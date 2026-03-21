@@ -3,16 +3,17 @@ use std::env;
 
 use anyhow::Result;
 
-use forgeplan_core::artifact::store::list_artifacts;
+use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::workspace::{find_workspace, load_config};
 
-pub fn run() -> Result<()> {
+pub async fn run() -> Result<()> {
     let cwd = env::current_dir()?;
     let workspace = find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
 
     let config = load_config(&workspace)?;
-    let artifacts = list_artifacts(&workspace)?;
+    let store = LanceStore::open(&workspace).await?;
+    let artifacts = store.list_artifacts(None).await?;
 
     // Count by kind
     let mut by_kind: BTreeMap<String, u32> = BTreeMap::new();

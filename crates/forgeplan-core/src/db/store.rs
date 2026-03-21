@@ -1,0 +1,1118 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
+use arrow_schema::ArrowError;
+use chrono::Utc;
+use futures::StreamExt;
+use lancedb::connection::Connection;
+use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::Table;
+
+use crate::artifact::store::ArtifactSummary;
+use crate::db::{convert, schema};
+
+/// Filter for listing artifacts.
+#[derive(Debug, Default)]
+pub struct ArtifactFilter {
+    pub kind: Option<String>,
+    pub status: Option<String>,
+}
+
+/// Minimal artifact data for creation.
+#[derive(Debug)]
+pub struct NewArtifact {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub body: String,
+    pub depth: String,
+    pub author: Option<String>,
+    pub parent_epic: Option<String>,
+    pub valid_until: Option<String>,
+}
+
+/// Full artifact record from LanceDB — includes body and all metadata.
+#[derive(Debug, Clone)]
+pub struct ArtifactRecord {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub body: String,
+    pub depth: String,
+    pub author: Option<String>,
+    pub parent_epic: Option<String>,
+    pub r_eff_score: f64,
+    pub valid_until: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ArtifactRecord {
+    /// Convert to a lightweight ArtifactSummary (drops body and most metadata).
+    pub fn to_summary(&self) -> ArtifactSummary {
+        ArtifactSummary {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            kind: self.kind.clone(),
+            status: self.status.clone(),
+        }
+    }
+
+    /// Reconstruct YAML frontmatter fields as a BTreeMap for serialization.
+    pub fn frontmatter_map(&self) -> BTreeMap<String, serde_yaml::Value> {
+        use serde_yaml::Value;
+
+        let mut map = BTreeMap::new();
+        map.insert("id".to_string(), Value::String(self.id.clone()));
+        map.insert("kind".to_string(), Value::String(self.kind.clone()));
+        map.insert("status".to_string(), Value::String(self.status.clone()));
+        map.insert("title".to_string(), Value::String(self.title.clone()));
+        map.insert("depth".to_string(), Value::String(self.depth.clone()));
+        if let Some(ref author) = self.author {
+            map.insert("author".to_string(), Value::String(author.clone()));
+        }
+        if let Some(ref parent) = self.parent_epic {
+            map.insert("parent_epic".to_string(), Value::String(parent.clone()));
+        }
+        map.insert(
+            "r_eff_score".to_string(),
+            Value::Number(serde_yaml::Number::from(self.r_eff_score)),
+        );
+        if let Some(ref vu) = self.valid_until {
+            map.insert("valid_until".to_string(), Value::String(vu.clone()));
+        }
+        map.insert("created_at".to_string(), Value::String(self.created_at.clone()));
+        map.insert("updated_at".to_string(), Value::String(self.updated_at.clone()));
+        map
+    }
+}
+
+/// LanceDB-backed artifact store.
+pub struct LanceStore {
+    _db: Connection,
+    artifacts: Table,
+    #[allow(dead_code)]
+    evidence: Table,
+    relations: Table,
+}
+
+impl LanceStore {
+    /// Connect to an existing LanceDB workspace (tables must already exist).
+    pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
+        let lance_dir = workspace_path.join("lance");
+        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
+
+        let artifacts = db.open_table("artifacts").execute().await?;
+        let evidence = db.open_table("evidence").execute().await?;
+        let relations = db.open_table("relations").execute().await?;
+
+        Ok(Self {
+            _db: db,
+            artifacts,
+            evidence,
+            relations,
+        })
+    }
+
+    /// Create tables if they don't exist, then open the store.
+    pub async fn init(workspace_path: &Path) -> anyhow::Result<Self> {
+        let lance_dir = workspace_path.join("lance");
+        tokio::fs::create_dir_all(&lance_dir).await?;
+
+        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
+        let existing_tables = db.table_names().execute().await?;
+
+        // Create artifacts table if not present
+        if !existing_tables.contains(&"artifacts".to_string()) {
+            let schema = schema::artifacts_schema();
+            let batch = empty_artifacts_batch(schema.clone())?;
+            db.create_table("artifacts", vec![batch]).execute().await?;
+        }
+
+        // Create evidence table if not present
+        if !existing_tables.contains(&"evidence".to_string()) {
+            let schema = schema::evidence_schema();
+            let batch = empty_evidence_batch(schema.clone())?;
+            db.create_table("evidence", vec![batch]).execute().await?;
+        }
+
+        // Create relations table if not present
+        if !existing_tables.contains(&"relations".to_string()) {
+            let schema = schema::relations_schema();
+            let batch = empty_relations_batch(schema.clone())?;
+            db.create_table("relations", vec![batch]).execute().await?;
+        }
+
+        let artifacts = db.open_table("artifacts").execute().await?;
+        let evidence = db.open_table("evidence").execute().await?;
+        let relations = db.open_table("relations").execute().await?;
+
+        Ok(Self {
+            _db: db,
+            artifacts,
+            evidence,
+            relations,
+        })
+    }
+
+    /// Insert a new artifact, returning its ID.
+    pub async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+        // Validate ID format — prevent path traversal and SQL injection
+        if !artifact.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            anyhow::bail!("Invalid artifact ID '{}': must contain only alphanumeric characters and hyphens", artifact.id);
+        }
+
+        // Guard: check for duplicate ID
+        if self.get_artifact(&artifact.id).await?.is_some() {
+            anyhow::bail!("Artifact '{}' already exists", artifact.id);
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let batch = convert::artifact_to_batch(artifact, &now)?;
+
+        self.artifacts.add(vec![batch]).execute().await?;
+        Ok(artifact.id.clone())
+    }
+
+    /// Get a single artifact by ID. Returns None if not found.
+    pub async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
+        let filter = format!("id = '{}'", id.replace('\'', "''"));
+        let batches = collect_batches(
+            self.artifacts
+                .query()
+                .only_if(filter)
+                .execute()
+                .await?,
+        )
+        .await?;
+
+        for batch in &batches {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            if let Some(summary) = extract_summary(batch, 0) {
+                return Ok(Some(summary));
+            }
+        }
+        Ok(None)
+    }
+
+    /// List artifacts with optional kind/status filter.
+    pub async fn list_artifacts(
+        &self,
+        filter: Option<&ArtifactFilter>,
+    ) -> anyhow::Result<Vec<ArtifactSummary>> {
+        let mut query = self.artifacts.query();
+
+        if let Some(f) = filter {
+            let mut conditions = Vec::new();
+            if let Some(kind) = &f.kind {
+                conditions.push(format!("kind = '{}'", kind.replace('\'', "''")));
+            }
+            if let Some(status) = &f.status {
+                conditions.push(format!("status = '{}'", status.replace('\'', "''")));
+            }
+            if !conditions.is_empty() {
+                query = query.only_if(conditions.join(" AND "));
+            }
+        }
+
+        let batches = collect_batches(query.execute().await?).await?;
+
+        let mut results = Vec::new();
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                if let Some(summary) = extract_summary(batch, row) {
+                    results.push(summary);
+                }
+            }
+        }
+        results.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(results)
+    }
+
+    /// Update artifact updated_at (and optionally status/title).
+    pub async fn update_artifact(
+        &self,
+        id: &str,
+        status: Option<&str>,
+        title: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let mut builder = self
+            .artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now));
+        if let Some(s) = status {
+            builder = builder.column("status", &format!("'{}'", s.replace('\'', "''")));
+        }
+        if let Some(t) = title {
+            builder = builder.column("title", &format!("'{}'", t.replace('\'', "''")));
+        }
+        builder.execute().await?;
+        Ok(())
+    }
+
+    /// Delete an artifact by ID.
+    pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts.delete(&predicate).await?;
+        Ok(())
+    }
+
+    /// Add a relation between two artifacts. Rejects duplicates.
+    pub async fn add_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        // Dedup: check if relation already exists
+        let existing = self.get_relations(source).await?;
+        let duplicate = existing.iter().any(|(t, r)| {
+            t.eq_ignore_ascii_case(target) && r == relation
+        });
+        if duplicate {
+            anyhow::bail!(
+                "Relation already exists: {} --{}--> {}",
+                source, relation, target
+            );
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let batch = convert::relation_to_batch(source, target, relation, &now)?;
+
+        self.relations.add(vec![batch]).execute().await?;
+        Ok(())
+    }
+
+    /// Get all relations for an artifact (as source).
+    /// Returns Vec<(target_id, relation_type)>.
+    pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let filter = format!("source_id = '{}'", id.replace('\'', "''"));
+        let batches = collect_batches(
+            self.relations
+                .query()
+                .only_if(filter)
+                .execute()
+                .await?,
+        )
+        .await?;
+
+        let mut results = Vec::new();
+        for batch in &batches {
+            let target_col = batch
+                .column_by_name("target_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let rel_col = batch
+                .column_by_name("relation_type")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+            if let (Some(targets), Some(rels)) = (target_col, rel_col) {
+                for i in 0..batch.num_rows() {
+                    if !targets.is_null(i) && !rels.is_null(i) {
+                        results.push((
+                            targets.value(i).to_string(),
+                            rels.value(i).to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    // -----------------------------------------------------------------------
+    // Full-record methods (ArtifactRecord)
+    // -----------------------------------------------------------------------
+
+    /// Get a single artifact by ID as a full record. Returns None if not found.
+    pub async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
+        let filter = format!("id = '{}'", id.replace('\'', "''"));
+        let batches = collect_batches(
+            self.artifacts
+                .query()
+                .only_if(filter)
+                .execute()
+                .await?,
+        )
+        .await?;
+
+        for batch in &batches {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            if let Some(record) = extract_record(batch, 0) {
+                return Ok(Some(record));
+            }
+        }
+        Ok(None)
+    }
+
+    /// List artifacts as full records with optional kind/status filter.
+    pub async fn list_records(
+        &self,
+        filter: Option<&ArtifactFilter>,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let mut query = self.artifacts.query();
+
+        if let Some(f) = filter {
+            let mut conditions = Vec::new();
+            if let Some(kind) = &f.kind {
+                conditions.push(format!("kind = '{}'", kind.replace('\'', "''")));
+            }
+            if let Some(status) = &f.status {
+                conditions.push(format!("status = '{}'", status.replace('\'', "''")));
+            }
+            if !conditions.is_empty() {
+                query = query.only_if(conditions.join(" AND "));
+            }
+        }
+
+        let batches = collect_batches(query.execute().await?).await?;
+
+        let mut results = Vec::new();
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                if let Some(record) = extract_record(batch, row) {
+                    results.push(record);
+                }
+            }
+        }
+        results.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(results)
+    }
+
+    /// Search artifacts by body/title content using case-insensitive substring match.
+    ///
+    /// LanceDB SQL may not support LIKE on LargeUtf8, so this does a full scan
+    /// and filters in Rust for maximum compatibility.
+    pub async fn search_body(
+        &self,
+        query: &str,
+        kind_filter: Option<&str>,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let filter = kind_filter.map(|k| ArtifactFilter {
+            kind: Some(k.to_string()),
+            status: None,
+        });
+        let all = self.list_records(filter.as_ref()).await?;
+
+        let query_lower = query.to_lowercase();
+        let results = all
+            .into_iter()
+            .filter(|r| {
+                r.title.to_lowercase().contains(&query_lower)
+                    || r.body.to_lowercase().contains(&query_lower)
+            })
+            .collect();
+        Ok(results)
+    }
+
+    /// Find artifacts where `valid_until` is set and is earlier than the current date.
+    pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let today = chrono::Utc::now().date_naive();
+        let all = self.list_records(None).await?;
+        let mut stale: Vec<ArtifactRecord> = all.into_iter().filter(|r| {
+            r.valid_until.as_ref().map_or(false, |vu| {
+                chrono::NaiveDate::parse_from_str(vu, "%Y-%m-%d")
+                    .or_else(|_| {
+                        // Try parsing as full ISO datetime and extract date
+                        chrono::DateTime::parse_from_rfc3339(vu)
+                            .map(|dt| dt.date_naive())
+                    })
+                    .map(|d| d < today)
+                    .unwrap_or(false)
+            })
+        }).collect();
+        stale.sort_by(|a, b| a.valid_until.cmp(&b.valid_until));
+        Ok(stale)
+    }
+
+    /// Compute the next sequential ID for a given kind prefix.
+    ///
+    /// Scans all existing artifact IDs matching the prefix, finds the maximum
+    /// numeric suffix, and returns the next one (e.g., "PRD-003" if max is "PRD-002").
+    /// If no artifacts exist with that prefix, returns "{PREFIX}-001".
+    pub async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String> {
+        let prefix_upper = kind_prefix.to_uppercase();
+        let all = self.list_artifacts(None).await?;
+
+        let mut max_num: u32 = 0;
+        let search_prefix = format!("{}-", prefix_upper);
+        for summary in &all {
+            let id_upper = summary.id.to_uppercase();
+            if let Some(rest) = id_upper.strip_prefix(&search_prefix) {
+                if let Some(num_str) = rest.split('-').next() {
+                    if let Ok(num) = num_str.parse::<u32>() {
+                        max_num = max_num.max(num);
+                    }
+                }
+            }
+        }
+
+        let next = max_num + 1;
+        Ok(format!("{}-{:03}", prefix_upper, next))
+    }
+
+    /// Update the body column of an artifact.
+    pub async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let escaped_body = body.replace('\'', "''");
+        // LanceDB coerces string literals to the column's schema type (LargeUtf8).
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("body", &format!("'{}'", escaped_body))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
+    /// Get all relations across all artifacts.
+    /// Returns Vec<(source_id, target_id, relation_type)>.
+    pub async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+        let batches = collect_batches(
+            self.relations.query().execute().await?,
+        )
+        .await?;
+
+        let mut results = Vec::new();
+        for batch in &batches {
+            let source_col = batch
+                .column_by_name("source_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let target_col = batch
+                .column_by_name("target_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let rel_col = batch
+                .column_by_name("relation_type")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+            if let (Some(sources), Some(targets), Some(rels)) = (source_col, target_col, rel_col) {
+                for i in 0..batch.num_rows() {
+                    if !sources.is_null(i) && !targets.is_null(i) && !rels.is_null(i) {
+                        results.push((
+                            sources.value(i).to_string(),
+                            targets.value(i).to_string(),
+                            rels.value(i).to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+}
+
+/// Collect a stream of RecordBatches into a Vec.
+async fn collect_batches(
+    stream: lancedb::arrow::SendableRecordBatchStream,
+) -> anyhow::Result<Vec<RecordBatch>> {
+    let mut batches = Vec::new();
+    let mut stream = std::pin::pin!(stream);
+    while let Some(result) = stream.next().await {
+        batches.push(result?);
+    }
+    Ok(batches)
+}
+
+/// Extract an ArtifactSummary from a RecordBatch row.
+fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
+    let id = get_string(batch, "id", row)?;
+    let title = get_string(batch, "title", row).unwrap_or_default();
+    let kind = get_string(batch, "kind", row).unwrap_or_default();
+    let status = get_string(batch, "status", row).unwrap_or_default();
+
+    Some(ArtifactSummary {
+        id,
+        title,
+        kind,
+        status,
+    })
+}
+
+/// Extract a full ArtifactRecord from a RecordBatch row.
+fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
+    let id = get_string(batch, "id", row)?;
+    let kind = get_string(batch, "kind", row).unwrap_or_default();
+    let status = get_string(batch, "status", row).unwrap_or_default();
+    let title = get_string(batch, "title", row).unwrap_or_default();
+    let body = get_large_string(batch, "body", row).unwrap_or_default();
+    let depth = get_string(batch, "depth", row).unwrap_or_default();
+    let author = get_string(batch, "author", row);
+    let parent_epic = get_string(batch, "parent_epic", row);
+    let r_eff_score = get_f64(batch, "r_eff_score", row).unwrap_or(0.0);
+    let valid_until = get_string(batch, "valid_until", row);
+    let created_at = get_string(batch, "created_at", row).unwrap_or_default();
+    let updated_at = get_string(batch, "updated_at", row).unwrap_or_default();
+    Some(ArtifactRecord {
+        id,
+        kind,
+        status,
+        title,
+        body,
+        depth,
+        author,
+        parent_epic,
+        r_eff_score,
+        valid_until,
+        created_at,
+        updated_at,
+    })
+}
+
+fn get_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    let array = batch.column_by_name(col)?;
+    if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+        if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row).to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/// Read a LargeUtf8 column value from a RecordBatch row.
+fn get_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    let array = batch.column_by_name(col)?;
+    if let Some(arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::LargeStringArray>()
+    {
+        if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row).to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/// Read a Float64 column value from a RecordBatch row.
+fn get_f64(batch: &RecordBatch, col: &str, row: usize) -> Option<f64> {
+    let array = batch.column_by_name(col)?;
+    if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+        if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row))
+        }
+    } else {
+        None
+    }
+}
+
+/// Create an empty RecordBatch for artifacts (used when initializing tables).
+fn empty_artifacts_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(arrow_array::LargeStringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(Float64Array::from(Vec::<f64>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            convert::make_null_embedding_col(0),
+        ],
+    )
+}
+
+/// Create an empty RecordBatch for evidence.
+fn empty_evidence_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(Int32Array::from(Vec::<i32>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+        ],
+    )
+}
+
+/// Create an empty RecordBatch for relations.
+fn empty_relations_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn make_store(tmp: &TempDir) -> LanceStore {
+        let ws = tmp.path().join(".forgeplan");
+        LanceStore::init(&ws).await.unwrap()
+    }
+
+    fn sample_artifact(id: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: format!("Test PRD {}", id),
+            body: "## Summary\n\nTest body content.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test-author".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn init_creates_tables() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // Should be able to list (empty) artifacts without error
+        let artifacts = store.list_artifacts(None).await.unwrap();
+        assert!(artifacts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_and_get_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let artifact = sample_artifact("PRD-001");
+        let id = store.create_artifact(&artifact).await.unwrap();
+        assert_eq!(id, "PRD-001");
+
+        let retrieved = store.get_artifact("PRD-001").await.unwrap();
+        assert!(retrieved.is_some());
+        let summary = retrieved.unwrap();
+        assert_eq!(summary.id, "PRD-001");
+        assert_eq!(summary.kind, "prd");
+        assert_eq!(summary.status, "draft");
+    }
+
+    #[tokio::test]
+    async fn get_nonexistent_artifact_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.get_artifact("MISSING-999").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_artifacts_returns_all() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+
+        let list = store.list_artifacts(None).await.unwrap();
+        assert_eq!(list.len(), 2);
+        // sorted by id
+        assert_eq!(list[0].id, "PRD-001");
+        assert_eq!(list[1].id, "PRD-002");
+    }
+
+    #[tokio::test]
+    async fn list_artifacts_with_kind_filter() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+
+        let mut rfc = sample_artifact("RFC-001");
+        rfc.kind = "rfc".to_string();
+        store.create_artifact(&rfc).await.unwrap();
+
+        let filter = ArtifactFilter {
+            kind: Some("prd".to_string()),
+            status: None,
+        };
+        let list = store.list_artifacts(Some(&filter)).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn delete_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store.delete_artifact("PRD-001").await.unwrap();
+
+        let result = store.get_artifact("PRD-001").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn add_and_get_relations() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        store.add_relation("PRD-001", "ADR-001", "based_on").await.unwrap();
+
+        let relations = store.get_relations("PRD-001").await.unwrap();
+        assert_eq!(relations.len(), 2);
+
+        let targets: Vec<&str> = relations.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(targets.contains(&"RFC-001"));
+        assert!(targets.contains(&"ADR-001"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for new full-record methods
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_record_returns_full_data() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let artifact = sample_artifact("PRD-001");
+        store.create_artifact(&artifact).await.unwrap();
+
+        let record = store.get_record("PRD-001").await.unwrap();
+        assert!(record.is_some());
+        let r = record.unwrap();
+        assert_eq!(r.id, "PRD-001");
+        assert_eq!(r.kind, "prd");
+        assert_eq!(r.status, "draft");
+        assert_eq!(r.title, "Test PRD PRD-001");
+        assert_eq!(r.body, "## Summary\n\nTest body content.");
+        assert_eq!(r.depth, "standard");
+        assert_eq!(r.author.as_deref(), Some("test-author"));
+        assert!(r.parent_epic.is_none());
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON);
+        assert!(r.valid_until.is_none());
+        assert!(!r.created_at.is_empty());
+        assert!(!r.updated_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_record_nonexistent_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.get_record("MISSING-999").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_records_returns_full_data() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+
+        let records = store.list_records(None).await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, "PRD-001");
+        assert_eq!(records[1].id, "PRD-002");
+        // Verify body is present
+        assert!(records[0].body.contains("Test body content"));
+    }
+
+    #[tokio::test]
+    async fn list_records_with_filter() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        let mut rfc = sample_artifact("RFC-001");
+        rfc.kind = "rfc".to_string();
+        store.create_artifact(&rfc).await.unwrap();
+
+        let filter = ArtifactFilter {
+            kind: Some("rfc".to_string()),
+            status: None,
+        };
+        let records = store.list_records(Some(&filter)).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "RFC-001");
+    }
+
+    #[tokio::test]
+    async fn search_body_finds_matching_content() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let mut a1 = sample_artifact("PRD-001");
+        a1.body = "This artifact is about authentication flow.".to_string();
+        store.create_artifact(&a1).await.unwrap();
+
+        let mut a2 = sample_artifact("PRD-002");
+        a2.body = "This artifact covers database schema design.".to_string();
+        store.create_artifact(&a2).await.unwrap();
+
+        // Search for "authentication" — should match PRD-001 only
+        let results = store.search_body("authentication", None).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn search_body_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let mut a1 = sample_artifact("PRD-001");
+        a1.body = "IMPORTANT: Security review needed.".to_string();
+        store.create_artifact(&a1).await.unwrap();
+
+        let results = store.search_body("security", None).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn search_body_matches_title_too() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let mut a1 = sample_artifact("PRD-001");
+        a1.title = "Authentication Module Design".to_string();
+        a1.body = "No relevant keywords here.".to_string();
+        store.create_artifact(&a1).await.unwrap();
+
+        let results = store.search_body("authentication", None).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn search_body_with_kind_filter() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let mut a1 = sample_artifact("PRD-001");
+        a1.body = "Search target text here.".to_string();
+        store.create_artifact(&a1).await.unwrap();
+
+        let mut a2 = sample_artifact("RFC-001");
+        a2.kind = "rfc".to_string();
+        a2.body = "Search target text here too.".to_string();
+        store.create_artifact(&a2).await.unwrap();
+
+        // Filter to rfc only
+        let results = store.search_body("target", Some("rfc")).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "RFC-001");
+    }
+
+    #[tokio::test]
+    async fn find_stale_returns_expired_artifacts() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Create an artifact with valid_until in the past
+        let mut stale = sample_artifact("PRD-001");
+        stale.valid_until = Some("2020-01-01T00:00:00+00:00".to_string());
+        store.create_artifact(&stale).await.unwrap();
+
+        // Create an artifact with valid_until in the future
+        let mut fresh = sample_artifact("PRD-002");
+        fresh.valid_until = Some("2099-12-31T23:59:59+00:00".to_string());
+        store.create_artifact(&fresh).await.unwrap();
+
+        // Create an artifact with no valid_until
+        store.create_artifact(&sample_artifact("PRD-003")).await.unwrap();
+
+        let stale_results = store.find_stale().await.unwrap();
+        assert_eq!(stale_results.len(), 1);
+        assert_eq!(stale_results[0].id, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn find_stale_empty_when_none_expired() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+
+        let stale_results = store.find_stale().await.unwrap();
+        assert!(stale_results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn next_id_starts_at_001() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let id = store.next_id("PRD").await.unwrap();
+        assert_eq!(id, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn next_id_increments_correctly() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+
+        let id = store.next_id("PRD").await.unwrap();
+        assert_eq!(id, "PRD-003");
+    }
+
+    #[tokio::test]
+    async fn next_id_ignores_other_kinds() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        let mut rfc = sample_artifact("RFC-001");
+        rfc.kind = "rfc".to_string();
+        store.create_artifact(&rfc).await.unwrap();
+
+        let prd_next = store.next_id("PRD").await.unwrap();
+        assert_eq!(prd_next, "PRD-002");
+
+        let rfc_next = store.next_id("RFC").await.unwrap();
+        assert_eq!(rfc_next, "RFC-002");
+    }
+
+    #[tokio::test]
+    async fn next_id_case_insensitive_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+
+        // Lowercase prefix should still find PRD-001
+        let id = store.next_id("prd").await.unwrap();
+        assert_eq!(id, "PRD-002");
+    }
+
+    #[tokio::test]
+    async fn update_body_changes_content() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+
+        store
+            .update_body("PRD-001", "## Updated\n\nNew body content.")
+            .await
+            .unwrap();
+
+        let record = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert_eq!(record.body, "## Updated\n\nNew body content.");
+    }
+
+    #[tokio::test]
+    async fn get_all_relations_returns_everything() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        store.add_relation("PRD-002", "ADR-001", "based_on").await.unwrap();
+
+        let all = store.get_all_relations().await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let sources: Vec<&str> = all.iter().map(|(s, _, _)| s.as_str()).collect();
+        assert!(sources.contains(&"PRD-001"));
+        assert!(sources.contains(&"PRD-002"));
+    }
+
+    #[tokio::test]
+    async fn get_all_relations_empty() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let all = store.get_all_relations().await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn artifact_record_to_summary() {
+        let record = ArtifactRecord {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Test".to_string(),
+            body: "body content".to_string(),
+            depth: "standard".to_string(),
+            author: Some("author".to_string()),
+            parent_epic: None,
+            r_eff_score: 0.5,
+            valid_until: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        let summary = record.to_summary();
+        assert_eq!(summary.id, "PRD-001");
+        assert_eq!(summary.kind, "prd");
+        assert_eq!(summary.status, "draft");
+        assert_eq!(summary.title, "Test");
+    }
+
+    #[tokio::test]
+    async fn artifact_record_frontmatter_map() {
+        let record = ArtifactRecord {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Test Title".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: Some("alice".to_string()),
+            parent_epic: None,
+            r_eff_score: 0.75,
+            valid_until: Some("2025-06-01".to_string()),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-06-01T00:00:00Z".to_string(),
+        };
+
+        let map = record.frontmatter_map();
+        assert_eq!(map.get("id").unwrap(), &serde_yaml::Value::String("PRD-001".to_string()));
+        assert_eq!(map.get("kind").unwrap(), &serde_yaml::Value::String("prd".to_string()));
+        assert_eq!(map.get("author").unwrap(), &serde_yaml::Value::String("alice".to_string()));
+        assert_eq!(map.get("valid_until").unwrap(), &serde_yaml::Value::String("2025-06-01".to_string()));
+        // parent_epic should not be present (None)
+        assert!(map.get("parent_epic").is_none());
+        // Should have all expected keys
+        assert!(map.contains_key("r_eff_score"));
+        assert!(map.contains_key("created_at"));
+        assert!(map.contains_key("updated_at"));
+    }
+}

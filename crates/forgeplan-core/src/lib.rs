@@ -1,5 +1,14 @@
 pub mod artifact;
 pub mod config;
+pub mod db;
+pub mod error;
+pub mod graph;
+pub mod link;
+pub mod progress;
+pub mod projection;
 pub mod scoring;
+pub mod search;
+pub mod stale;
 pub mod template;
+pub mod validation;
 pub mod workspace;

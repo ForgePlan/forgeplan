@@ -1,11 +1,11 @@
 use std::env;
-use std::fs;
 
 use anyhow::Result;
 
+use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::workspace::{find_workspace, init_workspace, FORGEPLAN_DIR};
 
-pub fn run(force: bool) -> Result<()> {
+pub async fn run(force: bool) -> Result<()> {
     let cwd = env::current_dir()?;
 
     // Check if already initialized
@@ -16,7 +16,7 @@ pub fn run(force: bool) -> Result<()> {
             return Ok(());
         }
         // Remove existing workspace for reinit
-        fs::remove_dir_all(&existing)?;
+        tokio::fs::remove_dir_all(&existing).await?;
         println!("  Removed existing {}", existing.display());
     }
 
@@ -27,8 +27,13 @@ pub fn run(force: bool) -> Result<()> {
         .unwrap_or_else(|| "unnamed".into());
 
     let ws = init_workspace(&cwd, &project_name)?;
+
+    // Initialize LanceDB tables (artifacts, evidence, relations)
+    LanceStore::init(&ws).await?;
+
     println!("  Initialized {}/ in {}", FORGEPLAN_DIR, cwd.display());
     println!("  Project: {}", project_name);
     println!("  Config:  {}", ws.join("config.yaml").display());
+    println!("  LanceDB: {}", ws.join("lance").display());
     Ok(())
 }

@@ -36,35 +36,68 @@ enum Commands {
     },
     /// Show project status dashboard
     Status,
-    /// Validate artifact completeness (placeholder)
+    /// Validate artifact completeness against schema rules
     Validate {
         /// Artifact ID (validates all if omitted)
         id: Option<String>,
     },
-    /// Show R_eff quality score (placeholder)
+    /// Compute R_eff quality score for decisions with evidence
     Score {
         /// Artifact ID
         id: Option<String>,
     },
+    /// Link two artifacts with a typed relationship
+    Link {
+        /// Source artifact ID
+        source: String,
+        /// Target artifact ID
+        target: String,
+        /// Relationship type: informs, based_on, supersedes, contradicts, refines
+        #[arg(long, default_value = "informs")]
+        relation: String,
+    },
+    /// Generate mermaid dependency graph of linked artifacts
+    Graph,
+    /// Search artifacts by keyword
+    Search {
+        /// Search query
+        query: String,
+        /// Filter by kind
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+    },
+    /// Detect stale artifacts with expired valid_until
+    Stale,
+    /// Show checkbox progress for artifacts
+    Progress {
+        /// Artifact ID (shows all if omitted)
+        id: Option<String>,
+    },
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { force } => commands::init::run(force),
-        Commands::New { kind, title } => commands::new::run(&kind, &title),
+        Commands::Init { force } => commands::init::run(force).await,
+        Commands::New { kind, title } => commands::new::run(&kind, &title).await,
         Commands::List { r#type, status } => {
-            commands::list::run(r#type.as_deref(), status.as_deref())
+            commands::list::run(r#type.as_deref(), status.as_deref()).await
         }
-        Commands::Status => commands::status::run(),
-        Commands::Validate { id } => {
-            println!("forgeplan validate {:?} -- coming in Phase 3B", id);
-            Ok(())
+        Commands::Status => commands::status::run().await,
+        Commands::Validate { id } => commands::validate::run(id.as_deref()).await,
+        Commands::Score { id } => commands::score::run(id.as_deref()).await,
+        Commands::Link {
+            source,
+            target,
+            relation,
+        } => commands::link::run(&source, &target, &relation).await,
+        Commands::Graph => commands::graph::run().await,
+        Commands::Search { query, r#type } => {
+            commands::search::run(&query, r#type.as_deref()).await
         }
-        Commands::Score { id } => {
-            println!("forgeplan score {:?} -- coming in Phase 3B", id);
-            Ok(())
-        }
+        Commands::Stale => commands::stale::run().await,
+        Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
     }
 }

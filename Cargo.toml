@@ -19,3 +19,10 @@ serde_yaml = "0.9"
 thiserror = "2"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+lancedb = "0.27"
+arrow = { version = "57", default-features = false }
+arrow-array = "57"
+arrow-schema = "57"
+futures = "0.3"
+async-trait = "0.1"
