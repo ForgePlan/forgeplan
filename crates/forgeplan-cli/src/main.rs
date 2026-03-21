@@ -58,6 +58,16 @@ enum Commands {
     },
     /// Generate mermaid dependency graph of linked artifacts
     Graph,
+    /// Search artifacts by keyword
+    Search {
+        /// Search query
+        query: String,
+        /// Filter by kind
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+    },
+    /// Detect stale artifacts with expired valid_until
+    Stale,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -78,5 +88,9 @@ fn main() -> anyhow::Result<()> {
             relation,
         } => commands::link::run(&source, &target, &relation),
         Commands::Graph => commands::graph::run(),
+        Commands::Search { query, r#type } => {
+            commands::search::run(&query, r#type.as_deref())
+        }
+        Commands::Stale => commands::stale::run(),
     }
 }
