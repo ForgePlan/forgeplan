@@ -306,6 +306,75 @@ fn score_without_evidence() {
 }
 
 #[test]
+fn duplicate_link_rejected() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "P"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "R"]).current_dir(tmp.path()).assert().success();
+
+    // First link succeeds
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Duplicate link fails
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn validate_exits_nonzero_on_must_errors() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+
+    // Create a minimal PRD that will fail deep validation (missing sections)
+    let prd_path = tmp.path().join(".forgeplan/prds/PRD-001-test.md");
+    std::fs::write(
+        &prd_path,
+        "---\nid: PRD-001\ntitle: Test\nstatus: Draft\nkind: prd\ndepth: deep\n---\n\n## Problem\n\nShort.\n",
+    )
+    .unwrap();
+
+    // Deep PRD with missing sections should fail
+    forgeplan()
+        .args(["validate", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn stale_detects_expired_artifact() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+
+    // Create an evidence artifact with expired valid_until
+    let evid_path = tmp.path().join(".forgeplan/evidence/EVID-001-old.md");
+    std::fs::write(
+        &evid_path,
+        "---\nid: EVID-001\ntitle: Old Benchmark\nstatus: Draft\nkind: evidence\nvalid_until: \"2020-01-01\"\n---\n\nExpired evidence.\n",
+    )
+    .unwrap();
+
+    forgeplan()
+        .arg("stale")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EVID-001"))
+        .stdout(predicate::str::contains("2020-01-01"));
+}
+
+#[test]
 fn no_workspace_gives_error() {
     let tmp = TempDir::new().unwrap();
 

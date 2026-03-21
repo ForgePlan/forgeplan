@@ -120,7 +120,13 @@ fn parse_kind(s: &str) -> ArtifactKind {
         "solution" | "solutionportfolio" => ArtifactKind::SolutionPortfolio,
         "evidence" | "evidencepack" => ArtifactKind::EvidencePack,
         "refresh" | "refreshreport" => ArtifactKind::RefreshReport,
-        _ => ArtifactKind::Note, // fallback
+        unknown => {
+            eprintln!(
+                "  Warning: unknown artifact kind '{}', applying base rules only",
+                unknown
+            );
+            ArtifactKind::Note
+        }
     }
 }
 

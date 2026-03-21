@@ -11,6 +11,8 @@ pub fn add_link(
     target_id: &str,
     relation: &str,
 ) -> anyhow::Result<()> {
+    // Normalize target to uppercase for consistent storage and dedup
+    let target_id = target_id.to_uppercase();
     let content = fs::read_to_string(artifact_path)?;
     let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
 
@@ -26,7 +28,7 @@ pub fn add_link(
                 let t = map.get(serde_yaml::Value::String("target".into()));
                 let r = map.get(serde_yaml::Value::String("relation".into()));
                 matches!((t, r), (Some(serde_yaml::Value::String(t)), Some(serde_yaml::Value::String(r)))
-                    if t == target_id && r == relation)
+                    if t.eq_ignore_ascii_case(&target_id) && r == relation)
             } else {
                 false
             }

@@ -83,15 +83,16 @@ pub fn render_mermaid(edges: &[Edge]) -> String {
     if !style_groups.is_empty() {
         lines.push(String::new());
         let colors = [
-            ("epic", "fill:#e1bee7,stroke:#7b1fa2"),
-            ("prd", "fill:#bbdefb,stroke:#1565c0"),
-            ("rfc", "fill:#c8e6c9,stroke:#2e7d32"),
-            ("adr", "fill:#fff9c4,stroke:#f9a825"),
-            ("spec", "fill:#ffe0b2,stroke:#e65100"),
+            ("epic", "epicStyle", "fill:#e1bee7,stroke:#7b1fa2"),
+            ("prd", "prdStyle", "fill:#bbdefb,stroke:#1565c0"),
+            ("rfc", "rfcStyle", "fill:#c8e6c9,stroke:#2e7d32"),
+            ("adr", "adrStyle", "fill:#fff9c4,stroke:#f9a825"),
+            ("spec", "specStyle", "fill:#ffe0b2,stroke:#e65100"),
         ];
-        for (kind, color) in &colors {
+        for (kind, class_name, color) in &colors {
             if let Some(ids) = style_groups.get(kind) {
-                lines.push(format!("    style {} {}", ids.join(","), color));
+                lines.push(format!("    classDef {} {}", class_name, color));
+                lines.push(format!("    class {} {}", ids.join(","), class_name));
             }
         }
     }

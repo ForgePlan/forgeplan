@@ -38,30 +38,27 @@ pub fn run(id: Option<&str>) -> anyhow::Result<()> {
             continue;
         }
 
+        let ev_content = std::fs::read_to_string(&artifact.path)?;
+        let ev_fm = match frontmatter::parse_frontmatter(&ev_content) {
+            Ok((fm, _)) => fm,
+            Err(_) => continue,
+        };
+
         // Check if this evidence is linked from target or links to target
         let is_linked = evidence_ids.iter().any(|eid| eid.eq_ignore_ascii_case(&artifact.id));
 
         if !is_linked {
-            let ev_content = std::fs::read_to_string(&artifact.path)?;
-            if let Ok((ev_fm, _)) = frontmatter::parse_frontmatter(&ev_content) {
-                let ev_links = link::list_links(&ev_fm);
-                let links_to_target = ev_links
-                    .iter()
-                    .any(|(t, _)| t.eq_ignore_ascii_case(target_id));
-                if !links_to_target {
-                    continue;
-                }
-            } else {
+            let ev_links = link::list_links(&ev_fm);
+            let links_to_target = ev_links
+                .iter()
+                .any(|(t, _)| t.eq_ignore_ascii_case(target_id));
+            if !links_to_target {
                 continue;
             }
         }
 
-        // Parse evidence item from frontmatter
-        let ev_content = std::fs::read_to_string(&artifact.path)?;
-        if let Ok((ev_fm, _)) = frontmatter::parse_frontmatter(&ev_content) {
-            let item = parse_evidence_item(&artifact.id, &ev_fm);
-            evidence_items.push(item);
-        }
+        let item = parse_evidence_item(&artifact.id, &ev_fm);
+        evidence_items.push(item);
     }
 
     // Compute R_eff
@@ -126,7 +123,8 @@ fn parse_evidence_item(id: &str, fm: &frontmatter::Frontmatter) -> EvidenceItem 
     let cl = fm
         .get("congruence_level")
         .and_then(|v| v.as_u64())
-        .unwrap_or(3) as u8;
+        .map(|v| v.min(3) as u8)
+        .unwrap_or(0); // conservative default: absent CL = highest penalty
 
     let valid_until = fm
         .get("valid_until")

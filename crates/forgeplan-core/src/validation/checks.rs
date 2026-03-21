@@ -37,10 +37,10 @@ pub fn section_item_count(body: &str, heading: &str) -> usize {
                 let trimmed = line.trim();
                 trimmed.starts_with("- ")
                     || trimmed.starts_with("* ")
-                    || trimmed.starts_with("| ")
-                        && !trimmed.starts_with("|-")
-                        && !trimmed.starts_with("| -")
-                        && !trimmed.contains("---")
+                    || (trimmed.starts_with("| ")
+                        && !trimmed.starts_with("|---")
+                        && !trimmed.contains("| --- |")
+                        && !trimmed.chars().skip(1).all(|c| c == '-' || c == '|' || c == ' '))
             })
             .count()
     } else {
@@ -56,16 +56,33 @@ pub fn find_placeholders(body: &str) -> Vec<(usize, String)> {
         LazyLock::new(|| Regex::new(r"(?i)\bTODO\b|\bFIXME\b|\bXXX\b").unwrap());
 
     let mut results = Vec::new();
+    let mut in_code_fence = false;
+    let mut in_comment = false;
     for (i, line) in body.lines().enumerate() {
-        // Skip HTML comments (BMAD reminders)
-        if line.trim().starts_with("<!--") || line.trim().starts_with("-->") {
+        let trimmed = line.trim();
+        // Track fenced code blocks
+        if trimmed.starts_with("```") {
+            in_code_fence = !in_code_fence;
+            continue;
+        }
+        if in_code_fence {
+            continue;
+        }
+        // Track HTML comments (BMAD reminders)
+        if trimmed.starts_with("<!--") {
+            in_comment = true;
+        }
+        if in_comment {
+            if trimmed.contains("-->") {
+                in_comment = false;
+            }
             continue;
         }
         for m in PLACEHOLDER_RE.find_iter(line) {
             results.push((i + 1, m.as_str().to_string()));
         }
-        // Only flag TODO outside of comments and code blocks
-        if !line.trim().starts_with("<!--") && !line.trim().starts_with("//") {
+        // Flag TODO outside of comments
+        if !trimmed.starts_with("//") {
             for m in TODO_RE.find_iter(line) {
                 results.push((i + 1, m.as_str().to_string()));
             }

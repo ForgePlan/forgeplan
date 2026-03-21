@@ -147,7 +147,7 @@ fn check_prd_related(body: &str, _fm: &Frontmatter) -> Option<String> {
 
 fn check_prd_density(body: &str, _fm: &Frontmatter) -> Option<String> {
     let wc = checks::section_word_count(body, "Problem");
-    if wc > 0 && wc < 50 {
+    if wc < 50 {
         Some(format!("Problem section has {} words (expected >= 50)", wc))
     } else {
         None
