@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 use std::env;
-use std::fs;
-
 use anyhow::{Context, Result};
 
 use forgeplan_core::artifact::store::{kind_dir, next_id, slugify};
@@ -64,11 +62,11 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
 
     // Write file
     let dir = workspace.join(kind_dir(&kind));
-    fs::create_dir_all(&dir)?;
+    tokio::fs::create_dir_all(&dir).await?;
     let filename = format!("{}-{}.md", id, slug);
     let filepath = dir.join(&filename);
 
-    fs::write(&filepath, &rendered)
+    tokio::fs::write(&filepath, &rendered).await
         .with_context(|| format!("Failed to write {}", filepath.display()))?;
 
     println!("  Created: {}", filepath.display());

@@ -10,7 +10,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::Table;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::schema;
+use crate::db::{convert, schema};
 
 /// Filter for listing artifacts.
 #[derive(Debug, Default)]
@@ -46,7 +46,7 @@ impl LanceStore {
     /// Connect to an existing LanceDB workspace (tables must already exist).
     pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
-        let db = lancedb::connect(lance_dir.to_str().unwrap()).execute().await?;
+        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
 
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
@@ -65,7 +65,7 @@ impl LanceStore {
         let lance_dir = workspace_path.join("lance");
         tokio::fs::create_dir_all(&lance_dir).await?;
 
-        let db = lancedb::connect(lance_dir.to_str().unwrap()).execute().await?;
+        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
         let existing_tables = db.table_names().execute().await?;
 
         // Create artifacts table if not present
@@ -103,32 +103,13 @@ impl LanceStore {
 
     /// Insert a new artifact, returning its ID.
     pub async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+        // Guard: check for duplicate ID
+        if self.get_artifact(&artifact.id).await?.is_some() {
+            anyhow::bail!("Artifact '{}' already exists", artifact.id);
+        }
+
         let now = Utc::now().to_rfc3339();
-        let schema = schema::artifacts_schema();
-
-        // Build null FixedSizeList(384) column for embedding
-        let embedding_col = make_null_embedding_col(1);
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec![artifact.id.as_str()])),
-                Arc::new(StringArray::from(vec![artifact.kind.as_str()])),
-                Arc::new(StringArray::from(vec![artifact.status.as_str()])),
-                Arc::new(StringArray::from(vec![artifact.title.as_str()])),
-                Arc::new(arrow_array::LargeStringArray::from(vec![
-                    artifact.body.as_str()
-                ])),
-                Arc::new(StringArray::from(vec![artifact.depth.as_str()])),
-                Arc::new(StringArray::from(vec![artifact.author.as_deref()])),
-                Arc::new(StringArray::from(vec![artifact.parent_epic.as_deref()])),
-                Arc::new(Float64Array::from(vec![0.0f64])),
-                Arc::new(StringArray::from(vec![artifact.valid_until.as_deref()])),
-                Arc::new(StringArray::from(vec![now.as_str()])),
-                Arc::new(StringArray::from(vec![now.as_str()])),
-                embedding_col,
-            ],
-        )?;
+        let batch = convert::artifact_to_batch(artifact, &now)?;
 
         self.artifacts.add(vec![batch]).execute().await?;
         Ok(artifact.id.clone())
@@ -196,7 +177,7 @@ impl LanceStore {
         &self,
         id: &str,
         status: Option<&str>,
-        _title: Option<&str>,
+        title: Option<&str>,
     ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
@@ -207,6 +188,9 @@ impl LanceStore {
             .column("updated_at", &format!("'{}'", now));
         if let Some(s) = status {
             builder = builder.column("status", &format!("'{}'", s.replace('\'', "''")));
+        }
+        if let Some(t) = title {
+            builder = builder.column("title", &format!("'{}'", t.replace('\'', "''")));
         }
         builder.execute().await?;
         Ok(())
@@ -219,25 +203,27 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Add a relation between two artifacts.
+    /// Add a relation between two artifacts. Rejects duplicates.
     pub async fn add_relation(
         &self,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let schema = schema::relations_schema();
+        // Dedup: check if relation already exists
+        let existing = self.get_relations(source).await?;
+        let duplicate = existing.iter().any(|(t, r)| {
+            t.eq_ignore_ascii_case(target) && r == relation
+        });
+        if duplicate {
+            anyhow::bail!(
+                "Relation already exists: {} --{}--> {}",
+                source, relation, target
+            );
+        }
 
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec![source])),
-                Arc::new(StringArray::from(vec![target])),
-                Arc::new(StringArray::from(vec![relation])),
-                Arc::new(StringArray::from(vec![now.as_str()])),
-            ],
-        )?;
+        let now = Utc::now().to_rfc3339();
+        let batch = convert::relation_to_batch(source, target, relation, &now)?;
 
         self.relations.add(vec![batch]).execute().await?;
         Ok(())
@@ -321,15 +307,6 @@ fn get_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
     }
 }
 
-/// Build a null FixedSizeList(384, Float32) array of length `len`.
-fn make_null_embedding_col(len: usize) -> Arc<dyn Array> {
-    use arrow_array::FixedSizeListArray;
-    use arrow_schema::Field;
-
-    let item_field = Arc::new(Field::new("item", arrow_schema::DataType::Float32, true));
-    Arc::new(FixedSizeListArray::new_null(item_field, 384, len))
-}
-
 /// Create an empty RecordBatch for artifacts (used when initializing tables).
 fn empty_artifacts_batch(
     schema: Arc<arrow_schema::Schema>,
@@ -349,7 +326,7 @@ fn empty_artifacts_batch(
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
-            make_null_embedding_col(0),
+            convert::make_null_embedding_col(0),
         ],
     )
 }

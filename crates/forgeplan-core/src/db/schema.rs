@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 
+/// Embedding vector dimension (BGE-M3 / all-MiniLM-L6-v2).
+/// Referenced from schema, store, and convert modules.
+pub const EMBEDDING_DIM: i32 = 384;
+
 /// Arrow schema for the `artifacts` table.
 ///
 /// Columns:
@@ -36,7 +40,7 @@ pub fn artifacts_schema() -> Arc<Schema> {
             "embedding",
             DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
-                384,
+                EMBEDDING_DIM,
             ),
             true,
         ),
@@ -124,7 +128,7 @@ mod tests {
         assert!(emb.is_nullable());
         match emb.data_type() {
             DataType::FixedSizeList(inner, size) => {
-                assert_eq!(*size, 384);
+                assert_eq!(*size, EMBEDDING_DIM);
                 assert_eq!(*inner.data_type(), DataType::Float32);
             }
             _ => panic!("embedding should be FixedSizeList"),

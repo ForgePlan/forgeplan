@@ -1,5 +1,4 @@
 use std::env;
-use std::fs;
 
 use anyhow::Result;
 
@@ -16,7 +15,7 @@ pub async fn run(force: bool) -> Result<()> {
             return Ok(());
         }
         // Remove existing workspace for reinit
-        fs::remove_dir_all(&existing)?;
+        tokio::fs::remove_dir_all(&existing).await?;
         println!("  Removed existing {}", existing.display());
     }
 

@@ -36,7 +36,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut total_passed = 0;
 
     for artifact in &to_validate {
-        let content = std::fs::read_to_string(&artifact.path)?;
+        let content = tokio::fs::read_to_string(&artifact.path).await?;
         let (fm, body) = frontmatter::parse_frontmatter(&content)?;
 
         let kind = parse_kind(&artifact.kind);

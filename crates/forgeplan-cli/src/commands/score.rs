@@ -19,7 +19,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         .find(|a| a.id.eq_ignore_ascii_case(target_id))
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
 
-    let content = std::fs::read_to_string(&target.path)?;
+    let content = tokio::fs::read_to_string(&target.path).await?;
     let (fm, _) = frontmatter::parse_frontmatter(&content)?;
 
     // Collect evidence from linked EvidencePack artifacts
@@ -38,7 +38,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
             continue;
         }
 
-        let ev_content = std::fs::read_to_string(&artifact.path)?;
+        let ev_content = tokio::fs::read_to_string(&artifact.path).await?;
         let ev_fm = match frontmatter::parse_frontmatter(&ev_content) {
             Ok((fm, _)) => fm,
             Err(_) => continue,

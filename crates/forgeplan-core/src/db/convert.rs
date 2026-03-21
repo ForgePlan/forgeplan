@@ -104,12 +104,12 @@ fn get_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
     }
 }
 
-fn make_null_embedding_col(len: usize) -> Arc<dyn Array> {
+pub(crate) fn make_null_embedding_col(len: usize) -> Arc<dyn Array> {
     use arrow_array::FixedSizeListArray;
     use arrow_schema::Field;
 
     let item_field = Arc::new(Field::new("item", arrow_schema::DataType::Float32, true));
-    Arc::new(FixedSizeListArray::new_null(item_field, 384, len))
+    Arc::new(FixedSizeListArray::new_null(item_field, schema::EMBEDDING_DIM, len))
 }
 
 #[cfg(test)]
