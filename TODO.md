@@ -3,7 +3,8 @@
 ## Next: Phase 4 — MCP Server + AI
 
 ### P0 (прямо сейчас)
-- [ ] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
+- [x] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
+- [ ] RFC-004: MCP Server Architecture — document design decisions
 - [ ] ADR-006: Full LanceDB primary (no file fallback) — document decision
 - [ ] Update RFC-003 progress to 100%
 
@@ -74,3 +75,12 @@
   - [x] 4-agent Rust audit: CheckboxCount struct, clamp, no unwrap
   - [x] 158 tests pass (135 core + 16 CLI + 7 other)
   - [x] Dogfooding: all 11 commands verified end-to-end
+- [x] **Phase 4A** — MCP Server (2026-03-22):
+  - [x] `forgeplan-mcp` crate — rmcp 1.2.0 + stdio transport
+  - [x] 11 MCP tools: init, new, list, status, validate, score, link, graph, search, stale, progress
+  - [x] ForgeplanServer with Arc<RwLock<Option<LanceStore>>> for lazy init
+  - [x] Structured JSON responses (schemars JsonSchema on all types)
+  - [x] `forgeplan serve` subcommand in CLI
+  - [x] Refactor: Mode::FromStr in core, eliminated record_to_frontmatter dupe
+  - [x] Smoke test: initialize + tools/list verified via stdio
+  - [x] 158 tests pass (all existing tests unaffected)
