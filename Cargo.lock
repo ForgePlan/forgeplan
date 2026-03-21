@@ -1797,6 +1797,7 @@ dependencies = [
  "clap",
  "forgeplan-core",
  "predicates",
+ "serde_yaml",
  "tempfile",
  "tokio",
 ]

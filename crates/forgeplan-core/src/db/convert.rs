@@ -87,7 +87,6 @@ fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
         title,
         kind,
         status,
-        path: std::path::PathBuf::new(),
     })
 }
 

@@ -1,37 +1,35 @@
 use std::collections::HashMap;
 use std::env;
+
 use anyhow::{Context, Result};
 
-use forgeplan_core::artifact::store::{kind_dir, next_id, slugify};
 use forgeplan_core::artifact::types::ArtifactKind;
+use forgeplan_core::db::store::{LanceStore, NewArtifact};
+use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
-use forgeplan_core::workspace::{find_workspace, load_config};
+use forgeplan_core::workspace::find_workspace;
 
 pub async fn run(kind_str: &str, title: &str) -> Result<()> {
-    let kind = parse_kind(kind_str)?;
+    let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let cwd = env::current_dir()?;
     let workspace = find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
 
-    let config = load_config(&workspace)?;
-    let id = next_id(&workspace, &kind, config.id_digits).await?;
-    let slug = slugify(title);
+    let store = LanceStore::open(&workspace).await?;
 
-    // The kind string used for template lookup (lowercase, CLI-style name)
-    let template_key = kind_to_template_key(&kind);
+    // Get next sequential ID from LanceDB
+    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
+    let id = store.next_id(&prefix).await?;
+
+    // The kind string used for template lookup
+    let template_key = kind.template_key();
     let template = get_embedded_template(template_key)
         .ok_or_else(|| anyhow::anyhow!("No template found for kind '{}'", template_key))?;
 
     // Build template variables
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    // Extract the numeric part from ID like "PRD-001" -> "001"
-    let nnn = id
-        .split('-')
-        .last()
-        .unwrap_or("001")
-        .to_string();
-    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
+    let nnn = id.split('-').last().unwrap_or("001").to_string();
 
     let mut vars = HashMap::new();
     vars.insert("NNN".to_string(), nnn.clone());
@@ -47,11 +45,9 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
     // Replace full ID patterns like PRD-{NNN} that may remain after render
     let heading_pattern = format!("# {}-{}: ", prefix, nnn);
     if let Some(pos) = rendered.find(&heading_pattern) {
-        // Find the end of that line
         let line_start = pos + heading_pattern.len();
         if let Some(nl) = rendered[line_start..].find('\n') {
             let old_heading_text = &rendered[line_start..line_start + nl];
-            // Only replace if it looks like a placeholder (contains braces or slashes)
             if old_heading_text.contains('{') || old_heading_text.contains('/') {
                 let before = &rendered[..line_start];
                 let after = &rendered[line_start + nl..];
@@ -60,14 +56,39 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
         }
     }
 
-    // Write file
-    let dir = workspace.join(kind_dir(&kind));
-    tokio::fs::create_dir_all(&dir).await?;
-    let filename = format!("{}-{}.md", id, slug);
-    let filepath = dir.join(&filename);
+    // Write to LanceDB (source of truth)
+    let artifact = NewArtifact {
+        id: id.clone(),
+        kind: template_key.to_string(),
+        status: "draft".to_string(),
+        title: title.to_string(),
+        body: rendered.clone(),
+        depth: "standard".to_string(),
+        author: None,
+        parent_epic: None,
+        valid_until: None,
+    };
+    store
+        .create_artifact(&artifact)
+        .await
+        .with_context(|| format!("Failed to create artifact {} in LanceDB", id))?;
 
-    tokio::fs::write(&filepath, &rendered).await
-        .with_context(|| format!("Failed to write {}", filepath.display()))?;
+    // Render markdown projection (git-tracked)
+    let filepath = projection::render_projection(
+        &workspace,
+        &id,
+        template_key,
+        title,
+        "draft",
+        "standard",
+        None,
+        None,
+        None,
+        &rendered,
+        &[],
+    )
+    .await
+    .with_context(|| format!("Failed to write projection for {}", id))?;
 
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);
@@ -76,37 +97,3 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_kind(s: &str) -> Result<ArtifactKind> {
-    match s.to_lowercase().as_str() {
-        "prd" => Ok(ArtifactKind::Prd),
-        "epic" => Ok(ArtifactKind::Epic),
-        "spec" => Ok(ArtifactKind::Spec),
-        "rfc" => Ok(ArtifactKind::Rfc),
-        "adr" => Ok(ArtifactKind::Adr),
-        "problem" => Ok(ArtifactKind::ProblemCard),
-        "solution" => Ok(ArtifactKind::SolutionPortfolio),
-        "evidence" => Ok(ArtifactKind::EvidencePack),
-        "note" => Ok(ArtifactKind::Note),
-        "refresh" => Ok(ArtifactKind::RefreshReport),
-        _ => anyhow::bail!(
-            "Unknown artifact kind: '{}'. Valid: prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh",
-            s
-        ),
-    }
-}
-
-/// Map ArtifactKind to the template lookup key.
-fn kind_to_template_key(kind: &ArtifactKind) -> &'static str {
-    match kind {
-        ArtifactKind::Prd => "prd",
-        ArtifactKind::Epic => "epic",
-        ArtifactKind::Spec => "spec",
-        ArtifactKind::Rfc => "rfc",
-        ArtifactKind::Adr => "adr",
-        ArtifactKind::ProblemCard => "problem",
-        ArtifactKind::SolutionPortfolio => "solution",
-        ArtifactKind::EvidencePack => "evidence",
-        ArtifactKind::Note => "note",
-        ArtifactKind::RefreshReport => "refresh",
-    }
-}

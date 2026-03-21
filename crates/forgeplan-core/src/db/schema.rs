@@ -21,7 +21,7 @@ pub const EMBEDDING_DIM: i32 = 1024;
 /// - valid_until Utf8 (nullable) — ISO date for evidence decay
 /// - created_at  Utf8 (not null) — ISO datetime
 /// - updated_at  Utf8 (not null) — ISO datetime
-/// - embedding   FixedSizeList(384, Float32) (nullable) — vector for semantic search
+/// - embedding   FixedSizeList(1024, Float32) (nullable) — vector for semantic search
 pub fn artifacts_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),

@@ -1,12 +1,15 @@
-use forgeplan_core::search;
+use std::env;
+
+use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::workspace;
 
 pub async fn run(query: &str, kind: Option<&str>) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let hits = search::search(&ws, query, kind).await?;
+    let store = LanceStore::open(&ws).await?;
+    let hits = store.search_body(query, kind).await?;
 
     if hits.is_empty() {
         println!("No results for \"{}\"", query);
@@ -15,26 +18,35 @@ pub async fn run(query: &str, kind: Option<&str>) -> anyhow::Result<()> {
 
     println!("Found {} artifact(s) matching \"{}\":\n", hits.len(), query);
 
-    for hit in &hits {
-        println!(
-            "  {} [{}] \"{}\"",
-            hit.artifact.id, hit.artifact.kind, hit.artifact.title
-        );
-        for m in hit.matches.iter().take(3) {
-            let line_info = if m.line_number == 0 {
-                String::new()
-            } else {
-                format!("L{}: ", m.line_number)
-            };
-            let display = if m.line.len() > 100 {
-                format!("{}...", &m.line[..100])
-            } else {
-                m.line.clone()
-            };
-            println!("    {}{}", line_info, display.trim());
-        }
-        if hit.matches.len() > 3 {
-            println!("    ... and {} more match(es)", hit.matches.len() - 3);
+    for record in &hits {
+        println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
+
+        // Show matching lines from body
+        let query_lower = query.to_lowercase();
+        let mut match_count = 0;
+        for (i, line) in record.body.lines().enumerate() {
+            if line.to_lowercase().contains(&query_lower) {
+                let display = if line.chars().count() > 100 {
+                    format!("{}...", line.chars().take(100).collect::<String>())
+                } else {
+                    line.to_string()
+                };
+                println!("    L{}: {}", i + 1, display.trim());
+                match_count += 1;
+                if match_count >= 3 {
+                    // Count remaining matches
+                    let remaining: usize = record
+                        .body
+                        .lines()
+                        .skip(i + 1)
+                        .filter(|l| l.to_lowercase().contains(&query_lower))
+                        .count();
+                    if remaining > 0 {
+                        println!("    ... and {} more match(es)", remaining);
+                    }
+                    break;
+                }
+            }
         }
         println!();
     }
