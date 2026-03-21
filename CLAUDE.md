@@ -24,13 +24,14 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 ## Текущий статус
 
 - **Phase 0** (Foundation & Research) — DONE
-- **Phase 1** (Schemas & Templates) — IN PROGRESS
+- **Phase 1** (Schemas & Templates) — DONE (12/12, adversarial review passed)
 - **Phase 2** (Workflow & Integration) — не начат
-- **Phase 3** (Rust CLI + LanceDB) — не начат, `src/` пуст
+- **Phase 3** (Rust CLI + LanceDB) — IN PROGRESS (workspace scaffold, types + R_eff scoring, 4 tests pass)
 - **Phase 4** (Desktop App + AI) — не начат
 - **Phase 5** (MCP Server) — не начат
 
-Подробности: `PLAN.md` (49 задач, 5 фаз), `TODO.md` (текущие P0/P1/P2 приоритеты).
+Подробности: `PLAN.md` (49 задач, 5 фаз), `TODO.md` (текущие приоритеты).
+Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`, `docs/adrs/ADR-001..003`.
 
 ## Как начать работу в новом чате
 
@@ -41,6 +42,34 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 5. **Для поиска инструментов** — `SOURCES.md` (карта skills, commands, agents, repos)
 6. **Для reference code** — `sources/` (read-only repos, см. таблицу ниже)
 7. **Используй Hindsight** — `memory_recall("Forgeplan")` для быстрого восстановления контекста
+
+## Как пользоваться методологией (quick reference)
+
+> Полный гайд: `docs/guides/HOW-TO-USE.md`
+
+### Routing — один вопрос определяет depth:
+```
+Тривиально, обратимо за день?  → Tactical: ничего или Note
+Фича 1-3 дня, есть выбор?      → Standard: Brief/PRD → RFC
+Необратимо, 1-2 недели?        → Deep: PRD → Spec → RFC → ADR
+Кросс-команда, стратегия?       → Critical: Epic → PRD[] → Spec[] → RFC[] → ADR[]
+```
+
+### 5 артефактов = 5 вопросов:
+| Вопрос | Артефакт | Когда НЕ нужен |
+|--------|----------|----------------|
+| ЧТО и зачем? | PRD / Brief | Баг-фикс, рефакторинг |
+| КАК ТОЧНО работает? | Spec | Нет API / data model changes |
+| КАК СТРОИМ? | RFC | Архитектура очевидна, <1 дня |
+| ПОЧЕМУ именно это? | ADR | Решение тривиально и обратимо |
+| ГРУППИРОВКА? | Epic | Задача = один PRD |
+
+### Правила:
+- **Pipeline = guideline, НЕ бюрократия** — не создавай все 10 типов на каждую задачу
+- **[Actor] can [capability]** — формат FR, без технологий в требованиях
+- **Ребёнок ссылается на родителя** — PRD→Epic, RFC→PRD, ADR→RFC
+- **Supersede, не удаляй** — старый артефакт получает status: Superseded
+- **Quality gates по depth** — tactical: ничего, standard: Verification Gate, deep+: Adversarial Review
 
 ## Структура проекта
 
@@ -59,19 +88,32 @@ ForgePlan/
 │   │   ├── EPIC-SCHEMA.md  ← Aggregated progress, children rules
 │   │   └── SPEC-SCHEMA.md  ← API contracts, data models, versioning
 │   ├── guides/
+│   │   ├── HOW-TO-USE.md        ← **ПРАКТИЧЕСКИЙ ГАЙД** — 10 правил с примерами
 │   │   ├── ARTIFACT-MODEL.md    ← Иерархия: Epic→PRD→Spec→RFC→ADR + lifecycle
-│   │   └── PRD-RFC-ADR-FLOW.md  ← Decision tree: какой документ создать
+│   │   ├── PRD-RFC-ADR-FLOW.md  ← Decision tree: какой документ создать
+│   │   ├── DEPTH-CALIBRATION.md ← Tactical→Standard→Deep→Critical + auto-escalation
+│   │   ├── QUALITY-GATES.md     ← Verification Gate + Adversarial Review + R_eff
+│   │   └── GLOSSARY.md          ← 31 термин + lifecycle таблица
+│   ├── epics/              ← Dogfood: EPIC-001-build-forgeplan.md
+│   ├── prds/               ← Dogfood: PRD-001-forgeplan-cli.md
+│   ├── adrs/               ← Dogfood: ADR-001..003 (Rust, LanceDB, DEC→ADR merge)
 │   ├── references/
 │   │   ├── REF-DOCS-ANALYSIS.md ← Анализ 10 методологий
 │   │   └── SKILLS-AUDIT.md      ← 52 skills по 10 слоям + gaps
 │   └── ref/                ← Raw reference docs (Word, Markdown) на русском
 │
-├── templates/              ← Markdown шаблоны (_TEMPLATE.md)
-│   ├── prd/                ← PRD шаблон
-│   ├── epic/               ← Epic шаблон
-│   ├── spec/               ← Specification шаблон
-│   ├── rfc/                ← RFC шаблон
-│   └── adr/                ← ADR шаблон
+├── templates/              ← Markdown шаблоны (_TEMPLATE.md) — все с YAML frontmatter
+│   ├── prd/                ← PRD (обогащён BMAD 13-step validation)
+│   ├── brief/              ← Product Brief (lightweight tactical PRD)
+│   ├── epic/               ← Epic
+│   ├── spec/               ← Specification
+│   ├── rfc/                ← RFC (с Implementation Phases)
+│   ├── adr/                ← ADR (на deep+ включает DDR: invariants, rollback)
+│   ├── problem/            ← ProblemCard (signal, Anti-Goodhart indicators)
+│   ├── solution/           ← SolutionPortfolio (variants, weakest link)
+│   ├── note/               ← Note (auto-expires 90 days)
+│   ├── evidence/           ← EvidencePack (verdict, CL, valid_until → R_eff)
+│   └── refresh/            ← RefreshReport (re-evaluation of stale artifacts)
 │
 ├── sources/                ← Reference implementations (READ-ONLY, не редактировать!)
 │   ├── quint-code/         ← Go — data model, R_eff scoring, SQLite schema
@@ -81,8 +123,11 @@ ForgePlan/
 │   ├── adr-tools/          ← Bash — original ADR CLI
 │   └── ccpm/               ← Markdown — Claude Code project management
 │
+├── crates/                 ← Rust workspace
+│   ├── forgeplan-core/     ← Shared library (types, R_eff scoring — 4 tests pass)
+│   └── forgeplan-cli/      ← CLI binary (clap scaffold)
 ├── research/               ← Исследования методологий
-└── src/                    ← Rust CLI (пусто до Phase 3)
+└── src/                    ← (deprecated, см. crates/)
 ```
 
 ## Артефакты (10 типов)
