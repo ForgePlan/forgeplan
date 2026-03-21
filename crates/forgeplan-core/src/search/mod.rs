@@ -73,3 +73,90 @@ pub fn search(
 
     Ok(hits)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn setup_workspace(tmp: &TempDir) -> std::path::PathBuf {
+        let ws = tmp.path().join(".forgeplan");
+        fs::create_dir_all(ws.join("prds")).unwrap();
+        fs::create_dir_all(ws.join("rfcs")).unwrap();
+        fs::create_dir_all(ws.join("adrs")).unwrap();
+        fs::create_dir_all(ws.join("epics")).unwrap();
+        fs::create_dir_all(ws.join("specs")).unwrap();
+        fs::create_dir_all(ws.join("evidence")).unwrap();
+        fs::create_dir_all(ws.join("notes")).unwrap();
+        fs::create_dir_all(ws.join("problems")).unwrap();
+        fs::create_dir_all(ws.join("solutions")).unwrap();
+        fs::create_dir_all(ws.join("refresh")).unwrap();
+        ws
+    }
+
+    fn write_artifact(ws: &std::path::Path, subdir: &str, filename: &str, id: &str, kind: &str, title: &str, body: &str) {
+        let content = format!(
+            "---\nid: {}\ntitle: {}\nkind: {}\nstatus: Draft\n---\n\n{}\n",
+            id, title, kind, body
+        );
+        fs::write(ws.join(subdir).join(filename), content).unwrap();
+    }
+
+    #[test]
+    fn search_finds_match_in_title() {
+        let tmp = TempDir::new().unwrap();
+        let ws = setup_workspace(&tmp);
+        write_artifact(&ws, "prds", "PRD-001-auth.md", "PRD-001", "prd", "Authentication System", "Some body content.");
+
+        let hits = search(&ws, "authentication", None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].artifact.id, "PRD-001");
+        assert!(hits[0].matches.iter().any(|m| m.line.contains("[title]")));
+    }
+
+    #[test]
+    fn search_finds_match_in_body() {
+        let tmp = TempDir::new().unwrap();
+        let ws = setup_workspace(&tmp);
+        write_artifact(&ws, "rfcs", "RFC-001-search.md", "RFC-001", "rfc", "Search Feature", "Implement full-text search with LanceDB.");
+
+        let hits = search(&ws, "lancedb", None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].artifact.id, "RFC-001");
+        assert!(hits[0].matches.iter().any(|m| m.line_number > 0));
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        let ws = setup_workspace(&tmp);
+        write_artifact(&ws, "prds", "PRD-002-perf.md", "PRD-002", "prd", "Performance Goals", "NFR requirements here.");
+
+        let hits = search(&ws, "PERFORMANCE", None).unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn search_applies_kind_filter() {
+        let tmp = TempDir::new().unwrap();
+        let ws = setup_workspace(&tmp);
+        write_artifact(&ws, "prds", "PRD-001-x.md", "PRD-001", "prd", "Shared Keyword", "");
+        write_artifact(&ws, "rfcs", "RFC-001-x.md", "RFC-001", "rfc", "Shared Keyword", "");
+
+        // Filter to only rfcs
+        let hits = search(&ws, "shared keyword", Some("rfc")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].artifact.kind, "rfc");
+    }
+
+    #[test]
+    fn search_returns_empty_when_no_match() {
+        let tmp = TempDir::new().unwrap();
+        let ws = setup_workspace(&tmp);
+        write_artifact(&ws, "prds", "PRD-001-x.md", "PRD-001", "prd", "Title Here", "Body here.");
+
+        let hits = search(&ws, "nonexistent-term-xyz", None).unwrap();
+        assert!(hits.is_empty());
+    }
+}

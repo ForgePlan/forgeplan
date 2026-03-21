@@ -109,3 +109,102 @@ fn kind_from_id(id: &str) -> &'static str {
     else if upper.starts_with("SPEC") { "spec" }
     else { "other" }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- kind_from_id ---
+
+    #[test]
+    fn kind_from_id_all_known_kinds() {
+        assert_eq!(kind_from_id("EPIC-001"), "epic");
+        assert_eq!(kind_from_id("epic-001"), "epic");
+        assert_eq!(kind_from_id("PRD-001"), "prd");
+        assert_eq!(kind_from_id("prd-001"), "prd");
+        assert_eq!(kind_from_id("RFC-001"), "rfc");
+        assert_eq!(kind_from_id("rfc-001"), "rfc");
+        assert_eq!(kind_from_id("ADR-001"), "adr");
+        assert_eq!(kind_from_id("adr-001"), "adr");
+        assert_eq!(kind_from_id("SPEC-001"), "spec");
+        assert_eq!(kind_from_id("spec-001"), "spec");
+    }
+
+    #[test]
+    fn kind_from_id_unknown_returns_other() {
+        assert_eq!(kind_from_id("NOTE-001"), "other");
+        assert_eq!(kind_from_id("PROB-001"), "other");
+        assert_eq!(kind_from_id(""), "other");
+    }
+
+    // --- render_mermaid ---
+
+    #[test]
+    fn render_mermaid_empty_edges() {
+        let output = render_mermaid(&[]);
+        assert_eq!(
+            output,
+            "graph LR\n    %% No links found between artifacts\n"
+        );
+    }
+
+    #[test]
+    fn render_mermaid_single_edge_with_relation() {
+        let edges = vec![Edge {
+            from: "PRD-001".to_string(),
+            to: "RFC-001".to_string(),
+            relation: "informs".to_string(),
+        }];
+        let output = render_mermaid(&edges);
+        assert!(output.starts_with("graph LR\n"));
+        assert!(output.contains("PRD-001 -->|informs| RFC-001"));
+        // Uses classDef syntax, not old `style`
+        assert!(output.contains("classDef"));
+        assert!(output.contains("class "));
+        assert!(!output.contains("\n    style "));
+    }
+
+    #[test]
+    fn render_mermaid_multiple_edges_same_kind() {
+        let edges = vec![
+            Edge {
+                from: "PRD-001".to_string(),
+                to: "RFC-001".to_string(),
+                relation: "informs".to_string(),
+            },
+            Edge {
+                from: "PRD-002".to_string(),
+                to: "RFC-001".to_string(),
+                relation: "informs".to_string(),
+            },
+        ];
+        let output = render_mermaid(&edges);
+        // Both PRD nodes should appear in one `class` line for prdStyle
+        assert!(output.contains("classDef prdStyle"));
+        assert!(output.contains("classDef rfcStyle"));
+    }
+
+    #[test]
+    fn render_mermaid_empty_relation_uses_plain_arrow() {
+        let edges = vec![Edge {
+            from: "PRD-001".to_string(),
+            to: "EPIC-001".to_string(),
+            relation: "belongs_to".to_string(),
+        }];
+        let output = render_mermaid(&edges);
+        // belongs_to relation uses plain --> without label
+        assert!(output.contains("PRD-001 --> EPIC-001"));
+        assert!(!output.contains("|belongs_to|"));
+    }
+
+    #[test]
+    fn render_mermaid_named_relation_uses_label_arrow() {
+        let edges = vec![Edge {
+            from: "RFC-001".to_string(),
+            to: "PRD-001".to_string(),
+            relation: "based_on".to_string(),
+        }];
+        let output = render_mermaid(&edges);
+        assert!(output.contains("RFC-001 -->|based_on| PRD-001"));
+    }
+}

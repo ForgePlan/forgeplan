@@ -414,3 +414,302 @@ fn check_adr_rollback(body: &str, _fm: &Frontmatter) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validation::{validate, Severity};
+
+    fn make_fm(id: &str, status: &str) -> Frontmatter {
+        let mut fm = Frontmatter::new();
+        fm.insert("id".into(), serde_yaml::Value::String(id.into()));
+        fm.insert("status".into(), serde_yaml::Value::String(status.into()));
+        fm
+    }
+
+    // ─── 1. rules_for returns correct count per kind ────────────────────────
+
+    #[test]
+    fn rules_for_prd_tactical_returns_base_only() {
+        let rules = rules_for(&ArtifactKind::Prd, &Mode::Tactical);
+        let base_count = base_rules().len();
+        let prd_base = 5; // problem, goals, non-goals, fr, related
+        assert_eq!(rules.len(), base_count + prd_base);
+    }
+
+    #[test]
+    fn rules_for_prd_standard_includes_audience_density_leakage() {
+        let rules = rules_for(&ArtifactKind::Prd, &Mode::Standard);
+        let base_count = base_rules().len();
+        let prd_base = 5;
+        let standard_extra = 3; // density, audience, leakage
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"prd-problem-density"));
+        assert!(ids.contains(&"prd-target-audience"));
+        assert!(ids.contains(&"prd-no-impl-leakage"));
+    }
+
+    #[test]
+    fn rules_for_prd_deep_includes_timeline_stakeholders_acceptance() {
+        let rules = rules_for(&ArtifactKind::Prd, &Mode::Deep);
+        let base_count = base_rules().len();
+        let prd_base = 5;
+        let standard_extra = 3;
+        let deep_extra = 3; // timeline, stakeholders, acceptance
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra + deep_extra);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"prd-timeline"));
+        assert!(ids.contains(&"prd-stakeholders"));
+        assert!(ids.contains(&"prd-acceptance"));
+    }
+
+    #[test]
+    fn rules_for_epic_returns_base_plus_5() {
+        let rules = rules_for(&ArtifactKind::Epic, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 5);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"epic-vision"));
+        assert!(ids.contains(&"epic-outcomes"));
+        assert!(ids.contains(&"epic-children"));
+        assert!(ids.contains(&"epic-phases"));
+        assert!(ids.contains(&"epic-progress"));
+    }
+
+    #[test]
+    fn rules_for_spec_returns_base_plus_3() {
+        let rules = rules_for(&ArtifactKind::Spec, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 3);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"spec-summary"));
+        assert!(ids.contains(&"spec-contracts"));
+        assert!(ids.contains(&"spec-related"));
+    }
+
+    #[test]
+    fn rules_for_rfc_standard_returns_base_plus_5_no_risks() {
+        let rules = rules_for(&ArtifactKind::Rfc, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 5);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(!ids.contains(&"rfc-risks"));
+    }
+
+    #[test]
+    fn rules_for_rfc_deep_returns_base_plus_6_with_risks() {
+        let rules = rules_for(&ArtifactKind::Rfc, &Mode::Deep);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 6);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"rfc-risks"));
+    }
+
+    #[test]
+    fn rules_for_adr_standard_returns_base_plus_3() {
+        let rules = rules_for(&ArtifactKind::Adr, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 3);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(!ids.contains(&"adr-invariants"));
+        assert!(!ids.contains(&"adr-rollback"));
+    }
+
+    #[test]
+    fn rules_for_adr_deep_returns_base_plus_5_with_ddr() {
+        let rules = rules_for(&ArtifactKind::Adr, &Mode::Deep);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 5);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"adr-invariants"));
+        assert!(ids.contains(&"adr-rollback"));
+    }
+
+    #[test]
+    fn rules_for_note_returns_base_only() {
+        let rules = rules_for(&ArtifactKind::Note, &Mode::Tactical);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count);
+    }
+
+    // ─── 2. PRD validation on complete document ─────────────────────────────
+
+    #[test]
+    fn prd_complete_document_passes_deep_validation() {
+        let fm = make_fm("prd-001", "draft");
+
+        // Problem section with >= 50 words
+        let problem_text = "This is a significant problem that affects many users \
+            across the platform. The current workflow is inefficient and error-prone, \
+            leading to frequent mistakes and wasted time. Users have reported frustration \
+            with the existing process, and our metrics show a decline in engagement. \
+            We need a comprehensive solution that addresses the root causes and provides \
+            a streamlined experience for all user segments.";
+
+        let body = format!(
+            "## Problem\n\n{problem_text}\n\n\
+             ## Goals\n\nImprove user satisfaction by 20%.\n\n\
+             ## Non-Goals\n\nWe will not rebuild the entire platform.\n\n\
+             ## Functional Requirements\n\n- [Actor] can [capability]\n\n\
+             ## Related Artifacts\n\n- RFC-001\n\n\
+             ## Target Users\n\nDevelopers and project managers.\n\n\
+             ## Timeline\n\nQ1 2026.\n\n\
+             ## Stakeholders\n\n- Engineering lead\n- Product manager\n\n\
+             ## Acceptance Criteria\n\n- All FR implemented\n- Tests pass\n"
+        );
+
+        let result = validate("prd-001", &body, &fm, &ArtifactKind::Prd, &Mode::Deep);
+        let must_findings: Vec<_> = result.findings.iter()
+            .filter(|f| f.severity == Severity::Must)
+            .collect();
+        assert!(
+            must_findings.is_empty(),
+            "Expected 0 Must findings on complete PRD, got {}: {:?}",
+            must_findings.len(),
+            must_findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        );
+        assert!(result.passed());
+    }
+
+    // ─── 3. PRD validation on incomplete document ───────────────────────────
+
+    #[test]
+    fn prd_incomplete_document_has_multiple_must_findings() {
+        let fm = make_fm("prd-002", "draft");
+        let body = "## Problem\n\nShort.";
+
+        let result = validate("prd-002", body, &fm, &ArtifactKind::Prd, &Mode::Deep);
+        let must_count = result.error_count();
+
+        // Missing: Goals, Non-Goals, FR, Related, Audience, Timeline, Stakeholders,
+        //          Acceptance, density < 50
+        assert!(
+            must_count >= 5,
+            "Expected at least 5 Must findings on incomplete PRD, got {}",
+            must_count
+        );
+        assert!(!result.passed());
+    }
+
+    // ─── 4. Density check fires on missing/short section ────────────────────
+
+    #[test]
+    fn density_check_fires_when_no_problem_section() {
+        let fm = make_fm("prd-003", "draft");
+        let body = "## Goals\n\nSome goals here.\n";
+
+        let result = check_prd_density(body, &fm);
+        assert!(result.is_some(), "Density check should fire when Problem section is missing");
+        let msg = result.unwrap();
+        assert!(msg.contains("0 words") || msg.contains("words"));
+    }
+
+    #[test]
+    fn density_check_fires_when_problem_section_too_short() {
+        let fm = make_fm("prd-004", "draft");
+        let body = "## Problem\n\nToo short.\n\n## Goals\n\nGoals here.\n";
+
+        let result = check_prd_density(body, &fm);
+        assert!(result.is_some(), "Density check should fire when Problem < 50 words");
+    }
+
+    #[test]
+    fn density_check_passes_when_problem_section_long_enough() {
+        let fm = make_fm("prd-005", "draft");
+        let long_problem = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let body = format!("## Problem\n\n{long_problem}\n\n## Goals\n\nGoals.\n");
+
+        let result = check_prd_density(&body, &fm);
+        assert!(result.is_none(), "Density check should pass when Problem >= 50 words");
+    }
+
+    // ─── 5. ADR deep rules include DDR fields ───────────────────────────────
+
+    #[test]
+    fn adr_standard_passes_with_context_decision_consequences() {
+        let fm = make_fm("adr-001", "active");
+        let body = "## Context\n\nWe need to choose a database.\n\n\
+                     ## Decision\n\nUse LanceDB for embedded vector storage.\n\n\
+                     ## Consequences\n\nSimplifies deployment, limits horizontal scaling.\n";
+
+        let result = validate("adr-001", body, &fm, &ArtifactKind::Adr, &Mode::Standard);
+        assert!(
+            result.passed(),
+            "ADR with Context+Decision+Consequences should pass at Standard depth, findings: {:?}",
+            result.findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn adr_deep_has_should_findings_for_invariants_and_rollback() {
+        let fm = make_fm("adr-002", "active");
+        let body = "## Context\n\nWe need to choose a database.\n\n\
+                     ## Decision\n\nUse LanceDB for embedded vector storage.\n\n\
+                     ## Consequences\n\nSimplifies deployment, limits horizontal scaling.\n";
+
+        let result = validate("adr-002", body, &fm, &ArtifactKind::Adr, &Mode::Deep);
+
+        // Should still pass (invariants and rollback are Should, not Must)
+        assert!(result.passed(), "ADR should still pass at Deep depth without DDR fields");
+
+        let should_ids: Vec<&str> = result.findings.iter()
+            .filter(|f| f.severity == Severity::Should)
+            .map(|f| f.rule_id.as_str())
+            .collect();
+        assert!(
+            should_ids.contains(&"adr-invariants"),
+            "Expected Should finding for adr-invariants at Deep depth"
+        );
+        assert!(
+            should_ids.contains(&"adr-rollback"),
+            "Expected Should finding for adr-rollback at Deep depth"
+        );
+    }
+
+    // ─── 6. Base rules - no-placeholders ────────────────────────────────────
+
+    #[test]
+    fn no_placeholders_fires_on_mustache_placeholder() {
+        let fm = make_fm("test-001", "draft");
+        let body = "## Summary\n\nThis has a {{placeholder}} in it.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_some(), "Should detect {{placeholder}}");
+    }
+
+    #[test]
+    fn no_placeholders_fires_on_todo() {
+        let fm = make_fm("test-002", "draft");
+        let body = "## Summary\n\nTODO fill this section.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_some(), "Should detect TODO");
+    }
+
+    #[test]
+    fn no_placeholders_ignores_todo_inside_code_fence() {
+        let fm = make_fm("test-003", "draft");
+        let body = "## Summary\n\nSome text.\n\n```rust\n// TODO: implement later\n```\n\nMore text.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_none(), "Should NOT detect TODO inside code fence");
+    }
+
+    #[test]
+    fn no_placeholders_passes_on_clean_body() {
+        let fm = make_fm("test-004", "draft");
+        let body = "## Summary\n\nThis is a clean document with no issues.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_none(), "Clean body should pass no-placeholders check");
+    }
+}

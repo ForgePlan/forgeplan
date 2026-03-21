@@ -103,3 +103,114 @@ pub fn normalize_relation(input: &str) -> anyhow::Result<String> {
         Err(ForgeplanError::InvalidRelation(input.to_string()).into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // --- normalize_relation ---
+
+    #[test]
+    fn normalize_relation_valid_snake_case() {
+        for &rel in VALID_RELATIONS {
+            let result = normalize_relation(rel).unwrap();
+            assert_eq!(result, rel);
+        }
+    }
+
+    #[test]
+    fn normalize_relation_kebab_to_snake() {
+        assert_eq!(normalize_relation("based-on").unwrap(), "based_on");
+        assert_eq!(normalize_relation("based-ON").unwrap(), "based_on");
+    }
+
+    #[test]
+    fn normalize_relation_invalid_returns_error() {
+        let err = normalize_relation("unknown-relation").unwrap_err();
+        assert!(err.to_string().contains("unknown-relation"));
+    }
+
+    // --- list_links ---
+
+    #[test]
+    fn list_links_empty_frontmatter() {
+        let fm = std::collections::BTreeMap::new();
+        assert!(list_links(&fm).is_empty());
+    }
+
+    #[test]
+    fn list_links_with_sequence() {
+        let yaml = r#"
+links:
+  - target: PRD-001
+    relation: informs
+  - target: RFC-002
+    relation: based_on
+"#;
+        let fm: crate::artifact::frontmatter::Frontmatter =
+            serde_yaml::from_str(yaml).unwrap();
+        let links = list_links(&fm);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0], ("PRD-001".to_string(), "informs".to_string()));
+        assert_eq!(links[1], ("RFC-002".to_string(), "based_on".to_string()));
+    }
+
+    #[test]
+    fn list_links_non_sequence_links_field() {
+        let yaml = r#"links: "not-a-sequence""#;
+        let fm: crate::artifact::frontmatter::Frontmatter =
+            serde_yaml::from_str(yaml).unwrap();
+        // Non-sequence links field should return empty vec
+        assert!(list_links(&fm).is_empty());
+    }
+
+    // --- add_link ---
+
+    fn make_artifact(dir: &std::path::Path, id: &str, extra_yaml: &str) -> std::path::PathBuf {
+        let path = dir.join(format!("{}.md", id));
+        let content = format!(
+            "---\nid: {}\ntitle: Test\nkind: prd\nstatus: Draft\n{}---\n\nBody text.\n",
+            id, extra_yaml
+        );
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn add_link_creates_link_entry() {
+        let tmp = TempDir::new().unwrap();
+        let path = make_artifact(tmp.path(), "PRD-001", "");
+        add_link(&path, "RFC-001", "informs").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+        let links = list_links(&fm);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "RFC-001");
+        assert_eq!(links[0].1, "informs");
+    }
+
+    #[test]
+    fn add_link_writes_target_uppercase() {
+        let tmp = TempDir::new().unwrap();
+        let path = make_artifact(tmp.path(), "PRD-001", "");
+        add_link(&path, "rfc-001", "informs").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+        let links = list_links(&fm);
+        assert_eq!(links[0].0, "RFC-001");
+    }
+
+    #[test]
+    fn add_link_detects_case_insensitive_duplicate() {
+        let tmp = TempDir::new().unwrap();
+        let path = make_artifact(tmp.path(), "PRD-001", "");
+        add_link(&path, "RFC-001", "informs").unwrap();
+        // Adding duplicate with different case should fail
+        let err = add_link(&path, "rfc-001", "informs").unwrap_err();
+        assert!(err.to_string().contains("RFC-001") || err.to_string().contains("already"));
+    }
+}
