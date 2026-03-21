@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 
-/// Embedding vector dimension (BGE-M3 / all-MiniLM-L6-v2).
+/// Embedding vector dimension — BGE-M3 full-size (ADR-005).
 /// Referenced from schema, store, and convert modules.
-pub const EMBEDDING_DIM: i32 = 384;
+pub const EMBEDDING_DIM: i32 = 1024;
 
 /// Arrow schema for the `artifacts` table.
 ///

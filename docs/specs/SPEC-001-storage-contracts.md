@@ -5,6 +5,7 @@ status: Draft
 author: explosovebit
 created: 2026-03-22
 updated: 2026-03-22
+delta: "v1.1: EMBEDDING_DIM 384→1024 (ADR-005), fastembed-rs"
 prd: PRD-001
 rfc: RFC-003
 depth: deep
@@ -76,7 +77,7 @@ pub struct ArtifactRecord {
     pub updated_at: String,  // ISO 8601
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding: Option<Vec<f32>>,  // 384-dim, None until Phase 4
+    pub embedding: Option<Vec<f32>>,  // 1024-dim, None until Phase 4
 }
 ```
 
@@ -156,7 +157,7 @@ pub struct ArtifactUpdate {
 | 9 | `valid_until` | `Utf8` | YES | ISO date "2027-03-22" |
 | 10 | `created_at` | `Utf8` | NO | ISO datetime |
 | 11 | `updated_at` | `Utf8` | NO | ISO datetime |
-| 12 | `embedding` | `FixedSizeList(384, Float32)` | YES | Semantic vector (None until Phase 4) |
+| 12 | `embedding` | `FixedSizeList(1024, Float32)` | YES | Semantic vector (None until Phase 4) |
 
 ```rust
 pub fn artifacts_schema() -> Schema {
@@ -176,7 +177,7 @@ pub fn artifacts_schema() -> Schema {
         Field::new("embedding",
             DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
-                384  // i32!
+                1024  // i32! Full BGE-M3 (ADR-005)
             ),
             true,  // nullable — None until ONNX embeddings added
         ),
@@ -311,7 +312,7 @@ impl ArtifactStore for LanceStore { /* ... */ }
 | `congruence_level` | 0..=3 |
 | `relation_type` | One of: informs, based_on, supersedes, contradicts, refines |
 | `r_eff_score` | 0.0..=1.0 |
-| `embedding` | Exactly 384 f32 values, or None |
+| `embedding` | Exactly 1024 f32 values, or None (BGE-M3 full, ADR-005) |
 
 ### SQL Injection Prevention
 
@@ -389,6 +390,7 @@ links:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-03-22 | Initial: 3 tables, ArtifactStore trait, 6 DTOs |
+| 1.1 | 2026-03-22 | MODIFIED: EMBEDDING_DIM 384→1024 (ADR-005). MODIFIED: ort→fastembed-rs. ADDED: reranker support. |
 
 ---
 
