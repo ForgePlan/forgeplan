@@ -8,8 +8,8 @@ sources/
 # Rust build output
 target/
 
-# LanceDB data
-.forgeplan/lance/
+# Forgeplan workspace (dogfood — this repo IS the tool, not the target project)
+.forgeplan/
 
 # Node.js
 node_modules/
