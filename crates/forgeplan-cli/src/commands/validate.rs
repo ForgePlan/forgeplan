@@ -4,12 +4,12 @@ use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::validation::{self, Severity, ValidationResult};
 use forgeplan_core::workspace;
 
-pub fn run(id: Option<&str>) -> anyhow::Result<()> {
+pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let artifacts = store::list_artifacts(&ws)?;
+    let artifacts = store::list_artifacts(&ws).await?;
     if artifacts.is_empty() {
         println!("No artifacts found.");
         return Ok(());

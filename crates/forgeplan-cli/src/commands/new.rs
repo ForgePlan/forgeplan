@@ -9,7 +9,7 @@ use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::template::{get_embedded_template, render_template};
 use forgeplan_core::workspace::{find_workspace, load_config};
 
-pub fn run(kind_str: &str, title: &str) -> Result<()> {
+pub async fn run(kind_str: &str, title: &str) -> Result<()> {
     let kind = parse_kind(kind_str)?;
 
     let cwd = env::current_dir()?;
@@ -17,7 +17,7 @@ pub fn run(kind_str: &str, title: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
 
     let config = load_config(&workspace)?;
-    let id = next_id(&workspace, &kind, config.id_digits)?;
+    let id = next_id(&workspace, &kind, config.id_digits).await?;
     let slug = slugify(title);
 
     // The kind string used for template lookup (lowercase, CLI-style name)
@@ -47,12 +47,6 @@ pub fn run(kind_str: &str, title: &str) -> Result<()> {
     rendered = rendered.replace("YYYY-MM-DD", &today);
 
     // Replace full ID patterns like PRD-{NNN} that may remain after render
-    // (render_template already handles {NNN}, but the prefix-qualified pattern
-    // e.g. "PRD-001" is produced naturally from "PRD-{NNN}" -> "PRD-001")
-    // So this should already work. But let's also replace the heading pattern.
-    // The heading "# PRD-001: {Product Area / Feature Name}" needs title substitution.
-    // The template renders {NNN} to the number, producing "# PRD-001: ..."
-    // We replace the boilerplate heading hint with the actual title.
     let heading_pattern = format!("# {}-{}: ", prefix, nnn);
     if let Some(pos) = rendered.find(&heading_pattern) {
         // Find the end of that line

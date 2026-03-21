@@ -70,27 +70,28 @@ enum Commands {
     Stale,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { force } => commands::init::run(force),
-        Commands::New { kind, title } => commands::new::run(&kind, &title),
+        Commands::Init { force } => commands::init::run(force).await,
+        Commands::New { kind, title } => commands::new::run(&kind, &title).await,
         Commands::List { r#type, status } => {
-            commands::list::run(r#type.as_deref(), status.as_deref())
+            commands::list::run(r#type.as_deref(), status.as_deref()).await
         }
-        Commands::Status => commands::status::run(),
-        Commands::Validate { id } => commands::validate::run(id.as_deref()),
-        Commands::Score { id } => commands::score::run(id.as_deref()),
+        Commands::Status => commands::status::run().await,
+        Commands::Validate { id } => commands::validate::run(id.as_deref()).await,
+        Commands::Score { id } => commands::score::run(id.as_deref()).await,
         Commands::Link {
             source,
             target,
             relation,
-        } => commands::link::run(&source, &target, &relation),
-        Commands::Graph => commands::graph::run(),
+        } => commands::link::run(&source, &target, &relation).await,
+        Commands::Graph => commands::graph::run().await,
         Commands::Search { query, r#type } => {
-            commands::search::run(&query, r#type.as_deref())
+            commands::search::run(&query, r#type.as_deref()).await
         }
-        Commands::Stale => commands::stale::run(),
+        Commands::Stale => commands::stale::run().await,
     }
 }

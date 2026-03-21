@@ -5,12 +5,12 @@ use anyhow::Result;
 use forgeplan_core::artifact::store::list_artifacts;
 use forgeplan_core::workspace::find_workspace;
 
-pub fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Result<()> {
+pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Result<()> {
     let cwd = env::current_dir()?;
     let workspace = find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
 
-    let mut artifacts = list_artifacts(&workspace)?;
+    let mut artifacts = list_artifacts(&workspace).await?;
 
     // Apply filters
     if let Some(kind) = kind_filter {

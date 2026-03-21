@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use forgeplan_core::workspace::{find_workspace, init_workspace, FORGEPLAN_DIR};
 
-pub fn run(force: bool) -> Result<()> {
+pub async fn run(force: bool) -> Result<()> {
     let cwd = env::current_dir()?;
 
     // Check if already initialized

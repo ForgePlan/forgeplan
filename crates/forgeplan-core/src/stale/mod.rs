@@ -14,13 +14,13 @@ pub struct StaleArtifact {
 }
 
 /// Find all artifacts where valid_until has passed.
-pub fn find_stale(workspace: &Path) -> anyhow::Result<Vec<StaleArtifact>> {
+pub async fn find_stale(workspace: &Path) -> anyhow::Result<Vec<StaleArtifact>> {
     let today = Utc::now().date_naive();
-    let artifacts = store::list_artifacts(workspace)?;
+    let artifacts = store::list_artifacts(workspace).await?;
     let mut stale = Vec::new();
 
     for artifact in artifacts {
-        let content = std::fs::read_to_string(&artifact.path)?;
+        let content = tokio::fs::read_to_string(&artifact.path).await?;
         let (fm, _) = match frontmatter::parse_frontmatter(&content) {
             Ok(result) => result,
             Err(_) => continue,
@@ -80,43 +80,43 @@ mod tests {
         fs::write(ws.join(subdir).join(filename), content).unwrap();
     }
 
-    #[test]
-    fn find_stale_no_stale_artifacts() {
+    #[tokio::test]
+    async fn find_stale_no_stale_artifacts() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         // Artifact with no valid_until — not stale
         write_artifact_with_expiry(&ws, "prds", "PRD-001.md", "PRD-001", None);
 
-        let stale = find_stale(&ws).unwrap();
+        let stale = find_stale(&ws).await.unwrap();
         assert!(stale.is_empty());
     }
 
-    #[test]
-    fn find_stale_expired_artifact() {
+    #[tokio::test]
+    async fn find_stale_expired_artifact() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         // valid_until in the past
         write_artifact_with_expiry(&ws, "prds", "PRD-001.md", "PRD-001", Some("2020-01-01"));
 
-        let stale = find_stale(&ws).unwrap();
+        let stale = find_stale(&ws).await.unwrap();
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].artifact.id, "PRD-001");
         assert!(stale[0].days_expired > 0);
     }
 
-    #[test]
-    fn find_stale_future_valid_until_not_stale() {
+    #[tokio::test]
+    async fn find_stale_future_valid_until_not_stale() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         // valid_until far in the future
         write_artifact_with_expiry(&ws, "prds", "PRD-001.md", "PRD-001", Some("2099-12-31"));
 
-        let stale = find_stale(&ws).unwrap();
+        let stale = find_stale(&ws).await.unwrap();
         assert!(stale.is_empty());
     }
 
-    #[test]
-    fn find_stale_sorted_by_days_expired_descending() {
+    #[tokio::test]
+    async fn find_stale_sorted_by_days_expired_descending() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         // PRD-001 expired longer ago
@@ -124,7 +124,7 @@ mod tests {
         // PRD-002 expired more recently
         write_artifact_with_expiry(&ws, "rfcs", "RFC-001.md", "RFC-001", Some("2020-01-01"));
 
-        let stale = find_stale(&ws).unwrap();
+        let stale = find_stale(&ws).await.unwrap();
         assert_eq!(stale.len(), 2);
         // First element should have more days_expired (older expiry)
         assert!(stale[0].days_expired >= stale[1].days_expired);
