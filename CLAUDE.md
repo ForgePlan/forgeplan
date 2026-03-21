@@ -26,12 +26,12 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 - **Phase 0** (Foundation & Research) — DONE
 - **Phase 1** (Schemas & Templates) — DONE (12/12, adversarial review passed)
 - **Phase 2** (Workflow & Integration) — не начат
-- **Phase 3** (Rust CLI + LanceDB) — IN PROGRESS (workspace scaffold, types + R_eff scoring, 4 tests pass)
+- **Phase 3** (Rust CLI + LanceDB) — IN PROGRESS (Phase 3A done: init, new, list, status; 11 tests pass)
 - **Phase 4** (Desktop App + AI) — не начат
 - **Phase 5** (MCP Server) — не начат
 
 Подробности: `PLAN.md` (49 задач, 5 фаз), `TODO.md` (текущие приоритеты).
-Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`, `docs/adrs/ADR-001..003`.
+Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`, `docs/rfcs/RFC-001-*.md`, `docs/adrs/ADR-001..003`.
 
 ## Как начать работу в новом чате
 
@@ -70,6 +70,103 @@ Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`
 - **Ребёнок ссылается на родителя** — PRD→Epic, RFC→PRD, ADR→RFC
 - **Supersede, не удаляй** — старый артефакт получает status: Superseded
 - **Quality gates по depth** — tactical: ничего, standard: Verification Gate, deep+: Adversarial Review
+
+### Progress Tracking (ОБЯЗАТЕЛЬНО):
+После завершения блока работ (реализация FR, закрытие фазы, создание артефакта) — **предложи пользователю обновить прогресс** в следующих местах:
+1. **RFC** — чекбоксы Implementation Phases (`- [ ]` → `- [x]`) + progress bar
+2. **PRD** — progress bar по FR (сколько FR реализовано)
+3. **Epic** — Children таблица (progress %), aggregated progress bar
+4. **PLAN.md** — Phase progress bar + чекбоксы задач
+5. **TODO.md** — переместить завершённые задачи в Done ✅, обновить P0
+
+Формула: **работа не закончена, пока прогресс не отражён в артефактах.**
+
+### Git-конвенции
+
+#### Формат коммита (Conventional Commits + Forgeplan):
+```
+<type>(<scope>): <description>
+
+[body — что и почему, на русском]
+
+Refs: RFC-001, FR-001..004
+```
+
+#### Types:
+| Type | Когда | Пример |
+|------|-------|--------|
+| `feat` | Новая функциональность (FR-*) | `feat(cli): implement forgeplan init` |
+| `docs` | Артефакты методологии (RFC, PRD, ADR) | `docs(rfc): add RFC-001 CLI architecture` |
+| `fix` | Баг-фикс | `fix(frontmatter): handle missing closing ---` |
+| `refactor` | Рефакторинг без изменения поведения | `refactor(store): extract slugify` |
+| `test` | Тесты | `test(workspace): add init roundtrip tests` |
+| `chore` | Build, deps, CI | `chore(deps): add tempfile dev-dependency` |
+| `progress` | Обновление прогресса артефактов | `progress: update Phase 3A tracking` |
+
+#### Scope = модуль или артефакт:
+- Код: `cli`, `core`, `store`, `template`, `scoring`, `workspace`, `config`
+- Артефакты: `rfc`, `prd`, `adr`, `epic`
+
+#### Branching Strategy (Simplified Git Flow):
+```
+main                              ← только релизы (tagged: v0.1.0)
+  └── dev                         ← integration branch
+       ├── feat/phase-3a-core-cli ← feature branch
+       ├── fix/frontmatter-crash  ← bugfix branch
+       └── docs/rfc-002-lancedb   ← docs-only branch
+```
+
+| Ветка | Назначение | Мерджится в | Стратегия merge |
+|-------|-----------|-------------|-----------------|
+| `feat/*`, `fix/*`, `docs/*` | Работа над задачей | `dev` | Squash merge |
+| `dev` | Интеграция фич | `release/v*` | Merge commit |
+| `release/v*` | RC, стабилизация, финальные фиксы | `main` | Merge commit + tag |
+| `main` | Stable releases | — | Protected, PR-only |
+
+Формат имени: `{type}/{scope}-{slug}` — `feat/phase-3a-core-cli`, `fix/frontmatter-parser`
+
+#### Lifecycle ветки:
+```
+1. git checkout dev && git checkout -b feat/phase-3b-search
+2. ... работа, коммиты ...
+3. PR: feat/phase-3b-search → dev (squash merge)
+4. Когда фаза готова: git checkout dev && git checkout -b release/v0.2.0
+5. ... стабилизация, фиксы в release/* ...
+6. PR: release/v0.2.0 → main (merge commit + tag v0.2.0)
+7. main → dev (sync back: merge commit)
+```
+
+#### Правила коммитов:
+- **Refs обязательны** — каждый коммит ссылается на артефакт (RFC, FR, ADR)
+- **Один коммит = одна логическая единица** — не мешать feat + docs + refactor
+- **Description на английском** (для совместимости), body на русском (для контекста)
+- **Не коммить напрямую в main или dev** — всегда через feature branch + PR
+
+#### PR и merge:
+- **PR title** = `[ARTIFACT-ID] description` — `[RFC-001] Implement Phase 3A core CLI`
+- **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
+- **feat/* → dev**: Squash merge (чистая история)
+- **release/* → main**: Merge commit (сохраняет историю RC)
+- **После merge в dev**: удалить feature branch
+- **После merge в main**: tag + удалить release branch + sync dev from main
+
+#### Релизы:
+- **Формат тега**: `v{major}.{minor}.{patch}` — `v0.1.0`, `v0.2.0`
+- **Когда**: после завершения Phase (3A → v0.1.0, 3B → v0.2.0, 3C → v1.0.0)
+- **Процесс**: `dev` → `release/v0.x.0` (RC) → тесты → фиксы → `main` + tag
+- **Release notes**: автогенерация из conventional commits
+- **Binary**: `cargo build --release` + проверка NFR-002 (< 15MB)
+
+#### Worktrees (параллельная работа):
+```bash
+# Создать worktree для параллельной задачи (hotfix во время фичи)
+git worktree add ../forgeplan-fix fix/frontmatter-parser
+
+# Вернуться и удалить после merge
+git worktree remove ../forgeplan-fix
+```
+- **Когда**: hotfix во время долгой фичи; параллельная работа агентов (isolation: "worktree")
+- **Правило**: worktree = временный, удалять после merge
 
 ## Структура проекта
 

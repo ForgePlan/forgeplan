@@ -3,10 +3,11 @@
 ## Next: Eat Your Own Dogfood — применить процесс к Forgeplan
 
 ### P0 (прямо сейчас)
-- [ ] Создать Epic: "Build Forgeplan" используя templates/epic/_TEMPLATE.md
-- [ ] Создать PRD: "Forgeplan CLI" используя templates/prd/_TEMPLATE.md (обогащённый BMAD)
-- [ ] Записать ADR: "Rust вместо Go" используя templates/adr/_TEMPLATE.md
-- [ ] Записать ADR: "LanceDB вместо SQLite" используя templates/adr/_TEMPLATE.md
+- [ ] Phase 3C: `forgeplan validate` — schema rules engine
+- [ ] Phase 3C: `forgeplan score` — R_eff CLI wrapper
+- [ ] Phase 3C: `forgeplan graph` — mermaid dependency graph
+- [ ] Phase 3C: `forgeplan search` — keyword search
+- [ ] LanceDB tables schema — adapt quint-code schema
 
 ### P1 (Phase 2 — Workflow Integration)
 - [ ] Расширить /write-doc (prd, epic, spec)
@@ -17,9 +18,6 @@
 - [ ] Verification Gate checklist в /audit
 - [ ] Adversarial Review protocol в /audit
 - [ ] Обновить CLAUDE.md
-
-## Backlog: Phase 3 — Rust CLI
-→ См. PLAN.md Phase 3
 
 ## Backlog: Phase 4 — AI
 → См. PLAN.md Phase 4
@@ -40,3 +38,12 @@
 - [x] Rust workspace scaffold (forgeplan-core + forgeplan-cli)
 - [x] Artifact types (11 kinds) + R_eff scoring (4 tests pass)
 - [x] Git initialized, 2 commits
+- [x] **Phase 3A** — Core CLI (2026-03-21):
+  - [x] RFC-001: CLI Architecture (модули, data flow, phases)
+  - [x] `forgeplan init` — workspace initialization (FR-001)
+  - [x] `forgeplan new` — template engine + auto-ID (FR-002)
+  - [x] `forgeplan list` — frontmatter parser + table output (FR-003)
+  - [x] `forgeplan status` — project dashboard (FR-004)
+  - [x] Config module + YAML loader
+  - [x] Artifact store (CRUD, slugify, next_id)
+  - [x] 11 tests pass (4 R_eff + 3 frontmatter + 4 workspace)
