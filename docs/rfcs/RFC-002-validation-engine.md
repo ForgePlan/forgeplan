@@ -14,9 +14,9 @@ depth: standard
 ## Progress
 
 ```
-Phase B  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Validate + Score + Link + Graph
+Phase B  ████████████████████████  4/4   (100%)  Validate + Score + Link + Graph  ✅ DONE
 ─────────────────────────────────────────────────
-TOTAL                               0/4   (  0%)
+TOTAL                               4/4   (100%)
 ```
 
 ---
@@ -317,10 +317,10 @@ Output to stdout (user copies to docs or pipes to file).
 ## Implementation Phases
 
 ### Phase B: Validate + Score + Link + Graph
-- [ ] **B.1** `forgeplan validate` — validation engine + rules for PRD, Epic, Spec, RFC, ADR
-- [ ] **B.2** `forgeplan score` — R_eff CLI wrapper with evidence lookup
-- [ ] **B.3** `forgeplan link` — add/remove typed relationships in frontmatter
-- [ ] **B.4** `forgeplan graph` — mermaid dependency graph from links
+- [x] **B.1** `forgeplan validate` — validation engine + rules for PRD, Epic, Spec, RFC, ADR
+- [x] **B.2** `forgeplan score` — R_eff CLI wrapper with evidence lookup
+- [x] **B.3** `forgeplan link` — add/remove typed relationships in frontmatter
+- [x] **B.4** `forgeplan graph` — mermaid dependency graph from links
 
 ## Related Artifacts
 

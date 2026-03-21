@@ -16,10 +16,10 @@ status: Active
 
 ```
 Phase A  ████████████████████████  5/5   (100%)  Core CLI                   ✅ DONE
-Phase B  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Search & Score
+Phase B  ████████████████████████  4/4   (100%)  Search & Score             ✅ DONE
 Phase C  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   (  0%)  Polish & Tests
 ─────────────────────────────────────────────────
-TOTAL                               5/12  ( 42%)
+TOTAL                               9/12  ( 75%)
 ```
 
 ---
@@ -228,10 +228,10 @@ kind: prd
 - [x] **A.5** `forgeplan list` + `forgeplan status` — frontmatter parser + dashboard
 
 ### Phase B: Search & Score
-- [ ] **B.1** `forgeplan validate` — schema rules engine
-- [ ] **B.2** `forgeplan score` — R_eff CLI wrapper
-- [ ] **B.3** `forgeplan search` — keyword search (Tantivy)
-- [ ] **B.4** `forgeplan graph` — mermaid dependency graph
+- [x] **B.1** `forgeplan validate` — schema rules engine (RFC-002)
+- [x] **B.2** `forgeplan score` — R_eff CLI wrapper
+- [x] **B.3** `forgeplan link` — typed relationships in frontmatter
+- [x] **B.4** `forgeplan graph` — mermaid dependency graph
 
 ### Phase C: Polish & Tests
 - [ ] **C.1** Error handling refinement (thiserror enum)
