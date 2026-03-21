@@ -129,10 +129,10 @@ main                              ← только релизы (tagged: v0.1.0)
 ```
 1. git checkout dev && git checkout -b feat/phase-3b-search
 2. ... работа, коммиты ...
-3. PR: feat/phase-3b-search → dev (squash merge)
+3. PR: feat/phase-3b-search → dev (squash merge, НЕ удалять ветку)
 4. Когда фаза готова: git checkout dev && git checkout -b release/v0.2.0
 5. ... стабилизация, фиксы в release/* ...
-6. PR: release/v0.2.0 → main (merge commit + tag v0.2.0)
+6. PR: release/v0.2.0 → main (merge commit + tag v0.2.0, НЕ удалять ветку)
 7. main → dev (sync back: merge commit)
 ```
 
@@ -147,8 +147,8 @@ main                              ← только релизы (tagged: v0.1.0)
 - **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
 - **feat/* → dev**: Squash merge (чистая история)
 - **release/* → main**: Merge commit (сохраняет историю RC)
-- **После merge в dev**: удалить feature branch
-- **После merge в main**: tag + удалить release branch + sync dev from main
+- **НЕ удалять ветки после merge** — feature и release branches сохраняются как история
+- **После merge в main**: tag + sync dev from main
 
 #### Релизы:
 - **Формат тега**: `v{major}.{minor}.{patch}` — `v0.1.0`, `v0.2.0`
