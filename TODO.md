@@ -3,12 +3,9 @@
 ## Next: Phase 3C — Polish & Tests
 
 ### P0 (прямо сейчас)
-- [ ] Phase 3C: `forgeplan search` — keyword search (FR-008)
-- [ ] Phase 3C: `forgeplan stale` — detect expired valid_until (FR-010)
-- [ ] Phase 3C: Integration tests (assert_cmd + tempdir)
-- [ ] Phase 3C: Error handling refinement (thiserror enum)
-- [ ] Phase 3C: >80% test coverage
+- [ ] Phase 3C: >80% test coverage + CI (C.3)
 - [ ] LanceDB tables schema — adapt quint-code schema (3.4)
+- [ ] Phase 3: `forgeplan progress` — checkbox parser + ASCII progress bars (3.10)
 
 ### P1 (Phase 2 — Workflow Integration)
 - [ ] Расширить /write-doc (prd, epic, spec)
@@ -58,3 +55,10 @@
   - [x] link/ module (add_link, list_links, normalize_relation)
   - [x] graph/ module (build_edges, render_mermaid)
   - [x] 16 tests pass (5 validation + 4 R_eff + 3 frontmatter + 4 workspace)
+- [x] **Phase 3C** — Search + Stale + Polish (2026-03-21):
+  - [x] `forgeplan search` — keyword grep по body (FR-008)
+  - [x] `forgeplan stale` — detect expired valid_until (FR-010)
+  - [x] ForgeplanError enum (thiserror) — typed errors
+  - [x] 13 integration tests (assert_cmd + tempdir)
+  - [x] 29 tests total, все проходят
+  - [x] Release binary: 3.3 MB (NFR-002: < 15MB)

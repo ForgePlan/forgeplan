@@ -17,9 +17,9 @@ status: Active
 ```
 Phase A  ████████████████████████  5/5   (100%)  Core CLI                   ✅ DONE
 Phase B  ████████████████████████  4/4   (100%)  Search & Score             ✅ DONE
-Phase C  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   (  0%)  Polish & Tests
+Phase C  ████████████████░░░░░░░░  2/3   ( 67%)  Polish & Tests
 ─────────────────────────────────────────────────
-TOTAL                               9/12  ( 75%)
+TOTAL                              11/12  ( 92%)
 ```
 
 ---
@@ -234,8 +234,8 @@ kind: prd
 - [x] **B.4** `forgeplan graph` — mermaid dependency graph
 
 ### Phase C: Polish & Tests
-- [ ] **C.1** Error handling refinement (thiserror enum)
-- [ ] **C.2** Integration tests (assert_cmd + tempdir)
+- [x] **C.1** Error handling refinement (thiserror enum) — ForgeplanError
+- [x] **C.2** Integration tests (assert_cmd + tempdir) — 13 E2E tests
 - [ ] **C.3** >80% test coverage + CI
 
 ## Related Artifacts
