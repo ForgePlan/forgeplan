@@ -1,0 +1,24 @@
+# Reference repos (large, read-only)
+sources/
+
+# Claude Code
+.claude/
+.mcp.json
+
+# Rust build output
+target/
+
+# LanceDB data
+.forgeplan/lance/
+
+# Node.js
+node_modules/
+
+# OS files
+.DS_Store
+
+# Editor swap files
+*.swp
+
+# Local todo files
+todo/
