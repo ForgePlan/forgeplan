@@ -107,35 +107,59 @@ Refs: RFC-001, FR-001..004
 - Код: `cli`, `core`, `store`, `template`, `scoring`, `workspace`, `config`
 - Артефакты: `rfc`, `prd`, `adr`, `epic`
 
-#### Ветки:
+#### Branching Strategy (Simplified Git Flow):
 ```
-main                              ← стабильная, PR-only
-  └── feat/phase-3a-core-cli      ← feature branch
+main                              ← только релизы (tagged: v0.1.0)
+  └── dev                         ← integration branch
+       ├── feat/phase-3a-core-cli ← feature branch
+       ├── fix/frontmatter-crash  ← bugfix branch
+       └── docs/rfc-002-lancedb   ← docs-only branch
 ```
-Формат: `{type}/{scope}-{slug}` — `feat/phase-3a-core-cli`, `docs/rfc-002-lancedb`, `fix/frontmatter-parser`
+
+| Ветка | Назначение | Мерджится в | Стратегия merge |
+|-------|-----------|-------------|-----------------|
+| `feat/*`, `fix/*`, `docs/*` | Работа над задачей | `dev` | Squash merge |
+| `dev` | Интеграция фич | `release/v*` | Merge commit |
+| `release/v*` | RC, стабилизация, финальные фиксы | `main` | Merge commit + tag |
+| `main` | Stable releases | — | Protected, PR-only |
+
+Формат имени: `{type}/{scope}-{slug}` — `feat/phase-3a-core-cli`, `fix/frontmatter-parser`
+
+#### Lifecycle ветки:
+```
+1. git checkout dev && git checkout -b feat/phase-3b-search
+2. ... работа, коммиты ...
+3. PR: feat/phase-3b-search → dev (squash merge)
+4. Когда фаза готова: git checkout dev && git checkout -b release/v0.2.0
+5. ... стабилизация, фиксы в release/* ...
+6. PR: release/v0.2.0 → main (merge commit + tag v0.2.0)
+7. main → dev (sync back: merge commit)
+```
 
 #### Правила коммитов:
 - **Refs обязательны** — каждый коммит ссылается на артефакт (RFC, FR, ADR)
 - **Один коммит = одна логическая единица** — не мешать feat + docs + refactor
 - **Description на английском** (для совместимости), body на русском (для контекста)
-- **Не коммить напрямую в main** — всегда через feature branch + PR
+- **Не коммить напрямую в main или dev** — всегда через feature branch + PR
 
 #### PR и merge:
 - **PR title** = `[ARTIFACT-ID] description` — `[RFC-001] Implement Phase 3A core CLI`
 - **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
-- **Merge strategy**: Squash merge для feature branches (чистая история в main)
-- **PR review**: self-review для solo dev; на deep+ — adversarial review
-- **После merge**: удалить feature branch, обновить прогресс артефактов
+- **feat/* → dev**: Squash merge (чистая история)
+- **release/* → main**: Merge commit (сохраняет историю RC)
+- **После merge в dev**: удалить feature branch
+- **После merge в main**: tag + удалить release branch + sync dev from main
 
 #### Релизы:
 - **Формат тега**: `v{major}.{minor}.{patch}` — `v0.1.0`, `v0.2.0`
 - **Когда**: после завершения Phase (3A → v0.1.0, 3B → v0.2.0, 3C → v1.0.0)
-- **Release notes**: автогенерация из conventional commits (`git log --oneline`)
+- **Процесс**: `dev` → `release/v0.x.0` (RC) → тесты → фиксы → `main` + tag
+- **Release notes**: автогенерация из conventional commits
 - **Binary**: `cargo build --release` + проверка NFR-002 (< 15MB)
 
 #### Worktrees (параллельная работа):
 ```bash
-# Создать worktree для параллельной задачи
+# Создать worktree для параллельной задачи (hotfix во время фичи)
 git worktree add ../forgeplan-fix fix/frontmatter-parser
 
 # Вернуться и удалить после merge
@@ -143,7 +167,6 @@ git worktree remove ../forgeplan-fix
 ```
 - **Когда**: hotfix во время долгой фичи; параллельная работа агентов (isolation: "worktree")
 - **Правило**: worktree = временный, удалять после merge
-- **Не используй** worktree для долгоживущих веток — используй обычные branches
 
 ## Структура проекта
 
