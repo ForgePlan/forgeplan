@@ -20,7 +20,7 @@ pub struct MatchContext {
 }
 
 /// Search all artifacts for a keyword pattern (case-insensitive regex grep).
-pub fn search(
+pub async fn search(
     workspace: &Path,
     query: &str,
     kind_filter: Option<&str>,
@@ -29,7 +29,7 @@ pub fn search(
         .case_insensitive(true)
         .build()?;
 
-    let artifacts = store::list_artifacts(workspace)?;
+    let artifacts = store::list_artifacts(workspace).await?;
     let mut hits = Vec::new();
 
     for artifact in artifacts {
@@ -40,7 +40,7 @@ pub fn search(
             }
         }
 
-        let content = std::fs::read_to_string(&artifact.path)?;
+        let content = tokio::fs::read_to_string(&artifact.path).await?;
         let (_fm, body) = match frontmatter::parse_frontmatter(&content) {
             Ok(result) => result,
             Err(_) => continue,
@@ -103,60 +103,60 @@ mod tests {
         fs::write(ws.join(subdir).join(filename), content).unwrap();
     }
 
-    #[test]
-    fn search_finds_match_in_title() {
+    #[tokio::test]
+    async fn search_finds_match_in_title() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         write_artifact(&ws, "prds", "PRD-001-auth.md", "PRD-001", "prd", "Authentication System", "Some body content.");
 
-        let hits = search(&ws, "authentication", None).unwrap();
+        let hits = search(&ws, "authentication", None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].artifact.id, "PRD-001");
         assert!(hits[0].matches.iter().any(|m| m.line.contains("[title]")));
     }
 
-    #[test]
-    fn search_finds_match_in_body() {
+    #[tokio::test]
+    async fn search_finds_match_in_body() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         write_artifact(&ws, "rfcs", "RFC-001-search.md", "RFC-001", "rfc", "Search Feature", "Implement full-text search with LanceDB.");
 
-        let hits = search(&ws, "lancedb", None).unwrap();
+        let hits = search(&ws, "lancedb", None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].artifact.id, "RFC-001");
         assert!(hits[0].matches.iter().any(|m| m.line_number > 0));
     }
 
-    #[test]
-    fn search_is_case_insensitive() {
+    #[tokio::test]
+    async fn search_is_case_insensitive() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         write_artifact(&ws, "prds", "PRD-002-perf.md", "PRD-002", "prd", "Performance Goals", "NFR requirements here.");
 
-        let hits = search(&ws, "PERFORMANCE", None).unwrap();
+        let hits = search(&ws, "PERFORMANCE", None).await.unwrap();
         assert_eq!(hits.len(), 1);
     }
 
-    #[test]
-    fn search_applies_kind_filter() {
+    #[tokio::test]
+    async fn search_applies_kind_filter() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         write_artifact(&ws, "prds", "PRD-001-x.md", "PRD-001", "prd", "Shared Keyword", "");
         write_artifact(&ws, "rfcs", "RFC-001-x.md", "RFC-001", "rfc", "Shared Keyword", "");
 
         // Filter to only rfcs
-        let hits = search(&ws, "shared keyword", Some("rfc")).unwrap();
+        let hits = search(&ws, "shared keyword", Some("rfc")).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].artifact.kind, "rfc");
     }
 
-    #[test]
-    fn search_returns_empty_when_no_match() {
+    #[tokio::test]
+    async fn search_returns_empty_when_no_match() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
         write_artifact(&ws, "prds", "PRD-001-x.md", "PRD-001", "prd", "Title Here", "Body here.");
 
-        let hits = search(&ws, "nonexistent-term-xyz", None).unwrap();
+        let hits = search(&ws, "nonexistent-term-xyz", None).await.unwrap();
         assert!(hits.is_empty());
     }
 }

@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use crate::artifact::frontmatter::{self, Frontmatter};
@@ -6,14 +5,14 @@ use crate::error::ForgeplanError;
 
 /// Add a typed link to an artifact's frontmatter.
 /// Writes the updated file back to disk.
-pub fn add_link(
+pub async fn add_link(
     artifact_path: &Path,
     target_id: &str,
     relation: &str,
 ) -> anyhow::Result<()> {
     // Normalize target to uppercase for consistent storage and dedup
     let target_id = target_id.to_uppercase();
-    let content = fs::read_to_string(artifact_path)?;
+    let content = tokio::fs::read_to_string(artifact_path).await?;
     let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
 
     // Get or create links array
@@ -57,7 +56,7 @@ pub fn add_link(
     }
 
     let output = frontmatter::render_frontmatter(&fm, &body)?;
-    fs::write(artifact_path, output)?;
+    tokio::fs::write(artifact_path, output).await?;
     Ok(())
 }
 
@@ -178,11 +177,11 @@ links:
         path
     }
 
-    #[test]
-    fn add_link_creates_link_entry() {
+    #[tokio::test]
+    async fn add_link_creates_link_entry() {
         let tmp = TempDir::new().unwrap();
         let path = make_artifact(tmp.path(), "PRD-001", "");
-        add_link(&path, "RFC-001", "informs").unwrap();
+        add_link(&path, "RFC-001", "informs").await.unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
@@ -192,11 +191,11 @@ links:
         assert_eq!(links[0].1, "informs");
     }
 
-    #[test]
-    fn add_link_writes_target_uppercase() {
+    #[tokio::test]
+    async fn add_link_writes_target_uppercase() {
         let tmp = TempDir::new().unwrap();
         let path = make_artifact(tmp.path(), "PRD-001", "");
-        add_link(&path, "rfc-001", "informs").unwrap();
+        add_link(&path, "rfc-001", "informs").await.unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
@@ -204,13 +203,13 @@ links:
         assert_eq!(links[0].0, "RFC-001");
     }
 
-    #[test]
-    fn add_link_detects_case_insensitive_duplicate() {
+    #[tokio::test]
+    async fn add_link_detects_case_insensitive_duplicate() {
         let tmp = TempDir::new().unwrap();
         let path = make_artifact(tmp.path(), "PRD-001", "");
-        add_link(&path, "RFC-001", "informs").unwrap();
+        add_link(&path, "RFC-001", "informs").await.unwrap();
         // Adding duplicate with different case should fail
-        let err = add_link(&path, "rfc-001", "informs").unwrap_err();
+        let err = add_link(&path, "rfc-001", "informs").await.unwrap_err();
         assert!(err.to_string().contains("RFC-001") || err.to_string().contains("already"));
     }
 }

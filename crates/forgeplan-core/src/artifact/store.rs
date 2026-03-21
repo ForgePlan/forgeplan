@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::artifact::frontmatter::{self, Frontmatter};
@@ -32,17 +31,15 @@ pub fn kind_dir(kind: &ArtifactKind) -> &'static str {
 
 /// Find the next sequential ID for a given kind in workspace.
 /// Scans existing files, extracts the numeric part, returns max + 1.
-pub fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyhow::Result<String> {
+pub async fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyhow::Result<String> {
     let dir = workspace.join(kind_dir(kind));
-    // The prefix like "PRD", "RFC" etc (without trailing dash)
     let kind_prefix = kind.prefix().trim_end_matches('-').to_uppercase();
 
     let mut max_num: u32 = 0;
     if dir.exists() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
+        let mut read_dir = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
             let name = entry.file_name().to_string_lossy().to_string();
-            // Extract number from filenames like PRD-001-title.md
             if let Some(rest) = name.to_uppercase().strip_prefix(&format!("{}-", kind_prefix)) {
                 if let Some(num_str) = rest.split('-').next() {
                     if let Ok(num) = num_str.parse::<u32>() {
@@ -75,20 +72,20 @@ pub fn slugify(title: &str) -> String {
 }
 
 /// List all artifacts in the workspace, reading only frontmatter.
-pub fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSummary>> {
+pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSummary>> {
     let mut results = Vec::new();
     for dir_name in crate::workspace::ARTIFACT_DIRS {
         let dir = workspace.join(dir_name);
         if !dir.exists() {
             continue;
         }
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
+        let mut read_dir = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
             if path.extension().map_or(true, |e| e != "md") {
                 continue;
             }
-            let content = fs::read_to_string(&path)?;
+            let content = tokio::fs::read_to_string(&path).await?;
             if let Ok((fm, _body)) = frontmatter::parse_frontmatter(&content) {
                 let id = fm_string(&fm, "id");
                 let title = fm_string(&fm, "title");

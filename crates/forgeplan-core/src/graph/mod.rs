@@ -14,12 +14,12 @@ pub struct Edge {
 }
 
 /// Build all edges by scanning all artifacts in the workspace.
-pub fn build_edges(workspace: &Path) -> anyhow::Result<Vec<Edge>> {
-    let artifacts = store::list_artifacts(workspace)?;
+pub async fn build_edges(workspace: &Path) -> anyhow::Result<Vec<Edge>> {
+    let artifacts = store::list_artifacts(workspace).await?;
     let mut edges = Vec::new();
 
     for artifact in &artifacts {
-        let content = std::fs::read_to_string(&artifact.path)?;
+        let content = tokio::fs::read_to_string(&artifact.path).await?;
         if let Ok((fm, _)) = frontmatter::parse_frontmatter(&content) {
             let links = link::list_links(&fm);
             for (target, relation) in links {

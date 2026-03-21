@@ -13,6 +13,7 @@ forgeplan-core = { path = "../forgeplan-core" }
 clap = { version = "4", features = ["derive"] }
 anyhow.workspace = true
 chrono.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 assert_cmd = "2"
