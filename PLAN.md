@@ -5,11 +5,11 @@
 ```
 Phase 0  ████████████████████████  10/10  (100%)  Foundation & Research      ✅ DONE
 Phase 1  ████████████████████████  12/12  (100%)  Schemas, Templates & Docs  ✅ DONE
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░   0/8   (  0%)  Workflow & Integration
-Phase 3  ██████████████████████░░  12/13  ( 92%)  Rust CLI Application (forgeplan)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░   0/8   (  0%)  Workflow & Integration (SUPERSEDED by MCP)
+Phase 3  ████████████████████████  13/13  (100%)  Rust CLI + LanceDB        ✅ DONE
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░   0/7   (  0%)  AI & Automation
 ─────────────────────────────────────────────────
-TOTAL                               34/50  (68.0%)
+TOTAL                               35/50  (70.0%)
 ```
 
 ---
@@ -69,7 +69,7 @@ TOTAL                               34/50  (68.0%)
 - [x] **3.1** `cargo init` + Cargo.toml с dependencies (clap, serde, chrono, anyhow, thiserror)
 - [x] **3.2** CLI scaffold (clap derive) — `forgeplan init|new|list|status|validate|score`
 - [x] **3.3** Config module — `.forgeplan/config.yaml` loader (serde_yaml)
-- [ ] **3.4** LanceDB tables schema — adapt quint-code `schema.sql` + new tables (progress, epic_children)
+- [x] **3.4** LanceDB tables schema — 3 tables (artifacts, evidence, relations) via Phase 3D
 
 ### 3B: Core
 - [x] **3.5** Artifact model — port quint-code `types.go` → Rust (ArtifactKind, Meta, Link, Status)
@@ -79,7 +79,7 @@ TOTAL                               34/50  (68.0%)
 
 ### 3C: Features
 - [x] **3.9** Validator — required sections check per kind (BMAD rules) — RFC-002
-- [ ] **3.10** Progress tracker — checkbox parser + ASCII progress bars
+- [x] **3.10** Progress tracker — checkbox parser + ASCII progress bars (forgeplan progress)
 - [x] **3.11** Graph builder — dependency graph → mermaid output
 - [x] **3.12** R_eff scoring — port quint-code `reff.go` → Rust (done in 3A, CLI wrapper in 3B)
 - [x] **3.13** Link manager — typed relationships in frontmatter
