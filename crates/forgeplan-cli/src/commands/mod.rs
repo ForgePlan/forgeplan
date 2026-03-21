@@ -3,6 +3,7 @@ pub mod init;
 pub mod link;
 pub mod list;
 pub mod new;
+pub mod progress;
 pub mod score;
 pub mod search;
 pub mod stale;
