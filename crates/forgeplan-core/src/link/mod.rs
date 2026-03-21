@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::artifact::frontmatter::{self, Frontmatter};
+use crate::error::ForgeplanError;
 
 /// Add a typed link to an artifact's frontmatter.
 /// Writes the updated file back to disk.
@@ -32,12 +33,11 @@ pub fn add_link(
         });
 
         if already_exists {
-            anyhow::bail!(
-                "Link already exists: {} --{}--> {}",
-                fm.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
-                relation,
-                target_id
-            );
+            return Err(ForgeplanError::LinkExists {
+                from: fm.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+                relation: relation.to_string(),
+                to: target_id.to_string(),
+            }.into());
         }
 
         let mut entry = serde_yaml::Mapping::new();
@@ -51,7 +51,7 @@ pub fn add_link(
         );
         seq.push(serde_yaml::Value::Mapping(entry));
     } else {
-        anyhow::bail!("'links' field is not a sequence");
+        return Err(ForgeplanError::Frontmatter("'links' field is not a sequence".into()).into());
     }
 
     let output = frontmatter::render_frontmatter(&fm, &body)?;
@@ -98,10 +98,6 @@ pub fn normalize_relation(input: &str) -> anyhow::Result<String> {
     if VALID_RELATIONS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {
-        anyhow::bail!(
-            "Invalid relation '{}'. Valid: {}",
-            input,
-            VALID_RELATIONS.join(", ")
-        )
+        Err(ForgeplanError::InvalidRelation(input.to_string()).into())
     }
 }

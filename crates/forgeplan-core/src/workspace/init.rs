@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
+use crate::error::ForgeplanError;
 
 pub const FORGEPLAN_DIR: &str = ".forgeplan";
 
@@ -16,7 +17,7 @@ pub const ARTIFACT_DIRS: &[&str] = &[
 pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf> {
     let fp_dir = root.join(FORGEPLAN_DIR);
     if fp_dir.exists() {
-        anyhow::bail!(".forgeplan/ already exists. Use --force to reinitialize.");
+        return Err(ForgeplanError::WorkspaceExists(fp_dir.display().to_string()).into());
     }
     fs::create_dir_all(&fp_dir)?;
     for dir in ARTIFACT_DIRS {
