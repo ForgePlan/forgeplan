@@ -1,0 +1,14 @@
+[package]
+name = "forgeplan-cli"
+version.workspace = true
+edition.workspace = true
+description = "CLI for Forgeplan — forge your plan"
+
+[[bin]]
+name = "forgeplan"
+path = "src/main.rs"
+
+[dependencies]
+forgeplan-core = { path = "../forgeplan-core" }
+clap = { version = "4", features = ["derive"] }
+anyhow.workspace = true

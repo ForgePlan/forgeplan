@@ -3,13 +3,9 @@
 ## Next: Phase 1 — Schemas, Templates & Docs
 
 ### P0 (обязательно перед Phase 2)
-- [ ] PRD-SCHEMA.md — формальные правила, BMAD 13 validation steps
-- [ ] EPIC-SCHEMA.md — aggregated progress, children rules
-- [ ] PRD-RFC-ADR-FLOW.md — workflow guide с decision tree
 - [ ] GLOSSARY.md — R_eff, CL, DDR, ADI, delta-spec, artifact DAG
 
 ### P1 (до начала Rust CLI)
-- [ ] SPEC-SCHEMA.md
 - [ ] Product Brief шаблон (lightweight PRD)
 - [ ] Обогатить PRD шаблон из BMAD `create-prd/`
 - [ ] Problem Card шаблон (из quint-code)
@@ -33,6 +29,10 @@
 → См. PLAN.md Phase 4
 
 ## Done ✅
+- [x] PRD-SCHEMA.md — формальные правила, BMAD 13 validation steps
+- [x] EPIC-SCHEMA.md — aggregated progress, children rules
+- [x] SPEC-SCHEMA.md — API contracts, data models, versioning
+- [x] PRD-RFC-ADR-FLOW.md — workflow guide с decision tree
 - [x] frameworks/ directory structure
 - [x] README.md, PLAN.md, SOURCES.md
 - [x] ARTIFACT-MODEL.md

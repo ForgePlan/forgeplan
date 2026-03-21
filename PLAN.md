@@ -66,10 +66,10 @@ TOTAL                               14/49  (28.6%)
 **References**: quint-code (data model), git-adr (Rust CLI), OpenSpec (artifact DAG)
 
 ### 3A: Foundation
-- [ ] **3.1** `cargo init` + Cargo.toml с dependencies (clap, serde, rusqlite, tera, pulldown-cmark)
+- [ ] **3.1** `cargo init` + Cargo.toml с dependencies (clap, serde, lancedb, tantivy, tera, pulldown-cmark, ort)
 - [ ] **3.2** CLI scaffold (clap derive) — `forgeplan init|new|list|status|show|validate|link|graph|score`
 - [ ] **3.3** Config module — `.forgeplan/config.yaml` loader (serde_yaml)
-- [ ] **3.4** SQLite schema — port quint-code `schema.sql` + new tables (progress, epic_children)
+- [ ] **3.4** LanceDB tables schema — adapt quint-code `schema.sql` + new tables (progress, epic_children)
 
 ### 3B: Core
 - [ ] **3.5** Artifact model — port quint-code `types.go` → Rust (ArtifactKind, Meta, Link, Status)
@@ -98,52 +98,25 @@ TOTAL                               14/49  (28.6%)
 ## Architecture (Rust)
 
 ```
-frameworks/src/
-├── Cargo.toml
-├── src/
-│   ├── main.rs
-│   ├── cli/              ← clap commands
-│   │   ├── mod.rs
-│   │   ├── init.rs
-│   │   ├── new.rs
-│   │   ├── list.rs
-│   │   ├── status.rs
-│   │   ├── validate.rs
-│   │   ├── link.rs
-│   │   ├── graph.rs
-│   │   └── score.rs
-│   ├── artifact/         ← from quint-code types.go
-│   │   ├── mod.rs
-│   │   ├── types.rs      ← ArtifactKind, Meta, Link
-│   │   ├── parser.rs     ← YAML frontmatter + markdown
-│   │   ├── writer.rs
-│   │   └── store.rs
-│   ├── template/         ← tera templates
-│   │   ├── mod.rs
-│   │   └── engine.rs
-│   ├── scoring/          ← from quint-code reff.go
-│   │   ├── mod.rs
-│   │   └── reff.rs       ← R_eff = min(evidence_scores)
-│   ├── validation/       ← from BMAD create-prd/
-│   │   ├── mod.rs
-│   │   └── rules.rs
-│   ├── progress/         ← checkbox parser + progress bars
-│   │   ├── mod.rs
-│   │   └── bars.rs
-│   ├── graph/            ← mermaid generation
-│   │   ├── mod.rs
-│   │   └── mermaid.rs
-│   ├── db/               ← from quint-code schema.sql
-│   │   ├── mod.rs
-│   │   └── schema.rs
-│   └── config/
-│       └── mod.rs
-└── templates/            ← embedded .md.tera files
-    ├── prd.md.tera
-    ├── epic.md.tera
-    ├── spec.md.tera
-    ├── rfc.md.tera
-    └── adr.md.tera
+forgeplan/
+├── Cargo.toml                    ← workspace root
+├── crates/
+│   ├── forgeplan-core/           ← SHARED LIBRARY (вся логика)
+│   │   ├── artifact/             ← types, parser, writer, store
+│   │   ├── scoring/              ← R_eff = min(evidence_scores)
+│   │   ├── validation/           ← BMAD 13-step rules
+│   │   ├── search/               ← LanceDB vectors + Tantivy text
+│   │   ├── progress/             ← checkbox parser + progress bars
+│   │   ├── graph/                ← mermaid dependency graph
+│   │   ├── embed/                ← ONNX local embeddings (BGE-M3)
+│   │   ├── db/                   ← LanceDB operations
+│   │   ├── template/             ← tera engine
+│   │   └── config/               ← .forgeplan/config.yaml
+│   ├── forgeplan-cli/            ← CLI binary (clap derive)
+│   ├── forgeplan-tauri/          ← Desktop app backend (Tauri 2.0 + core)
+│   └── forgeplan-mcp/            ← MCP server (Phase 5, rmcp)
+├── apps/desktop/                 ← React frontend (Tauri UI)
+└── templates/                    ← .md.tera шаблоны (embedded in binary)
 ```
 
 ## Design Decisions
@@ -155,7 +128,7 @@ frameworks/src/
 | Templates | tera | Jinja2-compatible, powerful filters |
 | Markdown | pulldown-cmark | Fast, compliant, pure Rust |
 | YAML | serde_yaml | serde ecosystem integration |
-| Database | SQLite (rusqlite) | Embedded, zero-config, quint-code proven |
+| Database | LanceDB | Embedded, zero-config, structured tables + vector embeddings |
 | Config | YAML | Human-readable |
 | Diagrams | Mermaid | GitHub/GitLab renderable |
 | MCP | rmcp | Official Rust MCP SDK |
