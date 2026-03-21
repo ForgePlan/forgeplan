@@ -1,28 +1,32 @@
-use forgeplan_core::artifact::frontmatter;
-use forgeplan_core::artifact::store;
+use std::collections::BTreeMap;
+use std::env;
+
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
+use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::validation::{self, Severity, ValidationResult};
 use forgeplan_core::workspace;
 
 pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let artifacts = store::list_artifacts(&ws).await?;
-    if artifacts.is_empty() {
+    let store = LanceStore::open(&ws).await?;
+    let all_records = store.list_records(None).await?;
+
+    if all_records.is_empty() {
         println!("No artifacts found.");
         return Ok(());
     }
 
     let to_validate: Vec<_> = if let Some(target_id) = id {
         let upper = target_id.to_uppercase();
-        artifacts
+        all_records
             .into_iter()
-            .filter(|a| a.id.to_uppercase() == upper)
+            .filter(|r| r.id.to_uppercase() == upper)
             .collect()
     } else {
-        artifacts
+        all_records
     };
 
     if to_validate.is_empty() {
@@ -35,19 +39,21 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut total_warnings = 0;
     let mut total_passed = 0;
 
-    for artifact in &to_validate {
-        let content = tokio::fs::read_to_string(&artifact.path).await?;
-        let (fm, body) = frontmatter::parse_frontmatter(&content)?;
+    for record in &to_validate {
+        // Reconstruct frontmatter map from record fields
+        let fm = record_to_frontmatter(record);
 
-        let kind = parse_kind(&artifact.kind);
-        let depth = fm
-            .get("depth")
-            .and_then(|v| v.as_str())
-            .and_then(parse_depth)
-            .unwrap_or(Mode::Standard);
+        let kind = record.kind.parse::<ArtifactKind>().unwrap_or_else(|_| {
+            eprintln!(
+                "  Warning: unknown artifact kind '{}', applying base rules only",
+                record.kind
+            );
+            ArtifactKind::Note
+        });
+        let depth = parse_depth(&record.depth).unwrap_or(Mode::Standard);
 
-        let result = validation::validate(&artifact.id, &body, &fm, &kind, &depth);
-        print_result(&result, &artifact.title, &depth);
+        let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
+        print_result(&result, &record.title, &depth);
 
         total_errors += result.error_count();
         total_warnings += result.warning_count();
@@ -71,6 +77,49 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Reconstruct a frontmatter BTreeMap from an ArtifactRecord.
+fn record_to_frontmatter(
+    record: &forgeplan_core::db::store::ArtifactRecord,
+) -> BTreeMap<String, serde_yaml::Value> {
+    let mut fm = BTreeMap::new();
+    fm.insert(
+        "id".to_string(),
+        serde_yaml::Value::String(record.id.clone()),
+    );
+    fm.insert(
+        "title".to_string(),
+        serde_yaml::Value::String(record.title.clone()),
+    );
+    fm.insert(
+        "kind".to_string(),
+        serde_yaml::Value::String(record.kind.clone()),
+    );
+    fm.insert(
+        "status".to_string(),
+        serde_yaml::Value::String(record.status.clone()),
+    );
+    fm.insert(
+        "depth".to_string(),
+        serde_yaml::Value::String(record.depth.clone()),
+    );
+    if let Some(ref a) = record.author {
+        fm.insert("author".to_string(), serde_yaml::Value::String(a.clone()));
+    }
+    if let Some(ref pe) = record.parent_epic {
+        fm.insert(
+            "parent_epic".to_string(),
+            serde_yaml::Value::String(pe.clone()),
+        );
+    }
+    if let Some(ref vu) = record.valid_until {
+        fm.insert(
+            "valid_until".to_string(),
+            serde_yaml::Value::String(vu.clone()),
+        );
+    }
+    fm
 }
 
 fn print_result(result: &ValidationResult, title: &str, depth: &Mode) {
@@ -98,7 +147,13 @@ fn print_result(result: &ValidationResult, title: &str, depth: &Mode) {
     }
 
     let passed = result.findings.is_empty();
-    let status = if passed { "PASS" } else if result.passed() { "PASS (with warnings)" } else { "FAIL" };
+    let status = if passed {
+        "PASS"
+    } else if result.passed() {
+        "PASS (with warnings)"
+    } else {
+        "FAIL"
+    };
     println!();
     println!(
         "  Result: {} -- {} error(s), {} warning(s)",
@@ -106,28 +161,6 @@ fn print_result(result: &ValidationResult, title: &str, depth: &Mode) {
         result.error_count(),
         result.warning_count()
     );
-}
-
-fn parse_kind(s: &str) -> ArtifactKind {
-    match s.to_lowercase().as_str() {
-        "prd" => ArtifactKind::Prd,
-        "epic" => ArtifactKind::Epic,
-        "spec" => ArtifactKind::Spec,
-        "rfc" => ArtifactKind::Rfc,
-        "adr" => ArtifactKind::Adr,
-        "note" => ArtifactKind::Note,
-        "problem" | "problemcard" => ArtifactKind::ProblemCard,
-        "solution" | "solutionportfolio" => ArtifactKind::SolutionPortfolio,
-        "evidence" | "evidencepack" => ArtifactKind::EvidencePack,
-        "refresh" | "refreshreport" => ArtifactKind::RefreshReport,
-        unknown => {
-            eprintln!(
-                "  Warning: unknown artifact kind '{}', applying base rules only",
-                unknown
-            );
-            ArtifactKind::Note
-        }
-    }
 }
 
 fn parse_depth(s: &str) -> Option<Mode> {

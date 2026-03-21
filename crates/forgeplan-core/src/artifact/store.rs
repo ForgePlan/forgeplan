@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::artifact::frontmatter::{self, Frontmatter};
 use crate::artifact::types::ArtifactKind;
@@ -10,29 +10,18 @@ pub struct ArtifactSummary {
     pub title: String,
     pub kind: String,
     pub status: String,
-    pub path: PathBuf,
 }
 
 /// Get the subdirectory name for a given kind.
+#[deprecated(note = "use ArtifactKind::dir_name() instead")]
 pub fn kind_dir(kind: &ArtifactKind) -> &'static str {
-    match kind {
-        ArtifactKind::Prd => "prds",
-        ArtifactKind::Epic => "epics",
-        ArtifactKind::Spec => "specs",
-        ArtifactKind::Rfc => "rfcs",
-        ArtifactKind::Adr => "adrs",
-        ArtifactKind::ProblemCard => "problems",
-        ArtifactKind::SolutionPortfolio => "solutions",
-        ArtifactKind::EvidencePack => "evidence",
-        ArtifactKind::Note => "notes",
-        ArtifactKind::RefreshReport => "refresh",
-    }
+    kind.dir_name()
 }
 
 /// Find the next sequential ID for a given kind in workspace.
 /// Scans existing files, extracts the numeric part, returns max + 1.
 pub async fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyhow::Result<String> {
-    let dir = workspace.join(kind_dir(kind));
+    let dir = workspace.join(kind.dir_name());
     let kind_prefix = kind.prefix().trim_end_matches('-').to_uppercase();
 
     let mut max_num: u32 = 0;
@@ -59,16 +48,9 @@ pub async fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyh
 }
 
 /// Convert title to filename slug.
+#[deprecated(note = "use crate::artifact::types::slugify instead")]
 pub fn slugify(title: &str) -> String {
-    title
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    crate::artifact::types::slugify(title)
 }
 
 /// List all artifacts in the workspace, reading only frontmatter.
@@ -99,7 +81,6 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
                         title: title.unwrap_or_default(),
                         kind,
                         status,
-                        path: path.clone(),
                     });
                 }
             }

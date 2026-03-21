@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::artifact::frontmatter;
-use crate::artifact::store;
 use crate::link;
 
 /// Edge in the dependency graph.
@@ -15,29 +14,43 @@ pub struct Edge {
 
 /// Build all edges by scanning all artifacts in the workspace.
 pub async fn build_edges(workspace: &Path) -> anyhow::Result<Vec<Edge>> {
-    let artifacts = store::list_artifacts(workspace).await?;
     let mut edges = Vec::new();
 
-    for artifact in &artifacts {
-        let content = tokio::fs::read_to_string(&artifact.path).await?;
-        if let Ok((fm, _)) = frontmatter::parse_frontmatter(&content) {
-            let links = link::list_links(&fm);
-            for (target, relation) in links {
-                edges.push(Edge {
-                    from: artifact.id.clone(),
-                    to: target,
-                    relation,
-                });
+    for dir_name in crate::workspace::ARTIFACT_DIRS {
+        let dir = workspace.join(dir_name);
+        if !dir.exists() {
+            continue;
+        }
+        let mut read_dir = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            if path.extension().map_or(true, |e| e != "md") {
+                continue;
             }
-            // Also check parent_epic / epic / prd fields
-            for field in &["epic", "prd", "parent_epic"] {
-                if let Some(serde_yaml::Value::String(parent)) = fm.get(*field) {
-                    if !parent.is_empty() {
-                        edges.push(Edge {
-                            from: artifact.id.clone(),
-                            to: parent.clone(),
-                            relation: "belongs_to".to_string(),
-                        });
+            let content = tokio::fs::read_to_string(&path).await?;
+            if let Ok((fm, _)) = frontmatter::parse_frontmatter(&content) {
+                let id = match fm.get("id").and_then(|v| v.as_str()) {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                let links = link::list_links(&fm);
+                for (target, relation) in links {
+                    edges.push(Edge {
+                        from: id.clone(),
+                        to: target,
+                        relation,
+                    });
+                }
+                // Also check parent_epic / epic / prd fields
+                for field in &["epic", "prd", "parent_epic"] {
+                    if let Some(serde_yaml::Value::String(parent)) = fm.get(*field) {
+                        if !parent.is_empty() {
+                            edges.push(Edge {
+                                from: id.clone(),
+                                to: parent.clone(),
+                                relation: "belongs_to".to_string(),
+                            });
+                        }
                     }
                 }
             }

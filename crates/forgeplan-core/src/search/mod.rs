@@ -3,7 +3,7 @@ use std::path::Path;
 use regex::RegexBuilder;
 
 use crate::artifact::frontmatter;
-use crate::artifact::store::{self, ArtifactSummary};
+use crate::artifact::store::ArtifactSummary;
 
 /// A search hit with context.
 #[derive(Debug, Clone)]
@@ -29,45 +29,73 @@ pub async fn search(
         .case_insensitive(true)
         .build()?;
 
-    let artifacts = store::list_artifacts(workspace).await?;
     let mut hits = Vec::new();
 
-    for artifact in artifacts {
-        // Apply kind filter
-        if let Some(filter) = kind_filter {
-            if !artifact.kind.eq_ignore_ascii_case(filter) {
+    for dir_name in crate::workspace::ARTIFACT_DIRS {
+        let dir = workspace.join(dir_name);
+        if !dir.exists() {
+            continue;
+        }
+        let mut read_dir = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            if path.extension().map_or(true, |e| e != "md") {
                 continue;
             }
-        }
+            let content = tokio::fs::read_to_string(&path).await?;
+            let (fm, body) = match frontmatter::parse_frontmatter(&content) {
+                Ok(result) => result,
+                Err(_) => continue,
+            };
 
-        let content = tokio::fs::read_to_string(&artifact.path).await?;
-        let (_fm, body) = match frontmatter::parse_frontmatter(&content) {
-            Ok(result) => result,
-            Err(_) => continue,
-        };
+            let id = match fm.get("id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let kind = fm.get("kind").and_then(|v| v.as_str())
+                .unwrap_or_else(|| dir_name.trim_end_matches('s'))
+                .to_string();
+            let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("Draft").to_string();
 
-        // Search in title (from frontmatter)
-        let mut matches = Vec::new();
+            // Apply kind filter
+            if let Some(filter) = kind_filter {
+                if !kind.eq_ignore_ascii_case(filter) {
+                    continue;
+                }
+            }
 
-        if re.is_match(&artifact.title) {
-            matches.push(MatchContext {
-                line_number: 0,
-                line: format!("[title] {}", artifact.title),
-            });
-        }
+            // Search in title (from frontmatter)
+            let mut matches = Vec::new();
 
-        // Search in body
-        for (i, line) in body.lines().enumerate() {
-            if re.is_match(line) {
+            if re.is_match(&title) {
                 matches.push(MatchContext {
-                    line_number: i + 1,
-                    line: line.to_string(),
+                    line_number: 0,
+                    line: format!("[title] {}", title),
                 });
             }
-        }
 
-        if !matches.is_empty() {
-            hits.push(SearchHit { artifact, matches });
+            // Search in body
+            for (i, line) in body.lines().enumerate() {
+                if re.is_match(line) {
+                    matches.push(MatchContext {
+                        line_number: i + 1,
+                        line: line.to_string(),
+                    });
+                }
+            }
+
+            if !matches.is_empty() {
+                hits.push(SearchHit {
+                    artifact: ArtifactSummary {
+                        id,
+                        title,
+                        kind,
+                        status,
+                    },
+                    matches,
+                });
+            }
         }
     }
 

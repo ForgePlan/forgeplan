@@ -14,9 +14,9 @@ depth: deep
 ## Progress
 
 ```
-Phase D  ████████████████░░░░░░░░  3/5   ( 60%)  LanceDB Integration
+Phase D  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  LanceDB Integration
 ─────────────────────────────────────────────────
-TOTAL                               3/5   ( 60%)
+TOTAL                               0/5   (  0%)
 ```
 
 ---
@@ -311,9 +311,9 @@ forgeplan init --migrate (existing workspace):
 ## Implementation Phases
 
 ### Phase D: LanceDB Integration
-- [x] **D.1** Async migration — tokio runtime, async core functions, async tests
-- [x] **D.2** LanceDB db module — schema, connect, create tables
-- [x] **D.3** ArtifactStore trait + LanceStore implementation (CRUD + convert)
+- [ ] **D.1** Async migration — tokio runtime, async core functions, async tests
+- [ ] **D.2** LanceDB db module — schema, connect, create tables
+- [ ] **D.3** ArtifactStore trait + LanceStore implementation (CRUD)
 - [ ] **D.4** Markdown projection — write LanceDB → render markdown
 - [ ] **D.5** Command migration — all 10 CLI commands use LanceStore
 

@@ -4,6 +4,7 @@ pub mod db;
 pub mod error;
 pub mod graph;
 pub mod link;
+pub mod projection;
 pub mod scoring;
 pub mod search;
 pub mod stale;

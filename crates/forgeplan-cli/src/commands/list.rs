@@ -2,7 +2,7 @@ use std::env;
 
 use anyhow::Result;
 
-use forgeplan_core::artifact::store::list_artifacts;
+use forgeplan_core::db::store::{ArtifactFilter, LanceStore};
 use forgeplan_core::workspace::find_workspace;
 
 pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Result<()> {
@@ -10,17 +10,18 @@ pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Resu
     let workspace = find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
 
-    let mut artifacts = list_artifacts(&workspace).await?;
+    let store = LanceStore::open(&workspace).await?;
 
-    // Apply filters
-    if let Some(kind) = kind_filter {
-        let kind_lower = kind.to_lowercase();
-        artifacts.retain(|a| a.kind.to_lowercase() == kind_lower);
-    }
-    if let Some(status) = status_filter {
-        let status_lower = status.to_lowercase();
-        artifacts.retain(|a| a.status.to_lowercase() == status_lower);
-    }
+    let filter = if kind_filter.is_some() || status_filter.is_some() {
+        Some(ArtifactFilter {
+            kind: kind_filter.map(|s| s.to_lowercase()),
+            status: status_filter.map(|s| s.to_lowercase()),
+        })
+    } else {
+        None
+    };
+
+    let artifacts = store.list_artifacts(filter.as_ref()).await?;
 
     if artifacts.is_empty() {
         println!("  No artifacts found.");
@@ -29,8 +30,18 @@ pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Resu
 
     // Calculate column widths for alignment
     let id_width = artifacts.iter().map(|a| a.id.len()).max().unwrap_or(6).max(2);
-    let kind_width = artifacts.iter().map(|a| a.kind.len()).max().unwrap_or(6).max(4);
-    let status_width = artifacts.iter().map(|a| a.status.len()).max().unwrap_or(6).max(6);
+    let kind_width = artifacts
+        .iter()
+        .map(|a| a.kind.len())
+        .max()
+        .unwrap_or(6)
+        .max(4);
+    let status_width = artifacts
+        .iter()
+        .map(|a| a.status.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
 
     // Print header
     println!(
