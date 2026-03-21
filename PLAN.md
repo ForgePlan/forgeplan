@@ -6,10 +6,10 @@
 Phase 0  ████████████████████████  10/10  (100%)  Foundation & Research      ✅ DONE
 Phase 1  ████████████████████████  12/12  (100%)  Schemas, Templates & Docs  ✅ DONE
 Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░   0/8   (  0%)  Workflow & Integration
-Phase 3  ██████████░░░░░░░░░░░░░░   6/12  ( 50%)  Rust CLI Application (forgeplan)
+Phase 3  ██████████████████████░░  12/13  ( 92%)  Rust CLI Application (forgeplan)
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░   0/7   (  0%)  AI & Automation
 ─────────────────────────────────────────────────
-TOTAL                               28/49  (57.1%)
+TOTAL                               34/50  (68.0%)
 ```
 
 ---
@@ -78,10 +78,11 @@ TOTAL                               28/49  (57.1%)
 - [x] **3.8** Template engine — embedded templates (include_str!) + placeholder substitution
 
 ### 3C: Features
-- [ ] **3.9** Validator — required sections check per kind (BMAD rules)
+- [x] **3.9** Validator — required sections check per kind (BMAD rules) — RFC-002
 - [ ] **3.10** Progress tracker — checkbox parser + ASCII progress bars
-- [ ] **3.11** Graph builder — dependency graph → mermaid output
-- [ ] **3.12** R_eff scoring — port quint-code `reff.go` → Rust (52 lines)
+- [x] **3.11** Graph builder — dependency graph → mermaid output
+- [x] **3.12** R_eff scoring — port quint-code `reff.go` → Rust (done in 3A, CLI wrapper in 3B)
+- [x] **3.13** Link manager — typed relationships in frontmatter
 
 ## Phase 4 — AI & Automation
 

@@ -36,16 +36,38 @@ enum Commands {
     },
     /// Show project status dashboard
     Status,
-    /// Validate artifact completeness (placeholder)
+    /// Validate artifact completeness against schema rules
     Validate {
         /// Artifact ID (validates all if omitted)
         id: Option<String>,
     },
-    /// Show R_eff quality score (placeholder)
+    /// Compute R_eff quality score for decisions with evidence
     Score {
         /// Artifact ID
         id: Option<String>,
     },
+    /// Link two artifacts with a typed relationship
+    Link {
+        /// Source artifact ID
+        source: String,
+        /// Target artifact ID
+        target: String,
+        /// Relationship type: informs, based_on, supersedes, contradicts, refines
+        #[arg(long, default_value = "informs")]
+        relation: String,
+    },
+    /// Generate mermaid dependency graph of linked artifacts
+    Graph,
+    /// Search artifacts by keyword
+    Search {
+        /// Search query
+        query: String,
+        /// Filter by kind
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+    },
+    /// Detect stale artifacts with expired valid_until
+    Stale,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -58,13 +80,17 @@ fn main() -> anyhow::Result<()> {
             commands::list::run(r#type.as_deref(), status.as_deref())
         }
         Commands::Status => commands::status::run(),
-        Commands::Validate { id } => {
-            println!("forgeplan validate {:?} -- coming in Phase 3B", id);
-            Ok(())
+        Commands::Validate { id } => commands::validate::run(id.as_deref()),
+        Commands::Score { id } => commands::score::run(id.as_deref()),
+        Commands::Link {
+            source,
+            target,
+            relation,
+        } => commands::link::run(&source, &target, &relation),
+        Commands::Graph => commands::graph::run(),
+        Commands::Search { query, r#type } => {
+            commands::search::run(&query, r#type.as_deref())
         }
-        Commands::Score { id } => {
-            println!("forgeplan score {:?} -- coming in Phase 3B", id);
-            Ok(())
-        }
+        Commands::Stale => commands::stale::run(),
     }
 }

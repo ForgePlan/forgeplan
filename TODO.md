@@ -1,13 +1,11 @@
 # TODO — Forgeplan
 
-## Next: Eat Your Own Dogfood — применить процесс к Forgeplan
+## Next: Phase 3C — Polish & Tests
 
 ### P0 (прямо сейчас)
-- [ ] Phase 3C: `forgeplan validate` — schema rules engine
-- [ ] Phase 3C: `forgeplan score` — R_eff CLI wrapper
-- [ ] Phase 3C: `forgeplan graph` — mermaid dependency graph
-- [ ] Phase 3C: `forgeplan search` — keyword search
-- [ ] LanceDB tables schema — adapt quint-code schema
+- [ ] Phase 3C: >80% test coverage + CI (C.3)
+- [ ] LanceDB tables schema — adapt quint-code schema (3.4)
+- [ ] Phase 3: `forgeplan progress` — checkbox parser + ASCII progress bars (3.10)
 
 ### P1 (Phase 2 — Workflow Integration)
 - [ ] Расширить /write-doc (prd, epic, spec)
@@ -47,3 +45,20 @@
   - [x] Config module + YAML loader
   - [x] Artifact store (CRUD, slugify, next_id)
   - [x] 11 tests pass (4 R_eff + 3 frontmatter + 4 workspace)
+- [x] **Phase 3B** — Validate + Score + Link + Graph (2026-03-21):
+  - [x] RFC-002: Validation Engine Architecture
+  - [x] `forgeplan validate` — schema rules engine per kind per depth (FR-005)
+  - [x] `forgeplan score` — R_eff CLI wrapper with evidence lookup (FR-006)
+  - [x] `forgeplan link` — typed relationships in frontmatter (FR-009)
+  - [x] `forgeplan graph` — mermaid dependency graph (FR-007)
+  - [x] validation/ module (checks, rules — PRD/Epic/Spec/RFC/ADR)
+  - [x] link/ module (add_link, list_links, normalize_relation)
+  - [x] graph/ module (build_edges, render_mermaid)
+  - [x] 16 tests pass (5 validation + 4 R_eff + 3 frontmatter + 4 workspace)
+- [x] **Phase 3C** — Search + Stale + Polish (2026-03-21):
+  - [x] `forgeplan search` — keyword grep по body (FR-008)
+  - [x] `forgeplan stale` — detect expired valid_until (FR-010)
+  - [x] ForgeplanError enum (thiserror) — typed errors
+  - [x] 13 integration tests (assert_cmd + tempdir)
+  - [x] 29 tests total, все проходят
+  - [x] Release binary: 3.3 MB (NFR-002: < 15MB)

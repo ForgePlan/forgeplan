@@ -1,0 +1,715 @@
+use crate::artifact::frontmatter::Frontmatter;
+use crate::artifact::types::{ArtifactKind, Mode};
+use crate::validation::checks;
+use crate::validation::Severity;
+
+/// A rule entry: (rule_id, severity, description, check_fn).
+/// check_fn returns Some(error_message) if the rule fails, None if it passes.
+type CheckFn = fn(&str, &Frontmatter) -> Option<String>;
+pub type RuleEntry = (&'static str, Severity, &'static str, CheckFn);
+
+/// Get validation rules for a given artifact kind and depth.
+pub fn rules_for(kind: &ArtifactKind, depth: &Mode) -> Vec<RuleEntry> {
+    let mut rules = base_rules();
+    match kind {
+        ArtifactKind::Prd => rules.extend(prd_rules(depth)),
+        ArtifactKind::Epic => rules.extend(epic_rules(depth)),
+        ArtifactKind::Spec => rules.extend(spec_rules(depth)),
+        ArtifactKind::Rfc => rules.extend(rfc_rules(depth)),
+        ArtifactKind::Adr => rules.extend(adr_rules(depth)),
+        _ => {} // Quint-code types: base rules only
+    }
+    rules
+}
+
+// ─── Helper: wrap check fn ──────────────────────────────────────────────────
+
+fn rule(
+    id: &'static str,
+    sev: Severity,
+    desc: &'static str,
+    f: CheckFn,
+) -> RuleEntry {
+    (id, sev, desc, f)
+}
+
+// ─── Base Rules ─────────────────────────────────────────────────────────────
+
+fn base_rules() -> Vec<RuleEntry> {
+    vec![
+        rule("meta-id", Severity::Must, "Frontmatter must have 'id'", check_meta_id),
+        rule("meta-status", Severity::Must, "Frontmatter must have 'status'", check_meta_status),
+        rule("no-placeholders", Severity::Should, "No {{placeholder}} or TODO", check_no_placeholders),
+    ]
+}
+
+fn check_meta_id(_body: &str, fm: &Frontmatter) -> Option<String> {
+    if !checks::frontmatter_has(fm, "id") {
+        Some("Missing 'id' field in frontmatter".into())
+    } else {
+        None
+    }
+}
+
+fn check_meta_status(_body: &str, fm: &Frontmatter) -> Option<String> {
+    if !checks::frontmatter_has(fm, "status") {
+        Some("Missing 'status' field in frontmatter".into())
+    } else {
+        None
+    }
+}
+
+fn check_no_placeholders(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let placeholders = checks::find_placeholders(body);
+    if placeholders.is_empty() {
+        None
+    } else {
+        let details: Vec<String> = placeholders
+            .iter()
+            .take(3)
+            .map(|(line, text)| format!("line {}: {}", line, text))
+            .collect();
+        Some(format!(
+            "Found {} placeholder(s): {}",
+            placeholders.len(),
+            details.join(", ")
+        ))
+    }
+}
+
+// ─── PRD Rules ──────────────────────────────────────────────────────────────
+
+fn prd_rules(depth: &Mode) -> Vec<RuleEntry> {
+    let mut rules = vec![
+        rule("prd-problem-exists", Severity::Must, "Problem Statement", check_prd_problem),
+        rule("prd-goals-exist", Severity::Must, "Goals section", check_prd_goals),
+        rule("prd-non-goals", Severity::Must, "Non-Goals section", check_prd_non_goals),
+        rule("prd-fr-exist", Severity::Must, "Functional Requirements", check_prd_fr),
+        rule("prd-related", Severity::Must, "Related Artifacts", check_prd_related),
+    ];
+
+    if matches!(depth, Mode::Standard | Mode::Deep) {
+        let density_sev = if matches!(depth, Mode::Deep) { Severity::Must } else { Severity::Should };
+        let leakage_sev = if matches!(depth, Mode::Deep) { Severity::Must } else { Severity::Should };
+        rules.push(rule("prd-problem-density", density_sev, "Problem density >= 50 words", check_prd_density));
+        rules.push(rule("prd-target-audience", Severity::Must, "Target Audience", check_prd_audience));
+        rules.push(rule("prd-no-impl-leakage", leakage_sev, "No tech in FR", check_prd_leakage));
+    }
+
+    if matches!(depth, Mode::Deep) {
+        rules.push(rule("prd-timeline", Severity::Must, "Timeline section", check_prd_timeline));
+        rules.push(rule("prd-stakeholders", Severity::Must, "Stakeholders", check_prd_stakeholders));
+        rules.push(rule("prd-acceptance", Severity::Must, "Acceptance Criteria", check_prd_acceptance));
+    }
+
+    rules
+}
+
+fn check_prd_problem(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Problem") {
+        Some("Missing '## Problem' or '## Problem Statement' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_goals(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Goals") && !checks::section_exists(body, "Success Criteria") {
+        Some("Missing '## Goals' or '## Success Criteria' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_non_goals(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Non-Goals") && !checks::section_exists(body, "Out of Scope") {
+        Some("Missing '## Non-Goals' or '## Out of Scope' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_fr(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Functional Requirements") && !checks::section_exists(body, "Requirements") {
+        Some("Missing '## Functional Requirements' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_related(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Related Artifacts") && !checks::section_exists(body, "Related") {
+        Some("Missing '## Related Artifacts' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_density(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let wc = checks::section_word_count(body, "Problem");
+    if wc < 50 {
+        Some(format!("Problem section has {} words (expected >= 50)", wc))
+    } else {
+        None
+    }
+}
+
+fn check_prd_audience(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Target") && !checks::section_exists(body, "Audience") && !checks::section_exists(body, "Users") {
+        Some("Missing target audience/users section (standard+ depth)".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_leakage(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if let Some(start) = body.find("## Functional Requirements") {
+        let fr_text = &body[start..];
+        let end = fr_text[30..].find("\n## ").map(|i| i + 30).unwrap_or(fr_text.len());
+        let fr_section = &fr_text[..end];
+        let leaks = checks::find_tech_leakage(fr_section);
+        if leaks.is_empty() {
+            None
+        } else {
+            let names: Vec<String> = leaks.iter().map(|(_, name)| name.clone()).collect();
+            Some(format!("Tech names in FR section: {}", names.join(", ")))
+        }
+    } else {
+        None
+    }
+}
+
+fn check_prd_timeline(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Timeline") {
+        Some("Missing '## Timeline' section (required for deep depth)".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_stakeholders(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Stakeholders") {
+        Some("Missing '## Stakeholders' section (required for deep depth)".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_acceptance(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Acceptance Criteria") {
+        Some("Missing '## Acceptance Criteria' section (required for deep depth)".into())
+    } else {
+        None
+    }
+}
+
+// ─── Epic Rules ─────────────────────────────────────────────────────────────
+
+fn epic_rules(_depth: &Mode) -> Vec<RuleEntry> {
+    vec![
+        rule("epic-vision", Severity::Must, "Vision section", check_epic_vision),
+        rule("epic-outcomes", Severity::Must, "Outcomes section", check_epic_outcomes),
+        rule("epic-children", Severity::Must, "Children table", check_epic_children),
+        rule("epic-phases", Severity::Must, "Phases section", check_epic_phases),
+        rule("epic-progress", Severity::Must, "Progress bars", check_epic_progress),
+    ]
+}
+
+fn check_epic_vision(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Vision") {
+        Some("Missing '## Vision' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_epic_outcomes(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Outcomes") {
+        Some("Missing '## Outcomes' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_epic_children(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Children") && !checks::section_exists(body, "Artifacts") {
+        Some("Missing children/artifacts table section".into())
+    } else {
+        None
+    }
+}
+
+fn check_epic_phases(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Phases") && !checks::section_exists(body, "Phase") {
+        Some("Missing '## Phases' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_epic_progress(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Progress") {
+        Some("Missing '## Progress' section with aggregated bars".into())
+    } else {
+        None
+    }
+}
+
+// ─── Spec Rules ─────────────────────────────────────────────────────────────
+
+fn spec_rules(_depth: &Mode) -> Vec<RuleEntry> {
+    vec![
+        rule("spec-summary", Severity::Must, "Summary section", check_spec_summary),
+        rule("spec-contracts", Severity::Must, "API/Data Model", check_spec_contracts),
+        rule("spec-related", Severity::Must, "Related Artifacts", check_spec_related),
+    ]
+}
+
+fn check_spec_summary(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Summary") {
+        Some("Missing '## Summary' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_spec_contracts(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let has_api = checks::section_exists(body, "API");
+    let has_data = checks::section_exists(body, "Data Model");
+    let has_contracts = checks::section_exists(body, "Contracts");
+    if !has_api && !has_data && !has_contracts {
+        Some("Missing '## API Contracts' or '## Data Models' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_spec_related(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Related") {
+        Some("Missing '## Related Artifacts' section".into())
+    } else {
+        None
+    }
+}
+
+// ─── RFC Rules ──────────────────────────────────────────────────────────────
+
+fn rfc_rules(depth: &Mode) -> Vec<RuleEntry> {
+    let mut rules = vec![
+        rule("rfc-summary", Severity::Must, "Summary section", check_rfc_summary),
+        rule("rfc-motivation", Severity::Must, "Motivation section", check_rfc_motivation),
+        rule("rfc-options", Severity::Should, "Options Considered", check_rfc_options),
+        rule("rfc-proposed", Severity::Must, "Proposed Direction", check_rfc_proposed),
+        rule("rfc-phases", Severity::Should, "Implementation Phases", check_rfc_phases),
+    ];
+
+    if matches!(depth, Mode::Deep) {
+        rules.push(rule("rfc-risks", Severity::Must, "Risks section", check_rfc_risks));
+    }
+
+    rules
+}
+
+fn check_rfc_summary(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Summary") {
+        Some("Missing '## Summary' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_rfc_motivation(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Motivation") {
+        Some("Missing '## Motivation' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_rfc_options(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Options") && !checks::section_exists(body, "Alternatives") {
+        Some("Missing '## Options Considered' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_rfc_proposed(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Proposed") && !checks::section_exists(body, "Direction") && !checks::section_exists(body, "Architecture") {
+        Some("Missing '## Proposed Direction' or '## Architecture' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_rfc_phases(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Implementation") && !checks::section_exists(body, "Phases") {
+        Some("Missing '## Implementation Phases' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_rfc_risks(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Risks") {
+        Some("Missing '## Risks' section (required for deep depth)".into())
+    } else {
+        None
+    }
+}
+
+// ─── ADR Rules ──────────────────────────────────────────────────────────────
+
+fn adr_rules(depth: &Mode) -> Vec<RuleEntry> {
+    let mut rules = vec![
+        rule("adr-context", Severity::Must, "Context section", check_adr_context),
+        rule("adr-decision", Severity::Must, "Decision section", check_adr_decision),
+        rule("adr-consequences", Severity::Must, "Consequences", check_adr_consequences),
+    ];
+
+    if matches!(depth, Mode::Deep) {
+        rules.push(rule("adr-invariants", Severity::Should, "Invariants (DDR)", check_adr_invariants));
+        rules.push(rule("adr-rollback", Severity::Should, "Rollback Plan", check_adr_rollback));
+    }
+
+    rules
+}
+
+fn check_adr_context(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Context") {
+        Some("Missing '## Context' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_adr_decision(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Decision") {
+        Some("Missing '## Decision' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_adr_consequences(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Consequences") {
+        Some("Missing '## Consequences' section".into())
+    } else {
+        None
+    }
+}
+
+fn check_adr_invariants(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Invariants") {
+        Some("Missing '## Invariants' section (recommended for deep ADR/DDR)".into())
+    } else {
+        None
+    }
+}
+
+fn check_adr_rollback(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Rollback") {
+        Some("Missing '## Rollback Plan' section (recommended for deep ADR/DDR)".into())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validation::{validate, Severity};
+
+    fn make_fm(id: &str, status: &str) -> Frontmatter {
+        let mut fm = Frontmatter::new();
+        fm.insert("id".into(), serde_yaml::Value::String(id.into()));
+        fm.insert("status".into(), serde_yaml::Value::String(status.into()));
+        fm
+    }
+
+    // ─── 1. rules_for returns correct count per kind ────────────────────────
+
+    #[test]
+    fn rules_for_prd_tactical_returns_base_only() {
+        let rules = rules_for(&ArtifactKind::Prd, &Mode::Tactical);
+        let base_count = base_rules().len();
+        let prd_base = 5; // problem, goals, non-goals, fr, related
+        assert_eq!(rules.len(), base_count + prd_base);
+    }
+
+    #[test]
+    fn rules_for_prd_standard_includes_audience_density_leakage() {
+        let rules = rules_for(&ArtifactKind::Prd, &Mode::Standard);
+        let base_count = base_rules().len();
+        let prd_base = 5;
+        let standard_extra = 3; // density, audience, leakage
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"prd-problem-density"));
+        assert!(ids.contains(&"prd-target-audience"));
+        assert!(ids.contains(&"prd-no-impl-leakage"));
+    }
+
+    #[test]
+    fn rules_for_prd_deep_includes_timeline_stakeholders_acceptance() {
+        let rules = rules_for(&ArtifactKind::Prd, &Mode::Deep);
+        let base_count = base_rules().len();
+        let prd_base = 5;
+        let standard_extra = 3;
+        let deep_extra = 3; // timeline, stakeholders, acceptance
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra + deep_extra);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"prd-timeline"));
+        assert!(ids.contains(&"prd-stakeholders"));
+        assert!(ids.contains(&"prd-acceptance"));
+    }
+
+    #[test]
+    fn rules_for_epic_returns_base_plus_5() {
+        let rules = rules_for(&ArtifactKind::Epic, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 5);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"epic-vision"));
+        assert!(ids.contains(&"epic-outcomes"));
+        assert!(ids.contains(&"epic-children"));
+        assert!(ids.contains(&"epic-phases"));
+        assert!(ids.contains(&"epic-progress"));
+    }
+
+    #[test]
+    fn rules_for_spec_returns_base_plus_3() {
+        let rules = rules_for(&ArtifactKind::Spec, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 3);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"spec-summary"));
+        assert!(ids.contains(&"spec-contracts"));
+        assert!(ids.contains(&"spec-related"));
+    }
+
+    #[test]
+    fn rules_for_rfc_standard_returns_base_plus_5_no_risks() {
+        let rules = rules_for(&ArtifactKind::Rfc, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 5);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(!ids.contains(&"rfc-risks"));
+    }
+
+    #[test]
+    fn rules_for_rfc_deep_returns_base_plus_6_with_risks() {
+        let rules = rules_for(&ArtifactKind::Rfc, &Mode::Deep);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 6);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"rfc-risks"));
+    }
+
+    #[test]
+    fn rules_for_adr_standard_returns_base_plus_3() {
+        let rules = rules_for(&ArtifactKind::Adr, &Mode::Standard);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 3);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(!ids.contains(&"adr-invariants"));
+        assert!(!ids.contains(&"adr-rollback"));
+    }
+
+    #[test]
+    fn rules_for_adr_deep_returns_base_plus_5_with_ddr() {
+        let rules = rules_for(&ArtifactKind::Adr, &Mode::Deep);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 5);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"adr-invariants"));
+        assert!(ids.contains(&"adr-rollback"));
+    }
+
+    #[test]
+    fn rules_for_note_returns_base_only() {
+        let rules = rules_for(&ArtifactKind::Note, &Mode::Tactical);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count);
+    }
+
+    // ─── 2. PRD validation on complete document ─────────────────────────────
+
+    #[test]
+    fn prd_complete_document_passes_deep_validation() {
+        let fm = make_fm("prd-001", "draft");
+
+        // Problem section with >= 50 words
+        let problem_text = "This is a significant problem that affects many users \
+            across the platform. The current workflow is inefficient and error-prone, \
+            leading to frequent mistakes and wasted time. Users have reported frustration \
+            with the existing process, and our metrics show a decline in engagement. \
+            We need a comprehensive solution that addresses the root causes and provides \
+            a streamlined experience for all user segments.";
+
+        let body = format!(
+            "## Problem\n\n{problem_text}\n\n\
+             ## Goals\n\nImprove user satisfaction by 20%.\n\n\
+             ## Non-Goals\n\nWe will not rebuild the entire platform.\n\n\
+             ## Functional Requirements\n\n- [Actor] can [capability]\n\n\
+             ## Related Artifacts\n\n- RFC-001\n\n\
+             ## Target Users\n\nDevelopers and project managers.\n\n\
+             ## Timeline\n\nQ1 2026.\n\n\
+             ## Stakeholders\n\n- Engineering lead\n- Product manager\n\n\
+             ## Acceptance Criteria\n\n- All FR implemented\n- Tests pass\n"
+        );
+
+        let result = validate("prd-001", &body, &fm, &ArtifactKind::Prd, &Mode::Deep);
+        let must_findings: Vec<_> = result.findings.iter()
+            .filter(|f| f.severity == Severity::Must)
+            .collect();
+        assert!(
+            must_findings.is_empty(),
+            "Expected 0 Must findings on complete PRD, got {}: {:?}",
+            must_findings.len(),
+            must_findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        );
+        assert!(result.passed());
+    }
+
+    // ─── 3. PRD validation on incomplete document ───────────────────────────
+
+    #[test]
+    fn prd_incomplete_document_has_multiple_must_findings() {
+        let fm = make_fm("prd-002", "draft");
+        let body = "## Problem\n\nShort.";
+
+        let result = validate("prd-002", body, &fm, &ArtifactKind::Prd, &Mode::Deep);
+        let must_count = result.error_count();
+
+        // Missing: Goals, Non-Goals, FR, Related, Audience, Timeline, Stakeholders,
+        //          Acceptance, density < 50
+        assert!(
+            must_count >= 5,
+            "Expected at least 5 Must findings on incomplete PRD, got {}",
+            must_count
+        );
+        assert!(!result.passed());
+    }
+
+    // ─── 4. Density check fires on missing/short section ────────────────────
+
+    #[test]
+    fn density_check_fires_when_no_problem_section() {
+        let fm = make_fm("prd-003", "draft");
+        let body = "## Goals\n\nSome goals here.\n";
+
+        let result = check_prd_density(body, &fm);
+        assert!(result.is_some(), "Density check should fire when Problem section is missing");
+        let msg = result.unwrap();
+        assert!(msg.contains("0 words") || msg.contains("words"));
+    }
+
+    #[test]
+    fn density_check_fires_when_problem_section_too_short() {
+        let fm = make_fm("prd-004", "draft");
+        let body = "## Problem\n\nToo short.\n\n## Goals\n\nGoals here.\n";
+
+        let result = check_prd_density(body, &fm);
+        assert!(result.is_some(), "Density check should fire when Problem < 50 words");
+    }
+
+    #[test]
+    fn density_check_passes_when_problem_section_long_enough() {
+        let fm = make_fm("prd-005", "draft");
+        let long_problem = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let body = format!("## Problem\n\n{long_problem}\n\n## Goals\n\nGoals.\n");
+
+        let result = check_prd_density(&body, &fm);
+        assert!(result.is_none(), "Density check should pass when Problem >= 50 words");
+    }
+
+    // ─── 5. ADR deep rules include DDR fields ───────────────────────────────
+
+    #[test]
+    fn adr_standard_passes_with_context_decision_consequences() {
+        let fm = make_fm("adr-001", "active");
+        let body = "## Context\n\nWe need to choose a database.\n\n\
+                     ## Decision\n\nUse LanceDB for embedded vector storage.\n\n\
+                     ## Consequences\n\nSimplifies deployment, limits horizontal scaling.\n";
+
+        let result = validate("adr-001", body, &fm, &ArtifactKind::Adr, &Mode::Standard);
+        assert!(
+            result.passed(),
+            "ADR with Context+Decision+Consequences should pass at Standard depth, findings: {:?}",
+            result.findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn adr_deep_has_should_findings_for_invariants_and_rollback() {
+        let fm = make_fm("adr-002", "active");
+        let body = "## Context\n\nWe need to choose a database.\n\n\
+                     ## Decision\n\nUse LanceDB for embedded vector storage.\n\n\
+                     ## Consequences\n\nSimplifies deployment, limits horizontal scaling.\n";
+
+        let result = validate("adr-002", body, &fm, &ArtifactKind::Adr, &Mode::Deep);
+
+        // Should still pass (invariants and rollback are Should, not Must)
+        assert!(result.passed(), "ADR should still pass at Deep depth without DDR fields");
+
+        let should_ids: Vec<&str> = result.findings.iter()
+            .filter(|f| f.severity == Severity::Should)
+            .map(|f| f.rule_id.as_str())
+            .collect();
+        assert!(
+            should_ids.contains(&"adr-invariants"),
+            "Expected Should finding for adr-invariants at Deep depth"
+        );
+        assert!(
+            should_ids.contains(&"adr-rollback"),
+            "Expected Should finding for adr-rollback at Deep depth"
+        );
+    }
+
+    // ─── 6. Base rules - no-placeholders ────────────────────────────────────
+
+    #[test]
+    fn no_placeholders_fires_on_mustache_placeholder() {
+        let fm = make_fm("test-001", "draft");
+        let body = "## Summary\n\nThis has a {{placeholder}} in it.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_some(), "Should detect {{placeholder}}");
+    }
+
+    #[test]
+    fn no_placeholders_fires_on_todo() {
+        let fm = make_fm("test-002", "draft");
+        let body = "## Summary\n\nTODO fill this section.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_some(), "Should detect TODO");
+    }
+
+    #[test]
+    fn no_placeholders_ignores_todo_inside_code_fence() {
+        let fm = make_fm("test-003", "draft");
+        let body = "## Summary\n\nSome text.\n\n```rust\n// TODO: implement later\n```\n\nMore text.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_none(), "Should NOT detect TODO inside code fence");
+    }
+
+    #[test]
+    fn no_placeholders_passes_on_clean_body() {
+        let fm = make_fm("test-004", "draft");
+        let body = "## Summary\n\nThis is a clean document with no issues.\n";
+
+        let result = check_no_placeholders(body, &fm);
+        assert!(result.is_none(), "Clean body should pass no-placeholders check");
+    }
+}
