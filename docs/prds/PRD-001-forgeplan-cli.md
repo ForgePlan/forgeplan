@@ -1,7 +1,7 @@
 ---
 id: PRD-001
 title: "Forgeplan CLI"
-status: Draft
+status: In Progress
 author: explosovebit
 created: 2026-03-21
 updated: 2026-03-21
@@ -18,9 +18,18 @@ stepsCompleted: []
 ## Progress
 
 ```
-Phase 0  ░░░░░░░░░░░░░░░░░░░░░░░░  0/0  (  0%)
+FR-001   ████████████████████████  1/1   (100%)  init workspace       ✅
+FR-002   ████████████████████████  1/1   (100%)  new artifact          ✅
+FR-003   ████████████████████████  1/1   (100%)  list artifacts        ✅
+FR-004   ████████████████████████  1/1   (100%)  status dashboard      ✅
+FR-005   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1   (  0%)  validate
+FR-006   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1   (  0%)  score R_eff
+FR-007   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1   (  0%)  graph
+FR-008   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1   (  0%)  search
+FR-009   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1   (  0%)  link artifacts
+FR-010   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1   (  0%)  stale detection
 ─────────────────────────────────────────────────
-TOTAL                               0/0  (  0%)
+TOTAL                               4/10  ( 40%)
 ```
 
 ---

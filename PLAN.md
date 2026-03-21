@@ -6,10 +6,10 @@
 Phase 0  ████████████████████████  10/10  (100%)  Foundation & Research      ✅ DONE
 Phase 1  ████████████████████████  12/12  (100%)  Schemas, Templates & Docs  ✅ DONE
 Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░   0/8   (  0%)  Workflow & Integration
-Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░   0/12  (  0%)  Rust CLI Application (forgeplan)
+Phase 3  ██████████░░░░░░░░░░░░░░   6/12  ( 50%)  Rust CLI Application (forgeplan)
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░   0/7   (  0%)  AI & Automation
 ─────────────────────────────────────────────────
-TOTAL                               22/49  (44.9%)
+TOTAL                               28/49  (57.1%)
 ```
 
 ---
@@ -66,16 +66,16 @@ TOTAL                               22/49  (44.9%)
 **References**: quint-code (data model), git-adr (Rust CLI), OpenSpec (artifact DAG)
 
 ### 3A: Foundation
-- [ ] **3.1** `cargo init` + Cargo.toml с dependencies (clap, serde, lancedb, tantivy, tera, pulldown-cmark, ort)
-- [ ] **3.2** CLI scaffold (clap derive) — `forgeplan init|new|list|status|show|validate|link|graph|score`
-- [ ] **3.3** Config module — `.forgeplan/config.yaml` loader (serde_yaml)
+- [x] **3.1** `cargo init` + Cargo.toml с dependencies (clap, serde, chrono, anyhow, thiserror)
+- [x] **3.2** CLI scaffold (clap derive) — `forgeplan init|new|list|status|validate|score`
+- [x] **3.3** Config module — `.forgeplan/config.yaml` loader (serde_yaml)
 - [ ] **3.4** LanceDB tables schema — adapt quint-code `schema.sql` + new tables (progress, epic_children)
 
 ### 3B: Core
-- [ ] **3.5** Artifact model — port quint-code `types.go` → Rust (ArtifactKind, Meta, Link, Status)
-- [ ] **3.6** Parser — YAML frontmatter + markdown body (pulldown-cmark)
-- [ ] **3.7** Writer — create artifact in `.forgeplan/` directory with auto-ID
-- [ ] **3.8** Template engine — tera + embedded templates (include_str!)
+- [x] **3.5** Artifact model — port quint-code `types.go` → Rust (ArtifactKind, Meta, Link, Status)
+- [x] **3.6** Parser — YAML frontmatter + markdown body
+- [x] **3.7** Writer — create artifact in `.forgeplan/` directory with auto-ID
+- [x] **3.8** Template engine — embedded templates (include_str!) + placeholder substitution
 
 ### 3C: Features
 - [ ] **3.9** Validator — required sections check per kind (BMAD rules)

@@ -26,12 +26,12 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 - **Phase 0** (Foundation & Research) — DONE
 - **Phase 1** (Schemas & Templates) — DONE (12/12, adversarial review passed)
 - **Phase 2** (Workflow & Integration) — не начат
-- **Phase 3** (Rust CLI + LanceDB) — IN PROGRESS (workspace scaffold, types + R_eff scoring, 4 tests pass)
+- **Phase 3** (Rust CLI + LanceDB) — IN PROGRESS (Phase 3A done: init, new, list, status; 11 tests pass)
 - **Phase 4** (Desktop App + AI) — не начат
 - **Phase 5** (MCP Server) — не начат
 
 Подробности: `PLAN.md` (49 задач, 5 фаз), `TODO.md` (текущие приоритеты).
-Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`, `docs/adrs/ADR-001..003`.
+Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`, `docs/rfcs/RFC-001-*.md`, `docs/adrs/ADR-001..003`.
 
 ## Как начать работу в новом чате
 
@@ -70,6 +70,55 @@ Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`
 - **Ребёнок ссылается на родителя** — PRD→Epic, RFC→PRD, ADR→RFC
 - **Supersede, не удаляй** — старый артефакт получает status: Superseded
 - **Quality gates по depth** — tactical: ничего, standard: Verification Gate, deep+: Adversarial Review
+
+### Progress Tracking (ОБЯЗАТЕЛЬНО):
+После завершения блока работ (реализация FR, закрытие фазы, создание артефакта) — **предложи пользователю обновить прогресс** в следующих местах:
+1. **RFC** — чекбоксы Implementation Phases (`- [ ]` → `- [x]`) + progress bar
+2. **PRD** — progress bar по FR (сколько FR реализовано)
+3. **Epic** — Children таблица (progress %), aggregated progress bar
+4. **PLAN.md** — Phase progress bar + чекбоксы задач
+5. **TODO.md** — переместить завершённые задачи в Done ✅, обновить P0
+
+Формула: **работа не закончена, пока прогресс не отражён в артефактах.**
+
+### Git-конвенции
+
+#### Формат коммита (Conventional Commits + Forgeplan):
+```
+<type>(<scope>): <description>
+
+[body — что и почему, на русском]
+
+Refs: RFC-001, FR-001..004
+```
+
+#### Types:
+| Type | Когда | Пример |
+|------|-------|--------|
+| `feat` | Новая функциональность (FR-*) | `feat(cli): implement forgeplan init` |
+| `docs` | Артефакты методологии (RFC, PRD, ADR) | `docs(rfc): add RFC-001 CLI architecture` |
+| `fix` | Баг-фикс | `fix(frontmatter): handle missing closing ---` |
+| `refactor` | Рефакторинг без изменения поведения | `refactor(store): extract slugify` |
+| `test` | Тесты | `test(workspace): add init roundtrip tests` |
+| `chore` | Build, deps, CI | `chore(deps): add tempfile dev-dependency` |
+| `progress` | Обновление прогресса артефактов | `progress: update Phase 3A tracking` |
+
+#### Scope = модуль или артефакт:
+- Код: `cli`, `core`, `store`, `template`, `scoring`, `workspace`, `config`
+- Артефакты: `rfc`, `prd`, `adr`, `epic`
+
+#### Ветки:
+```
+main                              ← стабильная, PR-only
+  └── feat/phase-3a-core-cli      ← feature branch
+```
+Формат: `{type}/{scope}-{slug}` — `feat/phase-3a-core-cli`, `docs/rfc-002-lancedb`, `fix/frontmatter-parser`
+
+#### Правила:
+- **Refs обязательны** — каждый коммит ссылается на артефакт (RFC, FR, ADR)
+- **Один коммит = одна логическая единица** — не мешать feat + docs + refactor
+- **Description на английском** (для совместимости), body на русском (для контекста)
+- **Не коммить напрямую в main** — всегда через feature branch + PR
 
 ## Структура проекта
 
