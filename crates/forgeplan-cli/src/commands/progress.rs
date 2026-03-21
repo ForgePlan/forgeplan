@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 
 use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::progress::{self, ArtifactProgress};
+use forgeplan_core::progress::{self, ArtifactProgress, CheckboxCount};
 use forgeplan_core::workspace;
 
 pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
@@ -19,16 +19,15 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Build progress for each artifact
-    let mut all_progress: Vec<ArtifactProgress> = records
+    let all_progress: Vec<ArtifactProgress> = records
         .iter()
         .map(|r| {
-            let (total, completed) = progress::count_checkboxes(&r.body);
+            let count = progress::count_checkboxes(&r.body);
             ArtifactProgress {
                 id: r.id.clone(),
                 title: r.title.clone(),
                 kind: r.kind.clone(),
-                total,
-                completed,
+                count,
             }
         })
         .collect();
@@ -36,47 +35,35 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     // If specific ID requested, show only that artifact
     if let Some(target_id) = id {
         let upper = target_id.to_uppercase();
-        let filtered: Vec<_> = all_progress
-            .into_iter()
-            .filter(|p| p.id.to_uppercase() == upper)
-            .collect();
 
-        if filtered.is_empty() {
-            anyhow::bail!("Artifact '{}' not found", target_id);
-        }
+        // Find both progress and record in one pass
+        let found = records.iter().enumerate().find(|(_, r)| r.id.to_uppercase() == upper);
+        let (idx, record) = found
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
+        let p = &all_progress[idx];
 
-        let p = &filtered[0];
         println!();
         println!("{} \"{}\"", p.id, p.title);
         println!("{}", "─".repeat(50));
 
-        if p.total == 0 {
+        if p.count.total == 0 {
             println!("  No checkboxes found in this artifact.");
         } else {
             println!(
                 "  {}  {}/{}  ({}%)  {}",
                 progress::render_bar(p.ratio(), 24),
-                p.completed,
-                p.total,
+                p.count.completed,
+                p.count.total,
                 p.percent(),
-                p.status_icon()
+                p.status_label()
             );
 
-            // Show individual checkbox lines
-            let record = records
-                .iter()
-                .find(|r| r.id.to_uppercase() == upper)
-                .unwrap();
-
+            // Show individual checkbox lines using shared parser
             println!();
             for line in record.body.lines() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ")
-                    || trimmed.starts_with("* [x] ") || trimmed.starts_with("* [X] ")
-                {
-                    println!("  [x] {}", trimmed.get(6..).unwrap_or(""));
-                } else if trimmed.starts_with("- [ ] ") || trimmed.starts_with("* [ ] ") {
-                    println!("  [ ] {}", trimmed.get(6..).unwrap_or(""));
+                if let Some((checked, text)) = progress::checkbox_text(line) {
+                    let mark = if checked { "x" } else { " " };
+                    println!("  [{}] {}", mark, text);
                 }
             }
         }
@@ -85,20 +72,23 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Filter to artifacts with checkboxes
-    all_progress.retain(|p| p.total > 0);
+    let with_checkboxes: Vec<&ArtifactProgress> = all_progress
+        .iter()
+        .filter(|p| p.count.total > 0)
+        .collect();
 
-    if all_progress.is_empty() {
+    if with_checkboxes.is_empty() {
         println!("No artifacts with checkboxes found.");
         return Ok(());
     }
 
     // Group by kind
     let mut by_kind: BTreeMap<String, Vec<&ArtifactProgress>> = BTreeMap::new();
-    for p in &all_progress {
+    for p in &with_checkboxes {
         by_kind.entry(p.kind.clone()).or_default().push(p);
     }
 
-    let id_width = all_progress
+    let id_width = with_checkboxes
         .iter()
         .map(|p| p.id.len())
         .max()
@@ -118,10 +108,14 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Aggregated totals
-    let total_items: usize = all_progress.iter().map(|p| p.total).sum();
-    let total_completed: usize = all_progress.iter().map(|p| p.completed).sum();
-    let overall_ratio = if total_items > 0 {
-        total_completed as f64 / total_items as f64
+    let total_items: usize = with_checkboxes.iter().map(|p| p.count.total).sum();
+    let total_completed: usize = with_checkboxes.iter().map(|p| p.count.completed).sum();
+    let overall = CheckboxCount {
+        total: total_items,
+        completed: total_completed,
+    };
+    let overall_ratio = if overall.total > 0 {
+        overall.completed as f64 / overall.total as f64
     } else {
         0.0
     };
@@ -130,13 +124,13 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     println!(
         "  {}  {}/{}  ({}%)",
         progress::render_bar(overall_ratio, 24),
-        total_completed,
-        total_items,
+        overall.completed,
+        overall.total,
         (overall_ratio * 100.0).round() as u32,
     );
     println!(
         "  {} artifact(s) with checkboxes",
-        all_progress.len()
+        with_checkboxes.len()
     );
     println!();
 
