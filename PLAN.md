@@ -4,12 +4,12 @@
 
 ```
 Phase 0  ████████████████████████  10/10  (100%)  Foundation & Research      ✅ DONE
-Phase 1  ████████░░░░░░░░░░░░░░░░   4/12  ( 33%)  Schemas, Templates & Docs
+Phase 1  ████████████████████████  12/12  (100%)  Schemas, Templates & Docs  ✅ DONE
 Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░   0/8   (  0%)  Workflow & Integration
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░   0/12  (  0%)  Rust CLI Application (forgeplan)
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░   0/7   (  0%)  AI & Automation
 ─────────────────────────────────────────────────
-TOTAL                               14/49  (28.6%)
+TOTAL                               22/49  (44.9%)
 ```
 
 ---
@@ -37,17 +37,17 @@ TOTAL                               14/49  (28.6%)
 - [x] **1.3** SPEC-SCHEMA.md — API contracts, data models, events, versioning
 
 ### 1B: Templates (обогащение существующих)
-- [ ] **1.4** PRD шаблон — обогатить из BMAD `create-prd/` (validation steps)
-- [ ] **1.5** Product Brief шаблон — lightweight PRD для Quick Flow (из BMAD)
-- [ ] **1.6** Problem Card шаблон — из quint-code ProblemCard
-- [ ] **1.7** Solution Portfolio шаблон — из quint-code (variants + weakest_link)
-- [ ] **1.8** Decision Record (DDR) шаблон — из quint-code/FPF (invariants + rollback + valid_until)
+- [x] **1.4** PRD шаблон — обогатить из BMAD `create-prd/` (validation steps)
+- [x] **1.5** Product Brief шаблон — lightweight PRD для Quick Flow (из BMAD)
+- [x] **1.6** Problem Card шаблон — из quint-code ProblemCard
+- [x] **1.7** Solution Portfolio шаблон — из quint-code (variants + weakest_link)
+- [x] **1.8** Decision Record (DDR) шаблон — из quint-code/FPF (invariants + rollback + valid_until)
 
 ### 1C: Documentation
 - [x] **1.9** PRD-RFC-ADR-FLOW.md — полный workflow guide с decision tree
-- [ ] **1.10** DEPTH-CALIBRATION.md — когда Tactical, Standard, Deep, Critical
-- [ ] **1.11** QUALITY-GATES.md — Verification Gate (5-point) + Adversarial Review
-- [ ] **1.12** GLOSSARY.md — термины: R_eff, CL, DDR, ADI, delta-spec, artifact DAG
+- [x] **1.10** DEPTH-CALIBRATION.md — когда Tactical, Standard, Deep, Critical
+- [x] **1.11** QUALITY-GATES.md — Verification Gate (5-point) + Adversarial Review
+- [x] **1.12** GLOSSARY.md — термины: R_eff, CL, DDR, ADI, delta-spec, artifact DAG
 
 ## Phase 2 — Workflow & Claude Code Integration
 
