@@ -73,6 +73,8 @@ enum Commands {
         /// Artifact ID (shows all if omitted)
         id: Option<String>,
     },
+    /// Start MCP server (stdio transport) for AI agent integration
+    Serve,
 }
 
 #[tokio::main]
@@ -99,5 +101,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Stale => commands::stale::run().await,
         Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
+        Commands::Serve => {
+            let cwd = std::env::current_dir()?;
+            forgeplan_mcp::run_stdio(cwd).await
+        }
     }
 }
