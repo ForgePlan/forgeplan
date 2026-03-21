@@ -1,11 +1,24 @@
+---
+id: RFC-{NNN}
+title: "{title}"
+status: Draft
+author:
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+prd: PRD-{NNN}
+depth: standard / deep / critical
+---
+
 # RFC-{NNN}: {Title}
 
-| Field | Value |
-|-------|-------|
-| Status | Draft |
-| Author | |
-| Created | YYYY-MM-DD |
-| Decision Deadline | YYYY-MM-DD |
+## Progress
+
+```
+Phase 1  ░░░░░░░░░░░░░░░░░░░░░░░░  0/0  (  0%)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/0  (  0%)
+─────────────────────────────────────────────────
+TOTAL                               0/0  (  0%)
+```
 
 ---
 
@@ -73,6 +86,24 @@
 - Risk 1
 - Open question 1
 
+## Implementation Phases
+
+### Phase 1: {Name}
+- [ ] **1.1** ...
+- [ ] **1.2** ...
+
+### Phase 2: {Name}
+- [ ] **2.1** ...
+- [ ] **2.2** ...
+
+## Related Artifacts
+
+| Artifact | Type | Relation |
+|----------|------|----------|
+| PRD-{NNN} | PRD | based_on |
+| SPEC-{NNN} | Spec | implements |
+| ADR-{NNN} | ADR | decided_by |
+
 ---
 
-> **Next step**: После обсуждения и approve → создать ADR с ссылкой на этот RFC.
+> **Next step**: После обсуждения и approve -> создать ADR с ссылкой на этот RFC.

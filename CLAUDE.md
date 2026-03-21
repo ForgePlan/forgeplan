@@ -85,15 +85,14 @@ ForgePlan/
 └── src/                    ← Rust CLI (пусто до Phase 3)
 ```
 
-## Артефакты (11 типов)
+## Артефакты (10 типов)
 
-### Из Quint-code (6):
+### Из Quint-code (5):
 | Kind | Prefix | Описание |
 |------|--------|----------|
 | Note | `note-` | Микро-решение |
 | ProblemCard | `prob-` | Проблема с контекстом |
 | SolutionPortfolio | `sol-` | 2-3+ варианта (weakest link scoring) |
-| DecisionRecord | `dec-` | DDR: invariants + rollback + valid_until |
 | EvidencePack | `evid-` | Тесты, benchmarks, measurements |
 | RefreshReport | `ref-` | Переоценка stale решений |
 
@@ -104,7 +103,7 @@ ForgePlan/
 | Epic | `epic-` | Группирует PRD[], RFC[], ADR[] |
 | Spec | `spec-` | API contracts, data models |
 | RFC | `rfc-` | Архитектурное предложение с фазами |
-| ADR | `adr-` | Architecture Decision Record |
+| ADR | `adr-` | Architecture Decision Record (на deep+ включает DDR-поля: invariants, rollback, valid_until) |
 
 ### Иерархия
 ```
@@ -155,7 +154,7 @@ R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
 ├── lance/           ← LanceDB (gitignore)
 ├── prds/            ← markdown (git-tracked)
 ├── epics/, specs/, rfcs/, adrs/
-├── problems/, solutions/, decisions/
+├── problems/, solutions/
 ├── evidence/, notes/, refresh/
 ```
 

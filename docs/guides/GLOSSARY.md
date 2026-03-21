@@ -57,6 +57,9 @@ UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → RE
 ### Epic
 Стратегическая инициатива, группирует PRD[], RFC[], ADR[]. Имеет aggregated progress — прогресс вычисляется из дочерних артефактов. Префикс: `epic-`.
 
+### ID формат
+Каноничный формат: `TYPE-NNN` (uppercase). Примеры: `PRD-001`, `EPIC-042`, `ADR-007`, `PROB-003`, `SOL-001`, `SPEC-015`, `RFC-128`. Для файлов: `TYPE-NNN-kebab-case-title.md` (например `PRD-001-social-login.md`). В коде Rust используется lowercase prefix с датой: `prd-20260321-001`.
+
 ### Evidence Decay
 Доказательства имеют TTL (`valid_until`). Истёкшие доказательства получают score = 0.1 (слабые, но не отсутствующие). Graduated epistemic debt — чем дольше истёк срок, тем менее надёжно.
 
@@ -138,3 +141,20 @@ TTL артефакта или evidence. По истечении срока:
 - [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — иерархия артефактов и lifecycle
 - [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: какой документ создать
 - [VISION.md](../../VISION.md) — архитектура и data model
+
+## Lifecycle статусы по типу артефакта
+
+| Тип | Lifecycle |
+|-----|-----------|
+| PRD | Draft → Review → Approved → Implementing → Implemented → Closed (или Rejected) |
+| Epic | Draft → Active → Done → Archived (или Cancelled) |
+| Spec | Draft → Approved → Implemented |
+| RFC | Draft → Discussion → Accepted → Implemented → Superseded |
+| ADR | Proposed → Accepted → Deprecated → Superseded |
+| ProblemCard | Draft → Active → Resolved |
+| SolutionPortfolio | Draft → Active → Decided |
+| EvidencePack | Draft → Active → Expired |
+| Note | Active → Expired (auto-expires 90 days) |
+| RefreshReport | Draft → Complete |
+
+**Важно**: это type-specific lifecycles. Не путать с DerivedStatus (UNDERFRAMED→...→APPLIED), который вычисляется автоматически по полноте цепочки ProblemCard→SolutionPortfolio→ADR→EvidencePack и НЕ хранится как поле.

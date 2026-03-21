@@ -1,16 +1,18 @@
-# PROB-{NNN}: {Problem Title}
+---
+id: PROB-{NNN}
+title: "{title}"
+status: Draft
+created: YYYY-MM-DD
+depth: tactical / standard / deep
+context: "{grouping tag}"
+parent_epic: EPIC-{NNN}
+---
 
-| Field | Value |
-|-------|-------|
-| Status | Draft |
-| Created | YYYY-MM-DD |
-| Mode | tactical / standard / deep |
-| Context | {grouping tag} |
-| Parent Epic | EPIC-{NNN} (если есть) |
+# PROB-{NNN}: {Problem Title}
 
 ## Signal
 
-{Что аномально или сломано — наблюдение, НЕ предполагаемая причина}
+{Что аномально или сломано -- наблюдение, НЕ предполагаемая причина}
 
 ## Constraints
 
@@ -28,7 +30,7 @@
 
 ## Observation Indicators (Anti-Goodhart)
 
-{Что мониторить, но НЕ оптимизировать — для предотвращения reward hacking}
+{Что мониторить, но НЕ оптимизировать -- для предотвращения reward hacking}
 
 -
 -

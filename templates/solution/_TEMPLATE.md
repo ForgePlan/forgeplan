@@ -1,11 +1,13 @@
-# SOL-{NNN}: {Portfolio Title}
+---
+id: SOL-{NNN}
+title: "{title}"
+status: Draft
+created: YYYY-MM-DD
+depth: tactical / standard / deep
+problem: PROB-{NNN}
+---
 
-| Field | Value |
-|-------|-------|
-| Status | Draft |
-| Created | YYYY-MM-DD |
-| Mode | tactical / standard / deep |
-| Problem | PROB-{NNN} |
+# SOL-{NNN}: {Portfolio Title}
 
 ## Variants
 
@@ -23,7 +25,7 @@
 -
 -
 
-**Stepping Stone**: Yes / No — {открывает ли будущие возможности}
+**Stepping Stone**: Yes / No -- {открывает ли будущие возможности}
 
 **Rollback Notes**: {как откатить}
 
@@ -77,7 +79,7 @@
 
 ## Diversity Check
 
-{Jaccard similarity >0.5 = варианты слишком похожи — отличаются степенью, не видом}
+{Jaccard similarity >0.5 = варианты слишком похожи -- отличаются степенью, не видом}
 
 ## Related Artifacts
 

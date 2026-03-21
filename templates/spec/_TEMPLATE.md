@@ -1,15 +1,16 @@
-# SPEC-{NNN}: {Specification Title}
-
-| Field | Value |
-|-------|-------|
-| Status | Draft |
-| Author | |
-| Created | YYYY-MM-DD |
-| Updated | YYYY-MM-DD |
-| PRD | PRD-{NNN} |
-| Type | API / Data Model / Protocol / UI Spec |
-
 ---
+id: SPEC-{NNN}
+title: "{title}"
+status: Draft
+author:
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+prd: PRD-{NNN}
+type: API / Data Model / Protocol / UI Spec
+depth: standard / deep / critical
+---
+
+# SPEC-{NNN}: {Specification Title}
 
 ## Summary
 
@@ -121,4 +122,4 @@ erDiagram
 
 ---
 
-> **Next step**: После approve → создать RFC с архитектурой реализации.
+> **Next step**: После approve -> создать RFC с архитектурой реализации.

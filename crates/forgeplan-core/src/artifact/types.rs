@@ -2,7 +2,8 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 /// All artifact kinds supported by Forgeplan.
-/// 6 from Quint-code + 5 new for Forgeplan.
+/// 5 from Quint-code + 5 new for Forgeplan = 10 types.
+/// DecisionRecord merged into ADR (ADR at deep+ depth includes DDR fields).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
@@ -10,7 +11,6 @@ pub enum ArtifactKind {
     Note,
     ProblemCard,
     SolutionPortfolio,
-    DecisionRecord,
     EvidencePack,
     RefreshReport,
     // New for Forgeplan
@@ -28,7 +28,6 @@ impl ArtifactKind {
             Self::Note => "note-",
             Self::ProblemCard => "prob-",
             Self::SolutionPortfolio => "sol-",
-            Self::DecisionRecord => "dec-",
             Self::EvidencePack => "evid-",
             Self::RefreshReport => "ref-",
             Self::Prd => "prd-",

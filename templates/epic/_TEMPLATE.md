@@ -1,12 +1,15 @@
-# EPIC-{NNN}: {Initiative Name}
+---
+id: EPIC-{NNN}
+title: "{title}"
+status: Draft
+owner:
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+target: "Q{N} YYYY"
+depth: standard / deep / critical
+---
 
-| Field | Value |
-|-------|-------|
-| Status | Draft |
-| Owner | |
-| Created | YYYY-MM-DD |
-| Updated | YYYY-MM-DD |
-| Target | Q{N} YYYY |
+# EPIC-{NNN}: {Initiative Name}
 
 ## Progress (Aggregated)
 
@@ -26,9 +29,9 @@ TOTAL                              15/26 (57.7%)
 
 ## Outcomes (Measurable)
 
-1. **Outcome 1**: metric → target value
-2. **Outcome 2**: metric → target value
-3. **Outcome 3**: metric → target value
+1. **Outcome 1**: metric -> target value
+2. **Outcome 2**: metric -> target value
+3. **Outcome 3**: metric -> target value
 
 ## Problem Space
 
@@ -71,11 +74,11 @@ graph TD
 ## Phases
 
 ### Phase 1: Foundation
-- PRD-001 → SPEC-001 → RFC-101
+- PRD-001 -> SPEC-001 -> RFC-101
 - ADR-015
 
 ### Phase 2: Core
-- PRD-002 → RFC-102
+- PRD-002 -> RFC-102
 
 ### Phase 3: Enhancement
 - PRD-003 (depends on Phase 2)

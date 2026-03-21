@@ -1,31 +1,37 @@
-# ADR-{NNN}: {Decision Title}
+---
+id: ADR-{NNN}
+title: "{title}"
+status: Proposed
+depth: standard / deep / critical
+valid_until: YYYY-MM-DD
+problem_ref: PROB-{NNN}
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
 
-| Field | Value |
-|-------|-------|
-| Status | Accepted |
-| Date | YYYY-MM-DD |
-| RFC | RFC-{NNN} (если есть) |
-| Updated | YYYY-MM-DD |
+# ADR-{NNN}: {Decision Title}
 
 ## Progress
 
+```
 Phase 0  ░░░░░░░░░░░░░░░░░░░░░░░░  0/0  (  0%)
 ─────────────────────────────────────────────────
 TOTAL                               0/0  (  0%)
+```
 
 ---
 
 ## Context
 
-Какой был контекст и проблема. Ссылка на RFC если есть.
+Какой был контекст и проблема. Ссылка на RFC/PROB если есть.
 
 ## Decision
 
 Что именно решили. Кратко и чётко.
 
-## Rationale
+**Selected**: {название выбранного варианта}
 
-Почему выбрали именно это. Главные аргументы.
+**Why Selected**: {обоснование выбора}
 
 ## Alternatives Considered
 
@@ -45,6 +51,75 @@ TOTAL                               0/0  (  0%)
 
 ### Risks
 - ...
+
+<!-- Depth: standard+ — обязательно для standard, deep, critical -->
+
+## Invariants
+
+{Что ДОЛЖНО выполняться всегда, независимо от реализации}
+
+- ...
+- ...
+
+## Evidence Requirements
+
+{Что измерить/доказать для подтверждения решения}
+
+- ...
+- ...
+
+## Valid Until
+
+**Дата**: `valid_until` из frontmatter
+
+**Обоснование TTL**: {почему выбран именно такой срок}
+
+**Refresh Triggers** (когда пере-оценить досрочно):
+- ...
+- ...
+
+<!-- Depth: deep+ — обязательно для deep, critical -->
+
+## Pre-conditions (чеклист ДО реализации)
+
+- [ ] ...
+- [ ] ...
+
+## Post-conditions (Definition of Done)
+
+- [ ] ...
+- [ ] ...
+
+## Admissibility
+
+{Что НЕ допускается в рамках этого решения}
+
+- NOT: ...
+- NOT: ...
+
+## Rollback Plan
+
+**Triggers** (когда откатывать):
+- ...
+- ...
+
+**Steps** (шаги отката):
+1. ...
+2. ...
+
+**Blast Radius**: {масштаб влияния отката}
+
+## Weakest Link
+
+{Оценка самого слабого звена выбранного решения — R_eff = min(evidence_scores)}
+
+## Affected Files
+
+| File | Baseline Hash |
+|------|---------------|
+| | |
+
+<!-- /Depth: deep+ -->
 
 ## AI Guidance
 
@@ -75,7 +150,11 @@ TOTAL                               0/0  (  0%)
 | 0.1 | ... | Done | ... |
 -->
 
-## Related
+## Related Artifacts
 
-- RFC-{NNN}: {link}
-- ADR-{NNN}: {link}
+| Artifact | Type | Relation |
+|----------|------|----------|
+| RFC-{NNN} | RFC | based_on |
+| PROB-{NNN} | ProblemCard | based_on |
+| SOL-{NNN} | SolutionPortfolio | based_on |
+| SPEC-{NNN} | Spec | implements |
