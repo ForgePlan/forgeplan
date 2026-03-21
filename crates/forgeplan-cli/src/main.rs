@@ -68,6 +68,11 @@ enum Commands {
     },
     /// Detect stale artifacts with expired valid_until
     Stale,
+    /// Show checkbox progress for artifacts
+    Progress {
+        /// Artifact ID (shows all if omitted)
+        id: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -93,5 +98,6 @@ async fn main() -> anyhow::Result<()> {
             commands::search::run(&query, r#type.as_deref()).await
         }
         Commands::Stale => commands::stale::run().await,
+        Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
     }
 }
