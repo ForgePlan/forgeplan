@@ -138,6 +138,21 @@ pub enum Mode {
     Deep,
 }
 
+impl std::str::FromStr for Mode {
+    type Err = crate::error::ForgeplanError;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "note" => Ok(Self::Note),
+            "tactical" => Ok(Self::Tactical),
+            "standard" => Ok(Self::Standard),
+            "deep" | "critical" => Ok(Self::Deep),
+            other => Err(crate::error::ForgeplanError::InvalidKind(
+                format!("invalid depth: {other}"),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Meta {
     pub id: String,

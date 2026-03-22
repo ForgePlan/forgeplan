@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::env;
 
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
@@ -40,8 +39,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut total_passed = 0;
 
     for record in &to_validate {
-        // Reconstruct frontmatter map from record fields
-        let fm = record_to_frontmatter(record);
+        let fm = record.frontmatter_map();
 
         let kind = record.kind.parse::<ArtifactKind>().unwrap_or_else(|_| {
             eprintln!(
@@ -50,7 +48,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
             );
             ArtifactKind::Note
         });
-        let depth = parse_depth(&record.depth).unwrap_or(Mode::Standard);
+        let depth = record.depth.parse::<Mode>().unwrap_or(Mode::Standard);
 
         let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
         print_result(&result, &record.title, &depth);
@@ -77,49 +75,6 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
-}
-
-/// Reconstruct a frontmatter BTreeMap from an ArtifactRecord.
-fn record_to_frontmatter(
-    record: &forgeplan_core::db::store::ArtifactRecord,
-) -> BTreeMap<String, serde_yaml::Value> {
-    let mut fm = BTreeMap::new();
-    fm.insert(
-        "id".to_string(),
-        serde_yaml::Value::String(record.id.clone()),
-    );
-    fm.insert(
-        "title".to_string(),
-        serde_yaml::Value::String(record.title.clone()),
-    );
-    fm.insert(
-        "kind".to_string(),
-        serde_yaml::Value::String(record.kind.clone()),
-    );
-    fm.insert(
-        "status".to_string(),
-        serde_yaml::Value::String(record.status.clone()),
-    );
-    fm.insert(
-        "depth".to_string(),
-        serde_yaml::Value::String(record.depth.clone()),
-    );
-    if let Some(ref a) = record.author {
-        fm.insert("author".to_string(), serde_yaml::Value::String(a.clone()));
-    }
-    if let Some(ref pe) = record.parent_epic {
-        fm.insert(
-            "parent_epic".to_string(),
-            serde_yaml::Value::String(pe.clone()),
-        );
-    }
-    if let Some(ref vu) = record.valid_until {
-        fm.insert(
-            "valid_until".to_string(),
-            serde_yaml::Value::String(vu.clone()),
-        );
-    }
-    fm
 }
 
 fn print_result(result: &ValidationResult, title: &str, depth: &Mode) {
@@ -163,12 +118,3 @@ fn print_result(result: &ValidationResult, title: &str, depth: &Mode) {
     );
 }
 
-fn parse_depth(s: &str) -> Option<Mode> {
-    match s.to_lowercase().as_str() {
-        "note" => Some(Mode::Note),
-        "tactical" => Some(Mode::Tactical),
-        "standard" => Some(Mode::Standard),
-        "deep" | "critical" => Some(Mode::Deep),
-        _ => None,
-    }
-}

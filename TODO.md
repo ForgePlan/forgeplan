@@ -1,24 +1,26 @@
 # TODO — Forgeplan
 
-## Next: Phase 3C — Polish & Tests
+## Next: Phase 4 — MCP Server + AI
 
 ### P0 (прямо сейчас)
-- [ ] Phase 3C: >80% test coverage + CI (C.3)
-- [ ] LanceDB tables schema — adapt quint-code schema (3.4)
-- [ ] Phase 3: `forgeplan progress` — checkbox parser + ASCII progress bars (3.10)
+- [x] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
+- [ ] RFC-004: MCP Server Architecture — document design decisions
+- [ ] ADR-006: Full LanceDB primary (no file fallback) — document decision
+- [ ] Update RFC-003 progress to 100%
 
-### P1 (Phase 2 — Workflow Integration)
-- [ ] Расширить /write-doc (prd, epic, spec)
-- [ ] /prd slash command
-- [ ] PRD-INDEX.md template
-- [ ] EPIC-INDEX.md template
-- [ ] Hindsight memory integration
-- [ ] Verification Gate checklist в /audit
-- [ ] Adversarial Review protocol в /audit
-- [ ] Обновить CLAUDE.md
+### P1 (Phase 4 — AI Features)
+- [ ] LLM integration — generate PRD from description
+- [ ] FPF ADI cycle — Abduction→Deduction→Induction for decisions
+- [ ] Auto-decompose — PRD → RFC tasks
+- [ ] Evidence Decay — valid_until TTL + refresh alerts
+- [ ] Depth calibration — auto-suggest Tactical/Standard/Deep/Critical
+- [ ] Auto-capture — agent records decisions from conversation context
 
-## Backlog: Phase 4 — AI
-→ См. PLAN.md Phase 4
+### P2 (Phase 2 — Superseded by MCP)
+- [ ] ~~Workflow Integration~~ — superseded: MCP server covers these use cases
+
+## Backlog: Phase 5 — Desktop App
+- [ ] Tauri 2.0 + React frontend (shared Rust core)
 
 ## Done ✅
 - [x] **Phase 0** — Foundation & Research (10/10)
@@ -35,7 +37,6 @@
   - [x] GLOSSARY.md (31 термин)
 - [x] Rust workspace scaffold (forgeplan-core + forgeplan-cli)
 - [x] Artifact types (11 kinds) + R_eff scoring (4 tests pass)
-- [x] Git initialized, 2 commits
 - [x] **Phase 3A** — Core CLI (2026-03-21):
   - [x] RFC-001: CLI Architecture (модули, data flow, phases)
   - [x] `forgeplan init` — workspace initialization (FR-001)
@@ -62,3 +63,24 @@
   - [x] 13 integration tests (assert_cmd + tempdir)
   - [x] 29 tests total, все проходят
   - [x] Release binary: 3.3 MB (NFR-002: < 15MB)
+- [x] **Phase 3D** — LanceDB Primary + Async Migration (2026-03-22):
+  - [x] LanceDB as sole source of truth (no file fallback)
+  - [x] ArtifactRecord + 8 new LanceStore methods
+  - [x] Markdown projection module (write-only, git-tracked)
+  - [x] All 10 CLI commands migrated to LanceStore
+  - [x] impl FromStr for ArtifactKind (eliminated 3 parse_kind dupes)
+  - [x] N+1 query fixes, ID validation, UTF-8 safety
+  - [x] 5-agent audit: 15 findings, all critical+high fixed
+  - [x] `forgeplan progress` — checkbox parser + ASCII bars (3.10)
+  - [x] 4-agent Rust audit: CheckboxCount struct, clamp, no unwrap
+  - [x] 158 tests pass (135 core + 16 CLI + 7 other)
+  - [x] Dogfooding: all 11 commands verified end-to-end
+- [x] **Phase 4A** — MCP Server (2026-03-22):
+  - [x] `forgeplan-mcp` crate — rmcp 1.2.0 + stdio transport
+  - [x] 11 MCP tools: init, new, list, status, validate, score, link, graph, search, stale, progress
+  - [x] ForgeplanServer with Arc<RwLock<Option<LanceStore>>> for lazy init
+  - [x] Structured JSON responses (schemars JsonSchema on all types)
+  - [x] `forgeplan serve` subcommand in CLI
+  - [x] Refactor: Mode::FromStr in core, eliminated record_to_frontmatter dupe
+  - [x] Smoke test: initialize + tools/list verified via stdio
+  - [x] 158 tests pass (all existing tests unaffected)

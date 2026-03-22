@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/forgeplan-core",
     "crates/forgeplan-cli",
+    "crates/forgeplan-mcp",
 ]
 
 [workspace.package]
