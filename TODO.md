@@ -1,8 +1,30 @@
 # TODO — Forgeplan
 
-## Next: Phase 4 — MCP Server + AI
+## Next: EPIC-001 — Forgeplan v1.0 Real Methodology Engine
 
-### P0 (прямо сейчас)
+### P0: Health + Blind Spots (PRD-003) — максимальный impact
+- [ ] `forgeplan health` — агрегированный dashboard (R_eff, stale, gaps, next actions)
+- [ ] `forgeplan blindspots` — артефакты без evidence, orphans, missing links
+- [ ] MCP tools: `forgeplan_health`, `forgeplan_blindspots`
+
+### P1: Decision Journal (PRD-004)
+- [ ] `forgeplan journal` — timeline решений с R_eff и evidence status
+- [ ] Фильтры: --kind, --since, --risk
+
+### P2: BMAD Validation v2 (PRD-005)
+- [ ] 13-step validation per kind (not schema check)
+- [ ] `forgeplan validate --adversarial` mode
+
+### P3: Smart Routing v2 (PRD-006)
+- [ ] Rule-based engine (no LLM for core logic)
+- [ ] Works offline, instant response
+
+### P4: FPF Engine (PRD-002)
+- [ ] F-G-R scoring, structured ADI, bounded contexts, explore-exploit
+
+## Done: Phase 4 — MCP Server + AI
+
+### Completed P0
 - [x] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
 - [x] RFC-004: MCP Server Architecture — document design decisions
 - [x] ADR-006: Full LanceDB primary (no file fallback) — document decision

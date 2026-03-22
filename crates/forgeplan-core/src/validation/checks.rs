@@ -68,7 +68,7 @@ pub fn find_placeholders(body: &str) -> Vec<(usize, String)> {
         if in_code_fence {
             continue;
         }
-        // Track HTML comments (BMAD reminders)
+        // Track HTML comments
         if trimmed.starts_with("<!--") {
             in_comment = true;
         }

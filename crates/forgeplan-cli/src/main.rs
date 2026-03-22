@@ -130,10 +130,61 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// Suggest depth level and artifact pipeline for a task description
+    /// Suggest depth level and artifact pipeline for a task description (rule-based, no LLM)
     Route {
         /// Task description in natural language
         description: String,
+        /// Optional: use LLM to explain the routing decision
+        #[arg(long)]
+        explain: bool,
+    },
+    /// Review an artifact — run validation and show lifecycle checklist
+    Review {
+        /// Artifact ID
+        id: String,
+    },
+    /// Activate an artifact (draft → active) with validation gate
+    Activate {
+        /// Artifact ID
+        id: String,
+    },
+    /// Supersede an artifact (active → superseded) with replacement link
+    Supersede {
+        /// Artifact ID to supersede
+        id: String,
+        /// Replacement artifact ID
+        #[arg(long)]
+        by: String,
+    },
+    /// Deprecate an artifact (active → deprecated) with reason
+    Deprecate {
+        /// Artifact ID
+        id: String,
+        /// Reason for deprecation
+        #[arg(long)]
+        reason: String,
+    },
+    /// Show F-G-R quality scores (Formality, Granularity, Reliability)
+    Fgr {
+        /// Artifact ID (scores all if omitted)
+        id: Option<String>,
+    },
+    /// Show blind spots — decisions without evidence, orphan artifacts
+    Blindspots,
+    /// Show decision journal — chronological timeline with R_eff scores
+    Journal {
+        /// Filter by kind (adr, note, problem, solution)
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+        /// Show only at-risk decisions (no evidence, stale, low R_eff)
+        #[arg(long)]
+        risk: bool,
+    },
+    /// Show project health dashboard — gaps, risks, blind spots, next actions
+    Health {
+        /// Compact one-line output for hooks/scripts
+        #[arg(long)]
+        compact: bool,
     },
     /// Capture a decision from conversation into a Note or ADR artifact
     Capture {
@@ -200,7 +251,20 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
-        Commands::Route { description } => commands::route::run(&description).await,
+        Commands::Blindspots => commands::blindspots::run().await,
+        Commands::Journal { r#type, risk } => {
+            commands::journal::run(r#type.as_deref(), risk).await
+        }
+        Commands::Health { compact } => commands::health::run(compact).await,
+        Commands::Route {
+            description,
+            explain,
+        } => commands::route::run(&description, explain).await,
+        Commands::Review { id } => commands::review::run(&id).await,
+        Commands::Activate { id } => commands::activate::run(&id).await,
+        Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
+        Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
+        Commands::Fgr { id } => commands::fgr::run(id.as_deref()).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
         }
