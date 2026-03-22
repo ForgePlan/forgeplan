@@ -1,0 +1,253 @@
+//! Signal extraction from text — keyword triggers, complexity metrics, blast radius.
+
+use crate::artifact::types::Mode;
+use crate::routing::Signal;
+
+/// Keyword trigger: pattern → minimum depth.
+struct KeywordTrigger {
+    keywords: &'static [&'static str],
+    id: &'static str,
+    description: &'static str,
+    min_depth: Mode,
+    weight: f64,
+}
+
+/// Hardcoded safety-net rules. These cannot be overridden.
+const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
+    // Security / Compliance → Deep+
+    KeywordTrigger {
+        keywords: &["security", "auth", "authentication", "authorization", "oauth", "jwt", "encryption", "compliance", "gdpr", "hipaa", "soc2"],
+        id: "keyword:security",
+        description: "Security or compliance topic detected",
+        min_depth: Mode::Deep,
+        weight: 0.9,
+    },
+    // Breaking changes → Deep+
+    KeywordTrigger {
+        keywords: &["breaking change", "backwards compatibility", "migration", "deprecat"],
+        id: "keyword:breaking",
+        description: "Breaking change or migration detected",
+        min_depth: Mode::Deep,
+        weight: 0.8,
+    },
+    // Cross-team / Multi-team → Standard+
+    KeywordTrigger {
+        keywords: &["cross-team", "multi-team", "multiple teams", "cross-service", "inter-service"],
+        id: "keyword:cross_team",
+        description: "Cross-team coordination needed",
+        min_depth: Mode::Standard,
+        weight: 0.7,
+    },
+    // Public API → Deep+
+    KeywordTrigger {
+        keywords: &["public api", "external api", "api contract", "api versioning", "openapi", "graphql schema"],
+        id: "keyword:public_api",
+        description: "Public/external API changes",
+        min_depth: Mode::Deep,
+        weight: 0.8,
+    },
+    // Data model / Schema → Standard+
+    KeywordTrigger {
+        keywords: &["data model", "schema change", "database migration", "table alter"],
+        id: "keyword:data_model",
+        description: "Data model or schema changes",
+        min_depth: Mode::Standard,
+        weight: 0.6,
+    },
+    // Infrastructure → Standard+
+    KeywordTrigger {
+        keywords: &["infrastructure", "deployment", "ci/cd", "kubernetes", "docker", "terraform"],
+        id: "keyword:infra",
+        description: "Infrastructure changes",
+        min_depth: Mode::Standard,
+        weight: 0.5,
+    },
+    // Strategy / Roadmap → Deep+
+    KeywordTrigger {
+        keywords: &["strategy", "roadmap", "quarterly", "okr", "initiative"],
+        id: "keyword:strategy",
+        description: "Strategic initiative",
+        min_depth: Mode::Deep,
+        weight: 0.7,
+    },
+    // New subsystem → Standard+
+    KeywordTrigger {
+        keywords: &["new module", "new service", "new subsystem", "new crate", "new package"],
+        id: "keyword:new_subsystem",
+        description: "New subsystem or module",
+        min_depth: Mode::Standard,
+        weight: 0.6,
+    },
+];
+
+/// Extract signals from a text description (task description or artifact body).
+pub fn extract(text: &str) -> Vec<Signal> {
+    let lower = text.to_lowercase();
+    let mut signals = Vec::new();
+
+    for trigger in KEYWORD_TRIGGERS {
+        if trigger.keywords.iter().any(|kw| lower.contains(kw)) {
+            signals.push(Signal {
+                id: trigger.id.to_string(),
+                description: trigger.description.to_string(),
+                minimum_depth: trigger.min_depth.clone(),
+                weight: trigger.weight,
+            });
+        }
+    }
+
+    // Complexity signal: estimated scope from text
+    let word_count = text.split_whitespace().count();
+    if word_count > 500 {
+        signals.push(Signal {
+            id: "complexity:length".into(),
+            description: format!("{word_count} words — complex description"),
+            minimum_depth: Mode::Standard,
+            weight: 0.4,
+        });
+    }
+
+    // Reversibility signal: explicit mentions
+    if lower.contains("irreversible") || lower.contains("cannot undo") || lower.contains("one-way") {
+        signals.push(Signal {
+            id: "reversibility:low".into(),
+            description: "Explicitly irreversible".into(),
+            minimum_depth: Mode::Deep,
+            weight: 0.9,
+        });
+    }
+
+    signals
+}
+
+/// Extract structural signals from an existing artifact body + metadata.
+pub fn extract_structural(body: &str, link_count: usize, has_epic: bool) -> Vec<Signal> {
+    let mut signals = Vec::new();
+
+    // FR count
+    let fr_count = body
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with("- [") || t.starts_with("* [")
+        })
+        .count();
+
+    if fr_count > 10 {
+        signals.push(Signal {
+            id: "structure:fr_count".into(),
+            description: format!("{fr_count} functional requirements"),
+            minimum_depth: Mode::Deep,
+            weight: 0.7,
+        });
+    } else if fr_count > 3 {
+        signals.push(Signal {
+            id: "structure:fr_count".into(),
+            description: format!("{fr_count} functional requirements"),
+            minimum_depth: Mode::Standard,
+            weight: 0.5,
+        });
+    }
+
+    // Link count (dependency proxy)
+    if link_count > 5 {
+        signals.push(Signal {
+            id: "structure:links".into(),
+            description: format!("{link_count} dependency links"),
+            minimum_depth: Mode::Deep,
+            weight: 0.6,
+        });
+    } else if link_count > 2 {
+        signals.push(Signal {
+            id: "structure:links".into(),
+            description: format!("{link_count} dependency links"),
+            minimum_depth: Mode::Standard,
+            weight: 0.4,
+        });
+    }
+
+    // Part of epic → at least Standard
+    if has_epic {
+        signals.push(Signal {
+            id: "structure:parent_epic".into(),
+            description: "Part of an epic (strategic initiative)".into(),
+            minimum_depth: Mode::Standard,
+            weight: 0.5,
+        });
+    }
+
+    // Section count
+    let section_count = body.lines().filter(|l| l.starts_with("## ")).count();
+    if section_count > 8 {
+        signals.push(Signal {
+            id: "structure:sections".into(),
+            description: format!("{section_count} sections — complex artifact"),
+            minimum_depth: Mode::Deep,
+            weight: 0.5,
+        });
+    } else if section_count > 4 {
+        signals.push(Signal {
+            id: "structure:sections".into(),
+            description: format!("{section_count} sections"),
+            minimum_depth: Mode::Standard,
+            weight: 0.3,
+        });
+    }
+
+    signals
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn security_keyword_triggers_deep() {
+        let signals = extract("We need to implement OAuth2 authentication for the API");
+        assert!(signals.iter().any(|s| s.id == "keyword:security"));
+        assert!(signals.iter().any(|s| matches!(s.minimum_depth, Mode::Deep)));
+    }
+
+    #[test]
+    fn breaking_change_triggers_deep() {
+        let signals = extract("This is a breaking change to the API contract");
+        assert!(signals.iter().any(|s| s.id == "keyword:breaking"));
+    }
+
+    #[test]
+    fn cross_team_triggers_standard() {
+        let signals = extract("Cross-team effort involving backend and mobile");
+        assert!(signals.iter().any(|s| s.id == "keyword:cross_team"));
+    }
+
+    #[test]
+    fn simple_task_no_triggers() {
+        let signals = extract("Fix the typo in the readme");
+        assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn irreversible_triggers_deep() {
+        let signals = extract("This is an irreversible database migration");
+        assert!(signals.iter().any(|s| s.id == "reversibility:low"));
+    }
+
+    #[test]
+    fn structural_fr_count() {
+        let body = "## FR\n- [ ] FR-001\n- [ ] FR-002\n- [ ] FR-003\n- [ ] FR-004\n";
+        let signals = extract_structural(body, 0, false);
+        assert!(signals.iter().any(|s| s.id == "structure:fr_count"));
+    }
+
+    #[test]
+    fn structural_links() {
+        let signals = extract_structural("body", 6, false);
+        assert!(signals.iter().any(|s| s.id == "structure:links"));
+    }
+
+    #[test]
+    fn structural_epic() {
+        let signals = extract_structural("body", 0, true);
+        assert!(signals.iter().any(|s| s.id == "structure:parent_epic"));
+    }
+}

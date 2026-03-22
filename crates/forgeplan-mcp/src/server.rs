@@ -80,6 +80,10 @@ fn json_result<T: serde::Serialize>(data: &T) -> CallToolResult {
     }
 }
 
+fn text_result(msg: &str) -> CallToolResult {
+    CallToolResult::success(vec![Content::text(msg)])
+}
+
 fn err_result(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.to_string())])
 }
@@ -170,6 +174,34 @@ struct DeleteParams {
 struct RouteParams {
     /// Task description in natural language
     description: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ReviewParams {
+    /// Artifact ID to review
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ActivateParams {
+    /// Artifact ID to activate
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SupersedeParams {
+    /// Artifact ID to supersede
+    id: String,
+    /// Replacement artifact ID
+    by: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DeprecateParams {
+    /// Artifact ID to deprecate
+    id: String,
+    /// Reason for deprecation
+    reason: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -735,29 +767,93 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description using LLM. Requires LLM provider configured.")]
+    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Rule-based, instant, no LLM needed.")]
     async fn forgeplan_route(
         &self,
         Parameters(p): Parameters<RouteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
+        let result = forgeplan_core::routing::route(&p.description);
+        Ok(json_result(&serde_json::json!({
+            "depth": format!("{:?}", result.depth),
+            "pipeline": result.pipeline.iter().map(|k| k.template_key()).collect::<Vec<_>>(),
+            "triggers": result.triggers.iter().map(|t| &t.id).collect::<Vec<_>>(),
+            "confidence": result.confidence,
+            "display": format!("{result}"),
+        })))
+    }
+
+    #[tool(description = "Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated.")]
+    async fn forgeplan_review(
+        &self,
+        Parameters(p): Parameters<ReviewParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
+        match forgeplan_core::lifecycle::review(&store, &p.id).await {
+            Ok(result) => Ok(json_result(&serde_json::json!({
+                "artifact_id": result.artifact_id,
+                "can_activate": result.can_activate,
+                "must_findings": result.must_findings,
+                "should_findings": result.should_findings,
+                "warnings": result.warnings,
+            }))),
+            Err(e) => Ok(err_result(&e.to_string())),
+        }
+    }
 
-        let config = workspace::load_config(&ws)
-            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
-        let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+    #[tool(description = "Activate an artifact (draft → active). Requires all MUST validation rules to pass.")]
+    async fn forgeplan_activate(
+        &self,
+        Parameters(p): Parameters<ActivateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        match forgeplan_core::lifecycle::activate(&store, &p.id).await {
+            Ok(()) => Ok(text_result(&format!("Activated {} (draft → active)", p.id))),
+            Err(e) => Ok(err_result(&e.to_string())),
+        }
+    }
 
-        let result = forgeplan_core::llm::route::route(&llm_config, &p.description)
-            .await
-            .map_err(|e| McpError::internal_error(format!("Routing failed: {e}"), None))?;
+    #[tool(description = "Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents.")]
+    async fn forgeplan_supersede(
+        &self,
+        Parameters(p): Parameters<SupersedeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
+            Ok(dependents) => Ok(json_result(&serde_json::json!({
+                "superseded": p.id,
+                "replacement": p.by,
+                "dependents_affected": dependents,
+            }))),
+            Err(e) => Ok(err_result(&e.to_string())),
+        }
+    }
 
-        Ok(json_result(&serde_json::json!({
-            "routing": result,
-            "provider": llm_config.provider,
-            "model": llm_config.model,
-        })))
+    #[tool(description = "Deprecate an artifact (active → deprecated) with a reason.")]
+    async fn forgeplan_deprecate(
+        &self,
+        Parameters(p): Parameters<DeprecateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
+            Ok(dependents) => Ok(json_result(&serde_json::json!({
+                "deprecated": p.id,
+                "reason": p.reason,
+                "dependents_affected": dependents,
+            }))),
+            Err(e) => Ok(err_result(&e.to_string())),
+        }
     }
 
     #[tool(description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed.")]
