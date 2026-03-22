@@ -4,8 +4,8 @@
 
 ### P0 (прямо сейчас)
 - [x] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
-- [ ] RFC-004: MCP Server Architecture — document design decisions
-- [ ] ADR-006: Full LanceDB primary (no file fallback) — document decision
+- [x] RFC-004: MCP Server Architecture — document design decisions
+- [x] ADR-006: Full LanceDB primary (no file fallback) — document decision
 - [ ] Update RFC-003 progress to 100%
 
 ### P1 (Phase 4 — AI Features)
