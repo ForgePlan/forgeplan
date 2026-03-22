@@ -1,4 +1,4 @@
-use schemars::JsonSchema;
+use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
 // ── Shared DTOs ──────────────────────────────────────────────
@@ -239,4 +239,62 @@ pub struct ProgressResponse {
     pub artifacts: Vec<ProgressDto>,
     pub total_checkboxes: usize,
     pub total_completed: usize,
+}
+
+// ── Decay types ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DecayResponse {
+    pub entries: Vec<DecayEntryDto>,
+    pub total_affected: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DecayEntryDto {
+    pub artifact_id: String,
+    pub artifact_title: String,
+    pub current_r_eff: f64,
+    pub fresh_r_eff: f64,
+    pub r_eff_drop: f64,
+    pub expired_evidence: Vec<ExpiredEvidenceDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ExpiredEvidenceDto {
+    pub id: String,
+    pub valid_until: String,
+    pub days_expired: i64,
+    pub score: f64,
+}
+
+// ── Calibrate types ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CalibrateRequest {
+    /// Artifact ID (checks all if omitted)
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CalibrateResponse {
+    pub results: Vec<CalibrationDto>,
+    pub total_escalations: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CalibrationDto {
+    pub artifact_id: String,
+    pub artifact_title: String,
+    pub current_depth: String,
+    pub suggested_depth: String,
+    pub escalation_needed: bool,
+    pub signals: Vec<SignalDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SignalDto {
+    pub name: String,
+    pub value: String,
+    pub minimum_depth: String,
 }
