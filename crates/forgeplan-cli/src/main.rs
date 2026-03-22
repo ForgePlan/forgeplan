@@ -58,13 +58,16 @@ enum Commands {
     },
     /// Generate mermaid dependency graph of linked artifacts
     Graph,
-    /// Search artifacts by keyword
+    /// Search artifacts by keyword (or --semantic for vector similarity search)
     Search {
         /// Search query
         query: String,
         /// Filter by kind
         #[arg(long, short = 't')]
         r#type: Option<String>,
+        /// Use semantic (vector) search instead of substring match
+        #[arg(long)]
+        semantic: bool,
     },
     /// Detect stale artifacts with expired valid_until
     Stale,
@@ -163,8 +166,12 @@ async fn main() -> anyhow::Result<()> {
             relation,
         } => commands::link::run(&source, &target, &relation).await,
         Commands::Graph => commands::graph::run().await,
-        Commands::Search { query, r#type } => {
-            commands::search::run(&query, r#type.as_deref()).await
+        Commands::Search {
+            query,
+            r#type,
+            semantic,
+        } => {
+            commands::search::run(&query, r#type.as_deref(), semantic).await
         }
         Commands::Stale => commands::stale::run().await,
         Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
