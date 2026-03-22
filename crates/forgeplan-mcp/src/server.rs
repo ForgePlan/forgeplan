@@ -863,7 +863,7 @@ impl ForgeplanServer {
 
         let config = workspace::load_config(&ws)
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
-        let llm_config = config.llm.unwrap_or_default();
+        let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         let title = p
             .description

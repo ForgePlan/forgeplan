@@ -19,7 +19,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
 
     let config = load_config(&workspace)?;
-    let llm_config = config.llm.unwrap_or_default();
+    let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
     let store = LanceStore::open(&workspace).await?;
 
