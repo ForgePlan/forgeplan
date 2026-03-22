@@ -132,6 +132,14 @@ enum Commands {
         /// Task description in natural language
         description: String,
     },
+    /// Capture a decision from conversation into a Note or ADR artifact
+    Capture {
+        /// The decision statement
+        decision: String,
+        /// Additional context (optional)
+        #[arg(long)]
+        context: Option<String>,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -186,6 +194,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
         Commands::Route { description } => commands::route::run(&description).await,
+        Commands::Capture { decision, context } => {
+            commands::capture::run(&decision, context.as_deref()).await
+        }
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await
