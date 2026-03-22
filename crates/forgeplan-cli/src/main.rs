@@ -80,6 +80,13 @@ enum Commands {
         /// Artifact ID (checks all if omitted)
         id: Option<String>,
     },
+    /// Generate an artifact using AI from a natural language description
+    Generate {
+        /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
+        kind: String,
+        /// Description of what to generate
+        description: String,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -110,6 +117,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
+        Commands::Generate { kind, description } => {
+            commands::generate::run(&kind, &description).await
+        }
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

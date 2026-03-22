@@ -18,6 +18,7 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

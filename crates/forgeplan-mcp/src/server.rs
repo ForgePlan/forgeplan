@@ -138,6 +138,14 @@ fn default_relation() -> String {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct GenerateParams {
+    /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
+    kind: String,
+    /// Natural language description of what to generate
+    description: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
     /// Search query (case-insensitive substring)
     query: String,
@@ -830,6 +838,90 @@ impl ForgeplanServer {
         Ok(json_result(&CalibrateResponse {
             results,
             total_escalations,
+        }))
+    }
+
+    #[tool(description = "Generate an artifact using AI from a natural language description. Requires LLM provider configured in .forgeplan/config.yaml. Supports OpenAI, Claude, Gemini, Ollama, and any OpenAI-compatible endpoint.")]
+    async fn forgeplan_generate(
+        &self,
+        Parameters(p): Parameters<GenerateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let guard = match self.require_store().await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = guard.as_ref().unwrap();
+
+        let artifact_kind: ArtifactKind = match p.kind.parse() {
+            Ok(k) => k,
+            Err(e) => return Ok(err_result(&format!("{e}"))),
+        };
+
+        let config = workspace::load_config(&ws)
+            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+        let llm_config = config.llm.unwrap_or_default();
+
+        let title = p
+            .description
+            .lines()
+            .next()
+            .unwrap_or(&p.description)
+            .chars()
+            .take(80)
+            .collect::<String>();
+
+        let template_key = artifact_kind.template_key();
+
+        let body = forgeplan_core::llm::generate::generate_body(
+            &llm_config,
+            template_key,
+            &p.description,
+            &title,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("LLM generation failed: {e}"), None))?;
+
+        let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
+        let id = store
+            .next_id(&prefix)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let artifact = NewArtifact {
+            id: id.clone(),
+            kind: template_key.into(),
+            status: "draft".into(),
+            title: title.clone(),
+            body: body.clone(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+        };
+
+        store
+            .create_artifact(&artifact)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let filepath = projection::render_projection(
+            &ws, &id, template_key, &title, "draft", "standard",
+            None, None, None, &body, &[],
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        Ok(json_result(&GenerateResponse {
+            id,
+            kind: template_key.into(),
+            title,
+            filepath: filepath.display().to_string(),
+            provider: llm_config.provider,
+            model: llm_config.model,
         }))
     }
 }
