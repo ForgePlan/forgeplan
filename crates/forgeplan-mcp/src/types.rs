@@ -56,77 +56,6 @@ pub struct ProgressDto {
     pub percent: f64,
 }
 
-// ── Request types ────────────────────────────────────────────
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct InitRequest {
-    /// Force reinitialize even if workspace exists
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct NewArtifactRequest {
-    /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh
-    pub kind: String,
-    /// Artifact title
-    pub title: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListRequest {
-    /// Filter by kind (optional)
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Filter by status (optional)
-    #[serde(default)]
-    pub status: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ValidateRequest {
-    /// Artifact ID to validate (validates all if omitted)
-    #[serde(default)]
-    pub id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ScoreRequest {
-    /// Artifact ID to score
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct LinkRequest {
-    /// Source artifact ID
-    pub source: String,
-    /// Target artifact ID
-    pub target: String,
-    /// Relationship type: informs, based_on, supersedes, contradicts, refines
-    #[serde(default = "default_relation")]
-    pub relation: String,
-}
-
-fn default_relation() -> String {
-    "informs".to_string()
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct SearchRequest {
-    /// Search query (case-insensitive substring)
-    pub query: String,
-    /// Filter by artifact kind (optional)
-    #[serde(default)]
-    pub kind: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ProgressRequest {
-    /// Artifact ID (shows all if omitted)
-    #[serde(default)]
-    pub id: Option<String>,
-}
-
 // ── Response types ───────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -302,13 +231,6 @@ pub struct ExpiredEvidenceDto {
 }
 
 // ── Calibrate types ──────────────────────────────────────────
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CalibrateRequest {
-    /// Artifact ID (checks all if omitted)
-    #[serde(default)]
-    pub id: Option<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CalibrateResponse {

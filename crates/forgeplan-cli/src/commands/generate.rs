@@ -3,7 +3,6 @@ use std::env;
 use anyhow::Context;
 
 use forgeplan_core::artifact::types::ArtifactKind;
-use forgeplan_core::config::LlmConfig;
 use forgeplan_core::db::store::{LanceStore, NewArtifact};
 use forgeplan_core::llm::generate::generate_body;
 use forgeplan_core::projection;

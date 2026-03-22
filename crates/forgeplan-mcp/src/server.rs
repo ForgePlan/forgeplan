@@ -18,7 +18,7 @@ use forgeplan_core::graph;
 use forgeplan_core::link;
 use forgeplan_core::progress;
 use forgeplan_core::projection;
-use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
+use forgeplan_core::scoring::reff::{self, EvidenceItem};
 use forgeplan_core::template::{get_embedded_template, render_template};
 use forgeplan_core::validation;
 use forgeplan_core::workspace;
@@ -29,7 +29,7 @@ use crate::types::*;
 
 #[derive(Clone)]
 pub struct ForgeplanServer {
-    store: Arc<RwLock<Option<LanceStore>>>,
+    store: Arc<RwLock<Option<Arc<LanceStore>>>>,
     workspace_root: PathBuf,
     workspace_path: Arc<RwLock<Option<PathBuf>>>,
     tool_router: ToolRouter<Self>,
@@ -39,7 +39,7 @@ impl ForgeplanServer {
     pub async fn new(workspace_root: PathBuf) -> Self {
         let ws = workspace::find_workspace(&workspace_root);
         let store = if let Some(ref ws_path) = ws {
-            LanceStore::open(ws_path).await.ok()
+            LanceStore::open(ws_path).await.ok().map(Arc::new)
         } else {
             None
         };
@@ -52,12 +52,14 @@ impl ForgeplanServer {
         }
     }
 
-    async fn require_store(&self) -> Result<tokio::sync::RwLockReadGuard<'_, Option<LanceStore>>, String> {
-        let guard = self.store.read().await;
-        if guard.is_none() {
-            return Err("Workspace not initialized. Call forgeplan_init first.".into());
-        }
-        Ok(guard)
+    /// Clone the Arc<LanceStore> and immediately release the RwLock guard.
+    /// This prevents holding the lock across .await points in tool handlers.
+    async fn require_store(&self) -> Result<Arc<LanceStore>, String> {
+        self.store
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "Workspace not initialized. Call forgeplan_init first.".into())
     }
 
     async fn require_workspace(&self) -> Result<PathBuf, String> {
@@ -138,6 +140,13 @@ fn default_relation() -> String {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct CalibrateParams {
+    /// Artifact ID (checks all if omitted)
+    #[serde(default)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ReasonParams {
     /// Artifact ID to analyze with ADI reasoning cycle
     id: String,
@@ -209,7 +218,7 @@ impl ForgeplanServer {
             .await
             .map_err(|e| McpError::internal_error(format!("LanceDB init failed: {e}"), None))?;
 
-        *self.store.write().await = Some(new_store);
+        *self.store.write().await = Some(Arc::new(new_store));
         *self.workspace_path.write().await = Some(ws.clone());
 
         Ok(json_result(&InitResponse {
@@ -227,11 +236,10 @@ impl ForgeplanServer {
             Ok(ws) => ws,
             Err(e) => return Ok(err_result(&e)),
         };
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let artifact_kind: ArtifactKind = match p.kind.parse() {
             Ok(k) => k,
@@ -311,11 +319,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let filter = if p.kind.is_some() || p.status.is_some() {
             Some(ArtifactFilter {
@@ -346,11 +353,10 @@ impl ForgeplanServer {
             Ok(ws) => ws,
             Err(e) => return Ok(err_result(&e)),
         };
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let config = workspace::load_config(&ws)
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
@@ -387,11 +393,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ValidateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let all_records = store
             .list_records(None)
@@ -445,11 +450,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ScoreParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let target = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
@@ -457,7 +461,10 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
-        let outgoing = store.get_relations(&p.id).await.unwrap_or_default();
+        let outgoing = store.get_relations(&p.id).await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to get relations for {}: {e}", p.id);
+            Vec::new()
+        });
         let evidence_targets: Vec<String> = outgoing
             .iter()
             .filter(|(_, rel)| rel == "informs" || rel == "based_on" || rel == "refines")
@@ -468,7 +475,10 @@ impl ForgeplanServer {
             kind: Some("evidence".into()),
             status: None,
         };
-        let evidence_records = store.list_records(Some(&filter)).await.unwrap_or_default();
+        let evidence_records = store.list_records(Some(&filter)).await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to list evidence records: {e}");
+            Vec::new()
+        });
 
         let mut evidence_items: Vec<EvidenceItem> = Vec::new();
         let mut evidence_dtos: Vec<EvidenceDto> = Vec::new();
@@ -479,7 +489,10 @@ impl ForgeplanServer {
                 .any(|eid| eid.eq_ignore_ascii_case(&ev.id));
 
             if !is_linked {
-                let ev_rels = store.get_relations(&ev.id).await.unwrap_or_default();
+                let ev_rels = store.get_relations(&ev.id).await.unwrap_or_else(|e| {
+                    tracing::warn!("Failed to get relations for {}: {e}", ev.id);
+                    Vec::new()
+                });
                 if !ev_rels.iter().any(|(t, _)| t.eq_ignore_ascii_case(&p.id)) {
                     continue;
                 }
@@ -521,11 +534,10 @@ impl ForgeplanServer {
             Ok(ws) => ws,
             Err(e) => return Ok(err_result(&e)),
         };
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let relation = match link::normalize_relation(&p.relation) {
             Ok(r) => r,
@@ -560,11 +572,10 @@ impl ForgeplanServer {
 
     #[tool(description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges.")]
     async fn forgeplan_graph(&self) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let relations = store
             .get_all_relations()
@@ -604,11 +615,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let hits = store
             .search_body(&p.query, p.kind.as_deref())
@@ -649,11 +659,10 @@ impl ForgeplanServer {
 
     #[tool(description = "Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry.")]
     async fn forgeplan_stale(&self) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let stale_records = store
             .find_stale()
@@ -691,11 +700,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ProgressParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let records = store
             .list_records(None)
@@ -750,13 +758,12 @@ impl ForgeplanServer {
 
     #[tool(description = "Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison.")]
     async fn forgeplan_decay(&self) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
-        let entries = forgeplan_core::scoring::decay::decay_report(store)
+        let entries = forgeplan_core::scoring::decay::decay_report(&store)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
@@ -791,13 +798,12 @@ impl ForgeplanServer {
     #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity.")]
     async fn forgeplan_calibrate(
         &self,
-        Parameters(p): Parameters<CalibrateRequest>,
+        Parameters(p): Parameters<CalibrateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let records = store
             .list_records(None)
@@ -822,7 +828,10 @@ impl ForgeplanServer {
         let mut total_escalations = 0;
 
         for record in &to_check {
-            let link_count = store.get_relations(&record.id).await.unwrap_or_default().len();
+            let link_count = store.get_relations(&record.id).await.unwrap_or_else(|e| {
+                tracing::warn!("Failed to get relations for {}: {e}", record.id);
+                Vec::new()
+            }).len();
             let cal = forgeplan_core::depth::suggest_depth(record, link_count);
 
             if cal.escalation_needed {
@@ -862,11 +871,10 @@ impl ForgeplanServer {
             Ok(ws) => ws,
             Err(e) => return Ok(err_result(&e)),
         };
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
@@ -902,11 +910,10 @@ impl ForgeplanServer {
             Ok(ws) => ws,
             Err(e) => return Ok(err_result(&e)),
         };
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
@@ -942,11 +949,10 @@ impl ForgeplanServer {
             Ok(ws) => ws,
             Err(e) => return Ok(err_result(&e)),
         };
-        let guard = match self.require_store().await {
-            Ok(g) => g,
+        let store = match self.require_store().await {
+            Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let store = guard.as_ref().unwrap();
 
         let artifact_kind: ArtifactKind = match p.kind.parse() {
             Ok(k) => k,
@@ -1036,52 +1042,5 @@ impl rmcp::ServerHandler for ForgeplanServer {
     }
 }
 
-// ── Evidence parsing (ported from CLI score command) ──────────
-
-fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
-    let verdict = extract_field(&record.body, "verdict")
-        .map(|s| match s.to_lowercase().as_str() {
-            "supports" => Verdict::Supports,
-            "weakens" => Verdict::Weakens,
-            "refutes" => Verdict::Refutes,
-            _ => Verdict::Supports,
-        })
-        .unwrap_or(Verdict::Supports);
-
-    let cl = extract_field(&record.body, "congruence_level")
-        .and_then(|s| s.parse::<u8>().ok())
-        .map(|v| v.min(3))
-        .unwrap_or(0);
-
-    let valid_until = record.valid_until.as_deref().and_then(|s| {
-        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-            .ok()
-            .or_else(|| {
-                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                    .ok()
-                    .and_then(|d| d.and_hms_opt(23, 59, 59))
-            })
-    });
-
-    EvidenceItem {
-        id: record.id.clone(),
-        evidence_type: EvidenceType::Measurement,
-        verdict,
-        congruence_level: cl,
-        valid_until,
-    }
-}
-
-fn extract_field(body: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key}:");
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            let val = rest.trim();
-            if !val.is_empty() {
-                return Some(val.into());
-            }
-        }
-    }
-    None
-}
+// Evidence parsing delegated to forgeplan_core::scoring::evidence
+use forgeplan_core::scoring::evidence::parse_evidence_from_record;
