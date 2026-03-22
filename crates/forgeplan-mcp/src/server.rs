@@ -140,6 +140,39 @@ fn default_relation() -> String {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct GetParams {
+    /// Artifact ID to read
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UpdateParams {
+    /// Artifact ID to update
+    id: String,
+    /// New status (draft, active, superseded, deprecated)
+    #[serde(default)]
+    status: Option<String>,
+    /// New title
+    #[serde(default)]
+    title: Option<String>,
+    /// New body content
+    #[serde(default)]
+    body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DeleteParams {
+    /// Artifact ID to delete
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RouteParams {
+    /// Task description in natural language
+    description: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CalibrateParams {
     /// Artifact ID (checks all if omitted)
     #[serde(default)]
@@ -568,6 +601,144 @@ impl ForgeplanServer {
         Ok(json_result(&LinkResponse {
             message: format!("Linked: {} --{}--> {}", p.source, relation, p.target),
         }))
+    }
+
+    #[tool(description = "Read a full artifact by ID. Returns all metadata and body content.")]
+    async fn forgeplan_get(
+        &self,
+        Parameters(p): Parameters<GetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        match store.get_record(&p.id).await {
+            Ok(Some(r)) => Ok(json_result(&ArtifactRecordDto::from(r))),
+            Ok(None) => Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Err(e) => Ok(err_result(&format!("{e}"))),
+        }
+    }
+
+    #[tool(description = "Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update.")]
+    async fn forgeplan_update(
+        &self,
+        Parameters(p): Parameters<UpdateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Verify exists
+        if store.get_record(&p.id).await.map_err(|e| McpError::internal_error(format!("{e}"), None))?.is_none() {
+            return Ok(err_result(&format!("Artifact '{}' not found", p.id)));
+        }
+
+        if p.status.is_none() && p.title.is_none() && p.body.is_none() {
+            return Ok(err_result("Nothing to update. Provide status, title, or body."));
+        }
+
+        if p.status.is_some() || p.title.is_some() {
+            store
+                .update_artifact(&p.id, p.status.as_deref(), p.title.as_deref())
+                .await
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        }
+
+        if let Some(ref body) = p.body {
+            store
+                .update_body(&p.id, body)
+                .await
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        }
+
+        // Re-render projection
+        let updated = store.get_record(&p.id).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?
+            .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
+        let links = store.get_relations(&p.id).await.unwrap_or_default();
+        let _ = projection::render_projection(
+            &ws, &updated.id, &updated.kind, &updated.title, &updated.status,
+            &updated.depth, updated.author.as_deref(), updated.parent_epic.as_deref(),
+            updated.valid_until.as_deref(), &updated.body, &links,
+        ).await;
+
+        Ok(json_result(&serde_json::json!({
+            "id": p.id,
+            "message": "Updated successfully",
+            "status": updated.status,
+            "title": updated.title,
+        })))
+    }
+
+    #[tool(description = "Delete an artifact from LanceDB and remove its markdown projection file.")]
+    async fn forgeplan_delete(
+        &self,
+        Parameters(p): Parameters<DeleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Err(e) => return Ok(err_result(&format!("{e}"))),
+        };
+
+        store
+            .delete_artifact(&p.id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        // Remove projection file
+        if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
+            let slug = forgeplan_core::artifact::types::slugify(&record.title);
+            let filename = format!("{}-{}.md", record.id, slug);
+            let filepath = ws.join(kind.dir_name()).join(&filename);
+            let _ = tokio::fs::remove_file(&filepath).await;
+        }
+
+        Ok(json_result(&serde_json::json!({
+            "id": p.id,
+            "title": record.title,
+            "message": "Deleted successfully",
+        })))
+    }
+
+    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description using LLM. Requires LLM provider configured.")]
+    async fn forgeplan_route(
+        &self,
+        Parameters(p): Parameters<RouteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let config = workspace::load_config(&ws)
+            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+        let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+
+        let result = forgeplan_core::llm::route::route(&llm_config, &p.description)
+            .await
+            .map_err(|e| McpError::internal_error(format!("Routing failed: {e}"), None))?;
+
+        Ok(json_result(&serde_json::json!({
+            "routing": result,
+            "provider": llm_config.provider,
+            "model": llm_config.model,
+        })))
     }
 
     #[tool(description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges.")]
