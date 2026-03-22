@@ -97,6 +97,41 @@ enum Commands {
         /// PRD artifact ID to decompose
         id: String,
     },
+    /// Read a full artifact by ID
+    Get {
+        /// Artifact ID
+        id: String,
+    },
+    /// Update artifact metadata or body
+    Update {
+        /// Artifact ID
+        id: String,
+        /// New status (draft, active, superseded, deprecated)
+        #[arg(long)]
+        status: Option<String>,
+        /// New title
+        #[arg(long)]
+        title: Option<String>,
+        /// New depth (tactical, standard, deep)
+        #[arg(long)]
+        depth: Option<String>,
+        /// New body content (use @filepath to read from file)
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// Delete an artifact
+    Delete {
+        /// Artifact ID
+        id: String,
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Suggest depth level and artifact pipeline for a task description
+    Route {
+        /// Task description in natural language
+        description: String,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -132,6 +167,25 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Reason { id } => commands::reason::run(&id).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
+        Commands::Get { id } => commands::get::run(&id).await,
+        Commands::Update {
+            id,
+            status,
+            title,
+            depth,
+            body,
+        } => {
+            commands::update::run(
+                &id,
+                status.as_deref(),
+                title.as_deref(),
+                depth.as_deref(),
+                body.as_deref(),
+            )
+            .await
+        }
+        Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
+        Commands::Route { description } => commands::route::run(&description).await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

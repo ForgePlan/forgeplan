@@ -1,6 +1,7 @@
 pub mod decompose;
 pub mod generate;
 pub mod reason;
+pub mod route;
 
 use serde::{Deserialize, Serialize};
 

@@ -390,3 +390,284 @@ fn no_workspace_gives_error() {
         .failure()
         .stderr(predicate::str::contains("forgeplan init"));
 }
+
+// ── Phase 4D: CRUD tests ─────────────────────────────────
+
+#[test]
+fn get_reads_artifact() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Get Test Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("Get Test Feature"))
+        .stdout(predicate::str::contains("draft"))
+        .stdout(predicate::str::contains("prd"));
+}
+
+#[test]
+fn get_nonexistent_fails() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+
+    forgeplan()
+        .args(["get", "PRD-999"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn update_changes_status() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Update Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Update status
+    forgeplan()
+        .args(["update", "PRD-001", "--status", "active"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated"))
+        .stdout(predicate::str::contains("active"));
+
+    // Verify via get
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+}
+
+#[test]
+fn update_changes_title() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "rfc", "Old Title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["update", "RFC-001", "--title", "New Title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("New Title"));
+}
+
+#[test]
+fn update_nothing_fails() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["update", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Nothing to update"));
+}
+
+#[test]
+fn delete_requires_confirmation() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Delete Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Without --yes, should warn but not delete
+    forgeplan()
+        .args(["delete", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--yes"));
+
+    // Artifact should still exist
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn delete_with_yes_removes_artifact() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "To Be Deleted"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Delete with --yes
+    forgeplan()
+        .args(["delete", "PRD-001", "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted"));
+
+    // Should be gone
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+// ── Full Workflow Dogfood Test ────────────────────────────
+
+#[test]
+fn full_workflow_dogfood() {
+    let tmp = TempDir::new().unwrap();
+
+    // 1. Init
+    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+
+    // 2. Create PRD
+    forgeplan()
+        .args(["new", "prd", "User Authentication"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // 3. Create RFC linked to PRD
+    forgeplan()
+        .args(["new", "rfc", "OAuth2 Architecture"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RFC-001"));
+
+    // 4. Link RFC to PRD
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // 5. Read artifact
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("User Authentication"));
+
+    // 6. Update status to active
+    forgeplan()
+        .args(["update", "PRD-001", "--status", "active"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // 7. Validate
+    forgeplan()
+        .args(["validate", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // 8. Graph shows both artifacts
+    forgeplan()
+        .arg("graph")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RFC-001"))
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // 9. List shows 2 artifacts
+    forgeplan()
+        .arg("list")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("RFC-001"));
+
+    // 10. Status shows correct counts
+    forgeplan()
+        .arg("status")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 total"));
+
+    // 11. Search finds artifact
+    forgeplan()
+        .args(["search", "Authentication"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // 12. Calibrate
+    forgeplan()
+        .args(["calibrate", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // 13. Progress
+    forgeplan()
+        .arg("progress")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // 14. Delete RFC
+    forgeplan()
+        .args(["delete", "RFC-001", "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted"));
+
+    // 15. Verify only PRD remains
+    forgeplan()
+        .arg("list")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("1 artifact"));
+}
