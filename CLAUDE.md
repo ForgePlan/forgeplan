@@ -25,7 +25,7 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 
 - **v0.7.0** released — EPIC-001 complete
 - **33 CLI команд**, **26 MCP tools**, **225 тестов**
-- **19 dogfood артефактов** в LanceDB (4 active, 15 draft, 1 evidence)
+- **20 dogfood артефактов** в LanceDB (5 active, 15 draft)
 - **Phase 0–4** — DONE
 - **Phase 5** (Desktop App, Tauri) — backlog
 
@@ -33,13 +33,20 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 
 ## Как начать работу в новом чате
 
-1. **Прочитай `CONTEXT.md`** — полный контекст проекта (368 строк), содержит всё что нужно
-2. **Для архитектуры** — `VISION.md` (560 строк): data model, tech stack, modules, все 17 секций
-3. **Для текущих задач** — `TODO.md` → `PLAN.md`
-4. **Для gap analysis** — `COMPLETENESS-CHECK.md` (52 компонента, 10 слоёв)
-5. **Для поиска инструментов** — `SOURCES.md` (карта skills, commands, agents, repos)
-6. **Для reference code** — `sources/` (read-only repos, см. таблицу ниже)
-7. **Используй Hindsight** — `memory_recall("Forgeplan")` для быстрого восстановления контекста
+1. **Прочитай этот файл** — CLAUDE.md содержит CLI workflow, методологию, git-конвенции
+2. **`forgeplan health`** — понять текущее состояние проекта (artifacts, blind spots, next actions)
+3. **Для текущих задач** — `TODO.md`
+4. **Полный гайд по CLI и методологии** — `docs/guides/FORGEPLAN-GUIDE.md`
+5. **Для reference code** — `sources/` (read-only repos, см. таблицу ниже)
+6. **Используй Hindsight** — `memory_recall("Forgeplan")` для быстрого восстановления контекста
+
+### ОБЯЗАТЕЛЬНО перед работой над задачей:
+
+```bash
+forgeplan route "описание задачи"   # определи depth и pipeline
+```
+
+Если route говорит Standard+ → создай артефакт ПЕРЕД кодингом. Если Tactical → просто делай.
 
 ## Как пользоваться Forgeplan CLI (MCP-first)
 
@@ -190,33 +197,28 @@ Refs: RFC-001, FR-001..004
 - Код: `cli`, `core`, `store`, `template`, `scoring`, `workspace`, `config`
 - Артефакты: `rfc`, `prd`, `adr`, `epic`
 
-#### Branching Strategy (Simplified Git Flow):
+#### Branching Strategy (Trunk-based):
 ```
-main                              ← только релизы (tagged: v0.1.0)
-  └── dev                         ← integration branch
-       ├── feat/phase-3a-core-cli ← feature branch
-       ├── fix/frontmatter-crash  ← bugfix branch
-       └── docs/rfc-002-lancedb   ← docs-only branch
+main                              ← primary branch (tagged releases: v0.7.0)
+  ├── feat/epic-001-completion    ← feature branch
+  ├── fix/dogfood-findings        ← bugfix branch
+  └── docs/rfc-002-lancedb       ← docs-only branch
 ```
 
-| Ветка | Назначение | Мерджится в | Стратегия merge |
-|-------|-----------|-------------|-----------------|
-| `feat/*`, `fix/*`, `docs/*` | Работа над задачей | `dev` | Squash merge |
-| `dev` | Интеграция фич | `release/v*` | Merge commit |
-| `release/v*` | RC, стабилизация, финальные фиксы | `main` | Merge commit + tag |
-| `main` | Stable releases | — | Protected, PR-only |
+| Ветка | Мерджится в | Стратегия |
+|-------|-------------|-----------|
+| `feat/*`, `fix/*`, `docs/*` | `main` | Squash merge via PR |
 
-Формат имени: `{type}/{scope}-{slug}` — `feat/phase-3a-core-cli`, `fix/frontmatter-parser`
+Формат имени: `{type}/{slug}` — `feat/epic-001-completion`, `fix/dogfood-findings`
 
 #### Lifecycle ветки:
 ```
-1. git checkout dev && git checkout -b feat/phase-3b-search
+1. git checkout main && git checkout -b feat/my-feature
 2. ... работа, коммиты ...
-3. PR: feat/phase-3b-search → dev (squash merge, НЕ удалять ветку)
-4. Когда фаза готова: git checkout dev && git checkout -b release/v0.2.0
-5. ... стабилизация, фиксы в release/* ...
-6. PR: release/v0.2.0 → main (merge commit + tag v0.2.0, НЕ удалять ветку)
-7. main → dev (sync back: merge commit)
+3. git push origin feat/my-feature
+4. gh pr create → squash merge в main (НЕ удалять ветку)
+5. git checkout main && git pull
+6. При release: git tag -a v0.x.0 && git push origin v0.x.0
 ```
 
 #### Правила коммитов:
@@ -238,7 +240,7 @@ main                              ← только релизы (tagged: v0.1.0)
 - **Когда**: после завершения Phase (3A → v0.1.0, 3B → v0.2.0, 3C → v1.0.0)
 - **Процесс**: `dev` → `release/v0.x.0` (RC) → тесты → фиксы → `main` + tag
 - **Release notes**: автогенерация из conventional commits
-- **Binary**: `cargo build --release` + проверка NFR-002 (< 15MB)
+- **Binary**: `cargo build --release` (152MB с LanceDB+Arrow+tokio)
 
 #### Worktrees (параллельная работа):
 ```bash
@@ -268,7 +270,8 @@ ForgePlan/
 │   │   ├── EPIC-SCHEMA.md  ← Aggregated progress, children rules
 │   │   └── SPEC-SCHEMA.md  ← API contracts, data models, versioning
 │   ├── guides/
-│   │   ├── HOW-TO-USE.md        ← **ПРАКТИЧЕСКИЙ ГАЙД** — 10 правил с примерами
+│   │   ├── FORGEPLAN-GUIDE.md   ← **ПОЛНЫЙ ГАЙД** — методология + CLI + evidence + lifecycle
+│   │   ├── HOW-TO-USE.md        ← 10 правил методологии с примерами
 │   │   ├── ARTIFACT-MODEL.md    ← Иерархия: Epic→PRD→Spec→RFC→ADR + lifecycle
 │   │   ├── PRD-RFC-ADR-FLOW.md  ← Decision tree: какой документ создать
 │   │   ├── DEPTH-CALIBRATION.md ← Tactical→Standard→Deep→Critical + auto-escalation
@@ -303,11 +306,8 @@ ForgePlan/
 │   ├── adr-tools/          ← Bash — original ADR CLI
 │   └── ccpm/               ← Markdown — Claude Code project management
 │
-├── crates/                 ← Rust workspace
-│   ├── forgeplan-core/     ← Shared library (types, R_eff scoring — 4 tests pass)
-│   └── forgeplan-cli/      ← CLI binary (clap scaffold)
-├── research/               ← Исследования методологий
-└── src/                    ← (deprecated, см. crates/)
+├── crates/                 ← Rust workspace (core + cli + mcp)
+└── research/               ← Исследования методологий
 ```
 
 ## Артефакты (10 типов)
@@ -367,11 +367,11 @@ R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
 - **Pipeline = guideline**, NOT rigid sequence (подтверждено FPF автором)
 - **Contextual chain** — output каждой фазы = input следующей
 
-## Storage: LanceDB + Markdown (dual)
+## Storage: LanceDB primary
 
-- **LanceDB** = source of truth (structured tables + vector embeddings)
-- **Markdown** = human-readable projections (git-tracked)
-- Sync on every write: write to LanceDB → render markdown → save to `.forgeplan/`
+- **LanceDB** = sole source of truth (structured tables + vector embeddings)
+- **Markdown** = projections generated at `forgeplan new` (git-tracked, read-only after creation)
+- Mutations через `forgeplan update` обновляют только LanceDB, не markdown
 
 ```
 .forgeplan/          ← создаётся forgeplan init в целевом проекте
@@ -383,31 +383,35 @@ R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
 ├── evidence/, notes/, refresh/
 ```
 
-## Planned Rust Architecture (Phase 3+)
+## Rust Architecture (реализовано)
 
 ```
-forgeplan/
-├── Cargo.toml                    ← workspace root
-├── crates/
-│   ├── forgeplan-core/           ← SHARED LIBRARY (вся логика)
-│   │   ├── artifact/             ← types, parser, writer, store
-│   │   ├── scoring/              ← R_eff = min(evidence_scores)
-│   │   ├── validation/           ← BMAD 13-step rules
-│   │   ├── search/               ← LanceDB vectors + Tantivy text
-│   │   ├── progress/             ← checkbox parser + progress bars
-│   │   ├── graph/                ← mermaid dependency graph
-│   │   ├── embed/                ← ONNX local embeddings (BGE-M3)
-│   │   ├── db/                   ← LanceDB operations
-│   │   ├── template/             ← tera engine
-│   │   └── config/               ← .forgeplan/config.yaml
-│   ├── forgeplan-cli/            ← CLI binary (clap derive)
-│   ├── forgeplan-tauri/          ← Desktop app backend (Tauri 2.0 + core)
-│   └── forgeplan-mcp/            ← MCP server (Phase 5, rmcp)
-├── apps/desktop/                 ← React frontend (Tauri UI)
-└── templates/                    ← .md.tera шаблоны (embedded in binary)
+crates/
+├── forgeplan-core/               ← SHARED LIBRARY (12.8K LOC, 194 теста)
+│   ├── artifact/                 ← types, frontmatter parser
+│   ├── config/                   ← .forgeplan/config.yaml
+│   ├── db/                       ← LanceDB store (CRUD, relations, search)
+│   ├── depth/                    ← depth calibration heuristics
+│   ├── embed/                    ← fastembed (BGE-M3, behind feature flag)
+│   ├── fpf/                      ← FPF engine: bounded contexts, explore-exploit
+│   ├── graph/                    ← mermaid dependency graph
+│   ├── health/                   ← project health dashboard
+│   ├── journal/                  ← decision journal with R_eff
+│   ├── lifecycle/                ← review → activate → supersede/deprecate
+│   ├── link/                     ← typed artifact relationships
+│   ├── llm/                      ← LLM integration (generate, reason, route, capture)
+│   ├── progress/                 ← checkbox parser + ASCII progress bars
+│   ├── projection/               ← markdown projection (LanceDB → .md)
+│   ├── routing/                  ← rule-based Smart Routing v2 (no LLM)
+│   ├── scoring/                  ← R_eff + F-G-R quality scoring
+│   ├── search/                   ← keyword + semantic search
+│   ├── stale/                    ← expired valid_until detection
+│   ├── template/                 ← tera template engine
+│   ├── validation/               ← depth-aware rules (30+ per kind)
+│   └── workspace/                ← .forgeplan/ directory management
+├── forgeplan-cli/                ← CLI binary (33 commands, clap derive)
+└── forgeplan-mcp/                ← MCP server (26 tools, rmcp, stdio transport)
 ```
-
-Key dependencies: `clap` (derive), `lancedb`, `tantivy`, `tera`, `pulldown-cmark`, `serde_yaml`, `ort` (ONNX Runtime), `rmcp`.
 
 ## Reference Code — что откуда портировать
 
