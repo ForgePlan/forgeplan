@@ -57,6 +57,15 @@ impl std::fmt::Display for ReviewResult {
     }
 }
 
+/// Artifact kinds that support full lifecycle (review → activate).
+/// Notes and Problems are lightweight — they stay draft or get superseded directly.
+const LIFECYCLE_KINDS: &[&str] = &["prd", "epic", "spec", "rfc", "adr"];
+
+/// Check if a kind supports lifecycle operations.
+pub fn supports_lifecycle(kind: &str) -> bool {
+    LIFECYCLE_KINDS.contains(&kind.to_lowercase().as_str())
+}
+
 /// Review an artifact: run validation and check lifecycle warnings.
 pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<ReviewResult> {
     let record = store
@@ -108,6 +117,8 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
 }
 
 /// Activate an artifact: Draft → Active (with validation gate).
+/// Only PRD, Epic, Spec, RFC, ADR support activation.
+/// Notes/Problems can be activated without validation gate.
 pub async fn activate(store: &LanceStore, artifact_id: &str) -> anyhow::Result<()> {
     let record = store
         .get_record(artifact_id)
@@ -115,6 +126,14 @@ pub async fn activate(store: &LanceStore, artifact_id: &str) -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
     transitions::validate_transition(&record.status, "active")?;
+
+    // Lightweight kinds skip validation gate
+    if !supports_lifecycle(&record.kind) {
+        store
+            .update_artifact(artifact_id, Some("active"), None)
+            .await?;
+        return Ok(());
+    }
 
     // Must pass validation before activation
     let review_result = review(store, artifact_id).await?;
