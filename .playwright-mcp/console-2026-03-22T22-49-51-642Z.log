@@ -1,0 +1,2 @@
+[     289ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://github.com/nicepkg/agent-skills:0
+[    3780ms] [WARNING] The resource https://github.githubassets.com/assets/global-banner-disable-758f0cae02744f7a.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ https://github.com/nicepkg/agent-skills:0
