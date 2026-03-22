@@ -4,7 +4,7 @@ use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::llm::reason;
 use forgeplan_core::workspace::{self, load_config};
 
-pub async fn run(id: &str) -> anyhow::Result<()> {
+pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -32,7 +32,19 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
     )
     .await?;
 
-    println!("{}", analysis);
+    if json {
+        // Structured JSON output (FR-004)
+        let structured = serde_json::json!({
+            "artifact_id": record.id,
+            "artifact_kind": record.kind,
+            "adi_analysis": analysis,
+            "depth": record.depth,
+            "r_eff_score": record.r_eff_score,
+        });
+        println!("{}", serde_json::to_string_pretty(&structured)?);
+    } else {
+        println!("{}", analysis);
+    }
 
     Ok(())
 }

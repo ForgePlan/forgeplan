@@ -7,6 +7,7 @@ pub mod decompose;
 pub mod delete;
 pub mod deprecate;
 pub mod fgr;
+pub mod fpf;
 pub mod generate;
 pub mod get;
 pub mod graph;

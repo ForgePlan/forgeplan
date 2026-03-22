@@ -2180,6 +2180,7 @@ dependencies = [
  "forgeplan-core",
  "forgeplan-mcp",
  "predicates",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "tokio",

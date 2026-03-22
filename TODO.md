@@ -1,112 +1,50 @@
 # TODO — Forgeplan
 
-## Next: EPIC-001 — Forgeplan v1.0 Real Methodology Engine
+## Current: v0.6.0 Released
 
-### P0: Health + Blind Spots (PRD-003) — максимальный impact
-- [ ] `forgeplan health` — агрегированный dashboard (R_eff, stale, gaps, next actions)
-- [ ] `forgeplan blindspots` — артефакты без evidence, orphans, missing links
-- [ ] MCP tools: `forgeplan_health`, `forgeplan_blindspots`
+### EPIC-001 — Forgeplan v1.0 Real Methodology Engine — COMPLETE ✅
 
-### P1: Decision Journal (PRD-004)
-- [ ] `forgeplan journal` — timeline решений с R_eff и evidence status
-- [ ] Фильтры: --kind, --since, --risk
+All PRDs implemented:
 
-### P2: BMAD Validation v2 (PRD-005)
-- [ ] 13-step validation per kind (not schema check)
-- [ ] `forgeplan validate --adversarial` mode
+- [x] **P0: Health + Blind Spots (PRD-003)** — `forgeplan health`, `forgeplan blindspots` (PR #17)
+- [x] **P1: Decision Journal (PRD-004)** — `forgeplan journal` with R_eff (PR #18)
+- [x] **P2: Validation v2 (PRD-005)** — depth-aware rules, 20 checks for Deep PRD (PR #19)
+- [x] **P3: Smart Routing v2 (PRD-006)** — rule engine, 8 keyword triggers, no LLM (PR #20)
+- [x] **P4: FPF Engine (PRD-002)** — F-G-R scoring, bounded contexts, explore-exploit, FPF dashboard
+- [x] **Lifecycle (PRD-007)** — review, activate, supersede, deprecate with validation gates (PR #20)
 
-### P3: Smart Routing v2 (PRD-006)
-- [ ] Rule-based engine (no LLM for core logic)
-- [ ] Works offline, instant response
+### Stats
+- 33 CLI commands
+- 26 MCP tools
+- 225 tests (194 core + 24 CLI + 7 other)
+- 18 dogfood artifacts in LanceDB
 
-### P4: FPF Engine (PRD-002)
-- [ ] F-G-R scoring, structured ADI, bounded contexts, explore-exploit
+## Backlog
 
-## Done: Phase 4 — MCP Server + AI
+### P0: Dogfooding & Polish
+- [ ] Activate dogfood artifacts (review → activate for mature ones)
+- [ ] `forgeplan validate --adversarial` mode (devil's advocate review)
+- [ ] Custom prompts directory `.forgeplan/prompts/` (currently hardcoded in Rust)
+- [ ] Fix NFR-002: binary 152MB → investigate LanceDB feature flags / strip
 
-### Completed P0
-- [x] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
-- [x] RFC-004: MCP Server Architecture — document design decisions
-- [x] ADR-006: Full LanceDB primary (no file fallback) — document decision
-- [x] Update RFC-003 progress to 100%
-
-### P1 (Phase 4 — AI Features)
-- [x] LLM integration — `forgeplan generate <kind> <description>` (multi-provider: OpenAI, Claude, Gemini, Ollama)
-- [x] Evidence Decay — `forgeplan decay` (R_eff impact of expired evidence)
-- [x] Depth calibration — `forgeplan calibrate [id]` (heuristic depth suggestion)
-- [x] FPF ADI cycle — `forgeplan reason <id>` (Abduction→Deduction→Induction)
-- [x] Auto-decompose — `forgeplan decompose <prd-id>` (PRD → RFC tasks)
-- [x] CRUD: `forgeplan get/update/delete` — full artifact CRUD
-- [x] Workflow routing — `forgeplan route "<description>"` (LLM suggests depth + pipeline)
-- [x] MCP config — `.mcp.json` for Claude Code integration
-- [x] Auto-capture — `forgeplan capture "<decision>"` (LLM auto-detects Note vs ADR)
-- [x] Semantic search — `forgeplan search --semantic` (fastembed behind feature flag, RFC-006)
-
-### P2 (Phase 2 — Superseded by MCP)
-- [ ] ~~Workflow Integration~~ — superseded: MCP server covers these use cases
-
-## Backlog: Phase 5 — Desktop App
+### P1: Desktop App (Phase 5)
 - [ ] Tauri 2.0 + React frontend (shared Rust core)
+- [ ] forgeplan-tauri crate
+
+### P2: Integrations
+- [ ] Bidirectional sync with task trackers (Linear, Jira, Orchestra)
+- [ ] `.mcp.json` auto-configuration for Claude Code
 
 ## Done ✅
+
 - [x] **Phase 0** — Foundation & Research (10/10)
-- [x] **Phase 1** — Schemas, Templates & Docs (12/12):
-  - [x] PRD-SCHEMA.md, EPIC-SCHEMA.md, SPEC-SCHEMA.md
-  - [x] PRD-RFC-ADR-FLOW.md
-  - [x] PRD шаблон обогащён из BMAD (13 validation steps, YAML frontmatter)
-  - [x] Product Brief шаблон (lightweight PRD для Quick Flow)
-  - [x] Problem Card шаблон (из quint-code)
-  - [x] Solution Portfolio шаблон (из quint-code, weakest link)
-  - [x] DDR шаблон (FPF E.9: invariants + rollback + valid_until)
-  - [x] DEPTH-CALIBRATION.md (4 уровня + auto-escalation)
-  - [x] QUALITY-GATES.md (Verification Gate + Adversarial Review + BMAD 13 steps + R_eff)
-  - [x] GLOSSARY.md (31 термин)
-- [x] Rust workspace scaffold (forgeplan-core + forgeplan-cli)
-- [x] Artifact types (11 kinds) + R_eff scoring (4 tests pass)
-- [x] **Phase 3A** — Core CLI (2026-03-21):
-  - [x] RFC-001: CLI Architecture (модули, data flow, phases)
-  - [x] `forgeplan init` — workspace initialization (FR-001)
-  - [x] `forgeplan new` — template engine + auto-ID (FR-002)
-  - [x] `forgeplan list` — frontmatter parser + table output (FR-003)
-  - [x] `forgeplan status` — project dashboard (FR-004)
-  - [x] Config module + YAML loader
-  - [x] Artifact store (CRUD, slugify, next_id)
-  - [x] 11 tests pass (4 R_eff + 3 frontmatter + 4 workspace)
-- [x] **Phase 3B** — Validate + Score + Link + Graph (2026-03-21):
-  - [x] RFC-002: Validation Engine Architecture
-  - [x] `forgeplan validate` — schema rules engine per kind per depth (FR-005)
-  - [x] `forgeplan score` — R_eff CLI wrapper with evidence lookup (FR-006)
-  - [x] `forgeplan link` — typed relationships in frontmatter (FR-009)
-  - [x] `forgeplan graph` — mermaid dependency graph (FR-007)
-  - [x] validation/ module (checks, rules — PRD/Epic/Spec/RFC/ADR)
-  - [x] link/ module (add_link, list_links, normalize_relation)
-  - [x] graph/ module (build_edges, render_mermaid)
-  - [x] 16 tests pass (5 validation + 4 R_eff + 3 frontmatter + 4 workspace)
-- [x] **Phase 3C** — Search + Stale + Polish (2026-03-21):
-  - [x] `forgeplan search` — keyword grep по body (FR-008)
-  - [x] `forgeplan stale` — detect expired valid_until (FR-010)
-  - [x] ForgeplanError enum (thiserror) — typed errors
-  - [x] 13 integration tests (assert_cmd + tempdir)
-  - [x] 29 tests total, все проходят
-  - [x] Release binary: 3.3 MB (NFR-002: < 15MB)
-- [x] **Phase 3D** — LanceDB Primary + Async Migration (2026-03-22):
-  - [x] LanceDB as sole source of truth (no file fallback)
-  - [x] ArtifactRecord + 8 new LanceStore methods
-  - [x] Markdown projection module (write-only, git-tracked)
-  - [x] All 10 CLI commands migrated to LanceStore
-  - [x] impl FromStr for ArtifactKind (eliminated 3 parse_kind dupes)
-  - [x] N+1 query fixes, ID validation, UTF-8 safety
-  - [x] 5-agent audit: 15 findings, all critical+high fixed
-  - [x] `forgeplan progress` — checkbox parser + ASCII bars (3.10)
-  - [x] 4-agent Rust audit: CheckboxCount struct, clamp, no unwrap
-  - [x] 158 tests pass (135 core + 16 CLI + 7 other)
-  - [x] Dogfooding: all 11 commands verified end-to-end
-- [x] **Phase 4A** — MCP Server (2026-03-22):
-  - [x] `forgeplan-mcp` crate — rmcp 1.2.0 + stdio transport
-  - [x] 11 MCP tools: init, new, list, status, validate, score, link, graph, search, stale, progress
-  - [x] ForgeplanServer with Arc<RwLock<Option<LanceStore>>> for lazy init
-  - [x] Structured JSON responses (schemars JsonSchema on all types)
-  - [x] `forgeplan serve` subcommand in CLI
-  - [x] Refactor: Mode::FromStr in core, eliminated record_to_frontmatter dupe
-  - [x] Smoke test: initialize + tools/list verified via stdio
-  - [x] 158 tests pass (all existing tests unaffected)
+- [x] **Phase 1** — Schemas, Templates & Docs (12/12)
+- [x] **Phase 3A** — Core CLI: init, new, list, status (11 tests)
+- [x] **Phase 3B** — Validate + Score + Link + Graph (106 tests)
+- [x] **Phase 3C** — Search + Stale + Polish (29 tests)
+- [x] **Phase 3D** — LanceDB Primary + Async (158 tests)
+- [x] **Phase 4A** — MCP Server (11 tools)
+- [x] **Phase 4B** — AI Features: generate, reason, decompose, capture, route, semantic search
+- [x] **Phase 4C** — CRUD: get, update, delete
+- [x] **v0.5.0** — Health, Journal, Validation v2 (PRD-003/004/005)
+- [x] **v0.6.0** — Methodology Engine: routing, lifecycle, FPF, F-G-R (PRD-002/006/007)
