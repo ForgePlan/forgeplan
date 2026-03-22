@@ -1,7 +1,7 @@
 ---
 id: RFC-003
 title: "LanceDB Integration — async storage, schema, migration"
-status: Draft
+status: Accepted
 author: explosovebit
 created: 2026-03-21
 updated: 2026-03-21
@@ -14,9 +14,9 @@ depth: deep
 ## Progress
 
 ```
-Phase D  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  LanceDB Integration
+Phase D  ████████████████████████  5/5   (100%)  LanceDB Integration  ✅ DONE
 ─────────────────────────────────────────────────
-TOTAL                               0/5   (  0%)
+TOTAL                               5/5   (100%)
 ```
 
 ---
@@ -311,11 +311,11 @@ forgeplan init --migrate (existing workspace):
 ## Implementation Phases
 
 ### Phase D: LanceDB Integration
-- [ ] **D.1** Async migration — tokio runtime, async core functions, async tests
-- [ ] **D.2** LanceDB db module — schema, connect, create tables
-- [ ] **D.3** ArtifactStore trait + LanceStore implementation (CRUD)
-- [ ] **D.4** Markdown projection — write LanceDB → render markdown
-- [ ] **D.5** Command migration — all 10 CLI commands use LanceStore
+- [x] **D.1** Async migration — tokio runtime, async core functions, async tests
+- [x] **D.2** LanceDB db module — schema, connect, create tables
+- [x] **D.3** ArtifactStore trait + LanceStore implementation (CRUD)
+- [x] **D.4** Markdown projection — write LanceDB → render markdown
+- [x] **D.5** Command migration — all 11 CLI commands use LanceStore
 
 ## Related Artifacts
 

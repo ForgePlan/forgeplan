@@ -73,6 +73,32 @@ enum Commands {
         /// Artifact ID (shows all if omitted)
         id: Option<String>,
     },
+    /// Show evidence decay impact on R_eff scores
+    Decay,
+    /// Suggest depth level (Tactical/Standard/Deep/Critical) based on artifact content
+    Calibrate {
+        /// Artifact ID (checks all if omitted)
+        id: Option<String>,
+    },
+    /// Generate an artifact using AI from a natural language description
+    Generate {
+        /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
+        kind: String,
+        /// Description of what to generate
+        description: String,
+    },
+    /// Analyze an artifact using FPF ADI reasoning cycle (Abduction→Deduction→Induction)
+    Reason {
+        /// Artifact ID to analyze
+        id: String,
+    },
+    /// Decompose a PRD into RFC tasks using AI
+    Decompose {
+        /// PRD artifact ID to decompose
+        id: String,
+    },
+    /// Start MCP server (stdio transport) for AI agent integration
+    Serve,
 }
 
 #[tokio::main]
@@ -99,5 +125,16 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Stale => commands::stale::run().await,
         Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
+        Commands::Decay => commands::decay::run().await,
+        Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
+        Commands::Generate { kind, description } => {
+            commands::generate::run(&kind, &description).await
+        }
+        Commands::Reason { id } => commands::reason::run(&id).await,
+        Commands::Decompose { id } => commands::decompose::run(&id).await,
+        Commands::Serve => {
+            let cwd = std::env::current_dir()?;
+            forgeplan_mcp::run_stdio(cwd).await
+        }
     }
 }
