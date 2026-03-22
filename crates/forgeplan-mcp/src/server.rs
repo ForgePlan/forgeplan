@@ -750,6 +750,33 @@ impl ForgeplanServer {
         })))
     }
 
+    #[tool(description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed.")]
+    async fn forgeplan_health(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let report = forgeplan_core::health::health_report(&store)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        Ok(json_result(&serde_json::json!({
+            "total": report.total,
+            "by_kind": report.by_kind,
+            "by_status": report.by_status,
+            "at_risk": report.at_risk.iter().map(|a| serde_json::json!({
+                "id": a.id, "title": a.title, "reason": a.reason
+            })).collect::<Vec<_>>(),
+            "blind_spots": report.blind_spots.iter().map(|b| serde_json::json!({
+                "id": b.id, "title": b.title, "issue": b.issue
+            })).collect::<Vec<_>>(),
+            "stale_count": report.stale_count,
+            "orphans": report.orphans,
+            "next_actions": report.next_actions,
+        })))
+    }
+
     #[tool(description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider.")]
     async fn forgeplan_capture(
         &self,

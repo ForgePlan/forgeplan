@@ -135,6 +135,12 @@ enum Commands {
         /// Task description in natural language
         description: String,
     },
+    /// Show project health dashboard — gaps, risks, blind spots, next actions
+    Health {
+        /// Compact one-line output for hooks/scripts
+        #[arg(long)]
+        compact: bool,
+    },
     /// Capture a decision from conversation into a Note or ADR artifact
     Capture {
         /// The decision statement
@@ -200,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
+        Commands::Health { compact } => commands::health::run(compact).await,
         Commands::Route { description } => commands::route::run(&description).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
