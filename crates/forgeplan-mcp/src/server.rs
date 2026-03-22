@@ -173,6 +173,16 @@ struct RouteParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct JournalParams {
+    /// Filter by kind (adr, note, problem, solution)
+    #[serde(default)]
+    kind: Option<String>,
+    /// Show only at-risk decisions
+    #[serde(default)]
+    risk: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CaptureParams {
     /// The decision statement to capture
     decision: String,
@@ -774,6 +784,37 @@ impl ForgeplanServer {
             "stale_count": report.stale_count,
             "orphans": report.orphans,
             "next_actions": report.next_actions,
+        })))
+    }
+
+    #[tool(description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status.")]
+    async fn forgeplan_journal(
+        &self,
+        Parameters(p): Parameters<JournalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let entries = forgeplan_core::journal::build_journal(
+            &store, p.kind.as_deref(), p.risk.unwrap_or(false),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let dtos: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| serde_json::json!({
+                "id": e.id, "title": e.title, "kind": e.kind,
+                "created_at": e.created_at, "r_eff": e.r_eff,
+                "evidence_count": e.evidence_count,
+                "has_stale_evidence": e.has_stale_evidence,
+            }))
+            .collect();
+
+        Ok(json_result(&serde_json::json!({
+            "entries": dtos, "total": entries.len(),
         })))
     }
 
