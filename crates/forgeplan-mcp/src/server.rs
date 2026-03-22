@@ -777,6 +777,27 @@ impl ForgeplanServer {
         })))
     }
 
+    #[tool(description = "Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections.")]
+    async fn forgeplan_blindspots(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let report = forgeplan_core::health::health_report(&store)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        Ok(json_result(&serde_json::json!({
+            "blind_spots": report.blind_spots.iter().map(|b| serde_json::json!({
+                "id": b.id, "title": b.title, "issue": b.issue
+            })).collect::<Vec<_>>(),
+            "orphans": report.orphans,
+            "total_blind_spots": report.blind_spots.len(),
+            "total_orphans": report.orphans.len(),
+        })))
+    }
+
     #[tool(description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider.")]
     async fn forgeplan_capture(
         &self,

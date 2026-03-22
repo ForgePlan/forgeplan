@@ -1,3 +1,4 @@
+pub mod blindspots;
 pub mod calibrate;
 pub mod capture;
 pub mod decay;
