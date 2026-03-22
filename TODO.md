@@ -14,7 +14,11 @@
 - [x] Depth calibration — `forgeplan calibrate [id]` (heuristic depth suggestion)
 - [x] FPF ADI cycle — `forgeplan reason <id>` (Abduction→Deduction→Induction)
 - [x] Auto-decompose — `forgeplan decompose <prd-id>` (PRD → RFC tasks)
+- [x] CRUD: `forgeplan get/update/delete` — full artifact CRUD
+- [x] Workflow routing — `forgeplan route "<description>"` (LLM suggests depth + pipeline)
+- [x] MCP config — `.mcp.json` for Claude Code integration
 - [ ] Auto-capture — agent records decisions from conversation (deferred: needs MCP context)
+- [ ] Semantic search — vector embeddings (fastembed + BGE-M3, ADR-005)
 
 ### P2 (Phase 2 — Superseded by MCP)
 - [ ] ~~Workflow Integration~~ — superseded: MCP server covers these use cases
