@@ -173,6 +173,15 @@ struct RouteParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct CaptureParams {
+    /// The decision statement to capture
+    decision: String,
+    /// Additional context (optional)
+    #[serde(default)]
+    context: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CalibrateParams {
     /// Artifact ID (checks all if omitted)
     #[serde(default)]
@@ -736,6 +745,70 @@ impl ForgeplanServer {
 
         Ok(json_result(&serde_json::json!({
             "routing": result,
+            "provider": llm_config.provider,
+            "model": llm_config.model,
+        })))
+    }
+
+    #[tool(description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider.")]
+    async fn forgeplan_capture(
+        &self,
+        Parameters(p): Parameters<CaptureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let config = workspace::load_config(&ws)
+            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+        let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+
+        let (kind_str, body) = forgeplan_core::llm::capture::capture(
+            &llm_config, &p.decision, p.context.as_deref(),
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Capture failed: {e}"), None))?;
+
+        let kind: ArtifactKind = kind_str.parse().unwrap_or(ArtifactKind::Note);
+        let template_key = kind.template_key();
+        let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
+        let id = store.next_id(&prefix).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let title: String = p.decision.lines().next().unwrap_or(&p.decision).chars().take(80).collect();
+
+        let artifact = NewArtifact {
+            id: id.clone(),
+            kind: template_key.into(),
+            status: "draft".into(),
+            title: title.clone(),
+            body: body.clone(),
+            depth: "tactical".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+        };
+
+        store.create_artifact(&artifact).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let filepath = projection::render_projection(
+            &ws, &id, template_key, &title, "draft", "tactical",
+            None, None, None, &body, &[],
+        ).await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        Ok(json_result(&serde_json::json!({
+            "id": id,
+            "kind": template_key,
+            "title": title,
+            "filepath": filepath.display().to_string(),
+            "auto_detected_type": kind_str,
             "provider": llm_config.provider,
             "model": llm_config.model,
         })))

@@ -17,7 +17,7 @@
 - [x] CRUD: `forgeplan get/update/delete` — full artifact CRUD
 - [x] Workflow routing — `forgeplan route "<description>"` (LLM suggests depth + pipeline)
 - [x] MCP config — `.mcp.json` for Claude Code integration
-- [ ] Auto-capture — agent records decisions from conversation (deferred: needs MCP context)
+- [x] Auto-capture — `forgeplan capture "<decision>"` (LLM auto-detects Note vs ADR)
 - [ ] Semantic search — vector embeddings (fastembed + BGE-M3, ADR-005)
 
 ### P2 (Phase 2 — Superseded by MCP)
