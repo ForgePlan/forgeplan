@@ -23,15 +23,13 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 
 ## Текущий статус
 
-- **Phase 0** (Foundation & Research) — DONE
-- **Phase 1** (Schemas & Templates) — DONE (12/12, adversarial review passed)
-- **Phase 2** (Workflow & Integration) — не начат
-- **Phase 3** (Rust CLI + LanceDB) — IN PROGRESS (Phase 3A done: init, new, list, status; 11 tests pass)
-- **Phase 4** (Desktop App + AI) — не начат
-- **Phase 5** (MCP Server) — не начат
+- **v0.7.0** released — EPIC-001 complete
+- **33 CLI команд**, **26 MCP tools**, **225 тестов**
+- **19 dogfood артефактов** в LanceDB (4 active, 15 draft, 1 evidence)
+- **Phase 0–4** — DONE
+- **Phase 5** (Desktop App, Tauri) — backlog
 
-Подробности: `PLAN.md` (49 задач, 5 фаз), `TODO.md` (текущие приоритеты).
-Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`, `docs/rfcs/RFC-001-*.md`, `docs/adrs/ADR-001..003`.
+Подробности: `TODO.md` (текущие приоритеты).
 
 ## Как начать работу в новом чате
 
@@ -42,6 +40,91 @@ Dogfood артефакты: `docs/epics/EPIC-001-*.md`, `docs/prds/PRD-001-*.md`
 5. **Для поиска инструментов** — `SOURCES.md` (карта skills, commands, agents, repos)
 6. **Для reference code** — `sources/` (read-only repos, см. таблицу ниже)
 7. **Используй Hindsight** — `memory_recall("Forgeplan")` для быстрого восстановления контекста
+
+## Как пользоваться Forgeplan CLI (MCP-first)
+
+> Forgeplan — MCP-first tool. Основной потребитель = AI агент через MCP server.
+> CLI = secondary interface для human inspection.
+
+### Core workflow (6 шагов):
+
+```bash
+# 1. Session start — понять состояние проекта
+forgeplan health
+
+# 2. Перед работой — определить depth и pipeline
+forgeplan route "описание задачи"
+# → Depth: Standard, Pipeline: PRD → RFC, Confidence: 85%
+
+# 3. Создать артефакт
+forgeplan new prd "Auth System"
+
+# 4. Проверить качество
+forgeplan validate PRD-001
+# → MUST: Missing Problem section
+# → SHOULD: density < 50 words
+
+# 5. Когда готов — review и activate
+forgeplan review PRD-001
+# → Review PASSED — ready to activate
+forgeplan activate PRD-001
+# → draft → active
+
+# 6. Подтвердить решение evidence
+forgeplan new evidence "Benchmark results for auth approach"
+forgeplan link EVID-001 PRD-001 --relation informs
+forgeplan score PRD-001
+# → R_eff = 1.00 (was 0.00)
+```
+
+### EvidencePack — как создавать (ВАЖНО):
+
+EvidencePack ОБЯЗАТЕЛЬНО должен содержать structured fields в body для корректного R_eff scoring:
+
+```markdown
+## Structured Fields
+
+verdict: supports
+congruence_level: 3
+evidence_type: measurement
+```
+
+| Field | Значения | Описание |
+|-------|----------|----------|
+| `verdict` | supports / weakens / refutes | Подтверждает, ослабляет или опровергает решение |
+| `congruence_level` | 0-3 | CL3=same context (best), CL0=opposed context (worst) |
+| `evidence_type` | measurement / test / benchmark / audit | Тип доказательства |
+
+Без structured fields R_eff parser не найдёт данные и выставит CL0 (penalty 0.9).
+
+### Lifecycle commands:
+
+```bash
+forgeplan review <id>              # проверить готовность
+forgeplan activate <id>            # draft → active (validation gate)
+forgeplan supersede <id> --by <new> # active → superseded + chain warnings
+forgeplan deprecate <id> --reason "..." # active → deprecated
+```
+
+Notes и Problems не требуют validation gate для activation.
+PRD, RFC, ADR, Epic, Spec — MUST rules должны пройти.
+
+### Validator aliases:
+
+Validator принимает синонимы для секций:
+- `## Problem` = `## Motivation` = `## Problem Statement` = `## Background`
+- `## Goals` = `## Success Criteria` = `## Objectives`
+- `## Non-Goals` = `## Out of Scope` = `## Product Scope`
+- `## Related` = `## Related Artifacts` = `## Dependencies`
+- `## Target Users` = `## Target Audience` = `## Users`
+
+### Dogfood insights (из реального использования):
+
+1. **Создавай артефакт → сразу заполняй MUST секции** — иначе review fail
+2. **Evidence делает R_eff живым** — без evidence все scores = 0.0, health кричит "At Risk"
+3. **Не создавай все 10 типов** — реально используются 6: PRD, RFC, ADR, Note, Problem, Epic
+4. **route перед работой** — определяет depth и pipeline, экономит время
+5. **health на session start** — показывает orphans, blind spots, at risk
 
 ## Как пользоваться методологией (quick reference)
 
