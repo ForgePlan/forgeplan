@@ -1,5 +1,6 @@
 pub mod calibrate;
 pub mod decay;
+pub mod decompose;
 pub mod generate;
 pub mod graph;
 pub mod init;
@@ -7,6 +8,7 @@ pub mod link;
 pub mod list;
 pub mod new;
 pub mod progress;
+pub mod reason;
 pub mod score;
 pub mod search;
 pub mod stale;

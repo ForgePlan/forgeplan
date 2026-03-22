@@ -138,6 +138,18 @@ fn default_relation() -> String {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ReasonParams {
+    /// Artifact ID to analyze with ADI reasoning cycle
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DecomposeParams {
+    /// PRD artifact ID to decompose into RFC tasks
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateParams {
     /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
     kind: String,
@@ -838,6 +850,86 @@ impl ForgeplanServer {
         Ok(json_result(&CalibrateResponse {
             results,
             total_escalations,
+        }))
+    }
+
+    #[tool(description = "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider.")]
+    async fn forgeplan_reason(
+        &self,
+        Parameters(p): Parameters<ReasonParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let guard = match self.require_store().await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = guard.as_ref().unwrap();
+
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Err(e) => return Ok(err_result(&format!("{e}"))),
+        };
+
+        let config = workspace::load_config(&ws)
+            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+        let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+
+        let analysis = forgeplan_core::llm::reason::reason(
+            &llm_config, &record.id, &record.title, &record.kind, &record.body,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("ADI reasoning failed: {e}"), None))?;
+
+        Ok(json_result(&ReasonResponse {
+            artifact_id: record.id,
+            artifact_title: record.title,
+            analysis,
+            provider: llm_config.provider,
+            model: llm_config.model,
+        }))
+    }
+
+    #[tool(description = "Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider.")]
+    async fn forgeplan_decompose(
+        &self,
+        Parameters(p): Parameters<DecomposeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let guard = match self.require_store().await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = guard.as_ref().unwrap();
+
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Err(e) => return Ok(err_result(&format!("{e}"))),
+        };
+
+        let config = workspace::load_config(&ws)
+            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+        let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+
+        let tasks = forgeplan_core::llm::decompose::decompose(
+            &llm_config, &record.id, &record.title, &record.body,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Decompose failed: {e}"), None))?;
+
+        Ok(json_result(&DecomposeResponse {
+            prd_id: record.id,
+            prd_title: record.title,
+            tasks,
+            provider: llm_config.provider,
+            model: llm_config.model,
         }))
     }
 
