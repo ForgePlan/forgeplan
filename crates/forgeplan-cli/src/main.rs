@@ -137,6 +137,15 @@ enum Commands {
     },
     /// Show blind spots — decisions without evidence, orphan artifacts
     Blindspots,
+    /// Show decision journal — chronological timeline with R_eff scores
+    Journal {
+        /// Filter by kind (adr, note, problem, solution)
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+        /// Show only at-risk decisions (no evidence, stale, low R_eff)
+        #[arg(long)]
+        risk: bool,
+    },
     /// Show project health dashboard — gaps, risks, blind spots, next actions
     Health {
         /// Compact one-line output for hooks/scripts
@@ -209,6 +218,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
         Commands::Blindspots => commands::blindspots::run().await,
+        Commands::Journal { r#type, risk } => {
+            commands::journal::run(r#type.as_deref(), risk).await
+        }
         Commands::Health { compact } => commands::health::run(compact).await,
         Commands::Route { description } => commands::route::run(&description).await,
         Commands::Capture { decision, context } => {

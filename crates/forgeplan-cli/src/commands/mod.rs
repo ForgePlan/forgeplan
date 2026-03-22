@@ -9,6 +9,7 @@ pub mod get;
 pub mod graph;
 pub mod health;
 pub mod init;
+pub mod journal;
 pub mod link;
 pub mod list;
 pub mod new;
