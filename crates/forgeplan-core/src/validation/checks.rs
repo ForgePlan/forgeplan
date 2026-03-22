@@ -14,18 +14,109 @@ pub fn frontmatter_has(fm: &Frontmatter, key: &str) -> bool {
 }
 
 /// Check that a markdown section with given heading text exists (any heading level).
+/// Also checks known aliases (e.g. "Problem" matches "Motivation", "Problem Statement").
 pub fn section_exists(body: &str, heading: &str) -> bool {
-    let pattern = format!(r"(?m)^#+\s+{}", regex::escape(heading));
-    Regex::new(&pattern).map(|re| re.is_match(body)).unwrap_or(false)
+    let headings_to_check = expand_aliases(heading);
+    for h in headings_to_check {
+        let pattern = format!(r"(?m)^#+\s+{}", regex::escape(&h));
+        if Regex::new(&pattern).map(|re| re.is_match(body)).unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Expand a heading name to include known aliases.
+fn expand_aliases(heading: &str) -> Vec<String> {
+    let mut result = vec![heading.to_string()];
+    match heading {
+        "Problem" => {
+            result.push("Motivation".into());
+            result.push("Problem Statement".into());
+            result.push("Background".into());
+        }
+        "Goals" => {
+            result.push("Success Criteria".into());
+            result.push("Objectives".into());
+        }
+        "Non-Goals" => {
+            result.push("Out of Scope".into());
+            result.push("Product Scope".into()); // contains "Out of Scope" subsection
+        }
+        "Target" | "Audience" | "Users" => {
+            result.push("Target Users".into());
+            result.push("Target Audience".into());
+            result.push("Users".into());
+            result.push("Audience".into());
+            result.push("Target".into());
+        }
+        "Related" => {
+            result.push("Related Artifacts".into());
+            result.push("Dependencies".into());
+        }
+        "Summary" => {
+            result.push("Executive Summary".into());
+            result.push("Overview".into());
+        }
+        "Vision" => {
+            result.push("Goals".into());
+            result.push("Executive Summary".into());
+        }
+        "Outcomes" => {
+            result.push("Success Criteria".into());
+            result.push("Goals".into());
+        }
+        "Children" => {
+            result.push("Artifacts".into());
+            result.push("PRDs".into());
+            result.push("Components".into());
+        }
+        "Phases" => {
+            result.push("Phase".into());
+            result.push("Implementation Phases".into());
+            result.push("Timeline".into());
+        }
+        "Progress" => {
+            result.push("Status".into());
+        }
+        "Proposed" | "Direction" | "Architecture" => {
+            result.push("Proposed".into());
+            result.push("Proposed Direction".into());
+            result.push("Architecture".into());
+            result.push("Design".into());
+        }
+        "Motivation" => {
+            result.push("Problem".into());
+            result.push("Background".into());
+            result.push("Why".into());
+        }
+        "Options" | "Alternatives" => {
+            result.push("Options".into());
+            result.push("Options Considered".into());
+            result.push("Alternatives".into());
+        }
+        "Implementation" => {
+            result.push("Implementation Phases".into());
+            result.push("Phases".into());
+            result.push("Plan".into());
+        }
+        _ => {}
+    }
+    result
 }
 
 /// Count words in a section (from heading to next heading of same or higher level).
+/// Checks aliases if the primary heading is not found.
 pub fn section_word_count(body: &str, heading: &str) -> usize {
-    if let Some(content) = extract_section(body, heading) {
-        content.split_whitespace().count()
-    } else {
-        0
+    for h in expand_aliases(heading) {
+        if let Some(content) = extract_section(body, &h) {
+            let count = content.split_whitespace().count();
+            if count > 0 {
+                return count;
+            }
+        }
     }
+    0
 }
 
 /// Count list items (lines starting with - or *) or table rows (lines with |) in a section.
