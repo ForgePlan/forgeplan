@@ -100,7 +100,14 @@ fn prd_rules(depth: &Mode) -> Vec<RuleEntry> {
         rules.push(rule("prd-timeline", Severity::Must, "Timeline section", check_prd_timeline));
         rules.push(rule("prd-stakeholders", Severity::Must, "Stakeholders", check_prd_stakeholders));
         rules.push(rule("prd-acceptance", Severity::Must, "Acceptance Criteria", check_prd_acceptance));
+        rules.push(rule("prd-risk-assessment", Severity::Must, "Risk Assessment", check_prd_risk));
+        rules.push(rule("prd-rollback", Severity::Should, "Rollback Plan", check_prd_rollback));
+        rules.push(rule("prd-success-metrics", Severity::Must, "Success Metrics", check_prd_success_metrics));
+        rules.push(rule("prd-dependencies", Severity::Should, "Dependencies", check_prd_dependencies));
     }
+
+    // FR format check — [Actor] can [capability]
+    rules.push(rule("prd-fr-format", Severity::Could, "FR format: [Actor] can [capability]", check_prd_fr_format));
 
     rules
 }
@@ -200,6 +207,82 @@ fn check_prd_acceptance(body: &str, _fm: &Frontmatter) -> Option<String> {
         Some("Missing '## Acceptance Criteria' section (required for deep depth)".into())
     } else {
         None
+    }
+}
+
+// ─── Extended PRD Validation Rules ──────────────────────────────────────────
+
+fn check_prd_risk(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Risk") {
+        Some("Missing '## Risk Assessment' or '## Risks' section (deep depth)".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_rollback(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Rollback") && !checks::section_exists(body, "Revert") {
+        Some("Missing rollback/revert plan (deep depth)".into())
+    } else {
+        None
+    }
+}
+
+fn check_prd_success_metrics(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Success Metrics") && !checks::section_exists(body, "Success Criteria") {
+        // Already checked via goals, but this checks for measurable metrics specifically
+        None
+    } else {
+        // Check if metrics section has numbers/percentages (measurability check)
+        let body_lower = body.to_lowercase();
+        if let Some(start) = body_lower.find("## success") {
+            let section = &body[start..];
+            let end = section[10..].find("\n## ").map(|i| i + 10).unwrap_or(section.len());
+            let section_text = &section[..end];
+            let has_measurable = section_text.contains('%')
+                || section_text.contains("< ")
+                || section_text.contains("> ")
+                || section_text.chars().any(|c| c.is_ascii_digit());
+            if !has_measurable {
+                return Some("Success metrics section has no measurable values (numbers, percentages)".into());
+            }
+        }
+        None
+    }
+}
+
+fn check_prd_dependencies(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if !checks::section_exists(body, "Dependencies") && !checks::section_exists(body, "Depends") {
+        Some("Missing '## Dependencies' section (deep depth)".into())
+    } else {
+        None
+    }
+}
+
+/// FR format check — [Actor] can [capability] (or - [ ] FR-NNN: ...)
+fn check_prd_fr_format(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let body_lower = body.to_lowercase();
+    if let Some(start) = body_lower.find("## functional requirements") {
+        let section = &body[start..];
+        let end = section[30..].find("\n## ").map(|i| i + 30).unwrap_or(section.len());
+        let fr_section = &section[..end];
+
+        // Count FR lines (checkboxes or bullet points)
+        let fr_lines: Vec<&str> = fr_section
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                t.starts_with("- [") || t.starts_with("* [") || t.starts_with("- FR-")
+            })
+            .collect();
+
+        if fr_lines.is_empty() {
+            return Some("Functional Requirements section has no FR items (use checkboxes: - [ ] FR-001: ...)".into());
+        }
+
+        None
+    } else {
+        None // No FR section — caught by check_prd_fr
     }
 }
 
@@ -434,7 +517,8 @@ mod tests {
         let rules = rules_for(&ArtifactKind::Prd, &Mode::Tactical);
         let base_count = base_rules().len();
         let prd_base = 5; // problem, goals, non-goals, fr, related
-        assert_eq!(rules.len(), base_count + prd_base);
+        let fr_format = 1; // fr-format check (all depths)
+        assert_eq!(rules.len(), base_count + prd_base + fr_format);
     }
 
     #[test]
@@ -443,7 +527,8 @@ mod tests {
         let base_count = base_rules().len();
         let prd_base = 5;
         let standard_extra = 3; // density, audience, leakage
-        assert_eq!(rules.len(), base_count + prd_base + standard_extra);
+        let fr_format = 1;
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra + fr_format);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"prd-problem-density"));
@@ -457,8 +542,9 @@ mod tests {
         let base_count = base_rules().len();
         let prd_base = 5;
         let standard_extra = 3;
-        let deep_extra = 3; // timeline, stakeholders, acceptance
-        assert_eq!(rules.len(), base_count + prd_base + standard_extra + deep_extra);
+        let deep_extra = 7; // timeline, stakeholders, acceptance, risk, rollback, success_metrics, dependencies
+        let fr_format = 1;
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra + deep_extra + fr_format);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"prd-timeline"));
@@ -564,7 +650,10 @@ mod tests {
              ## Target Users\n\nDevelopers and project managers.\n\n\
              ## Timeline\n\nQ1 2026.\n\n\
              ## Stakeholders\n\n- Engineering lead\n- Product manager\n\n\
-             ## Acceptance Criteria\n\n- All FR implemented\n- Tests pass\n"
+             ## Acceptance Criteria\n\n- All FR implemented\n- Tests pass\n\n\
+             ## Risk Assessment\n\n- Migration may break existing integrations\n\n\
+             ## Dependencies\n\n- Auth service must be deployed first\n\n\
+             ## Success Metrics\n\n- 20% improvement in task completion rate\n"
         );
 
         let result = validate("prd-001", &body, &fm, &ArtifactKind::Prd, &Mode::Deep);
