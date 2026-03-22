@@ -6,6 +6,7 @@ pub mod delete;
 pub mod generate;
 pub mod get;
 pub mod graph;
+pub mod health;
 pub mod init;
 pub mod link;
 pub mod list;

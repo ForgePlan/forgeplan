@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod depth;
 pub mod embed;
+pub mod health;
 pub mod llm;
 pub mod error;
 pub mod graph;
