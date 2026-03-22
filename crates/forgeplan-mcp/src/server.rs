@@ -727,6 +727,111 @@ impl ForgeplanServer {
             total_completed,
         }))
     }
+
+    #[tool(description = "Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison.")]
+    async fn forgeplan_decay(&self) -> Result<CallToolResult, McpError> {
+        let guard = match self.require_store().await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = guard.as_ref().unwrap();
+
+        let entries = forgeplan_core::scoring::decay::decay_report(store)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let total = entries.len();
+        let dtos: Vec<DecayEntryDto> = entries
+            .into_iter()
+            .map(|e| DecayEntryDto {
+                r_eff_drop: e.fresh_r_eff - e.current_r_eff,
+                artifact_id: e.artifact_id,
+                artifact_title: e.artifact_title,
+                current_r_eff: e.current_r_eff,
+                fresh_r_eff: e.fresh_r_eff,
+                expired_evidence: e
+                    .expired_evidence
+                    .into_iter()
+                    .map(|ev| ExpiredEvidenceDto {
+                        id: ev.id,
+                        valid_until: ev.valid_until,
+                        days_expired: ev.days_expired,
+                        score: ev.individual_score,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Ok(json_result(&DecayResponse {
+            entries: dtos,
+            total_affected: total,
+        }))
+    }
+
+    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity.")]
+    async fn forgeplan_calibrate(
+        &self,
+        Parameters(p): Parameters<CalibrateRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let guard = match self.require_store().await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = guard.as_ref().unwrap();
+
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let to_check: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
+            let upper = target_id.to_uppercase();
+            let filtered: Vec<_> = records
+                .iter()
+                .filter(|r| r.id.to_uppercase() == upper)
+                .collect();
+            if filtered.is_empty() {
+                return Ok(err_result(&format!("Artifact '{target_id}' not found")));
+            }
+            filtered
+        } else {
+            records.iter().collect()
+        };
+
+        let mut results = Vec::new();
+        let mut total_escalations = 0;
+
+        for record in &to_check {
+            let link_count = store.get_relations(&record.id).await.unwrap_or_default().len();
+            let cal = forgeplan_core::depth::suggest_depth(record, link_count);
+
+            if cal.escalation_needed {
+                total_escalations += 1;
+            }
+
+            results.push(CalibrationDto {
+                artifact_id: cal.artifact_id,
+                artifact_title: cal.artifact_title,
+                current_depth: cal.current_depth,
+                suggested_depth: format!("{:?}", cal.suggested_depth),
+                escalation_needed: cal.escalation_needed,
+                signals: cal
+                    .signals
+                    .into_iter()
+                    .map(|s| SignalDto {
+                        name: s.name,
+                        value: s.value,
+                        minimum_depth: format!("{:?}", s.minimum_depth),
+                    })
+                    .collect(),
+            });
+        }
+
+        Ok(json_result(&CalibrateResponse {
+            results,
+            total_escalations,
+        }))
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────

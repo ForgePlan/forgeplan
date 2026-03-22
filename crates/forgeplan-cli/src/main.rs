@@ -73,6 +73,13 @@ enum Commands {
         /// Artifact ID (shows all if omitted)
         id: Option<String>,
     },
+    /// Show evidence decay impact on R_eff scores
+    Decay,
+    /// Suggest depth level (Tactical/Standard/Deep/Critical) based on artifact content
+    Calibrate {
+        /// Artifact ID (checks all if omitted)
+        id: Option<String>,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -101,6 +108,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Stale => commands::stale::run().await,
         Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
+        Commands::Decay => commands::decay::run().await,
+        Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await
