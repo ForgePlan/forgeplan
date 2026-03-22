@@ -69,6 +69,37 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
+    /// Apply environment variable overrides on top of config.yaml values.
+    ///
+    /// Priority: env var > config.yaml > default
+    ///
+    /// Supported env vars:
+    /// - `FORGEPLAN_LLM_PROVIDER` — overrides provider
+    /// - `FORGEPLAN_LLM_MODEL` — overrides model
+    /// - `FORGEPLAN_LLM_BASE_URL` — overrides base_url
+    /// - `FORGEPLAN_LLM_MAX_TOKENS` — overrides max_tokens
+    /// - `FORGEPLAN_LLM_API_KEY_ENV` — overrides api_key_env name
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(v) = std::env::var("FORGEPLAN_LLM_PROVIDER") {
+            self.provider = v;
+        }
+        if let Ok(v) = std::env::var("FORGEPLAN_LLM_MODEL") {
+            self.model = v;
+        }
+        if let Ok(v) = std::env::var("FORGEPLAN_LLM_BASE_URL") {
+            self.base_url = Some(v);
+        }
+        if let Ok(v) = std::env::var("FORGEPLAN_LLM_MAX_TOKENS") {
+            if let Ok(n) = v.parse::<u32>() {
+                self.max_tokens = n;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGEPLAN_LLM_API_KEY_ENV") {
+            self.api_key_env = Some(v);
+        }
+        self
+    }
+
     /// Resolve base URL from provider preset or custom override.
     pub fn resolve_base_url(&self) -> String {
         if let Some(ref url) = self.base_url {
