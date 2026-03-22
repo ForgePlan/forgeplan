@@ -3,12 +3,28 @@ use std::env;
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::workspace;
 
-pub async fn run(query: &str, kind: Option<&str>) -> anyhow::Result<()> {
+pub async fn run(query: &str, kind: Option<&str>, semantic: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
     let store = LanceStore::open(&ws).await?;
+
+    if semantic {
+        #[cfg(feature = "semantic-search")]
+        {
+            return run_semantic(&store, query).await;
+        }
+        #[cfg(not(feature = "semantic-search"))]
+        {
+            anyhow::bail!(
+                "Semantic search not available. Rebuild with: \
+                 cargo build --features semantic-search"
+            );
+        }
+    }
+
+    // Substring search (default)
     let hits = store.search_body(query, kind).await?;
 
     if hits.is_empty() {
@@ -21,7 +37,6 @@ pub async fn run(query: &str, kind: Option<&str>) -> anyhow::Result<()> {
     for record in &hits {
         println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
 
-        // Show matching lines from body
         let query_lower = query.to_lowercase();
         let mut match_count = 0;
         for (i, line) in record.body.lines().enumerate() {
@@ -34,7 +49,6 @@ pub async fn run(query: &str, kind: Option<&str>) -> anyhow::Result<()> {
                 println!("    L{}: {}", i + 1, display.trim());
                 match_count += 1;
                 if match_count >= 3 {
-                    // Count remaining matches
                     let remaining: usize = record
                         .body
                         .lines()
@@ -49,6 +63,38 @@ pub async fn run(query: &str, kind: Option<&str>) -> anyhow::Result<()> {
             }
         }
         println!();
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "semantic-search")]
+async fn run_semantic(
+    store: &LanceStore,
+    query: &str,
+) -> anyhow::Result<()> {
+    use forgeplan_core::embed::Embedder;
+
+    println!("  Embedding query...");
+    let embedder = Embedder::new()?;
+    let query_vec = embedder.embed(query)?;
+
+    let hits = store.vector_search(&query_vec, 10).await?;
+
+    if hits.is_empty() {
+        println!("No semantic results for \"{}\"", query);
+        println!("Hint: Artifacts need embeddings. Use `forgeplan embed` to generate them.");
+        return Ok(());
+    }
+
+    println!(
+        "Found {} artifact(s) semantically similar to \"{}\":\n",
+        hits.len(),
+        query
+    );
+
+    for record in &hits {
+        println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
     }
 
     Ok(())
