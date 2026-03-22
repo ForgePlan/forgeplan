@@ -241,6 +241,18 @@ pub struct ProgressResponse {
     pub total_completed: usize,
 }
 
+// ── Generate types ───────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct GenerateResponse {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub filepath: String,
+    pub provider: String,
+    pub model: String,
+}
+
 // ── Decay types ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

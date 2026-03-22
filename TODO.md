@@ -9,11 +9,11 @@
 - [x] Update RFC-003 progress to 100%
 
 ### P1 (Phase 4 — AI Features)
-- [ ] LLM integration — generate PRD from description
+- [x] LLM integration — `forgeplan generate <kind> <description>` (multi-provider: OpenAI, Claude, Gemini, Ollama)
+- [x] Evidence Decay — `forgeplan decay` (R_eff impact of expired evidence)
+- [x] Depth calibration — `forgeplan calibrate [id]` (heuristic depth suggestion)
 - [ ] FPF ADI cycle — Abduction→Deduction→Induction for decisions
 - [ ] Auto-decompose — PRD → RFC tasks
-- [ ] Evidence Decay — valid_until TTL + refresh alerts
-- [ ] Depth calibration — auto-suggest Tactical/Standard/Deep/Critical
 - [ ] Auto-capture — agent records decisions from conversation context
 
 ### P2 (Phase 2 — Superseded by MCP)

@@ -2,6 +2,7 @@ pub mod artifact;
 pub mod config;
 pub mod db;
 pub mod depth;
+pub mod llm;
 pub mod error;
 pub mod graph;
 pub mod link;
