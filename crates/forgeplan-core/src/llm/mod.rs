@@ -61,10 +61,11 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(config: LlmConfig) -> Self {
-        Self {
-            config,
-            http: reqwest::Client::new(),
-        }
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_default();
+        Self { config, http }
     }
 
     /// Generate text from a prompt with optional system message.
@@ -105,7 +106,7 @@ impl LlmClient {
             model: self.config.model.clone(),
             messages,
             max_tokens: self.config.max_tokens,
-            temperature: 0.7,
+            temperature: self.config.temperature,
         };
 
         let mut req = self.http.post(&url).json(&body);
@@ -119,7 +120,8 @@ impl LlmClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("LLM API error ({}): {}", status, text);
+            let safe_text: String = text.chars().take(200).collect();
+            anyhow::bail!("LLM API error ({}): {}", status, safe_text);
         }
 
         let chat_resp: ChatResponse = resp.json().await?;

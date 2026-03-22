@@ -42,6 +42,9 @@ pub struct LlmConfig {
     /// Max response tokens
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// Temperature for LLM generation (0.0 = deterministic, 1.0 = creative)
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
 }
 
 fn default_provider() -> String {
@@ -56,6 +59,10 @@ fn default_max_tokens() -> u32 {
     4096
 }
 
+fn default_temperature() -> f32 {
+    0.7
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
@@ -64,6 +71,7 @@ impl Default for LlmConfig {
             api_key_env: Some("OPENAI_API_KEY".into()),
             base_url: None,
             max_tokens: default_max_tokens(),
+            temperature: default_temperature(),
         }
     }
 }
