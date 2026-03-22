@@ -137,7 +137,11 @@ fn find_blind_spots(
             "prd" | "rfc" | "adr" | "epic"
         );
 
-        if is_decision_type && !artifact_has_evidence(&record.id, evidence_records, outgoing) {
+        // Only flag active/accepted artifacts as blind spots.
+        // Draft artifacts are still being worked on — evidence not expected yet.
+        let needs_evidence = record.status != "draft";
+
+        if is_decision_type && needs_evidence && !artifact_has_evidence(&record.id, evidence_records, outgoing) {
             spots.push(BlindSpot {
                 id: record.id.clone(),
                 title: record.title.clone(),
@@ -306,8 +310,10 @@ mod tests {
     }
 
     #[test]
-    fn blind_spot_detected_without_evidence() {
-        let records = vec![make_record("PRD-001", "prd")];
+    fn blind_spot_detected_for_active_without_evidence() {
+        let mut record = make_record("PRD-001", "prd");
+        record.status = "active".into(); // only active artifacts are blind spots
+        let records = vec![record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -315,6 +321,17 @@ mod tests {
         let spots = find_blind_spots(&refs, &evidence, &outgoing);
         assert_eq!(spots.len(), 1);
         assert_eq!(spots[0].id, "PRD-001");
+    }
+
+    #[test]
+    fn draft_not_flagged_as_blind_spot() {
+        let records = vec![make_record("PRD-001", "prd")]; // default = draft
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty()); // draft doesn't need evidence
     }
 
     #[test]
