@@ -1,16 +1,26 @@
 # TODO — Forgeplan
 
-## Next: Phase 4G — FPF Reasoning Engine
+## Next: EPIC-001 — Forgeplan v1.0 Real Methodology Engine
 
-### P0 (прямо сейчас)
-- [ ] PRD-002: FPF Reasoning Engine (created, content filled)
-- [ ] RFC-007: FPF Engine core module architecture (created, linked to PRD-002)
-- [ ] G.1: fpf/router.rs — rule-based depth calibration
-- [ ] G.2: fpf/fgr.rs — F-G-R scoring (Formality, Granularity, Reliability)
-- [ ] G.3: fpf/contexts.rs — bounded context detection from graph
-- [ ] G.4: fpf/adi.rs — structured ADI (JSON output)
-- [ ] G.5: fpf/explore.rs — explore-exploit suggestions
-- [ ] G.6: CLI `forgeplan fpf` + MCP tools
+### P0: Health + Blind Spots (PRD-003) — максимальный impact
+- [ ] `forgeplan health` — агрегированный dashboard (R_eff, stale, gaps, next actions)
+- [ ] `forgeplan blindspots` — артефакты без evidence, orphans, missing links
+- [ ] MCP tools: `forgeplan_health`, `forgeplan_blindspots`
+
+### P1: Decision Journal (PRD-004)
+- [ ] `forgeplan journal` — timeline решений с R_eff и evidence status
+- [ ] Фильтры: --kind, --since, --risk
+
+### P2: BMAD Validation v2 (PRD-005)
+- [ ] 13-step validation per kind (not schema check)
+- [ ] `forgeplan validate --adversarial` mode
+
+### P3: Smart Routing v2 (PRD-006)
+- [ ] Rule-based engine (no LLM for core logic)
+- [ ] Works offline, instant response
+
+### P4: FPF Engine (PRD-002)
+- [ ] F-G-R scoring, structured ADI, bounded contexts, explore-exploit
 
 ## Done: Phase 4 — MCP Server + AI
 
