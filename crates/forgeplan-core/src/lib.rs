@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod depth;
 pub mod embed;
+pub mod fpf;
 pub mod health;
 pub mod journal;
 pub mod lifecycle;

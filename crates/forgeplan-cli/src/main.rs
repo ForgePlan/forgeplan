@@ -94,6 +94,9 @@ enum Commands {
     Reason {
         /// Artifact ID to analyze
         id: String,
+        /// Output structured JSON instead of markdown
+        #[arg(long)]
+        json: bool,
     },
     /// Decompose a PRD into RFC tasks using AI
     Decompose {
@@ -164,6 +167,8 @@ enum Commands {
         #[arg(long)]
         reason: String,
     },
+    /// FPF Dashboard — bounded contexts, quality scores, explore-exploit actions
+    Fpf,
     /// Show F-G-R quality scores (Formality, Granularity, Reliability)
     Fgr {
         /// Artifact ID (scores all if omitted)
@@ -231,7 +236,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
         }
-        Commands::Reason { id } => commands::reason::run(&id).await,
+        Commands::Reason { id, json } => commands::reason::run(&id, json).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
         Commands::Get { id } => commands::get::run(&id).await,
         Commands::Update {
@@ -264,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Activate { id } => commands::activate::run(&id).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
+        Commands::Fpf => commands::fpf::run().await,
         Commands::Fgr { id } => commands::fgr::run(id.as_deref()).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
