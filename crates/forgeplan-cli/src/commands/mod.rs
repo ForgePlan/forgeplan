@@ -1,4 +1,5 @@
 pub mod calibrate;
+pub mod capture;
 pub mod decay;
 pub mod decompose;
 pub mod delete;

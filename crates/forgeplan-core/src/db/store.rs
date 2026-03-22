@@ -415,6 +415,54 @@ impl LanceStore {
         Ok(results)
     }
 
+    /// Vector similarity search using pre-computed embedding.
+    /// Returns artifacts sorted by cosine distance (closest first).
+    #[cfg(feature = "semantic-search")]
+    pub async fn vector_search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+        use lancedb::query::QueryBase;
+
+        let results = self
+            .artifacts
+            .vector_search(query_embedding)
+            .map_err(|e| anyhow::anyhow!("Vector search failed: {e}"))?
+            .limit(limit)
+            .execute()
+            .await?;
+
+        let batches: Vec<_> = futures::StreamExt::collect::<Vec<_>>(results).await;
+        let mut records = Vec::new();
+        for batch_result in batches {
+            let batch = batch_result?;
+            let batch_records = convert::batch_to_records(&batch)?;
+            records.extend(batch_records);
+        }
+        Ok(records)
+    }
+
+    /// Update the embedding column for an artifact.
+    pub async fn update_embedding(&self, id: &str, embedding: &[f32]) -> anyhow::Result<()> {
+        let embedding_str = format!(
+            "[{}]",
+            embedding
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("embedding", &embedding_str)
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Find artifacts where `valid_until` is set and is earlier than the current date.
     pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
         let today = chrono::Utc::now().date_naive();

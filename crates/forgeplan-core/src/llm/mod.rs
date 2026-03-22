@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod decompose;
 pub mod generate;
 pub mod reason;
