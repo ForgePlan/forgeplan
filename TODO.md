@@ -12,9 +12,9 @@
 - [x] LLM integration — `forgeplan generate <kind> <description>` (multi-provider: OpenAI, Claude, Gemini, Ollama)
 - [x] Evidence Decay — `forgeplan decay` (R_eff impact of expired evidence)
 - [x] Depth calibration — `forgeplan calibrate [id]` (heuristic depth suggestion)
-- [ ] FPF ADI cycle — Abduction→Deduction→Induction for decisions
-- [ ] Auto-decompose — PRD → RFC tasks
-- [ ] Auto-capture — agent records decisions from conversation context
+- [x] FPF ADI cycle — `forgeplan reason <id>` (Abduction→Deduction→Induction)
+- [x] Auto-decompose — `forgeplan decompose <prd-id>` (PRD → RFC tasks)
+- [ ] Auto-capture — agent records decisions from conversation (deferred: needs MCP context)
 
 ### P2 (Phase 2 — Superseded by MCP)
 - [ ] ~~Workflow Integration~~ — superseded: MCP server covers these use cases

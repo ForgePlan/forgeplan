@@ -241,6 +241,28 @@ pub struct ProgressResponse {
     pub total_completed: usize,
 }
 
+// ── Reason types ─────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReasonResponse {
+    pub artifact_id: String,
+    pub artifact_title: String,
+    pub analysis: String,
+    pub provider: String,
+    pub model: String,
+}
+
+// ── Decompose types ──────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DecomposeResponse {
+    pub prd_id: String,
+    pub prd_title: String,
+    pub tasks: String,
+    pub provider: String,
+    pub model: String,
+}
+
 // ── Generate types ───────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

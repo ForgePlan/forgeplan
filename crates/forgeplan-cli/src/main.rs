@@ -87,6 +87,16 @@ enum Commands {
         /// Description of what to generate
         description: String,
     },
+    /// Analyze an artifact using FPF ADI reasoning cycle (Abduction→Deduction→Induction)
+    Reason {
+        /// Artifact ID to analyze
+        id: String,
+    },
+    /// Decompose a PRD into RFC tasks using AI
+    Decompose {
+        /// PRD artifact ID to decompose
+        id: String,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -120,6 +130,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
         }
+        Commands::Reason { id } => commands::reason::run(&id).await,
+        Commands::Decompose { id } => commands::decompose::run(&id).await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await
