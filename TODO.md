@@ -1,8 +1,20 @@
 # TODO — Forgeplan
 
-## Next: Phase 4 — MCP Server + AI
+## Next: Phase 4G — FPF Reasoning Engine
 
 ### P0 (прямо сейчас)
+- [ ] PRD-002: FPF Reasoning Engine (created, content filled)
+- [ ] RFC-007: FPF Engine core module architecture (created, linked to PRD-002)
+- [ ] G.1: fpf/router.rs — rule-based depth calibration
+- [ ] G.2: fpf/fgr.rs — F-G-R scoring (Formality, Granularity, Reliability)
+- [ ] G.3: fpf/contexts.rs — bounded context detection from graph
+- [ ] G.4: fpf/adi.rs — structured ADI (JSON output)
+- [ ] G.5: fpf/explore.rs — explore-exploit suggestions
+- [ ] G.6: CLI `forgeplan fpf` + MCP tools
+
+## Done: Phase 4 — MCP Server + AI
+
+### Completed P0
 - [x] Phase 4.1: MCP server — `forgeplan serve` (rmcp crate, expose all 11 commands as tools)
 - [x] RFC-004: MCP Server Architecture — document design decisions
 - [x] ADR-006: Full LanceDB primary (no file fallback) — document decision
