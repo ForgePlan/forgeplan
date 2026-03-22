@@ -24,7 +24,7 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 ## Текущий статус
 
 - **v0.7.0** released — EPIC-001 complete
-- **33 CLI команд**, **26 MCP tools**, **225 тестов**
+- **33 CLI команд**, **28 MCP tools**, **225 тестов**
 - **20 dogfood артефактов** в LanceDB (5 active, 15 draft)
 - **Phase 0–4** — DONE
 - **Phase 5** (Desktop App, Tauri) — backlog
