@@ -628,7 +628,7 @@ impl ForgeplanServer {
                     r_eff: 0.0,
                     self_score: 0.0,
                     weakest_link: None,
-                    decay_penalty: 0.0,
+                    expired_count: 0,
                     factors: vec![format!("Error: {e}")],
                 }
             });
@@ -644,6 +644,22 @@ impl ForgeplanServer {
             .filter(|(src, tgt, _)| src == &target.id || tgt == &target.id)
             .count();
 
+        // Compute staleness from valid_until
+        let is_stale = target
+            .valid_until
+            .as_deref()
+            .and_then(|s| {
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                            .ok()
+                            .map(|dt| dt.date())
+                    })
+            })
+            .map(|d| Utc::now().date_naive() > d)
+            .unwrap_or(false);
+
         let fgr_score = fgr::compute(
             &target.id,
             &target.body,
@@ -652,7 +668,7 @@ impl ForgeplanServer {
             &depth,
             report.r_eff,
             link_count,
-            false,
+            is_stale,
         );
 
         Ok(json_result(&ScoreResponse {
@@ -667,7 +683,7 @@ impl ForgeplanServer {
             overall_grade: fgr_score.grade().to_string(),
             weakest_link: report.weakest_link,
             factors: report.factors,
-            decay_penalty: report.decay_penalty,
+            expired_count: report.expired_count,
         }))
     }
 

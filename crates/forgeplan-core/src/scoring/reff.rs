@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::db::store::{ArtifactFilter, LanceStore};
-use crate::scoring::evidence::parse_evidence_from_record;
+use crate::db::store::LanceStore;
+use crate::scoring::evidence::preload_evidence_map;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +88,9 @@ pub fn r_eff(evidence: &[EvidenceItem]) -> f64 {
 // Recursive R_eff engine (Wave 1, PRD-016)
 // ---------------------------------------------------------------------------
 
+/// Maximum recursion depth for `r_eff_recursive` to prevent resource exhaustion.
+pub const MAX_RECURSION_DEPTH: u8 = 10;
+
 /// Assurance report for an artifact, including recursive dependency analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssuranceReport {
@@ -95,7 +98,8 @@ pub struct AssuranceReport {
     pub r_eff: f64,
     pub self_score: f64,
     pub weakest_link: Option<String>,
-    pub decay_penalty: f64,
+    /// Number of expired evidence items found during traversal.
+    pub expired_count: u32,
     pub factors: Vec<String>,
 }
 
@@ -127,16 +131,41 @@ fn score_evidence_full(e: &EvidenceItem) -> f64 {
 /// Recursively compute R_eff for an artifact and its dependency chain.
 ///
 /// Implements the weakest-link principle across the artifact's own evidence
-/// and all transitive dependencies. Cycle detection prevents infinite
-/// recursion — a revisited artifact returns `r_eff = 1.0` (neutral).
+/// and all transitive dependencies. Uses a preloaded evidence cache to avoid
+/// O(N*M) DB queries. Cycle detection + max depth prevent infinite recursion
+/// and resource exhaustion.
 ///
-/// Dependency relation types considered: `informs`, `based_on`, `refines`,
-/// `depends_on`.
+/// Call `preload_evidence_map()` once, then pass the result here.
 pub async fn r_eff_recursive(
     artifact_id: &str,
     store: &LanceStore,
     visited: &mut HashSet<String>,
 ) -> anyhow::Result<AssuranceReport> {
+    // Preload evidence map once at top level
+    let evidence_map = preload_evidence_map(store).await?;
+    r_eff_recursive_inner(artifact_id, store, visited, &evidence_map, 0).await
+}
+
+/// Inner recursive function with evidence cache and depth tracking.
+async fn r_eff_recursive_inner(
+    artifact_id: &str,
+    store: &LanceStore,
+    visited: &mut HashSet<String>,
+    evidence_map: &std::collections::HashMap<String, Vec<EvidenceItem>>,
+    depth: u8,
+) -> anyhow::Result<AssuranceReport> {
+    // Depth limit: return neutral score to prevent resource exhaustion.
+    if depth >= MAX_RECURSION_DEPTH {
+        return Ok(AssuranceReport {
+            artifact_id: artifact_id.to_string(),
+            r_eff: 1.0,
+            self_score: 1.0,
+            weakest_link: None,
+            expired_count: 0,
+            factors: vec![format!("Max depth ({MAX_RECURSION_DEPTH}) reached, returning neutral")],
+        });
+    }
+
     // Cycle detection: return neutral score to break the cycle.
     if visited.contains(artifact_id) {
         return Ok(AssuranceReport {
@@ -144,46 +173,29 @@ pub async fn r_eff_recursive(
             r_eff: 1.0,
             self_score: 1.0,
             weakest_link: None,
-            decay_penalty: 0.0,
+            expired_count: 0,
             factors: vec!["Cycle detected, skipping re-evaluation".to_string()],
         });
     }
     visited.insert(artifact_id.to_string());
 
     let mut factors: Vec<String> = Vec::new();
-    let mut decay_penalty = 0.0;
+    let mut expired_count: u32 = 0;
 
-    // ---- 1. Self score from own evidence --------------------------------
+    // ---- 1. Self score from cached evidence (bidirectional via preload) --
 
-    // Collect evidence records that link to this artifact.
-    let relations = store.get_relations(artifact_id).await?;
-    let evidence_filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
-    };
-    let all_evidence = store.list_records(Some(&evidence_filter)).await?;
-
-    // Build set of evidence IDs that inform this artifact (via any relation
-    // direction where this artifact is the target).
-    let linked_evidence_ids: HashSet<String> = relations
-        .iter()
-        .map(|(target_id, _)| target_id.clone())
-        .collect();
-
-    let evidence_items: Vec<EvidenceItem> = all_evidence
-        .iter()
-        .filter(|rec| linked_evidence_ids.contains(&rec.id))
-        .map(|rec| parse_evidence_from_record(rec))
-        .collect();
+    let evidence_items = evidence_map
+        .get(artifact_id)
+        .cloned()
+        .unwrap_or_default();
 
     let self_score = if evidence_items.is_empty() {
         factors.push("No evidence found (L0)".to_string());
         0.0
     } else {
-        // Track decay for reporting
         for item in &evidence_items {
             if is_expired(item.valid_until) {
-                decay_penalty += 0.9;
+                expired_count += 1;
                 factors.push(format!("Evidence {} expired (Decay applied)", item.id));
             }
         }
@@ -191,20 +203,26 @@ pub async fn r_eff_recursive(
         evidence_items
             .iter()
             .map(|e| score_evidence_full(e))
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|a, b| a.total_cmp(b))
             .unwrap_or(0.0)
     };
 
-    // ---- 2. Dependency scores -------------------------------------------
+    // ---- 2. Dependency scores (excluding evidence artifacts) -------------
 
-    let dep_relation_types: HashSet<&str> =
-        ["informs", "based_on", "refines", "depends_on"].iter().copied().collect();
+    let relations = store.get_relations(artifact_id).await?;
 
-    // Collect dependency IDs with their CL from the relation graph.
-    // Relations are stored as (target_id, relation_type) from get_relations.
+    // Evidence IDs to exclude from deps (they are NOT architectural dependencies)
+    let evidence_ids: HashSet<&String> = evidence_map
+        .values()
+        .flat_map(|items| items.iter().map(|i| &i.id))
+        .collect();
+
     let deps: Vec<(String, String)> = relations
         .iter()
-        .filter(|(_, rel_type)| dep_relation_types.contains(rel_type.as_str()))
+        .filter(|(target_id, rel_type)| {
+            matches!(rel_type.as_str(), "informs" | "based_on" | "refines" | "depends_on")
+                && !evidence_ids.contains(target_id)
+        })
         .cloned()
         .collect();
 
@@ -212,24 +230,26 @@ pub async fn r_eff_recursive(
     let mut weakest_link: Option<String> = None;
 
     for (dep_id, rel_type) in &deps {
-        let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {
+        let dep_report = match Box::pin(r_eff_recursive_inner(
+            dep_id, store, visited, evidence_map, depth + 1,
+        ))
+        .await
+        {
             Ok(report) => report,
-            Err(_) => {
-                factors.push(format!("Failed to compute R_eff for dependency {dep_id}"));
+            Err(e) => {
+                factors.push(format!("Failed to compute R_eff for {dep_id}: {e}"));
                 AssuranceReport {
                     artifact_id: dep_id.clone(),
                     r_eff: 0.0,
                     self_score: 0.0,
                     weakest_link: None,
-                    decay_penalty: 0.0,
+                    expired_count: 0,
                     factors: vec!["Error during recursive evaluation".to_string()],
                 }
             }
         };
 
-        // Apply CL penalty based on relation type. Direct dependencies
-        // (depends_on, refines) are CL3; informational (informs) is CL2;
-        // based_on is CL2.
+        // CL penalty based on relation type
         let dep_cl: u8 = match rel_type.as_str() {
             "depends_on" | "refines" => 3,
             "based_on" | "informs" => 2,
@@ -261,7 +281,7 @@ pub async fn r_eff_recursive(
         r_eff: final_score,
         self_score,
         weakest_link,
-        decay_penalty,
+        expired_count,
         factors,
     })
 }
@@ -426,7 +446,7 @@ mod tests {
             r_eff: 0.0,
             self_score: 0.0,
             weakest_link: None,
-            decay_penalty: 0.0,
+            expired_count: 0,
             factors: vec![],
         };
         assert_eq!(report.artifact_id, "PRD-001");
@@ -442,7 +462,7 @@ mod tests {
             r_eff: 0.7,
             self_score: 0.8,
             weakest_link: Some("PRD-002".into()),
-            decay_penalty: 0.0,
+            expired_count: 0,
             factors: vec!["CL penalty applied for PRD-002".into()],
         };
         assert_eq!(report.weakest_link.as_deref(), Some("PRD-002"));

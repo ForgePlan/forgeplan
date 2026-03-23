@@ -98,16 +98,19 @@ fn default_effort() -> String {
 
 /// Try to parse LLM response as structured ADI JSON, with fallback to raw markdown.
 pub fn parse_adi_output(response: &str) -> AdiOutput {
-    // Try JSON parse first (may be wrapped in ```json ... ```)
-    let cleaned = response
-        .trim()
-        .strip_prefix("```json")
-        .unwrap_or(response.trim())
-        .strip_prefix("```")
-        .unwrap_or(response.trim())
-        .strip_suffix("```")
-        .unwrap_or(response.trim())
-        .trim();
+    // Strip code fences sequentially — each step feeds the next
+    let s = response.trim();
+    let s = s.strip_prefix("```json").map(|r| r.trim_start()).unwrap_or(s);
+    let s = s.strip_prefix("```").map(|r| r.trim_start()).unwrap_or(s);
+    let s = s.strip_suffix("```").map(|r| r.trim_end()).unwrap_or(s);
+    // Also try finding first '{' for cases where LLM adds text before JSON
+    let cleaned = if s.starts_with('{') {
+        s
+    } else if let Some(pos) = s.find('{') {
+        &s[pos..]
+    } else {
+        s
+    };
 
     match serde_json::from_str::<AdiOutput>(cleaned) {
         Ok(mut output) => {
@@ -155,4 +158,62 @@ pub async fn reason(
     let response = client.generate(&prompt, Some(&system)).await?;
     let adi_output = parse_adi_output(&response);
     Ok((response, adi_output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_adi_valid_json() {
+        let json = r#"{"hypotheses":[{"id":"H1","description":"test"}],"recommendation":"use H1","confidence":"High"}"#;
+        let out = parse_adi_output(json);
+        assert!(out.raw_markdown.is_none());
+        assert_eq!(out.hypotheses.len(), 1);
+        assert_eq!(out.hypotheses[0].id, "H1");
+        assert_eq!(out.recommendation, "use H1");
+        assert_eq!(out.confidence, "High");
+    }
+
+    #[test]
+    fn parse_adi_json_in_backticks() {
+        let input = "```json\n{\"hypotheses\":[],\"recommendation\":\"none\",\"confidence\":\"Low\"}\n```";
+        let out = parse_adi_output(input);
+        assert!(out.raw_markdown.is_none());
+        assert_eq!(out.confidence, "Low");
+        assert_eq!(out.recommendation, "none");
+    }
+
+    #[test]
+    fn parse_adi_malformed_json_falls_back() {
+        let input = "{broken json here!!!";
+        let out = parse_adi_output(input);
+        assert!(out.raw_markdown.is_some());
+        assert!(out.hypotheses.is_empty());
+        assert_eq!(out.confidence, "Unknown");
+    }
+
+    #[test]
+    fn parse_adi_empty_string_no_panic() {
+        let out = parse_adi_output("");
+        assert!(out.raw_markdown.is_some());
+        assert!(out.hypotheses.is_empty());
+    }
+
+    #[test]
+    fn parse_adi_partial_fields_uses_defaults() {
+        let json = r#"{"hypotheses":[]}"#;
+        let out = parse_adi_output(json);
+        assert!(out.raw_markdown.is_none());
+        assert_eq!(out.confidence, "Medium"); // default
+        assert!(out.recommendation.is_empty()); // default empty
+    }
+
+    #[test]
+    fn parse_adi_text_before_json() {
+        let input = "Here is my analysis:\n\n{\"hypotheses\":[{\"id\":\"H1\",\"description\":\"d\"}],\"recommendation\":\"ok\"}";
+        let out = parse_adi_output(input);
+        assert!(out.raw_markdown.is_none());
+        assert_eq!(out.hypotheses.len(), 1);
+    }
 }

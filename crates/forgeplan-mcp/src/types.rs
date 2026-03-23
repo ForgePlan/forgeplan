@@ -122,7 +122,7 @@ pub struct ScoreResponse {
     pub overall_grade: String,
     pub weakest_link: Option<String>,
     pub factors: Vec<String>,
-    pub decay_penalty: f64,
+    pub expired_count: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

@@ -5,9 +5,10 @@ use chrono::{NaiveDate, Utc};
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
-use forgeplan_core::db::store::{ArtifactFilter, LanceStore};
+use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::scoring::evidence::collect_evidence_for;
 use forgeplan_core::scoring::fgr;
-use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
+use forgeplan_core::scoring::reff;
 use forgeplan_core::workspace;
 
 pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
@@ -29,40 +30,8 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut visited = HashSet::new();
     let report = reff::r_eff_recursive(target_id, &store, &mut visited).await?;
 
-    // --- Flat evidence list for display (backward-compat) ---
-    let outgoing = store.get_relations(target_id).await?;
-    let evidence_targets: Vec<String> = outgoing
-        .iter()
-        .filter(|(_, rel)| rel == "informs" || rel == "based_on" || rel == "refines")
-        .map(|(t, _)| t.clone())
-        .collect();
-
-    let filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
-    };
-    let evidence_records = store.list_records(Some(&filter)).await?;
-
-    let mut evidence_items: Vec<EvidenceItem> = Vec::new();
-
-    for ev_record in &evidence_records {
-        let is_linked = evidence_targets
-            .iter()
-            .any(|eid| eid.eq_ignore_ascii_case(&ev_record.id));
-
-        if !is_linked {
-            let ev_relations = store.get_relations(&ev_record.id).await?;
-            let links_to_target = ev_relations
-                .iter()
-                .any(|(t, _)| t.eq_ignore_ascii_case(target_id));
-            if !links_to_target {
-                continue;
-            }
-        }
-
-        let item = parse_evidence_from_record(ev_record);
-        evidence_items.push(item);
-    }
+    // --- Evidence list via shared bidirectional lookup ---
+    let evidence_items = collect_evidence_for(target_id, &store).await?;
 
     // --- F-G-R computation ---
     let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
@@ -220,60 +189,3 @@ fn score_grade(v: f64) -> &'static str {
     }
 }
 
-/// Parse evidence fields from an ArtifactRecord's body.
-/// Evidence metadata is stored in the body as YAML-like fields.
-fn parse_evidence_from_record(
-    record: &forgeplan_core::db::store::ArtifactRecord,
-) -> EvidenceItem {
-    // Parse verdict from body (look for "verdict:" line)
-    let verdict = extract_field(&record.body, "verdict")
-        .map(|s| match s.to_lowercase().as_str() {
-            "supports" => Verdict::Supports,
-            "weakens" => Verdict::Weakens,
-            "refutes" => Verdict::Refutes,
-            _ => Verdict::Supports,
-        })
-        .unwrap_or(Verdict::Supports);
-
-    // Parse congruence_level
-    let cl = extract_field(&record.body, "congruence_level")
-        .and_then(|s| s.parse::<u8>().ok())
-        .map(|v| v.min(3))
-        .unwrap_or(0);
-
-    let valid_until = record
-        .valid_until
-        .as_deref()
-        .and_then(|s| {
-            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .or_else(|| {
-                    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                        .ok()
-                        .and_then(|d| d.and_hms_opt(23, 59, 59))
-                })
-        });
-
-    EvidenceItem {
-        id: record.id.clone(),
-        evidence_type: EvidenceType::Measurement,
-        verdict,
-        congruence_level: cl,
-        valid_until,
-    }
-}
-
-/// Extract a simple "key: value" from body text.
-fn extract_field(body: &str, key: &str) -> Option<String> {
-    let prefix = format!("{}:", key);
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            let val = rest.trim();
-            if !val.is_empty() {
-                return Some(val.to_string());
-            }
-        }
-    }
-    None
-}
