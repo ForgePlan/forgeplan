@@ -284,6 +284,21 @@ struct ImportParams {
     force: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FpfSearchParams {
+    /// Search query for FPF knowledge base
+    query: String,
+    /// Max results (default 5)
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FpfSectionParams {
+    /// FPF section ID (e.g. "B.3", "C.2.2")
+    id: String,
+}
+
 // ── Tool implementations ─────────────────────────────────────
 
 #[tool_router]
@@ -1378,7 +1393,7 @@ impl ForgeplanServer {
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
-            &llm_config, &record.id, &record.title, &record.kind, &record.body,
+            &llm_config, &record.id, &record.title, &record.kind, &record.body, None,
         )
         .await
         .map_err(|e| McpError::internal_error(format!("ADI reasoning failed: {e}"), None))?;
@@ -1666,6 +1681,83 @@ impl ForgeplanServer {
             "skipped": skipped,
             "relations_imported": relations_imported,
         })))
+    }
+
+    // ── FPF Knowledge Base tools ────────────────────────────────
+
+    #[tool(description = "Search FPF (First Principles Framework) knowledge base for relevant patterns and concepts. Returns matching sections with titles and snippets.")]
+    async fn forgeplan_fpf_search(
+        &self,
+        Parameters(p): Parameters<FpfSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        if !store.has_fpf() {
+            return Ok(err_result("FPF knowledge base not loaded. Run `forgeplan fpf ingest` first."));
+        }
+
+        let limit = p.limit.unwrap_or(5);
+        let results = store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
+            tracing::warn!("FPF search failed: {e}");
+            Vec::new()
+        });
+
+        Ok(json_result(&FpfSearchResponse {
+            query: p.query,
+            results: results.iter().map(|c| FpfSearchHit {
+                section_id: c.section_id.clone(),
+                title: c.title.clone(),
+                snippet: c.body.lines().take(3).collect::<Vec<_>>().join(" ").chars().take(200).collect(),
+                line_count: c.line_count,
+            }).collect(),
+        }))
+    }
+
+    #[tool(description = "Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1').")]
+    async fn forgeplan_fpf_section(
+        &self,
+        Parameters(p): Parameters<FpfSectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        match store.get_fpf_section(&p.id).await {
+            Ok(Some(chunk)) => Ok(json_result(&FpfSectionResponse {
+                section_id: chunk.section_id,
+                title: chunk.title,
+                body: chunk.body,
+                line_count: chunk.line_count,
+            })),
+            Ok(None) => Ok(err_result(&format!("FPF section '{}' not found", p.id))),
+            Err(e) => Ok(err_result(&format!("Failed to get section: {e}"))),
+        }
+    }
+
+    #[tool(description = "List all available FPF (First Principles Framework) sections in the knowledge base.")]
+    async fn forgeplan_fpf_list(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let sections = store.list_fpf_sections().await.unwrap_or_else(|e| {
+            tracing::warn!("FPF list failed: {e}");
+            Vec::new()
+        });
+
+        Ok(json_result(&FpfListResponse {
+            sections: sections.iter().map(|s| FpfListItem {
+                section_id: s.section_id.clone(),
+                title: s.title.clone(),
+                line_count: s.line_count,
+            }).collect(),
+            total: sections.len(),
+        }))
     }
 }
 

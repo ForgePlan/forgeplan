@@ -263,3 +263,40 @@ pub struct SignalDto {
     pub value: String,
     pub minimum_depth: String,
 }
+
+// ── FPF Knowledge Base types ────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FpfSearchResponse {
+    pub query: String,
+    pub results: Vec<FpfSearchHit>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FpfSearchHit {
+    pub section_id: String,
+    pub title: String,
+    pub snippet: String,
+    pub line_count: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FpfSectionResponse {
+    pub section_id: String,
+    pub title: String,
+    pub body: String,
+    pub line_count: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FpfListResponse {
+    pub sections: Vec<FpfListItem>,
+    pub total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FpfListItem {
+    pub section_id: String,
+    pub title: String,
+    pub line_count: i32,
+}

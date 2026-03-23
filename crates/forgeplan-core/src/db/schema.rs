@@ -87,6 +87,30 @@ pub fn relations_schema() -> Arc<Schema> {
     ]))
 }
 
+/// Arrow schema for the `fpf_spec` table — FPF knowledge base chunks.
+///
+/// Columns:
+/// - id            Utf8 (not null) — unique chunk ID: "fpf-B.3-001"
+/// - section_id    Utf8 (not null) — FPF section ID: "B.3", "C.2.2", "A.1"
+/// - parent_section Utf8 (nullable) — parent section: "07-part-b"
+/// - title         Utf8 (not null) — section title
+/// - body          LargeUtf8 (not null) — full markdown content
+/// - line_count    Int32 (not null) — number of lines
+/// - file_path     Utf8 (not null) — original file path
+/// - created_at    Utf8 (not null) — ISO datetime of ingestion
+pub fn fpf_spec_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("section_id", DataType::Utf8, false),
+        Field::new("parent_section", DataType::Utf8, true),
+        Field::new("title", DataType::Utf8, false),
+        Field::new("body", DataType::LargeUtf8, false),
+        Field::new("line_count", DataType::Int32, false),
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +177,31 @@ mod tests {
         assert!(names.contains(&"target_id"));
         assert!(names.contains(&"relation_type"));
         assert!(names.contains(&"created_at"));
+    }
+
+    #[test]
+    fn fpf_spec_schema_has_required_columns() {
+        let schema = fpf_spec_schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(names.contains(&"id"));
+        assert!(names.contains(&"section_id"));
+        assert!(names.contains(&"parent_section"));
+        assert!(names.contains(&"title"));
+        assert!(names.contains(&"body"));
+        assert!(names.contains(&"line_count"));
+        assert!(names.contains(&"file_path"));
+        assert!(names.contains(&"created_at"));
+    }
+
+    #[test]
+    fn fpf_spec_schema_nullable_fields() {
+        let schema = fpf_spec_schema();
+        let nullable: Vec<&str> = schema
+            .fields()
+            .iter()
+            .filter(|f| f.is_nullable())
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(nullable, vec!["parent_section"]);
     }
 }
