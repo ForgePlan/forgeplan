@@ -78,6 +78,14 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
         min_depth: Mode::Standard,
         weight: 0.6,
     },
+    // Redesign / Overhaul → Standard+
+    KeywordTrigger {
+        keywords: &["redesign", "overhaul", "rewrite", "refactor all", "rework", "revamp"],
+        id: "keyword:redesign",
+        description: "Major redesign or overhaul detected",
+        min_depth: Mode::Standard,
+        weight: 0.6,
+    },
 ];
 
 /// Extract signals from a text description (task description or artifact body).
@@ -230,6 +238,12 @@ mod tests {
     fn irreversible_triggers_deep() {
         let signals = extract("This is an irreversible database migration");
         assert!(signals.iter().any(|s| s.id == "reversibility:low"));
+    }
+
+    #[test]
+    fn redesign_triggers_standard() {
+        let signals = extract("Redesign the entire CLI with new UI framework");
+        assert!(signals.iter().any(|s| s.id == "keyword:redesign"));
     }
 
     #[test]

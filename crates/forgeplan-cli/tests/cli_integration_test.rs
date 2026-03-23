@@ -11,7 +11,7 @@ fn init_creates_workspace() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -29,14 +29,14 @@ fn init_idempotent_without_force() {
 
     // First init succeeds
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
 
     // Second init succeeds but warns
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -48,7 +48,7 @@ fn new_creates_artifact() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -77,7 +77,7 @@ fn new_auto_increments_id() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -102,7 +102,7 @@ fn list_shows_artifacts() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -127,7 +127,7 @@ fn status_shows_dashboard() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -151,7 +151,7 @@ fn validate_checks_artifact() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -175,7 +175,7 @@ fn link_creates_relationship() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -205,7 +205,7 @@ fn graph_outputs_mermaid() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -243,7 +243,7 @@ fn search_finds_content() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -268,7 +268,7 @@ fn stale_runs_without_error() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -286,7 +286,7 @@ fn score_without_evidence() {
     let tmp = TempDir::new().unwrap();
 
     forgeplan()
-        .arg("init")
+        .args(["init", "-y"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -309,7 +309,7 @@ fn score_without_evidence() {
 fn duplicate_link_rejected() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan().args(["new", "prd", "P"]).current_dir(tmp.path()).assert().success();
     forgeplan().args(["new", "rfc", "R"]).current_dir(tmp.path()).assert().success();
 
@@ -333,7 +333,7 @@ fn duplicate_link_rejected() {
 fn validate_exits_nonzero_on_must_errors() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
     // Create a PRD via CLI (goes into LanceDB)
     forgeplan()
@@ -356,7 +356,7 @@ fn validate_exits_nonzero_on_must_errors() {
 fn stale_detects_expired_artifact() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
     // Create an evidence artifact via CLI (goes into LanceDB + projection)
     forgeplan()
@@ -397,7 +397,7 @@ fn no_workspace_gives_error() {
 fn get_reads_artifact() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan()
         .args(["new", "prd", "Get Test Feature"])
         .current_dir(tmp.path())
@@ -419,7 +419,7 @@ fn get_reads_artifact() {
 fn get_nonexistent_fails() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
     forgeplan()
         .args(["get", "PRD-999"])
@@ -433,7 +433,7 @@ fn get_nonexistent_fails() {
 fn update_changes_status() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan()
         .args(["new", "prd", "Update Test"])
         .current_dir(tmp.path())
@@ -462,7 +462,7 @@ fn update_changes_status() {
 fn update_changes_title() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan()
         .args(["new", "rfc", "Old Title"])
         .current_dir(tmp.path())
@@ -481,7 +481,7 @@ fn update_changes_title() {
 fn update_nothing_fails() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan()
         .args(["new", "prd", "Test"])
         .current_dir(tmp.path())
@@ -500,7 +500,7 @@ fn update_nothing_fails() {
 fn delete_requires_confirmation() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan()
         .args(["new", "prd", "Delete Test"])
         .current_dir(tmp.path())
@@ -527,7 +527,7 @@ fn delete_requires_confirmation() {
 fn delete_with_yes_removes_artifact() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
     forgeplan()
         .args(["new", "prd", "To Be Deleted"])
         .current_dir(tmp.path())
@@ -558,7 +558,7 @@ fn full_workflow_dogfood() {
     let tmp = TempDir::new().unwrap();
 
     // 1. Init
-    forgeplan().arg("init").current_dir(tmp.path()).assert().success();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
     // 2. Create PRD
     forgeplan()

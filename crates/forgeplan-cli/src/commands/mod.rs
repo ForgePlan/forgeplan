@@ -23,6 +23,7 @@ pub mod review;
 pub mod route;
 pub mod score;
 pub mod search;
+pub mod setup_skill;
 pub mod stale;
 pub mod status;
 pub mod supersede;

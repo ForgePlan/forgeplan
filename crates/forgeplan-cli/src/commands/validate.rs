@@ -1,11 +1,14 @@
 use std::env;
 
+use console::style;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::validation::{self, Severity, ValidationResult};
 use forgeplan_core::workspace;
 
-pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
+use crate::ui;
+
+pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -37,21 +40,42 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut total_errors = 0;
     let mut total_warnings = 0;
     let mut total_passed = 0;
+    let mut json_results = Vec::new();
 
     for record in &to_validate {
         let fm = record.frontmatter_map();
 
         let kind = record.kind.parse::<ArtifactKind>().unwrap_or_else(|_| {
-            eprintln!(
-                "  Warning: unknown artifact kind '{}', applying base rules only",
-                record.kind
-            );
+            if !json {
+                eprintln!(
+                    "  Warning: unknown artifact kind '{}', applying base rules only",
+                    record.kind
+                );
+            }
             ArtifactKind::Note
         });
         let depth = record.depth.parse::<Mode>().unwrap_or(Mode::Standard);
 
         let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
-        print_result(&result, &record.title, &depth);
+
+        if json {
+            json_results.push(serde_json::json!({
+                "artifact_id": result.artifact_id,
+                "kind": result.kind,
+                "depth": result.depth,
+                "passed": result.passed(),
+                "errors": result.error_count(),
+                "warnings": result.warning_count(),
+                "findings": result.findings.iter().map(|f| serde_json::json!({
+                    "rule_id": f.rule_id,
+                    "severity": format!("{:?}", f.severity),
+                    "message": f.message,
+                    "section": f.section,
+                })).collect::<Vec<_>>(),
+            }));
+        } else {
+            print_result(&result, &record.title, &depth);
+        }
 
         total_errors += result.error_count();
         total_warnings += result.warning_count();
@@ -60,14 +84,16 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
-    if to_validate.len() > 1 {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json_results)?);
+    } else if to_validate.len() > 1 {
         println!();
         println!(
             "Summary: {} artifact(s), {} passed, {} error(s), {} warning(s)",
             to_validate.len(),
-            total_passed,
-            total_errors,
-            total_warnings
+            ui::styled_count(total_passed, false),
+            ui::styled_count(total_errors, true),
+            ui::styled_count(total_warnings, total_warnings > 0),
         );
     }
 
@@ -78,43 +104,53 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn print_result(result: &ValidationResult, title: &str, depth: &Mode) {
+    let depth_str = format!("{:?}", depth);
     println!();
     println!(
-        "{} \"{}\" (depth: {:?})",
-        result.artifact_id, title, depth
+        "{} \"{}\" (depth: {})",
+        style(&result.artifact_id).bold(),
+        title,
+        ui::styled_depth(&depth_str),
     );
-    println!("{}", "─".repeat(50));
+    println!("{}", style("─".repeat(50)).dim());
 
     if result.findings.is_empty() {
-        println!("  All checks passed!");
+        println!("  {}", style("All checks passed!").green().bold());
     } else {
         for f in &result.findings {
             let icon = match f.severity {
-                Severity::Must => "x",
-                Severity::Should => "!",
-                Severity::Could => "~",
+                Severity::Must => style("x").red().bold().to_string(),
+                Severity::Should => style("!").yellow().to_string(),
+                Severity::Could => style("~").dim().to_string(),
+            };
+            let severity_str = match f.severity {
+                Severity::Must => "MUST",
+                Severity::Should => "SHOULD",
+                Severity::Could => "COULD",
             };
             println!(
                 "  {} [{}] {}: {}",
-                icon, f.severity, f.rule_id, f.message
+                icon,
+                ui::styled_severity(severity_str),
+                style(&f.rule_id).dim(),
+                f.message
             );
         }
     }
 
-    let passed = result.findings.is_empty();
-    let status = if passed {
-        "PASS"
+    let no_findings = result.findings.is_empty();
+    let status_styled = if no_findings {
+        style("PASS").green().bold()
     } else if result.passed() {
-        "PASS (with warnings)"
+        style("PASS (with warnings)").green()
     } else {
-        "FAIL"
+        style("FAIL").red().bold()
     };
     println!();
     println!(
         "  Result: {} -- {} error(s), {} warning(s)",
-        status,
-        result.error_count(),
-        result.warning_count()
+        status_styled,
+        ui::styled_count(result.error_count(), true),
+        ui::styled_count(result.warning_count(), result.warning_count() > 0),
     );
 }
-
