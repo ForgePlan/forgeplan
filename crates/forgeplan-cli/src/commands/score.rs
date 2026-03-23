@@ -1,6 +1,12 @@
+use std::collections::HashSet;
 use std::env;
 
+use chrono::{NaiveDate, Utc};
+
+use forgeplan_core::artifact::frontmatter::Frontmatter;
+use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::{ArtifactFilter, LanceStore};
+use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
 use forgeplan_core::workspace;
 
@@ -19,7 +25,11 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
 
-    // Get relations FROM target (outgoing links)
+    // --- Recursive R_eff via AssuranceReport ---
+    let mut visited = HashSet::new();
+    let report = reff::r_eff_recursive(target_id, &store, &mut visited).await?;
+
+    // --- Flat evidence list for display (backward-compat) ---
     let outgoing = store.get_relations(target_id).await?;
     let evidence_targets: Vec<String> = outgoing
         .iter()
@@ -27,7 +37,6 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         .map(|(t, _)| t.clone())
         .collect();
 
-    // Find all EvidencePack artifacts
     let filter = ArtifactFilter {
         kind: Some("evidence".to_string()),
         status: None,
@@ -37,13 +46,11 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut evidence_items: Vec<EvidenceItem> = Vec::new();
 
     for ev_record in &evidence_records {
-        // Check if this evidence is linked from target
         let is_linked = evidence_targets
             .iter()
             .any(|eid| eid.eq_ignore_ascii_case(&ev_record.id));
 
         if !is_linked {
-            // Check if evidence links TO target
             let ev_relations = store.get_relations(&ev_record.id).await?;
             let links_to_target = ev_relations
                 .iter()
@@ -57,9 +64,46 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         evidence_items.push(item);
     }
 
-    // Compute R_eff
-    let score = reff::r_eff(&evidence_items);
+    // --- F-G-R computation ---
+    let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
+    let depth: Mode = target.depth.parse().unwrap_or(Mode::Standard);
+    let frontmatter: Frontmatter = Frontmatter::new();
 
+    // Determine staleness from valid_until
+    let is_stale = target
+        .valid_until
+        .as_deref()
+        .and_then(|s| {
+            NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .ok()
+                .or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                        .ok()
+                        .map(|dt| dt.date())
+                })
+        })
+        .map(|d| Utc::now().date_naive() > d)
+        .unwrap_or(false);
+
+    // Link count for reliability
+    let all_relations = store.get_all_relations().await?;
+    let link_count = all_relations
+        .iter()
+        .filter(|(src, tgt, _)| src == target_id || tgt == target_id)
+        .count();
+
+    let fgr_score = fgr::compute(
+        target_id,
+        &target.body,
+        &frontmatter,
+        &kind,
+        &depth,
+        report.r_eff,
+        link_count,
+        is_stale,
+    );
+
+    // --- Display ---
     println!();
     println!("{} \"{}\"", target.id, target.title);
     println!("{}", "-".repeat(50));
@@ -75,7 +119,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         for item in &evidence_items {
             let expired = item
                 .valid_until
-                .map(|dt| chrono::Utc::now().naive_utc() > dt)
+                .map(|dt| Utc::now().naive_utc() > dt)
                 .unwrap_or(false);
             let item_score = reff::r_eff(&[item.clone()]);
             println!(
@@ -89,19 +133,91 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         }
         println!();
 
-        let status = if score >= 0.5 {
+        let status = if report.r_eff >= 0.5 {
             "Adequate"
-        } else if score >= 0.3 {
+        } else if report.r_eff >= 0.3 {
             "Needs Review"
         } else {
             "AT RISK"
         };
 
-        println!("  R_eff = {:.2} -- {}", score, status);
+        println!("  R_eff = {:.2} -- {}", report.r_eff, status);
     }
+
+    // Weakest link
+    if let Some(ref wl) = report.weakest_link {
+        println!("  Weakest link: {}", wl);
+    }
+
+    // Factors
+    if !report.factors.is_empty() {
+        println!();
+        for factor in &report.factors {
+            println!("  \u{2022} {}", factor);
+        }
+    }
+
+    // F-G-R breakdown
+    println!();
+    println!("  Quality (F-G-R):");
+    println!(
+        "    Formality:    {:.2} ({})",
+        fgr_score.formality,
+        score_grade(fgr_score.formality)
+    );
+    println!(
+        "    Granularity:  {:.2} ({})",
+        fgr_score.granularity,
+        score_grade(fgr_score.granularity)
+    );
+    println!(
+        "    Reliability:  {:.2} ({})",
+        fgr_score.reliability,
+        score_grade(fgr_score.reliability)
+    );
+    println!(
+        "    Overall:      {:.2} ({})",
+        fgr_score.overall(),
+        fgr_score.grade()
+    );
+
+    // Hints for low scores
+    let mut hints: Vec<&str> = Vec::new();
+    if fgr_score.formality < 0.4 {
+        hints.push("Hint: Fill in required sections to improve formality");
+    }
+    if fgr_score.granularity < 0.4 {
+        hints.push("Hint: Add more FR checkboxes to improve granularity");
+    }
+    if fgr_score.reliability < 0.3 {
+        hints.push("Hint: Add evidence with `forgeplan new evidence`");
+    }
+
+    if !hints.is_empty() {
+        println!();
+        for hint in &hints {
+            println!("  {}", hint);
+        }
+    }
+
     println!();
 
     Ok(())
+}
+
+/// Per-dimension grade (same thresholds as FgrScore::grade but for a single value).
+fn score_grade(v: f64) -> &'static str {
+    if v > 0.8 {
+        "A"
+    } else if v > 0.6 {
+        "B"
+    } else if v > 0.4 {
+        "C"
+    } else if v > 0.2 {
+        "D"
+    } else {
+        "F"
+    }
 }
 
 /// Parse evidence fields from an ArtifactRecord's body.
@@ -132,7 +248,7 @@ fn parse_evidence_from_record(
             chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
                 .ok()
                 .or_else(|| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    NaiveDate::parse_from_str(s, "%Y-%m-%d")
                         .ok()
                         .and_then(|d| d.and_hms_opt(23, 59, 59))
                 })

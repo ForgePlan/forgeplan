@@ -110,6 +110,9 @@ enum Commands {
         /// Output structured JSON instead of markdown
         #[arg(long)]
         json: bool,
+        /// Save ADI analysis as a Note artifact linked to the source
+        #[arg(long)]
+        save: bool,
     },
     /// Decompose a PRD into RFC tasks using AI
     Decompose {
@@ -270,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
         }
-        Commands::Reason { id, json } => commands::reason::run(&id, json).await,
+        Commands::Reason { id, json, save } => commands::reason::run(&id, json, save).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
         Commands::Get { id } => commands::get::run(&id).await,
         Commands::Update {

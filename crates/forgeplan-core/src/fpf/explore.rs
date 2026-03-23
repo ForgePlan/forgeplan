@@ -7,6 +7,7 @@
 
 use crate::db::store::ArtifactRecord;
 use crate::scoring::fgr::FgrScore;
+use crate::scoring::reff::AssuranceReport;
 
 /// A suggested next action.
 #[derive(Debug, Clone)]
@@ -22,7 +23,12 @@ pub fn suggest(
     records: &[ArtifactRecord],
     fgr_scores: &[FgrScore],
     relations: &[(String, String, String)],
+    assurance_reports: Option<&[AssuranceReport]>,
 ) -> Vec<Action> {
+    let find_report = |id: &str| -> Option<&AssuranceReport> {
+        assurance_reports.and_then(|reports| reports.iter().find(|r| r.artifact_id == id))
+    };
+
     let mut actions = Vec::new();
 
     for record in records {
@@ -56,13 +62,22 @@ pub fn suggest(
 
         // Rule 2: Has evidence but stale → INVESTIGATE
         if record.r_eff_score > 0.0 && record.r_eff_score < 0.5 {
+            let mut reason = format!(
+                "R_eff={:.2} — evidence exists but weak/stale. Refresh or add stronger evidence.",
+                record.r_eff_score
+            );
+            if let Some(report) = find_report(&record.id) {
+                if let Some(ref wl) = report.weakest_link {
+                    reason.push_str(&format!(" Weakest link: {}", wl));
+                }
+                if let Some(first) = report.factors.first() {
+                    reason.push_str(&format!(" {}", first));
+                }
+            }
             actions.push(Action {
                 artifact_id: record.id.clone(),
                 action_type: "INVESTIGATE".into(),
-                reason: format!(
-                    "R_eff={:.2} — evidence exists but weak/stale. Refresh or add stronger evidence.",
-                    record.r_eff_score
-                ),
+                reason,
                 priority: 2,
             });
             continue;
@@ -83,14 +98,23 @@ pub fn suggest(
         if record.r_eff_score >= 0.7 {
             if let Some(fgr) = fgr {
                 if fgr.overall() >= 0.6 {
+                    let mut reason = format!(
+                        "R_eff={:.2}, quality={:.2}. Ready to build on.",
+                        record.r_eff_score,
+                        fgr.overall()
+                    );
+                    if let Some(report) = find_report(&record.id) {
+                        if !report.factors.is_empty() {
+                            reason.push_str(&format!(
+                                " ({} factors analyzed)",
+                                report.factors.len()
+                            ));
+                        }
+                    }
                     actions.push(Action {
                         artifact_id: record.id.clone(),
                         action_type: "EXPLOIT".into(),
-                        reason: format!(
-                            "R_eff={:.2}, quality={:.2}. Ready to build on.",
-                            record.r_eff_score,
-                            fgr.overall()
-                        ),
+                        reason,
                         priority: 5,
                     });
                 }
@@ -137,7 +161,7 @@ mod tests {
     fn draft_no_evidence_gets_explore() {
         let records = vec![record("PRD-001", "draft", 0.0)];
         let scores = vec![fgr("PRD-001", 0.2, 0.2, 0.1)];
-        let actions = suggest(&records, &scores, &[]);
+        let actions = suggest(&records, &scores, &[], None);
 
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].action_type, "EXPLORE");
@@ -148,7 +172,7 @@ mod tests {
     fn weak_evidence_gets_investigate() {
         let records = vec![record("PRD-001", "active", 0.3)];
         let scores = vec![fgr("PRD-001", 0.5, 0.5, 0.3)];
-        let actions = suggest(&records, &scores, &[]);
+        let actions = suggest(&records, &scores, &[], None);
 
         assert_eq!(actions[0].action_type, "INVESTIGATE");
     }
@@ -156,7 +180,7 @@ mod tests {
     #[test]
     fn superseded_skipped() {
         let records = vec![record("PRD-001", "superseded", 0.0)];
-        let actions = suggest(&records, &[], &[]);
+        let actions = suggest(&records, &[], &[], None);
         assert!(actions.is_empty());
     }
 
@@ -167,7 +191,7 @@ mod tests {
         let relations = vec![
             ("PRD-001".into(), "RFC-001".into(), "informs".into()),
         ];
-        let actions = suggest(&records, &scores, &relations);
+        let actions = suggest(&records, &scores, &relations, None);
 
         assert!(actions.iter().any(|a| a.action_type == "EXPLOIT"));
     }

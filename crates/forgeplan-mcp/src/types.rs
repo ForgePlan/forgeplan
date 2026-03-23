@@ -114,6 +114,15 @@ pub struct ScoreResponse {
     pub title: String,
     pub r_eff: f64,
     pub evidence: Vec<EvidenceDto>,
+    // F-G-R enrichment (Wave 2)
+    pub self_score: f64,
+    pub formality: f64,
+    pub granularity: f64,
+    pub reliability: f64,
+    pub overall_grade: String,
+    pub weakest_link: Option<String>,
+    pub factors: Vec<String>,
+    pub decay_penalty: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

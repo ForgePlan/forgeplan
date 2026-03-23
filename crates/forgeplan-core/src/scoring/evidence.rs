@@ -27,9 +27,20 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
             })
     });
 
+    let evidence_type = extract_field(&record.body, "evidence_type")
+        .or_else(|| extract_field(&record.body, "type"))
+        .map(|s| match s.to_lowercase().as_str() {
+            "test" => EvidenceType::Test,
+            "measurement" => EvidenceType::Measurement,
+            "benchmark" => EvidenceType::Benchmark,
+            "audit" => EvidenceType::Audit,
+            _ => EvidenceType::Measurement,
+        })
+        .unwrap_or(EvidenceType::Measurement);
+
     EvidenceItem {
         id: record.id.clone(),
-        evidence_type: EvidenceType::Measurement,
+        evidence_type,
         verdict,
         congruence_level: cl,
         valid_until,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,6 +18,8 @@ use forgeplan_core::graph;
 use forgeplan_core::link;
 use forgeplan_core::progress;
 use forgeplan_core::projection;
+use forgeplan_core::artifact::frontmatter::Frontmatter;
+use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem};
 use forgeplan_core::template::{get_embedded_template, render_template};
 use forgeplan_core::validation;
@@ -615,13 +617,57 @@ impl ForgeplanServer {
             evidence_items.push(item);
         }
 
-        let r_eff = reff::r_eff(&evidence_items);
+        // Recursive R_eff with dependency chain analysis
+        let mut visited = HashSet::new();
+        let report = reff::r_eff_recursive(&p.id, &store, &mut visited)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed recursive R_eff for {}: {e}", p.id);
+                reff::AssuranceReport {
+                    artifact_id: p.id.clone(),
+                    r_eff: 0.0,
+                    self_score: 0.0,
+                    weakest_link: None,
+                    decay_penalty: 0.0,
+                    factors: vec![format!("Error: {e}")],
+                }
+            });
+
+        // F-G-R quality breakdown
+        let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
+        let depth: Mode = target.depth.parse().unwrap_or(Mode::Standard);
+        let frontmatter: Frontmatter = target.frontmatter_map();
+
+        let all_relations = store.get_all_relations().await.unwrap_or_default();
+        let link_count = all_relations
+            .iter()
+            .filter(|(src, tgt, _)| src == &target.id || tgt == &target.id)
+            .count();
+
+        let fgr_score = fgr::compute(
+            &target.id,
+            &target.body,
+            &frontmatter,
+            &kind,
+            &depth,
+            report.r_eff,
+            link_count,
+            false,
+        );
 
         Ok(json_result(&ScoreResponse {
             id: target.id,
             title: target.title,
-            r_eff,
+            r_eff: report.r_eff,
             evidence: evidence_dtos,
+            self_score: report.self_score,
+            formality: fgr_score.formality,
+            granularity: fgr_score.granularity,
+            reliability: fgr_score.reliability,
+            overall_grade: fgr_score.grade().to_string(),
+            weakest_link: report.weakest_link,
+            factors: report.factors,
+            decay_penalty: report.decay_penalty,
         }))
     }
 
@@ -1331,7 +1377,7 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
-        let analysis = forgeplan_core::llm::reason::reason(
+        let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
             &llm_config, &record.id, &record.title, &record.kind, &record.body,
         )
         .await
