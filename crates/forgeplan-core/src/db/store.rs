@@ -642,25 +642,43 @@ impl LanceStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
 
-        let escaped = query.to_lowercase().replace('\'', "''");
+        let query_lower = query.to_lowercase();
+        let escaped = query_lower.replace('\'', "''");
         let filter = format!(
             "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
             escaped, escaped
         );
 
+        // Fetch more candidates than needed, then rank by relevance
+        let fetch_limit = (limit * 10).min(200);
         let batches = collect_batches(
-            table.query().only_if(filter).limit(limit).execute().await?,
+            table.query().only_if(filter).limit(fetch_limit).execute().await?,
         )
         .await?;
 
-        let mut results = Vec::new();
+        let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
         for batch in &batches {
             for i in 0..batch.num_rows() {
                 if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                    results.push(chunk);
+                    // Simple relevance: title match = 10 points, body occurrence = 1 point each
+                    let mut score = 0usize;
+                    let title_lower = chunk.title.to_lowercase();
+                    let body_lower = chunk.body.to_lowercase();
+
+                    if title_lower.contains(&query_lower) {
+                        score += 10;
+                    }
+                    // Count occurrences in body
+                    score += body_lower.matches(&query_lower).count();
+
+                    scored.push((chunk, score));
                 }
             }
         }
+
+        // Sort by score descending, then truncate
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
         Ok(results)
     }
 
