@@ -62,3 +62,50 @@ pub fn styled_count(count: usize, is_problem: bool) -> String {
         style(count.to_string()).dim().to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn styled_status_all_variants() {
+        // Verify no panics and non-empty output for all known statuses
+        assert!(!styled_status("active").is_empty());
+        assert!(!styled_status("draft").is_empty());
+        assert!(!styled_status("superseded").is_empty());
+        assert!(!styled_status("deprecated").is_empty());
+        assert!(!styled_status("unknown").is_empty());
+    }
+
+    #[test]
+    fn styled_depth_all_variants() {
+        assert!(!styled_depth("tactical").is_empty());
+        assert!(!styled_depth("standard").is_empty());
+        assert!(!styled_depth("deep").is_empty());
+        assert!(!styled_depth("deep/critical").is_empty());
+        assert!(!styled_depth("Deep").is_empty()); // case insensitive
+        assert!(!styled_depth("TACTICAL").is_empty());
+    }
+
+    #[test]
+    fn styled_severity_all_variants() {
+        assert!(!styled_severity("MUST").is_empty());
+        assert!(!styled_severity("SHOULD").is_empty());
+        assert!(!styled_severity("COULD").is_empty());
+        assert!(!styled_severity("OTHER").is_empty());
+    }
+
+    #[test]
+    fn styled_count_zero_and_nonzero() {
+        assert!(!styled_count(0, false).is_empty());
+        assert!(!styled_count(5, false).is_empty());
+        assert!(!styled_count(3, true).is_empty());
+        assert!(!styled_count(0, true).is_empty());
+    }
+
+    #[test]
+    fn banner_contains_fpl() {
+        assert!(BANNER.contains("███████╗"));
+        assert!(BANNER.contains("██████╔╝"));
+    }
+}
