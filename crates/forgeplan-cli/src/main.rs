@@ -270,6 +270,8 @@ enum FpfCommands {
     },
     /// List all FPF sections
     List,
+    /// Show FPF knowledge base status — source, ingested count, staleness
+    Status,
 }
 
 #[tokio::main]
@@ -352,6 +354,7 @@ async fn main() -> anyhow::Result<()> {
             FpfCommands::Search { query, limit } => commands::fpf::run_search(&query, limit).await,
             FpfCommands::Section { id, summary } => commands::fpf::run_section(&id, summary).await,
             FpfCommands::List => commands::fpf::run_list().await,
+            FpfCommands::Status => commands::fpf::run_status().await,
         },
         Commands::Fgr { id } => commands::fgr::run(id.as_deref()).await,
         Commands::Capture { decision, context } => {

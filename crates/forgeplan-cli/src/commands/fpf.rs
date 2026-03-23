@@ -129,6 +129,82 @@ pub async fn run_section(id: &str, summary: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `forgeplan fpf status`
+pub async fn run_status() -> anyhow::Result<()> {
+    let cwd = env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+
+    println!();
+    println!("FPF Knowledge Base Status");
+    println!("{}", "=".repeat(40));
+
+    // Check source
+    let source_path = knowledge::default_fpf_path();
+    let source_count = match &source_path {
+        Some(p) => {
+            println!("  Source:    {} (exists)", p.display());
+            count_md_files(p).await
+        }
+        None => {
+            println!("  Source:    not found (set fpf.path in config or install fpf-simple skill)");
+            0
+        }
+    };
+    if source_count > 0 {
+        println!("  Files:     {} markdown files", source_count);
+    }
+
+    // Check ingested
+    let store = LanceStore::open(&ws).await?;
+    if store.has_fpf() {
+        let sections = store.list_fpf_sections().await?;
+        if sections.is_empty() {
+            println!("  Ingested:  empty (run `forgeplan fpf ingest`)");
+        } else {
+            let total_lines: i32 = sections.iter().map(|s| s.line_count).sum();
+            println!("  Ingested:  {} sections, {} total lines", sections.len(), total_lines);
+
+            // Staleness check
+            if source_count > 0 && source_count != sections.len() {
+                println!("  Status:    STALE — source has {} files, ingested has {} sections",
+                    source_count, sections.len());
+                println!("  Action:    Run `forgeplan fpf ingest` to re-sync");
+            } else if source_count > 0 {
+                println!("  Status:    UP TO DATE");
+            }
+        }
+    } else {
+        println!("  Ingested:  not initialized");
+        println!("  Action:    Run `forgeplan fpf ingest` to load FPF spec");
+    }
+
+    println!();
+    Ok(())
+}
+
+async fn count_md_files(dir: &std::path::Path) -> usize {
+    let mut count = 0;
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let p = entry.path();
+            if p.is_dir() {
+                if let Ok(mut sub) = tokio::fs::read_dir(&p).await {
+                    while let Ok(Some(sub_entry)) = sub.next_entry().await {
+                        let sp = sub_entry.path();
+                        if sp.extension().map_or(false, |e| e == "md")
+                            && sp.file_name().map_or(false, |n| n != "_index.md")
+                        {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
 /// `forgeplan fpf list`
 pub async fn run_list() -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
