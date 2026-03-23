@@ -1,4 +1,5 @@
 mod commands;
+mod ui;
 
 use clap::{Parser, Subcommand};
 
@@ -17,6 +18,9 @@ enum Commands {
         /// Force reinitialize even if .forgeplan/ exists
         #[arg(long)]
         force: bool,
+        /// Non-interactive mode (skip prompts, use defaults)
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Create a new artifact from template
     New {
@@ -208,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { force } => commands::init::run(force).await,
+        Commands::Init { force, yes } => commands::init::run(force, yes).await,
         Commands::New { kind, title } => commands::new::run(&kind, &title).await,
         Commands::List { r#type, status } => {
             commands::list::run(r#type.as_deref(), status.as_deref()).await

@@ -17,6 +17,9 @@ chrono.workspace = true
 tokio.workspace = true
 serde_yaml.workspace = true
 serde_json.workspace = true
+cliclack = "0.5.2"
+console = "0.16.3"
+ctrlc = "3.5.2"
 
 [features]
 semantic-search = []
