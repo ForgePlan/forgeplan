@@ -1,73 +1,70 @@
 # TODO — Forgeplan
 
-## Current: v0.7.0 Released
+## Current: v0.8.0 Released
 
-### EPIC-001 — Forgeplan v1.0 Real Methodology Engine — COMPLETE
-
-- [x] PRD-002: FPF Engine (F-G-R, bounded contexts, explore-exploit)
-- [x] PRD-003: Health Dashboard + Blind Spots
-- [x] PRD-004: Decision Journal
-- [x] PRD-005: Validation v2 (depth-aware rules)
-- [x] PRD-006: Smart Routing v2 (rule engine, no LLM)
-- [x] PRD-007: Artifact Lifecycle (review, activate, supersede, deprecate)
+### Completed
+- [x] **EPIC-001** — v1.0 Methodology Engine (PRD-002..007)
+- [x] **PRD-008** — CLI UX Redesign: cliclack, styled output, --json, setup-skill
+- [x] **PROB-006** — Routing keyword fix (redesign/overhaul → Standard+)
 
 ### Stats
-- 33 CLI commands, 28 MCP tools, 225 tests
-- 21 dogfood artifacts (6 active, 15 draft, 1 evidence)
+- 34 CLI commands, 28 MCP tools, 231 tests
+- 27 dogfood artifacts (11 active, 16 draft)
+- v0.8.0 tagged, PRs #17-#23 merged
 
 ---
 
-## Next: CLI UX Redesign (PRD-008) — PLANNED
+## Open Problems (из dogfood)
 
-### P0: cliclack interactive init
-- [ ] FR-001: ASCII banner FPL при init и --version
-- [ ] FR-002: Interactive wizard: name → agents → .mcp.json → spinner → summary
-- [ ] FR-003: Auto-generate .mcp.json for selected agents
-- [ ] FR-004: Auto-add Forgeplan section to CLAUDE.md
-- [ ] FR-005: Auto-generate .cursorrules (if Cursor selected)
-- [ ] FR-012: `forgeplan setup-skill` — install /forge to ~/.claude/skills/
-
-### P1: Styled CLI output
-- [ ] FR-006: health — note boxes, colored statuses, icons
-- [ ] FR-007: validate — colored MUST/SHOULD/COULD
-- [ ] FR-008: review — styled checklist
-- [ ] FR-009: route — depth colors (tactical=green, deep=red)
-- [ ] FR-010: list — colored table by status
-
-### P2: Machine-readable
-- [ ] FR-011: All commands support --json for scripting/MCP
-
-### Bugs
-- [ ] PROB-006: Routing misses "redesign/overhaul/refactor" scope — add keyword triggers
+| ID | Priority | Title | Impact |
+|----|----------|-------|--------|
+| PROB-001 | **P0** | Data loss — no export/import, rm -rf destroys all | Lost 26 artifacts |
+| PROB-002 | P2 | Auth reuse — separate API key barrier | Adoption friction |
+| PROB-003 | Done | Dead statuses → solved by PRD-007 lifecycle | |
+| PROB-004 | P1 | Agent drift — AI ignores methodology | 90% value lost |
+| PROB-005 | P1 | Cold start — zero context in new chat | Bad onboarding |
 
 ---
 
-## Backlog
+## Backlog (приоритизированный)
 
-### Polish
-- [ ] `forgeplan validate --adversarial` mode
-- [ ] Custom prompts `.forgeplan/prompts/`
-- [ ] Binary size 152MB → investigate feature flags / strip
-- [ ] `forgeplan init --scan` — detect existing docs/ADRs and offer import
+### P0: Data Safety
+- [ ] `forgeplan export` — dump all artifacts to JSON (git-trackable)
+- [ ] `forgeplan import` — restore from dump
+- [ ] Auto-export on every write (or periodic)
 
-### Distribution
+### P1: Distribution & Adoption
 - [ ] brew tap formula (macOS)
-- [ ] GitHub Actions release pipeline (cross-compile)
-- [ ] Install script (`curl | sh`)
+- [ ] GitHub Actions release pipeline (cross-compile for linux/windows/mac)
+- [ ] Install script (`curl -fsSL https://forgeplan.dev/install.sh | sh`)
 - [ ] `fpl` alias symlink in install
+- [ ] Publish to crates.io (`cargo install forgeplan`)
 
-### Desktop App (Phase 5)
-- [ ] Tauri 2.0 + React frontend (shared Rust core)
+### P1: Agent Integration
+- [ ] `forgeplan init --scan` — detect existing docs/ADRs and offer import (PROB-005)
+- [ ] SessionStart hook → `forgeplan health --compact --json` (PROB-004/005)
+- [ ] PostToolUse hook → remind capture decisions (PROB-004)
 
-### Integrations
+### P2: Polish
+- [ ] `forgeplan validate --adversarial` mode (devil's advocate review)
+- [ ] Custom prompts `.forgeplan/prompts/` (PROB-001)
+- [ ] Binary size 152MB → investigate LanceDB feature flags / strip
+- [ ] Markdown projection sync on `forgeplan update` (not just `new`)
+
+### P3: Integrations
 - [ ] Bidirectional sync with task trackers (Linear, Jira, Orchestra)
+- [ ] Export to GitHub Issues / Linear tasks
+
+### Phase 5: Desktop App
+- [ ] Tauri 2.0 + React frontend (shared Rust core)
 
 ---
 
 ## Done
 
-- [x] **v0.7.0** — EPIC-001 complete, 6 PRDs, dogfood lifecycle, FORGEPLAN-GUIDE, /forge skill
-- [x] **v0.6.0** — Methodology Engine: routing, lifecycle, FPF, F-G-R
+- [x] **v0.8.0** — CLI UX: cliclack init, styled output, --json, setup-skill, PROB-006 fix
+- [x] **v0.7.0** — EPIC-001 complete, FPF engine, lifecycle, /forge skill
+- [x] **v0.6.0** — Methodology Engine: routing, lifecycle, F-G-R
 - [x] **v0.5.0** — Health, Journal, Validation v2
 - [x] **Phase 4** — MCP Server + AI Features + CRUD
 - [x] **Phase 3** — Core CLI + LanceDB Primary
