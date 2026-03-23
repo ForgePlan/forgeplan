@@ -10,7 +10,17 @@ use crate::config::LlmConfig;
 
 /// Load a prompt from .forgeplan/prompts/{name}.md if it exists,
 /// otherwise return the default embedded prompt.
+///
+/// Name is validated to prevent path traversal — only alphanumeric + hyphens allowed.
 pub fn load_prompt(name: &str, default: &str) -> String {
+    // Reject names with path separators or traversal characters
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.is_empty()
+    {
+        return default.to_string();
+    }
     let custom_path = std::path::Path::new(".forgeplan/prompts").join(format!("{name}.md"));
     if custom_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&custom_path) {
@@ -20,6 +30,35 @@ pub fn load_prompt(name: &str, default: &str) -> String {
         }
     }
     default.to_string()
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn load_prompt_returns_default_when_no_file() {
+        let result = load_prompt("nonexistent_prompt_xyz", "default text");
+        assert_eq!(result, "default text");
+    }
+
+    #[test]
+    fn load_prompt_rejects_path_traversal() {
+        let result = load_prompt("../../etc/passwd", "safe default");
+        assert_eq!(result, "safe default");
+    }
+
+    #[test]
+    fn load_prompt_rejects_slash() {
+        let result = load_prompt("some/nested", "safe default");
+        assert_eq!(result, "safe default");
+    }
+
+    #[test]
+    fn load_prompt_rejects_empty_name() {
+        let result = load_prompt("", "safe default");
+        assert_eq!(result, "safe default");
+    }
 }
 
 /// Request body for OpenAI-compatible chat completions API.

@@ -128,18 +128,34 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
             serde_json::json!({})
         };
 
-        // Add hook if not already present
-        let hooks = settings
-            .as_object_mut()
-            .unwrap()
+        // Add hook if not already present — safe handling of malformed JSON
+        let settings_obj = match settings.as_object_mut() {
+            Some(obj) => obj,
+            None => {
+                settings = serde_json::json!({});
+                settings.as_object_mut().expect("just created")
+            }
+        };
+
+        let hooks = settings_obj
             .entry("hooks")
             .or_insert(serde_json::json!({}));
 
+        // Ensure hooks is an object
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+
         let user_prompt = hooks
             .as_object_mut()
-            .unwrap()
+            .expect("just ensured object")
             .entry("UserPromptSubmit")
             .or_insert(serde_json::json!([]));
+
+        // Ensure UserPromptSubmit is an array
+        if !user_prompt.is_array() {
+            *user_prompt = serde_json::json!([]);
+        }
 
         // Check if forgeplan hook already exists
         let already_has = user_prompt
@@ -169,7 +185,7 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
                     "timeout": 5
                 }]
             });
-            user_prompt.as_array_mut().unwrap().push(hook_entry);
+            user_prompt.as_array_mut().expect("just ensured array").push(hook_entry);
             fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
             cliclack::log::success("SessionStart hook configured in .claude/settings.json")?;
             true

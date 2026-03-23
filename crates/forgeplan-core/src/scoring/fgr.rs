@@ -76,15 +76,15 @@ pub fn compute_granularity(body: &str) -> f64 {
     let mut score = 0.0;
     let mut checks = 0.0;
 
-    // Check 1: Has Problem/Motivation section with > 20 words
+    // Check 1: Has Problem/Motivation section with > 20 words (with aliases)
     checks += 1.0;
-    if section_has_content(body, &["Problem", "Motivation", "Background"], 20) {
+    if section_has_content(body, &["Problem", "Motivation", "Problem Statement", "Background"], 20) {
         score += 1.0;
     }
 
-    // Check 2: Has Goals/Success Criteria
+    // Check 2: Has Goals/Success Criteria (with aliases)
     checks += 1.0;
-    if section_has_content(body, &["Goals", "Success Criteria", "Objectives"], 10) {
+    if section_has_content(body, &["Goals", "Success Criteria", "Objectives", "Outcomes"], 10) {
         score += 1.0;
     }
 
@@ -209,6 +209,31 @@ The system uses a layered approach with clear separation of concerns.\n\n\
 Q1 2026 delivery target.";
         let g = compute_granularity(body);
         assert!(g > 0.5, "Rich body should have high granularity: {g}");
+    }
+
+    #[test]
+    fn granularity_with_motivation_alias() {
+        let body = "\
+## Motivation\n\n\
+This is a detailed motivation section that explains the background and reasoning \
+behind this initiative and why it matters for the project direction.\n\n\
+## Success Criteria\n\n\
+Achieve 95% coverage across all modules.\n\n\
+## Functional Requirements\n\n\
+- [ ] FR-001: Core feature\n\n\
+## Dependencies\n\n\
+Requires auth service deployed first.\n\n\
+## More context for substance padding to reach over one hundred words total \
+in the body so that check five passes as well with enough content.";
+        let g = compute_granularity(body);
+        assert!(g > 0.5, "Body with aliases should score well: {g}");
+    }
+
+    #[test]
+    fn section_has_content_works() {
+        let body = "## Motivation\n\nThis is enough words to pass the check here.\n\n## Other\n\nStuff.";
+        assert!(section_has_content(body, &["Motivation", "Problem"], 5));
+        assert!(!section_has_content(body, &["NonExistent"], 5));
     }
 
     #[test]
