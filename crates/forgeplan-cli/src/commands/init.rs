@@ -50,7 +50,7 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
     // ─── Interactive wizard ──────────────────────────────────────
 
     ui::print_banner();
-    cliclack::intro(style(" forgeplan init ").on_cyan().black())?;
+    cliclack::intro(style(" forgeplan init ").bold())?;
 
     // Project name
     let default_name = cwd

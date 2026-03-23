@@ -12,7 +12,7 @@ pub const BANNER: &str = r#"
 
 /// Print the FPL banner with version.
 pub fn print_banner() {
-    println!("{}", style(BANNER).cyan());
+    println!("{}", style(BANNER).bold());
     println!(
         "     {} — v{}",
         style("forge your plan").dim(),
