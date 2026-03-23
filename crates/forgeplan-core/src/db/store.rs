@@ -35,7 +35,7 @@ pub struct NewArtifact {
 }
 
 /// Full artifact record from LanceDB — includes body and all metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactRecord {
     pub id: String,
     pub kind: String,

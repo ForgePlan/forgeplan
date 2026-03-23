@@ -1,3 +1,4 @@
+pub mod adversarial;
 pub mod checks;
 pub mod rules;
 

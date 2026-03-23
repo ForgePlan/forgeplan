@@ -3,12 +3,12 @@ use std::env;
 use console::style;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::validation::{self, Severity, ValidationResult};
+use forgeplan_core::validation::{self, adversarial, Severity, ValidationResult};
 use forgeplan_core::workspace;
 
 use crate::ui;
 
-pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
+pub async fn run(id: Option<&str>, json: bool, adversarial: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -56,7 +56,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         });
         let depth = record.depth.parse::<Mode>().unwrap_or(Mode::Standard);
 
-        let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
+        let mut result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
+
+        if adversarial {
+            let adv_findings = adversarial::adversarial_checks(&record.body, &record.kind);
+            let adv_count = adv_findings.len();
+            result.findings.extend(adv_findings);
+            result.total_rules_checked += adv_count;
+        }
 
         if json {
             json_results.push(serde_json::json!({
