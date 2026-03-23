@@ -1,6 +1,7 @@
 //! FPF Knowledge Base — ingest and search over FPF specification.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use regex::Regex;
 
@@ -67,7 +68,9 @@ pub async fn ingest_fpf_directory(sections_dir: &Path) -> anyhow::Result<Vec<Ing
         md_files.sort();
 
         for file_path in &md_files {
-            let content = tokio::fs::read_to_string(file_path).await?;
+            let content = tokio::fs::read_to_string(file_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read {}: {e}", file_path.display()))?;
             if content.trim().is_empty() {
                 continue;
             }
@@ -98,16 +101,18 @@ pub async fn ingest_fpf_directory(sections_dir: &Path) -> anyhow::Result<Vec<Ing
 /// Tries to extract from first `##` heading: `## B.3 - Trust & Assurance Calculus`
 /// Falls back to extracting from filename: `13-b-3---trust-assurance-calculus.md`
 fn parse_section_header(content: &str, file_path: &Path) -> (String, String) {
-    // Try to find ## heading
-    // Pattern: ## X.Y.Z - Title or ## X.Y.Z — Title
-    let heading_re =
-        Regex::new(r"^##\s+([A-Z]\.\d+(?:\.\d+)*(?:\.[A-Z])?)\s*[-—:]\s*(.+)$").unwrap();
+    // Compile regex once (OnceLock) — avoids re-compilation on every call
+    static HEADING_RE: OnceLock<Regex> = OnceLock::new();
+    let heading_re = HEADING_RE.get_or_init(|| {
+        Regex::new(r"^##\s+([A-Z]\.\d+(?:\.\d+)*(?:\.[A-Z])?)\s*[-—:]\s*(.+)$")
+            .expect("FPF heading regex is valid")
+    });
 
     for line in content.lines().take(5) {
         let trimmed = line.trim();
         if let Some(caps) = heading_re.captures(trimmed) {
-            let section_id = caps.get(1).unwrap().as_str().to_string();
-            let title = caps.get(2).unwrap().as_str().trim().to_string();
+            let section_id = caps.get(1).expect("group 1 present after match").as_str().to_string();
+            let title = caps.get(2).expect("group 2 present after match").as_str().trim().to_string();
             return (section_id, title);
         }
     }
