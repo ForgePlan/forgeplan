@@ -46,7 +46,8 @@ pub async fn capture(
     }
     prompt.push_str("\n\nFirst line of your response MUST be either `KIND: note` or `KIND: adr` to indicate the artifact type. Then the body follows.");
 
-    let response = client.generate(&prompt, Some(CAPTURE_SYSTEM_PROMPT)).await?;
+    let system = crate::llm::load_prompt("capture", CAPTURE_SYSTEM_PROMPT);
+    let response = client.generate(&prompt, Some(&system)).await?;
 
     // Parse kind from first line
     let (kind, body) = if let Some(rest) = response.strip_prefix("KIND: ") {

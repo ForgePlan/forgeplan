@@ -71,70 +71,65 @@ pub fn compute_formality(
     passed as f64 / total as f64
 }
 
-/// Compute Granularity: content density score.
+/// Compute Granularity as COMPLETENESS — % of expected sections that have real content.
 pub fn compute_granularity(body: &str) -> f64 {
     let mut score = 0.0;
-    let mut max_score = 0.0;
+    let mut checks = 0.0;
 
-    // Word count (0-0.3)
-    max_score += 0.3;
-    let word_count = body.split_whitespace().count();
-    score += match word_count {
-        0..=50 => 0.05,
-        51..=150 => 0.1,
-        151..=500 => 0.2,
-        _ => 0.3,
-    };
-
-    // Section count (0-0.2)
-    max_score += 0.2;
-    let section_count = body.lines().filter(|l| l.starts_with("## ")).count();
-    score += match section_count {
-        0 => 0.0,
-        1..=2 => 0.05,
-        3..=5 => 0.1,
-        6..=10 => 0.15,
-        _ => 0.2,
-    };
-
-    // Checklist items (0-0.2)
-    max_score += 0.2;
-    let checklist_count = body
-        .lines()
-        .filter(|l| {
-            let t = l.trim();
-            t.starts_with("- [") || t.starts_with("* [")
-        })
-        .count();
-    score += match checklist_count {
-        0 => 0.0,
-        1..=3 => 0.1,
-        4..=10 => 0.15,
-        _ => 0.2,
-    };
-
-    // Code blocks (0-0.15) — technical detail
-    max_score += 0.15;
-    let code_blocks = body.matches("```").count() / 2;
-    score += match code_blocks {
-        0 => 0.0,
-        1 => 0.05,
-        2..=3 => 0.1,
-        _ => 0.15,
-    };
-
-    // Tables (0-0.15) — structured data
-    max_score += 0.15;
-    let has_table = body.contains("| --- ") || body.contains("|---|");
-    if has_table {
-        score += 0.15;
+    // Check 1: Has Problem/Motivation section with > 20 words (with aliases)
+    checks += 1.0;
+    if section_has_content(body, &["Problem", "Motivation", "Problem Statement", "Background"], 20) {
+        score += 1.0;
     }
 
-    if max_score > 0.0 {
-        score / max_score
+    // Check 2: Has Goals/Success Criteria (with aliases)
+    checks += 1.0;
+    if section_has_content(body, &["Goals", "Success Criteria", "Objectives", "Outcomes"], 10) {
+        score += 1.0;
+    }
+
+    // Check 3: Has FR/Requirements with checkboxes
+    checks += 1.0;
+    let has_fr = body.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("- [") || t.starts_with("* [")
+    });
+    if has_fr {
+        score += 1.0;
+    }
+
+    // Check 4: Has Related/Dependencies
+    checks += 1.0;
+    if section_has_content(body, &["Related", "Dependencies", "Related Artifacts"], 5) {
+        score += 1.0;
+    }
+
+    // Check 5: Body has substance (> 100 words total)
+    checks += 1.0;
+    if body.split_whitespace().count() > 100 {
+        score += 1.0;
+    }
+
+    if checks > 0.0 {
+        score / checks
     } else {
         0.0
     }
+}
+
+fn section_has_content(body: &str, headings: &[&str], min_words: usize) -> bool {
+    for heading in headings {
+        let pattern = format!("## {}", heading);
+        if let Some(pos) = body.find(&pattern) {
+            let after = &body[pos + pattern.len()..];
+            let end = after.find("\n## ").unwrap_or(after.len());
+            let section = &after[..end];
+            if section.split_whitespace().count() >= min_words {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Compute Reliability: trust score based on R_eff + metadata.
@@ -188,20 +183,57 @@ mod tests {
     #[test]
     fn granularity_empty_body_low() {
         let g = compute_granularity("");
-        assert!(g < 0.2, "Empty body should have low granularity: {g}");
+        assert!(
+            g == 0.0,
+            "Empty body should have zero granularity: {g}"
+        );
     }
 
     #[test]
     fn granularity_rich_body_high() {
-        let body = "## Summary\n\nLong description with lots of detail.\n\n\
-                     ## Requirements\n\n- [ ] FR-001: First requirement\n- [ ] FR-002: Second\n\
-                     - [ ] FR-003: Third\n- [ ] FR-004: Fourth\n\n\
-                     ## Architecture\n\n```rust\nfn main() {}\n```\n\n\
-                     ## Data Model\n\n| Field | Type |\n| --- | --- |\n| id | String |\n\n\
-                     ## Timeline\n\nQ1 2026.\n\n## Risks\n\nSome risks.\n\n\
-                     ## Implementation\n\nDetailed plan.";
+        let body = "\
+## Problem\n\n\
+This is a detailed problem statement that describes what we are trying to solve \
+and why it matters to users and stakeholders in the project.\n\n\
+## Goals\n\n\
+The primary objective is to deliver a working solution that meets all criteria.\n\n\
+## Requirements\n\n\
+- [ ] FR-001: First requirement\n\
+- [ ] FR-002: Second requirement\n\
+- [ ] FR-003: Third requirement\n\n\
+## Related Artifacts\n\n\
+- RFC-001: Architecture proposal for this feature\n\n\
+## Architecture\n\n\
+The system uses a layered approach with clear separation of concerns.\n\n\
+## Timeline\n\n\
+Q1 2026 delivery target.";
         let g = compute_granularity(body);
         assert!(g > 0.5, "Rich body should have high granularity: {g}");
+    }
+
+    #[test]
+    fn granularity_with_motivation_alias() {
+        let body = "\
+## Motivation\n\n\
+This is a detailed motivation section that explains the background and reasoning \
+behind this initiative and why it matters for the project direction.\n\n\
+## Success Criteria\n\n\
+Achieve 95% coverage across all modules.\n\n\
+## Functional Requirements\n\n\
+- [ ] FR-001: Core feature\n\n\
+## Dependencies\n\n\
+Requires auth service deployed first.\n\n\
+## More context for substance padding to reach over one hundred words total \
+in the body so that check five passes as well with enough content.";
+        let g = compute_granularity(body);
+        assert!(g > 0.5, "Body with aliases should score well: {g}");
+    }
+
+    #[test]
+    fn section_has_content_works() {
+        let body = "## Motivation\n\nThis is enough words to pass the check here.\n\n## Other\n\nStuff.";
+        assert!(section_has_content(body, &["Motivation", "Problem"], 5));
+        assert!(!section_has_content(body, &["NonExistent"], 5));
     }
 
     #[test]

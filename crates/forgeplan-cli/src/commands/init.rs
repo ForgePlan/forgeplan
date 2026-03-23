@@ -110,6 +110,93 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
         }
     }
 
+    // Configure hooks
+    let configure_hooks = cliclack::confirm("Configure SessionStart hook? (auto health check)")
+        .initial_value(true)
+        .interact()?;
+
+    let hooks_configured = if configure_hooks {
+        let claude_settings_dir = cwd.join(".claude");
+        fs::create_dir_all(&claude_settings_dir)?;
+        let settings_path = claude_settings_dir.join("settings.json");
+
+        // Read existing or create new
+        let mut settings: serde_json::Value = if settings_path.exists() {
+            let content = fs::read_to_string(&settings_path)?;
+            serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        // Add hook if not already present — safe handling of malformed JSON
+        let settings_obj = match settings.as_object_mut() {
+            Some(obj) => obj,
+            None => {
+                settings = serde_json::json!({});
+                settings.as_object_mut().expect("just created")
+            }
+        };
+
+        let hooks = settings_obj
+            .entry("hooks")
+            .or_insert(serde_json::json!({}));
+
+        // Ensure hooks is an object
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+
+        let user_prompt = hooks
+            .as_object_mut()
+            .expect("just ensured object")
+            .entry("UserPromptSubmit")
+            .or_insert(serde_json::json!([]));
+
+        // Ensure UserPromptSubmit is an array
+        if !user_prompt.is_array() {
+            *user_prompt = serde_json::json!([]);
+        }
+
+        // Check if forgeplan hook already exists
+        let already_has = user_prompt
+            .as_array()
+            .map(|arr| {
+                arr.iter().any(|h| {
+                    h.get("hooks")
+                        .and_then(|h| h.as_array())
+                        .map(|hooks| {
+                            hooks.iter().any(|hook| {
+                                hook.get("command")
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.contains("forgeplan"))
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        if !already_has {
+            let hook_entry = serde_json::json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": "forgeplan health --compact --json 2>/dev/null || true",
+                    "timeout": 5
+                }]
+            });
+            user_prompt.as_array_mut().expect("just ensured array").push(hook_entry);
+            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            cliclack::log::success("SessionStart hook configured in .claude/settings.json")?;
+            true
+        } else {
+            cliclack::log::info("Forgeplan hook already configured — skipped")?;
+            false
+        }
+    } else {
+        false
+    };
+
     // Summary
     let mut summary_lines = vec![
         ".forgeplan/     created".to_string(),
@@ -120,6 +207,9 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
     }
     if agents.contains(&"cursor") {
         summary_lines.push(".cursorrules    ready".into());
+    }
+    if hooks_configured {
+        summary_lines.push("Hooks           configured".into());
     }
     summary_lines.push(format!(
         "Agents:         {}",

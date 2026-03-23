@@ -49,5 +49,6 @@ pub async fn reason(
         body = artifact_body,
     );
 
-    client.generate(&prompt, Some(ADI_SYSTEM_PROMPT)).await
+    let system = crate::llm::load_prompt("reason", ADI_SYSTEM_PROMPT);
+    client.generate(&prompt, Some(&system)).await
 }

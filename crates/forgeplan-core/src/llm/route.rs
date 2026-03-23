@@ -50,5 +50,6 @@ pub async fn route(config: &LlmConfig, description: &str) -> anyhow::Result<Stri
         description
     );
 
-    client.generate(&prompt, Some(ROUTE_SYSTEM_PROMPT)).await
+    let system = crate::llm::load_prompt("route", ROUTE_SYSTEM_PROMPT);
+    client.generate(&prompt, Some(&system)).await
 }

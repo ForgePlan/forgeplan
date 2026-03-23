@@ -17,8 +17,8 @@ pub async fn run(
 
     let store = LanceStore::open(&ws).await?;
 
-    // Verify artifact exists
-    let _record = store
+    // Verify artifact exists (keep original for old projection cleanup)
+    let original = store
         .get_record(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
@@ -55,6 +55,11 @@ pub async fn run(
             b.to_string()
         };
         store.update_body(id, &body_content).await?;
+    }
+
+    // Remove old projection file (title change → different slug → stale file)
+    if title.is_some() {
+        let _ = projection::remove_projection(&ws, id, &original.kind).await;
     }
 
     // Re-render projection
