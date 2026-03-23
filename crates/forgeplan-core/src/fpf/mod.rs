@@ -129,7 +129,7 @@ pub async fn dashboard(store: &LanceStore) -> anyhow::Result<FpfDashboard> {
     }
 
     // Explore-Exploit Actions
-    let actions = explore::suggest(&records, &fgr_scores, &all_relations);
+    let actions = explore::suggest(&records, &fgr_scores, &all_relations, None);
 
     // Pipeline Status — compute aggregate across all PRDs
     let active_count = records.iter().filter(|r| r.status == "active").count();
