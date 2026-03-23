@@ -2238,6 +2238,7 @@ dependencies = [
  "cliclack",
  "console 0.16.3",
  "ctrlc",
+ "dirs",
  "forgeplan-core",
  "forgeplan-mcp",
  "predicates",

@@ -37,6 +37,9 @@ enum Commands {
         /// Filter by status (draft, active, etc.)
         #[arg(long, short)]
         status: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Show project status dashboard
     Status,
@@ -44,6 +47,9 @@ enum Commands {
     Validate {
         /// Artifact ID (validates all if omitted)
         id: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Compute R_eff quality score for decisions with evidence
     Score {
@@ -171,6 +177,8 @@ enum Commands {
         #[arg(long)]
         reason: String,
     },
+    /// Install /forge skill for Claude Code
+    SetupSkill,
     /// FPF Dashboard — bounded contexts, quality scores, explore-exploit actions
     Fpf,
     /// Show F-G-R quality scores (Formality, Granularity, Reliability)
@@ -194,6 +202,9 @@ enum Commands {
         /// Compact one-line output for hooks/scripts
         #[arg(long)]
         compact: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Capture a decision from conversation into a Note or ADR artifact
     Capture {
@@ -214,11 +225,11 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Init { force, yes } => commands::init::run(force, yes).await,
         Commands::New { kind, title } => commands::new::run(&kind, &title).await,
-        Commands::List { r#type, status } => {
-            commands::list::run(r#type.as_deref(), status.as_deref()).await
+        Commands::List { r#type, status, json } => {
+            commands::list::run(r#type.as_deref(), status.as_deref(), json).await
         }
         Commands::Status => commands::status::run().await,
-        Commands::Validate { id } => commands::validate::run(id.as_deref()).await,
+        Commands::Validate { id, json } => commands::validate::run(id.as_deref(), json).await,
         Commands::Score { id } => commands::score::run(id.as_deref()).await,
         Commands::Link {
             source,
@@ -264,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Journal { r#type, risk } => {
             commands::journal::run(r#type.as_deref(), risk).await
         }
-        Commands::Health { compact } => commands::health::run(compact).await,
+        Commands::Health { compact, json } => commands::health::run(compact, json).await,
         Commands::Route {
             description,
             explain,
@@ -273,6 +284,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Activate { id } => commands::activate::run(&id).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
+        Commands::SetupSkill => commands::setup_skill::run().await,
         Commands::Fpf => commands::fpf::run().await,
         Commands::Fgr { id } => commands::fgr::run(id.as_deref()).await,
         Commands::Capture { decision, context } => {

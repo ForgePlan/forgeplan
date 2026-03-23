@@ -1,11 +1,14 @@
 use std::env;
 
 use anyhow::Result;
+use console::style;
 
 use forgeplan_core::db::store::{ArtifactFilter, LanceStore};
 use forgeplan_core::workspace::find_workspace;
 
-pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Result<()> {
+use crate::ui;
+
+pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>, json: bool) -> Result<()> {
     let cwd = env::current_dir()?;
     let workspace = find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
@@ -24,7 +27,25 @@ pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Resu
     let artifacts = store.list_artifacts(filter.as_ref()).await?;
 
     if artifacts.is_empty() {
-        println!("  No artifacts found.");
+        if json {
+            println!("[]");
+        } else {
+            println!("  No artifacts found.");
+        }
+        return Ok(());
+    }
+
+    if json {
+        let json_data: Vec<_> = artifacts
+            .iter()
+            .map(|a| serde_json::json!({
+                "id": a.id,
+                "kind": a.kind,
+                "status": a.status,
+                "title": a.title,
+            }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
     }
 
@@ -43,12 +64,13 @@ pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Resu
         .unwrap_or(6)
         .max(6);
 
-    // Print header
+    // Print header — bold underlined
     println!(
-        "{:<id_w$}  {:<kind_w$}  {:<status_w$}  Title",
-        "ID",
-        "Kind",
-        "Status",
+        "{:<id_w$}  {:<kind_w$}  {:<status_w$}  {}",
+        style("ID").bold().underlined(),
+        style("Kind").bold().underlined(),
+        style("Status").bold().underlined(),
+        style("Title").bold().underlined(),
         id_w = id_width,
         kind_w = kind_width,
         status_w = status_width,
@@ -56,15 +78,24 @@ pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>) -> Resu
 
     // Print rows
     for a in &artifacts {
+        // Pad status manually so ANSI codes don't break alignment
+        let status_plain_len = a.status.len();
+        let status_styled = ui::styled_status(&a.status);
+        let status_padding = if status_width > status_plain_len {
+            " ".repeat(status_width - status_plain_len)
+        } else {
+            String::new()
+        };
+
         println!(
-            "{:<id_w$}  {:<kind_w$}  {:<status_w$}  {}",
-            a.id,
+            "{:<id_w$}  {:<kind_w$}  {}{}  {}",
+            style(&a.id).bold(),
             a.kind,
-            a.status,
+            status_styled,
+            status_padding,
             a.title,
             id_w = id_width,
             kind_w = kind_width,
-            status_w = status_width,
         );
     }
 
