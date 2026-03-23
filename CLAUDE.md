@@ -48,6 +48,37 @@ forgeplan route "описание задачи"   # определи depth и pi
 
 Если route говорит Standard+ → создай артефакт ПЕРЕД кодингом. Если Tactical → просто делай.
 
+### ОБЯЗАТЕЛЬНО при создании артефакта (Shape → Validate → Code):
+
+1. **`forgeplan new prd "Title"`** — создаёт stub из шаблона
+2. **СРАЗУ заполни ВСЕ MUST секции** — Problem, Goals, Non-Goals, Target Users, Related, FR
+3. **`forgeplan validate PRD-XXX`** — убедись что PASS (0 MUST errors)
+4. **Только ПОСЛЕ validate PASS** — начинай писать код
+
+**НЕ оставляй PRD-заглушки.** Stub PRD без Problem/Goals = "решение без обоснования".
+
+### ОБЯЗАТЕЛЬНО после реализации (Code → Evidence → Activate):
+
+1. **Создай EvidencePack** с фактами (тесты, LOC, dogfood результаты):
+   ```bash
+   forgeplan new evidence "Описание что подтверждено"
+   # Добавь в body: verdict: supports, congruence_level: 3, evidence_type: test
+   forgeplan link EVID-XXX PRD-XXX --relation informs
+   ```
+2. **Проверь R_eff** — `forgeplan score PRD-XXX` → должен быть > 0
+3. **Review и activate** — `forgeplan review PRD-XXX` → `forgeplan activate PRD-XXX`
+4. **Обнови прогресс** — чекбоксы FR `[x]` в PRD/RFC
+
+**Работа не закончена, пока: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.**
+
+### ОБЯЗАТЕЛЬНО на session start:
+
+```bash
+forgeplan health
+```
+
+Если health показывает **blind spots** (active без evidence) или **orphans** (без связей) — **FIX ИХ ПЕРВЫМИ**, до начала новой работы. Не копи долг.
+
 ## Как пользоваться Forgeplan CLI (MCP-first)
 
 > Forgeplan — MCP-first tool. Основной потребитель = AI агент через MCP server.
@@ -127,11 +158,14 @@ Validator принимает синонимы для секций:
 
 ### Dogfood insights (из реального использования):
 
-1. **Создавай артефакт → сразу заполняй MUST секции** — иначе review fail
-2. **Evidence делает R_eff живым** — без evidence все scores = 0.0, health кричит "At Risk"
-3. **Не создавай все 10 типов** — реально используются 6: PRD, RFC, ADR, Note, Problem, Epic
-4. **route перед работой** — определяет depth и pipeline, экономит время
-5. **health на session start** — показывает orphans, blind spots, at risk
+1. **Shape → Validate → Code → Evidence → Activate** — полный цикл, не пропускай шаги
+2. **Создавай артефакт → СРАЗУ заполняй MUST секции** — stub PRD = долг, который копится
+3. **Evidence делает R_eff живым** — без evidence все scores = 0.0, health кричит "blind spot"
+4. **Не активируй без кода** — active PRD без реализации = ложное обещание
+5. **Не создавай все 10 типов** — реально используются 6: PRD, RFC, ADR, Note, Problem, Epic
+6. **route перед работой** — определяет depth и pipeline, экономит время
+7. **health на session start** — показывает orphans, blind spots; **fix их первыми**
+8. **Работа не закончена пока**: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated
 
 ## Как пользоваться методологией (quick reference)
 

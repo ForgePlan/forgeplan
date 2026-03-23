@@ -8,10 +8,8 @@ pub mod explore;
 
 use std::collections::BTreeMap;
 
-use crate::artifact::frontmatter;
 use crate::artifact::types::{ArtifactKind, Mode};
-use crate::db::store::{ArtifactRecord, LanceStore};
-use crate::routing;
+use crate::db::store::LanceStore;
 use crate::scoring::fgr;
 
 use contexts::BoundedContext;
@@ -134,7 +132,6 @@ pub async fn dashboard(store: &LanceStore) -> anyhow::Result<FpfDashboard> {
     let actions = explore::suggest(&records, &fgr_scores, &all_relations);
 
     // Pipeline Status — compute aggregate across all PRDs
-    let prd_count = records.iter().filter(|r| r.kind == "prd").count();
     let active_count = records.iter().filter(|r| r.status == "active").count();
     let draft_count = records.iter().filter(|r| r.status == "draft").count();
     let pipeline_status = format!(

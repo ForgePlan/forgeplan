@@ -18,7 +18,7 @@ pub async fn run(
     let store = LanceStore::open(&ws).await?;
 
     // Verify artifact exists
-    let record = store
+    let _record = store
         .get_record(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;

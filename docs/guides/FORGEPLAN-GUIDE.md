@@ -434,6 +434,33 @@ forgeplan update PRD-001 --body @/tmp/new-body.md
 
 Из dogfood опыта: PRD, RFC, ADR, Note, Problem, Epic — реально используются. EvidencePack, Spec, SolutionPortfolio, RefreshReport — для зрелых проектов с большим количеством артефактов.
 
+### 6. PRD-заглушки: "создал ID, забыл заполнить"
+
+**Антипаттерн:** `forgeplan new prd "Title"` → сразу пишешь код → PRD остаётся stub навсегда.
+
+Результат: `forgeplan validate` показывает 5 MUST errors, PRD нельзя activate, нет обоснования решения.
+
+**Решение:** Shape → Validate → Code. После `forgeplan new` — СРАЗУ заполни MUST секции (Problem, Goals, Non-Goals, Target Users, Related). Запусти `forgeplan validate` и убедись что PASS. Только потом кодь.
+
+### 7. Код готов, но нет Evidence → R_eff = 0.0
+
+**Антипаттерн:** реализовал PRD полностью (200+ тестов), но не создал EvidencePack. Health кричит "blind spot", R_eff = 0.0.
+
+**Решение:** Code → Evidence → Activate. После реализации:
+```bash
+forgeplan new evidence "Что подтверждено: тесты, LOC, dogfood"
+# Добавь structured fields в body
+forgeplan link EVID-XXX PRD-XXX --relation informs
+forgeplan score PRD-XXX   # → R_eff > 0
+forgeplan activate PRD-XXX
+```
+
+### 8. Active без кода = ложный статус
+
+**Антипаттерн:** активировали PRD до начала реализации. Health не показывает проблем, но артефакт — пустое обещание.
+
+**Решение:** activate ТОЛЬКО когда код написан + evidence создан. Если PRD описывает будущую работу — оставь в draft.
+
 ---
 
 ## Ссылки

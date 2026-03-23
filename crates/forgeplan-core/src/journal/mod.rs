@@ -1,4 +1,4 @@
-use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
+use crate::db::store::{ArtifactFilter, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
 
