@@ -71,6 +71,18 @@ forgeplan route "описание задачи"   # определи depth и pi
 
 **Работа не закончена, пока: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.**
 
+### ОБЯЗАТЕЛЬНО при написании Rust кода:
+
+1. **Перед сложными паттернами** — активируй Rust skills:
+   - `Skill("rust-expert")` — ownership, lifetimes, async, error handling
+   - `Skill("m01-ownership")` — borrow checker issues
+   - `Skill("m06-error-handling")` — Result, Option, anyhow patterns
+   - `Skill("m07-concurrency")` — async/Send/Sync issues
+2. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
+3. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
+4. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
+5. **Используй `/forge`** для structured workflow (route → create → validate → code)
+
 ### ОБЯЗАТЕЛЬНО на session start:
 
 ```bash
