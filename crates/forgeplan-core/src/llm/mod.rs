@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::LlmConfig;
 
+/// Load a prompt from .forgeplan/prompts/{name}.md if it exists,
+/// otherwise return the default embedded prompt.
+pub fn load_prompt(name: &str, default: &str) -> String {
+    let custom_path = std::path::Path::new(".forgeplan/prompts").join(format!("{name}.md"));
+    if custom_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&custom_path) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+    default.to_string()
+}
+
 /// Request body for OpenAI-compatible chat completions API.
 #[derive(Debug, Serialize)]
 struct ChatRequest {
