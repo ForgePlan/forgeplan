@@ -19,4 +19,5 @@ pub mod search;
 pub mod stale;
 pub mod template;
 pub mod validation;
+pub mod export;
 pub mod workspace;

@@ -266,6 +266,22 @@ struct ProgressParams {
     id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ExportParams {
+    /// Optional output file path. If omitted, returns JSON directly.
+    #[serde(default)]
+    output: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ImportParams {
+    /// JSON export data as a string
+    data: String,
+    /// Overwrite existing artifacts (default: false)
+    #[serde(default)]
+    force: Option<bool>,
+}
+
 // ── Tool implementations ─────────────────────────────────────
 
 #[tool_router]
@@ -1450,6 +1466,160 @@ impl ForgeplanServer {
             provider: llm_config.provider,
             model: llm_config.model,
         }))
+    }
+
+    #[tool(description = "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path.")]
+    async fn forgeplan_export(
+        &self,
+        Parameters(p): Parameters<ExportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let artifacts: Vec<serde_json::Value> = records
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "kind": r.kind,
+                    "status": r.status,
+                    "title": r.title,
+                    "body": r.body,
+                    "depth": r.depth,
+                    "author": r.author,
+                    "parent_epic": r.parent_epic,
+                    "r_eff_score": r.r_eff_score,
+                    "valid_until": r.valid_until,
+                    "created_at": r.created_at,
+                    "updated_at": r.updated_at,
+                })
+            })
+            .collect();
+
+        let all_relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let relations: Vec<serde_json::Value> = all_relations
+            .into_iter()
+            .map(|(s, t, r)| serde_json::json!({"source": s, "target": t, "relation": r}))
+            .collect();
+
+        let data = serde_json::json!({
+            "version": 1,
+            "artifacts": artifacts,
+            "relations": relations,
+        });
+
+        if let Some(ref output_path) = p.output {
+            let ws = match self.require_workspace().await {
+                Ok(ws) => ws,
+                Err(e) => return Ok(err_result(&e)),
+            };
+            let full_path = if std::path::Path::new(output_path).is_absolute() {
+                std::path::PathBuf::from(output_path)
+            } else {
+                ws.parent().unwrap_or(&ws).join(output_path)
+            };
+            let json_str = serde_json::to_string_pretty(&data)
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+            tokio::fs::write(&full_path, &json_str)
+                .await
+                .map_err(|e| McpError::internal_error(format!("Write failed: {e}"), None))?;
+            return Ok(text_result(&format!(
+                "Exported {} artifacts, {} relations to {}",
+                artifacts.len(),
+                relations.len(),
+                full_path.display()
+            )));
+        }
+
+        Ok(json_result(&data))
+    }
+
+    #[tool(description = "Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts.")]
+    async fn forgeplan_import(
+        &self,
+        Parameters(p): Parameters<ImportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let data: serde_json::Value = serde_json::from_str(&p.data).map_err(|e| {
+            McpError::internal_error(format!("Invalid JSON: {e}"), None)
+        })?;
+
+        let artifacts = data["artifacts"]
+            .as_array()
+            .ok_or_else(|| McpError::internal_error("Missing 'artifacts' array", None))?;
+
+        let force = p.force.unwrap_or(false);
+        let mut imported = 0usize;
+        let mut skipped = 0usize;
+
+        for art in artifacts {
+            let id = art["id"].as_str().unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+
+            let existing = store.get_record(id).await.unwrap_or(None);
+            if existing.is_some() && !force {
+                skipped += 1;
+                continue;
+            }
+
+            if existing.is_some() {
+                let _ = store.delete_artifact(id).await;
+            }
+
+            let new_art = NewArtifact {
+                id: id.to_string(),
+                kind: art["kind"].as_str().unwrap_or("note").to_string(),
+                status: art["status"].as_str().unwrap_or("draft").to_string(),
+                title: art["title"].as_str().unwrap_or("").to_string(),
+                body: art["body"].as_str().unwrap_or("").to_string(),
+                depth: art["depth"].as_str().unwrap_or("standard").to_string(),
+                author: art["author"].as_str().map(String::from),
+                parent_epic: art["parent_epic"].as_str().map(String::from),
+                valid_until: art["valid_until"].as_str().map(String::from),
+            };
+
+            if let Err(e) = store.create_artifact(&new_art).await {
+                return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
+            }
+            imported += 1;
+        }
+
+        let mut relations_imported = 0usize;
+        if let Some(relations) = data["relations"].as_array() {
+            for rel in relations {
+                let source = rel["source"].as_str().unwrap_or_default();
+                let target = rel["target"].as_str().unwrap_or_default();
+                let relation = rel["relation"].as_str().unwrap_or("informs");
+                if !source.is_empty() && !target.is_empty() {
+                    if store.add_relation(source, target, relation).await.is_ok() {
+                        relations_imported += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(json_result(&serde_json::json!({
+            "imported": imported,
+            "skipped": skipped,
+            "relations_imported": relations_imported,
+        })))
     }
 }
 

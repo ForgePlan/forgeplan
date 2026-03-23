@@ -50,6 +50,9 @@ enum Commands {
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
+        /// Run adversarial (devil's advocate) review
+        #[arg(long)]
+        adversarial: bool,
     },
     /// Compute R_eff quality score for decisions with evidence
     Score {
@@ -214,6 +217,20 @@ enum Commands {
         #[arg(long)]
         context: Option<String>,
     },
+    /// Export all artifacts to JSON file
+    Export {
+        /// Output file path (default: .forgeplan/export.json)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+    /// Import artifacts from JSON file
+    Import {
+        /// Path to JSON export file
+        path: String,
+        /// Overwrite existing artifacts
+        #[arg(long)]
+        force: bool,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -229,7 +246,9 @@ async fn main() -> anyhow::Result<()> {
             commands::list::run(r#type.as_deref(), status.as_deref(), json).await
         }
         Commands::Status => commands::status::run().await,
-        Commands::Validate { id, json } => commands::validate::run(id.as_deref(), json).await,
+        Commands::Validate { id, json, adversarial } => {
+            commands::validate::run(id.as_deref(), json, adversarial).await
+        }
         Commands::Score { id } => commands::score::run(id.as_deref()).await,
         Commands::Link {
             source,
@@ -290,6 +309,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
         }
+        Commands::Export { output } => commands::export::run(output.as_deref()).await,
+        Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await
