@@ -392,6 +392,46 @@ git worktree remove ../forgeplan-fix
 - **Когда**: hotfix во время долгой фичи; параллельная работа агентов (isolation: "worktree")
 - **Правило**: worktree = временный, удалять после merge
 
+### ЗАПРЕЩЁННЫЕ действия (CRITICAL):
+
+**НИКОГДА не удалять `.forgeplan/` без backup:**
+```bash
+# ПРАВИЛЬНО:
+forgeplan export --output backup.json   # ОБЯЗАТЕЛЬНО перед любым reinit
+cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)  # backup copy
+# потом уже можно reinit
+
+# ЗАПРЕЩЕНО:
+rm -rf .forgeplan   # ← ПОТЕРЯ ВСЕХ АРТЕФАКТОВ, EVIDENCE, LINKS!
+```
+
+**ОБЯЗАТЕЛЬНО при reinit:**
+1. `forgeplan export` → сохранить JSON
+2. `cp -r .forgeplan .forgeplan-backup-ДАТА`
+3. Только потом `rm -rf .forgeplan && forgeplan init -y`
+4. `forgeplan import backup.json` → восстановить
+
+**AI агенты:**
+- `forgeplan init` → ВСЕГДА с `-y` (non-interactive mode)
+- НИКОГДА `rm -rf .forgeplan` без `forgeplan export` первым
+- После init → настроить `.forgeplan/config.yaml` (LLM provider)
+
+### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
+
+```bash
+cargo test                              # ВСЕ должны PASS
+forgeplan init -y                       # Workspace создаётся
+forgeplan new prd "Smoke Test"          # Артефакт создаётся
+forgeplan validate PRD-XXX              # Валидация работает
+forgeplan score PRD-XXX                 # F-G-R scoring работает
+forgeplan blocked                       # Граф зависимостей
+forgeplan order                         # Topological sort
+forgeplan fpf ingest                    # FPF KB загружается
+forgeplan fpf search "trust"            # Поиск работает
+```
+
+**Если любой шаг fail — НЕ коммитить. Починить сначала.**
+
 ## Структура проекта
 
 ```
