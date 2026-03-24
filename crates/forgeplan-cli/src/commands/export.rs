@@ -1,14 +1,8 @@
-use std::env;
-
-use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::workspace;
+use crate::commands::common;
 
 pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+    let store = common::store().await?;
+    let cwd = std::env::current_dir()?;
 
     let records = store.list_records(None).await?;
     let artifacts: Vec<serde_json::Value> = records

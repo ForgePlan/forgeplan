@@ -1,19 +1,13 @@
-use std::env;
-
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::db::store::{ArtifactFilter, LanceStore};
-use forgeplan_core::workspace::find_workspace;
+use forgeplan_core::db::store::ArtifactFilter;
 
+use crate::commands::common;
 use crate::ui;
 
 pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>, json: bool) -> Result<()> {
-    let cwd = env::current_dir()?;
-    let workspace = find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&workspace).await?;
+    let store = common::store().await?;
 
     let filter = if kind_filter.is_some() || status_filter.is_some() {
         Some(ArtifactFilter {

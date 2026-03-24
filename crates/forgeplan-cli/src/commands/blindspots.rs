@@ -1,15 +1,9 @@
-use std::env;
-
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::health;
-use forgeplan_core::workspace;
+
+use crate::commands::common;
 
 pub async fn run() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+    let store = common::store().await?;
     let report = health::health_report(&store).await?;
 
     if report.blind_spots.is_empty() && report.orphans.is_empty() {
