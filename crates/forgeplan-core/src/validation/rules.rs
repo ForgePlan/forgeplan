@@ -578,6 +578,14 @@ fn rfc_rules(depth: &Mode) -> Vec<RuleEntry> {
         rules.push(rule("rfc-risks", Severity::Must, "Risks section", check_rfc_risks));
     }
 
+    // Decision Contract rules for RFC (Could — RFC is a proposal, not a decision)
+    rules.push(rule("rfc-invariants", Severity::Could,
+        "RFC could define invariants",
+        check_adr_invariants));
+    rules.push(rule("rfc-rollback", Severity::Could,
+        "RFC could define rollback plan",
+        check_adr_rollback));
+
     rules
 }
 
@@ -638,10 +646,27 @@ fn adr_rules(depth: &Mode) -> Vec<RuleEntry> {
         rule("adr-consequences", Severity::Must, "Consequences", check_adr_consequences),
     ];
 
-    if matches!(depth, Mode::Deep) {
-        rules.push(rule("adr-invariants", Severity::Should, "Invariants (DDR)", check_adr_invariants));
-        rules.push(rule("adr-rollback", Severity::Should, "Rollback Plan", check_adr_rollback));
-    }
+    // Decision Contract rules — severity scales with depth
+    let (inv_sev, roll_sev) = match depth {
+        Mode::Deep => (Severity::Must, Severity::Must),
+        _ => (Severity::Should, Severity::Should),
+    };
+
+    rules.push(rule("adr-invariants", inv_sev,
+        "Invariants — what must never be violated",
+        check_adr_invariants));
+    rules.push(rule("adr-rollback", roll_sev,
+        "Rollback plan — what to do if decision fails",
+        check_adr_rollback));
+    rules.push(rule("adr-preconditions", Severity::Could,
+        "Preconditions — what must be true before implementing",
+        check_adr_preconditions));
+    rules.push(rule("adr-postconditions", Severity::Could,
+        "Postconditions — what must be true after implementing",
+        check_adr_postconditions));
+    rules.push(rule("adr-affected-files", Severity::Should,
+        "Affected files/modules — scope of the decision",
+        check_adr_affected_files));
 
     rules
 }
@@ -671,18 +696,54 @@ fn check_adr_consequences(body: &str, _fm: &Frontmatter) -> Option<String> {
 }
 
 fn check_adr_invariants(body: &str, _fm: &Frontmatter) -> Option<String> {
-    if !checks::section_exists(body, "Invariants") {
-        Some("Missing '## Invariants' section (recommended for deep ADR/DDR)".into())
-    } else {
+    if checks::section_exists(body, "Invariants") {
         None
+    } else {
+        Some("Missing '## Invariants' section — what must NEVER be violated by this decision".into())
     }
 }
 
 fn check_adr_rollback(body: &str, _fm: &Frontmatter) -> Option<String> {
-    if !checks::section_exists(body, "Rollback") {
-        Some("Missing '## Rollback Plan' section (recommended for deep ADR/DDR)".into())
-    } else {
+    if checks::section_exists(body, "Rollback")
+        || checks::section_exists(body, "Rollback Plan")
+        || checks::section_exists(body, "Mitigation")
+    {
         None
+    } else {
+        Some("Missing '## Rollback Plan' section — what to do if this decision fails".into())
+    }
+}
+
+fn check_adr_preconditions(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if checks::section_exists(body, "Preconditions")
+        || checks::section_exists(body, "Pre-conditions")
+        || checks::section_exists(body, "Prerequisites")
+    {
+        None
+    } else {
+        Some("Missing '## Preconditions' section".into())
+    }
+}
+
+fn check_adr_postconditions(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if checks::section_exists(body, "Postconditions")
+        || checks::section_exists(body, "Post-conditions")
+        || checks::section_exists(body, "Expected Outcome")
+    {
+        None
+    } else {
+        Some("Missing '## Postconditions' section".into())
+    }
+}
+
+fn check_adr_affected_files(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if checks::section_exists(body, "Affected Files")
+        || checks::section_exists(body, "Affected Scope")
+        || checks::section_exists(body, "Scope")
+    {
+        None
+    } else {
+        Some("Missing '## Affected Files' section — which files/modules does this decision affect".into())
     }
 }
 
@@ -779,45 +840,69 @@ mod tests {
     }
 
     #[test]
-    fn rules_for_rfc_standard_returns_base_plus_5_no_risks() {
+    fn rules_for_rfc_standard_returns_base_plus_7_with_contracts() {
         let rules = rules_for(&ArtifactKind::Rfc, &Mode::Standard);
         let base_count = base_rules().len();
-        assert_eq!(rules.len(), base_count + 5);
+        // 5 base RFC + 2 contract rules (invariants, rollback)
+        assert_eq!(rules.len(), base_count + 7);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(!ids.contains(&"rfc-risks"));
+        assert!(ids.contains(&"rfc-invariants"));
+        assert!(ids.contains(&"rfc-rollback"));
+
+        // RFC contract rules are Could severity
+        let inv = rules.iter().find(|(id, _, _, _)| *id == "rfc-invariants").unwrap();
+        assert_eq!(inv.1, Severity::Could);
     }
 
     #[test]
-    fn rules_for_rfc_deep_returns_base_plus_6_with_risks() {
+    fn rules_for_rfc_deep_returns_base_plus_8_with_risks_and_contracts() {
         let rules = rules_for(&ArtifactKind::Rfc, &Mode::Deep);
         let base_count = base_rules().len();
-        assert_eq!(rules.len(), base_count + 6);
+        // 5 base RFC + 1 risks + 2 contract rules
+        assert_eq!(rules.len(), base_count + 8);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"rfc-risks"));
+        assert!(ids.contains(&"rfc-invariants"));
+        assert!(ids.contains(&"rfc-rollback"));
     }
 
     #[test]
-    fn rules_for_adr_standard_returns_base_plus_3() {
+    fn rules_for_adr_standard_returns_base_plus_8_with_contracts() {
         let rules = rules_for(&ArtifactKind::Adr, &Mode::Standard);
         let base_count = base_rules().len();
-        assert_eq!(rules.len(), base_count + 3);
-
-        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
-        assert!(!ids.contains(&"adr-invariants"));
-        assert!(!ids.contains(&"adr-rollback"));
-    }
-
-    #[test]
-    fn rules_for_adr_deep_returns_base_plus_5_with_ddr() {
-        let rules = rules_for(&ArtifactKind::Adr, &Mode::Deep);
-        let base_count = base_rules().len();
-        assert_eq!(rules.len(), base_count + 5);
+        // 3 base ADR + 5 contract rules (invariants, rollback, preconditions, postconditions, affected-files)
+        assert_eq!(rules.len(), base_count + 8);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"adr-invariants"));
         assert!(ids.contains(&"adr-rollback"));
+        assert!(ids.contains(&"adr-preconditions"));
+        assert!(ids.contains(&"adr-postconditions"));
+        assert!(ids.contains(&"adr-affected-files"));
+
+        // At standard depth, invariants and rollback are Should (not Must)
+        let inv = rules.iter().find(|(id, _, _, _)| *id == "adr-invariants").unwrap();
+        assert_eq!(inv.1, Severity::Should);
+    }
+
+    #[test]
+    fn rules_for_adr_deep_returns_base_plus_8_with_must_contracts() {
+        let rules = rules_for(&ArtifactKind::Adr, &Mode::Deep);
+        let base_count = base_rules().len();
+        assert_eq!(rules.len(), base_count + 8);
+
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"adr-invariants"));
+        assert!(ids.contains(&"adr-rollback"));
+
+        // At deep depth, invariants and rollback are Must
+        let inv = rules.iter().find(|(id, _, _, _)| *id == "adr-invariants").unwrap();
+        assert_eq!(inv.1, Severity::Must);
+        let roll = rules.iter().find(|(id, _, _, _)| *id == "adr-rollback").unwrap();
+        assert_eq!(roll.1, Severity::Must);
     }
 
     #[test]
@@ -939,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_deep_has_should_findings_for_invariants_and_rollback() {
+    fn adr_deep_has_must_findings_for_invariants_and_rollback() {
         let fm = make_fm("adr-002", "active");
         let body = "## Context\n\nWe need to choose a database.\n\n\
                      ## Decision\n\nUse LanceDB for embedded vector storage.\n\n\
@@ -947,20 +1032,38 @@ mod tests {
 
         let result = validate("adr-002", body, &fm, &ArtifactKind::Adr, &Mode::Deep);
 
-        // Should still pass (invariants and rollback are Should, not Must)
-        assert!(result.passed(), "ADR should still pass at Deep depth without DDR fields");
+        // Should NOT pass — invariants and rollback are Must at Deep depth
+        assert!(!result.passed(), "ADR should fail at Deep depth without Invariants/Rollback");
 
-        let should_ids: Vec<&str> = result.findings.iter()
-            .filter(|f| f.severity == Severity::Should)
+        let must_ids: Vec<&str> = result.findings.iter()
+            .filter(|f| f.severity == Severity::Must)
             .map(|f| f.rule_id.as_str())
             .collect();
         assert!(
-            should_ids.contains(&"adr-invariants"),
-            "Expected Should finding for adr-invariants at Deep depth"
+            must_ids.contains(&"adr-invariants"),
+            "Expected Must finding for adr-invariants at Deep depth"
         );
         assert!(
-            should_ids.contains(&"adr-rollback"),
-            "Expected Should finding for adr-rollback at Deep depth"
+            must_ids.contains(&"adr-rollback"),
+            "Expected Must finding for adr-rollback at Deep depth"
+        );
+    }
+
+    #[test]
+    fn adr_deep_passes_with_full_contract() {
+        let fm = make_fm("adr-003", "active");
+        let body = "## Context\n\nWe need to choose a database.\n\n\
+                     ## Decision\n\nUse LanceDB for embedded vector storage.\n\n\
+                     ## Consequences\n\nSimplifies deployment, limits horizontal scaling.\n\n\
+                     ## Invariants\n\n- Single-file deployment must be preserved.\n\n\
+                     ## Rollback Plan\n\n- Revert to SQLite.\n\n\
+                     ## Affected Files\n\n- crates/forgeplan-core/src/db/\n";
+
+        let result = validate("adr-003", body, &fm, &ArtifactKind::Adr, &Mode::Deep);
+        assert!(
+            result.passed(),
+            "ADR with full contract should pass at Deep depth, findings: {:?}",
+            result.findings.iter().map(|f| (&f.rule_id, &f.severity)).collect::<Vec<_>>()
         );
     }
 

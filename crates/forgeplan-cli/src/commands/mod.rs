@@ -7,6 +7,7 @@ pub mod decay;
 pub mod decompose;
 pub mod delete;
 pub mod deprecate;
+pub mod drift;
 pub mod export;
 
 pub mod fgr;

@@ -196,6 +196,8 @@ enum Commands {
         /// Artifact ID (scores all if omitted)
         id: Option<String>,
     },
+    /// Check for drifted decisions (affected files changed after decision)
+    Drift,
     /// Show blocked artifacts and their dependencies
     Blocked {
         /// Specific artifact ID to check (optional)
@@ -343,6 +345,7 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
+        Commands::Drift => commands::drift::run().await,
         Commands::Blocked { id } => commands::blocked::run(id.as_deref()).await,
         Commands::Blindspots => commands::blindspots::run().await,
         Commands::Journal { r#type, risk } => {
