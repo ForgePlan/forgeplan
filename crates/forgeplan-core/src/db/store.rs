@@ -527,8 +527,11 @@ impl LanceStore {
         let mut records = Vec::new();
         for batch_result in batches {
             let batch = batch_result?;
-            let batch_records = convert::batch_to_records(&batch)?;
-            records.extend(batch_records);
+            for row in 0..batch.num_rows() {
+                if let Some(record) = extract_record(&batch, row) {
+                    records.push(record);
+                }
+            }
         }
         Ok(records)
     }

@@ -20,7 +20,7 @@ mod inner {
         }
 
         /// Embed a single text. Returns 1024-dim vector.
-        pub fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        pub fn embed(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
             let results = self.model.embed(vec![text], None)?;
             results
                 .into_iter()
@@ -29,7 +29,7 @@ mod inner {
         }
 
         /// Embed multiple texts in batch.
-        pub fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        pub fn embed_batch(&mut self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
             let texts_owned: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
             let results = self.model.embed(texts_owned, None)?;
             Ok(results)
