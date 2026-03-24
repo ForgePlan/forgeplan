@@ -7,6 +7,7 @@ pub mod decay;
 pub mod decompose;
 pub mod delete;
 pub mod deprecate;
+pub mod drift;
 pub mod export;
 
 pub mod fgr;
@@ -20,6 +21,7 @@ pub mod init;
 pub mod journal;
 pub mod link;
 pub mod list;
+pub mod migrate;
 pub mod new;
 pub mod order;
 pub mod progress;
