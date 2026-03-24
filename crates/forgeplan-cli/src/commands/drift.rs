@@ -1,19 +1,25 @@
-use std::env;
-
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::drift;
-use forgeplan_core::workspace;
 
-pub async fn run() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+use crate::commands::common;
 
-    let store = LanceStore::open(&ws).await?;
+pub async fn run(json: bool) -> anyhow::Result<()> {
+    let (ws, store) = common::open_store().await?;
 
-    // workspace_root = parent of .forgeplan
-    let workspace_root = ws.parent().unwrap_or(&ws);
+    let workspace_root = ws.parent()
+        .ok_or_else(|| anyhow::anyhow!("Workspace path has no parent directory"))?;
     let reports = drift::check_drift(&store, workspace_root).await?;
+
+    if json {
+        let data: Vec<_> = reports.iter().map(|r| {
+            serde_json::json!({
+                "id": r.artifact_id, "title": r.artifact_title, "is_stale": r.is_stale,
+                "created_at": r.created_at,
+                "changed_files": r.changed_files.iter().map(|f| serde_json::json!({"path": f.path, "last_modified": f.last_modified})).collect::<Vec<_>>(),
+            })
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     if reports.is_empty() {
         println!("  No active ADR/RFC with affected_files found.");

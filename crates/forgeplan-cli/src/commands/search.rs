@@ -1,14 +1,8 @@
-use std::env;
+use crate::commands::common;
+use crate::ui;
 
-use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::workspace;
-
-pub async fn run(query: &str, kind: Option<&str>, semantic: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+pub async fn run(query: &str, kind: Option<&str>, semantic: bool, json: bool) -> anyhow::Result<()> {
+    let store = common::store().await?;
 
     if semantic {
         #[cfg(feature = "semantic-search")]
@@ -28,7 +22,25 @@ pub async fn run(query: &str, kind: Option<&str>, semantic: bool) -> anyhow::Res
     let hits = store.search_body(query, kind).await?;
 
     if hits.is_empty() {
-        println!("No results for \"{}\"", query);
+        if json {
+            println!("[]");
+        } else {
+            ui::info(&format!("No results for \"{}\"", query));
+        }
+        return Ok(());
+    }
+
+    if json {
+        let json_data: Vec<_> = hits
+            .iter()
+            .map(|r| serde_json::json!({
+                "id": r.id,
+                "kind": r.kind,
+                "status": r.status,
+                "title": r.title,
+            }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
     }
 

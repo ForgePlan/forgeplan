@@ -1,10 +1,12 @@
 use std::env;
 use std::fs;
+use std::path::Path;
 
 use anyhow::Result;
 use console::style;
 
 use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
 use forgeplan_core::workspace::{find_workspace, init_workspace, FORGEPLAN_DIR};
 
 use crate::ui;
@@ -12,7 +14,7 @@ use crate::ui;
 /// Default project name fallback (unified for both paths).
 const DEFAULT_PROJECT_NAME: &str = "my-project";
 
-pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
+pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
     let cwd = env::current_dir()?;
 
     // Check if already initialized
@@ -25,6 +27,10 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
                     "Already initialized at {}. Use --force to reinitialize.",
                     existing.display()
                 ))?;
+            }
+            // Even if already initialized, run scan if requested
+            if scan {
+                run_scan_import(&cwd, &existing).await?;
             }
             return Ok(());
         }
@@ -44,6 +50,12 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
 
         println!("  Initialized {}/ in {}", FORGEPLAN_DIR, cwd.display());
         println!("  Project: {}", project_name);
+
+        if scan {
+            let workspace = cwd.join(FORGEPLAN_DIR);
+            run_scan_import(&cwd, &workspace).await?;
+        }
+
         return Ok(());
     }
 
@@ -228,6 +240,11 @@ pub async fn run(force: bool, non_interactive: bool) -> Result<()> {
         style("/forge \"your task\"").cyan()
     ))?;
 
+    if scan {
+        let workspace = cwd.join(FORGEPLAN_DIR);
+        run_scan_import(&cwd, &workspace).await?;
+    }
+
     Ok(())
 }
 
@@ -314,4 +331,58 @@ fn agent_display_name(agent: &str) -> &str {
         "copilot" => "Copilot",
         _ => agent,
     }
+}
+
+/// Run scan-import after init to discover and import existing docs.
+async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
+    println!("\n  {} Scanning for existing documents...", style("◉").cyan());
+
+    let store = LanceStore::init(workspace).await?;
+    let options = ScanImportOptions::default();
+
+    let result = scan_and_import(project_root, &store, &options).await?;
+
+    if result.total_found == 0 {
+        println!("  No documents found to import.");
+        return Ok(());
+    }
+
+    let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for entry in &result.entries {
+        if entry.status == ImportStatus::Imported {
+            let kind = entry
+                .detected_kind
+                .as_ref()
+                .map(|k| k.template_key().to_uppercase())
+                .unwrap_or_else(|| "???".to_string());
+            *by_kind.entry(kind).or_insert(0) += 1;
+        }
+    }
+
+    let kind_summary: Vec<String> = by_kind
+        .iter()
+        .map(|(k, v)| format!("{} {}", v, k))
+        .collect();
+
+    println!(
+        "  Imported {} artifact(s): {}",
+        style(result.imported).green().bold(),
+        kind_summary.join(", ")
+    );
+
+    if result.skipped > 0 {
+        println!(
+            "  Skipped {} (already exist)",
+            style(result.skipped).yellow()
+        );
+    }
+    if result.unknown > 0 {
+        println!(
+            "  {} unknown file(s) — run {} for details",
+            style(result.unknown).dim(),
+            style("forgeplan scan-import --dry-run").cyan()
+        );
+    }
+
+    Ok(())
 }

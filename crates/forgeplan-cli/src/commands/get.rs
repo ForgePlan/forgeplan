@@ -1,39 +1,50 @@
-use std::env;
+use crate::commands::common;
+use crate::ui;
 
-use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::workspace;
-
-pub async fn run(id: &str) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
+    let store = common::store().await?;
     let record = store
         .get_record(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
-    println!();
-    println!("ID:           {}", record.id);
-    println!("Kind:         {}", record.kind);
-    println!("Status:       {}", record.status);
-    println!("Title:        {}", record.title);
-    println!("Depth:        {}", record.depth);
+    if json {
+        let json_data = serde_json::json!({
+            "id": record.id,
+            "kind": record.kind,
+            "status": record.status,
+            "title": record.title,
+            "depth": record.depth,
+            "author": record.author,
+            "parent_epic": record.parent_epic,
+            "valid_until": record.valid_until,
+            "r_eff": record.r_eff_score,
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "body": record.body,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_data)?);
+        return Ok(());
+    }
+
+    ui::header(&record.id, &record.title);
+    ui::kv("Kind", &record.kind);
+    ui::kv("Status", &ui::styled_status(&record.status));
+    ui::kv("Depth", &ui::styled_depth(&record.depth));
     if let Some(ref author) = record.author {
-        println!("Author:       {}", author);
+        ui::kv("Author", author);
     }
     if let Some(ref epic) = record.parent_epic {
         if !epic.is_empty() {
-            println!("Parent Epic:  {}", epic);
+            ui::kv("Parent Epic", epic);
         }
     }
     if let Some(ref vu) = record.valid_until {
-        println!("Valid Until:   {}", vu);
+        ui::kv("Valid Until", vu);
     }
-    println!("R_eff:        {:.2}", record.r_eff_score);
-    println!("Created:      {}", record.created_at);
-    println!("Updated:      {}", record.updated_at);
+    ui::kv("R_eff", &ui::styled_reff(record.r_eff_score));
+    ui::kv("Created", &record.created_at);
+    ui::kv("Updated", &record.updated_at);
     println!();
     println!("{}", record.body);
 

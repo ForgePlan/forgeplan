@@ -1,3 +1,4 @@
+pub mod common;
 pub mod activate;
 pub mod blindspots;
 pub mod blocked;
@@ -29,6 +30,7 @@ pub mod progress;
 pub mod reason;
 pub mod review;
 pub mod route;
+pub mod scan_import;
 pub mod score;
 pub mod search;
 pub mod setup_skill;

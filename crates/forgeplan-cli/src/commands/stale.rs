@@ -1,20 +1,30 @@
-use std::env;
-
 use chrono::{NaiveDate, Utc};
 
-use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::workspace;
+use crate::commands::common;
 
-pub async fn run() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+pub async fn run(json: bool) -> anyhow::Result<()> {
+    let store = common::store().await?;
     let stale_records = store.find_stale().await?;
 
     if stale_records.is_empty() {
-        println!("No stale artifacts found. All valid_until dates are current.");
+        if json {
+            println!("[]");
+        } else {
+            println!("No stale artifacts found. All valid_until dates are current.");
+        }
+        return Ok(());
+    }
+
+    if json {
+        let today = Utc::now().date_naive();
+        let data: Vec<_> = stale_records.iter().map(|r| {
+            let days = r.valid_until.as_deref()
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                .map(|d| (today - d).num_days())
+                .unwrap_or(0);
+            serde_json::json!({"id": r.id, "title": r.title, "valid_until": r.valid_until, "days_expired": days})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
         return Ok(());
     }
 
@@ -32,8 +42,8 @@ pub async fn run() -> anyhow::Result<()> {
     let today = Utc::now().date_naive();
 
     for record in &stale_records {
-        let title = if record.title.len() > 28 {
-            format!("{}...", &record.title[..25])
+        let title: String = if record.title.chars().count() > 28 {
+            format!("{}...", record.title.chars().take(25).collect::<String>())
         } else {
             record.title.clone()
         };
