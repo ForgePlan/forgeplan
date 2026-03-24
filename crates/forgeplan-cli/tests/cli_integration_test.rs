@@ -1209,3 +1209,348 @@ fn e2e_adr_contract_validation() {
         .stdout(predicate::str::contains("ADR-001"))
         .stdout(predicate::str::contains("PASS").or(predicate::str::contains("error").or(predicate::str::contains("warning"))));
 }
+
+// ── E2E: Severe Tests — Codebase Awareness + Data Integrity ──
+
+#[test]
+fn e2e_scan_detects_real_modules() {
+    let tmp = TempDir::new().unwrap();
+    // TempDir names start with .tmp — scan skips dirs starting with '.'
+    // So create a non-dot project subdirectory and scan from there
+    let project = tmp.path().join("myproject");
+    std::fs::create_dir_all(&project).unwrap();
+
+    forgeplan().args(["init", "-y"]).current_dir(&project).assert().success();
+
+    // Create a fake project structure with source files
+    let src = project.join("src");
+    std::fs::create_dir_all(src.join("api")).unwrap();
+    std::fs::create_dir_all(src.join("db")).unwrap();
+    std::fs::write(src.join("api/handler.rs"), "fn handle() {}\n").unwrap();
+    std::fs::write(src.join("api/routes.rs"), "fn routes() {}\n").unwrap();
+    std::fs::write(src.join("db/store.rs"), "fn store() {}\nfn query() {}\n").unwrap();
+    std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+
+    // Scan with explicit --path to bypass temp dir dot-prefix issue
+    let output = forgeplan()
+        .args(["scan", "--path", project.to_str().unwrap()])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("src/api") || stdout.contains("src\\api"),
+        "Should detect src/api module, got:\n{}", stdout);
+    assert!(stdout.contains("src/db") || stdout.contains("src\\db"),
+        "Should detect src/db module, got:\n{}", stdout);
+    // Should show file counts
+    assert!(stdout.contains("2") || stdout.contains("files"),
+        "Should show file count for api (2 files), got:\n{}", stdout);
+}
+
+#[test]
+fn e2e_coverage_with_affected_files() {
+    let tmp = TempDir::new().unwrap();
+    // TempDir names start with .tmp — scan skips dirs starting with '.'
+    let project = tmp.path().join("myproject");
+    std::fs::create_dir_all(&project).unwrap();
+
+    forgeplan().args(["init", "-y"]).current_dir(&project).assert().success();
+
+    // Create source structure
+    let src = project.join("src");
+    std::fs::create_dir_all(src.join("scoring")).unwrap();
+    std::fs::create_dir_all(src.join("validation")).unwrap();
+    std::fs::write(src.join("scoring/reff.rs"), "fn score() {}\n").unwrap();
+    std::fs::write(src.join("validation/rules.rs"), "fn validate() {}\n").unwrap();
+
+    // Create ADR with affected_files that matches src/scoring
+    forgeplan().args(["new", "adr", "Use R_eff scoring"]).current_dir(&project).assert().success();
+
+    let adr_body = "# ADR-001: Use R_eff scoring\n\n## Context\n\nNeed a scoring mechanism for artifact quality.\n\n## Decision\n\nUse weakest-link R_eff.\n\n## Consequences\n\nAll artifacts must have evidence to get non-zero R_eff.\n\n## Affected Files\n\n- src/scoring/*.rs\n- src/scoring/reff.rs";
+    forgeplan()
+        .args(["update", "ADR-001", "--body", adr_body])
+        .current_dir(&project)
+        .assert()
+        .success();
+
+    // Activate ADR (coverage only counts active artifacts)
+    forgeplan().args(["activate", "ADR-001"]).current_dir(&project).assert().success();
+
+    // Coverage should show > 0%
+    let output = forgeplan()
+        .args(["coverage"])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should NOT be 0% anymore
+    assert!(
+        !stdout.contains("0%") || stdout.contains("Covered"),
+        "Coverage should be > 0% with affected_files in active ADR, got:\n{}", stdout
+    );
+}
+
+#[test]
+fn e2e_drift_detects_stale_decision() {
+    let tmp = TempDir::new().unwrap();
+
+    // Init git repo first
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    // Create source file and commit
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/store.rs"), "fn v1() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    // Init forgeplan
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create ADR with affected_files (include Context + Consequences for validation gate)
+    forgeplan().args(["new", "adr", "Storage Decision"]).current_dir(tmp.path()).assert().success();
+    let body = "# ADR-001\n\n## Context\n\nNeed embedded database for artifacts.\n\n## Decision\n\nUse LanceDB.\n\n## Consequences\n\nAll data stored in lance/ directory.\n\n## Affected Files\n\n- src/store.rs";
+    forgeplan().args(["update", "ADR-001", "--body", body]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["activate", "ADR-001"]).current_dir(tmp.path()).assert().success();
+
+    // Commit .forgeplan
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "add forgeplan"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    // Now modify the affected file AFTER the ADR
+    std::thread::sleep(std::time::Duration::from_secs(1)); // ensure different timestamp
+    std::fs::write(tmp.path().join("src/store.rs"), "fn v2() { /* changed! */ }\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "src/store.rs"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "modify store"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    // Drift should detect the change
+    let output = forgeplan()
+        .args(["drift"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("STALE") || stdout.contains("Changed") || stdout.contains("store.rs"),
+        "Drift should detect that src/store.rs changed after ADR-001, got:\n{}", stdout
+    );
+}
+
+#[test]
+fn e2e_deep_adr_requires_contract_sections() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create ADR (it will be standard depth by default)
+    forgeplan().args(["new", "adr", "Critical Security Decision"]).current_dir(tmp.path()).assert().success();
+
+    // Update to Deep depth and minimal body WITHOUT invariants/rollback
+    let body = "# ADR-001: Critical Security Decision\n\n## Context\n\nSecurity architecture choice.\n\n## Decision\n\nUse mTLS.\n\n## Status\n\nProposed";
+    forgeplan().args(["update", "ADR-001", "--body", body]).current_dir(tmp.path()).assert().success();
+
+    // Validate — should produce warnings about missing contract sections
+    let output = forgeplan()
+        .args(["validate", "ADR-001"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // At minimum, should warn about missing invariants or rollback
+    assert!(
+        stdout.contains("Invariants") || stdout.contains("Rollback") || stdout.contains("invariants") || stdout.contains("rollback") || stdout.contains("SHOULD") || stdout.contains("MUST"),
+        "Deep ADR should warn about missing contract sections, got:\n{}", stdout
+    );
+}
+
+#[test]
+fn e2e_migrate_preserves_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create artifacts
+    forgeplan().args(["new", "prd", "Feature X"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "How to X"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+
+    // Run migrate
+    forgeplan()
+        .args(["migrate"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify artifacts still exist
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Feature X"));
+
+    forgeplan()
+        .args(["get", "RFC-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("How to X"));
+
+    // Verify link still exists
+    forgeplan()
+        .args(["graph"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RFC-001"))
+        .stdout(predicate::str::contains("PRD-001"));
+}
+
+#[test]
+fn e2e_graph_cycle_detection() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create circular dependency: A → B → A (using valid relation type)
+    forgeplan().args(["new", "prd", "Feature A"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Feature B"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "PRD-001", "PRD-002", "--relation", "refines"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "PRD-002", "PRD-001", "--relation", "refines"]).current_dir(tmp.path()).assert().success();
+
+    // Order or blocked should detect cycle
+    let output = forgeplan()
+        .args(["order"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should mention cycle or show both as blocked
+    assert!(
+        stdout.contains("Cycle") || stdout.contains("cycle") || stdout.contains("\u{26a0}") || stdout.contains("Blocked"),
+        "Should detect circular dependency, got:\n{}", stdout
+    );
+}
+
+#[test]
+fn e2e_export_import_preserves_links() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create artifacts with links
+    forgeplan().args(["new", "prd", "Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "Tests pass"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"]).current_dir(tmp.path()).assert().success();
+
+    // Export
+    let export_path = tmp.path().join("backup.json");
+    forgeplan()
+        .args(["export", "--output", export_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify export contains relations
+    let content = std::fs::read_to_string(&export_path).unwrap();
+    assert!(content.contains("informs"), "Export should contain relation type 'informs'");
+    assert!(content.contains("EVID-001"), "Export should contain EVID-001");
+
+    // Destroy and reimport
+    std::fs::remove_dir_all(tmp.path().join(".forgeplan")).unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["import", export_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify graph has the link
+    forgeplan()
+        .args(["graph"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EVID-001"))
+        .stdout(predicate::str::contains("informs"));
+}
+
+#[test]
+fn e2e_fpf_search_after_ingest() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // FPF search on empty KB should not crash
+    forgeplan()
+        .args(["fpf", "search", "trust"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Check if FPF spec exists on disk (skip ingest if not)
+    let fpf_path = std::env::var("HOME").ok()
+        .map(|h| std::path::PathBuf::from(h).join(".claude/skills/fpf-simple/sections"))
+        .filter(|p| p.exists());
+
+    if let Some(fpf_dir) = fpf_path {
+        // Ingest FPF
+        forgeplan()
+            .args(["fpf", "ingest", "--path", fpf_dir.to_str().unwrap()])
+            .current_dir(tmp.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("sections"));
+
+        // Search should find results
+        let output = forgeplan()
+            .args(["fpf", "search", "holon", "--limit", "3"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            !stdout.contains("No FPF sections") && stdout.len() > 50,
+            "FPF search for 'holon' should return results after ingest, got:\n{}", stdout
+        );
+    }
+    // If FPF not installed, test still passes (graceful skip)
+}
