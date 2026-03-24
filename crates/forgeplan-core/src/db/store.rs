@@ -91,6 +91,23 @@ impl ArtifactRecord {
     }
 }
 
+/// Compute a simple fingerprint hash for artifact body content.
+///
+/// Uses a lightweight approach (length + byte sum) to avoid adding sha2 dependency.
+/// Sufficient for change detection across artifact versions.
+pub fn compute_body_hash(body: &str) -> String {
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+    // Simple hash: sum of bytes with position weighting
+    let hash: u64 = bytes
+        .iter()
+        .enumerate()
+        .fold(0u64, |acc, (i, &b)| {
+            acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
+        });
+    format!("{:016x}-{:08x}", hash, len)
+}
+
 /// FPF knowledge base chunk.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FpfChunk {
@@ -935,6 +952,7 @@ fn empty_relations_batch(
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(Int32Array::from(Vec::<Option<i32>>::new())), // congruence_level
         ],
     )
 }

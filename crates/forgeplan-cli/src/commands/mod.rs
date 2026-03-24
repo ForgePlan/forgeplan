@@ -1,5 +1,6 @@
 pub mod activate;
 pub mod blindspots;
+pub mod blocked;
 pub mod calibrate;
 pub mod capture;
 pub mod decay;
@@ -20,6 +21,7 @@ pub mod journal;
 pub mod link;
 pub mod list;
 pub mod new;
+pub mod order;
 pub mod progress;
 pub mod reason;
 pub mod review;
