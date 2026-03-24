@@ -68,9 +68,18 @@ pub async fn scan_and_import(
     store: &LanceStore,
     options: &ScanImportOptions,
 ) -> anyhow::Result<ScanImportResult> {
-    // Discover files
+    // Discover files — with path traversal protection
     let scan_root = if let Some(ref custom) = options.custom_path {
-        project_root.join(custom)
+        let candidate = project_root.join(custom);
+        let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
+        let canonical_root = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
+        if !canonical.starts_with(&canonical_root) {
+            anyhow::bail!(
+                "Scan path '{}' is outside project root. Path traversal rejected.",
+                custom
+            );
+        }
+        candidate
     } else {
         project_root.to_path_buf()
     };
@@ -224,9 +233,10 @@ async fn resolve_artifact_id(detection: &DetectionResult, store: &LanceStore) ->
         }
     }
 
-    // Fallback
+    // Exhausted ID space — return a clearly invalid ID that will fail at create
+    // (better than silently returning a collision)
     format!(
-        "{}-999",
+        "{}-OVERFLOW",
         detection.kind.prefix().trim_end_matches('-').to_uppercase()
     )
 }

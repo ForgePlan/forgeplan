@@ -1,21 +1,15 @@
-use std::env;
-
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
 use forgeplan_core::scan::detect::DetectionTier;
-use forgeplan_core::workspace::find_workspace;
+
+use crate::commands::common;
 
 /// `forgeplan scan-import [--path <dir>] [--dry-run]`
 pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
-    let cwd = env::current_dir()?;
-    let workspace = find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::init(&workspace).await?;
-    let project_root = workspace
+    let (ws, store) = common::open_store().await?;
+    let project_root = ws
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root"))?;
 
