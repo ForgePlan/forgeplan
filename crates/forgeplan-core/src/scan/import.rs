@@ -240,3 +240,130 @@ async fn resolve_artifact_id(detection: &DetectionResult, store: &LanceStore) ->
         detection.kind.prefix().trim_end_matches('-').to_uppercase()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn setup_store() -> (TempDir, std::path::PathBuf, LanceStore) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = LanceStore::init(&ws).await.unwrap();
+        (tmp, ws, store)
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_persist() {
+        let (tmp, _ws, store) = setup_store().await;
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("PRD-001-test.md"),
+            "---\nkind: prd\nid: PRD-001\ntitle: Test\n---\n# Test",
+        ).unwrap();
+
+        let opts = ScanImportOptions { dry_run: true, custom_path: None };
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(result.imported, 1); // preview count
+        // But artifact should NOT exist in store
+        assert!(store.get_artifact("PRD-001").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn import_creates_artifact() {
+        let (tmp, _ws, store) = setup_store().await;
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("RFC-001-design.md"),
+            "---\nkind: rfc\nid: RFC-001\ntitle: Design\n---\n# Design",
+        ).unwrap();
+
+        let opts = ScanImportOptions::default();
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(result.imported, 1);
+        assert!(store.get_artifact("RFC-001").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn skips_existing_artifact() {
+        let (tmp, _ws, store) = setup_store().await;
+
+        // Pre-create artifact
+        let existing = crate::db::store::NewArtifact {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Existing".to_string(),
+            body: "".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&existing).await.unwrap();
+
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("PRD-001-dup.md"),
+            "---\nkind: prd\nid: PRD-001\ntitle: Duplicate\n---\n# Dup",
+        ).unwrap();
+
+        let opts = ScanImportOptions::default();
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(result.skipped, 1);
+        assert_eq!(result.imported, 0);
+    }
+
+    #[tokio::test]
+    async fn unknown_files_counted() {
+        let (tmp, _ws, store) = setup_store().await;
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("random.md"), "# Shopping\n- Milk").unwrap();
+
+        let opts = ScanImportOptions::default();
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(result.unknown, 1);
+        assert_eq!(result.imported, 0);
+    }
+
+    #[tokio::test]
+    async fn generates_id_when_none_suggested() {
+        let (tmp, _ws, store) = setup_store().await;
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        // File with frontmatter kind but no id
+        std::fs::write(
+            docs.join("my-feature.md"),
+            "---\nkind: prd\ntitle: My Feature\n---\n# Feature",
+        ).unwrap();
+
+        let opts = ScanImportOptions::default();
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(result.imported, 1);
+        // Should have generated PRD-001
+        assert!(store.get_artifact("PRD-001").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn path_traversal_rejected() {
+        let (tmp, _ws, store) = setup_store().await;
+
+        let opts = ScanImportOptions {
+            dry_run: false,
+            custom_path: Some("../../etc".to_string()),
+        };
+        let result = scan_and_import(tmp.path(), &store, &opts).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("traversal"));
+    }
+}

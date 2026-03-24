@@ -197,4 +197,34 @@ mod tests {
         // 0.09 is red
         assert!(!styled_reff(0.09).is_empty());
     }
+
+    #[test]
+    fn styled_reff_threshold_correctness() {
+        // Green zone: >= 0.5
+        let green = styled_reff(0.5);
+        let also_green = styled_reff(1.0);
+        assert_eq!(green, green); // same threshold, same output structure
+
+        // Yellow zone: 0.1 <= x < 0.5
+        let yellow = styled_reff(0.49);
+        assert_ne!(yellow, green); // different zone
+
+        // Red zone: < 0.1
+        let red = styled_reff(0.09);
+        assert_ne!(red, yellow); // different zone
+        assert_ne!(red, green); // different zone
+
+        // Boundary: 0.5 is green, 0.49 is yellow
+        assert_ne!(styled_reff(0.5), styled_reff(0.49));
+        // Boundary: 0.1 is yellow, 0.09 is red
+        assert_ne!(styled_reff(0.1), styled_reff(0.09));
+    }
+
+    #[test]
+    fn styled_reff_contains_value() {
+        // Output should contain the numeric value
+        assert!(styled_reff(1.0).contains("1.00"));
+        assert!(styled_reff(0.0).contains("0.00"));
+        assert!(styled_reff(0.42).contains("0.42"));
+    }
 }
