@@ -15,12 +15,21 @@ pub fn frontmatter_has(fm: &Frontmatter, key: &str) -> bool {
 
 /// Check that a markdown section with given heading text exists (any heading level).
 /// Also checks known aliases (e.g. "Problem" matches "Motivation", "Problem Statement").
+/// Uses string matching (no regex compilation per call).
 pub fn section_exists(body: &str, heading: &str) -> bool {
     let headings_to_check = expand_aliases(heading);
     for h in headings_to_check {
-        let pattern = format!(r"(?m)^#+\s+{}", regex::escape(&h));
-        if Regex::new(&pattern).map(|re| re.is_match(body)).unwrap_or(false) {
-            return true;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                // Strip leading '#' and check if remaining text starts with the heading
+                let after_hashes = trimmed.trim_start_matches('#').trim_start();
+                if after_hashes.eq_ignore_ascii_case(&h)
+                    || after_hashes.to_lowercase().starts_with(&h.to_lowercase())
+                {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -182,22 +191,142 @@ pub fn find_placeholders(body: &str) -> Vec<(usize, String)> {
     results
 }
 
-/// Tech names blocklist for implementation leakage detection.
-static TECH_BLOCKLIST: &[&str] = &[
-    "React", "Angular", "Vue", "Svelte", "Django", "Flask", "Rails",
-    "Express", "Next.js", "Nuxt", "PostgreSQL", "MySQL", "MongoDB",
-    "Redis", "Kafka", "RabbitMQ", "Docker", "Kubernetes", "AWS",
-    "Azure", "GCP", "Lambda", "S3", "EC2", "Terraform",
+/// BMAD Step 3: Filler phrases that reduce information density.
+/// Each entry: (pattern_to_find, suggested_replacement)
+const FILLER_CONVERSATIONAL: &[(&str, &str)] = &[
+    ("the system will allow users to", "users can"),
+    ("it is important to note that", ""),
+    ("in order to", "to"),
+    ("for the purpose of", "for"),
+    ("with regard to", "regarding"),
+    ("at this point in time", "now"),
+    ("it should be noted that", ""),
+    ("the system shall allow", "users can"),
+    ("the application will provide", "provides"),
+    ("users will be able to", "users can"),
+    ("the platform should support", "supports"),
 ];
 
+const FILLER_WORDY: &[(&str, &str)] = &[
+    ("due to the fact that", "because"),
+    ("in the event of", "if"),
+    ("in a manner that", "how"),
+    ("on a regular basis", "regularly"),
+    ("in close proximity to", "near"),
+];
+
+const FILLER_REDUNDANT: &[(&str, &str)] = &[
+    ("future plans", "plans"),
+    ("past history", "history"),
+    ("absolutely essential", "essential"),
+    ("completely finish", "finish"),
+    ("basic fundamentals", "fundamentals"),
+    ("end result", "result"),
+    ("final outcome", "outcome"),
+];
+
+/// Check for filler phrases in body text. Returns vec of (found_phrase, replacement, line_number).
+pub fn check_filler_phrases(body: &str) -> Vec<(String, String, usize)> {
+    let mut findings = Vec::new();
+
+    for (line_num, line) in body.lines().enumerate() {
+        let line_lower = line.to_lowercase();
+        for (phrase, replacement) in FILLER_CONVERSATIONAL
+            .iter()
+            .chain(FILLER_WORDY.iter())
+            .chain(FILLER_REDUNDANT.iter())
+        {
+            if line_lower.contains(phrase) {
+                findings.push((
+                    phrase.to_string(),
+                    replacement.to_string(),
+                    line_num + 1,
+                ));
+            }
+        }
+    }
+    findings
+}
+
+/// Compute density score: filler_count / total_words.
+pub fn density_score(body: &str) -> f64 {
+    let total_words = body.split_whitespace().count();
+    if total_words == 0 {
+        return 0.0;
+    }
+    let filler_count = check_filler_phrases(body).len();
+    filler_count as f64 / total_words as f64
+}
+
+/// BMAD Step 7: Implementation technology keywords by category.
+/// These should NOT appear in Functional Requirements.
+const TECH_KEYWORDS_FRONTEND: &[&str] = &[
+    "react", "vue", "angular", "svelte", "next.js", "nuxt", "gatsby",
+    "webpack", "vite", "tailwind", "bootstrap", "material-ui",
+];
+
+const TECH_KEYWORDS_BACKEND: &[&str] = &[
+    "express", "django", "rails", "spring", "laravel", "fastapi",
+    "nestjs", "flask", "gin", "actix", "axum", "rocket",
+];
+
+const TECH_KEYWORDS_DATABASE: &[&str] = &[
+    "postgresql", "mysql", "mongodb", "redis", "dynamodb", "cassandra",
+    "sqlite", "elasticsearch", "neo4j", "cockroachdb", "lancedb",
+];
+
+const TECH_KEYWORDS_CLOUD: &[&str] = &[
+    "aws", "gcp", "azure", "cloudflare", "vercel", "netlify",
+    "heroku", "digitalocean", "fly.io",
+];
+
+const TECH_KEYWORDS_INFRA: &[&str] = &[
+    "docker", "kubernetes", "terraform", "ansible", "helm",
+    "nginx", "apache", "caddy", "traefik",
+];
+
+const TECH_KEYWORDS_AUTH: &[&str] = &[
+    "jwt", "oauth", "oauth2", "saml", "ldap", "keycloak",
+    "auth0", "cognito", "firebase auth",
+];
+
+const TECH_KEYWORDS_PROTOCOL: &[&str] = &[
+    "rest", "graphql", "grpc", "websocket", "mqtt", "amqp",
+    "kafka", "rabbitmq", "nats",
+];
+
+/// Collect all tech keywords into a single list for matching.
+pub fn all_tech_keywords() -> Vec<&'static str> {
+    let mut all = Vec::new();
+    all.extend_from_slice(TECH_KEYWORDS_FRONTEND);
+    all.extend_from_slice(TECH_KEYWORDS_BACKEND);
+    all.extend_from_slice(TECH_KEYWORDS_DATABASE);
+    all.extend_from_slice(TECH_KEYWORDS_CLOUD);
+    all.extend_from_slice(TECH_KEYWORDS_INFRA);
+    all.extend_from_slice(TECH_KEYWORDS_AUTH);
+    all.extend_from_slice(TECH_KEYWORDS_PROTOCOL);
+    all
+}
+
+/// Build compiled regexes for all tech keywords (lazy, one-time cost).
+static TECH_KEYWORD_REGEXES: LazyLock<Vec<(String, Regex)>> = LazyLock::new(|| {
+    all_tech_keywords()
+        .into_iter()
+        .filter_map(|kw| {
+            let pattern = format!(r"(?i)\b{}\b", regex::escape(kw));
+            Regex::new(&pattern).ok().map(|re| (kw.to_string(), re))
+        })
+        .collect()
+});
+
 /// Check for technology names in text (implementation leakage).
-/// Returns list of (line_number, tech_name).
+/// Returns list of (line_number, tech_name) using case-insensitive word boundary matching.
 pub fn find_tech_leakage(text: &str) -> Vec<(usize, String)> {
     let mut results = Vec::new();
     for (i, line) in text.lines().enumerate() {
-        for tech in TECH_BLOCKLIST {
-            if line.contains(tech) {
-                results.push((i + 1, tech.to_string()));
+        for (keyword, re) in TECH_KEYWORD_REGEXES.iter() {
+            if re.is_match(line) {
+                results.push((i + 1, keyword.clone()));
             }
         }
     }
@@ -212,25 +341,335 @@ pub fn has_numeric_targets(text: &str) -> bool {
 }
 
 /// Extract section content between a heading and the next heading of same/higher level.
-fn extract_section(body: &str, heading: &str) -> Option<String> {
-    let heading_pattern = format!(r"(?m)^(#+)\s+{}", regex::escape(heading));
-    let re = Regex::new(&heading_pattern).ok()?;
+/// Extract section content between a heading and the next heading of same or higher level.
+/// Uses string matching (no regex per call). Includes sub-headings in extracted text.
+pub fn extract_section(body: &str, heading: &str) -> Option<String> {
+    let heading_lower = heading.to_lowercase();
+    let mut found_level = 0usize;
+    let mut start_line = 0usize;
+    let mut found = false;
 
-    let m = re.find(body)?;
-    let start = m.end();
-    let heading_level = body[m.start()..m.end()]
-        .chars()
-        .take_while(|c| *c == '#')
-        .count();
+    let lines: Vec<&str> = body.lines().collect();
 
-    // Find next heading of same or higher level
-    let next_heading = Regex::new(&format!(r"(?m)^#{{1,{}}}\s+", heading_level)).ok()?;
-    let end = next_heading
-        .find(&body[start..])
-        .map(|m| start + m.start())
-        .unwrap_or(body.len());
+    // Find the heading line
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let level = trimmed.chars().take_while(|c| *c == '#').count();
+            let text = trimmed.trim_start_matches('#').trim_start();
+            if text.to_lowercase().starts_with(&heading_lower) {
+                found_level = level;
+                start_line = i + 1;
+                found = true;
+                break;
+            }
+        }
+    }
 
-    Some(body[start..end].to_string())
+    if !found {
+        return None;
+    }
+
+    // Find next heading of SAME or HIGHER level (lower number = higher level)
+    let mut end_line = lines.len();
+    for i in start_line..lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with('#') {
+            let level = trimmed.chars().take_while(|c| *c == '#').count();
+            if level <= found_level {
+                end_line = i;
+                break;
+            }
+            // Sub-headings (level > found_level) are INCLUDED
+        }
+    }
+
+    let section: String = lines[start_line..end_line].join("\n");
+    Some(section)
+}
+
+/// Extract the FR/Requirements section text, checking known heading aliases.
+pub fn extract_fr_section(body: &str) -> Option<String> {
+    for heading in &["Functional Requirements", "Requirements", "FR"] {
+        if let Some(content) = extract_section(body, heading) {
+            return Some(content);
+        }
+    }
+    // Also try alias expansion for each
+    for heading in &["Functional Requirements", "Requirements", "FR"] {
+        for alias in expand_aliases(heading) {
+            if let Some(content) = extract_section(body, &alias) {
+                return Some(content);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the NFR/Non-Functional Requirements section text.
+pub fn extract_nfr_section(body: &str) -> Option<String> {
+    for heading in &["Non-Functional Requirements", "NFR", "Quality Attributes"] {
+        if let Some(content) = extract_section(body, heading) {
+            return Some(content);
+        }
+    }
+    None
+}
+
+/// BMAD Step 5: Subjective adjectives that need metrics.
+const SUBJECTIVE_ADJECTIVES: &[&str] = &[
+    "easy", "fast", "simple", "intuitive", "user-friendly", "responsive",
+    "quick", "efficient", "robust", "scalable", "seamless", "smooth",
+];
+
+/// BMAD Step 5: Vague quantifiers without specifics.
+const VAGUE_QUANTIFIERS: &[&str] = &[
+    "multiple", "several", "some", "many", "few", "various", "number of",
+    "a lot", "numerous",
+];
+
+/// Check for subjective adjectives in FR/requirements sections.
+/// Returns vec of (found_word, line_number) — line numbers are relative to body start.
+pub fn check_measurability_adjectives(body: &str) -> Vec<(String, usize)> {
+    static ADJECTIVE_REGEXES: LazyLock<Vec<(String, Regex)>> = LazyLock::new(|| {
+        SUBJECTIVE_ADJECTIVES
+            .iter()
+            .filter_map(|word| {
+                let pattern = format!(r"(?i)\b{}\b", regex::escape(word));
+                Regex::new(&pattern).ok().map(|re| (word.to_string(), re))
+            })
+            .collect()
+    });
+
+    let fr_section = match extract_fr_section(body) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    // Find the line offset where the FR section starts in the body
+    let fr_start_offset = body.find(&fr_section).unwrap_or(0);
+    let line_offset = body[..fr_start_offset].lines().count();
+
+    let mut results = Vec::new();
+    for (i, line) in fr_section.lines().enumerate() {
+        for (word, re) in ADJECTIVE_REGEXES.iter() {
+            if re.is_match(line) {
+                results.push((word.clone(), line_offset + i + 1));
+            }
+        }
+    }
+    results
+}
+
+/// Check for vague quantifiers in FR/requirements sections.
+/// Returns vec of (found_word, line_number) — line numbers are relative to body start.
+pub fn check_vague_quantifiers(body: &str) -> Vec<(String, usize)> {
+    static QUANTIFIER_REGEXES: LazyLock<Vec<(String, Regex)>> = LazyLock::new(|| {
+        VAGUE_QUANTIFIERS
+            .iter()
+            .filter_map(|word| {
+                let pattern = format!(r"(?i)\b{}\b", regex::escape(word));
+                Regex::new(&pattern).ok().map(|re| (word.to_string(), re))
+            })
+            .collect()
+    });
+
+    let fr_section = match extract_fr_section(body) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let fr_start_offset = body.find(&fr_section).unwrap_or(0);
+    let line_offset = body[..fr_start_offset].lines().count();
+
+    let mut results = Vec::new();
+    for (i, line) in fr_section.lines().enumerate() {
+        for (word, re) in QUANTIFIER_REGEXES.iter() {
+            if re.is_match(line) {
+                results.push((word.clone(), line_offset + i + 1));
+            }
+        }
+    }
+    results
+}
+
+/// Check that FR items follow "[Actor] can [capability]" format.
+/// Looks for lines starting with "- [ ]" or "- [x]" with FR-NNN prefix in FR section.
+/// Returns vec of (problematic_line_text, line_number).
+pub fn check_fr_format(body: &str) -> Vec<(String, usize)> {
+    static FR_LINE_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^-\s+\[[ xX]\]\s+FR-\d+:\s*(.*)").unwrap());
+    static ACTOR_CAN_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b\w+\b\s+can\s+").unwrap());
+
+    let fr_section = match extract_fr_section(body) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let fr_start_offset = body.find(&fr_section).unwrap_or(0);
+    let line_offset = body[..fr_start_offset].lines().count();
+
+    let mut results = Vec::new();
+    for (i, line) in fr_section.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(caps) = FR_LINE_RE.captures(trimmed) {
+            let after_colon = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            if !ACTOR_CAN_RE.is_match(after_colon) {
+                results.push((trimmed.to_string(), line_offset + i + 1));
+            }
+        }
+    }
+    results
+}
+
+// ─── FR-002: Traceability Validation (BMAD Step 6) ─────────────────────────
+
+/// Extract FR identifiers (e.g., "FR-001", "FR-002") from the FR section.
+pub fn extract_fr_ids(body: &str) -> Vec<String> {
+    static FR_ID_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"FR-\d+").unwrap());
+
+    let fr_section = match extract_fr_section(body) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let mut ids: Vec<String> = FR_ID_RE
+        .find_iter(&fr_section)
+        .map(|m| m.as_str().to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Find orphan FRs — FR identifiers not mentioned outside the FR section itself.
+/// Checks User Journey, User Stories, and general body text.
+pub fn find_orphan_frs(body: &str) -> Vec<String> {
+    let fr_ids = extract_fr_ids(body);
+    if fr_ids.is_empty() {
+        return Vec::new();
+    }
+
+    // Get body text excluding the FR section for tracing
+    let body_without_fr = match extract_fr_section(body) {
+        Some(fr_text) => body.replace(&fr_text, ""),
+        None => return Vec::new(),
+    };
+
+    fr_ids
+        .into_iter()
+        .filter(|id| !body_without_fr.contains(id.as_str()))
+        .collect()
+}
+
+/// Find orphan Goals — goals in the Goals section not supported by any FR.
+/// Returns goal lines that don't reference or aren't referenced by any FR.
+pub fn find_orphan_goals(body: &str) -> Vec<String> {
+    let fr_section = match extract_fr_section(body) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let goals_section = match extract_section(body, "Goals") {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    // Extract goal items (bullet points)
+    let goal_lines: Vec<&str> = goals_section
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with("- ") || t.starts_with("* ") || t.starts_with("1.")
+        })
+        .collect();
+
+    if goal_lines.is_empty() {
+        return Vec::new();
+    }
+
+    // For each goal, check if any significant words appear in FR section
+    let fr_lower = fr_section.to_lowercase();
+    goal_lines
+        .into_iter()
+        .filter(|goal| {
+            let goal_words: Vec<&str> = goal
+                .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_ascii_digit() || c == '.' || c == ' ')
+                .split_whitespace()
+                .filter(|w| w.len() > 3) // Skip short words
+                .collect();
+            // Goal is orphan if none of its significant words appear in FR
+            !goal_words.iter().any(|w| fr_lower.contains(&w.to_lowercase()))
+        })
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+// ─── FR-004: Domain Classification (BMAD Step 8) ───────────────────────────
+
+/// Required sections by domain.
+pub fn domain_required_sections(domain: &str) -> Vec<(&'static str, &'static str)> {
+    match domain.to_lowercase().as_str() {
+        "healthcare" | "health" => vec![
+            ("Compliance", "HIPAA/regulatory compliance section"),
+            ("Privacy", "Data privacy and patient data handling"),
+            ("Audit", "Audit trail requirements"),
+        ],
+        "fintech" | "finance" => vec![
+            ("Compliance", "Financial regulatory compliance"),
+            ("Security", "Security requirements for financial data"),
+            ("Audit", "Audit trail requirements"),
+        ],
+        "govtech" | "government" => vec![
+            ("Compliance", "Government regulatory compliance"),
+            ("Accessibility", "Accessibility requirements (WCAG/Section 508)"),
+            ("Security", "Security clearance/classification"),
+        ],
+        "edtech" | "education" => vec![
+            ("Accessibility", "Accessibility requirements"),
+            ("Privacy", "Student data privacy (FERPA/COPPA)"),
+        ],
+        "saas" | "b2b-saas" => vec![
+            ("Multi-tenancy", "Multi-tenant architecture considerations"),
+            ("SLA", "Service level agreements"),
+            ("Security", "Security and data isolation"),
+        ],
+        _ => Vec::new(), // cli, library, etc. — no domain-specific requirements
+    }
+}
+
+// ─── FR-005: Project-Type Classification (BMAD Step 9) ─────────────────────
+
+/// Recommended sections by project type.
+pub fn project_type_recommended_sections(project_type: &str) -> Vec<(&'static str, &'static str)> {
+    match project_type.to_lowercase().as_str() {
+        "api-backend" | "api" | "backend" => vec![
+            ("API", "API contracts/endpoints"),
+            ("Authentication", "Authentication/authorization approach"),
+            ("Performance", "Performance requirements (latency, throughput)"),
+        ],
+        "mobile-app" | "mobile" => vec![
+            ("Platforms", "Supported platforms (iOS, Android)"),
+            ("Offline", "Offline/connectivity handling"),
+            ("Performance", "Performance requirements"),
+        ],
+        "saas-b2b" | "saas-b2c" | "web-app" => vec![
+            ("Authentication", "Authentication/authorization"),
+            ("Performance", "Performance requirements"),
+            ("Accessibility", "Accessibility requirements"),
+        ],
+        "cli-tool" | "cli" => vec![
+            ("Interface", "CLI interface/commands"),
+            ("Error Handling", "Error messages and exit codes"),
+        ],
+        "library" | "sdk" | "framework" => vec![
+            ("API", "Public API surface"),
+            ("Compatibility", "Version compatibility/breaking changes"),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +710,6 @@ mod tests {
         let text = "User can login via React component";
         let leaks = find_tech_leakage(text);
         assert_eq!(leaks.len(), 1);
-        assert_eq!(leaks[0].1, "React");
+        assert_eq!(leaks[0].1, "react");
     }
 }
