@@ -6,7 +6,7 @@ use forgeplan_core::graph::topological;
 use forgeplan_core::workspace;
 
 /// `forgeplan order` — show artifacts in topological order (dependency order).
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(json: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -22,6 +22,17 @@ pub async fn run() -> anyhow::Result<()> {
         .collect();
 
     let result = topological::kahn_sort(&all_relations, &active_ids);
+
+    if json {
+        let data = serde_json::json!({
+            "order": result.order,
+            "cycles": result.cycles,
+            "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({"id": id, "blocked_by": deps})).collect::<Vec<_>>(),
+            "ready": result.ready,
+        });
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     if !result.cycles.is_empty() {
         println!("  Warning: Cycles detected:");

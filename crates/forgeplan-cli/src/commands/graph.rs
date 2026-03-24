@@ -4,7 +4,7 @@ use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::graph;
 use forgeplan_core::workspace;
 
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(json: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -38,6 +38,13 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     all_edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
+
+    if json {
+        let data: Vec<_> = all_edges.iter().map(|e| serde_json::json!({"from": e.from, "to": e.to, "relation": e.relation})).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
     let mermaid = graph::render_mermaid(&all_edges);
     println!("{}", mermaid);
     Ok(())
