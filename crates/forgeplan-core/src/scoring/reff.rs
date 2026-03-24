@@ -156,19 +156,24 @@ pub async fn r_eff_recursive(
     // ---- 1. Self score from own evidence --------------------------------
 
     // Collect evidence records that link to this artifact.
-    let relations = store.get_relations(artifact_id).await?;
+    // Check BOTH directions: outgoing (this → evidence) AND incoming (evidence → this).
+    let outgoing = store.get_relations(artifact_id).await?;
+    let incoming = store.get_incoming_relations(artifact_id).await?;
     let evidence_filter = ArtifactFilter {
         kind: Some("evidence".to_string()),
         status: None,
     };
     let all_evidence = store.list_records(Some(&evidence_filter)).await?;
 
-    // Build set of evidence IDs that inform this artifact (via any relation
-    // direction where this artifact is the target).
-    let linked_evidence_ids: HashSet<String> = relations
+    // Build set of evidence IDs linked in either direction.
+    let mut linked_evidence_ids: HashSet<String> = outgoing
         .iter()
         .map(|(target_id, _)| target_id.clone())
         .collect();
+    // Also include incoming evidence (e.g., EVID-003 --informs--> EPIC-001)
+    for (source_id, _) in &incoming {
+        linked_evidence_ids.insert(source_id.clone());
+    }
 
     let evidence_items: Vec<EvidenceItem> = all_evidence
         .iter()
@@ -200,9 +205,8 @@ pub async fn r_eff_recursive(
     let dep_relation_types: HashSet<&str> =
         ["informs", "based_on", "refines", "depends_on"].iter().copied().collect();
 
-    // Collect dependency IDs with their CL from the relation graph.
-    // Relations are stored as (target_id, relation_type) from get_relations.
-    let deps: Vec<(String, String)> = relations
+    // Collect dependency IDs from outgoing relations.
+    let deps: Vec<(String, String)> = outgoing
         .iter()
         .filter(|(_, rel_type)| dep_relation_types.contains(rel_type.as_str()))
         .cloned()
