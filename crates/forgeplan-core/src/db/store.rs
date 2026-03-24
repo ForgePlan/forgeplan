@@ -658,22 +658,37 @@ impl LanceStore {
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
     pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Search query cannot be empty");
+        }
+
         let table = self
             .fpf_spec
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
 
-        let query_lower = query.to_lowercase();
-        let escaped = query_lower.replace('\'', "''");
-        let filter = format!(
-            "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
-            escaped, escaped
-        );
+        let query_lower = trimmed.to_lowercase();
+        // Split query into words for per-word OR matching
+        let words: Vec<String> = query_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 2)
+            .map(|w| w.replace('\'', "''"))
+            .collect();
 
-        // Fetch more candidates than needed, then rank by relevance
-        let fetch_limit = (limit * 10).min(200);
+        let filter = if words.is_empty() {
+            let escaped = query_lower.replace('\'', "''");
+            format!("LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'", escaped, escaped)
+        } else {
+            words.iter()
+                .map(|w| format!("(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')", w, w))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        };
+
+        // Fetch ALL matching then rank (small dataset ~204 sections)
         let batches = collect_batches(
-            table.query().only_if(filter).limit(fetch_limit).execute().await?,
+            table.query().only_if(filter).execute().await?,
         )
         .await?;
 
@@ -681,23 +696,29 @@ impl LanceStore {
         for batch in &batches {
             for i in 0..batch.num_rows() {
                 if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                    // Simple relevance: title match = 10 points, body occurrence = 1 point each
                     let mut score = 0usize;
                     let title_lower = chunk.title.to_lowercase();
                     let body_lower = chunk.body.to_lowercase();
 
-                    if title_lower.contains(&query_lower) {
-                        score += 10;
+                    for word in &words {
+                        if title_lower.contains(word.as_str()) {
+                            score += 50;
+                        }
+                        score += body_lower.matches(word.as_str()).count().min(20);
                     }
-                    // Count occurrences in body
-                    score += body_lower.matches(&query_lower).count();
+                    let all_in_title = words.len() > 1 && words.iter().all(|w| title_lower.contains(w.as_str()));
+                    if all_in_title {
+                        score += 100;
+                    }
+                    if title_lower.contains(&query_lower) {
+                        score += 200;
+                    }
 
                     scored.push((chunk, score));
                 }
             }
         }
 
-        // Sort by score descending, then truncate
         scored.sort_by(|a, b| b.1.cmp(&a.1));
         let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
         Ok(results)
