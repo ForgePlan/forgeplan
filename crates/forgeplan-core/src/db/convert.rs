@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 
 use crate::artifact::store::ArtifactSummary;
@@ -39,6 +39,7 @@ pub(crate) fn artifact_to_batch_with_schema(
             Arc::new(StringArray::from(vec![artifact.valid_until.as_deref()])),
             Arc::new(StringArray::from(vec![now])),
             Arc::new(StringArray::from(vec![now])),
+            Arc::new(StringArray::from(vec![Option::<&str>::None])),
             embedding_col,
         ],
     )?;
@@ -63,6 +64,17 @@ pub fn relation_to_batch(
     relation: &str,
     now: &str,
 ) -> anyhow::Result<RecordBatch> {
+    relation_to_batch_with_cl(source, target, relation, now, None)
+}
+
+/// Build a one-row RecordBatch for a relation record with explicit CL.
+pub fn relation_to_batch_with_cl(
+    source: &str,
+    target: &str,
+    relation: &str,
+    now: &str,
+    cl: Option<i32>,
+) -> anyhow::Result<RecordBatch> {
     let schema = schema::relations_schema();
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -71,6 +83,7 @@ pub fn relation_to_batch(
             Arc::new(StringArray::from(vec![target])),
             Arc::new(StringArray::from(vec![relation])),
             Arc::new(StringArray::from(vec![now])),
+            Arc::new(Int32Array::from(vec![cl])),
         ],
     )?;
     Ok(batch)

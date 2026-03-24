@@ -1,11 +1,14 @@
 pub mod activate;
 pub mod blindspots;
+pub mod blocked;
 pub mod calibrate;
 pub mod capture;
+pub mod coverage;
 pub mod decay;
 pub mod decompose;
 pub mod delete;
 pub mod deprecate;
+pub mod drift;
 pub mod export;
 
 pub mod fgr;
@@ -19,7 +22,9 @@ pub mod init;
 pub mod journal;
 pub mod link;
 pub mod list;
+pub mod migrate;
 pub mod new;
+pub mod order;
 pub mod progress;
 pub mod reason;
 pub mod review;

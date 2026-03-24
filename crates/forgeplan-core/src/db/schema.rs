@@ -21,6 +21,7 @@ pub const EMBEDDING_DIM: i32 = 1024;
 /// - valid_until Utf8 (nullable) — ISO date for evidence decay
 /// - created_at  Utf8 (not null) — ISO datetime
 /// - updated_at  Utf8 (not null) — ISO datetime
+/// - body_hash   Utf8 (nullable) — hash of body for change detection
 /// - embedding   FixedSizeList(1024, Float32) (nullable) — vector for semantic search
 pub fn artifacts_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
@@ -36,6 +37,7 @@ pub fn artifacts_schema() -> Arc<Schema> {
         Field::new("valid_until", DataType::Utf8, true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("body_hash", DataType::Utf8, true),
         Field::new(
             "embedding",
             DataType::FixedSizeList(
@@ -84,6 +86,7 @@ pub fn relations_schema() -> Arc<Schema> {
         Field::new("target_id", DataType::Utf8, false),
         Field::new("relation_type", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, false),
+        Field::new("congruence_level", DataType::Int32, true),
     ]))
 }
 
@@ -142,6 +145,7 @@ mod tests {
         assert!(nullable.contains(&"author"));
         assert!(nullable.contains(&"parent_epic"));
         assert!(nullable.contains(&"valid_until"));
+        assert!(nullable.contains(&"body_hash"));
         assert!(nullable.contains(&"embedding"));
     }
 

@@ -416,6 +416,36 @@ pub fn extract_nfr_section(body: &str) -> Option<String> {
     None
 }
 
+/// Extract affected_files from body — lines that look like file paths or glob patterns.
+pub fn extract_affected_files(body: &str) -> Vec<String> {
+    let section = extract_section(body, "Affected Files")
+        .or_else(|| extract_section(body, "Affected Scope"))
+        .or_else(|| extract_section(body, "affected_files"));
+
+    match section {
+        None => vec![],
+        Some(text) => text
+            .lines()
+            .map(|l| {
+                l.trim()
+                    .trim_start_matches("- ")
+                    .trim_start_matches("* ")
+                    .trim_start_matches("| ")
+                    .trim()
+            })
+            .filter(|l| {
+                !l.is_empty()
+                    && (l.contains('/')
+                        || l.contains('*')
+                        || l.ends_with(".rs")
+                        || l.ends_with(".ts")
+                        || l.ends_with(".md"))
+            })
+            .map(|l| l.to_string())
+            .collect(),
+    }
+}
+
 /// BMAD Step 5: Subjective adjectives that need metrics.
 const SUBJECTIVE_ADJECTIVES: &[&str] = &[
     "easy", "fast", "simple", "intuitive", "user-friendly", "responsive",

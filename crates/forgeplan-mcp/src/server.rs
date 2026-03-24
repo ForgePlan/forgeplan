@@ -1759,6 +1759,59 @@ impl ForgeplanServer {
             total: sections.len(),
         }))
     }
+
+    #[tool(description = "Check for drifted decisions — affected files that changed after ADR/RFC was created.")]
+    async fn forgeplan_drift(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let ws = match self.require_workspace().await {
+            Ok(p) => p,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let workspace_root = ws.parent().unwrap_or(&ws).to_path_buf();
+
+        let reports = forgeplan_core::drift::check_drift(&store, &workspace_root)
+            .await
+            .unwrap_or_default();
+
+        Ok(json_result(&serde_json::json!({
+            "total": reports.len(),
+            "stale": reports.iter().filter(|r| r.is_stale).count(),
+            "reports": reports,
+        })))
+    }
+
+    #[tool(description = "Show decision coverage per code module — which modules have architectural decisions and which are blind spots.")]
+    async fn forgeplan_coverage(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let ws = match self.require_workspace().await {
+            Ok(p) => p,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let project_root = ws.parent().unwrap_or(&ws).to_path_buf();
+
+        let mut modules = forgeplan_core::coverage::scan_modules(&project_root)
+            .await
+            .unwrap_or_default();
+        let report = forgeplan_core::coverage::build_coverage(&mut modules, &store)
+            .await
+            .unwrap_or_else(|_| forgeplan_core::coverage::CoverageReport {
+                total_modules: 0,
+                covered_modules: 0,
+                uncovered_modules: 0,
+                coverage_percent: 0.0,
+                modules: vec![],
+            });
+
+        Ok(json_result(&report))
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────

@@ -196,6 +196,21 @@ enum Commands {
         /// Artifact ID (scores all if omitted)
         id: Option<String>,
     },
+    /// Scan codebase for source modules
+    Scan {
+        /// Path to project root (default: current dir)
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Show decision coverage per code module
+    Coverage,
+    /// Check for drifted decisions (affected files changed after decision)
+    Drift,
+    /// Show blocked artifacts and their dependencies
+    Blocked {
+        /// Specific artifact ID to check (optional)
+        id: Option<String>,
+    },
     /// Show blind spots — decisions without evidence, orphan artifacts
     Blindspots,
     /// Show decision journal — chronological timeline with R_eff scores
@@ -238,6 +253,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Show artifacts in topological order (dependency order)
+    Order,
+    /// Run schema migrations on existing workspace
+    Migrate,
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -334,6 +353,10 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
+        Commands::Scan { path } => commands::coverage::run_scan(path.as_deref()).await,
+        Commands::Coverage => commands::coverage::run_coverage().await,
+        Commands::Drift => commands::drift::run().await,
+        Commands::Blocked { id } => commands::blocked::run(id.as_deref()).await,
         Commands::Blindspots => commands::blindspots::run().await,
         Commands::Journal { r#type, risk } => {
             commands::journal::run(r#type.as_deref(), risk).await
@@ -362,6 +385,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
+        Commands::Order => commands::order::run().await,
+        Commands::Migrate => commands::migrate::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

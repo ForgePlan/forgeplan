@@ -11,7 +11,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::Table;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::{convert, schema};
+use crate::db::{convert, migrate, schema};
 
 /// Filter for listing artifacts.
 #[derive(Debug, Default)]
@@ -91,6 +91,23 @@ impl ArtifactRecord {
     }
 }
 
+/// Compute a simple fingerprint hash for artifact body content.
+///
+/// Uses a lightweight approach (length + byte sum) to avoid adding sha2 dependency.
+/// Sufficient for change detection across artifact versions.
+pub fn compute_body_hash(body: &str) -> String {
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+    // Simple hash: sum of bytes with position weighting
+    let hash: u64 = bytes
+        .iter()
+        .enumerate()
+        .fold(0u64, |acc, (i, &b)| {
+            acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
+        });
+    format!("{:016x}-{:08x}", hash, len)
+}
+
 /// FPF knowledge base chunk.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FpfChunk {
@@ -124,6 +141,7 @@ pub struct LanceStore {
 
 impl LanceStore {
     /// Connect to an existing LanceDB workspace (tables must already exist).
+    /// Runs idempotent schema migrations on every open.
     pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
@@ -132,6 +150,9 @@ impl LanceStore {
         let evidence = db.open_table("evidence").execute().await?;
         let relations = db.open_table("relations").execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
+
+        // Run migrations (idempotent — safe on every open)
+        migrate::run_migrations(&artifacts, &relations).await?;
 
         Ok(Self {
             _db: db,
@@ -637,22 +658,37 @@ impl LanceStore {
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
     pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Search query cannot be empty");
+        }
+
         let table = self
             .fpf_spec
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
 
-        let query_lower = query.to_lowercase();
-        let escaped = query_lower.replace('\'', "''");
-        let filter = format!(
-            "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
-            escaped, escaped
-        );
+        let query_lower = trimmed.to_lowercase();
+        // Split query into words for per-word OR matching
+        let words: Vec<String> = query_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 2)
+            .map(|w| w.replace('\'', "''"))
+            .collect();
 
-        // Fetch more candidates than needed, then rank by relevance
-        let fetch_limit = (limit * 10).min(200);
+        let filter = if words.is_empty() {
+            let escaped = query_lower.replace('\'', "''");
+            format!("LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'", escaped, escaped)
+        } else {
+            words.iter()
+                .map(|w| format!("(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')", w, w))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        };
+
+        // Fetch ALL matching then rank (small dataset ~204 sections)
         let batches = collect_batches(
-            table.query().only_if(filter).limit(fetch_limit).execute().await?,
+            table.query().only_if(filter).execute().await?,
         )
         .await?;
 
@@ -660,23 +696,29 @@ impl LanceStore {
         for batch in &batches {
             for i in 0..batch.num_rows() {
                 if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                    // Simple relevance: title match = 10 points, body occurrence = 1 point each
                     let mut score = 0usize;
                     let title_lower = chunk.title.to_lowercase();
                     let body_lower = chunk.body.to_lowercase();
 
-                    if title_lower.contains(&query_lower) {
-                        score += 10;
+                    for word in &words {
+                        if title_lower.contains(word.as_str()) {
+                            score += 50;
+                        }
+                        score += body_lower.matches(word.as_str()).count().min(20);
                     }
-                    // Count occurrences in body
-                    score += body_lower.matches(&query_lower).count();
+                    let all_in_title = words.len() > 1 && words.iter().all(|w| title_lower.contains(w.as_str()));
+                    if all_in_title {
+                        score += 100;
+                    }
+                    if title_lower.contains(&query_lower) {
+                        score += 200;
+                    }
 
                     scored.push((chunk, score));
                 }
             }
         }
 
-        // Sort by score descending, then truncate
         scored.sort_by(|a, b| b.1.cmp(&a.1));
         let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
         Ok(results)
@@ -900,6 +942,7 @@ fn empty_artifacts_batch(
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             convert::make_null_embedding_col(0),
         ],
     )
@@ -935,6 +978,7 @@ fn empty_relations_batch(
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(Int32Array::from(Vec::<Option<i32>>::new())), // congruence_level
         ],
     )
 }
