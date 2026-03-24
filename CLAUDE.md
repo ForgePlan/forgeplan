@@ -217,6 +217,31 @@ Validator принимает синонимы для секций:
 
 Формула: **работа не закончена, пока прогресс не отражён в артефактах.**
 
+### Forge Mode (permission model)
+
+**Три зоны доверия** (FPF B.3 Trust Calculus applied to CLI permissions):
+
+| Зона | Что | Режим | Примеры |
+|------|-----|-------|---------|
+| **Green** | Read-only + build + test + forgeplan | Авто-разрешено | `cargo test`, `forgeplan health`, `git status` |
+| **Yellow** | Файлы + git add/commit | Авто-разрешено (acceptEdits) | Write, Edit, `git add`, `git commit` |
+| **Red** | Необратимые действия | **BLOCKED hook** | `git push --force`, `rm -rf /`, `cargo publish` |
+
+**Настройка:**
+- `settings.local.json` — whitelist permissions (wildcard patterns: `Bash(cargo:*)`, `Bash(git:*)`)
+- `.claude/hooks/forge-safety-hook.sh` — PreToolUse blacklist (blocked patterns)
+- Режим Claude Code: `acceptEdits` (файлы авто, bash через whitelist)
+
+**Blacklisted commands** (blocked даже в yolo mode):
+- `git push --force` / `git push -f`
+- `git reset --hard`
+- `git clean -fd`
+- `rm -rf /` / `rm -rf ~`
+- `cargo publish` (explicit manual action)
+- `DROP TABLE`
+
+**Команда `/forge-cycle`** — полный FPF-aligned цикл: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate.
+
 ### Git-конвенции
 
 #### Формат коммита (Conventional Commits + Forgeplan):
@@ -243,28 +268,53 @@ Refs: RFC-001, FR-001..004
 - Код: `cli`, `core`, `store`, `template`, `scoring`, `workspace`, `config`
 - Артефакты: `rfc`, `prd`, `adr`, `epic`
 
-#### Branching Strategy (Trunk-based):
+#### Branching Strategy (dev-based):
 ```
-main                              ← primary branch (tagged releases: v0.7.0)
-  ├── feat/epic-001-completion    ← feature branch
-  ├── fix/dogfood-findings        ← bugfix branch
-  └── docs/rfc-002-lancedb       ← docs-only branch
+main                              ← production (tagged releases: v0.8.0, v0.9.0)
+  │
+dev                               ← integration branch (all features merge here)
+  ├── feat/prd-018-openspec-dag   ← feature branch (from dev)
+  ├── fix/search-ranking          ← bugfix branch (from dev)
+  └── docs/rfc-002-lancedb       ← docs-only branch (from dev)
+  │
+release/v0.9.0                    ← release candidate (from dev → main)
 ```
 
-| Ветка | Мерджится в | Стратегия |
-|-------|-------------|-----------|
-| `feat/*`, `fix/*`, `docs/*` | `main` | Squash merge via PR |
+| Ветка | Создаётся из | Мерджится в | Стратегия |
+|-------|-------------|-------------|-----------|
+| `feat/*`, `fix/*`, `docs/*` | **dev** | **dev** | Squash merge via PR |
+| `release/v0.x.0` | **dev** | **main** + **dev** | Merge commit (сохраняет историю) |
+| `hotfix/*` | **main** | **main** + **dev** | Cherry-pick |
 
-Формат имени: `{type}/{slug}` — `feat/epic-001-completion`, `fix/dogfood-findings`
+Формат имени: `{type}/{slug}` — `feat/prd-018-openspec-dag`, `fix/search-ranking`
+
+#### ОБЯЗАТЕЛЬНО перед созданием ветки:
+```bash
+git checkout dev && git pull origin dev   # ВСЕГДА вытягивать перед новой веткой
+git checkout -b feat/my-feature
+```
+**НЕ создавать ветки из stale dev.** Всегда `git pull` первым.
 
 #### Lifecycle ветки:
 ```
-1. git checkout main && git checkout -b feat/my-feature
-2. ... работа, коммиты ...
-3. git push origin feat/my-feature
-4. gh pr create → squash merge в main (НЕ удалять ветку)
+1. git checkout dev && git pull origin dev        # обязательно pull!
+2. git checkout -b feat/my-feature
+3. ... работа, коммиты ...
+4. git push origin feat/my-feature
+5. gh pr create --base dev → squash merge в dev (НЕ удалять ветку)
+6. git checkout dev && git pull
+```
+
+#### Lifecycle релиза:
+```
+1. git checkout dev && git pull
+2. git checkout -b release/v0.x.0
+3. cargo test, финальные фиксы на ветке
+4. gh pr create --base main → merge commit в main
 5. git checkout main && git pull
-6. При release: git tag -a v0.x.0 && git push origin v0.x.0
+6. git tag -a v0.x.0 -m "Release v0.x.0" && git push origin v0.x.0
+7. git checkout dev && git merge main          # sync tag back to dev
+8. git push origin dev
 ```
 
 #### Правила коммитов:
@@ -274,19 +324,28 @@ main                              ← primary branch (tagged releases: v0.7.0)
 - **Не коммить напрямую в main или dev** — всегда через feature branch + PR
 
 #### PR и merge:
-- **PR title** = `[ARTIFACT-ID] description` — `[RFC-001] Implement Phase 3A core CLI`
+- **PR title** = `[ARTIFACT-ID] description` — `[PRD-018] OpenSpec DAG integration`
 - **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
-- **feat/* → dev**: Squash merge (чистая история)
-- **release/* → main**: Merge commit (сохраняет историю RC)
+- **feat/* → dev**: Squash merge (чистая история) — `gh pr create --base dev`
+- **release/* → main**: Merge commit (сохраняет историю RC) — `gh pr create --base main`
 - **НЕ удалять ветки после merge** — feature и release branches сохраняются как история
-- **После merge в main**: tag + sync dev from main
+- **После merge в main**: tag + sync dev from main (`git checkout dev && git merge main`)
+- **НЕ коммить напрямую в main** — только через release branch
+- **НЕ коммить напрямую в dev** — только через feature branch + PR
 
-#### Релизы:
-- **Формат тега**: `v{major}.{minor}.{patch}` — `v0.1.0`, `v0.2.0`
-- **Когда**: после завершения Phase (3A → v0.1.0, 3B → v0.2.0, 3C → v1.0.0)
-- **Процесс**: `dev` → `release/v0.x.0` (RC) → тесты → фиксы → `main` + tag
-- **Release notes**: автогенерация из conventional commits
-- **Binary**: `cargo build --release` (152MB с LanceDB+Arrow+tokio)
+#### Релизы и тегирование:
+- **Формат тега**: `v{major}.{minor}.{patch}` — `v0.8.0`, `v0.9.0`, `v1.0.0`
+- **Когда тегировать**: после merge release/* в main
+- **ОБЯЗАТЕЛЬНО тегировать каждый релиз** — без тега релиз не считается выпущенным
+- **Процесс**:
+  1. `dev` → `release/v0.x.0` (RC branch)
+  2. Тесты + финальные фиксы на release branch
+  3. PR в main → merge commit
+  4. `git tag -a v0.x.0 -m "Release v0.x.0: описание"` на main
+  5. `git push origin v0.x.0`
+  6. Sync: `git checkout dev && git merge main && git push origin dev`
+- **Release notes**: автогенерация из conventional commits (`gh release create`)
+- **Binary**: `cargo build --release`
 
 #### Worktrees (параллельная работа):
 ```bash
