@@ -1,20 +1,15 @@
 use std::collections::BTreeMap;
-use std::env;
 
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::progress::{self, ArtifactProgress, CheckboxCount};
-use forgeplan_core::workspace;
 
-pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+use crate::commands::common;
 
-    let store = LanceStore::open(&ws).await?;
+pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let store = common::store().await?;
     let records = store.list_records(None).await?;
 
     if records.is_empty() {
-        println!("No artifacts found.");
+        if json { println!("[]"); } else { println!("No artifacts found."); }
         return Ok(());
     }
 
@@ -31,6 +26,14 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
             }
         })
         .collect();
+
+    if json {
+        let data: Vec<_> = all_progress.iter().filter(|p| p.count.total > 0).map(|p| {
+            serde_json::json!({"id": p.id, "title": p.title, "kind": p.kind, "completed": p.count.completed, "total": p.count.total, "percent": p.percent()})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     // If specific ID requested, show only that artifact
     if let Some(target_id) = id {

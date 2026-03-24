@@ -88,6 +88,12 @@ async fn find_source_directories(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
+            // Skip symlinks to prevent traversal outside project
+            if let Ok(meta) = tokio::fs::symlink_metadata(&path).await {
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+            }
             if path.is_dir() {
                 stack.push(path);
             } else if is_source_file(&path) {
@@ -120,6 +126,11 @@ async fn count_files_and_lines(dir: &Path) -> anyhow::Result<(usize, usize)> {
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let path = entry.path();
         if path.is_file() && is_source_file(&path) {
+            // Skip files > 10 MB to prevent DoS
+            let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+            if size > 10 * 1024 * 1024 {
+                continue;
+            }
             file_count += 1;
             if let Ok(content) = tokio::fs::read_to_string(&path).await {
                 line_count += content.lines().count();

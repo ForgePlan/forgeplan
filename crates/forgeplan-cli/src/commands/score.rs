@@ -1,25 +1,20 @@
 use std::collections::HashSet;
-use std::env;
 
 use chrono::{NaiveDate, Utc};
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
-use forgeplan_core::db::store::{ArtifactFilter, LanceStore};
+use forgeplan_core::db::store::ArtifactFilter;
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
-use forgeplan_core::workspace;
 
+use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
     let target_id = id.ok_or_else(|| anyhow::anyhow!("Usage: forgeplan score <ID>"))?;
 
-    let store = LanceStore::open(&ws).await?;
+    let store = common::store().await?;
 
     // Get the target artifact
     let target = store
@@ -67,8 +62,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     }
 
     // --- F-G-R computation ---
-    let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
-    let depth: Mode = target.depth.parse().unwrap_or(Mode::Standard);
+    let kind: ArtifactKind = target.kind.parse().unwrap_or_else(|_| {
+        eprintln!("  Warning: unknown kind '{}', defaulting to Note", target.kind);
+        ArtifactKind::Note
+    });
+    let depth: Mode = target.depth.parse().unwrap_or_else(|_| {
+        eprintln!("  Warning: unknown depth '{}', defaulting to Standard", target.depth);
+        Mode::Standard
+    });
     let frontmatter: Frontmatter = Frontmatter::new();
 
     // Determine staleness from valid_until
