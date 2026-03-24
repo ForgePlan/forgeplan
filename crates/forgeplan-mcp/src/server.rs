@@ -1783,6 +1783,35 @@ impl ForgeplanServer {
             "reports": reports,
         })))
     }
+
+    #[tool(description = "Show decision coverage per code module — which modules have architectural decisions and which are blind spots.")]
+    async fn forgeplan_coverage(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let ws = match self.require_workspace().await {
+            Ok(p) => p,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let project_root = ws.parent().unwrap_or(&ws).to_path_buf();
+
+        let mut modules = forgeplan_core::coverage::scan_modules(&project_root)
+            .await
+            .unwrap_or_default();
+        let report = forgeplan_core::coverage::build_coverage(&mut modules, &store)
+            .await
+            .unwrap_or_else(|_| forgeplan_core::coverage::CoverageReport {
+                total_modules: 0,
+                covered_modules: 0,
+                uncovered_modules: 0,
+                coverage_percent: 0.0,
+                modules: vec![],
+            });
+
+        Ok(json_result(&report))
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────

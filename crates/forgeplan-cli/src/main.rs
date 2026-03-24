@@ -196,6 +196,14 @@ enum Commands {
         /// Artifact ID (scores all if omitted)
         id: Option<String>,
     },
+    /// Scan codebase for source modules
+    Scan {
+        /// Path to project root (default: current dir)
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Show decision coverage per code module
+    Coverage,
     /// Check for drifted decisions (affected files changed after decision)
     Drift,
     /// Show blocked artifacts and their dependencies
@@ -345,6 +353,8 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
+        Commands::Scan { path } => commands::coverage::run_scan(path.as_deref()).await,
+        Commands::Coverage => commands::coverage::run_coverage().await,
         Commands::Drift => commands::drift::run().await,
         Commands::Blocked { id } => commands::blocked::run(id.as_deref()).await,
         Commands::Blindspots => commands::blindspots::run().await,

@@ -3,6 +3,7 @@ pub mod blindspots;
 pub mod blocked;
 pub mod calibrate;
 pub mod capture;
+pub mod coverage;
 pub mod decay;
 pub mod decompose;
 pub mod delete;
