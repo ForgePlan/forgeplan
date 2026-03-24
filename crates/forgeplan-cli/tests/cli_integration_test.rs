@@ -671,3 +671,541 @@ fn full_workflow_dogfood() {
         .stdout(predicate::str::contains("PRD-001"))
         .stdout(predicate::str::contains("1 artifact"));
 }
+
+// ── E2E: Dependency Graph + Topological Sort ─────────────
+
+#[test]
+fn e2e_blocked_shows_dependencies() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD and RFC
+    forgeplan().args(["new", "prd", "Design Doc"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "Implementation Plan"]).current_dir(tmp.path()).assert().success();
+
+    // Link RFC depends on PRD
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Blocked should show RFC blocked by PRD
+    forgeplan()
+        .args(["blocked"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RFC-001"))
+        .stdout(predicate::str::contains("PRD-001"));
+}
+
+#[test]
+fn e2e_order_shows_topological_sequence() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create chain: Epic → PRD → RFC
+    forgeplan().args(["new", "epic", "Platform"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Feature A"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "How to build A"]).current_dir(tmp.path()).assert().success();
+
+    forgeplan().args(["link", "PRD-001", "EPIC-001", "--relation", "refines"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+
+    // Order should list all 3
+    forgeplan()
+        .args(["order"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EPIC-001"))
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("RFC-001"));
+}
+
+#[test]
+fn e2e_activate_unblocks_dependent() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    forgeplan().args(["new", "prd", "Base Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "How to build"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+
+    // Before activate: RFC blocked
+    let output = forgeplan()
+        .args(["blocked"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let before = String::from_utf8_lossy(&output.stdout);
+    assert!(before.contains("Blocked") || before.contains("blocked"), "RFC should be blocked before activate");
+
+    // Activate PRD
+    forgeplan().args(["activate", "PRD-001"]).current_dir(tmp.path()).assert().success();
+
+    // After activate: RFC should be ready
+    let output2 = forgeplan()
+        .args(["blocked"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let after = String::from_utf8_lossy(&output2.stdout);
+    // RFC-001 should no longer appear as blocked (PRD-001 is now active)
+    assert!(
+        !after.contains("RFC-001 <- blocked") || after.contains("Ready"),
+        "RFC should be unblocked after PRD activation, got: {}", after
+    );
+}
+
+#[test]
+fn e2e_graph_shows_mermaid_with_links() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    forgeplan().args(["new", "prd", "Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "Plan"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+
+    forgeplan()
+        .args(["graph"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("graph LR"))
+        .stdout(predicate::str::contains("RFC-001"))
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("based_on"));
+}
+
+#[test]
+fn e2e_drift_runs_on_empty_workspace() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Drift should run even with no ADR/RFC
+    forgeplan()
+        .args(["drift"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active ADR/RFC").or(predicate::str::contains("affected_files")));
+}
+
+#[test]
+fn e2e_migrate_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // First migrate
+    forgeplan()
+        .args(["migrate"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("up to date").or(predicate::str::contains("complete")));
+
+    // Second migrate — should also succeed (idempotent)
+    forgeplan()
+        .args(["migrate"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+// ── E2E: Full Methodology Cycle + Validation Quality ─────
+
+#[test]
+fn e2e_full_methodology_cycle() {
+    let tmp = TempDir::new().unwrap();
+
+    // 1. Init
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // 2. Create PRD with full content
+    forgeplan().args(["new", "prd", "Auth System"]).current_dir(tmp.path()).assert().success();
+
+    // 3. Fill PRD body with proper content (Problem, Goals, FR, etc.)
+    let body = r#"# PRD-001: Auth System
+
+## Problem
+
+Users cannot authenticate. The system has no login mechanism, no session management, and no access control. This blocks all features that require user identity.
+
+## Goals
+
+- [ ] Users can log in with email and password
+- [ ] Sessions persist across browser refreshes
+- [ ] Admin users have elevated permissions
+
+## Non-Goals
+
+- Social login (OAuth) — deferred to Phase 2
+- Two-factor authentication — future enhancement
+
+## Target Users
+
+- End users who need to access the application
+- Administrators who manage user accounts
+
+## Functional Requirements
+
+- [ ] FR-001: User can create an account with email and password
+- [ ] FR-002: User can log in with valid credentials
+- [ ] FR-003: System can maintain session state across requests
+- [ ] FR-004: Admin can view and manage user list
+
+## Related
+
+- EPIC-001: Application Platform"#;
+
+    forgeplan()
+        .args(["update", "PRD-001", "--body", body])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // 4. Validate — should PASS
+    forgeplan()
+        .args(["validate", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PASS"));
+
+    // 5. Create evidence
+    forgeplan()
+        .args(["new", "evidence", "Auth system tests pass"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Fill evidence with structured fields
+    let evid_body = "## Structured Fields\n\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n\n## Results\n- 10 tests pass\n- Login flow verified";
+    forgeplan()
+        .args(["update", "EVID-001", "--body", evid_body])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // 6. Link evidence → PRD
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // 7. Score — should show evidence and R_eff
+    forgeplan()
+        .args(["score", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EVID-001"))
+        .stdout(predicate::str::contains("R_eff"));
+
+    // 8. Activate PRD (runs review internally, should pass)
+    forgeplan()
+        .args(["activate", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+
+    // 9. Health — should show 1 active artifact
+    forgeplan()
+        .args(["health"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+}
+
+#[test]
+fn e2e_validation_catches_quality_issues() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Bad PRD"]).current_dir(tmp.path()).assert().success();
+
+    // PRD with subjective adjectives, tech leakage, filler phrases
+    let bad_body = r#"# PRD-001: Bad PRD
+
+## Problem
+
+This is a simple problem statement that needs to be fixed quickly.
+
+## Goals
+
+- [ ] Make the system easy to use and fast
+- [ ] Build an intuitive interface with multiple features
+
+## Non-Goals
+
+- None
+
+## Target Users
+
+- Users
+
+## Functional Requirements
+
+- [ ] FR-001: System will allow users to easily navigate using React components with PostgreSQL database
+- [ ] FR-002: In order to provide a seamless experience, the system should support multiple authentication methods via JWT and OAuth
+
+## Related
+
+- None"#;
+
+    forgeplan()
+        .args(["update", "PRD-001", "--body", bad_body])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Validate should catch issues
+    let output = forgeplan()
+        .args(["validate", "PRD-001"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should detect measurability issues (subjective adjectives)
+    assert!(
+        stdout.contains("Subjective adjective") || stdout.contains("adjective") || stdout.contains("easy"),
+        "Should detect subjective adjectives like 'easy', got: {}", stdout
+    );
+
+    // Should detect implementation leakage
+    assert!(
+        stdout.contains("Tech names") || stdout.contains("React") || stdout.contains("PostgreSQL"),
+        "Should detect tech leakage (React, PostgreSQL), got: {}", stdout
+    );
+
+    // Should detect filler phrases
+    assert!(
+        stdout.contains("filler") || stdout.contains("in order to"),
+        "Should detect filler phrases like 'in order to', got: {}", stdout
+    );
+}
+
+#[test]
+fn e2e_score_shows_fgr_breakdown() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Test Feature"]).current_dir(tmp.path()).assert().success();
+
+    // Score should show F-G-R breakdown
+    forgeplan()
+        .args(["score", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Formality"))
+        .stdout(predicate::str::contains("Granularity"))
+        .stdout(predicate::str::contains("Reliability"));
+}
+
+#[test]
+fn e2e_route_determines_depth() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Simple task → Tactical
+    forgeplan()
+        .args(["route", "fix typo in readme"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tactical"));
+
+    // Complex task with security keyword → Deep or Standard
+    forgeplan()
+        .args(["route", "implement OAuth2 authentication with security audit and compliance review"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deep").or(predicate::str::contains("Standard")));
+}
+
+// ── E2E: Export/Import + FPF Knowledge Base ──────────────
+
+#[test]
+fn e2e_export_import_preserves_data() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create 3 artifacts with links
+    forgeplan().args(["new", "prd", "Feature A"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "Plan for A"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "Tests pass"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"]).current_dir(tmp.path()).assert().success();
+
+    // Export
+    let export_path = tmp.path().join("backup.json");
+    forgeplan()
+        .args(["export", "--output", export_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 artifacts"));
+
+    assert!(export_path.exists());
+
+    // Verify export file is valid JSON
+    let content = std::fs::read_to_string(&export_path).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(json["artifacts"].is_array());
+    assert_eq!(json["artifacts"].as_array().unwrap().len(), 3);
+
+    // Destroy workspace
+    std::fs::remove_dir_all(tmp.path().join(".forgeplan")).unwrap();
+
+    // Re-init
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Import
+    forgeplan()
+        .args(["import", export_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify data restored
+    forgeplan()
+        .args(["health"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 total").or(predicate::str::contains("prd")));
+
+    // Verify specific artifact
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Feature A"));
+}
+
+#[test]
+fn e2e_health_comprehensive() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create varied artifacts
+    forgeplan().args(["new", "prd", "Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "problem", "Bug Report"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "note", "Quick Note"]).current_dir(tmp.path()).assert().success();
+
+    // Health should show all kinds
+    forgeplan()
+        .args(["health"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prd"))
+        .stdout(predicate::str::contains("problem"))
+        .stdout(predicate::str::contains("note"))
+        .stdout(predicate::str::contains("3 total"));
+}
+
+#[test]
+fn e2e_list_shows_all_artifact_types() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    forgeplan().args(["new", "prd", "My PRD"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "rfc", "My RFC"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "adr", "My ADR"]).current_dir(tmp.path()).assert().success();
+
+    forgeplan()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("RFC-001"))
+        .stdout(predicate::str::contains("ADR-001"))
+        .stdout(predicate::str::contains("My PRD"))
+        .stdout(predicate::str::contains("My RFC"))
+        .stdout(predicate::str::contains("My ADR"));
+}
+
+#[test]
+fn e2e_supersede_workflow() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create and activate old PRD
+    forgeplan().args(["new", "prd", "Old Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["activate", "PRD-001"]).current_dir(tmp.path()).assert().success();
+
+    // Create new PRD
+    forgeplan().args(["new", "prd", "New Feature"]).current_dir(tmp.path()).assert().success();
+
+    // Supersede old with new
+    forgeplan()
+        .args(["supersede", "PRD-001", "--by", "PRD-002"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Superseded"));
+
+    // Old PRD should be superseded
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("superseded").or(predicate::str::contains("Superseded")));
+}
+
+#[test]
+fn e2e_fpf_commands_available() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // FPF status before ingest
+    forgeplan()
+        .args(["fpf", "status"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not initialized").or(predicate::str::contains("Status")));
+
+    // FPF list before ingest
+    forgeplan()
+        .args(["fpf", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // FPF search before ingest (should not crash)
+    forgeplan()
+        .args(["fpf", "search", "test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn e2e_adr_contract_validation() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create ADR without contract sections
+    forgeplan().args(["new", "adr", "Use PostgreSQL"]).current_dir(tmp.path()).assert().success();
+
+    // Validate runs and produces result (PASS or warnings depending on depth)
+    forgeplan()
+        .args(["validate", "ADR-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ADR-001"))
+        .stdout(predicate::str::contains("PASS").or(predicate::str::contains("error").or(predicate::str::contains("warning"))));
+}
