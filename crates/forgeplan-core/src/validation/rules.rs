@@ -109,6 +109,40 @@ fn prd_rules(depth: &Mode) -> Vec<RuleEntry> {
     // FR format check — [Actor] can [capability]
     rules.push(rule("prd-fr-format", Severity::Could, "FR format: [Actor] can [capability]", check_prd_fr_format));
 
+    // BMAD Step 5: Measurability checks
+    rules.push(rule("prd-measurability-adjectives", Severity::Should,
+        "FR should not contain subjective adjectives without metrics",
+        check_prd_measurability_adjectives));
+    rules.push(rule("prd-vague-quantifiers", Severity::Should,
+        "FR should not contain vague quantifiers",
+        check_prd_vague_quantifiers));
+
+    // BMAD Step 3: Filler phrase detection
+    rules.push(rule("prd-filler-phrases", Severity::Should,
+        "Body should not contain filler phrases",
+        check_prd_filler_phrases));
+    rules.push(rule("prd-density-score", Severity::Could,
+        "Information density should be high (filler < 5% of words)",
+        check_prd_density_score));
+
+    // BMAD Step 6: Traceability validation
+    rules.push(rule("prd-orphan-frs", Severity::Should,
+        "All FRs should be referenced outside FR section",
+        check_prd_orphan_frs));
+    rules.push(rule("prd-orphan-goals", Severity::Should,
+        "All Goals should be supported by FRs",
+        check_prd_orphan_goals));
+
+    // BMAD Step 8: Domain classification
+    rules.push(rule("prd-domain-sections", Severity::Must,
+        "Domain-specific required sections",
+        check_prd_domain_sections));
+
+    // BMAD Step 9: Project-type classification
+    rules.push(rule("prd-project-type-sections", Severity::Should,
+        "Project-type recommended sections",
+        check_prd_project_type_sections));
+
     rules
 }
 
@@ -170,19 +204,28 @@ fn check_prd_audience(body: &str, _fm: &Frontmatter) -> Option<String> {
 }
 
 fn check_prd_leakage(body: &str, _fm: &Frontmatter) -> Option<String> {
-    if let Some(start) = body.find("## Functional Requirements") {
-        let fr_text = &body[start..];
-        let end = fr_text[30..].find("\n## ").map(|i| i + 30).unwrap_or(fr_text.len());
-        let fr_section = &fr_text[..end];
-        let leaks = checks::find_tech_leakage(fr_section);
-        if leaks.is_empty() {
-            None
-        } else {
-            let names: Vec<String> = leaks.iter().map(|(_, name)| name.clone()).collect();
-            Some(format!("Tech names in FR section: {}", names.join(", ")))
+    let mut all_leaks: Vec<String> = Vec::new();
+
+    // Check FR section
+    if let Some(fr_section) = checks::extract_fr_section(body) {
+        for (_, name) in checks::find_tech_leakage(&fr_section) {
+            all_leaks.push(name);
         }
-    } else {
+    }
+
+    // Check NFR section
+    if let Some(nfr_section) = checks::extract_nfr_section(body) {
+        for (_, name) in checks::find_tech_leakage(&nfr_section) {
+            all_leaks.push(name);
+        }
+    }
+
+    if all_leaks.is_empty() {
         None
+    } else {
+        all_leaks.sort();
+        all_leaks.dedup();
+        Some(format!("Tech names in FR/NFR sections: {}", all_leaks.join(", ")))
     }
 }
 
@@ -229,25 +272,23 @@ fn check_prd_rollback(body: &str, _fm: &Frontmatter) -> Option<String> {
 }
 
 fn check_prd_success_metrics(body: &str, _fm: &Frontmatter) -> Option<String> {
-    if !checks::section_exists(body, "Success Metrics") && !checks::section_exists(body, "Success Criteria") {
-        // Already checked via goals, but this checks for measurable metrics specifically
-        None
-    } else {
-        // Check if metrics section has numbers/percentages (measurability check)
-        let body_lower = body.to_lowercase();
-        if let Some(start) = body_lower.find("## success") {
-            let section = &body[start..];
-            let end = section[10..].find("\n## ").map(|i| i + 10).unwrap_or(section.len());
-            let section_text = &section[..end];
-            let has_measurable = section_text.contains('%')
-                || section_text.contains("< ")
-                || section_text.contains("> ")
-                || section_text.chars().any(|c| c.is_ascii_digit());
+    // Use extract_section for proper heading detection (fixes audit C1)
+    let section_text = checks::extract_section(body, "Success Metrics")
+        .or_else(|| checks::extract_section(body, "Success Criteria"));
+
+    match section_text {
+        None => Some("Missing '## Success Metrics' or '## Success Criteria' section".into()),
+        Some(text) => {
+            let has_measurable = text.contains('%')
+                || text.contains("< ")
+                || text.contains("> ")
+                || text.chars().any(|c| c.is_ascii_digit());
             if !has_measurable {
-                return Some("Success metrics section has no measurable values (numbers, percentages)".into());
+                Some("Success metrics section has no measurable values (numbers, percentages)".into())
+            } else {
+                None
             }
         }
-        None
     }
 }
 
@@ -261,14 +302,9 @@ fn check_prd_dependencies(body: &str, _fm: &Frontmatter) -> Option<String> {
 
 /// FR format check — [Actor] can [capability] (or - [ ] FR-NNN: ...)
 fn check_prd_fr_format(body: &str, _fm: &Frontmatter) -> Option<String> {
-    let body_lower = body.to_lowercase();
-    if let Some(start) = body_lower.find("## functional requirements") {
-        let section = &body[start..];
-        let end = section[30..].find("\n## ").map(|i| i + 30).unwrap_or(section.len());
-        let fr_section = &section[..end];
-
-        // Count FR lines (checkboxes or bullet points)
-        let fr_lines: Vec<&str> = fr_section
+    // First check: FR section has items at all
+    if let Some(fr_content) = checks::extract_fr_section(body) {
+        let fr_lines: Vec<&str> = fr_content
             .lines()
             .filter(|l| {
                 let t = l.trim();
@@ -280,9 +316,161 @@ fn check_prd_fr_format(body: &str, _fm: &Frontmatter) -> Option<String> {
             return Some("Functional Requirements section has no FR items (use checkboxes: - [ ] FR-001: ...)".into());
         }
 
+        // Second check: FR items follow [Actor] can [capability] format
+        let bad_lines = checks::check_fr_format(body);
+        if !bad_lines.is_empty() {
+            let details: Vec<String> = bad_lines.iter().take(3)
+                .map(|(text, line)| format!("line {}: '{}'", line, text))
+                .collect();
+            return Some(format!(
+                "FR items not in '[Actor] can [capability]' format: {}",
+                details.join("; ")
+            ));
+        }
+
         None
     } else {
         None // No FR section — caught by check_prd_fr
+    }
+}
+
+fn check_prd_measurability_adjectives(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let findings = checks::check_measurability_adjectives(body);
+    if findings.is_empty() {
+        None
+    } else {
+        let details: Vec<String> = findings.iter().take(5)
+            .map(|(word, line)| format!("'{}' at line {}", word, line))
+            .collect();
+        Some(format!("Subjective adjectives in FR: {}", details.join(", ")))
+    }
+}
+
+fn check_prd_vague_quantifiers(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let findings = checks::check_vague_quantifiers(body);
+    if findings.is_empty() {
+        None
+    } else {
+        let details: Vec<String> = findings.iter().take(5)
+            .map(|(word, line)| format!("'{}' at line {}", word, line))
+            .collect();
+        Some(format!("Vague quantifiers in FR: {}", details.join(", ")))
+    }
+}
+
+fn check_prd_filler_phrases(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let findings = checks::check_filler_phrases(body);
+    if findings.is_empty() {
+        None
+    } else {
+        let details: Vec<String> = findings.iter().take(5)
+            .map(|(phrase, replacement, line)| {
+                if replacement.is_empty() {
+                    format!("line {}: remove '{}'", line, phrase)
+                } else {
+                    format!("line {}: '{}' -> '{}'", line, phrase, replacement)
+                }
+            })
+            .collect();
+        Some(format!("{} filler phrase(s): {}", findings.len(), details.join("; ")))
+    }
+}
+
+fn check_prd_density_score(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let score = checks::density_score(body);
+    if score > 0.05 {
+        Some(format!("Density score: {:.1}% filler (threshold: 5%)", score * 100.0))
+    } else {
+        None
+    }
+}
+
+// ─── BMAD Step 6: Traceability ──────────────────────────────────────────────
+
+fn check_prd_orphan_frs(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let orphans = checks::find_orphan_frs(body);
+    if orphans.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Orphan FRs (not referenced outside FR section): {}",
+            orphans.join(", ")
+        ))
+    }
+}
+
+fn check_prd_orphan_goals(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let orphans = checks::find_orphan_goals(body);
+    if orphans.is_empty() {
+        None
+    } else {
+        let details: Vec<String> = orphans.iter().take(3)
+            .map(|g| format!("'{}'", g))
+            .collect();
+        Some(format!(
+            "Goals not supported by any FR: {}",
+            details.join(", ")
+        ))
+    }
+}
+
+// ─── BMAD Step 8: Domain Classification ─────────────────────────────────────
+
+fn check_prd_domain_sections(body: &str, fm: &Frontmatter) -> Option<String> {
+    let domain = match fm.get("domain") {
+        Some(serde_yaml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return None, // No domain set — skip check
+    };
+
+    let required = checks::domain_required_sections(&domain);
+    if required.is_empty() {
+        return None;
+    }
+
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|(heading, _)| !checks::section_exists(body, heading))
+        .map(|(_, desc)| desc.to_string())
+        .collect();
+
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Domain '{}' requires: {}",
+            domain,
+            missing.join(", ")
+        ))
+    }
+}
+
+// ─── BMAD Step 9: Project-Type Classification ───────────────────────────────
+
+fn check_prd_project_type_sections(body: &str, fm: &Frontmatter) -> Option<String> {
+    let project_type = match fm.get("project_type") {
+        Some(serde_yaml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return None, // No project_type set — skip check
+    };
+
+    let recommended = checks::project_type_recommended_sections(&project_type);
+    if recommended.is_empty() {
+        return None;
+    }
+
+    let missing: Vec<String> = recommended
+        .iter()
+        .filter(|(heading, _)| !checks::section_exists(body, heading))
+        .map(|(_, desc)| desc.to_string())
+        .collect();
+
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Project type '{}' recommends: {}",
+            project_type,
+            missing.join(", ")
+        ))
     }
 }
 
@@ -518,7 +706,11 @@ mod tests {
         let base_count = base_rules().len();
         let prd_base = 5; // problem, goals, non-goals, fr, related
         let fr_format = 1; // fr-format check (all depths)
-        assert_eq!(rules.len(), base_count + prd_base + fr_format);
+        let measurability = 2; // adjectives + vague quantifiers (all depths)
+        let density_detection = 2; // filler-phrases + density-score (all depths)
+        let traceability = 2; // orphan-frs + orphan-goals (all depths)
+        let classification = 2; // domain-sections + project-type-sections (all depths)
+        assert_eq!(rules.len(), base_count + prd_base + fr_format + measurability + density_detection + traceability + classification);
     }
 
     #[test]
@@ -528,7 +720,11 @@ mod tests {
         let prd_base = 5;
         let standard_extra = 3; // density, audience, leakage
         let fr_format = 1;
-        assert_eq!(rules.len(), base_count + prd_base + standard_extra + fr_format);
+        let measurability = 2; // adjectives + vague quantifiers
+        let density_detection = 2; // filler-phrases + density-score
+        let traceability = 2; // orphan-frs + orphan-goals
+        let classification = 2; // domain-sections + project-type-sections
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra + fr_format + measurability + density_detection + traceability + classification);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"prd-problem-density"));
@@ -544,7 +740,11 @@ mod tests {
         let standard_extra = 3;
         let deep_extra = 7; // timeline, stakeholders, acceptance, risk, rollback, success_metrics, dependencies
         let fr_format = 1;
-        assert_eq!(rules.len(), base_count + prd_base + standard_extra + deep_extra + fr_format);
+        let measurability = 2; // adjectives + vague quantifiers
+        let density_detection = 2; // filler-phrases + density-score
+        let traceability = 2; // orphan-frs + orphan-goals
+        let classification = 2; // domain-sections + project-type-sections
+        assert_eq!(rules.len(), base_count + prd_base + standard_extra + deep_extra + fr_format + measurability + density_detection + traceability + classification);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"prd-timeline"));
