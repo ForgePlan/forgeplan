@@ -44,7 +44,18 @@ pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let path = entry.path();
+            // Skip symlinks
+            if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+            }
             if path.is_file() && has_markdown_ext(&path) {
+                // Skip oversized files
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                if size > MAX_FILE_SIZE {
+                    continue;
+                }
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     // Skip common non-artifact files
                     if matches!(
@@ -76,6 +87,11 @@ pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile
     Ok(results)
 }
 
+/// Max file size for reading (10 MB).
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+/// Max recursion depth to prevent stack overflow.
+const MAX_DEPTH: usize = 20;
+
 /// Recursively collect markdown files from a directory.
 fn collect_markdown_recursive(
     dir: &Path,
@@ -83,18 +99,42 @@ fn collect_markdown_recursive(
     skip_dirs: &[&str],
     results: &mut Vec<DiscoveredFile>,
 ) -> anyhow::Result<()> {
+    collect_markdown_recursive_depth(dir, root, skip_dirs, results, 0)
+}
+
+fn collect_markdown_recursive_depth(
+    dir: &Path,
+    root: &Path,
+    skip_dirs: &[&str],
+    results: &mut Vec<DiscoveredFile>,
+    depth: usize,
+) -> anyhow::Result<()> {
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
     let entries = std::fs::read_dir(dir)?;
     for entry in entries.flatten() {
         let path = entry.path();
+        // Skip symlinks to prevent traversal outside project
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+        }
         if path.is_dir() {
             let dir_name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             if !skip_dirs.contains(&dir_name) {
-                collect_markdown_recursive(&path, root, skip_dirs, results)?;
+                collect_markdown_recursive_depth(&path, root, skip_dirs, results, depth + 1)?;
             }
         } else if path.is_file() && has_markdown_ext(&path) {
+            // Skip files exceeding size limit
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if size > MAX_FILE_SIZE {
+                continue;
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 let relative = path
                     .strip_prefix(root)

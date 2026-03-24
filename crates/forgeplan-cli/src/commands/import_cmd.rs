@@ -49,15 +49,20 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         }
 
         // Validate kind against known types
-        let kind_str = art["kind"].as_str().unwrap_or("note");
-        if kind_str.parse::<forgeplan_core::artifact::types::ArtifactKind>().is_err() {
-            eprintln!("  Warning: unknown kind '{}' for {}, defaulting to note", kind_str, id);
-        }
-        // Validate status
-        let status_str = art["status"].as_str().unwrap_or("draft");
-        if !matches!(status_str, "draft" | "active" | "superseded" | "deprecated") {
-            eprintln!("  Warning: unknown status '{}' for {}, defaulting to draft", status_str, id);
-        }
+        let raw_kind = art["kind"].as_str().unwrap_or("note");
+        let kind_str = if raw_kind.parse::<forgeplan_core::artifact::types::ArtifactKind>().is_err() {
+            eprintln!("  Warning: unknown kind '{}' for {}, defaulting to note", raw_kind, id);
+            "note"
+        } else {
+            raw_kind
+        };
+        let raw_status = art["status"].as_str().unwrap_or("draft");
+        let status_str = if !matches!(raw_status, "draft" | "active" | "superseded" | "deprecated") {
+            eprintln!("  Warning: unknown status '{}' for {}, defaulting to draft", raw_status, id);
+            "draft"
+        } else {
+            raw_status
+        };
 
         let new_artifact = NewArtifact {
             id: id.to_string(),
