@@ -71,6 +71,40 @@ forgeplan route "описание задачи"   # определи depth и pi
 
 **Работа не закончена, пока: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.**
 
+### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
+
+```bash
+# 1. Unit tests
+cargo test                              # ВСЕ должны PASS
+
+# 2. Workspace init (AI всегда использует -y!)
+forgeplan init -y                       # НИКОГДА без -y в AI контексте
+
+# 3. Core operations
+forgeplan new prd "Smoke Test"          # Создание артефакта
+forgeplan validate PRD-XXX              # Валидация работает
+forgeplan score PRD-XXX                 # F-G-R scoring работает
+
+# 4. Новые фичи (PRD-016+)
+forgeplan blocked                       # Граф зависимостей
+forgeplan order                         # Topological sort
+
+# 5. FPF Knowledge Base (PRD-021)
+forgeplan fpf ingest                    # 204 секции загружены
+forgeplan fpf search "trust"            # Поиск находит B.3
+
+# 6. LLM integration
+GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
+```
+
+**Если любой шаг fail — НЕ коммитить. Починить сначала.**
+
+### ВАЖНО для AI агентов:
+- **`forgeplan init`** — ВСЕГДА с `-y` флагом (без interactive prompt)
+- **Config после init** — проверить `.forgeplan/config.yaml`, настроить LLM provider
+- **`.forgeplan/` в gitignore** — workspace данные НЕ трекаются, config теряется при reinit
+- **LanceDB migration** — новые columns требуют reinit workspace (`rm -rf .forgeplan && forgeplan init -y`)
+
 ### ОБЯЗАТЕЛЬНО при написании Rust кода:
 
 1. **Перед сложными паттернами** — активируй Rust skills:

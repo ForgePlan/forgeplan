@@ -84,6 +84,7 @@ pub fn relations_schema() -> Arc<Schema> {
         Field::new("target_id", DataType::Utf8, false),
         Field::new("relation_type", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, false),
+        Field::new("congruence_level", DataType::Int32, true),
     ]))
 }
 

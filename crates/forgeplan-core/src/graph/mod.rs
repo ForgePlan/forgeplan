@@ -1,3 +1,5 @@
+pub mod topological;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
