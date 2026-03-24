@@ -1,22 +1,18 @@
 use std::collections::HashMap;
-use std::env;
 
 use anyhow::{Context, Result};
 
 use forgeplan_core::artifact::types::ArtifactKind;
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
+use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
-use forgeplan_core::workspace::find_workspace;
+
+use crate::commands::common;
 
 pub async fn run(kind_str: &str, title: &str) -> Result<()> {
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let cwd = env::current_dir()?;
-    let workspace = find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&workspace).await?;
+    let (workspace, store) = common::open_store().await?;
 
     // Get next sequential ID from LanceDB
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();

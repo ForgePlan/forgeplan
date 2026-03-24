@@ -1,12 +1,10 @@
-use std::env;
+use forgeplan_core::db::store::NewArtifact;
 
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
-use forgeplan_core::workspace;
+use crate::commands::common;
 
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (_ws, store) = common::open_store().await?;
+    let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {
         std::path::PathBuf::from(path)
@@ -30,8 +28,6 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
     let artifacts = data["artifacts"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Missing 'artifacts' array in export file"))?;
-
-    let store = LanceStore::open(&ws).await?;
 
     let mut imported = 0usize;
     let mut skipped = 0usize;

@@ -1,18 +1,14 @@
-use std::env;
-
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
+use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::llm::reason;
-use forgeplan_core::workspace::{self, load_config};
+use forgeplan_core::workspace::load_config;
+
+use crate::commands::common;
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, store) = common::open_store().await?;
 
     let config = load_config(&ws)?;
     let llm_config = config.llm.unwrap_or_default().with_env_overrides();
-
-    let store = LanceStore::open(&ws).await?;
     let record = store
         .get_record(id)
         .await?
