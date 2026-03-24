@@ -1,3 +1,4 @@
+pub mod common;
 pub mod activate;
 pub mod blindspots;
 pub mod blocked;

@@ -1,16 +1,9 @@
-use std::env;
-
 use chrono::{NaiveDate, Utc};
 
-use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::workspace;
+use crate::commands::common;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+    let store = common::store().await?;
     let stale_records = store.find_stale().await?;
 
     if stale_records.is_empty() {
