@@ -1,17 +1,12 @@
-use std::env;
-
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::drift;
-use forgeplan_core::workspace;
+
+use crate::commands::common;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, store) = common::open_store().await?;
 
-    let store = LanceStore::open(&ws).await?;
-
-    let workspace_root = ws.parent().unwrap_or(&ws);
+    let workspace_root = ws.parent()
+        .ok_or_else(|| anyhow::anyhow!("Workspace path has no parent directory"))?;
     let reports = drift::check_drift(&store, workspace_root).await?;
 
     if json {
