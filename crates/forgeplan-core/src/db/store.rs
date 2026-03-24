@@ -658,12 +658,17 @@ impl LanceStore {
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
     pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Search query cannot be empty");
+        }
+
         let table = self
             .fpf_spec
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
 
-        let query_lower = query.to_lowercase();
+        let query_lower = trimmed.to_lowercase();
         // Split query into words for per-word OR matching
         let words: Vec<String> = query_lower
             .split_whitespace()

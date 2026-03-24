@@ -90,7 +90,17 @@ impl std::fmt::Display for RoutingResult {
 
 /// Route a task description to depth + pipeline using rule engine.
 pub fn route(description: &str) -> RoutingResult {
-    let signals = signals::extract(description);
+    let trimmed = description.trim();
+    if trimmed.is_empty() {
+        return RoutingResult {
+            depth: crate::artifact::types::Mode::Tactical,
+            pipeline: vec![],
+            triggers: vec![],
+            confidence: 0.0, // zero confidence on empty input
+        };
+    }
+
+    let signals = signals::extract(trimmed);
     let depth = rules::compute_depth(&signals);
     let pipeline = pipeline::for_depth(&depth);
     let confidence = rules::compute_confidence(&signals, &depth);
