@@ -5,6 +5,7 @@
 
 pub mod contexts;
 pub mod explore;
+pub mod knowledge;
 
 use std::collections::BTreeMap;
 

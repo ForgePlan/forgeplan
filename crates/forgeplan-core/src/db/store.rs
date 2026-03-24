@@ -91,6 +91,27 @@ impl ArtifactRecord {
     }
 }
 
+/// FPF knowledge base chunk.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FpfChunk {
+    pub id: String,
+    pub section_id: String,
+    pub parent_section: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub line_count: i32,
+    pub file_path: String,
+    pub created_at: String,
+}
+
+/// FPF chunk summary (without body for listing).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FpfChunkSummary {
+    pub section_id: String,
+    pub title: String,
+    pub line_count: i32,
+}
+
 /// LanceDB-backed artifact store.
 pub struct LanceStore {
     _db: Connection,
@@ -98,6 +119,7 @@ pub struct LanceStore {
     #[allow(dead_code)]
     evidence: Table,
     relations: Table,
+    fpf_spec: Option<Table>,
 }
 
 impl LanceStore {
@@ -109,12 +131,14 @@ impl LanceStore {
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
         let relations = db.open_table("relations").execute().await?;
+        let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
 
         Ok(Self {
             _db: db,
             artifacts,
             evidence,
             relations,
+            fpf_spec,
         })
     }
 
@@ -147,15 +171,24 @@ impl LanceStore {
             db.create_table("relations", vec![batch]).execute().await?;
         }
 
+        // Create fpf_spec table if not present
+        if !existing_tables.contains(&"fpf_spec".to_string()) {
+            let schema = schema::fpf_spec_schema();
+            let batch = empty_fpf_batch(schema.clone())?;
+            db.create_table("fpf_spec", vec![batch]).execute().await?;
+        }
+
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
         let relations = db.open_table("relations").execute().await?;
+        let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
 
         Ok(Self {
             _db: db,
             artifacts,
             evidence,
             relations,
+            fpf_spec,
         })
     }
 
@@ -559,6 +592,162 @@ impl LanceStore {
         }
         Ok(results)
     }
+
+    // ── FPF Knowledge Base ───────────────────────────────────────────
+
+    /// Check if FPF knowledge base is loaded.
+    pub fn has_fpf(&self) -> bool {
+        self.fpf_spec.is_some()
+    }
+
+    /// Insert FPF chunks in batch.
+    pub async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
+        let table = self
+            .fpf_spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`"))?;
+
+        let ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
+        let section_ids: Vec<&str> = chunks.iter().map(|c| c.section_id.as_str()).collect();
+        let parent_sections: Vec<Option<&str>> =
+            chunks.iter().map(|c| c.parent_section.as_deref()).collect();
+        let titles: Vec<&str> = chunks.iter().map(|c| c.title.as_str()).collect();
+        let bodies: Vec<&str> = chunks.iter().map(|c| c.body.as_str()).collect();
+        let line_counts: Vec<i32> = chunks.iter().map(|c| c.line_count).collect();
+        let file_paths: Vec<&str> = chunks.iter().map(|c| c.file_path.as_str()).collect();
+        let created_ats: Vec<&str> = chunks.iter().map(|c| c.created_at.as_str()).collect();
+
+        let batch = RecordBatch::try_new(
+            schema::fpf_spec_schema(),
+            vec![
+                Arc::new(StringArray::from(ids)),
+                Arc::new(StringArray::from(section_ids)),
+                Arc::new(StringArray::from(parent_sections)),
+                Arc::new(StringArray::from(titles)),
+                Arc::new(arrow_array::LargeStringArray::from(bodies)),
+                Arc::new(Int32Array::from(line_counts)),
+                Arc::new(StringArray::from(file_paths)),
+                Arc::new(StringArray::from(created_ats)),
+            ],
+        )?;
+
+        table.add(vec![batch]).execute().await?;
+        Ok(chunks.len())
+    }
+
+    /// Search FPF spec by keyword (case-insensitive substring match on title + body).
+    pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
+        let table = self
+            .fpf_spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
+
+        let query_lower = query.to_lowercase();
+        let escaped = query_lower.replace('\'', "''");
+        let filter = format!(
+            "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
+            escaped, escaped
+        );
+
+        // Fetch more candidates than needed, then rank by relevance
+        let fetch_limit = (limit * 10).min(200);
+        let batches = collect_batches(
+            table.query().only_if(filter).limit(fetch_limit).execute().await?,
+        )
+        .await?;
+
+        let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
+        for batch in &batches {
+            for i in 0..batch.num_rows() {
+                if let Some(chunk) = extract_fpf_chunk(batch, i) {
+                    // Simple relevance: title match = 10 points, body occurrence = 1 point each
+                    let mut score = 0usize;
+                    let title_lower = chunk.title.to_lowercase();
+                    let body_lower = chunk.body.to_lowercase();
+
+                    if title_lower.contains(&query_lower) {
+                        score += 10;
+                    }
+                    // Count occurrences in body
+                    score += body_lower.matches(&query_lower).count();
+
+                    scored.push((chunk, score));
+                }
+            }
+        }
+
+        // Sort by score descending, then truncate
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
+        Ok(results)
+    }
+
+    /// Get a specific FPF section by section_id.
+    pub async fn get_fpf_section(&self, section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
+        let table = self
+            .fpf_spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
+
+        let filter = format!("section_id = '{}'", section_id.replace('\'', "''"));
+        let batches = collect_batches(
+            table.query().only_if(filter).limit(1).execute().await?,
+        )
+        .await?;
+
+        for batch in &batches {
+            if batch.num_rows() > 0 {
+                return Ok(extract_fpf_chunk(batch, 0));
+            }
+        }
+        Ok(None)
+    }
+
+    /// List all FPF sections (without body content for performance).
+    pub async fn list_fpf_sections(&self) -> anyhow::Result<Vec<FpfChunkSummary>> {
+        let table = self
+            .fpf_spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
+
+        let batches = collect_batches(table.query().execute().await?).await?;
+
+        let mut results = Vec::new();
+        for batch in &batches {
+            let id_col = batch
+                .column_by_name("section_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let title_col = batch
+                .column_by_name("title")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let lines_col = batch
+                .column_by_name("line_count")
+                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
+
+            if let (Some(ids), Some(titles), Some(lines)) = (id_col, title_col, lines_col) {
+                for i in 0..batch.num_rows() {
+                    if !ids.is_null(i) {
+                        results.push(FpfChunkSummary {
+                            section_id: ids.value(i).to_string(),
+                            title: titles.value(i).to_string(),
+                            line_count: lines.value(i),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Delete all FPF chunks (for re-ingestion).
+    pub async fn clear_fpf(&self) -> anyhow::Result<()> {
+        let table = self
+            .fpf_spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
+        table.delete("id IS NOT NULL").await?;
+        Ok(())
+    }
 }
 
 /// Collect a stream of RecordBatches into a Vec.
@@ -662,6 +851,36 @@ fn get_f64(batch: &RecordBatch, col: &str, row: usize) -> Option<f64> {
     }
 }
 
+/// Extract an FpfChunk from a RecordBatch row.
+fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
+    let id = get_string(batch, "id", row)?;
+    let section_id = get_string(batch, "section_id", row)?;
+    let parent_section = get_string(batch, "parent_section", row);
+    let title = get_string(batch, "title", row)?;
+    let body = get_large_string(batch, "body", row)?;
+    let line_count = {
+        let array = batch.column_by_name("line_count")?;
+        let arr = array.as_any().downcast_ref::<Int32Array>()?;
+        if arr.is_null(row) {
+            return None;
+        }
+        arr.value(row)
+    };
+    let file_path = get_string(batch, "file_path", row)?;
+    let created_at = get_string(batch, "created_at", row)?;
+
+    Some(FpfChunk {
+        id,
+        section_id,
+        parent_section,
+        title,
+        body,
+        line_count,
+        file_path,
+        created_at,
+    })
+}
+
 /// Create an empty RecordBatch for artifacts (used when initializing tables).
 fn empty_artifacts_batch(
     schema: Arc<arrow_schema::Schema>,
@@ -716,6 +935,24 @@ fn empty_relations_batch(
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
+        ],
+    )
+}
+
+fn empty_fpf_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // id
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // section_id
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // parent_section (nullable)
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // title
+            Arc::new(arrow_array::LargeStringArray::from(Vec::<&str>::new())), // body
+            Arc::new(Int32Array::from(Vec::<i32>::new())),         // line_count
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // file_path
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // created_at
         ],
     )
 }

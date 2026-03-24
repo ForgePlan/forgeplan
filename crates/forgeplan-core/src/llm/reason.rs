@@ -98,16 +98,19 @@ fn default_effort() -> String {
 
 /// Try to parse LLM response as structured ADI JSON, with fallback to raw markdown.
 pub fn parse_adi_output(response: &str) -> AdiOutput {
-    // Try JSON parse first (may be wrapped in ```json ... ```)
-    let cleaned = response
-        .trim()
-        .strip_prefix("```json")
-        .unwrap_or(response.trim())
-        .strip_prefix("```")
-        .unwrap_or(response.trim())
-        .strip_suffix("```")
-        .unwrap_or(response.trim())
-        .trim();
+    // Strip code fences sequentially — each step feeds the next
+    let s = response.trim();
+    let s = s.strip_prefix("```json").map(|r| r.trim_start()).unwrap_or(s);
+    let s = s.strip_prefix("```").map(|r| r.trim_start()).unwrap_or(s);
+    let s = s.strip_suffix("```").map(|r| r.trim_end()).unwrap_or(s);
+    // Find first '{' for cases where LLM adds text before JSON
+    let cleaned = if s.starts_with('{') {
+        s
+    } else if let Some(pos) = s.find('{') {
+        &s[pos..]
+    } else {
+        s
+    };
 
     match serde_json::from_str::<AdiOutput>(cleaned) {
         Ok(mut output) => {
@@ -128,6 +131,59 @@ pub fn parse_adi_output(response: &str) -> AdiOutput {
     }
 }
 
+/// Search FPF knowledge base for patterns relevant to the artifact, and build
+/// a context string for injection into the ADI system prompt.
+pub async fn build_fpf_context(
+    store: &crate::db::store::LanceStore,
+    artifact_title: &str,
+    _artifact_body: &str,
+) -> anyhow::Result<Option<String>> {
+    if !store.has_fpf() {
+        return Ok(None);
+    }
+
+    // Search by significant title keywords (skip short/common words, try each)
+    let keywords: Vec<&str> = artifact_title
+        .split_whitespace()
+        .filter(|w| w.len() > 3 && w.chars().all(|c| c.is_alphanumeric()))
+        .filter(|w| !matches!(w.to_lowercase().as_str(), "the" | "and" | "for" | "with" | "from" | "that" | "this"))
+        .take(5)
+        .collect();
+
+    // Try each keyword, collect unique results
+    let mut results = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for keyword in &keywords {
+        if let Ok(hits) = store.search_fpf(keyword, 3).await {
+            for hit in hits {
+                if seen_ids.insert(hit.section_id.clone()) {
+                    results.push(hit);
+                }
+            }
+        }
+        if results.len() >= 3 {
+            break;
+        }
+    }
+    results.truncate(3);
+
+    if results.is_empty() {
+        return Ok(None);
+    }
+
+    let mut context = String::from("\n\n## Relevant FPF Patterns (from knowledge base)\n\n");
+    for chunk in &results {
+        // Include first 300 chars of each section
+        let preview: String = chunk.body.chars().take(300).collect();
+        context.push_str(&format!(
+            "### {} — {}\n{}\n\n",
+            chunk.section_id, chunk.title, preview
+        ));
+    }
+
+    Ok(Some(context))
+}
+
 /// Run ADI reasoning cycle on an artifact.
 /// Returns both the raw response string and the parsed AdiOutput.
 pub async fn reason(
@@ -136,10 +192,11 @@ pub async fn reason(
     artifact_title: &str,
     artifact_kind: &str,
     artifact_body: &str,
+    fpf_context: Option<&str>,
 ) -> anyhow::Result<(String, AdiOutput)> {
     let client = LlmClient::new(config.clone());
 
-    let prompt = format!(
+    let mut prompt = format!(
         "Analyze this {kind} artifact using the ADI cycle:\n\n\
          **ID**: {id}\n\
          **Title**: {title}\n\n\
@@ -150,6 +207,10 @@ pub async fn reason(
         title = artifact_title,
         body = artifact_body,
     );
+
+    if let Some(ctx) = fpf_context {
+        prompt.push_str(ctx);
+    }
 
     let system = crate::llm::load_prompt("reason", ADI_SYSTEM_PROMPT);
     let response = client.generate(&prompt, Some(&system)).await?;

@@ -113,6 +113,9 @@ enum Commands {
         /// Save ADI analysis as a Note artifact linked to the source
         #[arg(long)]
         save: bool,
+        /// Inject relevant FPF patterns into the ADI prompt
+        #[arg(long)]
+        fpf: bool,
     },
     /// Decompose a PRD into RFC tasks using AI
     Decompose {
@@ -185,8 +188,9 @@ enum Commands {
     },
     /// Install /forge skill for Claude Code
     SetupSkill,
-    /// FPF Dashboard — bounded contexts, quality scores, explore-exploit actions
-    Fpf,
+    /// FPF Knowledge Base — dashboard, ingest, search, sections
+    #[command(subcommand)]
+    Fpf(FpfCommands),
     /// Show F-G-R quality scores (Formality, Granularity, Reliability)
     Fgr {
         /// Artifact ID (scores all if omitted)
@@ -238,6 +242,38 @@ enum Commands {
     Serve,
 }
 
+#[derive(Subcommand)]
+enum FpfCommands {
+    /// Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
+    Dashboard,
+    /// Ingest FPF spec into knowledge base
+    Ingest {
+        /// Path to FPF sections directory
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Search FPF knowledge base
+    Search {
+        /// Search query
+        query: String,
+        /// Max results
+        #[arg(long, default_value = "5")]
+        limit: usize,
+    },
+    /// Show a specific FPF section
+    Section {
+        /// Section ID (e.g. "B.3", "C.2.2")
+        id: String,
+        /// Show summary only (first 500 chars)
+        #[arg(long)]
+        summary: bool,
+    },
+    /// List all FPF sections
+    List,
+    /// Show FPF knowledge base status — source, ingested count, staleness
+    Status,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -273,7 +309,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
         }
-        Commands::Reason { id, json, save } => commands::reason::run(&id, json, save).await,
+        Commands::Reason {
+            id,
+            json,
+            save,
+            fpf,
+        } => commands::reason::run(&id, json, save, fpf).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
         Commands::Get { id } => commands::get::run(&id).await,
         Commands::Update {
@@ -307,7 +348,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,
-        Commands::Fpf => commands::fpf::run().await,
+        Commands::Fpf(sub) => match sub {
+            FpfCommands::Dashboard => commands::fpf::run_dashboard().await,
+            FpfCommands::Ingest { path } => commands::fpf::run_ingest(path.as_deref()).await,
+            FpfCommands::Search { query, limit } => commands::fpf::run_search(&query, limit).await,
+            FpfCommands::Section { id, summary } => commands::fpf::run_section(&id, summary).await,
+            FpfCommands::List => commands::fpf::run_list().await,
+            FpfCommands::Status => commands::fpf::run_status().await,
+        },
         Commands::Fgr { id } => commands::fgr::run(id.as_deref()).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await

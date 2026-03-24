@@ -4,7 +4,7 @@ use forgeplan_core::db::store::{LanceStore, NewArtifact};
 use forgeplan_core::llm::reason;
 use forgeplan_core::workspace::{self, load_config};
 
-pub async fn run(id: &str, json: bool, save: bool) -> anyhow::Result<()> {
+pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -18,6 +18,26 @@ pub async fn run(id: &str, json: bool, save: bool) -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
+    // Build FPF context if requested
+    let fpf_context = if fpf {
+        match reason::build_fpf_context(&store, &record.title, &record.body).await {
+            Ok(ctx) => {
+                if ctx.is_some() {
+                    println!("  FPF context injected into ADI prompt");
+                } else {
+                    println!("  No FPF sections found (run `forgeplan fpf ingest` first)");
+                }
+                ctx
+            }
+            Err(e) => {
+                eprintln!("  Warning: FPF context lookup failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     println!(
         "  Analyzing {} with ADI cycle ({}/{})...\n",
         record.id, llm_config.provider, llm_config.model
@@ -29,6 +49,7 @@ pub async fn run(id: &str, json: bool, save: bool) -> anyhow::Result<()> {
         &record.title,
         &record.kind,
         &record.body,
+        fpf_context.as_deref(),
     )
     .await?;
 
