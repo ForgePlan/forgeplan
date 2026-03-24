@@ -22,7 +22,7 @@ pub async fn migrate_artifacts(table: &Table) -> anyhow::Result<()> {
             .add_columns(
                 NewColumnTransform::SqlExpressions(vec![(
                     "body_hash".to_string(),
-                    "CAST(NULL AS UTF8)".to_string(),
+                    "CAST(NULL AS STRING)".to_string(),
                 )]),
                 None,
             )
@@ -45,7 +45,7 @@ pub async fn migrate_relations(table: &Table) -> anyhow::Result<()> {
             .add_columns(
                 NewColumnTransform::SqlExpressions(vec![(
                     "congruence_level".to_string(),
-                    "CAST(3 AS INT32)".to_string(),
+                    "CAST(3 AS INT)".to_string(),
                 )]),
                 None,
             )
