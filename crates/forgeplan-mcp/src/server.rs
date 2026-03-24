@@ -629,6 +629,7 @@ impl ForgeplanServer {
                     self_score: 0.0,
                     weakest_link: None,
                     decay_penalty: 0.0,
+                    formality_score: 0,
                     factors: vec![format!("Error: {e}")],
                 }
             });

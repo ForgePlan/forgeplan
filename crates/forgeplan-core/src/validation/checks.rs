@@ -636,6 +636,38 @@ pub fn domain_required_sections(domain: &str) -> Vec<(&'static str, &'static str
             ("SLA", "Service level agreements"),
             ("Security", "Security and data isolation"),
         ],
+        "aerospace" => vec![
+            ("Safety Certification", "Safety certification requirements"),
+            ("Simulation Validation", "Simulation and validation approach"),
+            ("Performance Requirements", "Performance and reliability requirements"),
+            ("Export Compliance", "Export control and compliance"),
+        ],
+        "automotive" => vec![
+            ("Safety Standards", "Automotive safety standards compliance"),
+            ("Functional Safety", "Functional safety requirements (ISO 26262)"),
+            ("Communication Protocols", "Vehicle communication protocols"),
+            ("Certification Requirements", "Certification and homologation"),
+        ],
+        "scientific" => vec![
+            ("Validation Methodology", "Scientific validation methodology"),
+            ("Accuracy Metrics", "Accuracy and precision metrics"),
+            ("Reproducibility Plan", "Reproducibility and repeatability plan"),
+        ],
+        "legaltech" | "legal" => vec![
+            ("Ethics Compliance", "Legal ethics compliance"),
+            ("Data Retention", "Data retention policies"),
+            ("Confidentiality Measures", "Confidentiality and privilege measures"),
+        ],
+        "insuretech" | "insurance" => vec![
+            ("Regulatory Requirements", "Insurance regulatory requirements"),
+            ("Risk Modeling", "Risk modeling and actuarial approach"),
+            ("Fraud Detection", "Fraud detection and prevention"),
+        ],
+        "energy" => vec![
+            ("Grid Compliance", "Grid compliance and standards"),
+            ("Safety Protocols", "Safety protocols and procedures"),
+            ("Environmental Compliance", "Environmental compliance requirements"),
+        ],
         _ => Vec::new(), // cli, library, etc. — no domain-specific requirements
     }
 }
@@ -667,6 +699,30 @@ pub fn project_type_recommended_sections(project_type: &str) -> Vec<(&'static st
         "library" | "sdk" | "framework" => vec![
             ("API", "Public API surface"),
             ("Compatibility", "Version compatibility/breaking changes"),
+        ],
+        "iot" | "embedded" => vec![
+            ("Hardware Requirements", "Hardware specifications and constraints"),
+            ("Connectivity Protocol", "Connectivity and communication protocol"),
+            ("Power Profile", "Power consumption and battery profile"),
+            ("Security Model", "Device security model"),
+        ],
+        "blockchain" | "web3" => vec![
+            ("Chain Specs", "Blockchain and chain specifications"),
+            ("Wallet Support", "Wallet integration and support"),
+            ("Smart Contracts", "Smart contract architecture"),
+            ("Security Audit", "Security audit requirements"),
+        ],
+        "desktop-app" | "desktop" => vec![
+            ("Platform Support", "Supported desktop platforms"),
+            ("System Integration", "OS and system integration"),
+            ("Update Strategy", "Application update strategy"),
+            ("Offline Capabilities", "Offline and local-first capabilities"),
+        ],
+        "data-pipeline" | "etl" => vec![
+            ("Data Sources", "Data source specifications"),
+            ("Schema Definitions", "Data schema definitions"),
+            ("Quality Checks", "Data quality checks and validation"),
+            ("SLA Requirements", "Processing SLA requirements"),
         ],
         _ => Vec::new(),
     }

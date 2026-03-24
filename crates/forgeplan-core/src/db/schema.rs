@@ -74,15 +74,17 @@ pub fn evidence_schema() -> Arc<Schema> {
 /// Arrow schema for the `relations` table.
 ///
 /// Columns:
-/// - source_id     Utf8 (not null) — FK: source artifact
-/// - target_id     Utf8 (not null) — FK: target artifact
-/// - relation_type Utf8 (not null) — "informs", "based_on", "supersedes"
-/// - created_at    Utf8 (not null) — ISO datetime
+/// - source_id        Utf8 (not null) — FK: source artifact
+/// - target_id        Utf8 (not null) — FK: target artifact
+/// - relation_type    Utf8 (not null) — "informs", "based_on", "supersedes"
+/// - congruence_level Int32 (nullable) — CL 0-3, default 3 (CL3)
+/// - created_at       Utf8 (not null) — ISO datetime
 pub fn relations_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("source_id", DataType::Utf8, false),
         Field::new("target_id", DataType::Utf8, false),
         Field::new("relation_type", DataType::Utf8, false),
+        Field::new("congruence_level", DataType::Int32, true),
         Field::new("created_at", DataType::Utf8, false),
     ]))
 }
@@ -152,6 +154,7 @@ mod tests {
         assert!(names.contains(&"source_id"));
         assert!(names.contains(&"target_id"));
         assert!(names.contains(&"relation_type"));
+        assert!(names.contains(&"congruence_level"));
         assert!(names.contains(&"created_at"));
     }
 }

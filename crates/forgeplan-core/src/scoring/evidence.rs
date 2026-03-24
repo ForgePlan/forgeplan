@@ -38,12 +38,19 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         })
         .unwrap_or(EvidenceType::Measurement);
 
+    let formality_level = extract_field(&record.body, "formality_level")
+        .or_else(|| extract_field(&record.body, "formality"))
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|v| v.min(9))
+        .unwrap_or(5);
+
     EvidenceItem {
         id: record.id.clone(),
         evidence_type,
         verdict,
         congruence_level: cl,
         valid_until,
+        formality_level,
     }
 }
 

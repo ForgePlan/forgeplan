@@ -106,7 +106,7 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
             .iter()
             .map(|e| EvidenceItem {
                 valid_until: None, // remove expiry
-                ..e.clone()
+                ..e.clone() // formality_level preserved via clone
             })
             .collect();
         let fresh = reff::r_eff(&fresh_items);

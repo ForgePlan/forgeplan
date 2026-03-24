@@ -41,6 +41,8 @@ pub struct EvidenceItem {
     /// Congruence Level 0-3. Higher = more congruent.
     pub congruence_level: u8,
     pub valid_until: Option<NaiveDateTime>,
+    /// Formality level 0-9 (how rigorous was the evidence gathering). Default 5.
+    pub formality_level: u8,
 }
 
 /// Congruence Level penalty. CL3 = no penalty, CL0 = almost disqualified.
@@ -61,7 +63,7 @@ fn is_expired(valid_until: Option<NaiveDateTime>) -> bool {
     }
 }
 
-/// Score a single evidence item.
+/// Score a single evidence item with evidence-type modifier applied.
 fn score_evidence(e: &EvidenceItem) -> f64 {
     // Expired evidence = 0.1 (stale, not absent)
     if is_expired(e.valid_until) {
@@ -69,7 +71,8 @@ fn score_evidence(e: &EvidenceItem) -> f64 {
     }
     let base = e.verdict.score();
     let penalty = cl_penalty(e.congruence_level);
-    (base - penalty).max(0.0)
+    let type_mod = evidence_type_to_cl_modifier(&e.evidence_type);
+    (base - penalty - type_mod).max(0.0)
 }
 
 /// R_eff = min(evidence_scores) — trust equals the weakest link, NEVER average.
@@ -96,6 +99,8 @@ pub struct AssuranceReport {
     pub self_score: f64,
     pub weakest_link: Option<String>,
     pub decay_penalty: f64,
+    /// F_eff: minimum formality level across evidence (0-9). Quint-code alignment.
+    pub formality_score: u8,
     pub factors: Vec<String>,
 }
 
@@ -109,19 +114,6 @@ pub fn evidence_type_to_cl_modifier(et: &EvidenceType) -> f64 {
         EvidenceType::Benchmark => 0.1,
         EvidenceType::Audit => 0.2,
     }
-}
-
-/// Score a single evidence item with evidence-type modifier applied.
-/// Used by the recursive engine; the original `score_evidence` is preserved
-/// for backward compatibility with `r_eff()`.
-fn score_evidence_full(e: &EvidenceItem) -> f64 {
-    if is_expired(e.valid_until) {
-        return 0.1;
-    }
-    let base = e.verdict.score();
-    let penalty = cl_penalty(e.congruence_level);
-    let type_mod = evidence_type_to_cl_modifier(&e.evidence_type);
-    (base - penalty - type_mod).max(0.0)
 }
 
 /// Recursively compute R_eff for an artifact and its dependency chain.
@@ -145,6 +137,7 @@ pub async fn r_eff_recursive(
             self_score: 1.0,
             weakest_link: None,
             decay_penalty: 0.0,
+            formality_score: 0,
             factors: vec!["Cycle detected, skipping re-evaluation".to_string()],
         });
     }
@@ -155,8 +148,12 @@ pub async fn r_eff_recursive(
 
     // ---- 1. Self score from own evidence --------------------------------
 
-    // Collect evidence records that link to this artifact.
-    let relations = store.get_relations(artifact_id).await?;
+    // Collect evidence records that link to this artifact (with CL).
+    let relations_with_cl = store.get_relations_with_cl(artifact_id).await?;
+    let relations: Vec<(String, String)> = relations_with_cl
+        .iter()
+        .map(|(t, r, _)| (t.clone(), r.clone()))
+        .collect();
     let evidence_filter = ArtifactFilter {
         kind: Some("evidence".to_string()),
         status: None,
@@ -176,21 +173,28 @@ pub async fn r_eff_recursive(
         .map(|rec| parse_evidence_from_record(rec))
         .collect();
 
+    // Track minimum formality across evidence items.
+    let mut min_formality: u8 = 9;
+
     let self_score = if evidence_items.is_empty() {
         factors.push("No evidence found (L0)".to_string());
+        min_formality = 0;
         0.0
     } else {
-        // Track decay for reporting
+        // Track decay and formality for reporting
         for item in &evidence_items {
             if is_expired(item.valid_until) {
                 decay_penalty += 0.9;
                 factors.push(format!("Evidence {} expired (Decay applied)", item.id));
             }
+            if item.formality_level < min_formality {
+                min_formality = item.formality_level;
+            }
         }
 
         evidence_items
             .iter()
-            .map(|e| score_evidence_full(e))
+            .map(|e| score_evidence(e))
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or(0.0)
     };
@@ -201,17 +205,16 @@ pub async fn r_eff_recursive(
         ["informs", "based_on", "refines", "depends_on"].iter().copied().collect();
 
     // Collect dependency IDs with their CL from the relation graph.
-    // Relations are stored as (target_id, relation_type) from get_relations.
-    let deps: Vec<(String, String)> = relations
+    let deps: Vec<(String, String, u8)> = relations_with_cl
         .iter()
-        .filter(|(_, rel_type)| dep_relation_types.contains(rel_type.as_str()))
+        .filter(|(_, rel_type, _)| dep_relation_types.contains(rel_type.as_str()))
         .cloned()
         .collect();
 
     let mut min_dep_score = 1.0_f64;
     let mut weakest_link: Option<String> = None;
 
-    for (dep_id, rel_type) in &deps {
+    for (dep_id, rel_type, stored_cl) in &deps {
         let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {
             Ok(report) => report,
             Err(_) => {
@@ -222,18 +225,22 @@ pub async fn r_eff_recursive(
                     self_score: 0.0,
                     weakest_link: None,
                     decay_penalty: 0.0,
+                    formality_score: 0,
                     factors: vec!["Error during recursive evaluation".to_string()],
                 }
             }
         };
 
-        // Apply CL penalty based on relation type. Direct dependencies
-        // (depends_on, refines) are CL3; informational (informs) is CL2;
-        // based_on is CL2.
-        let dep_cl: u8 = match rel_type.as_str() {
-            "depends_on" | "refines" => 3,
-            "based_on" | "informs" => 2,
-            _ => 1,
+        // Use stored CL from the relation. If 0 (unset), fall back to
+        // heuristic based on relation type.
+        let dep_cl: u8 = if *stored_cl > 0 {
+            *stored_cl
+        } else {
+            match rel_type.as_str() {
+                "depends_on" | "refines" => 3,
+                "based_on" | "informs" => 2,
+                _ => 1,
+            }
         };
         let penalty = cl_penalty(dep_cl);
         let effective_r = (dep_report.r_eff - penalty).max(0.0);
@@ -262,6 +269,7 @@ pub async fn r_eff_recursive(
         self_score,
         weakest_link,
         decay_penalty,
+        formality_score: min_formality,
         factors,
     })
 }
@@ -283,6 +291,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: None,
+            formality_level: 5,
         }];
         assert_eq!(r_eff(&evidence), 1.0);
     }
@@ -296,6 +305,7 @@ mod tests {
                 verdict: Verdict::Supports,
                 congruence_level: 3,
                 valid_until: None,
+                formality_level: 5,
             },
             EvidenceItem {
                 id: "e2".into(),
@@ -303,9 +313,13 @@ mod tests {
                 verdict: Verdict::Weakens,
                 congruence_level: 3,
                 valid_until: None,
+                formality_level: 5,
             },
         ];
-        assert_eq!(r_eff(&evidence), 0.5);
+        // e1: Test + Supports + CL3 = 1.0 - 0.0 - 0.0 = 1.0
+        // e2: Benchmark + Weakens + CL3 = 0.5 - 0.0 - 0.1 = 0.4
+        // min = 0.4
+        assert!((r_eff(&evidence) - 0.4).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -316,6 +330,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 0, // CL0 = 0.9 penalty
             valid_until: None,
+            formality_level: 5,
         }];
         let score = r_eff(&evidence);
         assert!((score - 0.1).abs() < f64::EPSILON);
@@ -343,66 +358,70 @@ mod tests {
         assert!((evidence_type_to_cl_modifier(&EvidenceType::Audit) - 0.2).abs() < f64::EPSILON);
     }
 
-    // === PRD-016: score_evidence_full with type penalty ===
+    // === PRD-016: score_evidence with type penalty ===
 
     #[test]
-    fn score_evidence_full_benchmark_reduces() {
+    fn score_evidence_benchmark_reduces() {
         let e = EvidenceItem {
             id: "e1".into(),
             evidence_type: EvidenceType::Benchmark,
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: None,
+            formality_level: 5,
         };
         // 1.0 - 0.0 (CL3) - 0.1 (Benchmark) = 0.9
-        let s = score_evidence_full(&e);
+        let s = score_evidence(&e);
         assert!((s - 0.9).abs() < f64::EPSILON, "Expected 0.9, got {s}");
     }
 
     #[test]
-    fn score_evidence_full_audit_reduces() {
+    fn score_evidence_audit_reduces() {
         let e = EvidenceItem {
             id: "e1".into(),
             evidence_type: EvidenceType::Audit,
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: None,
+            formality_level: 5,
         };
         // 1.0 - 0.0 (CL3) - 0.2 (Audit) = 0.8
-        let s = score_evidence_full(&e);
+        let s = score_evidence(&e);
         assert!((s - 0.8).abs() < f64::EPSILON, "Expected 0.8, got {s}");
     }
 
     #[test]
-    fn score_evidence_full_combined_penalties() {
+    fn score_evidence_combined_penalties() {
         let e = EvidenceItem {
             id: "e1".into(),
             evidence_type: EvidenceType::Audit,
             verdict: Verdict::Supports,
             congruence_level: 2, // CL2 = 0.1
             valid_until: None,
+            formality_level: 5,
         };
         // 1.0 - 0.1 (CL2) - 0.2 (Audit) = 0.7
-        let s = score_evidence_full(&e);
+        let s = score_evidence(&e);
         assert!((s - 0.7).abs() < f64::EPSILON, "Expected 0.7, got {s}");
     }
 
     #[test]
-    fn score_evidence_full_clamped_to_zero() {
+    fn score_evidence_clamped_to_zero() {
         let e = EvidenceItem {
             id: "e1".into(),
             evidence_type: EvidenceType::Audit,
             verdict: Verdict::Weakens, // base = 0.5
             congruence_level: 1,       // CL1 = 0.4
             valid_until: None,
+            formality_level: 5,
         };
         // 0.5 - 0.4 - 0.2 = -0.1 → 0.0
-        let s = score_evidence_full(&e);
+        let s = score_evidence(&e);
         assert_eq!(s, 0.0, "Should clamp to 0.0, got {s}");
     }
 
     #[test]
-    fn score_evidence_full_expired_ignores_type() {
+    fn score_evidence_expired_ignores_type() {
         use chrono::NaiveDate;
         let past = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap().and_hms_opt(0, 0, 0);
         let e = EvidenceItem {
@@ -411,9 +430,10 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: past,
+            formality_level: 5,
         };
         // Expired = 0.1, type penalty irrelevant
-        let s = score_evidence_full(&e);
+        let s = score_evidence(&e);
         assert!((s - 0.1).abs() < f64::EPSILON, "Expired should be 0.1, got {s}");
     }
 
@@ -427,6 +447,7 @@ mod tests {
             self_score: 0.0,
             weakest_link: None,
             decay_penalty: 0.0,
+            formality_score: 0,
             factors: vec![],
         };
         assert_eq!(report.artifact_id, "PRD-001");
@@ -443,6 +464,7 @@ mod tests {
             self_score: 0.8,
             weakest_link: Some("PRD-002".into()),
             decay_penalty: 0.0,
+            formality_score: 5,
             factors: vec!["CL penalty applied for PRD-002".into()],
         };
         assert_eq!(report.weakest_link.as_deref(), Some("PRD-002"));
@@ -450,7 +472,7 @@ mod tests {
         assert!(report.r_eff < report.self_score);
     }
 
-    // === PRD-016: r_eff with mixed types (flat mode — backward compat) ===
+    // === PRD-016: r_eff with mixed types (now includes type modifier) ===
 
     #[test]
     fn r_eff_mixed_types_weakest_wins() {
@@ -461,6 +483,7 @@ mod tests {
                 verdict: Verdict::Supports,
                 congruence_level: 3,
                 valid_until: None,
+                formality_level: 5,
             },
             EvidenceItem {
                 id: "e2".into(),
@@ -468,13 +491,14 @@ mod tests {
                 verdict: Verdict::Supports,
                 congruence_level: 2, // CL2 = 0.1
                 valid_until: None,
+                formality_level: 5,
             },
         ];
-        // r_eff uses old score_evidence (no type mod):
-        // e1: 1.0 - 0.0 = 1.0
-        // e2: 1.0 - 0.1 = 0.9
-        // min = 0.9
+        // score_evidence now applies type modifier:
+        // e1: 1.0 - 0.0 (CL3) - 0.0 (Test) = 1.0
+        // e2: 1.0 - 0.1 (CL2) - 0.2 (Audit) = 0.7
+        // min = 0.7
         let score = r_eff(&evidence);
-        assert!((score - 0.9).abs() < f64::EPSILON, "Expected 0.9, got {score}");
+        assert!((score - 0.7).abs() < f64::EPSILON, "Expected 0.7, got {score}");
     }
 }

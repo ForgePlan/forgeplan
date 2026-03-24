@@ -267,11 +267,23 @@ impl LanceStore {
     }
 
     /// Add a relation between two artifacts. Rejects duplicates.
+    /// `cl` — optional congruence level (0-3). Defaults to 3 (CL3) if None.
     pub async fn add_relation(
         &self,
         source: &str,
         target: &str,
         relation: &str,
+    ) -> anyhow::Result<()> {
+        self.add_relation_with_cl(source, target, relation, None).await
+    }
+
+    /// Add a relation with explicit congruence level.
+    pub async fn add_relation_with_cl(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+        cl: Option<u8>,
     ) -> anyhow::Result<()> {
         // Dedup: check if relation already exists
         let existing = self.get_relations(source).await?;
@@ -286,7 +298,7 @@ impl LanceStore {
         }
 
         let now = Utc::now().to_rfc3339();
-        let batch = convert::relation_to_batch(source, target, relation, &now)?;
+        let batch = convert::relation_to_batch(source, target, relation, cl, &now)?;
 
         self.relations.add(vec![batch]).execute().await?;
         Ok(())
@@ -295,6 +307,20 @@ impl LanceStore {
     /// Get all relations for an artifact (as source).
     /// Returns Vec<(target_id, relation_type)>.
     pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        Ok(self
+            .get_relations_with_cl(id)
+            .await?
+            .into_iter()
+            .map(|(target, rel, _cl)| (target, rel))
+            .collect())
+    }
+
+    /// Get all relations for an artifact (as source) with congruence level.
+    /// Returns Vec<(target_id, relation_type, congruence_level)>.
+    pub async fn get_relations_with_cl(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Vec<(String, String, u8)>> {
         let filter = format!("source_id = '{}'", id.replace('\'', "''"));
         let batches = collect_batches(
             self.relations
@@ -313,13 +339,20 @@ impl LanceStore {
             let rel_col = batch
                 .column_by_name("relation_type")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let cl_col = batch
+                .column_by_name("congruence_level")
+                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
 
             if let (Some(targets), Some(rels)) = (target_col, rel_col) {
                 for i in 0..batch.num_rows() {
                     if !targets.is_null(i) && !rels.is_null(i) {
+                        let cl = cl_col
+                            .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i) as u8) })
+                            .unwrap_or(3);
                         results.push((
                             targets.value(i).to_string(),
                             rels.value(i).to_string(),
+                            cl,
                         ));
                     }
                 }
@@ -715,6 +748,7 @@ fn empty_relations_batch(
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(Int32Array::from(Vec::<i32>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
         ],
     )

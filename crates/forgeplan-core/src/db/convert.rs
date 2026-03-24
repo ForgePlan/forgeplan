@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 
 use crate::artifact::store::ArtifactSummary;
@@ -61,15 +61,18 @@ pub fn relation_to_batch(
     source: &str,
     target: &str,
     relation: &str,
+    cl: Option<u8>,
     now: &str,
 ) -> anyhow::Result<RecordBatch> {
     let schema = schema::relations_schema();
+    let cl_value = cl.unwrap_or(3) as i32;
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(StringArray::from(vec![source])),
             Arc::new(StringArray::from(vec![target])),
             Arc::new(StringArray::from(vec![relation])),
+            Arc::new(Int32Array::from(vec![cl_value])),
             Arc::new(StringArray::from(vec![now])),
         ],
     )?;
@@ -169,7 +172,7 @@ mod tests {
     #[test]
     fn relation_to_batch_has_correct_columns() {
         let batch =
-            relation_to_batch("PRD-001", "RFC-001", "informs", "2026-01-01T00:00:00Z").unwrap();
+            relation_to_batch("PRD-001", "RFC-001", "informs", None, "2026-01-01T00:00:00Z").unwrap();
         assert_eq!(batch.num_rows(), 1);
 
         let src_col = batch
