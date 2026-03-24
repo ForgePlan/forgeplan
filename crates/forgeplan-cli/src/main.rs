@@ -73,7 +73,11 @@ enum Commands {
         relation: String,
     },
     /// Generate mermaid dependency graph of linked artifacts
-    Graph,
+    Graph {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Search artifacts by keyword (or --semantic for vector similarity search)
     Search {
         /// Search query
@@ -89,11 +93,18 @@ enum Commands {
         json: bool,
     },
     /// Detect stale artifacts with expired valid_until
-    Stale,
+    Stale {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Show checkbox progress for artifacts
     Progress {
         /// Artifact ID (shows all if omitted)
         id: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Show evidence decay impact on R_eff scores
     Decay,
@@ -204,6 +215,9 @@ enum Commands {
     Fgr {
         /// Artifact ID (scores all if omitted)
         id: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Scan codebase for source modules
     Scan {
@@ -214,11 +228,18 @@ enum Commands {
     /// Show decision coverage per code module
     Coverage,
     /// Check for drifted decisions (affected files changed after decision)
-    Drift,
+    Drift {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Show blocked artifacts and their dependencies
     Blocked {
         /// Specific artifact ID to check (optional)
         id: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Show blind spots — decisions without evidence, orphan artifacts
     Blindspots,
@@ -263,7 +284,11 @@ enum Commands {
         force: bool,
     },
     /// Show artifacts in topological order (dependency order)
-    Order,
+    Order {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Run schema migrations on existing workspace
     Migrate,
     /// Start MCP server (stdio transport) for AI agent integration
@@ -322,7 +347,7 @@ async fn main() -> anyhow::Result<()> {
             target,
             relation,
         } => commands::link::run(&source, &target, &relation).await,
-        Commands::Graph => commands::graph::run().await,
+        Commands::Graph { json } => commands::graph::run(json).await,
         Commands::Search {
             query,
             r#type,
@@ -331,8 +356,8 @@ async fn main() -> anyhow::Result<()> {
         } => {
             commands::search::run(&query, r#type.as_deref(), semantic, json).await
         }
-        Commands::Stale => commands::stale::run().await,
-        Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
+        Commands::Stale { json } => commands::stale::run(json).await,
+        Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
         Commands::Generate { kind, description } => {
@@ -365,8 +390,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
         Commands::Scan { path } => commands::coverage::run_scan(path.as_deref()).await,
         Commands::Coverage => commands::coverage::run_coverage().await,
-        Commands::Drift => commands::drift::run().await,
-        Commands::Blocked { id } => commands::blocked::run(id.as_deref()).await,
+        Commands::Drift { json } => commands::drift::run(json).await,
+        Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
         Commands::Journal { r#type, risk } => {
             commands::journal::run(r#type.as_deref(), risk).await
@@ -389,13 +414,13 @@ async fn main() -> anyhow::Result<()> {
             FpfCommands::List => commands::fpf::run_list().await,
             FpfCommands::Status => commands::fpf::run_status().await,
         },
-        Commands::Fgr { id } => commands::fgr::run(id.as_deref()).await,
+        Commands::Fgr { id, json } => commands::fgr::run(id.as_deref(), json).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
         }
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
-        Commands::Order => commands::order::run().await,
+        Commands::Order { json } => commands::order::run(json).await,
         Commands::Migrate => commands::migrate::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;

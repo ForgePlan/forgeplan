@@ -5,7 +5,7 @@ use chrono::{NaiveDate, Utc};
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::workspace;
 
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(json: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -14,7 +14,24 @@ pub async fn run() -> anyhow::Result<()> {
     let stale_records = store.find_stale().await?;
 
     if stale_records.is_empty() {
-        println!("No stale artifacts found. All valid_until dates are current.");
+        if json {
+            println!("[]");
+        } else {
+            println!("No stale artifacts found. All valid_until dates are current.");
+        }
+        return Ok(());
+    }
+
+    if json {
+        let today = Utc::now().date_naive();
+        let data: Vec<_> = stale_records.iter().map(|r| {
+            let days = r.valid_until.as_deref()
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                .map(|d| (today - d).num_days())
+                .unwrap_or(0);
+            serde_json::json!({"id": r.id, "title": r.title, "valid_until": r.valid_until, "days_expired": days})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
         return Ok(());
     }
 
