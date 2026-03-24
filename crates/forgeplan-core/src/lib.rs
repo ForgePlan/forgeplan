@@ -16,6 +16,7 @@ pub mod link;
 pub mod progress;
 pub mod projection;
 pub mod routing;
+pub mod scan;
 pub mod scoring;
 pub mod search;
 pub mod stale;

@@ -21,6 +21,9 @@ enum Commands {
         /// Non-interactive mode (skip prompts, use defaults)
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Scan for existing documents and import them
+        #[arg(long)]
+        scan: bool,
     },
     /// Create a new artifact from template
     New {
@@ -253,6 +256,16 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Scan for existing docs and import as artifacts
+    #[command(name = "scan-import")]
+    ScanImport {
+        /// Directory to scan (default: standard doc dirs)
+        #[arg(long)]
+        path: Option<String>,
+        /// Preview only, don't actually import
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show artifacts in topological order (dependency order)
     Order,
     /// Run schema migrations on existing workspace
@@ -298,7 +311,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { force, yes } => commands::init::run(force, yes).await,
+        Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
         Commands::New { kind, title } => commands::new::run(&kind, &title).await,
         Commands::List { r#type, status, json } => {
             commands::list::run(r#type.as_deref(), status.as_deref(), json).await
@@ -385,6 +398,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
+        Commands::ScanImport { path, dry_run } => commands::scan_import::run(path.as_deref(), dry_run).await,
         Commands::Order => commands::order::run().await,
         Commands::Migrate => commands::migrate::run().await,
         Commands::Serve => {
