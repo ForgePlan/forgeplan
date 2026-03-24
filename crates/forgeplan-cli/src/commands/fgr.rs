@@ -36,7 +36,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             let relations = store.get_relations(&record.id).await.unwrap_or_default();
             let is_stale = record.valid_until.as_ref().is_some_and(|v| {
                 chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
-                    .map(|dt| chrono::Utc::now().naive_utc() > dt).unwrap_or(false)
+                    .map(|dt| chrono::Utc::now().naive_utc() > dt)
+                    .or_else(|_| chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d")
+                        .map(|d| chrono::Utc::now().date_naive() > d))
+                    .unwrap_or(false)
             });
             let score = fgr::compute(&record.id, &record.body, &fm, &kind, &depth, record.r_eff_score, relations.len(), is_stale);
             results.push(serde_json::json!({

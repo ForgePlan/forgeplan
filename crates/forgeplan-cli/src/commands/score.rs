@@ -67,8 +67,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     }
 
     // --- F-G-R computation ---
-    let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
-    let depth: Mode = target.depth.parse().unwrap_or(Mode::Standard);
+    let kind: ArtifactKind = target.kind.parse().unwrap_or_else(|_| {
+        eprintln!("  Warning: unknown kind '{}', defaulting to Note", target.kind);
+        ArtifactKind::Note
+    });
+    let depth: Mode = target.depth.parse().unwrap_or_else(|_| {
+        eprintln!("  Warning: unknown depth '{}', defaulting to Standard", target.depth);
+        Mode::Standard
+    });
     let frontmatter: Frontmatter = Frontmatter::new();
 
     // Determine staleness from valid_until
