@@ -72,6 +72,10 @@ async fn find_source_directories(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
             || dir_name == "target"
             || dir_name == "node_modules"
             || dir_name == "vendor"
+            || dir_name == "sources"
+            || dir_name == "research"
+            || dir_name == "docs"
+            || dir_name == "templates"
         {
             continue;
         }
