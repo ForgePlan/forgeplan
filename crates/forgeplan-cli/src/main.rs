@@ -245,6 +245,8 @@ enum Commands {
     },
     /// Show artifacts in topological order (dependency order)
     Order,
+    /// Run schema migrations on existing workspace
+    Migrate,
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -371,6 +373,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
         Commands::Order => commands::order::run().await,
+        Commands::Migrate => commands::migrate::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

@@ -39,6 +39,7 @@ pub(crate) fn artifact_to_batch_with_schema(
             Arc::new(StringArray::from(vec![artifact.valid_until.as_deref()])),
             Arc::new(StringArray::from(vec![now])),
             Arc::new(StringArray::from(vec![now])),
+            Arc::new(StringArray::from(vec![Option::<&str>::None])),
             embedding_col,
         ],
     )?;

@@ -11,7 +11,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::Table;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::{convert, schema};
+use crate::db::{convert, migrate, schema};
 
 /// Filter for listing artifacts.
 #[derive(Debug, Default)]
@@ -141,6 +141,7 @@ pub struct LanceStore {
 
 impl LanceStore {
     /// Connect to an existing LanceDB workspace (tables must already exist).
+    /// Runs idempotent schema migrations on every open.
     pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
@@ -149,6 +150,9 @@ impl LanceStore {
         let evidence = db.open_table("evidence").execute().await?;
         let relations = db.open_table("relations").execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
+
+        // Run migrations (idempotent — safe on every open)
+        migrate::run_migrations(&artifacts, &relations).await?;
 
         Ok(Self {
             _db: db,
@@ -917,6 +921,7 @@ fn empty_artifacts_batch(
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             convert::make_null_embedding_col(0),
         ],
     )
