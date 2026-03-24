@@ -1427,3 +1427,152 @@ fn scan_import_multiple_types() {
     forgeplan().args(["get", "RFC-001"]).current_dir(tmp.path()).assert().success();
     forgeplan().args(["get", "ADR-001"]).current_dir(tmp.path()).assert().success();
 }
+
+// ─── JSON Output Structural Tests ────────────────────────────────
+
+#[test]
+fn json_get_is_valid_and_has_required_fields() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Test PRD"]).current_dir(tmp.path()).assert().success();
+
+    let output = forgeplan()
+        .args(["get", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert_eq!(json["id"], "PRD-001");
+    assert_eq!(json["kind"], "prd");
+    assert!(json["status"].is_string());
+    assert!(json["title"].is_string());
+    assert!(json["body"].is_string());
+    assert!(json["r_eff"].is_number());
+}
+
+#[test]
+fn json_score_is_valid_and_has_reff() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Test PRD"]).current_dir(tmp.path()).assert().success();
+
+    let output = forgeplan()
+        .args(["score", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(json["r_eff"].is_number());
+    assert!(json["fgr"].is_object());
+    assert!(json["fgr"]["formality"].is_number());
+}
+
+#[test]
+fn json_list_is_valid_array() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Test"]).current_dir(tmp.path()).assert().success();
+
+    let output = forgeplan()
+        .args(["list", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(json.is_array());
+    assert!(json.as_array().unwrap().len() >= 1);
+    assert!(json[0]["id"].is_string());
+}
+
+#[test]
+fn json_health_has_required_fields() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    let output = forgeplan()
+        .args(["health", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(json["total"].is_number());
+    assert!(json["blind_spots"].is_array());
+    assert!(json["at_risk"].is_array());
+}
+
+#[test]
+fn json_blocked_is_valid() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    let output = forgeplan()
+        .args(["blocked", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(json["ready"].is_array());
+    assert!(json["blocked"].is_array());
+}
+
+// ─── Dry-Run Side-Effect Test ────────────────────────────────────
+
+#[test]
+fn scan_import_dry_run_does_not_persist() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("PRD-099-test.md"),
+        "---\nkind: prd\nid: PRD-099\ntitle: Dry Run Test\n---\n# Test",
+    ).unwrap();
+
+    // Dry-run should show preview
+    forgeplan()
+        .args(["scan-import", "--dry-run"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Artifact should NOT exist
+    forgeplan()
+        .args(["get", "PRD-099"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+// ─── R_eff Bidirectional Evidence E2E Test ────────────────────────
+
+#[test]
+fn reff_finds_incoming_evidence() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD and evidence
+    forgeplan().args(["new", "prd", "Target PRD"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "Proof"]).current_dir(tmp.path()).assert().success();
+
+    // Link evidence → PRD (incoming direction for PRD)
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Score should find evidence via incoming link
+    forgeplan()
+        .args(["score", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EVID-001"));
+}
