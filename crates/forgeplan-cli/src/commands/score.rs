@@ -10,7 +10,9 @@ use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
 use forgeplan_core::workspace;
 
-pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
+use crate::ui;
+
+pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -103,19 +105,56 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         is_stale,
     );
 
-    // --- Display ---
-    println!();
-    println!("{} \"{}\"", target.id, target.title);
-    println!("{}", "-".repeat(50));
+    // --- JSON output ---
+    if json {
+        let evidence_json: Vec<_> = evidence_items
+            .iter()
+            .map(|item| {
+                let item_score = reff::r_eff(&[item.clone()]);
+                serde_json::json!({
+                    "id": item.id,
+                    "verdict": format!("{:?}", item.verdict),
+                    "congruence_level": item.congruence_level,
+                    "score": item_score,
+                    "expired": item.valid_until.map(|dt| Utc::now().naive_utc() > dt).unwrap_or(false),
+                })
+            })
+            .collect();
+
+        let json_data = serde_json::json!({
+            "id": target.id,
+            "title": target.title,
+            "r_eff": report.r_eff,
+            "weakest_link": report.weakest_link,
+            "factors": report.factors,
+            "evidence": evidence_json,
+            "fgr": {
+                "formality": fgr_score.formality,
+                "granularity": fgr_score.granularity,
+                "reliability": fgr_score.reliability,
+                "overall": fgr_score.overall(),
+                "grade": fgr_score.grade(),
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&json_data)?);
+        return Ok(());
+    }
+
+    // --- Styled display ---
+    ui::header(&target.id, &target.title);
 
     if evidence_items.is_empty() {
-        println!("  No evidence linked. R_eff = 0.0");
+        ui::info("No evidence linked. R_eff = 0.0");
         println!();
-        println!("  Hint: Create an EvidencePack and link it:");
-        println!("    forgeplan new evidence \"Benchmark for {}\"", target.id);
-        println!("    forgeplan link EVID-001 {} --relation informs", target.id);
+        ui::error_hint(
+            "No evidence found",
+            &format!(
+                "forgeplan new evidence \"Benchmark for {}\" && forgeplan link EVID-XXX {} --relation informs",
+                target.id, target.id
+            ),
+        );
     } else {
-        println!("  Evidence breakdown:");
+        ui::section("Evidence breakdown");
         for item in &evidence_items {
             let expired = item
                 .valid_until
@@ -141,15 +180,13 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
             "AT RISK"
         };
 
-        println!("  R_eff = {:.2} -- {}", report.r_eff, status);
+        ui::kv("R_eff", &format!("{} -- {}", ui::styled_reff(report.r_eff), status));
     }
 
-    // Weakest link
     if let Some(ref wl) = report.weakest_link {
-        println!("  Weakest link: {}", wl);
+        ui::kv("Weakest link", wl);
     }
 
-    // Factors
     if !report.factors.is_empty() {
         println!();
         for factor in &report.factors {
@@ -157,9 +194,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
-    // F-G-R breakdown
-    println!();
-    println!("  Quality (F-G-R):");
+    ui::section("Quality (F-G-R)");
     println!(
         "    Formality:    {:.2} ({})",
         fgr_score.formality,
@@ -182,22 +217,14 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     );
 
     // Hints for low scores
-    let mut hints: Vec<&str> = Vec::new();
     if fgr_score.formality < 0.4 {
-        hints.push("Hint: Fill in required sections to improve formality");
+        ui::warning("Fill in required sections to improve formality");
     }
     if fgr_score.granularity < 0.4 {
-        hints.push("Hint: Add more FR checkboxes to improve granularity");
+        ui::warning("Add more FR checkboxes to improve granularity");
     }
     if fgr_score.reliability < 0.3 {
-        hints.push("Hint: Add evidence with `forgeplan new evidence`");
-    }
-
-    if !hints.is_empty() {
-        println!();
-        for hint in &hints {
-            println!("  {}", hint);
-        }
+        ui::warning("Add evidence with `forgeplan new evidence`");
     }
 
     println!();
