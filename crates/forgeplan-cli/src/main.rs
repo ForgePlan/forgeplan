@@ -58,6 +58,9 @@ enum Commands {
     Score {
         /// Artifact ID
         id: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Link two artifacts with a typed relationship
     Link {
@@ -81,6 +84,9 @@ enum Commands {
         /// Use semantic (vector) search instead of substring match
         #[arg(long)]
         semantic: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Detect stale artifacts with expired valid_until
     Stale,
@@ -126,6 +132,9 @@ enum Commands {
     Get {
         /// Artifact ID
         id: String,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Update artifact metadata or body
     Update {
@@ -307,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Validate { id, json, adversarial } => {
             commands::validate::run(id.as_deref(), json, adversarial).await
         }
-        Commands::Score { id } => commands::score::run(id.as_deref()).await,
+        Commands::Score { id, json } => commands::score::run(id.as_deref(), json).await,
         Commands::Link {
             source,
             target,
@@ -318,8 +327,9 @@ async fn main() -> anyhow::Result<()> {
             query,
             r#type,
             semantic,
+            json,
         } => {
-            commands::search::run(&query, r#type.as_deref(), semantic).await
+            commands::search::run(&query, r#type.as_deref(), semantic, json).await
         }
         Commands::Stale => commands::stale::run().await,
         Commands::Progress { id } => commands::progress::run(id.as_deref()).await,
@@ -335,7 +345,7 @@ async fn main() -> anyhow::Result<()> {
             fpf,
         } => commands::reason::run(&id, json, save, fpf).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
-        Commands::Get { id } => commands::get::run(&id).await,
+        Commands::Get { id, json } => commands::get::run(&id, json).await,
         Commands::Update {
             id,
             status,
