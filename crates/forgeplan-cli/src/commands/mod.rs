@@ -29,6 +29,7 @@ pub mod progress;
 pub mod reason;
 pub mod review;
 pub mod route;
+pub mod scan_import;
 pub mod score;
 pub mod search;
 pub mod setup_skill;

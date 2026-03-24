@@ -1209,3 +1209,221 @@ fn e2e_adr_contract_validation() {
         .stdout(predicate::str::contains("ADR-001"))
         .stdout(predicate::str::contains("PASS").or(predicate::str::contains("error").or(predicate::str::contains("warning"))));
 }
+
+// ─── Scan-Import E2E Tests ───────────────────────────────────────
+
+#[test]
+fn scan_import_dry_run_shows_preview() {
+    let tmp = TempDir::new().unwrap();
+
+    // Init workspace
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create docs/ with a PRD file
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("PRD-001-auth.md"),
+        "---\nkind: prd\nid: PRD-001\ntitle: Auth System\n---\n\n# PRD-001: Auth System\n\n## Problem\nUsers can't log in.\n\n## Goals\nSecure auth.",
+    ).unwrap();
+
+    // Dry-run
+    forgeplan()
+        .args(["scan-import", "--dry-run"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD"))
+        .stdout(predicate::str::contains("1 imported"));
+}
+
+#[test]
+fn scan_import_imports_frontmatter_prd() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("PRD-042-payments.md"),
+        "---\nkind: prd\nid: PRD-042\ntitle: Payment Integration\n---\n\n# Payments\n\n## Problem\nNo payments.\n\n## Goals\nAccept payments.",
+    ).unwrap();
+
+    // Import
+    forgeplan()
+        .args(["scan-import"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 imported"));
+
+    // Verify artifact exists
+    forgeplan()
+        .args(["get", "PRD-042"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Payment Integration"));
+}
+
+#[test]
+fn scan_import_detects_by_filename() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    // File with no frontmatter but a PRD filename pattern
+    std::fs::write(
+        docs.join("RFC-001-api-redesign.md"),
+        "# API Redesign\n\nWe should redesign the API.",
+    ).unwrap();
+
+    forgeplan()
+        .args(["scan-import"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RFC"))
+        .stdout(predicate::str::contains("1 imported"));
+}
+
+#[test]
+fn scan_import_skips_existing_artifacts() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create a PRD first
+    forgeplan()
+        .args(["new", "prd", "Existing PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Now put a doc with the same ID
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("PRD-001-duplicate.md"),
+        "---\nkind: prd\nid: PRD-001\ntitle: Duplicate\n---\n# Duplicate",
+    ).unwrap();
+
+    // Import should skip
+    forgeplan()
+        .args(["scan-import"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 skipped"));
+}
+
+#[test]
+fn scan_import_handles_unknown_files() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("random-notes.md"),
+        "# Shopping List\n\n- Milk\n- Bread",
+    ).unwrap();
+
+    forgeplan()
+        .args(["scan-import", "--dry-run"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 unknown"));
+}
+
+#[test]
+fn init_with_scan_flag_imports_docs() {
+    let tmp = TempDir::new().unwrap();
+
+    // Pre-create docs before init
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("ADR-001-use-rust.md"),
+        "---\nkind: adr\nid: ADR-001\ntitle: Use Rust\n---\n\n## Decision\nUse Rust.\n\n## Status\nAccepted.",
+    ).unwrap();
+
+    // Init with --scan
+    forgeplan()
+        .args(["init", "-y", "--scan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported"));
+
+    // Verify
+    forgeplan()
+        .args(["get", "ADR-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Use Rust"));
+}
+
+#[test]
+fn scan_import_multiple_types() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let docs = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("PRD-001-feature.md"),
+        "---\nkind: prd\nid: PRD-001\ntitle: Feature\n---\n# Feature",
+    ).unwrap();
+    std::fs::write(
+        docs.join("RFC-001-design.md"),
+        "---\nkind: rfc\nid: RFC-001\ntitle: Design\n---\n# Design",
+    ).unwrap();
+    std::fs::write(
+        docs.join("ADR-001-choice.md"),
+        "---\nkind: adr\nid: ADR-001\ntitle: Choice\n---\n# Choice",
+    ).unwrap();
+
+    forgeplan()
+        .args(["scan-import"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 imported"));
+
+    // All three exist
+    forgeplan().args(["get", "PRD-001"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["get", "RFC-001"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["get", "ADR-001"]).current_dir(tmp.path()).assert().success();
+}
