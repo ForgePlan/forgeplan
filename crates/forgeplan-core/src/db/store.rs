@@ -382,6 +382,42 @@ impl LanceStore {
         Ok(results)
     }
 
+    /// Get incoming relations where this artifact is the TARGET.
+    /// Returns Vec<(source_id, relation_type)>.
+    pub async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let filter = format!("target_id = '{}'", id.replace('\'', "''"));
+        let batches = collect_batches(
+            self.relations
+                .query()
+                .only_if(filter)
+                .execute()
+                .await?,
+        )
+        .await?;
+
+        let mut results = Vec::new();
+        for batch in &batches {
+            let source_col = batch
+                .column_by_name("source_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let rel_col = batch
+                .column_by_name("relation_type")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+            if let (Some(sources), Some(rels)) = (source_col, rel_col) {
+                for i in 0..batch.num_rows() {
+                    if !sources.is_null(i) && !rels.is_null(i) {
+                        results.push((
+                            sources.value(i).to_string(),
+                            rels.value(i).to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+
     // -----------------------------------------------------------------------
     // Full-record methods (ArtifactRecord)
     // -----------------------------------------------------------------------
