@@ -34,11 +34,14 @@ pub fn styled_status(status: &str) -> String {
 
 /// Style a depth level with appropriate color.
 pub fn styled_depth(depth: &str) -> String {
-    match depth.to_lowercase().as_str() {
-        "tactical" => style(depth).green().to_string(),
-        "standard" => style(depth).cyan().to_string(),
-        "deep" | "deep/critical" => style(depth).red().bold().to_string(),
-        _ => depth.to_string(),
+    if depth.eq_ignore_ascii_case("tactical") {
+        style(depth).green().to_string()
+    } else if depth.eq_ignore_ascii_case("standard") {
+        style(depth).cyan().to_string()
+    } else if depth.eq_ignore_ascii_case("deep") || depth.eq_ignore_ascii_case("deep/critical") {
+        style(depth).red().bold().to_string()
+    } else {
+        depth.to_string()
     }
 }
 

@@ -49,8 +49,8 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     let today = Utc::now().date_naive();
 
     for record in &stale_records {
-        let title = if record.title.len() > 28 {
-            format!("{}...", &record.title[..25])
+        let title: String = if record.title.chars().count() > 28 {
+            format!("{}...", record.title.chars().take(25).collect::<String>())
         } else {
             record.title.clone()
         };
