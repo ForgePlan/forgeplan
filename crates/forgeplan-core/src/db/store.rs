@@ -664,16 +664,28 @@ impl LanceStore {
             .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
 
         let query_lower = query.to_lowercase();
-        let escaped = query_lower.replace('\'', "''");
-        let filter = format!(
-            "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
-            escaped, escaped
-        );
+        // Split query into words for per-word OR matching
+        let words: Vec<String> = query_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 2) // skip tiny words
+            .map(|w| w.replace('\'', "''"))
+            .collect();
+
+        // Build OR filter: each word matches title OR body
+        let filter = if words.is_empty() {
+            let escaped = query_lower.replace('\'', "''");
+            format!("LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'", escaped, escaped)
+        } else {
+            words.iter()
+                .map(|w| format!("(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')", w, w))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        };
 
         // Fetch more candidates than needed, then rank by relevance
-        let fetch_limit = (limit * 10).min(200);
+        // Fetch ALL matching, then rank — small dataset (204 FPF sections)
         let batches = collect_batches(
-            table.query().only_if(filter).limit(fetch_limit).execute().await?,
+            table.query().only_if(filter).execute().await?,
         )
         .await?;
 
@@ -681,16 +693,27 @@ impl LanceStore {
         for batch in &batches {
             for i in 0..batch.num_rows() {
                 if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                    // Simple relevance: title match = 10 points, body occurrence = 1 point each
                     let mut score = 0usize;
                     let title_lower = chunk.title.to_lowercase();
                     let body_lower = chunk.body.to_lowercase();
 
-                    if title_lower.contains(&query_lower) {
-                        score += 10;
+                    // Score per word: title match = 50pts, body occurrence = 1pt (capped at 20)
+                    for word in &words {
+                        if title_lower.contains(word.as_str()) {
+                            score += 50; // title matches heavily weighted
+                        }
+                        // Cap body occurrences to prevent large files dominating
+                        score += body_lower.matches(word.as_str()).count().min(20);
                     }
-                    // Count occurrences in body
-                    score += body_lower.matches(&query_lower).count();
+                    // Bonus: ALL query words in title = 100pts
+                    let all_in_title = words.iter().all(|w| title_lower.contains(w.as_str()));
+                    if all_in_title && words.len() > 1 {
+                        score += 100;
+                    }
+                    // Bonus: full query match in title = 200pts
+                    if title_lower.contains(&query_lower) {
+                        score += 200;
+                    }
 
                     scored.push((chunk, score));
                 }

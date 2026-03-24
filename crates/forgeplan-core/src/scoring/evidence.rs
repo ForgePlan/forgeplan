@@ -12,10 +12,12 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         })
         .unwrap_or(Verdict::Supports);
 
+    // Default CL=3 (same context) — evidence created in this project is local by default.
+    // CL=0 should only be explicit (opposed context).
     let cl = extract_field(&record.body, "congruence_level")
         .and_then(|s| s.parse::<u8>().ok())
         .map(|v| v.min(3))
-        .unwrap_or(0);
+        .unwrap_or(3);
 
     let valid_until = record.valid_until.as_deref().and_then(|s| {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
