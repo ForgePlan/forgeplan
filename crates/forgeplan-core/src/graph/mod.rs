@@ -1,3 +1,4 @@
+pub mod knowledge;
 pub mod topological;
 
 use std::collections::BTreeMap;

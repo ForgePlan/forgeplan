@@ -142,6 +142,14 @@ enum Commands {
         /// PRD artifact ID to decompose
         id: String,
     },
+    /// Single-call reasoning context — artifact + graph + validation + scoring
+    Context {
+        /// Artifact ID
+        id: String,
+        /// Output as JSON for machine consumption (primary mode for AI agents)
+        #[arg(long)]
+        json: bool,
+    },
     /// Read a full artifact by ID
     Get {
         /// Artifact ID
@@ -386,6 +394,7 @@ async fn main() -> anyhow::Result<()> {
             fpf,
         } => commands::reason::run(&id, json, save, fpf).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
+        Commands::Context { id, json } => commands::context::run(&id, json).await,
         Commands::Get { id, json } => commands::get::run(&id, json).await,
         Commands::Update {
             id,

@@ -2260,6 +2260,7 @@ dependencies = [
  "fastembed",
  "futures",
  "lancedb",
+ "petgraph",
  "pulldown-cmark",
  "regex",
  "reqwest",
