@@ -90,3 +90,26 @@ pub async fn run_coverage() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// `forgeplan coverage --backfill` — add "Affected Files" section to artifacts missing it
+pub async fn run_backfill() -> anyhow::Result<()> {
+    let cwd = env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+
+    let store = LanceStore::open(&ws).await?;
+    let updated = coverage::backfill_affected_files(&store).await?;
+
+    if updated.is_empty() {
+        println!("  All active PRD/RFC/ADR already have 'Affected Files' section.");
+    } else {
+        println!("  Backfilled {} artifact(s):", updated.len());
+        for id in &updated {
+            println!("    + {id}");
+        }
+        println!();
+        println!("  Edit each artifact to fill in actual file paths.");
+    }
+
+    Ok(())
+}

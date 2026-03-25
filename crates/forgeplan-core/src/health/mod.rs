@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::artifact::types::DECISION_KINDS_EVIDENCE;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
@@ -144,10 +145,7 @@ fn find_blind_spots(
     let mut spots = Vec::new();
 
     for record in records {
-        let is_decision_type = matches!(
-            record.kind.as_str(),
-            "prd" | "rfc" | "adr" | "epic" | "spec" | "problem" | "solution"
-        );
+        let is_decision_type = DECISION_KINDS_EVIDENCE.contains(&record.kind.as_str());
 
         // Only flag active/accepted artifacts as blind spots.
         // Draft artifacts are still being worked on — evidence not expected yet.

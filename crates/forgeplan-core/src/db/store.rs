@@ -313,9 +313,13 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Update r_eff_score for an artifact.
+    /// Update r_eff_score for an artifact. Verifies the artifact exists first.
     pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
         let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
+        // Verify artifact exists before update (LanceDB update is silent no-op on missing ID)
+        if self.get_record(id).await?.is_none() {
+            anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
+        }
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts
