@@ -73,6 +73,12 @@ UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → RE
 - **Granularity** — уровень детализации
 - **Reliability** — надёжность источника
 
+### Forge Cycle
+Полный FPF-aligned цикл разработки: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate → Next. Реализован как `/forge-cycle` команда в Claude Code. Автоматически разрешает конфликты через ADI + WLNK + Reversibility.
+
+### Forge Mode
+Модель разрешений для AI агентов с 3 зонами доверия (FPF B.3): Green (авто — cargo, forgeplan, git read), Yellow (acceptEdits — файлы), Red (blocked — force push, rm -rf). Реализован через whitelist в settings + PreToolUse blacklist hook.
+
 ### FPF (First Principles Framework)
 «Операционная система мышления». Транс-дисциплинарная архитектура для рассуждений. Источник ADI cycle, F-G-R Trust Calculus, Verification Gate и других паттернов Forgeplan.
 

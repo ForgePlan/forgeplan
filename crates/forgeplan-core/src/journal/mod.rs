@@ -22,7 +22,7 @@ pub async fn build_journal(
     risk_only: bool,
 ) -> anyhow::Result<Vec<JournalEntry>> {
     // Decision-type artifacts: adr, note, problem, solution
-    let decision_kinds = ["adr", "note", "problem", "solution"];
+    let decision_kinds = ["adr", "note", "prd", "rfc", "epic", "spec", "problem", "solution"];
 
     let records = if let Some(kind) = kind_filter {
         let filter = ArtifactFilter {

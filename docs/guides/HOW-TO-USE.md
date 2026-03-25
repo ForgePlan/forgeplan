@@ -346,3 +346,30 @@ docs/adrs/ADR-001-pdf-library.md
 **Шаг 5**: Делаю по фазам из RFC. Закрываю RFC когда все фазы ✅.
 
 Готово. Три документа, полный audit trail, < 1 часа на документацию.
+
+---
+
+## /forge-cycle — автоматизированный цикл (для AI агентов)
+
+Если работаешь с AI агентом (Claude Code), используй `/forge-cycle` для автоматизации всего цикла:
+
+```
+/forge-cycle "Добавить экспорт отчётов в PDF"
+```
+
+Агент автоматически:
+1. **Observe** — `forgeplan health` + `forgeplan stale` (что происходит?)
+2. **Route** — `forgeplan route` → определит Standard depth
+3. **Shape** — создаст PRD, заполнит MUST секции, `forgeplan validate`
+4. **Sprint** — сгенерирует wave-based план
+5. **Build** — реализует с `/team-up` и Rust skills
+6. **Audit** — `/audit` с adversarial review
+7. **Fix** — починит findings
+8. **Evidence** — `forgeplan new evidence` + `forgeplan activate`
+9. **Commit** — git commit + PR + hindsight report
+
+**Конфликты** (какую библиотеку выбрать?) автоматически разрешаются через FPF:
+- 3 гипотезы (Abduction)
+- Последствия каждой (Deduction)
+- WLNK + Reversibility → выбор (Induction)
+- Спрашивает пользователя только при необратимых решениях

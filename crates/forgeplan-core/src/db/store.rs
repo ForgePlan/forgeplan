@@ -313,6 +313,21 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Update r_eff_score for an artifact.
+    pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
+        let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("r_eff_score", &format!("{score}"))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Delete an artifact by ID.
     pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
@@ -1482,5 +1497,24 @@ mod tests {
         assert!(map.contains_key("r_eff_score"));
         assert!(map.contains_key("created_at"));
         assert!(map.contains_key("updated_at"));
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_persists() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+
+        // Default r_eff_score is 0.0
+        let before = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert!((before.r_eff_score - 0.0).abs() < f64::EPSILON);
+
+        store.update_r_eff_score("PRD-001", 0.85).await.unwrap();
+
+        let after = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert!((after.r_eff_score - 0.85).abs() < f64::EPSILON);
+        // updated_at should have changed
+        assert_ne!(before.updated_at, after.updated_at);
     }
 }
