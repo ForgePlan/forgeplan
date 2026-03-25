@@ -13,7 +13,7 @@
 - [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
 - [x] **R_eff divergence** — update_r_eff_score() persists to LanceDB, NaN guard
 - [x] **health vs journal inconsistency** — expanded blind spots + decision kinds aligned
-- [x] **coverage 0%** — Affected Files section added to PRD/RFC templates
+- [x] **coverage 0%** — Affected Files section added to templates + backfilled 18 active PRD/RFC/ADR
 - [x] **route underestimates** — 4 keyword triggers + 2 heuristics added
 
 Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 403 tests.
@@ -45,6 +45,12 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] Install script (`curl -fsSL https://forgeplan.dev/install.sh | sh`)
 - [ ] `fpl` alias symlink in install
 - [ ] Publish to crates.io (`cargo install forgeplan`)
+
+### P2: Integrity Follow-up (from FPF audit)
+- [x] **Read-back verify** in update_r_eff_score — pre-check with get_record before update
+- [x] **DRY decision_kinds** — DECISION_KINDS_EVIDENCE + DECISION_KINDS_JOURNAL in types.rs
+- [x] **Coverage batch-update** — `forgeplan coverage --backfill` (18 artifacts updated)
+- [ ] **PRD-019 implementation** — 3-layer methodology enforcement (hooks + MCP state machine)
 
 ### P2: Polish
 - [ ] Binary size optimization (LanceDB feature flags / strip)

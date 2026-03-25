@@ -148,6 +148,8 @@ pub fn extract(text: &str) -> Vec<Signal> {
     }
 
     // Bug density heuristic: multiple bug-related words → at least Standard
+    // NOTE: may double-count with keyword:bug_fix — this inflates confidence, not depth.
+    // Acceptable: compute_depth takes max(signal.depth), not sum(weights).
     let bug_words = ["bug", "fix", "broken", "issue", "error", "fail"];
     let bug_count = bug_words.iter().filter(|w| lower.contains(*w)).count();
     if bug_count >= 3 {
@@ -378,5 +380,60 @@ mod tests {
     fn issue_count_below_threshold() {
         let signals = extract("We found 2 issues in the codebase");
         assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"), "2 issues should not trigger");
+    }
+
+    #[test]
+    fn word_boundary_prevents_substring_match() {
+        // "tissues" contains "issues" but should NOT trigger issue_count
+        let signals = extract("We have 5 tissues on the table");
+        assert!(
+            !signals.iter().any(|s| s.id == "heuristic:issue_count"),
+            "tissues should not match issues"
+        );
+    }
+
+    #[test]
+    fn word_boundary_allows_real_match() {
+        let signals = extract("Found 4 issues in production");
+        assert!(signals.iter().any(|s| s.id == "heuristic:issue_count"));
+    }
+
+    // ─── Corner Cases ────────────────────────────────────
+
+    #[test]
+    fn empty_string_returns_no_signals() {
+        let signals = extract("");
+        assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn zero_issues_below_threshold() {
+        let signals = extract("We found 0 issues");
+        assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"), "0 issues should not trigger");
+    }
+
+    #[test]
+    fn number_after_word_not_matched() {
+        // "issues 5" — number AFTER the word, not before
+        let signals = extract("There are issues 5 of them critical");
+        assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"),
+            "Number after word should not trigger issue_count");
+    }
+
+    #[test]
+    fn mixed_case_p0_triggers_severity() {
+        let signals = extract("This is a P0 incident");
+        assert!(signals.iter().any(|s| s.id == "keyword:severity"), "P0 should trigger severity");
+        // Also lowercase
+        let signals2 = extract("this is a p0 incident");
+        assert!(signals2.iter().any(|s| s.id == "keyword:severity"), "p0 should trigger severity");
+    }
+
+    #[test]
+    fn no_duplicate_issue_count_signals() {
+        // "5 issues and 3 bugs" — should only emit ONE issue_count signal
+        let signals = extract("Found 5 issues and 3 bugs in the system");
+        let count = signals.iter().filter(|s| s.id == "heuristic:issue_count").count();
+        assert_eq!(count, 1, "Should emit exactly one issue_count signal, got {count}");
     }
 }

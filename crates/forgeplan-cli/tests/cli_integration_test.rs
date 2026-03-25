@@ -1847,3 +1847,155 @@ fn tree_json_is_valid() {
     assert_eq!(first["kind"], "prd");
     assert!(first["children"].is_array(), "children should be an array");
 }
+
+// ─── PROB-012 E2E Tests: Integrity Fixes ────────────────────────────
+
+#[test]
+fn e2e_reff_write_back_persists_to_tree() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD + evidence + link
+    forgeplan().args(["new", "prd", "Write-back Test"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "Proof"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Score should compute R_eff and persist it
+    forgeplan().args(["score", "PRD-001"])
+        .current_dir(tmp.path()).assert().success()
+        .stdout(predicate::str::contains("R_eff"));
+
+    // Tree should show the persisted R_eff (not 0.00)
+    let tree_output = forgeplan()
+        .args(["tree", "--json"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let tree_json: serde_json::Value = serde_json::from_slice(&tree_output.stdout)
+        .expect("valid tree JSON");
+    let nodes = tree_json.as_array().unwrap();
+    let prd = nodes.iter().find(|n| n["id"] == "PRD-001").expect("PRD-001 in tree");
+    let r_eff = prd["r_eff"].as_f64().unwrap_or(0.0);
+    assert!(r_eff > 0.0, "R_eff should be persisted after score, got {r_eff}");
+}
+
+#[test]
+fn e2e_route_p0_issues_not_tactical() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Route with severity + integrity keywords should NOT be Tactical
+    forgeplan()
+        .args(["route", "Fix 5 P0 integrity issues in scoring system"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tactical").not());
+}
+
+#[test]
+fn e2e_health_shows_problem_blind_spot() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create active problem without evidence
+    forgeplan().args(["new", "problem", "Test Problem"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Activate it (problems don't require validation gate)
+    forgeplan().args(["activate", "PROB-001"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Health should show blind spot for active problem without evidence
+    forgeplan().args(["health"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Blind spots: 1")
+            .or(predicate::str::contains("PROB-001")));
+}
+
+#[test]
+fn e2e_journal_excludes_deprecated_from_warning() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create note, activate, then deprecate (lifecycle: draft→active→deprecated)
+    forgeplan().args(["new", "note", "Old Decision"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["activate", "NOTE-001"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["deprecate", "NOTE-001", "--reason", "outdated"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Journal should NOT count deprecated as "no evidence"
+    let output = forgeplan()
+        .args(["journal"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // If deprecated is the only artifact, "no evidence" warning should be 0 or absent
+    assert!(
+        !stdout.contains("1 decision(s) without any evidence"),
+        "Deprecated note should not count in no-evidence warning"
+    );
+}
+
+#[test]
+fn e2e_coverage_backfill_adds_section() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD and strip Affected Files from body (simulate pre-template artifact)
+    forgeplan().args(["new", "prd", "Backfill Target"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["update", "PRD-001", "--body", "## Problem\n\nNo affected files section here."])
+        .current_dir(tmp.path()).assert().success();
+
+    // Force activate
+    forgeplan().args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Run backfill — should find PRD-001 missing section
+    forgeplan().args(["coverage", "--backfill"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // Get artifact and verify body contains Affected Files
+    let output = forgeplan()
+        .args(["get", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("valid JSON");
+    let body = json["body"].as_str().unwrap_or("");
+    assert!(body.contains("## Affected Files"), "Body should contain Affected Files section");
+    assert!(body.contains("/**"), "Should use glob patterns, not ...");
+
+    // Idempotent: second run should say "All active..."
+    forgeplan().args(["coverage", "--backfill"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already have"));
+}
+
+#[test]
+fn e2e_score_missing_id_shows_warning_not_crash() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Score nonexistent artifact should fail gracefully
+    forgeplan()
+        .args(["score", "NONEXISTENT-999"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found")
+            .or(predicate::str::contains("Not found")));
+}

@@ -154,7 +154,9 @@ pub async fn build_coverage(
         if record.status != "active" {
             continue;
         }
-        if record.kind != "adr" && record.kind != "rfc" && record.kind != "prd" {
+        // Coverage tracks code-level decisions (PRD/RFC/ADR) — these reference specific files.
+        // Epic/spec/problem/solution are higher-level and don't map to file paths.
+        if !matches!(record.kind.as_str(), "prd" | "rfc" | "adr") {
             continue;
         }
 
@@ -195,6 +197,39 @@ pub async fn build_coverage(
         coverage_percent: percent,
         modules: modules.to_vec(),
     })
+}
+
+/// Backfill "## Affected Files" section into artifacts that lack it.
+/// Returns the number of artifacts updated.
+pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<String>> {
+    let records = store.list_records(None).await?;
+    let mut updated = Vec::new();
+
+    for record in &records {
+        if record.status != "active" {
+            continue;
+        }
+        // Coverage tracks code-level decisions only (same scope as build_coverage)
+        if !matches!(record.kind.as_str(), "prd" | "rfc" | "adr") {
+            continue;
+        }
+        // Skip if already has the section
+        if record.body.contains("## Affected Files") || record.body.contains("## Affected Scope") {
+            continue;
+        }
+        // Append section with glob patterns that module_matches_pattern can parse
+        let new_body = format!(
+            "{}\n\n## Affected Files\n\n- crates/forgeplan-core/src/**\n- crates/forgeplan-cli/src/**\n",
+            record.body.trim_end()
+        );
+        if let Err(e) = store.update_body(&record.id, &new_body).await {
+            eprintln!("  Warning: backfill failed for {}: {e}", record.id);
+            continue;
+        }
+        updated.push(record.id.clone());
+    }
+
+    Ok(updated)
 }
 
 /// Check if a module path matches an affected_files pattern.
@@ -245,5 +280,165 @@ mod tests {
             "crates/core/src/scoring",
             "src/validation"
         ));
+    }
+
+    #[tokio::test]
+    async fn backfill_adds_section_to_active_prd() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // Create active PRD without Affected Files
+        let art = NewArtifact {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "active".to_string(),
+            title: "Test PRD".to_string(),
+            body: "## Problem\n\nSome problem.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        // Create draft PRD (should NOT be backfilled)
+        let draft = NewArtifact {
+            id: "PRD-002".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Draft PRD".to_string(),
+            body: "## Problem\n\nDraft.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&draft).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+
+        // Only active PRD-001 should be backfilled
+        assert_eq!(updated, vec!["PRD-001"]);
+
+        // Verify body was updated
+        let record = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert!(record.body.contains("## Affected Files"));
+        assert!(record.body.contains("crates/forgeplan-core/src/**"));
+
+        // Draft should NOT have been touched
+        let draft_record = store.get_record("PRD-002").await.unwrap().unwrap();
+        assert!(!draft_record.body.contains("Affected Files"));
+
+        // Idempotent: running again should return empty
+        let second_run = backfill_affected_files(&store).await.unwrap();
+        assert!(second_run.is_empty(), "Should be idempotent");
+    }
+
+    #[test]
+    fn backfill_placeholder_matches_modules() {
+        // Backfill uses "crates/forgeplan-core/src/**" — verify it matches real modules
+        assert!(module_matches_pattern(
+            "crates/forgeplan-core/src/scoring",
+            "crates/forgeplan-core/src/**"
+        ));
+        assert!(module_matches_pattern(
+            "crates/forgeplan-cli/src/commands",
+            "crates/forgeplan-cli/src/**"
+        ));
+    }
+
+    #[test]
+    fn dotdotdot_placeholder_does_not_match() {
+        // Old "..." placeholder should NOT match — verify it's broken
+        assert!(!module_matches_pattern(
+            "crates/forgeplan-core/src/scoring",
+            "crates/forgeplan-core/src/..."
+        ));
+    }
+
+    // ─── Backfill Corner Cases ──────────────────────────
+
+    #[tokio::test]
+    async fn backfill_skips_epic_and_spec() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // Active epic — should NOT get Affected Files (not code-level)
+        let epic = NewArtifact {
+            id: "EPIC-001".to_string(),
+            kind: "epic".to_string(),
+            status: "active".to_string(),
+            title: "Test Epic".to_string(),
+            body: "## Overview\n\nEpic.".to_string(),
+            depth: "deep".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&epic).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+        assert!(updated.is_empty(), "Epic should not be backfilled");
+    }
+
+    #[tokio::test]
+    async fn backfill_skips_artifact_with_affected_scope_alias() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // PRD with "Affected Scope" (alias) — should NOT be backfilled
+        let art = NewArtifact {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "active".to_string(),
+            title: "Has Alias".to_string(),
+            body: "## Problem\n\nTest.\n\n## Affected Scope\n\n- src/**".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+        assert!(updated.is_empty(), "Should skip artifact with Affected Scope alias");
+    }
+
+    #[tokio::test]
+    async fn backfill_handles_active_rfc() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let rfc = NewArtifact {
+            id: "RFC-001".to_string(),
+            kind: "rfc".to_string(),
+            status: "active".to_string(),
+            title: "Test RFC".to_string(),
+            body: "## Proposal\n\nArchitecture.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&rfc).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+        assert_eq!(updated, vec!["RFC-001"], "Active RFC should be backfilled");
     }
 }

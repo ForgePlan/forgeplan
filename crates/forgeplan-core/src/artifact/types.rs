@@ -40,6 +40,14 @@ impl std::str::FromStr for ArtifactKind {
     }
 }
 
+/// Kinds that represent decisions requiring evidence for health blind-spot checks.
+/// Excludes: note (ephemeral), evidence (IS evidence), refresh (meta-evaluation).
+pub const DECISION_KINDS_EVIDENCE: &[&str] = &["prd", "rfc", "adr", "epic", "spec", "problem", "solution"];
+
+/// Kinds shown in the decision journal timeline.
+/// Includes note (captured decisions) in addition to evidence-requiring kinds.
+pub const DECISION_KINDS_JOURNAL: &[&str] = &["adr", "note", "prd", "rfc", "epic", "spec", "problem", "solution"];
+
 impl ArtifactKind {
     /// Returns the ID prefix for this kind (e.g., "prd-", "epic-").
     pub fn prefix(&self) -> &'static str {

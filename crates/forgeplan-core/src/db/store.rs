@@ -313,9 +313,13 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Update r_eff_score for an artifact.
+    /// Update r_eff_score for an artifact. Verifies the artifact exists first.
     pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
         let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
+        // Verify artifact exists before update (LanceDB update is silent no-op on missing ID)
+        if self.get_record(id).await?.is_none() {
+            anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
+        }
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts
@@ -1516,5 +1520,61 @@ mod tests {
         assert!((after.r_eff_score - 0.85).abs() < f64::EPSILON);
         // updated_at should have changed
         assert_ne!(before.updated_at, after.updated_at);
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_missing_id_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.update_r_eff_score("NONEXISTENT-999", 0.5).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "Error should mention 'not found'"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_nan_becomes_zero() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store.update_r_eff_score("PRD-002", f64::NAN).await.unwrap();
+
+        let record = store.get_record("PRD-002").await.unwrap().unwrap();
+        assert!((record.r_eff_score - 0.0).abs() < f64::EPSILON, "NaN should become 0.0");
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_clamps_out_of_range() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&sample_artifact("PRD-003")).await.unwrap();
+
+        // Above range → clamped to 1.0
+        store.update_r_eff_score("PRD-003", 2.5).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "2.5 should clamp to 1.0");
+
+        // Below range → clamped to 0.0
+        store.update_r_eff_score("PRD-003", -0.5).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "-0.5 should clamp to 0.0");
+
+        // Infinity → clamped to 1.0
+        store.update_r_eff_score("PRD-003", f64::INFINITY).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "Infinity should clamp to 1.0");
+
+        // Boundary: exact 0.0 and 1.0
+        store.update_r_eff_score("PRD-003", 0.0).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "0.0 should stay 0.0");
+
+        store.update_r_eff_score("PRD-003", 1.0).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "1.0 should stay 1.0");
     }
 }

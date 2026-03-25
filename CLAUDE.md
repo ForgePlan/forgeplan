@@ -112,10 +112,11 @@ GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
    - `Skill("m01-ownership")` — borrow checker issues
    - `Skill("m06-error-handling")` — Result, Option, anyhow patterns
    - `Skill("m07-concurrency")` — async/Send/Sync issues
-2. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
-3. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
-4. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
-5. **Используй `/forge`** для structured workflow (route → create → validate → code)
+2. **Каждая новая `pub fn` = тест сразу** — НЕ переходи к следующей функции без теста. Hook `commit-test-check.sh` блокирует коммит без тестов.
+3. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
+4. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
+5. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
+6. **Используй `/forge`** для structured workflow (route → create → validate → code)
 
 ### ОБЯЗАТЕЛЬНО на session start:
 
