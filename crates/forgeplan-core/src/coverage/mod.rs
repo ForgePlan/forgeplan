@@ -282,6 +282,62 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn backfill_adds_section_to_active_prd() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // Create active PRD without Affected Files
+        let art = NewArtifact {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "active".to_string(),
+            title: "Test PRD".to_string(),
+            body: "## Problem\n\nSome problem.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        // Create draft PRD (should NOT be backfilled)
+        let draft = NewArtifact {
+            id: "PRD-002".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Draft PRD".to_string(),
+            body: "## Problem\n\nDraft.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&draft).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+
+        // Only active PRD-001 should be backfilled
+        assert_eq!(updated, vec!["PRD-001"]);
+
+        // Verify body was updated
+        let record = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert!(record.body.contains("## Affected Files"));
+        assert!(record.body.contains("crates/forgeplan-core/src/**"));
+
+        // Draft should NOT have been touched
+        let draft_record = store.get_record("PRD-002").await.unwrap().unwrap();
+        assert!(!draft_record.body.contains("Affected Files"));
+
+        // Idempotent: running again should return empty
+        let second_run = backfill_affected_files(&store).await.unwrap();
+        assert!(second_run.is_empty(), "Should be idempotent");
+    }
+
     #[test]
     fn backfill_placeholder_matches_modules() {
         // Backfill uses "crates/forgeplan-core/src/**" — verify it matches real modules
