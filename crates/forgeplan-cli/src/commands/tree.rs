@@ -208,33 +208,54 @@ fn print_node_recursive(
     }
 }
 
+/// Fixed column widths for alignment.
+const KIND_COL: usize = 8;   // "evidence" = longest kind
+const STATUS_COL: usize = 12; // "deprecated" = longest status
+
 /// Format a single node as columnar line: TREE | KIND | STATUS | R_EFF | BAR
 /// `prefix_len` is the visual width of the tree prefix (connectors + indentation).
 fn format_node(id: &str, records: &BTreeMap<String, DisplayRecord>, prefix_len: usize) -> String {
     let display = records.get(id);
     let title = display
-        .map(|d| truncate(&d.title, 30))
+        .map(|d| truncate(&d.title, 28))
         .unwrap_or_else(|| "?".to_string());
     let kind = display.map(|d| d.kind.as_str()).unwrap_or("?");
     let status = display.map(|d| d.status.as_str()).unwrap_or("unknown");
     let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
 
-    // Tree column: "ID Title" — pad to TREE_COL_WIDTH
-    let tree_text = format!("{} \"{}\"", id, title);
+    // Tree column: pad "ID Title" to TREE_COL_WIDTH using plain text width
     let tree_plain_len = prefix_len + id.len() + 2 + title.len() + 1;
-    let pad = if tree_plain_len < TREE_COL_WIDTH {
+    let tree_pad = if tree_plain_len < TREE_COL_WIDTH {
         " ".repeat(TREE_COL_WIDTH - tree_plain_len)
     } else {
         " ".to_string()
     };
 
+    // Kind column: right-pad to KIND_COL
+    let kind_styled = style(kind).dim().to_string();
+    let kind_pad = if kind.len() < KIND_COL {
+        " ".repeat(KIND_COL - kind.len())
+    } else {
+        String::new()
+    };
+
+    // Status column: right-pad to STATUS_COL (account for ANSI codes)
+    let status_styled = ui::styled_status(status);
+    let status_pad = if status.len() < STATUS_COL {
+        " ".repeat(STATUS_COL - status.len())
+    } else {
+        String::new()
+    };
+
     format!(
-        "{} \"{}\"{} {:>5}  {:<12} {:>5}  {}",
+        "{} \"{}\"{}  {}{}  {}{}  {}  {}",
         style(id).bold(),
         title,
-        pad,
-        style(kind).dim(),
-        ui::styled_status(status),
+        tree_pad,
+        kind_styled,
+        kind_pad,
+        status_styled,
+        status_pad,
         ui::styled_reff(r_eff),
         reff_bar(r_eff),
     )
