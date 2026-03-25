@@ -358,6 +358,7 @@ git checkout -b feat/my-feature
 - **Не коммить напрямую в main или dev** — всегда через feature branch + PR
 
 #### PR и merge:
+- **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
 - **PR title** = `[ARTIFACT-ID] description` — `[PRD-018] OpenSpec DAG integration`
 - **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
 - **feat/* → dev**: Squash merge (чистая история) — `gh pr create --base dev`
