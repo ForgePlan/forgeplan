@@ -1,13 +1,22 @@
 # TODO — Forgeplan
 
-## Current: v0.10.1 Released
+## Current: v0.11.0 Released
 
 ### Stats
-- ~35 CLI commands, 28 MCP tools, 318 tests
-- 56 dogfood artifacts (43 active, 8 draft, 5 deprecated)
-- 20,121 LOC Rust
-- v0.10.1 tagged, PRs #35-#41 merged
-- Health: clean (0 blind spots, 0 orphans, 0 at risk)
+- ~37 CLI commands (tree, context, scan-import), 28 MCP tools, 392 tests
+- 71 dogfood artifacts (49 active, 17 draft, 5 deprecated)
+- ~21K LOC Rust
+- v0.11.0 tagged, PRs #35-#52 merged
+- 0 compiler warnings
+
+### P0: Integrity Issues (PROB-012 dogfood audit)
+- [ ] **Semantic search broken** — feature flag not propagated CLI→core
+- [ ] **R_eff divergence** — tree shows stored 0.00 vs computed 1.0 (score/context)
+- [ ] **health vs journal inconsistency** — health says healthy, journal shows 23 without evidence
+- [ ] **coverage 0%** — no artifacts have affected_files sections
+- [ ] **route underestimates** — complex tasks rated Tactical
+
+Next: PRD for remediation → ADR for R_eff source-of-truth → phased fixes
 
 ---
 
