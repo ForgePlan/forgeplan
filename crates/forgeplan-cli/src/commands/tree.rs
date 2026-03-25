@@ -174,14 +174,19 @@ fn print_node_recursive(
     line_prefix: &str,
     child_prefix: &str,
 ) {
-    // Data LEFT, Tree RIGHT: "BAR  R_EFF  STATUS    KIND      | prefix ID title"
+    // Data LEFT, Tree RIGHT: "BAR  R_EFF  STATUS    KIND      prefix ID title"
     let data_left = format_data_cols(id, records);
-    println!("{}  {}{} {} \"{}\"",
+    let data_width = 44; // fixed left columns width
+    let prefix_width = line_prefix.chars().count();
+    let id_width = id.len() + 3; // ID + ' "' + '"'
+    let term_width = console::Term::stdout().size().1 as usize;
+    let available = term_width.saturating_sub(data_width + prefix_width + id_width + 2).max(10);
+    let title = records.get(id).map(|d| truncate(&d.title, available)).unwrap_or_else(|| "?".into());
+    println!("{}  {}{} \"{}\"",
         data_left,
         line_prefix,
         style(id).bold(),
-        style("").dim(), // empty separator
-        records.get(id).map(|d| truncate(&d.title, 35)).unwrap_or_else(|| "?".into()),
+        title,
     );
 
     if current_depth >= max_depth {
