@@ -148,6 +148,8 @@ pub fn extract(text: &str) -> Vec<Signal> {
     }
 
     // Bug density heuristic: multiple bug-related words → at least Standard
+    // NOTE: may double-count with keyword:bug_fix — this inflates confidence, not depth.
+    // Acceptable: compute_depth takes max(signal.depth), not sum(weights).
     let bug_words = ["bug", "fix", "broken", "issue", "error", "fail"];
     let bug_count = bug_words.iter().filter(|w| lower.contains(*w)).count();
     if bug_count >= 3 {
