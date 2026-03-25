@@ -116,6 +116,7 @@ pub fn error_hint(message: &str, hint: &str) {
 }
 
 /// Print a success message.
+#[allow(dead_code)]
 pub fn success(message: &str) {
     println!("  {} {}", style("✓").green(), message);
 }

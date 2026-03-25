@@ -90,7 +90,6 @@ struct DisplayRecord {
 }
 
 /// Column width for the tree part (left side).
-const TREE_COL_WIDTH: usize = 50;
 
 /// Build parent->children mapping from all relations and parent_epic fields.
 async fn build_hierarchy(

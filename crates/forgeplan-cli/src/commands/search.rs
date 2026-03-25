@@ -1,4 +1,3 @@
-use forgeplan_core::db::store::LanceStore;
 
 use crate::commands::common;
 use crate::ui;
