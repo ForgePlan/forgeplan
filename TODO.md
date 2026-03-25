@@ -3,11 +3,11 @@
 ## Current: v0.11.0 Released
 
 ### Stats
-- ~37 CLI commands (tree, context, scan-import), 28 MCP tools, 392 tests
-- 71 dogfood artifacts (49 active, 17 draft, 5 deprecated)
+- ~37 CLI commands (tree, context, scan-import, coverage --backfill), 28 MCP tools, 428 tests
+- 77 dogfood artifacts (51 active, 20 draft, 6 deprecated)
 - ~21K LOC Rust
-- v0.11.0 tagged, PRs #35-#52 merged
-- 0 compiler warnings
+- v0.11.0 tagged, PRs #35-#55 merged
+- 0 compiler warnings, 5 enforcement hooks
 
 ### P0: Integrity Issues (PROB-012 dogfood audit) ✅
 - [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
@@ -29,6 +29,11 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 | PROB-003 | Done | Dead statuses → solved by PRD-007 lifecycle | ✅ |
 | PROB-004 | Done | Agent drift → solved by PRD-010 hooks | ✅ |
 | PROB-005 | Done | Cold start → solved by PRD-012 init --scan | ✅ |
+| PROB-006 | Done | Routing misses UX scope → solved by PROB-012 keyword expansion | ✅ |
+| PROB-009 | Deprecated | F-G-R Granularity → future PRD scope | ⚠️ |
+| PROB-010 | Tracked | Markdown projections not updated → design decision (ADR-002) | 📋 |
+| PROB-012 | Done | Feature integrity gap → 5 fixes, 2 audit rounds | ✅ |
+| PROB-013 | Done | R_eff includes deprecated/draft in chain → skip non-active | ✅ |
 
 ---
 
@@ -46,11 +51,14 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] `fpl` alias symlink in install
 - [ ] Publish to crates.io (`cargo install forgeplan`)
 
-### P2: Integrity Follow-up (from FPF audit)
+### P2: Integrity Follow-up (from FPF audit) ✅
 - [x] **Read-back verify** in update_r_eff_score — pre-check with get_record before update
 - [x] **DRY decision_kinds** — DECISION_KINDS_EVIDENCE + DECISION_KINDS_JOURNAL in types.rs
 - [x] **Coverage batch-update** — `forgeplan coverage --backfill` (18 artifacts updated)
-- [ ] **PRD-019 implementation** — 3-layer methodology enforcement (hooks + MCP state machine)
+- [x] **PROB-013** — R_eff skip deprecated/draft in recursive chain (ADR-002)
+- [x] **Tree visual** — evidence/note show `··` instead of `0.00`
+- [x] **METHODOLOGY-COURSE.md** — Chapter 8 added (tree, coverage, hooks, R_eff rules)
+- [ ] **PRD-019 Layer 3** — MCP session state machine (next sprint)
 
 ### P2: Polish
 - [ ] Binary size optimization (LanceDB feature flags / strip)
