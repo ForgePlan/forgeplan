@@ -381,4 +381,20 @@ mod tests {
         let signals = extract("We found 2 issues in the codebase");
         assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"), "2 issues should not trigger");
     }
+
+    #[test]
+    fn word_boundary_prevents_substring_match() {
+        // "tissues" contains "issues" but should NOT trigger issue_count
+        let signals = extract("We have 5 tissues on the table");
+        assert!(
+            !signals.iter().any(|s| s.id == "heuristic:issue_count"),
+            "tissues should not match issues"
+        );
+    }
+
+    #[test]
+    fn word_boundary_allows_real_match() {
+        let signals = extract("Found 4 issues in production");
+        assert!(signals.iter().any(|s| s.id == "heuristic:issue_count"));
+    }
 }

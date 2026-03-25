@@ -1521,4 +1521,29 @@ mod tests {
         // updated_at should have changed
         assert_ne!(before.updated_at, after.updated_at);
     }
+
+    #[tokio::test]
+    async fn update_r_eff_score_missing_id_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.update_r_eff_score("NONEXISTENT-999", 0.5).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "Error should mention 'not found'"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_nan_becomes_zero() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store.update_r_eff_score("PRD-002", f64::NAN).await.unwrap();
+
+        let record = store.get_record("PRD-002").await.unwrap().unwrap();
+        assert!((record.r_eff_score - 0.0).abs() < f64::EPSILON, "NaN should become 0.0");
+    }
 }

@@ -98,8 +98,8 @@ TOTAL                               0/0  (  0%)
 
 ## Affected Files
 
-- crates/forgeplan-core/src/...
-- crates/forgeplan-cli/src/...
+- crates/forgeplan-core/src/**
+- crates/forgeplan-cli/src/**
 
 ## Related Artifacts
 

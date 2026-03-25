@@ -154,7 +154,9 @@ pub async fn build_coverage(
         if record.status != "active" {
             continue;
         }
-        if record.kind != "adr" && record.kind != "rfc" && record.kind != "prd" {
+        // Coverage tracks code-level decisions (PRD/RFC/ADR) — these reference specific files.
+        // Epic/spec/problem/solution are higher-level and don't map to file paths.
+        if !matches!(record.kind.as_str(), "prd" | "rfc" | "adr") {
             continue;
         }
 
@@ -207,7 +209,7 @@ pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<S
         if record.status != "active" {
             continue;
         }
-        // Only backfill decision-type artifacts that reference code
+        // Coverage tracks code-level decisions only (same scope as build_coverage)
         if !matches!(record.kind.as_str(), "prd" | "rfc" | "adr") {
             continue;
         }
@@ -215,12 +217,15 @@ pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<S
         if record.body.contains("## Affected Files") || record.body.contains("## Affected Scope") {
             continue;
         }
-        // Append section to body
+        // Append section with glob patterns that module_matches_pattern can parse
         let new_body = format!(
-            "{}\n\n## Affected Files\n\n- crates/forgeplan-core/src/...\n- crates/forgeplan-cli/src/...\n",
+            "{}\n\n## Affected Files\n\n- crates/forgeplan-core/src/**\n- crates/forgeplan-cli/src/**\n",
             record.body.trim_end()
         );
-        store.update_body(&record.id, &new_body).await?;
+        if let Err(e) = store.update_body(&record.id, &new_body).await {
+            eprintln!("  Warning: backfill failed for {}: {e}", record.id);
+            continue;
+        }
         updated.push(record.id.clone());
     }
 
@@ -274,6 +279,28 @@ mod tests {
         assert!(!module_matches_pattern(
             "crates/core/src/scoring",
             "src/validation"
+        ));
+    }
+
+    #[test]
+    fn backfill_placeholder_matches_modules() {
+        // Backfill uses "crates/forgeplan-core/src/**" — verify it matches real modules
+        assert!(module_matches_pattern(
+            "crates/forgeplan-core/src/scoring",
+            "crates/forgeplan-core/src/**"
+        ));
+        assert!(module_matches_pattern(
+            "crates/forgeplan-cli/src/commands",
+            "crates/forgeplan-cli/src/**"
+        ));
+    }
+
+    #[test]
+    fn dotdotdot_placeholder_does_not_match() {
+        // Old "..." placeholder should NOT match — verify it's broken
+        assert!(!module_matches_pattern(
+            "crates/forgeplan-core/src/scoring",
+            "crates/forgeplan-core/src/..."
         ));
     }
 }
