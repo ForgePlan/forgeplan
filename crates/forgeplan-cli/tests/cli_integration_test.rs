@@ -1576,3 +1576,180 @@ fn reff_finds_incoming_evidence() {
         .success()
         .stdout(predicate::str::contains("EVID-001"));
 }
+
+// ─── v0.11 E2E Tests: Activation Gate + Derived Status + Context ──
+
+#[test]
+fn activation_gate_rejects_invalid() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD then strip its body to trigger MUST validation errors
+    forgeplan()
+        .args(["new", "prd", "Stub PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Replace body with empty content — missing Problem, Goals, etc.
+    forgeplan()
+        .args(["update", "PRD-001", "--body", "# Empty PRD\n\nNo sections here."])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Activate should FAIL — PRD missing MUST sections (Problem, Goals, etc.)
+    let output = forgeplan()
+        .args(["activate", "PRD-001"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "activate on invalid PRD should fail, but succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("MUST") || stderr.contains("error") || stderr.contains("Validation") || stderr.contains("validation"),
+        "Error should mention MUST/error/validation, got stderr: {}", stderr
+    );
+}
+
+#[test]
+fn activation_gate_force_overrides() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD then strip body to trigger MUST errors
+    forgeplan()
+        .args(["new", "prd", "Force Activate PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["update", "PRD-001", "--body", "# Empty\n\nNo required sections."])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Activate with --force should SUCCEED despite validation errors
+    forgeplan()
+        .args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Warning").or(predicate::str::contains("forced").or(predicate::str::contains("Activated"))));
+}
+
+#[test]
+fn activation_gate_passes_when_valid() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Notes skip validation gate (lightweight kind)
+    forgeplan()
+        .args(["new", "note", "Test Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Activate should succeed — notes don't require validation
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Activated").or(predicate::str::contains("active")));
+}
+
+#[test]
+fn health_shows_derived_status() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create a stub PRD
+    forgeplan()
+        .args(["new", "prd", "Derived Status Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Health should show derived status info (STUB for an unfilled PRD)
+    let output = forgeplan()
+        .args(["health"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("STUB") || stdout.contains("derived") || stdout.contains("By derived"),
+        "Health should show derived status info, got: {}", stdout
+    );
+}
+
+#[test]
+fn context_command_json_output() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Context Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["context", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "context --json should succeed");
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("context --json should produce valid JSON");
+
+    // Verify all required top-level keys
+    assert!(json["artifact"].is_object(), "missing 'artifact' key in context JSON");
+    assert!(json["derived_status"].is_string(), "missing 'derived_status' key in context JSON");
+    assert!(json["graph"].is_object(), "missing 'graph' key in context JSON");
+    assert!(json["validation"].is_object(), "missing 'validation' key in context JSON");
+    assert!(json["fgr"].is_object(), "missing 'fgr' key in context JSON");
+}
+
+#[test]
+fn context_command_human_output() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Human Context Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["context", "PRD-001"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "context (human) should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PRD-001"),
+        "Human output should contain artifact ID, got: {}", stdout
+    );
+    assert!(
+        stdout.contains("Status"),
+        "Human output should contain 'Status:', got: {}", stdout
+    );
+    assert!(
+        stdout.contains("F-G-R"),
+        "Human output should contain 'F-G-R:', got: {}", stdout
+    );
+}

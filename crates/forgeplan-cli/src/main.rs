@@ -142,6 +142,14 @@ enum Commands {
         /// PRD artifact ID to decompose
         id: String,
     },
+    /// Single-call reasoning context — artifact + graph + validation + scoring
+    Context {
+        /// Artifact ID
+        id: String,
+        /// Output as JSON for machine consumption (primary mode for AI agents)
+        #[arg(long)]
+        json: bool,
+    },
     /// Read a full artifact by ID
     Get {
         /// Artifact ID
@@ -192,6 +200,9 @@ enum Commands {
     Activate {
         /// Artifact ID
         id: String,
+        /// Force activation even if validation has MUST errors
+        #[arg(long)]
+        force: bool,
     },
     /// Supersede an artifact (active → superseded) with replacement link
     Supersede {
@@ -383,6 +394,7 @@ async fn main() -> anyhow::Result<()> {
             fpf,
         } => commands::reason::run(&id, json, save, fpf).await,
         Commands::Decompose { id } => commands::decompose::run(&id).await,
+        Commands::Context { id, json } => commands::context::run(&id, json).await,
         Commands::Get { id, json } => commands::get::run(&id, json).await,
         Commands::Update {
             id,
@@ -415,7 +427,7 @@ async fn main() -> anyhow::Result<()> {
             explain,
         } => commands::route::run(&description, explain).await,
         Commands::Review { id } => commands::review::run(&id).await,
-        Commands::Activate { id } => commands::activate::run(&id).await,
+        Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,

@@ -116,10 +116,25 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
     })
 }
 
+/// Result of an activation attempt, including any validation findings.
+#[derive(Debug, Clone)]
+pub struct ActivateResult {
+    pub artifact_id: String,
+    pub forced: bool,
+    pub must_errors: Vec<String>,
+}
+
 /// Activate an artifact: Draft → Active (with validation gate).
 /// Only PRD, Epic, Spec, RFC, ADR support activation.
 /// Notes/Problems can be activated without validation gate.
-pub async fn activate(store: &LanceStore, artifact_id: &str) -> anyhow::Result<()> {
+///
+/// If `force` is true, activation proceeds even with MUST validation errors.
+/// Returns `ActivateResult` so the caller can display warnings when forced.
+pub async fn activate(
+    store: &LanceStore,
+    artifact_id: &str,
+    force: bool,
+) -> anyhow::Result<ActivateResult> {
     let record = store
         .get_record(artifact_id)
         .await?
@@ -132,21 +147,37 @@ pub async fn activate(store: &LanceStore, artifact_id: &str) -> anyhow::Result<(
         store
             .update_artifact(artifact_id, Some("active"), None)
             .await?;
-        return Ok(());
+        return Ok(ActivateResult {
+            artifact_id: artifact_id.to_string(),
+            forced: false,
+            must_errors: vec![],
+        });
     }
 
-    // Must pass validation before activation
+    // Must pass validation before activation (unless --force)
     let review_result = review(store, artifact_id).await?;
-    if !review_result.can_activate {
-        let issues = review_result.must_findings.join("; ");
-        anyhow::bail!("Cannot activate — MUST issues: {issues}");
+    if !review_result.can_activate && !force {
+        let mut msg = format!(
+            "Validation failed ({} MUST error{}):",
+            review_result.must_findings.len(),
+            if review_result.must_findings.len() == 1 { "" } else { "s" }
+        );
+        for finding in &review_result.must_findings {
+            msg.push_str(&format!("\n  - {finding}"));
+        }
+        msg.push_str("\n\nUse --force to override.");
+        anyhow::bail!("{msg}");
     }
 
     store
         .update_artifact(artifact_id, Some("active"), None)
         .await?;
 
-    Ok(())
+    Ok(ActivateResult {
+        artifact_id: artifact_id.to_string(),
+        forced: force && !review_result.must_findings.is_empty(),
+        must_errors: review_result.must_findings,
+    })
 }
 
 /// Supersede an artifact: Active → Superseded, link to replacement.

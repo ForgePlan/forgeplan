@@ -19,6 +19,7 @@ pub mod routing;
 pub mod scan;
 pub mod scoring;
 pub mod search;
+pub mod status;
 pub mod stale;
 pub mod template;
 pub mod validation;
