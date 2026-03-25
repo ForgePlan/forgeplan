@@ -224,7 +224,7 @@ fn format_data_cols(id: &str, records: &BTreeMap<String, DisplayRecord>) -> Stri
     // Evidence, note, refresh don't have R_eff — show dash instead of bar
     let is_non_scorable = matches!(kind, "evidence" | "note" | "refresh");
     let (bar, reff_str) = if is_non_scorable {
-        (style("··········".to_string()).dim().to_string(), style("  —— ").dim().to_string())
+        (style("··········".to_string()).dim().to_string(), style(" ·· ").dim().to_string())
     } else {
         (reff_bar(r_eff), ui::styled_reff(r_eff))
     };
