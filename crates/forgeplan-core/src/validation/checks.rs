@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 pub fn frontmatter_has(fm: &Frontmatter, key: &str) -> bool {
     fm.get(key)
         .map(|v| match v {
-            serde_yaml::Value::Null => false,
-            serde_yaml::Value::String(s) => !s.trim().is_empty(),
+            serde_yml::Value::Null => false,
+            serde_yml::Value::String(s) => !s.trim().is_empty(),
             _ => true,
         })
         .unwrap_or(false)

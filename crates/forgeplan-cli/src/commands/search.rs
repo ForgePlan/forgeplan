@@ -1,3 +1,5 @@
+use forgeplan_core::db::store::LanceStore;
+
 use crate::commands::common;
 use crate::ui;
 
@@ -88,7 +90,7 @@ async fn run_semantic(
     use forgeplan_core::embed::Embedder;
 
     println!("  Embedding query...");
-    let embedder = Embedder::new()?;
+    let mut embedder = Embedder::new()?;
     let query_vec = embedder.embed(query)?;
 
     let hits = store.vector_search(&query_vec, 10).await?;

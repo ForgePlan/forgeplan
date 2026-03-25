@@ -1,26 +1,22 @@
-use std::env;
-
 use anyhow::Context;
 
 use forgeplan_core::artifact::types::ArtifactKind;
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
+use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::llm::generate::generate_body;
 use forgeplan_core::projection;
-use forgeplan_core::workspace::{self, load_config};
+use forgeplan_core::workspace::load_config;
+
+use crate::commands::common;
 
 pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
     let kind: ArtifactKind = kind_str
         .parse()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let cwd = env::current_dir()?;
-    let workspace = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("Not in a forgeplan workspace. Run `forgeplan init` first."))?;
+    let (workspace, store) = common::open_store().await?;
 
     let config = load_config(&workspace)?;
     let llm_config = config.llm.unwrap_or_default().with_env_overrides();
-
-    let store = LanceStore::open(&workspace).await?;
 
     // Generate title from first line of description (truncated)
     let title = description

@@ -84,11 +84,20 @@ fn detect_from_filename(filename: &str) -> Option<DetectionResult> {
         ("PROB-", ArtifactKind::ProblemCard),
         ("SOL-", ArtifactKind::SolutionPortfolio),
         ("EVID-", ArtifactKind::EvidencePack),
+        ("REFRESH-", ArtifactKind::RefreshReport),
         ("REF-", ArtifactKind::RefreshReport),
     ];
 
     for (prefix, kind) in patterns {
         if upper.starts_with(prefix) {
+            // For REF- prefix, require digits after prefix to avoid false positives
+            // (e.g., REF-DOCS-ANALYSIS.md is NOT a RefreshReport)
+            if *prefix == "REF-" {
+                let after = &upper[prefix.len()..];
+                if after.is_empty() || !after.starts_with(|c: char| c.is_ascii_digit()) {
+                    continue;
+                }
+            }
             // Extract ID: everything before first non-ID character
             let id = extract_id_from_name(&upper, prefix);
             let title = extract_title_from_name(name, prefix);
@@ -271,5 +280,47 @@ mod tests {
         let result = detect_kind("PRD-001-looks-like-prd.md", content).unwrap();
         assert_eq!(result.kind, ArtifactKind::Rfc); // frontmatter wins
         assert_eq!(result.tier, DetectionTier::Frontmatter);
+    }
+
+    #[test]
+    fn ref_prefix_requires_digits() {
+        // REF-001 should detect as RefreshReport
+        let content = "No frontmatter";
+        let result = detect_kind("REF-001-review.md", content).unwrap();
+        assert_eq!(result.kind, ArtifactKind::RefreshReport);
+        assert_eq!(result.tier, DetectionTier::Filename);
+    }
+
+    #[test]
+    fn ref_docs_not_detected_as_refresh() {
+        // REF-DOCS-ANALYSIS.md should NOT be RefreshReport
+        let content = "# Reference Analysis\nSome analysis...";
+        assert!(detect_kind("REF-DOCS-ANALYSIS.md", content).is_none());
+    }
+
+    #[test]
+    fn refresh_prefix_detected() {
+        let content = "No frontmatter";
+        let result = detect_kind("REFRESH-001-quarterly.md", content).unwrap();
+        assert_eq!(result.kind, ArtifactKind::RefreshReport);
+    }
+
+    #[test]
+    fn tier3_content_spec() {
+        let content = "# Payment API\n\n## API\nREST endpoints.\n\n## Schema\nJSON schema.\n\n## Request\nPOST /pay";
+        let result = detect_kind("payment.md", content).unwrap();
+        assert_eq!(result.kind, ArtifactKind::Spec);
+        assert_eq!(result.tier, DetectionTier::Content);
+    }
+
+    #[test]
+    fn empty_content_returns_none() {
+        assert!(detect_kind("empty.md", "").is_none());
+    }
+
+    #[test]
+    fn binary_looking_content_returns_none() {
+        let content = "\0\0\0binary garbage\x01\x02";
+        assert!(detect_kind("binary.md", content).is_none());
     }
 }

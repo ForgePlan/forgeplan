@@ -1,12 +1,10 @@
-use std::env;
+use forgeplan_core::db::store::NewArtifact;
 
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
-use forgeplan_core::workspace;
+use crate::commands::common;
 
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (_ws, store) = common::open_store().await?;
+    let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {
         std::path::PathBuf::from(path)
@@ -31,8 +29,6 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Missing 'artifacts' array in export file"))?;
 
-    let store = LanceStore::open(&ws).await?;
-
     let mut imported = 0usize;
     let mut skipped = 0usize;
 
@@ -53,15 +49,20 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         }
 
         // Validate kind against known types
-        let kind_str = art["kind"].as_str().unwrap_or("note");
-        if kind_str.parse::<forgeplan_core::artifact::types::ArtifactKind>().is_err() {
-            eprintln!("  Warning: unknown kind '{}' for {}, defaulting to note", kind_str, id);
-        }
-        // Validate status
-        let status_str = art["status"].as_str().unwrap_or("draft");
-        if !matches!(status_str, "draft" | "active" | "superseded" | "deprecated") {
-            eprintln!("  Warning: unknown status '{}' for {}, defaulting to draft", status_str, id);
-        }
+        let raw_kind = art["kind"].as_str().unwrap_or("note");
+        let kind_str = if raw_kind.parse::<forgeplan_core::artifact::types::ArtifactKind>().is_err() {
+            eprintln!("  Warning: unknown kind '{}' for {}, defaulting to note", raw_kind, id);
+            "note"
+        } else {
+            raw_kind
+        };
+        let raw_status = art["status"].as_str().unwrap_or("draft");
+        let status_str = if !matches!(raw_status, "draft" | "active" | "superseded" | "deprecated") {
+            eprintln!("  Warning: unknown status '{}' for {}, defaulting to draft", raw_status, id);
+            "draft"
+        } else {
+            raw_status
+        };
 
         let new_artifact = NewArtifact {
             id: id.to_string(),

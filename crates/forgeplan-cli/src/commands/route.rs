@@ -1,5 +1,3 @@
-use std::env;
-
 use console::style;
 use forgeplan_core::routing;
 use forgeplan_core::workspace;
@@ -7,8 +5,6 @@ use forgeplan_core::workspace;
 use crate::ui;
 
 pub async fn run(description: &str, explain: bool) -> anyhow::Result<()> {
-    let _cwd = env::current_dir()?;
-
     // Rule-based routing (instant, offline, no LLM)
     let result = routing::route(description);
 
@@ -79,7 +75,7 @@ pub async fn run(description: &str, explain: bool) -> anyhow::Result<()> {
 
     // Optional LLM explanation
     if explain {
-        let cwd = env::current_dir()?;
+        let cwd = std::env::current_dir()?;
         let ws = workspace::find_workspace(&cwd);
         if let Some(ws) = ws {
             let config = workspace::load_config(&ws)?;
