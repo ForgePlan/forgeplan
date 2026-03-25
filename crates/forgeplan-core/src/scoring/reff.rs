@@ -216,6 +216,14 @@ pub async fn r_eff_recursive(
     let mut weakest_link: Option<String> = None;
 
     for (dep_id, rel_type) in &deps {
+        // Skip deprecated/superseded dependencies — they should not drag down R_eff
+        if let Ok(Some(dep_record)) = store.get_record(dep_id).await {
+            if dep_record.status == "deprecated" || dep_record.status == "superseded" {
+                factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
+                continue;
+            }
+        }
+
         let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {
             Ok(report) => report,
             Err(_) => {
