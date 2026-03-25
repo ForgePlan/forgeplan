@@ -24,8 +24,14 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
     // 2. Parse kind and depth
-    let kind: ArtifactKind = record.kind.parse().unwrap_or(ArtifactKind::Note);
-    let depth: Mode = record.depth.parse().unwrap_or(Mode::Standard);
+    let kind: ArtifactKind = record.kind.parse().unwrap_or_else(|_| {
+        eprintln!("  Warning: unknown kind '{}', defaulting to Note", record.kind);
+        ArtifactKind::Note
+    });
+    let depth: Mode = record.depth.parse().unwrap_or_else(|_| {
+        eprintln!("  Warning: unknown depth '{}', defaulting to Standard", record.depth);
+        Mode::Standard
+    });
 
     // 3. Relations — outgoing and incoming
     let outgoing = store.get_relations(id).await?;
