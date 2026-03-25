@@ -45,7 +45,7 @@ pub async fn build_edges(workspace: &Path) -> anyhow::Result<Vec<Edge>> {
                 }
                 // Also check parent_epic / epic / prd fields
                 for field in &["epic", "prd", "parent_epic"] {
-                    if let Some(serde_yaml::Value::String(parent)) = fm.get(*field) {
+                    if let Some(serde_yml::Value::String(parent)) = fm.get(*field) {
                         if !parent.is_empty() {
                             edges.push(Edge {
                                 from: id.clone(),

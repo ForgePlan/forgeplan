@@ -53,64 +53,64 @@ fn render_markdown(
     let mut fm = BTreeMap::new();
     fm.insert(
         "id".to_string(),
-        serde_yaml::Value::String(id.to_string()),
+        serde_yml::Value::String(id.to_string()),
     );
     fm.insert(
         "title".to_string(),
-        serde_yaml::Value::String(title.to_string()),
+        serde_yml::Value::String(title.to_string()),
     );
     fm.insert(
         "kind".to_string(),
-        serde_yaml::Value::String(kind.to_string()),
+        serde_yml::Value::String(kind.to_string()),
     );
     fm.insert(
         "status".to_string(),
-        serde_yaml::Value::String(status.to_string()),
+        serde_yml::Value::String(status.to_string()),
     );
     fm.insert(
         "depth".to_string(),
-        serde_yaml::Value::String(depth.to_string()),
+        serde_yml::Value::String(depth.to_string()),
     );
 
     if let Some(a) = author {
         fm.insert(
             "author".to_string(),
-            serde_yaml::Value::String(a.to_string()),
+            serde_yml::Value::String(a.to_string()),
         );
     }
     if let Some(pe) = parent_epic {
         fm.insert(
             "parent_epic".to_string(),
-            serde_yaml::Value::String(pe.to_string()),
+            serde_yml::Value::String(pe.to_string()),
         );
     }
     if let Some(vu) = valid_until {
         fm.insert(
             "valid_until".to_string(),
-            serde_yaml::Value::String(vu.to_string()),
+            serde_yml::Value::String(vu.to_string()),
         );
     }
 
     if !links.is_empty() {
-        let links_seq: Vec<serde_yaml::Value> = links
+        let links_seq: Vec<serde_yml::Value> = links
             .iter()
             .map(|(target, relation)| {
-                let mut m = serde_yaml::Mapping::new();
+                let mut m = serde_yml::Mapping::new();
                 m.insert(
-                    serde_yaml::Value::String("target".to_string()),
-                    serde_yaml::Value::String(target.clone()),
+                    serde_yml::Value::String("target".to_string()),
+                    serde_yml::Value::String(target.clone()),
                 );
                 m.insert(
-                    serde_yaml::Value::String("relation".to_string()),
-                    serde_yaml::Value::String(relation.clone()),
+                    serde_yml::Value::String("relation".to_string()),
+                    serde_yml::Value::String(relation.clone()),
                 );
-                serde_yaml::Value::Mapping(m)
+                serde_yml::Value::Mapping(m)
             })
             .collect();
-        fm.insert("links".to_string(), serde_yaml::Value::Sequence(links_seq));
+        fm.insert("links".to_string(), serde_yml::Value::Sequence(links_seq));
     }
 
-    let yaml = serde_yaml::to_string(&fm)?;
+    let yaml = serde_yml::to_string(&fm)?;
     Ok(format!("---\n{}---\n\n{}\n", yaml, body))
 }
 
