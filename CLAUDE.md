@@ -362,7 +362,10 @@ git checkout -b feat/my-feature
 - **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
 - **PR title** = `[ARTIFACT-ID] description` — `[PRD-018] OpenSpec DAG integration`
 - **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
-- **feat/* → dev**: Squash merge (чистая история) — `gh pr create --base dev`
+- **feat/* → dev**: Merge commit (НЕ squash!) — squash теряет поздние коммиты
+- **НИКОГДА не пушить в ветку после merge PR** — коммиты будут потеряны
+- **Перед merge**: убедиться что ВСЕ коммиты pushed: `git log origin/dev..HEAD`
+- **После merge**: сразу `git checkout dev && git pull` и проверить что изменения на месте
 - **release/* → main**: Merge commit (сохраняет историю RC) — `gh pr create --base main`
 - **НЕ удалять ветки после merge** — feature и release branches сохраняются как история
 - **После merge в main**: tag + sync dev from main (`git checkout dev && git merge main`)
