@@ -499,6 +499,32 @@ mod tests {
     }
 
     #[test]
+    fn evidence_artifact_never_flagged_as_blind_spot() {
+        let mut record = make_record("EVID-001", "evidence");
+        record.status = "active".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty(), "evidence kind should never be a blind spot");
+    }
+
+    #[test]
+    fn refresh_artifact_never_flagged_as_blind_spot() {
+        let mut record = make_record("REF-001", "refresh");
+        record.status = "active".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty(), "refresh kind should never be a blind spot");
+    }
+
+    #[test]
     fn next_actions_capped_at_three() {
         let mut by_status = BTreeMap::new();
         by_status.insert("draft".into(), 5);

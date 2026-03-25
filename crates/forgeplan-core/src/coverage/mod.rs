@@ -359,4 +359,86 @@ mod tests {
             "crates/forgeplan-core/src/..."
         ));
     }
+
+    // ─── Backfill Corner Cases ──────────────────────────
+
+    #[tokio::test]
+    async fn backfill_skips_epic_and_spec() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // Active epic — should NOT get Affected Files (not code-level)
+        let epic = NewArtifact {
+            id: "EPIC-001".to_string(),
+            kind: "epic".to_string(),
+            status: "active".to_string(),
+            title: "Test Epic".to_string(),
+            body: "## Overview\n\nEpic.".to_string(),
+            depth: "deep".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&epic).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+        assert!(updated.is_empty(), "Epic should not be backfilled");
+    }
+
+    #[tokio::test]
+    async fn backfill_skips_artifact_with_affected_scope_alias() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        // PRD with "Affected Scope" (alias) — should NOT be backfilled
+        let art = NewArtifact {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "active".to_string(),
+            title: "Has Alias".to_string(),
+            body: "## Problem\n\nTest.\n\n## Affected Scope\n\n- src/**".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+        assert!(updated.is_empty(), "Should skip artifact with Affected Scope alias");
+    }
+
+    #[tokio::test]
+    async fn backfill_handles_active_rfc() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let rfc = NewArtifact {
+            id: "RFC-001".to_string(),
+            kind: "rfc".to_string(),
+            status: "active".to_string(),
+            title: "Test RFC".to_string(),
+            body: "## Proposal\n\nArchitecture.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&rfc).await.unwrap();
+
+        let updated = backfill_affected_files(&store).await.unwrap();
+        assert_eq!(updated, vec!["RFC-001"], "Active RFC should be backfilled");
+    }
 }

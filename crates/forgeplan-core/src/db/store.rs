@@ -1546,4 +1546,35 @@ mod tests {
         let record = store.get_record("PRD-002").await.unwrap().unwrap();
         assert!((record.r_eff_score - 0.0).abs() < f64::EPSILON, "NaN should become 0.0");
     }
+
+    #[tokio::test]
+    async fn update_r_eff_score_clamps_out_of_range() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&sample_artifact("PRD-003")).await.unwrap();
+
+        // Above range → clamped to 1.0
+        store.update_r_eff_score("PRD-003", 2.5).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "2.5 should clamp to 1.0");
+
+        // Below range → clamped to 0.0
+        store.update_r_eff_score("PRD-003", -0.5).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "-0.5 should clamp to 0.0");
+
+        // Infinity → clamped to 1.0
+        store.update_r_eff_score("PRD-003", f64::INFINITY).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "Infinity should clamp to 1.0");
+
+        // Boundary: exact 0.0 and 1.0
+        store.update_r_eff_score("PRD-003", 0.0).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "0.0 should stay 0.0");
+
+        store.update_r_eff_score("PRD-003", 1.0).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "1.0 should stay 1.0");
+    }
 }
