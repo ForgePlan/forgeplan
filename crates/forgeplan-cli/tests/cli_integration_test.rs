@@ -1999,3 +1999,40 @@ fn e2e_score_missing_id_shows_warning_not_crash() {
         .stderr(predicate::str::contains("not found")
             .or(predicate::str::contains("Not found")));
 }
+
+#[test]
+fn e2e_reff_skips_deprecated_dependency() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create: PRD depends_on PROB, PROB has evidence, then deprecate PROB
+    forgeplan().args(["new", "problem", "Old Problem"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Depends on old problem"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "PRD proof"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Link: PRD → PROB (based_on), EVID → PRD (informs)
+    forgeplan().args(["link", "PRD-001", "PROB-001", "--relation", "based_on"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Activate and deprecate PROB
+    forgeplan().args(["activate", "PROB-001"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["deprecate", "PROB-001", "--reason", "resolved"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Score PRD-001 — should NOT be dragged to 0 by deprecated PROB-001
+    let output = forgeplan()
+        .args(["score", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("valid JSON");
+    let r_eff = json["r_eff"].as_f64().unwrap_or(0.0);
+    assert!(r_eff > 0.0, "R_eff should be > 0 when dependency is deprecated, got {r_eff}");
+}
