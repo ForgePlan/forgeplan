@@ -106,7 +106,7 @@ fn has_must_sections(body: &str, kind: &str) -> bool {
         }
         "spec" => {
             section_present(body, &["Summary"])
-                && section_present(body, &["API", "Data Model", "Contracts"])
+                && section_present(body, &["API", "API Endpoints", "API Contracts", "Data Model", "Contracts"])
         }
         // Lightweight types: note, problem, solution, evidence, refresh
         // These are considered SHAPED if they have any meaningful content
@@ -126,9 +126,9 @@ fn section_present(body: &str, headings: &[&str]) -> bool {
         if trimmed.starts_with('#') {
             let after_hashes = trimmed.trim_start_matches('#').trim_start();
             for heading in headings {
-                if after_hashes.eq_ignore_ascii_case(heading)
-                    || after_hashes.to_lowercase().starts_with(&heading.to_lowercase())
-                {
+                // Exact match only (case-insensitive) — no starts_with
+                // to avoid false positives like "API Gateway" matching "API"
+                if after_hashes.eq_ignore_ascii_case(heading) {
                     return true;
                 }
             }

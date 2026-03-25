@@ -36,21 +36,22 @@ pub struct KnowledgeGraph {
 impl KnowledgeGraph {
     /// Build a knowledge graph by loading all artifacts and relations from the store.
     pub async fn from_store(store: &LanceStore) -> anyhow::Result<Self> {
-        let records = store.list_records(None).await?;
+        // Use list_artifacts (summary, no body) to avoid loading full bodies into memory
+        let artifacts = store.list_artifacts(None).await?;
         let relations = store.get_all_relations().await?;
 
         let mut graph = DiGraph::new();
         let mut index = HashMap::new();
 
         // Add all artifacts as nodes.
-        for record in &records {
+        for artifact in &artifacts {
             let node = ArtifactNode {
-                id: record.id.clone(),
-                kind: record.kind.clone(),
-                status: record.status.clone(),
+                id: artifact.id.clone(),
+                kind: artifact.kind.clone(),
+                status: artifact.status.clone(),
             };
             let idx = graph.add_node(node);
-            index.insert(record.id.clone(), idx);
+            index.insert(artifact.id.clone(), idx);
         }
 
         // Add all relations as directed edges (source -> target).
