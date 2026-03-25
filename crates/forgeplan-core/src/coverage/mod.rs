@@ -197,6 +197,36 @@ pub async fn build_coverage(
     })
 }
 
+/// Backfill "## Affected Files" section into artifacts that lack it.
+/// Returns the number of artifacts updated.
+pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<String>> {
+    let records = store.list_records(None).await?;
+    let mut updated = Vec::new();
+
+    for record in &records {
+        if record.status != "active" {
+            continue;
+        }
+        // Only backfill decision-type artifacts that reference code
+        if !matches!(record.kind.as_str(), "prd" | "rfc" | "adr") {
+            continue;
+        }
+        // Skip if already has the section
+        if record.body.contains("## Affected Files") || record.body.contains("## Affected Scope") {
+            continue;
+        }
+        // Append section to body
+        let new_body = format!(
+            "{}\n\n## Affected Files\n\n- crates/forgeplan-core/src/...\n- crates/forgeplan-cli/src/...\n",
+            record.body.trim_end()
+        );
+        store.update_body(&record.id, &new_body).await?;
+        updated.push(record.id.clone());
+    }
+
+    Ok(updated)
+}
+
 /// Check if a module path matches an affected_files pattern.
 fn module_matches_pattern(module_path: &str, pattern: &str) -> bool {
     let pattern_clean = pattern

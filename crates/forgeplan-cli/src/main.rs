@@ -240,7 +240,11 @@ enum Commands {
         path: Option<String>,
     },
     /// Show decision coverage per code module
-    Coverage,
+    Coverage {
+        /// Backfill "Affected Files" section into artifacts missing it
+        #[arg(long)]
+        backfill: bool,
+    },
     /// Check for drifted decisions (affected files changed after decision)
     Drift {
         /// Output as JSON for machine consumption
@@ -425,7 +429,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
         Commands::Scan { path } => commands::coverage::run_scan(path.as_deref()).await,
-        Commands::Coverage => commands::coverage::run_coverage().await,
+        Commands::Coverage { backfill } => {
+            if backfill {
+                commands::coverage::run_backfill().await
+            } else {
+                commands::coverage::run_coverage().await
+            }
+        }
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
