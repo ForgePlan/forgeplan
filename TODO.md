@@ -60,6 +60,12 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [x] **METHODOLOGY-COURSE.md** — Chapter 8 added (tree, coverage, hooks, R_eff rules)
 - [ ] **PRD-019 Layer 3** — MCP session state machine (next sprint)
 
+### P2: Route & Enforcement (from usability testing)
+- [ ] **Route gap**: "new command/feature/add feature" не триггерит Standard → добавить keywords
+- [ ] **Batch score CLI**: `forgeplan score --all` для массового обновления cached R_eff
+- [ ] **PRD-019 Layer 3**: MCP session state machine — агент не может пропустить Shape phase
+- [ ] **Duplicate notes cleanup**: NOTE-004 и NOTE-005 оба "Complete Forgeplan guide" → deprecate один
+
 ### P2: Polish
 - [ ] Binary size optimization (LanceDB feature flags / strip)
 - [ ] Markdown projection sync on `forgeplan update` (not just `new`)
