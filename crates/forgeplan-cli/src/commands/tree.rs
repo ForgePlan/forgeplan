@@ -45,25 +45,19 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
             return Ok(());
         }
 
-        // Header
+        // Header — data LEFT, tree RIGHT
         println!();
+        println!("{}", style("Forgeplan Tree").bold());
+        println!("{}", style("═".repeat(90)).dim());
         println!(
-            "{} {:<tree_w$} {:>5}  {:<12} {:>5}  {}",
-            style("Forgeplan Tree").bold(),
-            "", "", "", "", "",
-            tree_w = TREE_COL_WIDTH - 15,
-        );
-        println!("{}", style("═".repeat(80)).dim());
-        println!(
-            "{:<tree_w$} {:>5}  {:<12} {:>5}  {}",
-            style("TREE").bold().underlined(),
-            style("KIND").bold().underlined(),
-            style("STATUS").bold().underlined(),
-            style("R_EFF").bold().underlined(),
+            "{:<10}  {:<4}  {:<12}  {:<8}  {}",
             style("PROGRESS").bold().underlined(),
-            tree_w = TREE_COL_WIDTH,
+            style("R_EFF").bold().underlined(),
+            style("STATUS").bold().underlined(),
+            style("KIND").bold().underlined(),
+            style("TREE").bold().underlined(),
         );
-        println!("{}", style("─".repeat(80)).dim());
+        println!("{}", style("─".repeat(90)).dim());
 
         for root in &roots {
             print_subtree(root, &children_map, &all_records, 0, depth, "");
@@ -181,8 +175,15 @@ fn print_node_recursive(
     line_prefix: &str,
     child_prefix: &str,
 ) {
-    let prefix_visual_len = line_prefix.chars().count();
-    println!("{}{}", line_prefix, format_node(id, records, prefix_visual_len));
+    // Data LEFT, Tree RIGHT: "BAR  R_EFF  STATUS    KIND      | prefix ID title"
+    let data_left = format_data_cols(id, records);
+    println!("{}  {}{} {} \"{}\"",
+        data_left,
+        line_prefix,
+        style(id).bold(),
+        style("").dim(), // empty separator
+        records.get(id).map(|d| truncate(&d.title, 35)).unwrap_or_else(|| "?".into()),
+    );
 
     if current_depth >= max_depth {
         return;
@@ -208,35 +209,23 @@ fn print_node_recursive(
     }
 }
 
-/// Format a single node as columnar line: TREE | KIND | STATUS | R_EFF | BAR
-/// `prefix_len` is the visual width of the tree prefix (connectors + indentation).
-fn format_node(id: &str, records: &BTreeMap<String, DisplayRecord>, prefix_len: usize) -> String {
+/// Format fixed-width data columns (LEFT side): BAR  R_EFF  STATUS      KIND
+/// Total width: 10 + 2 + 4 + 2 + 12 + 2 + 8 = ~40 chars (always same width)
+fn format_data_cols(id: &str, records: &BTreeMap<String, DisplayRecord>) -> String {
     let display = records.get(id);
-    let title = display
-        .map(|d| truncate(&d.title, 30))
-        .unwrap_or_else(|| "?".to_string());
     let kind = display.map(|d| d.kind.as_str()).unwrap_or("?");
-    let status = display.map(|d| d.status.as_str()).unwrap_or("unknown");
+    let status = display.map(|d| d.status.as_str()).unwrap_or("?");
     let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
 
-    // Tree column: "ID Title" — pad to TREE_COL_WIDTH
-    let tree_text = format!("{} \"{}\"", id, title);
-    let tree_plain_len = prefix_len + id.len() + 2 + title.len() + 1;
-    let pad = if tree_plain_len < TREE_COL_WIDTH {
-        " ".repeat(TREE_COL_WIDTH - tree_plain_len)
-    } else {
-        " ".to_string()
-    };
+    let bar = reff_bar(r_eff);
+    let reff_str = ui::styled_reff(r_eff);
+    let status_styled = ui::styled_status(status);
+    let status_pad = " ".repeat(12_usize.saturating_sub(status.len()));
+    let kind_pad = " ".repeat(8_usize.saturating_sub(kind.len()));
 
     format!(
-        "{} \"{}\"{} {:>5}  {:<12} {:>5}  {}",
-        style(id).bold(),
-        title,
-        pad,
-        style(kind).dim(),
-        ui::styled_status(status),
-        ui::styled_reff(r_eff),
-        reff_bar(r_eff),
+        "{}  {}  {}{}  {}{}",
+        bar, reff_str, status_styled, status_pad, style(kind).dim(), kind_pad,
     )
 }
 
