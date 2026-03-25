@@ -307,6 +307,17 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Show artifact hierarchy as ASCII tree
+    Tree {
+        /// Root artifact ID (shows all roots if omitted)
+        id: Option<String>,
+        /// Maximum depth (default: unlimited)
+        #[arg(long, default_value = "99")]
+        depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show artifacts in topological order (dependency order)
     Order {
         /// Output as JSON for machine consumption
@@ -446,6 +457,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
         Commands::ScanImport { path, dry_run } => commands::scan_import::run(path.as_deref(), dry_run).await,
+        Commands::Tree { id, depth, json } => {
+            commands::tree::run(id.as_deref(), depth, json).await
+        }
         Commands::Order { json } => commands::order::run(json).await,
         Commands::Migrate => commands::migrate::run().await,
         Commands::Serve => {

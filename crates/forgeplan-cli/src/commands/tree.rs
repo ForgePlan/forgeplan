@@ -1,0 +1,393 @@
+use std::collections::{BTreeMap, HashSet};
+
+use console::style;
+
+use forgeplan_core::db::store::LanceStore;
+
+use crate::commands::common;
+use crate::ui;
+
+/// `forgeplan tree [ID] [--depth N] [--json]` — ASCII tree view of artifact hierarchy.
+pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<()> {
+    let store = common::store().await?;
+
+    let (children_map, all_records) = build_hierarchy(&store).await?;
+
+    if json {
+        return render_json(id, depth, &children_map, &all_records);
+    }
+
+    if let Some(root_id) = id {
+        if !all_records.contains_key(root_id) {
+            ui::error_hint(
+                &format!("Artifact '{}' not found", root_id),
+                "Run `forgeplan list` to see available artifacts",
+            );
+            anyhow::bail!("Artifact '{}' not found", root_id);
+        }
+        println!();
+        print_subtree(root_id, &children_map, &all_records, 0, depth, "");
+    } else {
+        let has_parent: HashSet<&str> = children_map
+            .values()
+            .flat_map(|kids| kids.iter().map(|s| s.as_str()))
+            .collect();
+
+        let mut roots: Vec<&str> = all_records
+            .keys()
+            .map(|s| s.as_str())
+            .filter(|id| !has_parent.contains(id))
+            .collect();
+        roots.sort();
+
+        if roots.is_empty() {
+            ui::info("No artifacts found. Run `forgeplan new` to create one.");
+            return Ok(());
+        }
+
+        println!();
+        for root in &roots {
+            print_subtree(root, &children_map, &all_records, 0, depth, "");
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+/// Record info needed for display.
+struct DisplayRecord {
+    title: String,
+    status: String,
+    r_eff: f64,
+}
+
+/// Build parent->children mapping from all relations and parent_epic fields.
+async fn build_hierarchy(
+    store: &LanceStore,
+) -> anyhow::Result<(BTreeMap<String, Vec<String>>, BTreeMap<String, DisplayRecord>)> {
+    let records = store.list_records(None).await?;
+    let relations = store.get_all_relations().await?;
+
+    let mut records_map = BTreeMap::new();
+    for r in &records {
+        records_map.insert(
+            r.id.clone(),
+            DisplayRecord {
+                title: r.title.clone(),
+                status: r.status.clone(),
+                r_eff: r.r_eff_score,
+            },
+        );
+    }
+
+    // Edge direction: source -> target (source is child, target is parent).
+    // e.g., RFC-001 --based_on--> PRD-001 means RFC is child of PRD.
+    let child_relations: HashSet<&str> =
+        ["based_on", "refines", "informs", "belongs_to", "child_of"]
+            .into_iter()
+            .collect();
+
+    let mut children_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut has_parent: HashSet<String> = HashSet::new();
+
+    for (source, target, relation) in &relations {
+        if child_relations.contains(relation.as_str()) && !has_parent.contains(source) {
+            has_parent.insert(source.clone());
+            children_map
+                .entry(target.clone())
+                .or_default()
+                .push(source.clone());
+        }
+    }
+
+    for r in &records {
+        if let Some(parent) = &r.parent_epic {
+            if !parent.is_empty() && !has_parent.contains(&r.id) {
+                has_parent.insert(r.id.clone());
+                children_map
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(r.id.clone());
+            }
+        }
+    }
+
+    for kids in children_map.values_mut() {
+        kids.sort();
+    }
+
+    Ok((children_map, records_map))
+}
+
+/// Print the tree rooted at `id`. This is the entry point that prints the root
+/// node without any connector, then recurses into children.
+fn print_subtree(
+    id: &str,
+    children_map: &BTreeMap<String, Vec<String>>,
+    records: &BTreeMap<String, DisplayRecord>,
+    current_depth: usize,
+    max_depth: usize,
+    _prefix: &str,
+) {
+    print_node_recursive(id, children_map, records, current_depth, max_depth, "", "");
+}
+
+/// Recursive tree printer. `line_prefix` is printed before this node's line.
+/// `child_prefix` is the base prefix for this node's children lines.
+fn print_node_recursive(
+    id: &str,
+    children_map: &BTreeMap<String, Vec<String>>,
+    records: &BTreeMap<String, DisplayRecord>,
+    current_depth: usize,
+    max_depth: usize,
+    line_prefix: &str,
+    child_prefix: &str,
+) {
+    println!("{}{}", line_prefix, format_node(id, records));
+
+    if current_depth >= max_depth {
+        return;
+    }
+
+    let empty = Vec::new();
+    let kids = children_map.get(id).unwrap_or(&empty);
+
+    for (i, child) in kids.iter().enumerate() {
+        let is_last = i == kids.len() - 1;
+        let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " };
+        let continuation = if is_last { "   " } else { "\u{2502}  " };
+
+        print_node_recursive(
+            child,
+            children_map,
+            records,
+            current_depth + 1,
+            max_depth,
+            &format!("{}{}", child_prefix, connector),
+            &format!("{}{}", child_prefix, continuation),
+        );
+    }
+}
+
+/// Format a single node display line (without prefix/connector).
+fn format_node(id: &str, records: &BTreeMap<String, DisplayRecord>) -> String {
+    let display = records.get(id);
+    let title = display
+        .map(|d| truncate(&d.title, 40))
+        .unwrap_or_else(|| id.to_string());
+    let status = display.map(|d| d.status.as_str()).unwrap_or("unknown");
+    let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
+
+    format!(
+        "{} \"{}\" [{}] R={} {}",
+        style(id).bold(),
+        title,
+        ui::styled_status(status),
+        ui::styled_reff(r_eff),
+        reff_bar(r_eff),
+    )
+}
+
+/// Render R_eff as a 10-char bar.
+fn reff_bar(score: f64) -> String {
+    let filled = (score * 10.0).round() as usize;
+    let filled = filled.min(10);
+    let empty = 10 - filled;
+    let bar = format!(
+        "{}{}",
+        "\u{2588}".repeat(filled),
+        "\u{2591}".repeat(empty)
+    );
+    if score >= 0.5 {
+        style(bar).green().to_string()
+    } else if score >= 0.1 {
+        style(bar).yellow().to_string()
+    } else {
+        style(bar).red().dim().to_string()
+    }
+}
+
+/// Truncate a string to max_len chars, appending "..." if truncated.
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len - 3).collect();
+        format!("{}...", truncated)
+    }
+}
+
+/// Render JSON output.
+fn render_json(
+    id: Option<&str>,
+    depth: usize,
+    children_map: &BTreeMap<String, Vec<String>>,
+    records: &BTreeMap<String, DisplayRecord>,
+) -> anyhow::Result<()> {
+    if let Some(root_id) = id {
+        let tree = build_json_node(root_id, children_map, records, 0, depth);
+        println!("{}", serde_json::to_string_pretty(&tree)?);
+    } else {
+        let has_parent: HashSet<&str> = children_map
+            .values()
+            .flat_map(|kids| kids.iter().map(|s| s.as_str()))
+            .collect();
+
+        let mut roots: Vec<&str> = records
+            .keys()
+            .map(|s| s.as_str())
+            .filter(|id| !has_parent.contains(id))
+            .collect();
+        roots.sort();
+
+        let trees: Vec<serde_json::Value> = roots
+            .iter()
+            .map(|root| build_json_node(root, children_map, records, 0, depth))
+            .collect();
+
+        println!("{}", serde_json::to_string_pretty(&trees)?);
+    }
+    Ok(())
+}
+
+/// Build a JSON tree node recursively.
+fn build_json_node(
+    id: &str,
+    children_map: &BTreeMap<String, Vec<String>>,
+    records: &BTreeMap<String, DisplayRecord>,
+    current_depth: usize,
+    max_depth: usize,
+) -> serde_json::Value {
+    let display = records.get(id);
+    let title = display.map(|d| d.title.as_str()).unwrap_or("");
+    let status = display.map(|d| d.status.as_str()).unwrap_or("unknown");
+    let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
+
+    let kind = id.split('-').next().unwrap_or("").to_lowercase();
+
+    let children = if current_depth < max_depth {
+        let empty = Vec::new();
+        let kids = children_map.get(id).unwrap_or(&empty);
+        kids.iter()
+            .map(|child| {
+                build_json_node(child, children_map, records, current_depth + 1, max_depth)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    serde_json::json!({
+        "id": id,
+        "title": title,
+        "kind": kind,
+        "status": status,
+        "r_eff": r_eff,
+        "children": children,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hello", 40), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        let long = "a".repeat(50);
+        let result = truncate(&long, 40);
+        assert_eq!(result.len(), 40);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn reff_bar_full() {
+        let bar = reff_bar(1.0);
+        // Should contain 10 filled blocks (Unicode may be styled)
+        assert!(!bar.is_empty());
+    }
+
+    #[test]
+    fn reff_bar_empty() {
+        let bar = reff_bar(0.0);
+        assert!(!bar.is_empty());
+    }
+
+    #[test]
+    fn reff_bar_half() {
+        let bar = reff_bar(0.5);
+        assert!(!bar.is_empty());
+    }
+
+    #[test]
+    fn build_json_node_leaf() {
+        let records = BTreeMap::from([(
+            "PRD-001".to_string(),
+            DisplayRecord {
+                title: "Test".to_string(),
+                status: "draft".to_string(),
+                r_eff: 0.0,
+            },
+        )]);
+        let children_map = BTreeMap::new();
+
+        let node = build_json_node("PRD-001", &children_map, &records, 0, 99);
+        assert_eq!(node["id"], "PRD-001");
+        assert_eq!(node["title"], "Test");
+        assert_eq!(node["kind"], "prd");
+        assert_eq!(node["children"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn build_json_node_with_children() {
+        let records = BTreeMap::from([
+            (
+                "EPIC-001".to_string(),
+                DisplayRecord {
+                    title: "Epic".to_string(),
+                    status: "active".to_string(),
+                    r_eff: 1.0,
+                },
+            ),
+            (
+                "PRD-001".to_string(),
+                DisplayRecord {
+                    title: "Feature".to_string(),
+                    status: "draft".to_string(),
+                    r_eff: 0.0,
+                },
+            ),
+        ]);
+        let children_map = BTreeMap::from([(
+            "EPIC-001".to_string(),
+            vec!["PRD-001".to_string()],
+        )]);
+
+        let node = build_json_node("EPIC-001", &children_map, &records, 0, 99);
+        let children = node["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["id"], "PRD-001");
+    }
+
+    #[test]
+    fn build_json_node_respects_depth() {
+        let records = BTreeMap::from([
+            ("A-001".to_string(), DisplayRecord { title: "A".into(), status: "active".into(), r_eff: 0.0 }),
+            ("B-001".to_string(), DisplayRecord { title: "B".into(), status: "active".into(), r_eff: 0.0 }),
+        ]);
+        let children_map = BTreeMap::from([("A-001".to_string(), vec!["B-001".to_string()])]);
+
+        // depth=0 should not include children
+        let node = build_json_node("A-001", &children_map, &records, 0, 0);
+        assert_eq!(node["children"].as_array().unwrap().len(), 0);
+
+        // depth=1 should include children
+        let node = build_json_node("A-001", &children_map, &records, 0, 1);
+        assert_eq!(node["children"].as_array().unwrap().len(), 1);
+    }
+}

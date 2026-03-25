@@ -1753,3 +1753,97 @@ fn context_command_human_output() {
         "Human output should contain 'F-G-R:', got: {}", stdout
     );
 }
+
+#[test]
+fn tree_shows_hierarchy() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create epic and PRD
+    forgeplan()
+        .args(["new", "epic", "My Epic"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EPIC-001"));
+
+    forgeplan()
+        .args(["new", "prd", "My Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // Link PRD -> Epic (child relation)
+    forgeplan()
+        .args(["link", "PRD-001", "EPIC-001", "--relation", "refines"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Run tree — should show both artifacts in hierarchy
+    let output = forgeplan()
+        .args(["tree"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "tree should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("EPIC-001"),
+        "tree should contain EPIC-001, got: {}", stdout
+    );
+    assert!(
+        stdout.contains("PRD-001"),
+        "tree should contain PRD-001, got: {}", stdout
+    );
+    assert!(
+        stdout.contains("My Epic"),
+        "tree should contain epic title, got: {}", stdout
+    );
+}
+
+#[test]
+fn tree_json_is_valid() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "JSON Tree Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["tree", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "tree --json should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("tree --json output should be valid JSON: {}. Got: {}", e, stdout));
+
+    assert!(parsed.is_array(), "root should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert!(!arr.is_empty(), "array should have at least one root");
+
+    let first = &arr[0];
+    assert_eq!(first["id"], "PRD-001");
+    assert_eq!(first["kind"], "prd");
+    assert!(first["children"].is_array(), "children should be an array");
+}
