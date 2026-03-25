@@ -221,8 +221,14 @@ fn format_data_cols(id: &str, records: &BTreeMap<String, DisplayRecord>) -> Stri
     let status = display.map(|d| d.status.as_str()).unwrap_or("?");
     let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
 
-    let bar = reff_bar(r_eff);
-    let reff_str = ui::styled_reff(r_eff);
+    // Evidence, note, refresh don't have R_eff — show dash instead of bar
+    let is_non_scorable = matches!(kind, "evidence" | "note" | "refresh");
+    let (bar, reff_str) = if is_non_scorable {
+        (style("··········".to_string()).dim().to_string(), style(" ·· ").dim().to_string())
+    } else {
+        (reff_bar(r_eff), ui::styled_reff(r_eff))
+    };
+
     let status_styled = ui::styled_status(status);
     let status_pad = " ".repeat(12_usize.saturating_sub(status.len()));
     let kind_pad = " ".repeat(8_usize.saturating_sub(kind.len()));
