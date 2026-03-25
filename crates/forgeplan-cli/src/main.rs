@@ -192,6 +192,9 @@ enum Commands {
     Activate {
         /// Artifact ID
         id: String,
+        /// Force activation even if validation has MUST errors
+        #[arg(long)]
+        force: bool,
     },
     /// Supersede an artifact (active → superseded) with replacement link
     Supersede {
@@ -415,7 +418,7 @@ async fn main() -> anyhow::Result<()> {
             explain,
         } => commands::route::run(&description, explain).await,
         Commands::Review { id } => commands::review::run(&id).await,
-        Commands::Activate { id } => commands::activate::run(&id).await,
+        Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,

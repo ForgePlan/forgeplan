@@ -3,6 +3,10 @@ use std::collections::BTreeMap;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
+use crate::artifact::frontmatter::Frontmatter;
+use crate::artifact::types::{ArtifactKind, Mode};
+use crate::status::derived::{derive_status, DerivedStatus};
+use crate::validation;
 
 /// R_eff threshold below which an artifact is considered AT RISK.
 const REFF_AT_RISK_THRESHOLD: f64 = 0.3;
@@ -17,6 +21,7 @@ pub struct HealthReport {
     pub blind_spots: Vec<BlindSpot>,
     pub stale_count: usize,
     pub orphans: Vec<String>,
+    pub by_derived_status: Vec<(DerivedStatus, usize)>,
     pub next_actions: Vec<String>,
 }
 
@@ -78,6 +83,12 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     let orphans = find_orphans(&non_evidence, &outgoing, &incoming);
     let blind_spots = find_blind_spots(&non_evidence, &evidence_records, &outgoing);
     let at_risk = find_at_risk(&non_evidence, &evidence_records, &outgoing);
+
+    // Compute derived status for each non-evidence artifact
+    let by_derived_status = compute_derived_status_breakdown(
+        &non_evidence, &evidence_records, &outgoing,
+    );
+
     let next_actions = generate_next_actions(
         total, &by_status, &blind_spots, stale_count, &orphans,
     );
@@ -90,6 +101,7 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         blind_spots,
         stale_count,
         orphans,
+        by_derived_status,
         next_actions,
     })
 }
@@ -225,6 +237,79 @@ fn generate_next_actions(
     // Cap at 3 most important actions
     actions.truncate(3);
     actions
+}
+
+fn compute_derived_status_breakdown(
+    records: &[&ArtifactRecord],
+    evidence_records: &[ArtifactRecord],
+    outgoing: &RelationIndex,
+) -> Vec<(DerivedStatus, usize)> {
+    let mut counts: BTreeMap<DerivedStatus, usize> = BTreeMap::new();
+
+    for record in records {
+        // Check if artifact has linked evidence and compute R_eff
+        let mut ev_items = Vec::new();
+        for ev in evidence_records {
+            if is_evidence_linked(&record.id, &ev.id, outgoing) {
+                ev_items.push(parse_evidence_from_record(ev));
+            }
+        }
+        let has_evidence = !ev_items.is_empty();
+        let r_eff_score = if has_evidence { reff::r_eff(&ev_items) } else { 0.0 };
+
+        // Run validation to check if MUST rules pass
+        let validation_passed = check_validation_passed(record);
+
+        let ds = derive_status(
+            &record.status,
+            &record.body,
+            &record.kind,
+            has_evidence,
+            r_eff_score,
+            validation_passed,
+        );
+        *counts.entry(ds).or_default() += 1;
+    }
+
+    // Return in pipeline order (Stub → Shaped → Validated → Evidenced → Activated)
+    let order = [
+        DerivedStatus::Stub,
+        DerivedStatus::Shaped,
+        DerivedStatus::Validated,
+        DerivedStatus::Evidenced,
+        DerivedStatus::Activated,
+    ];
+    order
+        .into_iter()
+        .filter_map(|ds| {
+            let count = counts.get(&ds).copied().unwrap_or(0);
+            if count > 0 { Some((ds, count)) } else { None }
+        })
+        .collect()
+}
+
+/// Run validation on an artifact record and return whether it passes (0 MUST errors).
+/// Constructs a minimal frontmatter from record fields for the validator.
+fn check_validation_passed(record: &ArtifactRecord) -> bool {
+    let kind: ArtifactKind = match record.kind.parse() {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+    let depth: Mode = record.depth.parse().unwrap_or(Mode::Standard);
+
+    // Build a minimal YAML frontmatter from the record fields
+    let mut fm = Frontmatter::new();
+    fm.insert("id".into(), serde_yml::Value::String(record.id.clone()));
+    fm.insert("status".into(), serde_yml::Value::String(record.status.clone()));
+    fm.insert("title".into(), serde_yml::Value::String(record.title.clone()));
+    fm.insert("kind".into(), serde_yml::Value::String(record.kind.clone()));
+    fm.insert("depth".into(), serde_yml::Value::String(record.depth.clone()));
+    if let Some(ref author) = record.author {
+        fm.insert("author".into(), serde_yml::Value::String(author.clone()));
+    }
+
+    let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
+    result.passed()
 }
 
 /// Check if an artifact has any linked evidence (in either direction).

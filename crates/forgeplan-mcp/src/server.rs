@@ -188,6 +188,9 @@ struct ReviewParams {
 struct ActivateParams {
     /// Artifact ID to activate
     id: String,
+    /// Force activation even if validation has MUST errors
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -889,8 +892,18 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        match forgeplan_core::lifecycle::activate(&store, &p.id).await {
-            Ok(()) => Ok(text_result(&format!("Activated {} (draft → active)", p.id))),
+        match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
+            Ok(result) => {
+                let mut msg = format!("Activated {} (draft → active)", p.id);
+                if result.forced {
+                    msg.push_str(&format!(
+                        "\nWarning: Activated with {} validation error{}",
+                        result.must_errors.len(),
+                        if result.must_errors.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                Ok(text_result(&msg))
+            }
             Err(e) => Ok(err_result(&e.to_string())),
         }
     }
@@ -956,6 +969,7 @@ impl ForgeplanServer {
             })).collect::<Vec<_>>(),
             "stale_count": report.stale_count,
             "orphans": report.orphans,
+            "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
             "next_actions": report.next_actions,
         })))
     }
