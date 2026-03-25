@@ -45,11 +45,43 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
             return Ok(());
         }
 
+        // Header
         println!();
+        println!(
+            "{} {:<tree_w$} {:>5}  {:<12} {:>5}  {}",
+            style("Forgeplan Tree").bold(),
+            "", "", "", "", "",
+            tree_w = TREE_COL_WIDTH - 15,
+        );
+        println!("{}", style("═".repeat(80)).dim());
+        println!(
+            "{:<tree_w$} {:>5}  {:<12} {:>5}  {}",
+            style("TREE").bold().underlined(),
+            style("KIND").bold().underlined(),
+            style("STATUS").bold().underlined(),
+            style("R_EFF").bold().underlined(),
+            style("PROGRESS").bold().underlined(),
+            tree_w = TREE_COL_WIDTH,
+        );
+        println!("{}", style("─".repeat(80)).dim());
+
         for root in &roots {
             print_subtree(root, &children_map, &all_records, 0, depth, "");
-            println!();
         }
+
+        // Summary
+        let total = all_records.len();
+        let active = all_records.values().filter(|r| r.status == "active").count();
+        let draft = all_records.values().filter(|r| r.status == "draft").count();
+        let deprecated = all_records.values().filter(|r| r.status == "deprecated").count();
+        println!("{}", style("─".repeat(80)).dim());
+        println!(
+            "  {} artifacts | {} active | {} draft | {} deprecated",
+            style(total).bold(),
+            style(active).green(),
+            style(draft).dim(),
+            style(deprecated).red(),
+        );
     }
 
     Ok(())
@@ -57,10 +89,14 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
 
 /// Record info needed for display.
 struct DisplayRecord {
+    kind: String,
     title: String,
     status: String,
     r_eff: f64,
 }
+
+/// Column width for the tree part (left side).
+const TREE_COL_WIDTH: usize = 50;
 
 /// Build parent->children mapping from all relations and parent_epic fields.
 async fn build_hierarchy(
@@ -74,6 +110,7 @@ async fn build_hierarchy(
         records_map.insert(
             r.id.clone(),
             DisplayRecord {
+                kind: r.kind.clone(),
                 title: r.title.clone(),
                 status: r.status.clone(),
                 r_eff: r.r_eff_score,
@@ -144,7 +181,8 @@ fn print_node_recursive(
     line_prefix: &str,
     child_prefix: &str,
 ) {
-    println!("{}{}", line_prefix, format_node(id, records));
+    let prefix_visual_len = line_prefix.chars().count();
+    println!("{}{}", line_prefix, format_node(id, records, prefix_visual_len));
 
     if current_depth >= max_depth {
         return;
@@ -170,19 +208,32 @@ fn print_node_recursive(
     }
 }
 
-/// Format a single node display line (without prefix/connector).
-fn format_node(id: &str, records: &BTreeMap<String, DisplayRecord>) -> String {
+/// Format a single node as columnar line: TREE | KIND | STATUS | R_EFF | BAR
+/// `prefix_len` is the visual width of the tree prefix (connectors + indentation).
+fn format_node(id: &str, records: &BTreeMap<String, DisplayRecord>, prefix_len: usize) -> String {
     let display = records.get(id);
     let title = display
-        .map(|d| truncate(&d.title, 40))
-        .unwrap_or_else(|| id.to_string());
+        .map(|d| truncate(&d.title, 30))
+        .unwrap_or_else(|| "?".to_string());
+    let kind = display.map(|d| d.kind.as_str()).unwrap_or("?");
     let status = display.map(|d| d.status.as_str()).unwrap_or("unknown");
     let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
 
+    // Tree column: "ID Title" — pad to TREE_COL_WIDTH
+    let tree_text = format!("{} \"{}\"", id, title);
+    let tree_plain_len = prefix_len + id.len() + 2 + title.len() + 1;
+    let pad = if tree_plain_len < TREE_COL_WIDTH {
+        " ".repeat(TREE_COL_WIDTH - tree_plain_len)
+    } else {
+        " ".to_string()
+    };
+
     format!(
-        "{} \"{}\" [{}] R={} {}",
+        "{} \"{}\"{} {:>5}  {:<12} {:>5}  {}",
         style(id).bold(),
         title,
+        pad,
+        style(kind).dim(),
         ui::styled_status(status),
         ui::styled_reff(r_eff),
         reff_bar(r_eff),
@@ -329,6 +380,7 @@ mod tests {
         let records = BTreeMap::from([(
             "PRD-001".to_string(),
             DisplayRecord {
+                kind: "prd".to_string(),
                 title: "Test".to_string(),
                 status: "draft".to_string(),
                 r_eff: 0.0,
@@ -349,6 +401,7 @@ mod tests {
             (
                 "EPIC-001".to_string(),
                 DisplayRecord {
+                    kind: "epic".to_string(),
                     title: "Epic".to_string(),
                     status: "active".to_string(),
                     r_eff: 1.0,
@@ -357,6 +410,7 @@ mod tests {
             (
                 "PRD-001".to_string(),
                 DisplayRecord {
+                    kind: "prd".to_string(),
                     title: "Feature".to_string(),
                     status: "draft".to_string(),
                     r_eff: 0.0,
@@ -377,8 +431,8 @@ mod tests {
     #[test]
     fn build_json_node_respects_depth() {
         let records = BTreeMap::from([
-            ("A-001".to_string(), DisplayRecord { title: "A".into(), status: "active".into(), r_eff: 0.0 }),
-            ("B-001".to_string(), DisplayRecord { title: "B".into(), status: "active".into(), r_eff: 0.0 }),
+            ("A-001".to_string(), DisplayRecord { kind: "prd".into(), title: "A".into(), status: "active".into(), r_eff: 0.0 }),
+            ("B-001".to_string(), DisplayRecord { kind: "rfc".into(), title: "B".into(), status: "active".into(), r_eff: 0.0 }),
         ]);
         let children_map = BTreeMap::from([("A-001".to_string(), vec!["B-001".to_string()])]);
 
