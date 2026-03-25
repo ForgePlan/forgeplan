@@ -21,7 +21,8 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
 
     for entry in &entries {
         let date = entry.created_at.split('T').next().unwrap_or(&entry.created_at);
-        let risk_indicator = if entry.evidence_count == 0 {
+        let is_terminal = entry.status == "deprecated" || entry.status == "superseded";
+        let risk_indicator = if entry.evidence_count == 0 && !is_terminal {
             " ⚠ NO EVIDENCE"
         } else if entry.has_stale_evidence {
             " ⏰ STALE"
@@ -46,7 +47,10 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
     }
 
     // Summary
-    let no_evidence = entries.iter().filter(|e| e.evidence_count == 0).count();
+    let no_evidence = entries.iter()
+        .filter(|e| e.evidence_count == 0)
+        .filter(|e| e.status != "deprecated" && e.status != "superseded")
+        .count();
     if no_evidence > 0 {
         println!();
         println!(

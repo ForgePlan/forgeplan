@@ -9,14 +9,14 @@
 - v0.11.0 tagged, PRs #35-#52 merged
 - 0 compiler warnings
 
-### P0: Integrity Issues (PROB-012 dogfood audit)
-- [ ] **Semantic search broken** — feature flag not propagated CLI→core
-- [ ] **R_eff divergence** — tree shows stored 0.00 vs computed 1.0 (score/context)
-- [ ] **health vs journal inconsistency** — health says healthy, journal shows 23 without evidence
-- [ ] **coverage 0%** — no artifacts have affected_files sections
-- [ ] **route underestimates** — complex tasks rated Tactical
+### P0: Integrity Issues (PROB-012 dogfood audit) ✅
+- [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
+- [x] **R_eff divergence** — update_r_eff_score() persists to LanceDB, NaN guard
+- [x] **health vs journal inconsistency** — expanded blind spots + decision kinds aligned
+- [x] **coverage 0%** — Affected Files section added to PRD/RFC templates
+- [x] **route underestimates** — 4 keyword triggers + 2 heuristics added
 
-Next: PRD for remediation → ADR for R_eff source-of-truth → phased fixes
+Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 403 tests.
 
 ---
 
@@ -34,9 +34,10 @@ Next: PRD for remediation → ADR for R_eff source-of-truth → phased fixes
 
 ## Backlog (приоритизированный)
 
-### P0: Broken
-- [ ] **Embed feature fix** — fastembed API change broke `--all-features` (3 compiler errors)
+### P1: Embed & Distribution
+- [ ] **Embed feature fix** — fastembed API v5 broke `--all-features` (upstream dep, feature flag propagation fixed in PROB-012)
   - Блокирует: semantic/vector search (PRD-018)
+  - Downgraded from P0→P1: feature flag chain fixed, actual fix depends on fastembed upstream
 
 ### P1: Distribution & Adoption
 - [ ] brew tap formula (macOS)

@@ -26,6 +26,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let mut visited = HashSet::new();
     let report = reff::r_eff_recursive(target_id, &store, &mut visited).await?;
 
+    // Write R_eff back to LanceDB (soft error — don't block display)
+    if let Err(e) = store.update_r_eff_score(target_id, report.r_eff).await {
+        eprintln!("  Warning: could not persist R_eff score: {e}");
+    }
+
     // --- Flat evidence list for display (backward-compat) ---
     let outgoing = store.get_relations(target_id).await?;
     let evidence_targets: Vec<String> = outgoing

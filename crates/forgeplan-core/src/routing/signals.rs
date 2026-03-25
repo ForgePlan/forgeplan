@@ -86,6 +86,38 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
         min_depth: Mode::Standard,
         weight: 0.6,
     },
+    // Bug / Defect patterns → Standard+
+    KeywordTrigger {
+        keywords: &["bug", "bugfix", "defect", "broken", "fix bug", "regression"],
+        id: "keyword:bug_fix",
+        description: "Bug or defect fix detected",
+        min_depth: Mode::Standard,
+        weight: 0.6,
+    },
+    // Severity / Priority patterns → Deep+
+    KeywordTrigger {
+        keywords: &["p0", "critical", "urgent", "high priority", "severity", "hotfix"],
+        id: "keyword:severity",
+        description: "High severity or priority issue detected",
+        min_depth: Mode::Deep,
+        weight: 0.8,
+    },
+    // Integrity / Consistency patterns → Standard+
+    KeywordTrigger {
+        keywords: &["inconsistency", "divergence", "integrity", "mismatch", "out of sync", "data loss"],
+        id: "keyword:integrity",
+        description: "Data integrity or consistency issue detected",
+        min_depth: Mode::Standard,
+        weight: 0.7,
+    },
+    // Multi-issue patterns → Standard+
+    KeywordTrigger {
+        keywords: &["multiple issues", "several bugs", "batch fix", "remediation", "audit findings"],
+        id: "keyword:multi_issue",
+        description: "Multiple issues or batch remediation detected",
+        min_depth: Mode::Standard,
+        weight: 0.7,
+    },
 ];
 
 /// Extract signals from a text description (task description or artifact body).
@@ -113,6 +145,46 @@ pub fn extract(text: &str) -> Vec<Signal> {
             minimum_depth: Mode::Standard,
             weight: 0.4,
         });
+    }
+
+    // Bug density heuristic: multiple bug-related words → at least Standard
+    let bug_words = ["bug", "fix", "broken", "issue", "error", "fail"];
+    let bug_count = bug_words.iter().filter(|w| lower.contains(*w)).count();
+    if bug_count >= 3 {
+        signals.push(Signal {
+            id: "heuristic:bug_density".into(),
+            description: format!("{bug_count} bug-related words found"),
+            minimum_depth: Mode::Standard,
+            weight: 0.7,
+        });
+    }
+
+    // Detect "N issues/bugs/problems" pattern where N > 2
+    // The number may not be immediately before the target word (e.g. "5 P0 integrity issues")
+    // Only emit ONE signal to avoid duplicate weight inflation
+    // Uses word-boundary check to avoid substring matches ("tissues" ≠ "issues")
+    'issue_count: for word in ["issues", "bugs", "problems", "fixes", "errors"] {
+        if let Some(pos) = lower.find(word) {
+            // Word boundary: char before must be whitespace or start of string
+            let at_boundary = pos == 0 || lower.as_bytes().get(pos - 1).map_or(true, |b| !b.is_ascii_alphanumeric());
+            if !at_boundary {
+                continue;
+            }
+            let prefix = lower.get(..pos).unwrap_or("");
+            for token in prefix.split_whitespace() {
+                if let Ok(n) = token.parse::<u32>() {
+                    if n > 2 {
+                        signals.push(Signal {
+                            id: "heuristic:issue_count".into(),
+                            description: format!("{n} {word}"),
+                            minimum_depth: Mode::Standard,
+                            weight: 0.7,
+                        });
+                        break 'issue_count;
+                    }
+                }
+            }
+        }
     }
 
     // Reversibility signal: explicit mentions
@@ -263,5 +335,48 @@ mod tests {
     fn structural_epic() {
         let signals = extract_structural("body", 0, true);
         assert!(signals.iter().any(|s| s.id == "structure:parent_epic"));
+    }
+
+    #[test]
+    fn p0_integrity_issues_not_tactical() {
+        let signals = extract("Fix 5 P0 integrity issues");
+        // Should match severity (P0), integrity, and issue_count (5 issues)
+        assert!(!signals.is_empty(), "should not be empty for P0 integrity issues");
+        assert!(signals.iter().any(|s| s.id == "keyword:severity"));
+        assert!(signals.iter().any(|s| s.id == "keyword:integrity"));
+        assert!(signals.iter().any(|s| s.id == "heuristic:issue_count"));
+    }
+
+    #[test]
+    fn simple_typo_fix_remains_tactical() {
+        let signals = extract("Fix a typo in the readme");
+        // "fix" alone triggers keyword:bug_fix, but no severity/integrity/density
+        let non_bug = signals.iter().filter(|s| s.id != "keyword:bug_fix").count();
+        assert_eq!(non_bug, 0, "typo fix should not trigger severity or integrity");
+    }
+
+    #[test]
+    fn critical_security_bug_triggers_deep() {
+        let signals = extract("Critical security bug in auth system");
+        assert!(signals.iter().any(|s| s.id == "keyword:severity"));
+        assert!(signals.iter().any(|s| s.id == "keyword:security"));
+    }
+
+    #[test]
+    fn bug_density_heuristic() {
+        let signals = extract("This bug causes error when fix is applied and the issue persists");
+        assert!(signals.iter().any(|s| s.id == "heuristic:bug_density"));
+    }
+
+    #[test]
+    fn issue_count_heuristic() {
+        let signals = extract("We found 5 issues in the codebase");
+        assert!(signals.iter().any(|s| s.id == "heuristic:issue_count" && s.description == "5 issues"));
+    }
+
+    #[test]
+    fn issue_count_below_threshold() {
+        let signals = extract("We found 2 issues in the codebase");
+        assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"), "2 issues should not trigger");
     }
 }

@@ -203,7 +203,7 @@ mod tests {
     fn styled_reff_threshold_correctness() {
         // Green zone: >= 0.5
         let green = styled_reff(0.5);
-        let also_green = styled_reff(1.0);
+        let _also_green = styled_reff(1.0);
         assert_eq!(green, green); // same threshold, same output structure
 
         // Yellow zone: 0.1 <= x < 0.5

@@ -402,6 +402,59 @@ npx skills add ForgePlan/forgeplan --skill forge
 
 ---
 
+## Forge Mode — permission model для AI агентов
+
+При работе с AI агентами (Claude Code, Cursor) в автономном режиме используйте **Forge Mode** — модель разрешений с 3 зонами доверия (FPF B.3 Trust Calculus):
+
+| Зона | Что | Режим | Примеры |
+|------|-----|-------|---------|
+| **Green** | Read-only + build + test + forgeplan | Авто-разрешено | `cargo test`, `forgeplan health`, `git status` |
+| **Yellow** | Создание/редакция файлов, git add/commit | Авто-разрешено (acceptEdits) | Write, Edit, `git add`, `git commit` |
+| **Red** | Необратимые действия | **BLOCKED** | `git push --force`, `rm -rf /`, `cargo publish` |
+
+### Настройка (Claude Code)
+
+1. **Whitelist** в `settings.local.json` — wildcard patterns:
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)", "Bash(forgeplan:*)", "Bash(git:*)",
+      "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)",
+      "mcp__hindsight__memory_recall", "mcp__hindsight__memory_retain"
+    ]
+  }
+}
+```
+
+2. **Safety hook** в `.claude/hooks/forge-safety-hook.sh` — PreToolUse blacklist:
+```bash
+# Blocked даже в yolo mode:
+# git push --force, git reset --hard, rm -rf /, cargo publish
+```
+
+3. **Режим Claude Code**: `acceptEdits` (файлы авто, bash через whitelist)
+
+### /forge-cycle — полный FPF-aligned dev cycle
+
+Команда `/forge-cycle PRD-XXX` запускает 8-фазный цикл:
+
+```
+Phase 0: OBSERVE    → forgeplan health + stale + fpf (что происходит?)
+Phase 1: ROUTE      → forgeplan route (какой depth?)
+Phase 2: SPRINT     → /sprint (план волн)
+Phase 3: BUILD      → /team-up (реализация с Rust skills)
+Phase 4: AUDIT      → /audit (adversarial review, MUST find issues)
+Phase 5: FIXES      → /team-up (исправления по аудиту)
+Phase 6: EVIDENCE   → forgeplan new evidence + score + activate
+Phase 7: COMMIT     → git commit + PR + hindsight
+Phase 8: NEXT       → forgeplan health → следующая фича
+```
+
+**FPF auto-resolve**: при конфликтах/выборах агент автоматически применяет ADI cycle (Abduction → Deduction → Induction) + WLNK + Reversibility check. Спрашивает пользователя только при необратимых решениях.
+
+---
+
 ## Подводные камни (из реального dogfood)
 
 ### 1. EvidencePack без structured fields → R_eff = 0.1
