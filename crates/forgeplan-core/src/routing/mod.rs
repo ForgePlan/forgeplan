@@ -170,33 +170,46 @@ pub async fn route_with_llm_and_context(
     llm_config: &LlmConfig,
     fpf_context: Option<&str>,
 ) -> RoutingResult {
+    // Short-circuit: empty or very short descriptions don't need LLM
+    if description.trim().len() < 3 {
+        return route(description);
+    }
+
     // Check if API key is available before making the call
     if llm_config.resolve_api_key().is_none() && !llm_config.provider.eq("ollama") {
         return route(description);
     }
 
-    match crate::llm::route::route_with_context(llm_config, description, fpf_context).await {
-        Ok(response) => match parse_llm_route_response(&response) {
-            Some((depth, explanation)) => {
-                let pipeline = pipeline::for_depth(&depth);
-                RoutingResult {
-                    depth,
-                    pipeline,
-                    triggers: vec![],
-                    confidence: 0.9, // LLM classification assumed high confidence
-                    level: 1,
-                    explanation: Some(explanation),
-                }
-            }
-            None => {
-                // Unparseable LLM response — fallback to Level 0
-                route(description)
-            }
-        },
-        Err(_) => {
-            // LLM call failed — fallback to Level 0
+    // Route-specific timeout: 15 seconds (vs 120s global LLM timeout).
+    // Route should be fast — if LLM takes too long, fall back to keywords.
+    let llm_future = crate::llm::route::route_with_context(llm_config, description, fpf_context);
+    let timeout_result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        llm_future,
+    ).await;
+
+    match timeout_result {
+        Err(_elapsed) => {
+            // Timeout — fallback to Level 0
             route(description)
         }
+        Ok(llm_result) => match llm_result {
+            Ok(response) => match parse_llm_route_response(&response) {
+                Some((depth, explanation)) => {
+                    let pipeline = pipeline::for_depth(&depth);
+                    RoutingResult {
+                        depth,
+                        pipeline,
+                        triggers: vec![],
+                        confidence: 0.9,
+                        level: 1,
+                        explanation: Some(explanation),
+                    }
+                }
+                None => route(description),
+            },
+            Err(_) => route(description),
+        },
     }
 }
 
@@ -400,5 +413,30 @@ mod tests {
         let result = route("Simple task");
         let display = format!("{result}");
         assert!(display.contains("## Level: Level 0 (keywords)"));
+    }
+
+    #[test]
+    fn test_route_with_llm_short_input_skips_llm() {
+        // Very short inputs (<3 chars) should skip LLM and use Level 0
+        let config = LlmConfig {
+            provider: "openai".into(),
+            api_key_env: Some("GEMINI_API_KEY".into()),
+            ..Default::default()
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(route_with_llm("ab", &config));
+        assert_eq!(result.level, 0, "Short input should skip LLM");
+    }
+
+    #[test]
+    fn test_route_with_llm_empty_input_skips_llm() {
+        let config = LlmConfig {
+            provider: "openai".into(),
+            api_key_env: Some("GEMINI_API_KEY".into()),
+            ..Default::default()
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(route_with_llm("", &config));
+        assert_eq!(result.level, 0, "Empty input should skip LLM");
     }
 }
