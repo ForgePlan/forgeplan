@@ -72,7 +72,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // New subsystem → Standard+
     KeywordTrigger {
-        keywords: &["new module", "new service", "new subsystem", "new crate", "new package"],
+        keywords: &["new module", "new service", "new subsystem", "new crate", "new package", "new command", "new feature", "add feature", "implement feature", "new endpoint", "new api"],
         id: "keyword:new_subsystem",
         description: "New subsystem or module",
         min_depth: Mode::Standard,
