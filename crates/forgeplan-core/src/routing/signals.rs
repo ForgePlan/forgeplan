@@ -16,8 +16,7 @@ struct KeywordTrigger {
 const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     // Security / Compliance → Deep+
     KeywordTrigger {
-        keywords: &["security", "auth", "authentication", "authorization", "oauth", "jwt", "encryption", "compliance", "gdpr", "hipaa", "soc2",
-            "безопасность", "авторизация", "аутентификация", "шифрование"],
+        keywords: &["security", "auth", "authentication", "authorization", "oauth", "jwt", "encryption", "compliance", "gdpr", "hipaa", "soc2"],
         id: "keyword:security",
         description: "Security or compliance topic detected",
         min_depth: Mode::Deep,
@@ -25,8 +24,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Breaking changes → Deep+
     KeywordTrigger {
-        keywords: &["breaking change", "backwards compatibility", "migration", "deprecat",
-            "обратная совместимость", "миграция", "ломающее изменение"],
+        keywords: &["breaking change", "backwards compatibility", "migration", "deprecat"],
         id: "keyword:breaking",
         description: "Breaking change or migration detected",
         min_depth: Mode::Deep,
@@ -34,8 +32,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Cross-team / Multi-team → Standard+
     KeywordTrigger {
-        keywords: &["cross-team", "multi-team", "multiple teams", "cross-service", "inter-service",
-            "кросс-команда", "между командами", "межсервисный"],
+        keywords: &["cross-team", "multi-team", "multiple teams", "cross-service", "inter-service"],
         id: "keyword:cross_team",
         description: "Cross-team coordination needed",
         min_depth: Mode::Standard,
@@ -43,8 +40,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Public API → Deep+
     KeywordTrigger {
-        keywords: &["public api", "external api", "api contract", "api versioning", "openapi", "graphql schema",
-            "публичный api", "внешний api", "контракт api"],
+        keywords: &["public api", "external api", "api contract", "api versioning", "openapi", "graphql schema"],
         id: "keyword:public_api",
         description: "Public/external API changes",
         min_depth: Mode::Deep,
@@ -52,8 +48,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Data model / Schema → Standard+
     KeywordTrigger {
-        keywords: &["data model", "schema change", "database migration", "table alter",
-            "модель данных", "схема базы", "миграция базы"],
+        keywords: &["data model", "schema change", "database migration", "table alter"],
         id: "keyword:data_model",
         description: "Data model or schema changes",
         min_depth: Mode::Standard,
@@ -61,8 +56,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Infrastructure → Standard+
     KeywordTrigger {
-        keywords: &["infrastructure", "deployment", "ci/cd", "kubernetes", "docker", "terraform",
-            "инфраструктура", "деплой", "развёртывание"],
+        keywords: &["infrastructure", "deployment", "ci/cd", "kubernetes", "docker", "terraform"],
         id: "keyword:infra",
         description: "Infrastructure changes",
         min_depth: Mode::Standard,
@@ -70,8 +64,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Strategy / Roadmap → Deep+
     KeywordTrigger {
-        keywords: &["strategy", "roadmap", "quarterly", "okr", "initiative",
-            "стратегия", "дорожная карта", "квартальный"],
+        keywords: &["strategy", "roadmap", "quarterly", "okr", "initiative"],
         id: "keyword:strategy",
         description: "Strategic initiative",
         min_depth: Mode::Deep,
@@ -79,8 +72,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // New subsystem → Standard+
     KeywordTrigger {
-        keywords: &["new module", "new service", "new subsystem", "new crate", "new package", "new command", "new feature", "add feature", "implement feature", "new endpoint", "new api",
-            "новый модуль", "новая команда", "новую команду", "новая фича", "новую фичу", "добавить фичу", "новый сервис", "новый эндпоинт", "новую функцию", "новая функция"],
+        keywords: &["new module", "new service", "new subsystem", "new crate", "new package", "new command", "new feature", "add feature", "implement feature", "new endpoint", "new api"],
         id: "keyword:new_subsystem",
         description: "New subsystem or module",
         min_depth: Mode::Standard,
@@ -88,8 +80,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Redesign / Overhaul → Standard+
     KeywordTrigger {
-        keywords: &["redesign", "overhaul", "rewrite", "refactor all", "rework", "revamp",
-            "редизайн", "переписать", "рефакторинг всего", "переделать"],
+        keywords: &["redesign", "overhaul", "rewrite", "refactor all", "rework", "revamp"],
         id: "keyword:redesign",
         description: "Major redesign or overhaul detected",
         min_depth: Mode::Standard,
@@ -97,8 +88,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Bug / Defect patterns → Standard+
     KeywordTrigger {
-        keywords: &["bug", "bugfix", "defect", "broken", "fix bug", "regression",
-            "баг", "сломано", "дефект", "регрессия"],
+        keywords: &["bug", "bugfix", "defect", "broken", "fix bug", "regression"],
         id: "keyword:bug_fix",
         description: "Bug or defect fix detected",
         min_depth: Mode::Standard,
@@ -106,8 +96,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Severity / Priority patterns → Deep+
     KeywordTrigger {
-        keywords: &["p0", "critical", "urgent", "high priority", "severity", "hotfix",
-            "критический", "срочно", "высокий приоритет", "хотфикс"],
+        keywords: &["p0", "critical", "urgent", "high priority", "severity", "hotfix"],
         id: "keyword:severity",
         description: "High severity or priority issue detected",
         min_depth: Mode::Deep,
@@ -115,8 +104,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Integrity / Consistency patterns → Standard+
     KeywordTrigger {
-        keywords: &["inconsistency", "divergence", "integrity", "mismatch", "out of sync", "data loss",
-            "несоответствие", "расхождение", "целостность", "потеря данных"],
+        keywords: &["inconsistency", "divergence", "integrity", "mismatch", "out of sync", "data loss"],
         id: "keyword:integrity",
         description: "Data integrity or consistency issue detected",
         min_depth: Mode::Standard,
@@ -124,8 +112,7 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Multi-issue patterns → Standard+
     KeywordTrigger {
-        keywords: &["multiple issues", "several bugs", "batch fix", "remediation", "audit findings",
-            "несколько багов", "пакетное исправление", "результаты аудита"],
+        keywords: &["multiple issues", "several bugs", "batch fix", "remediation", "audit findings"],
         id: "keyword:multi_issue",
         description: "Multiple issues or batch remediation detected",
         min_depth: Mode::Standard,
