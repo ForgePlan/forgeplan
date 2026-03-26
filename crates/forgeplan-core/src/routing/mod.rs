@@ -2,6 +2,7 @@
 //!
 //! Level 0: deterministic keyword rules (offline, instant).
 //! Level 1: LLM-classified with graceful fallback to Level 0.
+//! Level 2: FPF ADI reasoning for complex/ambiguous cases (Deep/Critical).
 
 pub mod pipeline;
 pub mod rules;
@@ -297,6 +298,111 @@ fn kind_display(kind: &ArtifactKind) -> &'static str {
         ArtifactKind::RefreshReport => "Refresh",
     }
 }
+
+/// Route with Level 2 FPF reasoning for complex cases.
+///
+/// Flow: Level 1 (LLM classify) → if Deep/Critical → Level 2 (ADI reasoning).
+/// Level 2 adds structured analysis: hypotheses about correct depth, risks, recommendation.
+/// On any error, returns Level 1 result as-is.
+pub async fn route_with_reasoning(
+    description: &str,
+    llm_config: &LlmConfig,
+    fpf_context: Option<&str>,
+) -> RoutingResult {
+    // First, get Level 1 result
+    let mut result = route_with_llm_and_context(description, llm_config, fpf_context).await;
+
+    // Only escalate to Level 2 for Deep/Critical (complex cases worth reasoning about)
+    if !matches!(result.depth, Mode::Deep) {
+        return result;
+    }
+
+    // Level 2: ADI reasoning on the routing decision itself
+    let reasoning_prompt = format!(
+        "Analyze this task for depth classification using ADI:\n\n\
+         **Task**: {}\n\n\
+         **Current assessment**: Deep/Critical\n\n\
+         Evaluate using 4 FPF criteria:\n\
+         1. **Reversibility** — can the decision be rolled back? Less reversible = deeper.\n\
+         2. **Scope** — how many modules/files/teams affected? >5 modules = Deep.\n\
+         3. **Dependencies** — external deps, cross-team, API contracts, compliance?\n\
+         4. **Decision space** — obvious solution or multiple viable alternatives?\n\n\
+         Should this really be Deep/Critical, or could Standard suffice?",
+        description
+    );
+
+    let client = crate::llm::LlmClient::new(llm_config.clone());
+
+    let mut system = crate::llm::load_prompt("route_reasoning", ROUTE_REASONING_PROMPT);
+    if let Some(ctx) = fpf_context {
+        system.push_str("\n\n");
+        system.push_str(ctx);
+    }
+
+    // 30s timeout for Level 2 (more generous than Level 1, but not unbounded)
+    let llm_future = client.generate(&reasoning_prompt, Some(&system));
+    let timeout_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        llm_future,
+    ).await;
+
+    match timeout_result {
+        Ok(Ok(response)) => {
+            // Parse ADI output
+            let adi = crate::llm::reason::parse_adi_output(&response);
+
+            // Check if ADI recommends downgrading from Deep
+            let downgrade = adi.recommendation.to_lowercase();
+            if downgrade.contains("standard") && !downgrade.contains("deep") {
+                result.depth = Mode::Standard;
+                result.pipeline = pipeline::for_depth(&Mode::Standard);
+            }
+
+            // Enrich result with Level 2 reasoning
+            let reasoning_text = if !adi.recommendation.is_empty() {
+                format!(
+                    "{}\n\n### ADI Analysis\n{}",
+                    result.explanation.unwrap_or_default(),
+                    adi.recommendation
+                )
+            } else if let Some(raw) = &adi.raw_markdown {
+                format!(
+                    "{}\n\n### ADI Analysis\n{}",
+                    result.explanation.unwrap_or_default(),
+                    raw.chars().take(500).collect::<String>()
+                )
+            } else {
+                result.explanation.unwrap_or_default()
+            };
+
+            result.level = 2;
+            result.explanation = Some(reasoning_text);
+            result
+        }
+        _ => {
+            // Timeout or error — return Level 1 result as-is
+            result
+        }
+    }
+}
+
+const ROUTE_REASONING_PROMPT: &str = r#"You are an FPF reasoning engine evaluating task complexity for depth classification.
+
+Use the ADI cycle:
+- Abduction: Generate 3 hypotheses about the correct depth (Tactical, Standard, Deep)
+- Deduction: For each, evaluate consequences and risks
+- Induction: Recommend the best depth with confidence
+
+Return JSON:
+{
+  "hypotheses": [{"id": "H1", "description": "...", "assumptions": ["..."], "confidence": "Low|Medium|High"}],
+  "deductions": [{"hypothesis_id": "H1", "consequence": "...", "risks": ["..."], "feasibility": "Low|Medium|High"}],
+  "evidence_needed": [{"for_hypothesis": "H1", "test": "...", "effort": "Low|Medium|High"}],
+  "recommendation": "Standard|Deep|Critical with explanation",
+  "confidence": "Low|Medium|High"
+}
+
+Be concise. Write in the same language as the task description."#;
 
 #[cfg(test)]
 mod tests {
