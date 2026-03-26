@@ -349,27 +349,206 @@ docs/adrs/ADR-001-pdf-library.md
 
 ---
 
-## /forge-cycle — автоматизированный цикл (для AI агентов)
+## /forge-cycle — полный гайд
 
-Если работаешь с AI агентом (Claude Code), используй `/forge-cycle` для автоматизации всего цикла:
+### Что это
+
+`/forge-cycle` — команда для AI агентов (Claude Code), которая запускает **полный FPF-aligned цикл разработки** от идеи до PR. Одна команда заменяет 8 ручных шагов.
+
+### Когда использовать
+
+| Ситуация | Команда |
+|----------|---------|
+| Конкретная фича из TODO | `/forge-cycle PRD-016` |
+| Новая задача без PRD | `/forge-cycle "добавить экспорт в PDF"` |
+| Следующая задача из backlog | `/forge-cycle` (подхватит P0 из TODO.md) |
+
+### Как работает (8 фаз)
 
 ```
 /forge-cycle "Добавить экспорт отчётов в PDF"
 ```
 
-Агент автоматически:
-1. **Observe** — `forgeplan health` + `forgeplan stale` (что происходит?)
-2. **Route** — `forgeplan route` → определит Standard depth
-3. **Shape** — создаст PRD, заполнит MUST секции, `forgeplan validate`
-4. **Sprint** — сгенерирует wave-based план
-5. **Build** — реализует с `/team-up` и Rust skills
-6. **Audit** — `/audit` с adversarial review
-7. **Fix** — починит findings
-8. **Evidence** — `forgeplan new evidence` + `forgeplan activate`
-9. **Commit** — git commit + PR + hindsight report
+#### Phase 0: OBSERVE — что происходит?
 
-**Конфликты** (какую библиотеку выбрать?) автоматически разрешаются через FPF:
-- 3 гипотезы (Abduction)
-- Последствия каждой (Deduction)
-- WLNK + Reversibility → выбор (Induction)
-- Спрашивает пользователя только при необратимых решениях
+```bash
+forgeplan health       # blind spots, orphans
+forgeplan stale        # expired evidence
+forgeplan fpf          # explore/investigate/exploit suggestions
+```
+
+Агент фиксирует наблюдение:
+```
+OBSERVED: 3 PRD без evidence, 1 expired
+ANOMALY: PRD-003 active но R_eff=0
+OPPORTUNITY: добавить evidence для PRD-003
+```
+
+**Scope Lock** — агент фиксирует тип сессии:
+```
+SESSION_SCOPE: tactical     ← или strategic
+SESSION_GOAL: PRD-016
+```
+
+#### Phase 1: ROUTE — какой depth?
+
+```bash
+forgeplan route "добавить экспорт в PDF"
+# → Depth: Standard, Pipeline: PRD → RFC
+```
+
+- **Tactical** → сразу к Phase 3 (Build), без PRD
+- **Standard** → PRD + validate → Sprint → Build
+- **Deep** → PRD + RFC + validate → Sprint → Build
+
+#### Phase 2: SPRINT — план волн
+
+```
+/sprint PRD-016 — wave-based implementation plan
+```
+
+Auto-approve в yolo mode если: LOC < 2000, waves <= 5, нет file conflicts.
+
+#### Phase 3: BUILD — реализация
+
+```
+/team-up Implement PRD-016
+Skills: rust-expert, m01-ownership, m06-error-handling
+```
+
+**При конфликтах** (какой подход выбрать?) — FPF auto-resolve:
+
+1. **Abduction**: 3 гипотезы (Option A, B, C)
+2. **Deduction**: последствия каждой (что сломается? что улучшится?)
+3. **Induction**: WLNK (самый слабый failure mode) + Reversibility (что проще откатить)
+4. **Выбор**: max(reversibility) + max(WLNK strength)
+
+Спрашивает юзера **только** если решение необратимо (DB schema, public API).
+
+#### Phase 4: AUDIT — adversarial review
+
+```
+/audit PRD-016
+Skills: rust-expert, m06-error-handling (minimum 2)
+```
+
+Reviewer **обязан** найти проблемы. 0 findings → пере-review с более глубоким фокусом.
+
+#### Phase 5: FIXES
+
+```
+/team-up Fix audit findings: [список]
+```
+
+#### Phase 6: EVIDENCE — доказательства
+
+```bash
+forgeplan new evidence "Implementation verified: PRD-016"
+# Body: verdict: supports, congruence_level: 3, evidence_type: test
+forgeplan link EVID-XXX PRD-016 --relation informs
+forgeplan score PRD-016      # R_eff > 0
+forgeplan activate PRD-016   # draft → active
+```
+
+Evidence **обязательно** ссылается на наблюдение из Phase 0.
+
+#### Phase 7: COMMIT — фиксация
+
+```bash
+git commit    # conventional commits + Refs: PRD-016
+git push      # feature branch
+gh pr create  # PR с test plan
+```
+
++ `memory_retain` — hindsight отчёт для будущих сессий.
+
+#### Phase 8: NEXT — следующая итерация
+
+```bash
+forgeplan health    # новое состояние
+# → показывает next P0 task
+# → /forge-cycle "next task"
+```
+
+---
+
+### Scope Lock — защита от scope drift
+
+**Проблема**: начинаешь тактическую задачу (fix bug), по дороге уходишь в стратегию (а давай пере-спроектируем всё). Тактика не доделана, стратегия не доначата.
+
+**Как работает**: Phase 0 фиксирует тип сессии. Если агент замечает переключение — предупреждает:
+
+```
+⚠️ SCOPE DRIFT DETECTED
+
+Сессия начата как: tactical
+Текущее действие:  создание 6 PRD для roadmap (это strategic)
+
+Варианты:
+1. 🔒 Вернуться к плану — продолжить PRD-016
+2. 🔄 Bookmark — сохранить прогресс, переключиться
+3. 📋 Разделить — закрыть сессию, начать новую
+4. ✅ Переключиться осознанно — я понимаю
+```
+
+**Правила**:
+- **Tactical сессия** (конкретные задачи из TODO) → НЕ уходить в исследования, roadmap, новые PRD
+- **Strategic сессия** (audit, research, planning) → НЕ начинать кодить, НЕ запускать sprints
+- **Bookmark** при переключении → `forgeplan new note "Session bookmark: PRD-016, Phase 3 done, remaining: Phase 4-7"`
+
+### Пример: тактическая сессия
+
+```
+/forge-cycle PRD-016
+
+→ Phase 0: health OK, SESSION_SCOPE: tactical
+→ Phase 1: route → Standard, PRD exists, validated
+→ Phase 2: /sprint → 4 waves, 7 agents, approved
+→ Phase 3: /team-up → code written, cargo test pass
+→ Phase 4: /audit → 3 findings
+→ Phase 5: /team-up fix → all fixed
+→ Phase 6: evidence created, R_eff=1.0, activated
+→ Phase 7: commit + PR created
+→ Phase 8: health → next P0: PRD-017
+
+✅ Cycle complete. 1 PRD done. ~940 LOC. ~200 tests.
+```
+
+### Пример: стратегическая сессия
+
+```
+/forge-cycle "meta-audit методологии"
+
+→ Phase 0: health OK, SESSION_SCOPE: strategic
+→ Phase 1: route → Tactical (just research, no PRD needed)
+→ Phase 3: /research deep-scan sources/
+→ Phase 6: forgeplan new problem "PROB-010: source gaps"
+→ Phase 7: memory_retain findings
+→ Phase 8: next → plan tactical sessions for each PRD
+
+✅ Cycle complete. 1 PROB + 6 PRDs created. Research done.
+```
+
+### Чего НЕ делать
+
+| Anti-pattern | Почему плохо | Что делать |
+|---|---|---|
+| Tactical → "а давай всё пере-спроектируем" | Scope drift: тактика не закончена | Bookmark + новая strategic сессия |
+| Strategic → "давай сразу кодить" | Код без плана, без validate | Закончи planning, начни tactical |
+| Skip Phase 0 | Не знаешь состояние проекта | Всегда health + stale первыми |
+| Skip Phase 6 | Код без evidence, R_eff=0 | Без evidence работа не засчитана |
+| Skip Phase 4 | Код без review | Adversarial review обязателен |
+
+### Yolo Mode
+
+В yolo mode автоматически:
+- Sprint plans с LOC < 2000 → auto-approve
+- Конфликты → FPF auto-resolve (reversible + WLNK)
+- Audit < 5 findings → auto-fix
+- Evidence + activate → auto если R_eff > 0
+
+Спрашивает юзера **только**:
+- Необратимое решение (DB schema, public API)
+- R_eff = 0 после evidence
+- cargo test fails после 2-й попытки
+- PR creation
