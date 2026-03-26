@@ -59,8 +59,11 @@ enum Commands {
     },
     /// Compute R_eff quality score for decisions with evidence
     Score {
-        /// Artifact ID
+        /// Artifact ID (omit with --all to score everything)
         id: Option<String>,
+        /// Score all active decision artifacts and update cached R_eff
+        #[arg(long)]
+        all: bool,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -380,7 +383,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::Validate { id, json, adversarial } => {
             commands::validate::run(id.as_deref(), json, adversarial).await
         }
-        Commands::Score { id, json } => commands::score::run(id.as_deref(), json).await,
+        Commands::Score { id, all, json } => {
+            if all {
+                commands::score::run_all(json).await
+            } else {
+                commands::score::run(id.as_deref(), json).await
+            }
+        }
         Commands::Link {
             source,
             target,

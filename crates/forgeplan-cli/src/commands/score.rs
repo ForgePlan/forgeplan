@@ -11,6 +11,58 @@ use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
 use crate::commands::common;
 use crate::ui;
 
+/// Score all active decision artifacts and update cached R_eff.
+pub async fn run_all(json: bool) -> anyhow::Result<()> {
+    use forgeplan_core::artifact::types::DECISION_KINDS_EVIDENCE;
+
+    let store = common::store().await?;
+    let records = store.list_records(None).await?;
+
+    let decision_records: Vec<_> = records
+        .iter()
+        .filter(|r| r.status == "active" && DECISION_KINDS_EVIDENCE.contains(&r.kind.as_str()))
+        .collect();
+
+    if decision_records.is_empty() {
+        println!("  No active decision artifacts found.");
+        return Ok(());
+    }
+
+    println!("  Scoring {} active decision artifacts...", decision_records.len());
+    println!();
+
+    let mut results = Vec::new();
+    for record in &decision_records {
+        let mut visited = HashSet::new();
+        let report = reff::r_eff_recursive(&record.id, &store, &mut visited).await?;
+
+        if let Err(e) = store.update_r_eff_score(&record.id, report.r_eff).await {
+            eprintln!("  Warning: could not persist R_eff for {}: {e}", record.id);
+        }
+
+        let symbol = if report.r_eff >= 0.5 {
+            "+"
+        } else if report.r_eff >= 0.1 {
+            "~"
+        } else {
+            "!"
+        };
+        println!("  {} {} → R_eff={:.2}", symbol, record.id, report.r_eff);
+        results.push(serde_json::json!({"id": record.id, "r_eff": report.r_eff}));
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        let high = results.iter().filter(|r| r["r_eff"].as_f64().unwrap_or(0.0) >= 0.5).count();
+        let total = results.len();
+        println!();
+        println!("  {}/{} artifacts with R_eff >= 0.5", high, total);
+    }
+
+    Ok(())
+}
+
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let target_id = id.ok_or_else(|| anyhow::anyhow!("Usage: forgeplan score <ID>"))?;
 
