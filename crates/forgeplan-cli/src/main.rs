@@ -186,13 +186,16 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// Suggest depth level and artifact pipeline for a task description (rule-based, no LLM)
+    /// Suggest depth level and artifact pipeline for a task description
     Route {
         /// Task description in natural language
         description: String,
-        /// Optional: use LLM to explain the routing decision
+        /// Optional: use LLM to explain the routing decision (deprecated, use --level 1)
         #[arg(long)]
         explain: bool,
+        /// Routing level: 0 = keywords (default), 1 = LLM-classified
+        #[arg(long)]
+        level: Option<u8>,
     },
     /// Review an artifact — run validation and show lifecycle checklist
     Review {
@@ -455,7 +458,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Route {
             description,
             explain,
-        } => commands::route::run(&description, explain).await,
+            level,
+        } => commands::route::run(&description, explain, level).await,
         Commands::Review { id } => commands::review::run(&id).await,
         Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,

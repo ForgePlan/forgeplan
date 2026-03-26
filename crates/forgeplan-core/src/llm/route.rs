@@ -43,6 +43,15 @@ Write in the same language as the user's description."#;
 
 /// Route a task description to appropriate depth and artifact pipeline.
 pub async fn route(config: &LlmConfig, description: &str) -> anyhow::Result<String> {
+    route_with_context(config, description, None).await
+}
+
+/// Route a task description with optional FPF context injected into the system prompt.
+pub async fn route_with_context(
+    config: &LlmConfig,
+    description: &str,
+    fpf_context: Option<&str>,
+) -> anyhow::Result<String> {
     let client = LlmClient::new(config.clone());
 
     let prompt = format!(
@@ -50,6 +59,11 @@ pub async fn route(config: &LlmConfig, description: &str) -> anyhow::Result<Stri
         description
     );
 
-    let system = crate::llm::load_prompt("route", ROUTE_SYSTEM_PROMPT);
+    let mut system = crate::llm::load_prompt("route", ROUTE_SYSTEM_PROMPT);
+    if let Some(ctx) = fpf_context {
+        system.push_str("\n\n");
+        system.push_str(ctx);
+    }
+
     client.generate(&prompt, Some(&system)).await
 }
