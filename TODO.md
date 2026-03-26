@@ -61,10 +61,11 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] **PRD-019 Layer 3** — MCP session state machine (next sprint)
 
 ### P2: Route & Enforcement (from usability testing)
-- [ ] **Route gap**: "new command/feature/add feature" не триггерит Standard → добавить keywords
-- [ ] **Batch score CLI**: `forgeplan score --all` для массового обновления cached R_eff
+- [x] **Route gap**: added "new command/feature" keywords (English)
+- [x] **Batch score CLI**: `forgeplan score --all` implemented
+- [ ] **LLM-first route**: replace keyword matching with LLM classification (supports any language, no declension issues)
 - [ ] **PRD-019 Layer 3**: MCP session state machine — агент не может пропустить Shape phase
-- [ ] **Duplicate notes cleanup**: NOTE-004 и NOTE-005 оба "Complete Forgeplan guide" → deprecate один
+- [ ] **Duplicate notes cleanup**: NOTE-004 и NOTE-005 → deprecate один
 
 ### P2: Polish
 - [ ] Binary size optimization (LanceDB feature flags / strip)
