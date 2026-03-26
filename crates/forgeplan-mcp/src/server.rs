@@ -847,17 +847,43 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Rule-based, instant, no LLM needed.")]
+    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0).")]
     async fn forgeplan_route(
         &self,
         Parameters(p): Parameters<RouteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = forgeplan_core::routing::route(&p.description);
+        // Try Level 1 (LLM) if workspace has LLM config, with FPF context if available
+        let result = if let Ok(ws) = self.require_workspace().await {
+            if let Ok(config) = workspace::load_config(&ws) {
+                if let Some(llm_cfg) = config.llm {
+                    let llm_cfg = llm_cfg.with_env_overrides();
+                    // Try to build FPF context from store
+                    let fpf_ctx = if let Ok(store) = self.require_store().await {
+                        forgeplan_core::llm::reason::build_fpf_context(
+                            &store, &p.description, "",
+                        ).await.ok().flatten()
+                    } else {
+                        None
+                    };
+                    forgeplan_core::routing::route_with_llm_and_context(
+                        &p.description, &llm_cfg, fpf_ctx.as_deref(),
+                    ).await
+                } else {
+                    forgeplan_core::routing::route(&p.description)
+                }
+            } else {
+                forgeplan_core::routing::route(&p.description)
+            }
+        } else {
+            forgeplan_core::routing::route(&p.description)
+        };
         Ok(json_result(&serde_json::json!({
             "depth": format!("{:?}", result.depth),
             "pipeline": result.pipeline.iter().map(|k| k.template_key()).collect::<Vec<_>>(),
             "triggers": result.triggers.iter().map(|t| &t.id).collect::<Vec<_>>(),
             "confidence": result.confidence,
+            "level": result.level,
+            "explanation": result.explanation,
             "display": format!("{result}"),
         })))
     }

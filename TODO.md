@@ -3,11 +3,12 @@
 ## Current: v0.11.0 Released
 
 ### Stats
-- ~37 CLI commands (tree, context, scan-import, coverage --backfill), 28 MCP tools, 428 tests
-- 77 dogfood artifacts (51 active, 20 draft, 6 deprecated)
-- ~21K LOC Rust
-- v0.11.0 tagged, PRs #35-#55 merged
+- ~37 CLI commands (tree, context, scan-import, coverage --backfill), 28 MCP tools, 444 tests
+- 82 dogfood artifacts (52 active, 20 draft, 6 deprecated)
+- ~22K LOC Rust
+- v0.11.0 tagged, PRs #35-#55 merged, PR #59 pending (LLM-first route)
 - 0 compiler warnings, 5 enforcement hooks
+- 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
 
 ### P0: Integrity Issues (PROB-012 dogfood audit) ✅
 - [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
@@ -63,7 +64,7 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 ### P2: Route & Enforcement (from usability testing)
 - [x] **Route gap**: added "new command/feature" keywords (English)
 - [x] **Batch score CLI**: `forgeplan score --all` implemented
-- [ ] **LLM-first route**: replace keyword matching with LLM classification (supports any language, no declension issues)
+- [x] **LLM-first route**: 3-level routing (L0 keywords, L1 LLM classify, L2 FPF ADI reasoning) — PRD-020, 444 tests
 - [ ] **PRD-019 Layer 3**: MCP session state machine — агент не может пропустить Shape phase
 - [ ] **Duplicate notes cleanup**: NOTE-004 и NOTE-005 → deprecate один
 
