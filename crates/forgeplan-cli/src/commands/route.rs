@@ -5,15 +5,17 @@ use forgeplan_core::workspace;
 use crate::ui;
 
 pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow::Result<()> {
-    // Determine effective level: --level flag takes priority, --explain implies level 1
-    let requested_level = level.unwrap_or(if explain { 1 } else { 0 });
+    // Determine effective level:
+    // --level flag takes priority, --explain implies level 1,
+    // otherwise auto-detect: use Level 1 if LLM config with API key is available
+    let requested_level = level.unwrap_or(if explain { 1 } else { 99 }); // 99 = auto
 
-    let result = if requested_level >= 1 {
-        // Try Level 1 (LLM) — falls back to Level 0 internally
-        try_llm_route(description).await
-    } else {
-        // Level 0: rule-based routing (instant, offline, no LLM)
+    let result = if requested_level == 0 {
+        // Forced Level 0: rule-based routing (instant, offline, no LLM)
         routing::route(description)
+    } else {
+        // Level 1 (explicit or auto): try LLM, falls back to Level 0 internally
+        try_llm_route(description).await
     };
 
     // Styled level
@@ -99,8 +101,8 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
         println!("{explanation}");
     }
 
-    // Legacy --explain behavior (Level 0 + --explain without --level)
-    if explain && level.is_none() && result.level == 0 {
+    // Legacy --explain behavior (Level 0 + --explain + forced --level 0)
+    if explain && level == Some(0) && result.level == 0 {
         let cwd = std::env::current_dir()?;
         let ws = workspace::find_workspace(&cwd);
         if let Some(ws) = ws {

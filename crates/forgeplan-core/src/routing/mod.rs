@@ -157,13 +157,25 @@ pub fn calibrate_artifact(body: &str, link_count: usize, has_epic: bool) -> Rout
 ///
 /// If the LLM call succeeds and returns a parseable depth, returns a Level 1 result.
 /// On any error (no API key, network, unparseable response), falls back to Level 0 keywords.
+///
+/// `fpf_context` — optional FPF knowledge base context to inject into the LLM prompt.
+/// Build it via `llm::reason::build_fpf_context()` if a LanceStore is available.
 pub async fn route_with_llm(description: &str, llm_config: &LlmConfig) -> RoutingResult {
+    route_with_llm_and_context(description, llm_config, None).await
+}
+
+/// Route with optional FPF context injection into the LLM prompt.
+pub async fn route_with_llm_and_context(
+    description: &str,
+    llm_config: &LlmConfig,
+    fpf_context: Option<&str>,
+) -> RoutingResult {
     // Check if API key is available before making the call
     if llm_config.resolve_api_key().is_none() && !llm_config.provider.eq("ollama") {
         return route(description);
     }
 
-    match crate::llm::route::route(llm_config, description).await {
+    match crate::llm::route::route_with_context(llm_config, description, fpf_context).await {
         Ok(response) => match parse_llm_route_response(&response) {
             Some((depth, explanation)) => {
                 let pipeline = pipeline::for_depth(&depth);
