@@ -13,15 +13,25 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
     let result = if requested_level == 0 {
         // Forced Level 0: rule-based routing (instant, offline, no LLM)
         routing::route(description)
+    } else if requested_level == 2 {
+        // Forced Level 2: LLM + ADI reasoning
+        try_llm_route_with_reasoning(description).await
     } else {
-        // Level 1 (explicit or auto): try LLM, falls back to Level 0 internally
-        try_llm_route(description).await
+        // Level 1 or auto: try LLM, auto-escalate to Level 2 if Deep
+        let r = try_llm_route(description).await;
+        // Auto-escalate: if Level 1 says Deep and we're in auto mode, run Level 2
+        if r.level == 1 && matches!(r.depth, forgeplan_core::artifact::types::Mode::Deep) && level.is_none() {
+            try_llm_route_with_reasoning(description).await
+        } else {
+            r
+        }
     };
 
     // Styled level
     let level_label = match result.level {
         0 => style("Level 0 (keywords)").dim().to_string(),
         1 => style("Level 1 (LLM)").cyan().to_string(),
+        2 => style("Level 2 (FPF reasoning)").magenta().to_string(),
         _ => "Unknown".to_string(),
     };
     println!("## Level: {}", level_label);
@@ -120,6 +130,28 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
     }
 
     Ok(())
+}
+
+/// Attempt LLM routing with Level 2 FPF reasoning.
+async fn try_llm_route_with_reasoning(description: &str) -> routing::RoutingResult {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return routing::route(description),
+    };
+    let ws = match workspace::find_workspace(&cwd) {
+        Some(ws) => ws,
+        None => return routing::route(description),
+    };
+    let config = match workspace::load_config(&ws) {
+        Ok(c) => c,
+        Err(_) => return routing::route(description),
+    };
+    let llm_config = match config.llm {
+        Some(c) => c.with_env_overrides(),
+        None => return routing::route(description),
+    };
+
+    routing::route_with_reasoning(description, &llm_config, None).await
 }
 
 /// Attempt LLM-based routing (Level 1). Falls back to Level 0 if no config/key available.
