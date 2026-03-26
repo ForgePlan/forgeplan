@@ -858,6 +858,7 @@ impl ForgeplanServer {
             "pipeline": result.pipeline.iter().map(|k| k.template_key()).collect::<Vec<_>>(),
             "triggers": result.triggers.iter().map(|t| &t.id).collect::<Vec<_>>(),
             "confidence": result.confidence,
+            "level": result.level,
             "display": format!("{result}"),
         })))
     }
