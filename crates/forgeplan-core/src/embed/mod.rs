@@ -2,19 +2,20 @@
 mod inner {
     use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
-    /// Embedding dimension for BGE-M3 full-size.
+    /// Embedding dimension for BGE-M3.
     pub const EMBEDDING_DIM: usize = 1024;
 
-    /// Wrapper around fastembed TextEmbedding for BGE-M3.
+    /// Wrapper around fastembed TextEmbedding for BGE-M3 (multilingual SOTA).
     pub struct Embedder {
         model: TextEmbedding,
     }
 
     impl Embedder {
-        /// Create a new embedder. Downloads model on first use (~600MB).
+        /// Create a new embedder. Downloads BGE-M3 model on first use (~600MB).
+        /// BGE-M3 supports 100+ languages with best topic discrimination (gap 0.51).
         pub fn new() -> anyhow::Result<Self> {
             let model = TextEmbedding::try_new(
-                InitOptions::new(EmbeddingModel::BGESmallENV15).with_show_download_progress(true),
+                InitOptions::new(EmbeddingModel::BGEM3).with_show_download_progress(true),
             )?;
             Ok(Self { model })
         }
