@@ -10,6 +10,8 @@ pub struct Config {
     pub created_at: NaiveDate,
     #[serde(default)]
     pub llm: Option<LlmConfig>,
+    #[serde(default)]
+    pub embedding: Option<EmbeddingConfig>,
 }
 
 impl Default for Config {
@@ -21,6 +23,7 @@ impl Default for Config {
             id_digits: 3,
             created_at: chrono::Utc::now().date_naive(),
             llm: None,
+            embedding: None,
         }
     }
 }
@@ -139,5 +142,35 @@ impl LlmConfig {
     /// Whether this provider uses Anthropic-specific headers.
     pub fn is_anthropic(&self) -> bool {
         self.provider == "claude"
+    }
+}
+
+/// Embedding model configuration for semantic search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    /// Model name: bge-m3, bge-small-en, multilingual-e5-small, multilingual-e5-base
+    #[serde(default = "default_embedding_model")]
+    pub model: String,
+}
+
+fn default_embedding_model() -> String {
+    "bge-m3".into()
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            model: default_embedding_model(),
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    /// Apply env override: FORGEPLAN_EMBEDDING_MODEL
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(v) = std::env::var("FORGEPLAN_EMBEDDING_MODEL") {
+            self.model = v;
+        }
+        self
     }
 }
