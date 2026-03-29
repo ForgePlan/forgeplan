@@ -14,6 +14,9 @@ mod inner {
             "multilingual-e5-large" => EmbeddingModel::MultilingualE5Large,
             "nomic-embed-v1.5" => EmbeddingModel::NomicEmbedTextV15,
             "all-minilm-l6" => EmbeddingModel::AllMiniLML6V2,
+            "jina-v2-en" => EmbeddingModel::JinaEmbeddingsV2BaseEN,
+            "jina-v2-code" => EmbeddingModel::JinaEmbeddingsV2BaseCode,
+            "embedding-gemma-300m" => EmbeddingModel::EmbeddingGemma300M,
             _ => EmbeddingModel::BGEM3, // default fallback
         }
     }
@@ -30,6 +33,8 @@ mod inner {
             "multilingual-e5-large" => 1024,
             "nomic-embed-v1.5" => 768,
             "all-minilm-l6" => 384,
+            "jina-v2-en" | "jina-v2-code" => 768,
+            "embedding-gemma-300m" => 768,
             _ => 1024,
         }
     }

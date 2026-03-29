@@ -68,9 +68,26 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] **PRD-019 Layer 3**: MCP session state machine — агент не может пропустить Shape phase
 - [ ] **Duplicate notes cleanup**: NOTE-004 и NOTE-005 → deprecate один
 
+### P1: Smart Search (PROB-014, v0.12)
+- [ ] **F1 (P0)**: Embed title + body snippet (not just title) — accuracy x2
+- [ ] **F2 (P0)**: Graph walk shows relation types (informs/contradicts/supersedes)
+- [ ] **F3 (P1)**: Persistent embeddings in LanceDB vector column — `forgeplan embed`
+- [ ] **F4 (P1)**: Combined score (vector * 0.5 + R_eff * 0.3 + graph_centrality * 0.2)
+- [ ] **F5 (P1)**: `forgeplan gaps` — pipeline compliance by depth (Deep без ADR = gap)
+- [ ] **F6 (P2)**: Fix evidence blind spots (EVID-015, EVID-025, EVID-026, EVID-027)
+- [ ] `forgeplan search --semantic` — vector search by meaning
+- [ ] `forgeplan search --smart` — keyword + vector + graph combined
+- [ ] Configurable embedding model via config.yaml (done: BGE-M3 default)
+
+### P2: Architecture — Files as Source of Truth (ADR-003, v0.13)
+- [ ] Invert direction: .md files = truth, LanceDB = index
+- [ ] File watcher (notify crate) for auto-reindex
+- [ ] `forgeplan reindex` — one-time full re-sync from .md files
+- [ ] R_eff computed on-the-fly from evidence files (not stored)
+- [ ] Links in frontmatter `related:` field (not separate DB table)
+
 ### P2: Polish
 - [ ] Binary size optimization (LanceDB feature flags / strip)
-- [ ] Markdown projection sync on `forgeplan update` (not just `new`)
 - [ ] fpf.rs миграция на common::store() (6 functions)
 - [ ] coverage.rs, scan_import.rs миграция на common::open_store()
 
