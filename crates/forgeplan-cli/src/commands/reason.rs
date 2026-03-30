@@ -1,14 +1,12 @@
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::llm::reason;
-use forgeplan_core::workspace::load_config;
 
 use crate::commands::common;
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (_ws, store) = common::open_store().await?;
 
-    let config = load_config(&ws)?;
-    let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+    let llm_config = common::require_llm_config()?;
     let record = store
         .get_record(id)
         .await?

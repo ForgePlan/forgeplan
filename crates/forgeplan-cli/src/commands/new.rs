@@ -52,6 +52,16 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
         }
     }
 
+    // Lightweight kinds default to tactical depth; structured kinds default to standard
+    let depth = match kind {
+        ArtifactKind::Note
+        | ArtifactKind::EvidencePack
+        | ArtifactKind::ProblemCard
+        | ArtifactKind::SolutionPortfolio
+        | ArtifactKind::RefreshReport => "tactical",
+        _ => "standard",
+    };
+
     // Write to LanceDB (source of truth)
     let artifact = NewArtifact {
         id: id.clone(),
@@ -59,7 +69,7 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
         status: "draft".to_string(),
         title: title.to_string(),
         body: rendered.clone(),
-        depth: "standard".to_string(),
+        depth: depth.to_string(),
         author: None,
         parent_epic: None,
         valid_until: None,
@@ -76,7 +86,7 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
         template_key,
         title,
         "draft",
-        "standard",
+        depth,
         None,
         None,
         None,

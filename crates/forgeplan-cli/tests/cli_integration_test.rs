@@ -440,22 +440,21 @@ fn update_changes_status() {
         .assert()
         .success();
 
-    // Update status
+    // Direct --status active is blocked (B2 fix: must use forgeplan activate)
     forgeplan()
         .args(["update", "PRD-001", "--status", "active"])
         .current_dir(tmp.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Updated"))
-        .stdout(predicate::str::contains("active"));
+        .failure()
+        .stderr(predicate::str::contains("forgeplan activate"));
 
-    // Verify via get
+    // Non-active status changes still work
     forgeplan()
-        .args(["get", "PRD-001"])
+        .args(["update", "PRD-001", "--status", "deprecated"])
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("active"));
+        .stdout(predicate::str::contains("Updated"));
 }
 
 #[test]
@@ -507,12 +506,12 @@ fn delete_requires_confirmation() {
         .assert()
         .success();
 
-    // Without --yes, should warn but not delete
+    // Without --yes, should fail with confirmation prompt (exit code 1)
     forgeplan()
         .args(["delete", "PRD-001"])
         .current_dir(tmp.path())
         .assert()
-        .success()
+        .failure()
         .stderr(predicate::str::contains("--yes"));
 
     // Artifact should still exist
@@ -591,9 +590,9 @@ fn full_workflow_dogfood() {
         .success()
         .stdout(predicate::str::contains("User Authentication"));
 
-    // 6. Update status to active
+    // 6. Activate via lifecycle (update --status active is blocked)
     forgeplan()
-        .args(["update", "PRD-001", "--status", "active"])
+        .args(["activate", "PRD-001", "--force"])
         .current_dir(tmp.path())
         .assert()
         .success();

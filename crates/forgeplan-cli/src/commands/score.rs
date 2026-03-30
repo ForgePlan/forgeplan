@@ -24,12 +24,18 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
         .collect();
 
     if decision_records.is_empty() {
-        println!("  No active decision artifacts found.");
+        if json {
+            println!("[]");
+        } else {
+            println!("  No active decision artifacts found.");
+        }
         return Ok(());
     }
 
-    println!("  Scoring {} active decision artifacts...", decision_records.len());
-    println!();
+    if !json {
+        println!("  Scoring {} active decision artifacts...", decision_records.len());
+        println!();
+    }
 
     let mut results = Vec::new();
     for record in &decision_records {
@@ -40,14 +46,16 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
             eprintln!("  Warning: could not persist R_eff for {}: {e}", record.id);
         }
 
-        let symbol = if report.r_eff >= 0.5 {
-            "+"
-        } else if report.r_eff >= 0.1 {
-            "~"
-        } else {
-            "!"
-        };
-        println!("  {} {} → R_eff={:.2}", symbol, record.id, report.r_eff);
+        if !json {
+            let symbol = if report.r_eff >= 0.5 {
+                "+"
+            } else if report.r_eff >= 0.1 {
+                "~"
+            } else {
+                "!"
+            };
+            println!("  {} {} → R_eff={:.2}", symbol, record.id, report.r_eff);
+        }
         results.push(serde_json::json!({"id": record.id, "r_eff": report.r_eff}));
     }
 

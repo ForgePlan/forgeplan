@@ -1,13 +1,14 @@
 # TODO — Forgeplan
 
-## Current: v0.11.0 Released
+## Current: v0.12-dev (post-v0.11.0)
 
 ### Stats
-- ~37 CLI commands (tree, context, scan-import, coverage --backfill), 28 MCP tools, 444 tests
-- 82 dogfood artifacts (52 active, 20 draft, 6 deprecated)
-- ~22K LOC Rust
-- v0.11.0 tagged, PRs #35-#55 merged, PR #59 pending (LLM-first route)
-- 0 compiler warnings, 5 enforcement hooks
+- 43 CLI commands, 35 MCP tools, 532 tests
+- 91 dogfood artifacts (59 active, 25 draft, 7 deprecated)
+- ~24K LOC Rust, 41MB release binary
+- PRs #60-#65 merged (smart search, cosine distance, MCP hints, 13 CLI quality fixes)
+- Smart search by default (keyword + semantic + graph boosters)
+- MCP methodology hints (_next_action in tool responses)
 - 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
 
 ### P0: Integrity Issues (PROB-012 dogfood audit) ✅
@@ -81,6 +82,28 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [x] Configurable embedding model via config.yaml (BGE-M3 default)
 - [x] Configurable chunk_size via config.yaml (default 2000)
 - [ ] **Future**: Reciprocal Rank Fusion (RRF) for production-grade hybrid search
+
+### P0: CLI Quality Remediation (PROB-016, 3-agent deep audit) ✅
+**Wave 1 — BROKEN** (6-agent team sprint, PR #65):
+- [x] **B1**: `deprecate --reason` stores reason in body (## Deprecation section)
+- [x] **B2**: `update --status active` blocked — must use `forgeplan activate`
+- [x] **B3**: 4 LLM commands — pre-flight API key check via `require_llm_config()`
+- [x] **B4**: `review` checks evidence+stub gates (same as activate)
+
+**Wave 2 — SAFETY**:
+- [x] **N1**: `delete` checks dependents, warns + requires --yes
+- [x] **N7**: `supports` added to VALID_RELATIONS
+- [x] **N8**: `init --force` warns about data loss
+- [x] **N9**: `unlink` updates projection
+
+**Wave 3 — CORRECTNESS**:
+- [x] **N2**: `new` depth=tactical for note/evidence/problem/solution/refresh
+- [x] **N3**: `supersede` warns if replacement already superseded/deprecated
+- [x] **N4**: `score --all --json` clean JSON output
+- [x] **N5**: `update --depth` bails with error
+- [x] **N6**: `order/blocked` structural relations only (informs doesn't block)
+
+EVID-034. 532 tests. **Deferred**: fgr/blindspots redundancy, graph filtering, drift adoption, export embeddings
 
 ### P1: Driver Abstraction — RFC-003
 - [x] **Phase 1**: StorageDriver trait + LanceDriver + InMemoryStore + factory — PR #61 merged

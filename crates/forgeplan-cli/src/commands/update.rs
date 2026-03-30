@@ -21,20 +21,29 @@ pub async fn run(
         anyhow::bail!("Nothing to update. Use --status, --title, --depth, or --body.");
     }
 
+    // Block direct status change to "active" — must go through lifecycle gates
+    if let Some(s) = status {
+        if s.eq_ignore_ascii_case("active") {
+            anyhow::bail!(
+                "Direct status change to 'active' is not allowed.\n\
+                 Use `forgeplan activate {}` to activate artifacts (enforces validation gates).",
+                id
+            );
+        }
+    }
+
     // Update metadata (status, title)
     if status.is_some() || title.is_some() {
         store.update_artifact(id, status, title).await?;
     }
 
-    // Update depth (via update_artifact column)
+    // Depth update not supported — fail explicitly instead of silently continuing
     if let Some(d) = depth {
-        // Validate depth
+        // Validate the value first for a better error message
         let _: forgeplan_core::artifact::types::Mode = d
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Use: tactical, standard, deep", d))?;
-        // LanceStore::update_artifact doesn't support depth yet — use update_body workaround
-        // For now, we'll need to extend update_artifact. Skip depth for v1.
-        eprintln!("  Note: depth update not yet supported in LanceStore. Use forgeplan new with correct depth.");
+        anyhow::bail!("Depth update not yet supported. Use `forgeplan new` with the correct depth.");
     }
 
     // Update body

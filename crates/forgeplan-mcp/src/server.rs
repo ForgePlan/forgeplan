@@ -956,10 +956,11 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
-            Ok(dependents) => Ok(json_result(&serde_json::json!({
+            Ok(result) => Ok(json_result(&serde_json::json!({
                 "superseded": p.id,
                 "replacement": p.by,
-                "dependents_affected": dependents,
+                "dependents_affected": result.dependents,
+                "warnings": result.warnings,
             }))),
             Err(e) => Ok(err_result(&e.to_string())),
         }

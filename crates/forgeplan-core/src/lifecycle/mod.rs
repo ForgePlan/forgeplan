@@ -107,9 +107,35 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
         }
     }
 
+    // Methodology gates: same checks as activate() so review doesn't false-PASS
+    let mut gates_ok = true;
+    if supports_lifecycle(&record.kind) {
+        // Stub check: body too short means MUST sections not filled
+        if record.body.trim().len() < 100 {
+            warnings.push(format!(
+                "Body too short ({} chars, need 100+) — fill MUST sections before activating",
+                record.body.trim().len()
+            ));
+            gates_ok = false;
+        }
+
+        // Evidence check: no evidence linked = blind spot
+        let incoming = store.get_incoming_relations(artifact_id).await.unwrap_or_default();
+        let has_evidence = relations.iter().any(|(_, r)| r == "informs" || r == "supports")
+            || incoming.iter().any(|(source_id, _)| {
+                source_id.to_uppercase().starts_with("EVID-")
+            });
+        if !has_evidence {
+            warnings.push(
+                "No evidence linked — create evidence and link it before activating".to_string(),
+            );
+            gates_ok = false;
+        }
+    }
+
     Ok(ReviewResult {
         artifact_id: artifact_id.to_string(),
-        can_activate: must_findings.is_empty(),
+        can_activate: must_findings.is_empty() && gates_ok,
         must_findings,
         should_findings,
         warnings,
@@ -208,24 +234,42 @@ pub async fn activate(
     })
 }
 
+/// Result of a supersede operation.
+#[derive(Debug, Clone)]
+pub struct SupersedeResult {
+    /// Artifacts that depend on the superseded artifact.
+    pub dependents: Vec<String>,
+    /// Warnings (e.g., replacement is itself superseded/deprecated).
+    pub warnings: Vec<String>,
+}
+
 /// Supersede an artifact: Active → Superseded, link to replacement.
 pub async fn supersede(
     store: &LanceStore,
     artifact_id: &str,
     replacement_id: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<SupersedeResult> {
     let record = store
         .get_record(artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
     // Verify replacement exists
-    store
+    let replacement = store
         .get_record(replacement_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Replacement not found: {replacement_id}"))?;
 
     transitions::validate_transition(&record.status, "superseded")?;
+
+    // Block if replacement is itself superseded or deprecated (chain risk)
+    let mut warnings = Vec::new();
+    if replacement.status == "superseded" || replacement.status == "deprecated" {
+        anyhow::bail!(
+            "Replacement {} is already {}. Choose an active or draft artifact as replacement.",
+            replacement_id, replacement.status
+        );
+    }
 
     // Create supersedes link
     store
@@ -245,14 +289,17 @@ pub async fn supersede(
         .map(|(src, _, _)| src.clone())
         .collect();
 
-    Ok(dependents)
+    Ok(SupersedeResult {
+        dependents,
+        warnings,
+    })
 }
 
 /// Deprecate an artifact: Active → Deprecated with reason.
 pub async fn deprecate(
     store: &LanceStore,
     artifact_id: &str,
-    _reason: &str,
+    reason: &str,
 ) -> anyhow::Result<Vec<String>> {
     let record = store
         .get_record(artifact_id)
@@ -260,6 +307,12 @@ pub async fn deprecate(
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
     transitions::validate_transition(&record.status, "deprecated")?;
+
+    // Append deprecation reason to body before status change
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let deprecation_section = format!("\n\n## Deprecation\n\nReason: {reason}\nDate: {today}");
+    let new_body = format!("{}{}", record.body, deprecation_section);
+    store.update_body(artifact_id, &new_body).await?;
 
     store
         .update_artifact(artifact_id, Some("deprecated"), None)
@@ -274,4 +327,93 @@ pub async fn deprecate(
         .collect();
 
     Ok(dependents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::store::NewArtifact;
+    use tempfile::TempDir;
+
+    async fn make_store(tmp: &TempDir) -> LanceStore {
+        let ws = tmp.path().join(".forgeplan");
+        LanceStore::init(&ws).await.unwrap()
+    }
+
+    fn active_note(id: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "note".to_string(),
+            status: "active".to_string(),
+            title: format!("Test Note {id}"),
+            body: "Some body content.".to_string(),
+            depth: "tactical".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn review_flags_stub_body_and_missing_evidence() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Create a PRD with short body (stub) and no evidence
+        let art = NewArtifact {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Stub PRD".to_string(),
+            body: "Short body".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        let result = review(&store, "PRD-001").await.unwrap();
+
+        // Review must report can_activate = false
+        assert!(
+            !result.can_activate,
+            "review should NOT pass for stub PRD without evidence"
+        );
+
+        // Warnings must mention both gates
+        let warnings_joined = result.warnings.join(" | ");
+        assert!(
+            warnings_joined.contains("Body too short"),
+            "should warn about short body, got: {warnings_joined}"
+        );
+        assert!(
+            warnings_joined.contains("No evidence linked"),
+            "should warn about missing evidence, got: {warnings_joined}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deprecate_stores_reason_in_body() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&active_note("NOTE-099")).await.unwrap();
+
+        let reason = "no longer needed";
+        deprecate(&store, "NOTE-099", reason).await.unwrap();
+
+        let record = store.get_record("NOTE-099").await.unwrap().unwrap();
+        assert_eq!(record.status, "deprecated");
+        assert!(
+            record.body.contains("## Deprecation"),
+            "body should contain Deprecation section, got: {}",
+            record.body
+        );
+        assert!(
+            record.body.contains("Reason: no longer needed"),
+            "body should contain the reason text, got: {}",
+            record.body
+        );
+    }
 }
