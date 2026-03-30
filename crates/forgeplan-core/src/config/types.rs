@@ -157,16 +157,24 @@ pub struct EmbeddingConfig {
     /// Model name: bge-m3, bge-small-en, multilingual-e5-small, multilingual-e5-base
     #[serde(default = "default_embedding_model")]
     pub model: String,
+    /// Max characters of body to include in embedding text. Default: 2000.
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
 }
 
 fn default_embedding_model() -> String {
     "bge-m3".into()
 }
 
+fn default_chunk_size() -> usize {
+    2000
+}
+
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
             model: default_embedding_model(),
+            chunk_size: default_chunk_size(),
         }
     }
 }

@@ -72,12 +72,15 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [x] **F1 (P0)**: Embed title + body snippet — embedding_text() + forgeplan embed command
 - [x] **F2 (P0)**: Graph walk shows relation types — neighbors_with_relations()
 - [x] **F3 (P1)**: `forgeplan embed` — batch embed all artifacts (persistent in LanceDB)
-- [ ] **F4 (P1)**: Combined score (vector * 0.5 + R_eff * 0.3 + graph_centrality * 0.2)
+- [x] **F4 (P1)**: Smart search — text-first + boosters (Algolia-style, not weighted sum). EVID-033.
 - [x] **F5 (P1)**: `forgeplan gaps` — 18 MUST gaps found on real data! Audit: 4 fixes.
 - [ ] **F6 (P2)**: Fix evidence blind spots (EVID-015, EVID-025, EVID-026, EVID-027)
-- [ ] `forgeplan search --semantic` — vector search by meaning
-- [ ] `forgeplan search --smart` — keyword + vector + graph combined
+- [x] `forgeplan search --semantic` — vector-only search
+- [x] `forgeplan search` — smart by default (keyword + semantic + R_eff + status + graph boosters)
+- [x] `forgeplan search --keyword` — forced keyword grep
 - [x] Configurable embedding model via config.yaml (BGE-M3 default)
+- [x] Configurable chunk_size via config.yaml (default 2000)
+- [ ] **Future**: Reciprocal Rank Fusion (RRF) for production-grade hybrid search
 
 ### P1: Driver Abstraction — RFC-003
 - [x] **Phase 1**: StorageDriver trait + LanceDriver + InMemoryStore + factory — PR #61 merged
