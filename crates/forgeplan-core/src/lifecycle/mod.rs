@@ -234,24 +234,42 @@ pub async fn activate(
     })
 }
 
+/// Result of a supersede operation.
+#[derive(Debug, Clone)]
+pub struct SupersedeResult {
+    /// Artifacts that depend on the superseded artifact.
+    pub dependents: Vec<String>,
+    /// Warnings (e.g., replacement is itself superseded/deprecated).
+    pub warnings: Vec<String>,
+}
+
 /// Supersede an artifact: Active → Superseded, link to replacement.
 pub async fn supersede(
     store: &LanceStore,
     artifact_id: &str,
     replacement_id: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<SupersedeResult> {
     let record = store
         .get_record(artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
     // Verify replacement exists
-    store
+    let replacement = store
         .get_record(replacement_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Replacement not found: {replacement_id}"))?;
 
     transitions::validate_transition(&record.status, "superseded")?;
+
+    // Warn if replacement is itself superseded or deprecated (chain risk)
+    let mut warnings = Vec::new();
+    if replacement.status == "superseded" || replacement.status == "deprecated" {
+        warnings.push(format!(
+            "Warning: replacement {} is already {} — consider using a different replacement",
+            replacement_id, replacement.status
+        ));
+    }
 
     // Create supersedes link
     store
@@ -271,7 +289,10 @@ pub async fn supersede(
         .map(|(src, _, _)| src.clone())
         .collect();
 
-    Ok(dependents)
+    Ok(SupersedeResult {
+        dependents,
+        warnings,
+    })
 }
 
 /// Deprecate an artifact: Active → Deprecated with reason.

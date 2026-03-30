@@ -91,6 +91,7 @@ pub const VALID_RELATIONS: &[&str] = &[
     "supersedes",
     "contradicts",
     "refines",
+    "supports",
 ];
 
 /// Parse relation string, accepting both snake_case and kebab-case.

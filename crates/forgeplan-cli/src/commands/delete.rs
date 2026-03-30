@@ -10,6 +10,29 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
+    // Check for dependents (other artifacts linking TO this one)
+    let all_relations = store.get_all_relations().await?;
+    let dependents: Vec<_> = all_relations
+        .iter()
+        .filter(|(_, target, _)| target.eq_ignore_ascii_case(id))
+        .collect();
+
+    if !dependents.is_empty() {
+        eprintln!(
+            "  WARNING: {} has {} dependent(s):",
+            id,
+            dependents.len()
+        );
+        for (source, _, rel) in &dependents {
+            eprintln!("    {} --{}--> {}", source, rel, id);
+        }
+        if !yes {
+            eprintln!("  Use --yes to confirm deletion despite dependents.");
+            return Ok(());
+        }
+        eprintln!("  Proceeding with --yes despite dependents.");
+    }
+
     if !yes {
         eprintln!(
             "  About to delete {} \"{}\" (kind: {}, status: {})",
