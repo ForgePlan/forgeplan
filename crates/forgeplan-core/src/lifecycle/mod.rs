@@ -154,6 +154,34 @@ pub async fn activate(
         });
     }
 
+    // Methodology enforcement: stub check (body too short = not filled)
+    if record.body.trim().len() < 100 && !force {
+        anyhow::bail!(
+            "Cannot activate {}: body too short ({} chars). Fill required sections first.\n\
+             Current state: STUB → need VALIDATED before ACTIVATED.\n\
+             Run: forgeplan update {} --body \"...\"",
+            artifact_id, record.body.trim().len(), artifact_id
+        );
+    }
+
+    // Methodology enforcement: evidence check (no evidence = blind spot)
+    if !force {
+        let relations = store.get_relations(artifact_id).await.unwrap_or_default();
+        let incoming = store.get_incoming_relations(artifact_id).await.unwrap_or_default();
+        let has_evidence = relations.iter().any(|(_, r)| r == "informs" || r == "supports")
+            || incoming.iter().any(|(source_id, _)| {
+                source_id.to_uppercase().starts_with("EVID-")
+            });
+        if !has_evidence {
+            anyhow::bail!(
+                "Cannot activate {}: no evidence linked. Create evidence first.\n\
+                 Current state: VALIDATED → need EVIDENCED before ACTIVATED.\n\
+                 Run: forgeplan new evidence \"...\" && forgeplan link EVID-XXX {} --relation informs",
+                artifact_id, artifact_id
+            );
+        }
+    }
+
     // Must pass validation before activation (unless --force)
     let review_result = review(store, artifact_id).await?;
     if !review_result.can_activate && !force {

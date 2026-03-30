@@ -742,8 +742,8 @@ fn e2e_activate_unblocks_dependent() {
     let before = String::from_utf8_lossy(&output.stdout);
     assert!(before.contains("Blocked") || before.contains("blocked"), "RFC should be blocked before activate");
 
-    // Activate PRD
-    forgeplan().args(["activate", "PRD-001"]).current_dir(tmp.path()).assert().success();
+    // Activate PRD (--force because test PRD has short body and no evidence)
+    forgeplan().args(["activate", "PRD-001", "--force"]).current_dir(tmp.path()).assert().success();
 
     // After activate: RFC should be ready
     let output2 = forgeplan()
@@ -1140,9 +1140,9 @@ fn e2e_supersede_workflow() {
     let tmp = TempDir::new().unwrap();
     forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
-    // Create and activate old PRD
+    // Create and activate old PRD (--force because test PRD has short body and no evidence)
     forgeplan().args(["new", "prd", "Old Feature"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["activate", "PRD-001"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["activate", "PRD-001", "--force"]).current_dir(tmp.path()).assert().success();
 
     // Create new PRD
     forgeplan().args(["new", "prd", "New Feature"]).current_dir(tmp.path()).assert().success();
@@ -1613,8 +1613,8 @@ fn activation_gate_rejects_invalid() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("MUST") || stderr.contains("error") || stderr.contains("Validation") || stderr.contains("validation"),
-        "Error should mention MUST/error/validation, got stderr: {}", stderr
+        stderr.contains("MUST") || stderr.contains("error") || stderr.contains("Validation") || stderr.contains("validation") || stderr.contains("Cannot activate"),
+        "Error should mention rejection, got stderr: {}", stderr
     );
 }
 
