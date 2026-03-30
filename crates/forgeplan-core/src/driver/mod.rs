@@ -12,7 +12,7 @@ pub mod types;
 pub use types::*;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact};
+use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact, VectorSearchHit};
 
 use std::path::Path;
 
@@ -129,11 +129,12 @@ pub trait StorageDriver: Send + Sync {
     }
 
     /// Vector similarity search using a pre-computed embedding.
+    /// Returns hits with distance scores for real similarity computation.
     async fn vector_search(
         &self,
         _query_embedding: &[f32],
         _limit: usize,
-    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+    ) -> anyhow::Result<Vec<VectorSearchHit>> {
         Ok(Vec::new())
     }
 
