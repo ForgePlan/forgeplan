@@ -12,6 +12,10 @@ pub struct Config {
     pub llm: Option<LlmConfig>,
     #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,
+    #[serde(default)]
+    pub storage: Option<StorageConfig>,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
 }
 
 impl Default for Config {
@@ -24,6 +28,8 @@ impl Default for Config {
             created_at: chrono::Utc::now().date_naive(),
             llm: None,
             embedding: None,
+            storage: None,
+            memory: None,
         }
     }
 }
@@ -170,6 +176,83 @@ impl EmbeddingConfig {
     pub fn with_env_overrides(mut self) -> Self {
         if let Ok(v) = std::env::var("FORGEPLAN_EMBEDDING_MODEL") {
             self.model = v;
+        }
+        self
+    }
+}
+
+/// Storage backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Backend driver: "lancedb" (default) | "sqlite" | "memory"
+    #[serde(default = "default_storage_driver")]
+    pub driver: String,
+    /// Custom path for DB storage. If None, uses .forgeplan/lance/ (default).
+    /// Useful to keep DB cache outside the project directory.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+fn default_storage_driver() -> String {
+    "lancedb".into()
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            driver: default_storage_driver(),
+            path: None,
+        }
+    }
+}
+
+impl StorageConfig {
+    /// Apply env overrides: FORGEPLAN_STORAGE_DRIVER, FORGEPLAN_STORAGE_PATH
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(v) = std::env::var("FORGEPLAN_STORAGE_DRIVER") {
+            self.driver = v;
+        }
+        if let Ok(v) = std::env::var("FORGEPLAN_STORAGE_PATH") {
+            self.path = Some(v);
+        }
+        self
+    }
+
+    /// Resolve storage path: custom path or default .forgeplan/ subdirectory.
+    pub fn resolve_path(&self, workspace_path: &std::path::Path) -> std::path::PathBuf {
+        if let Some(ref custom) = self.path {
+            std::path::PathBuf::from(custom)
+        } else {
+            workspace_path.to_path_buf()
+        }
+    }
+}
+
+/// Memory bank configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// Memory driver: "file" (default) | "none"
+    #[serde(default = "default_memory_driver")]
+    pub driver: String,
+}
+
+fn default_memory_driver() -> String {
+    "file".into()
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            driver: default_memory_driver(),
+        }
+    }
+}
+
+impl MemoryConfig {
+    /// Apply env override: FORGEPLAN_MEMORY_DRIVER
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(v) = std::env::var("FORGEPLAN_MEMORY_DRIVER") {
+            self.driver = v;
         }
         self
     }

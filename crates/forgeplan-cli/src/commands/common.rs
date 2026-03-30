@@ -18,3 +18,13 @@ pub async fn store() -> anyhow::Result<LanceStore> {
     let (_, store) = open_store().await?;
     Ok(store)
 }
+
+/// Open storage using driver trait (new API — will replace open_store over time).
+pub async fn open_driver() -> anyhow::Result<std::sync::Arc<dyn forgeplan_core::driver::StorageDriver>> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ workspace found"))?;
+    let config = workspace::load_config(&ws)?;
+    let storage_config = config.storage.unwrap_or_default();
+    forgeplan_core::driver::factory::create_storage(&storage_config, &ws).await
+}
