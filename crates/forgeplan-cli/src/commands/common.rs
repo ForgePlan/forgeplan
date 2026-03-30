@@ -28,6 +28,32 @@ pub async fn store() -> anyhow::Result<LanceStore> {
     Ok(store)
 }
 
+/// Load and validate LLM config — fails early with actionable message if not configured.
+pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::LlmConfig> {
+    let cfg = config()?;
+    let llm = cfg
+        .llm
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "LLM not configured.\n\
+                 Add to .forgeplan/config.yaml:\n\
+                 llm:\n\
+                   provider: gemini\n\
+                   api_key_env: GEMINI_API_KEY"
+            )
+        })?
+        .with_env_overrides();
+    if llm.resolve_api_key().is_none() {
+        anyhow::bail!(
+            "API key not found for provider '{}'.\n\
+             Set environment variable: {}",
+            llm.provider,
+            llm.api_key_env.as_deref().unwrap_or("(none configured)")
+        );
+    }
+    Ok(llm)
+}
+
 /// Open storage using driver trait (new API — will replace open_store over time).
 pub async fn open_driver() -> anyhow::Result<std::sync::Arc<dyn forgeplan_core::driver::StorageDriver>> {
     let cwd = std::env::current_dir()?;
