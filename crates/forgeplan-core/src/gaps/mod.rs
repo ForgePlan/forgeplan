@@ -176,7 +176,7 @@ fn check_depth_compliance(
                 });
             }
         }
-        "deep" | "critical" => {
+        "deep" => {
             if !has_rfc {
                 gaps.push(Gap {
                     artifact_id: record.id.clone(),
@@ -201,6 +201,43 @@ fn check_depth_compliance(
                     message: format!("{} Deep depth but no linked ADR", record.id),
                 });
             }
+        }
+        "critical" => {
+            // Critical = Epic → PRD[] → Spec[] → RFC[] → ADR[]
+            let has_epic = record.parent_epic.is_some();
+            if !has_epic {
+                gaps.push(Gap {
+                    artifact_id: record.id.clone(),
+                    artifact_title: record.title.clone(),
+                    severity: GapSeverity::Must,
+                    message: format!("{} Critical depth but no parent Epic", record.id),
+                });
+            }
+            if !has_rfc {
+                gaps.push(Gap {
+                    artifact_id: record.id.clone(),
+                    artifact_title: record.title.clone(),
+                    severity: GapSeverity::Must,
+                    message: format!("{} Critical depth but no linked RFC", record.id),
+                });
+            }
+            if !has_adr {
+                gaps.push(Gap {
+                    artifact_id: record.id.clone(),
+                    artifact_title: record.title.clone(),
+                    severity: GapSeverity::Must,
+                    message: format!("{} Critical depth but no linked ADR", record.id),
+                });
+            }
+        }
+        "" => {
+            // Empty depth — data integrity issue
+            gaps.push(Gap {
+                artifact_id: record.id.clone(),
+                artifact_title: record.title.clone(),
+                severity: GapSeverity::Could,
+                message: format!("{} has no depth assigned", record.id),
+            });
         }
         _ => {} // tactical/note — no pipeline requirements
     }
@@ -262,7 +299,10 @@ fn check_stale_draft(record: &ArtifactRecord, gaps: &mut Vec<Gap>) {
         return;
     }
 
-    let created = NaiveDateTime::parse_from_str(&record.created_at, "%Y-%m-%dT%H:%M:%S")
+    // Parse RFC 3339 (with timezone) — this is what LanceStore produces
+    let created = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+        .map(|dt| dt.naive_utc())
+        .or_else(|_| NaiveDateTime::parse_from_str(&record.created_at, "%Y-%m-%dT%H:%M:%S"))
         .or_else(|_| NaiveDateTime::parse_from_str(&record.created_at, "%Y-%m-%dT%H:%M:%S%.f"));
 
     if let Ok(created) = created {
@@ -280,12 +320,18 @@ fn check_stale_draft(record: &ArtifactRecord, gaps: &mut Vec<Gap>) {
 }
 
 /// Check for orphan artifacts (no links at all).
+/// Notes and Problems are exempt — they often exist standalone.
 fn check_orphan(
     record: &ArtifactRecord,
     outgoing: &RelationIndex,
     incoming: &RelationIndex,
     gaps: &mut Vec<Gap>,
 ) {
+    // Notes and problems are often standalone — not orphans
+    let kind = record.kind.to_lowercase();
+    if kind == "note" || kind == "problem" {
+        return;
+    }
     let has_links = outgoing.contains_key(&record.id) || incoming.contains_key(&record.id);
     if !has_links {
         gaps.push(Gap {
@@ -404,8 +450,20 @@ mod tests {
     }
 
     #[test]
-    fn test_find_gaps_orphan() {
+    fn test_note_not_flagged_as_orphan() {
+        // Notes are exempt from orphan checks
         let record = make_record("NOTE-009", "note", "draft", "tactical");
+        let outgoing: RelationIndex = BTreeMap::new();
+        let incoming: RelationIndex = BTreeMap::new();
+        let mut gaps = Vec::new();
+        check_orphan(&record, &outgoing, &incoming, &mut gaps);
+        assert!(gaps.is_empty(), "Notes should not be flagged as orphans");
+    }
+
+    #[test]
+    fn test_find_gaps_orphan() {
+        // PRDs without links ARE orphans
+        let record = make_record("PRD-099", "prd", "draft", "tactical");
         let outgoing: RelationIndex = BTreeMap::new();
         let incoming: RelationIndex = BTreeMap::new();
         let mut gaps = Vec::new();
