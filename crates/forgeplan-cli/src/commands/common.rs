@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use forgeplan_core::config::types::Config;
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::workspace;
 
@@ -11,6 +12,14 @@ pub async fn open_store() -> anyhow::Result<(PathBuf, LanceStore)> {
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
     let store = LanceStore::open(&ws).await?;
     Ok((ws, store))
+}
+
+/// Load workspace config.
+pub fn config() -> anyhow::Result<Config> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    workspace::load_config(&ws)
 }
 
 /// Open workspace store, returning only the store (most common case).

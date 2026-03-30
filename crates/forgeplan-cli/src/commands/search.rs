@@ -1,25 +1,33 @@
-
 use crate::commands::common;
 use crate::ui;
 
-pub async fn run(query: &str, kind: Option<&str>, semantic: bool, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
+/// Search mode determined by CLI flags.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SearchMode {
+    /// Default: keyword + semantic + boosters (graceful degradation if no embeddings)
+    Smart,
+    /// Forced keyword-only (substring grep)
+    Keyword,
+    /// Forced semantic-only (vector similarity)
+    Semantic,
+}
 
-    if semantic {
-        #[cfg(feature = "semantic-search")]
-        {
-            return run_semantic(&store, query).await;
-        }
-        #[cfg(not(feature = "semantic-search"))]
-        {
-            anyhow::bail!(
-                "Semantic search not available. Rebuild with: \
-                 cargo build --features semantic-search"
-            );
-        }
+pub async fn run(
+    query: &str,
+    kind: Option<&str>,
+    mode: SearchMode,
+    json: bool,
+) -> anyhow::Result<()> {
+    match mode {
+        SearchMode::Keyword => run_keyword(query, kind, json).await,
+        SearchMode::Semantic => run_semantic_only(query, json).await,
+        SearchMode::Smart => run_smart(query, kind, json).await,
     }
+}
 
-    // Substring search (default)
+/// Keyword-only search (substring grep on title + body).
+async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let store = common::store().await?;
     let hits = store.search_body(query, kind).await?;
 
     if hits.is_empty() {
@@ -34,12 +42,15 @@ pub async fn run(query: &str, kind: Option<&str>, semantic: bool, json: bool) ->
     if json {
         let json_data: Vec<_> = hits
             .iter()
-            .map(|r| serde_json::json!({
-                "id": r.id,
-                "kind": r.kind,
-                "status": r.status,
-                "title": r.title,
-            }))
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "kind": r.kind,
+                    "status": r.status,
+                    "title": r.title,
+                    "mode": "keyword",
+                })
+            })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
@@ -81,34 +92,211 @@ pub async fn run(query: &str, kind: Option<&str>, semantic: bool, json: bool) ->
     Ok(())
 }
 
-#[cfg(feature = "semantic-search")]
-async fn run_semantic(
-    store: &LanceStore,
-    query: &str,
-) -> anyhow::Result<()> {
-    use forgeplan_core::embed::Embedder;
+/// Semantic-only search (vector similarity).
+async fn run_semantic_only(query: &str, json: bool) -> anyhow::Result<()> {
+    #[cfg(feature = "semantic-search")]
+    {
+        use forgeplan_core::embed::Embedder;
 
-    println!("  Embedding query...");
-    let mut embedder = Embedder::new()?;
-    let query_vec = embedder.embed(query)?;
+        let store = common::store().await?;
 
-    let hits = store.vector_search(&query_vec, 10).await?;
+        let mut embedder = Embedder::new()?;
+        let query_vec = embedder.embed(query)?;
+        let hits = store.vector_search(&query_vec, 10).await?;
 
-    if hits.is_empty() {
-        println!("No semantic results for \"{}\"", query);
-        println!("Hint: Artifacts need embeddings. Use `forgeplan embed` to generate them.");
+        if hits.is_empty() {
+            if json {
+                println!("[]");
+            } else {
+                ui::info(&format!("No semantic results for \"{}\"", query));
+                println!("  Hint: run `forgeplan embed` to generate embeddings.");
+            }
+            return Ok(());
+        }
+
+        if json {
+            let json_data: Vec<_> = hits
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "kind": r.kind,
+                        "status": r.status,
+                        "title": r.title,
+                        "mode": "semantic",
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_data)?);
+            return Ok(());
+        }
+
+        println!(
+            "Found {} artifact(s) semantically similar to \"{}\":\n",
+            hits.len(),
+            query
+        );
+        for record in &hits {
+            println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
+        }
+
+        Ok(())
+    }
+    #[cfg(not(feature = "semantic-search"))]
+    {
+        let _ = (query, json);
+        anyhow::bail!(
+            "Semantic search not available. Rebuild with: \
+             cargo build --features semantic-search"
+        );
+    }
+}
+
+/// Smart search: keyword + semantic + graph boosters.
+/// Graceful degradation: if embeddings unavailable, uses keyword only + hint.
+async fn run_smart(query: &str, kind: Option<&str>, json: bool) -> anyhow::Result<()> {
+    use forgeplan_core::graph::knowledge::KnowledgeGraph;
+    use forgeplan_core::search::smart;
+
+    let store = common::store().await?;
+
+    // Load all records (with optional kind filter applied after scoring)
+    let records = store.list_records(None).await?;
+    if records.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            ui::info("No artifacts found.");
+        }
         return Ok(());
     }
 
-    println!(
-        "Found {} artifact(s) semantically similar to \"{}\":\n",
-        hits.len(),
-        query
+    // Try to get semantic scores (graceful degradation)
+    let (semantic_scores, has_embeddings) = get_semantic_scores(&store, query).await;
+
+    // Build knowledge graph for centrality booster
+    let graph = KnowledgeGraph::from_store(&store).await.ok();
+
+    // Run smart search
+    let results = smart::smart_search(
+        &records,
+        query,
+        semantic_scores.as_ref(),
+        graph.as_ref(),
+        20,
     );
 
-    for record in &hits {
-        println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
+    // Apply kind filter post-scoring (so boosters still use full graph)
+    let results: Vec<_> = if let Some(k) = kind {
+        results
+            .into_iter()
+            .filter(|r| r.kind.eq_ignore_ascii_case(k))
+            .collect()
+    } else {
+        results
+    };
+
+    if results.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            ui::info(&format!("No results for \"{}\"", query));
+        }
+        return Ok(());
+    }
+
+    if json {
+        let json_data: Vec<_> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "kind": r.kind,
+                    "status": r.status,
+                    "title": r.title,
+                    "score": format!("{:.2}", r.score),
+                    "keyword_score": format!("{:.2}", r.keyword_score),
+                    "semantic_score": format!("{:.2}", r.semantic_score),
+                    "r_eff": format!("{:.2}", r.r_eff),
+                    "graph_centrality": format!("{:.2}", r.graph_centrality),
+                    "mode": "smart",
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_data)?);
+    } else {
+        println!(
+            "Found {} result(s) for \"{}\" (smart search):\n",
+            results.len(),
+            query
+        );
+        for r in &results {
+            let signals = format!(
+                "kw={:.1} sem={:.1} r={:.1} g={:.1}",
+                r.keyword_score, r.semantic_score, r.r_eff, r.graph_centrality
+            );
+            println!(
+                "  {:.2}  {} [{}|{}] \"{}\"",
+                r.score, r.id, r.kind, r.status, r.title
+            );
+            println!("        {}", signals);
+        }
+
+        if !has_embeddings {
+            println!();
+            println!(
+                "  Tip: run `forgeplan embed` to enable semantic search for better results."
+            );
+        }
     }
 
     Ok(())
+}
+
+/// Try to compute semantic scores for all artifacts.
+/// Returns (Some(map), true) if embeddings available, (None, false) otherwise.
+async fn get_semantic_scores(
+    store: &forgeplan_core::db::store::LanceStore,
+    query: &str,
+) -> (
+    Option<std::collections::HashMap<String, f64>>,
+    bool,
+) {
+    #[cfg(feature = "semantic-search")]
+    {
+        use forgeplan_core::embed::Embedder;
+
+        // Try to create embedder — if model not available, degrade gracefully
+        let mut embedder = match Embedder::new() {
+            Ok(e) => e,
+            Err(_) => return (None, false),
+        };
+
+        let query_vec = match embedder.embed(query) {
+            Ok(v) => v,
+            Err(_) => return (None, false),
+        };
+
+        let hits = match store.vector_search(&query_vec, 50).await {
+            Ok(h) if !h.is_empty() => h,
+            _ => return (None, false),
+        };
+
+        // Normalize cosine distances to similarity scores [0..1]
+        // LanceDB returns distance (lower = more similar), convert to similarity
+        let mut map = std::collections::HashMap::new();
+        let max_rank = hits.len() as f64;
+        for (i, record) in hits.iter().enumerate() {
+            // Rank-based score: top result = 1.0, last = close to 0
+            let score = 1.0 - (i as f64 / max_rank);
+            map.insert(record.id.clone(), score);
+        }
+
+        (Some(map), true)
+    }
+    #[cfg(not(feature = "semantic-search"))]
+    {
+        let _ = (store, query);
+        (None, false)
+    }
 }

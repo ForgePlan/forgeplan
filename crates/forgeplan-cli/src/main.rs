@@ -94,15 +94,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Search artifacts by keyword (or --semantic for vector similarity search)
+    /// Search artifacts (smart by default: keyword + semantic + boosters)
     Search {
         /// Search query
         query: String,
         /// Filter by kind
         #[arg(long, short = 't')]
         r#type: Option<String>,
-        /// Use semantic (vector) search instead of substring match
-        #[arg(long)]
+        /// Force keyword-only search (substring grep)
+        #[arg(long, conflicts_with = "semantic")]
+        keyword: bool,
+        /// Force semantic-only search (vector similarity)
+        #[arg(long, conflicts_with = "keyword")]
         semantic: bool,
         /// Output as JSON for machine consumption
         #[arg(long)]
@@ -421,10 +424,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::Search {
             query,
             r#type,
+            keyword,
             semantic,
             json,
         } => {
-            commands::search::run(&query, r#type.as_deref(), semantic, json).await
+            let mode = if keyword {
+                commands::search::SearchMode::Keyword
+            } else if semantic {
+                commands::search::SearchMode::Semantic
+            } else {
+                commands::search::SearchMode::Smart
+            };
+            commands::search::run(&query, r#type.as_deref(), mode, json).await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,

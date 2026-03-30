@@ -6,6 +6,12 @@ pub async fn run() -> anyhow::Result<()> {
     use forgeplan_core::embed::Embedder;
 
     let store = common::store().await?;
+    let config = common::config().unwrap_or_default();
+    let chunk_size = config
+        .embedding
+        .as_ref()
+        .map(|e| e.chunk_size)
+        .unwrap_or(2000);
 
     ui::info("Loading embedding model...");
     let mut embedder = Embedder::new()?;
@@ -16,13 +22,17 @@ pub async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("Embedding {} artifact(s) (title + body)...\n", records.len());
+    println!(
+        "Embedding {} artifact(s) (title + body, chunk_size={})...\n",
+        records.len(),
+        chunk_size
+    );
 
     let mut ok = 0usize;
     let mut err = 0usize;
 
     for record in &records {
-        let text = record.embedding_text();
+        let text = record.embedding_text(chunk_size);
         match embedder.embed(&text) {
             Ok(vec) => {
                 store.update_embedding(&record.id, &vec).await?;

@@ -52,13 +52,14 @@ pub struct ArtifactRecord {
 }
 
 impl ArtifactRecord {
-    /// Build the text used for embedding: id + title + first 300 chars of body.
+    /// Build the text used for embedding: title + first `chunk_size` chars of body.
     ///
-    /// This ensures semantic search can find artifacts based on body content
-    /// (FR, Goals, Problem sections), not just the title.
-    pub fn embedding_text(&self) -> String {
-        let body_preview: String = self.body.chars().take(300).collect();
-        format!("{} {} {}", self.id, self.title, body_preview)
+    /// ID is excluded — it has no semantic meaning and pollutes the vector space.
+    /// Default chunk_size=2000 captures Problem/Goals/FR sections.
+    /// Configurable via `embedding.chunk_size` in config.yaml.
+    pub fn embedding_text(&self, chunk_size: usize) -> String {
+        let body_preview: String = self.body.chars().take(chunk_size).collect();
+        format!("{} {}", self.title, body_preview)
     }
 
     /// Convert to a lightweight ArtifactSummary (drops body and most metadata).
@@ -1621,16 +1622,16 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
 
-        let text = record.embedding_text();
-        assert!(text.contains("PRD-042"), "should contain artifact id");
+        let text = record.embedding_text(2000);
+        assert!(!text.contains("PRD-042"), "should NOT contain artifact id (no semantic value)");
         assert!(text.contains("Authentication Module"), "should contain title");
         assert!(text.contains("OAuth2"), "should contain body content");
         assert!(text.contains("Google and GitHub"), "should contain body goals");
     }
 
     #[test]
-    fn embedding_text_truncates_long_body_at_300_chars() {
-        let long_body = "x".repeat(500);
+    fn embedding_text_truncates_body_at_chunk_size() {
+        let long_body = "x".repeat(5000);
         let record = ArtifactRecord {
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
@@ -1646,10 +1647,14 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
 
-        let text = record.embedding_text();
-        // "PRD-001 Title " = 15 chars + 300 body chars = 315
-        // But we count chars, not bytes, so check total body part
-        let body_part = text.strip_prefix("PRD-001 Title ").unwrap();
-        assert_eq!(body_part.len(), 300, "body should be truncated to 300 chars");
+        // Default chunk_size=2000
+        let text = record.embedding_text(2000);
+        let body_part = text.strip_prefix("Title ").unwrap();
+        assert_eq!(body_part.len(), 2000, "body should be truncated to chunk_size");
+
+        // Custom chunk_size=500
+        let text_small = record.embedding_text(500);
+        let body_small = text_small.strip_prefix("Title ").unwrap();
+        assert_eq!(body_small.len(), 500, "body should respect custom chunk_size");
     }
 }

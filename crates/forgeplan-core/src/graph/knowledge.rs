@@ -182,6 +182,29 @@ impl KnowledgeGraph {
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
     }
+
+    /// Normalized degree centrality for an artifact: (in_degree + out_degree) / (N - 1).
+    ///
+    /// Returns 0.0 for unknown IDs or graphs with fewer than 2 nodes.
+    /// Result is in [0.0, 1.0] — suitable as a search booster.
+    pub fn degree_centrality(&self, id: &str) -> f64 {
+        let n = self.graph.node_count();
+        if n < 2 {
+            return 0.0;
+        }
+        let Some(&idx) = self.index.get(id) else {
+            return 0.0;
+        };
+        let in_deg = self
+            .graph
+            .neighbors_directed(idx, Direction::Incoming)
+            .count();
+        let out_deg = self
+            .graph
+            .neighbors_directed(idx, Direction::Outgoing)
+            .count();
+        (in_deg + out_deg) as f64 / (n - 1) as f64
+    }
 }
 
 #[cfg(test)]
@@ -360,6 +383,45 @@ mod tests {
         let nodes = vec![make_node("PRD-001", "prd", "active")];
         let kg = KnowledgeGraph::from_parts(nodes, vec![]);
         assert!(kg.get("NONEXISTENT").is_none());
+    }
+
+    #[test]
+    fn degree_centrality_basic() {
+        let nodes = vec![
+            make_node("PRD-001", "prd", "active"),
+            make_node("RFC-001", "rfc", "active"),
+            make_node("EVID-001", "evidence", "active"),
+            make_node("ADR-001", "adr", "active"),
+        ];
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("EVID-001".into(), "PRD-001".into(), "informs".into()),
+            ("ADR-001".into(), "RFC-001".into(), "decides".into()),
+        ];
+        let kg = KnowledgeGraph::from_parts(nodes, edges);
+
+        // PRD-001: 2 incoming edges, 0 outgoing => degree = 2 / (4-1) = 0.667
+        let prd_c = kg.degree_centrality("PRD-001");
+        assert!((prd_c - 2.0 / 3.0).abs() < 0.001);
+
+        // RFC-001: 1 outgoing + 1 incoming => degree = 2 / 3 = 0.667
+        let rfc_c = kg.degree_centrality("RFC-001");
+        assert!((rfc_c - 2.0 / 3.0).abs() < 0.001);
+
+        // ADR-001: 1 outgoing, 0 incoming => degree = 1 / 3 = 0.333
+        let adr_c = kg.degree_centrality("ADR-001");
+        assert!((adr_c - 1.0 / 3.0).abs() < 0.001);
+
+        // Unknown ID => 0.0
+        assert_eq!(kg.degree_centrality("NONEXISTENT"), 0.0);
+    }
+
+    #[test]
+    fn degree_centrality_single_node() {
+        let nodes = vec![make_node("PRD-001", "prd", "active")];
+        let kg = KnowledgeGraph::from_parts(nodes, vec![]);
+        // N < 2 => 0.0
+        assert_eq!(kg.degree_centrality("PRD-001"), 0.0);
     }
 
     #[test]
