@@ -187,6 +187,10 @@ pub struct StorageConfig {
     /// Backend driver: "lancedb" (default) | "sqlite" | "memory"
     #[serde(default = "default_storage_driver")]
     pub driver: String,
+    /// Custom path for DB storage. If None, uses .forgeplan/lance/ (default).
+    /// Useful to keep DB cache outside the project directory.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 fn default_storage_driver() -> String {
@@ -197,17 +201,30 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             driver: default_storage_driver(),
+            path: None,
         }
     }
 }
 
 impl StorageConfig {
-    /// Apply env override: FORGEPLAN_STORAGE_DRIVER
+    /// Apply env overrides: FORGEPLAN_STORAGE_DRIVER, FORGEPLAN_STORAGE_PATH
     pub fn with_env_overrides(mut self) -> Self {
         if let Ok(v) = std::env::var("FORGEPLAN_STORAGE_DRIVER") {
             self.driver = v;
         }
+        if let Ok(v) = std::env::var("FORGEPLAN_STORAGE_PATH") {
+            self.path = Some(v);
+        }
         self
+    }
+
+    /// Resolve storage path: custom path or default .forgeplan/ subdirectory.
+    pub fn resolve_path(&self, workspace_path: &std::path::Path) -> std::path::PathBuf {
+        if let Some(ref custom) = self.path {
+            std::path::PathBuf::from(custom)
+        } else {
+            workspace_path.to_path_buf()
+        }
     }
 }
 

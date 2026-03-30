@@ -16,7 +16,8 @@ pub async fn create_storage(
 ) -> anyhow::Result<Arc<dyn StorageDriver>> {
     match config.driver.as_str() {
         "lancedb" | "lance" => {
-            let driver = LanceDriver::open(workspace_path).await?;
+            let resolved = config.resolve_path(workspace_path);
+            let driver = LanceDriver::open(&resolved).await?;
             Ok(Arc::new(driver))
         }
         "memory" | "in_memory" => Ok(Arc::new(InMemoryStore::new())),
@@ -36,7 +37,8 @@ pub async fn init_storage(
 ) -> anyhow::Result<Arc<dyn StorageDriver>> {
     match config.driver.as_str() {
         "lancedb" | "lance" => {
-            let driver = LanceDriver::init(workspace_path).await?;
+            let resolved = config.resolve_path(workspace_path);
+            let driver = LanceDriver::init(&resolved).await?;
             Ok(Arc::new(driver))
         }
         "memory" | "in_memory" => Ok(Arc::new(InMemoryStore::new())),
@@ -61,6 +63,7 @@ mod tests {
 
         let config = StorageConfig {
             driver: "lancedb".to_string(),
+            path: None,
         };
 
         // First init to create tables
@@ -75,6 +78,7 @@ mod tests {
     async fn test_create_memory_driver() {
         let config = StorageConfig {
             driver: "memory".to_string(),
+            path: None,
         };
 
         let driver = create_storage(&config, Path::new("/unused")).await.unwrap();
@@ -85,6 +89,7 @@ mod tests {
     async fn test_unknown_driver_returns_error() {
         let config = StorageConfig {
             driver: "postgres".to_string(),
+            path: None,
         };
 
         let result = create_storage(&config, Path::new("/unused")).await;
