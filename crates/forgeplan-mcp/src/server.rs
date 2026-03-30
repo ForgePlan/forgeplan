@@ -426,11 +426,14 @@ impl ForgeplanServer {
         .await
         .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
+        let hint = methodology_hint_after_new(template_key, &id);
+
         Ok(json_result(&NewArtifactResponse {
             id,
             kind: template_key.into(),
             title: p.title,
             filepath: filepath.display().to_string(),
+            _next_action: Some(hint),
         }))
     }
 
@@ -556,12 +559,21 @@ impl ForgeplanServer {
             results.push(ValidationResultDto::from(result));
         }
 
+        let hint = if total_errors > 0 {
+            Some("Fix MUST errors above, then re-validate. Do NOT code until validate PASS.".into())
+        } else if total_passed == to_validate.len() {
+            Some("All passed! Now implement, then create evidence and link it.".into())
+        } else {
+            None
+        };
+
         Ok(json_result(&ValidateResponse {
             total_artifacts: to_validate.len(),
             total_passed,
             total_errors,
             total_warnings,
             results,
+            _next_action: hint,
         }))
     }
 
@@ -1867,10 +1879,35 @@ impl rmcp::ServerHandler for ForgeplanServer {
             .with_instructions(
                 "Forgeplan MCP server: manage structured project artifacts \
                  (PRDs, RFCs, ADRs, Epics, Specs) with quality scoring, \
-                 validation, dependency graphs, and search.",
+                 validation, dependency graphs, and search.\n\n\
+                 IMPORTANT: Tool responses may include a `_next_action` field. \
+                 When present, follow this hint — it guides the correct methodology workflow: \
+                 Shape → Validate → Code → Evidence → Activate.",
             )
     }
 }
 
 // Evidence parsing delegated to forgeplan_core::scoring::evidence
 use forgeplan_core::scoring::evidence::parse_evidence_from_record;
+
+// ── Methodology hints ──────────────────────────────────────────
+
+/// Generate a methodology hint based on artifact kind after creation.
+fn methodology_hint_after_new(kind: &str, id: &str) -> String {
+    match kind {
+        "prd" | "rfc" | "adr" | "spec" | "epic" => format!(
+            "Fill ALL MUST sections, then: forgeplan validate {id}. \
+             Do NOT start coding until validate PASS."
+        ),
+        "evidence" => format!(
+            "Add structured fields (verdict, congruence_level, evidence_type) to body, \
+             then: forgeplan link {id} <TARGET> --relation informs"
+        ),
+        "problem" => format!(
+            "Describe the problem with context. \
+             Then: forgeplan link {id} <RELATED> --relation identifies"
+        ),
+        "note" => "Notes auto-expire in 90 days. Link to related artifacts if relevant.".into(),
+        _ => format!("Next: forgeplan validate {id}"),
+    }
+}

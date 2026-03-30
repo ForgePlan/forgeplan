@@ -107,6 +107,9 @@ enum Commands {
         /// Force semantic-only search (vector similarity)
         #[arg(long, conflicts_with = "keyword")]
         semantic: bool,
+        /// Max results to return (default: 20)
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -426,6 +429,7 @@ async fn main() -> anyhow::Result<()> {
             r#type,
             keyword,
             semantic,
+            limit,
             json,
         } => {
             let mode = if keyword {
@@ -435,7 +439,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 commands::search::SearchMode::Smart
             };
-            commands::search::run(&query, r#type.as_deref(), mode, json).await
+            commands::search::run(&query, r#type.as_deref(), mode, limit, json).await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
