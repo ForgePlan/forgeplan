@@ -1,31 +1,38 @@
 //! In-memory implementation of StorageDriver for testing.
-//! Uses HashMap + RwLock for thread-safe access. No disk I/O.
+//! Uses HashMap + tokio::sync::RwLock for thread-safe async access. No disk I/O.
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::RwLock;
 
-use chrono::Utc;
+use chrono::{DateTime, NaiveDate, Utc};
+use tokio::sync::RwLock;
 
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact};
 use crate::driver::StorageDriver;
 
+/// Internal state behind a single RwLock to avoid TOCTOU races.
+struct InMemoryState {
+    artifacts: HashMap<String, ArtifactRecord>,
+    relations: Vec<(String, String, String)>, // source, target, relation_type
+    fpf_chunks: Vec<FpfChunk>,
+    id_counters: HashMap<String, u32>,
+}
+
 /// Thread-safe in-memory store for testing.
 pub struct InMemoryStore {
-    artifacts: RwLock<HashMap<String, ArtifactRecord>>,
-    relations: RwLock<Vec<(String, String, String)>>, // source, target, relation_type
-    fpf_chunks: RwLock<Vec<FpfChunk>>,
-    id_counters: RwLock<HashMap<String, u32>>,
+    state: RwLock<InMemoryState>,
 }
 
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {
-            artifacts: RwLock::new(HashMap::new()),
-            relations: RwLock::new(Vec::new()),
-            fpf_chunks: RwLock::new(Vec::new()),
-            id_counters: RwLock::new(HashMap::new()),
+            state: RwLock::new(InMemoryState {
+                artifacts: HashMap::new(),
+                relations: Vec::new(),
+                fpf_chunks: Vec::new(),
+                id_counters: HashMap::new(),
+            }),
         }
     }
 }
@@ -36,9 +43,21 @@ impl Default for InMemoryStore {
     }
 }
 
+/// Try RFC3339 first, then NaiveDate (%Y-%m-%d).
+fn parse_date(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+        .or_else(|| {
+            NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .ok()
+                .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc())
+        })
+}
+
 #[async_trait::async_trait]
 impl StorageDriver for InMemoryStore {
-    // ── Lifecycle ────────────────────────────────────────────────────
+    // -- Lifecycle ------------------------------------------------------------
 
     async fn open(_workspace_path: &Path) -> anyhow::Result<Self>
     where
@@ -54,7 +73,7 @@ impl StorageDriver for InMemoryStore {
         Ok(Self::new())
     }
 
-    // ── Artifact CRUD ────────────────────────────────────────────────
+    // -- Artifact CRUD --------------------------------------------------------
 
     async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         let now = Utc::now().to_rfc3339();
@@ -73,30 +92,21 @@ impl StorageDriver for InMemoryStore {
             updated_at: now,
         };
         let id = record.id.clone();
-        self.artifacts
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
-            .insert(id.clone(), record);
+        self.state.write().await.artifacts.insert(id.clone(), record);
         Ok(id)
     }
 
     async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
-        let arts = self
-            .artifacts
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(arts.get(id).map(|r| r.to_summary()))
+        let state = self.state.read().await;
+        Ok(state.artifacts.get(id).map(|r| r.to_summary()))
     }
 
     async fn list_artifacts(
         &self,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactSummary>> {
-        let arts = self
-            .artifacts
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let iter = arts.values().filter(|r| {
+        let state = self.state.read().await;
+        let iter = state.artifacts.values().filter(|r| {
             if let Some(f) = filter {
                 if let Some(ref k) = f.kind {
                     if !r.kind.eq_ignore_ascii_case(k) {
@@ -122,11 +132,9 @@ impl StorageDriver for InMemoryStore {
         status: Option<&str>,
         title: Option<&str>,
     ) -> anyhow::Result<()> {
-        let mut arts = self
+        let mut state = self.state.write().await;
+        let record = state
             .artifacts
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let record = arts
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         if let Some(s) = status {
@@ -140,11 +148,9 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
-        let mut arts = self
+        let mut state = self.state.write().await;
+        let record = state
             .artifacts
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let record = arts
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         record.r_eff_score = score;
@@ -153,41 +159,29 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
-        let mut arts = self
+        let mut state = self.state.write().await;
+        state
             .artifacts
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        arts.remove(id)
+            .remove(id)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
-        // Also clean up relations involving this artifact
-        drop(arts);
-        let mut rels = self
-            .relations
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        rels.retain(|(s, t, _)| s != id && t != id);
+        // Atomically clean up relations involving this artifact (same lock)
+        state.relations.retain(|(s, t, _)| s != id && t != id);
         Ok(())
     }
 
-    // ── Full records ─────────────────────────────────────────────────
+    // -- Full records ---------------------------------------------------------
 
     async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
-        let arts = self
-            .artifacts
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(arts.get(id).cloned())
+        let state = self.state.read().await;
+        Ok(state.artifacts.get(id).cloned())
     }
 
     async fn list_records(
         &self,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
-        let arts = self
-            .artifacts
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let iter = arts.values().filter(|r| {
+        let state = self.state.read().await;
+        let iter = state.artifacts.values().filter(|r| {
             if let Some(f) = filter {
                 if let Some(ref k) = f.kind {
                     if !r.kind.eq_ignore_ascii_case(k) {
@@ -208,11 +202,9 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
-        let mut arts = self
+        let mut state = self.state.write().await;
+        let record = state
             .artifacts
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let record = arts
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         record.body = body.to_string();
@@ -220,7 +212,7 @@ impl StorageDriver for InMemoryStore {
         Ok(())
     }
 
-    // ── Relations ────────────────────────────────────────────────────
+    // -- Relations ------------------------------------------------------------
 
     async fn add_relation(
         &self,
@@ -228,27 +220,25 @@ impl StorageDriver for InMemoryStore {
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
-        let mut rels = self
-            .relations
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let mut state = self.state.write().await;
         // Reject duplicates
-        let exists = rels
+        let exists = state
+            .relations
             .iter()
             .any(|(s, t, r)| s == source && t == target && r == relation);
         if exists {
             anyhow::bail!("relation already exists: {source} -> {target} ({relation})");
         }
-        rels.push((source.to_string(), target.to_string(), relation.to_string()));
+        state
+            .relations
+            .push((source.to_string(), target.to_string(), relation.to_string()));
         Ok(())
     }
 
     async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let rels = self
+        let state = self.state.read().await;
+        Ok(state
             .relations
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(rels
             .iter()
             .filter(|(s, _, _)| s == id)
             .map(|(_, t, r)| (t.clone(), r.clone()))
@@ -256,11 +246,9 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let rels = self
+        let state = self.state.read().await;
+        Ok(state
             .relations
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(rels
             .iter()
             .filter(|(_, t, _)| t == id)
             .map(|(s, _, r)| (s.clone(), r.clone()))
@@ -268,26 +256,21 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
-        let rels = self
-            .relations
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(rels.clone())
+        let state = self.state.read().await;
+        Ok(state.relations.clone())
     }
 
-    // ── Search ───────────────────────────────────────────────────────
+    // -- Search ---------------------------------------------------------------
 
     async fn search_body(
         &self,
         query: &str,
         kind_filter: Option<&str>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
-        let arts = self
-            .artifacts
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let state = self.state.read().await;
         let query_lower = query.to_lowercase();
-        let mut results: Vec<ArtifactRecord> = arts
+        let mut results: Vec<ArtifactRecord> = state
+            .artifacts
             .values()
             .filter(|r| {
                 if let Some(k) = kind_filter {
@@ -305,16 +288,14 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
-        let now = Utc::now().to_rfc3339();
-        let arts = self
+        let now = Utc::now();
+        let state = self.state.read().await;
+        let mut stale: Vec<ArtifactRecord> = state
             .artifacts
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let mut stale: Vec<ArtifactRecord> = arts
             .values()
             .filter(|r| {
                 if let Some(ref vu) = r.valid_until {
-                    vu.as_str() < now.as_str()
+                    parse_date(vu).map_or(false, |d| d < now)
                 } else {
                     false
                 }
@@ -326,39 +307,35 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String> {
-        let mut counters = self
+        let mut state = self.state.write().await;
+        let counter = state
             .id_counters
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let counter = counters.entry(kind_prefix.to_uppercase()).or_insert(0);
+            .entry(kind_prefix.to_uppercase())
+            .or_insert(0);
         *counter += 1;
         Ok(format!("{}-{:03}", kind_prefix.to_uppercase(), *counter))
     }
 
-    // ── FPF Knowledge Base ───────────────────────────────────────────
+    // -- FPF Knowledge Base ---------------------------------------------------
 
     fn has_fpf(&self) -> bool {
-        let chunks = self.fpf_chunks.read().unwrap_or_else(|e| e.into_inner());
-        !chunks.is_empty()
+        self.state
+            .try_read()
+            .map_or(false, |s| !s.fpf_chunks.is_empty())
     }
 
     async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
-        let mut store = self
-            .fpf_chunks
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let mut state = self.state.write().await;
         let count = chunks.len();
-        store.extend(chunks.iter().cloned());
+        state.fpf_chunks.extend(chunks.iter().cloned());
         Ok(count)
     }
 
     async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
-        let store = self
-            .fpf_chunks
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let state = self.state.read().await;
         let query_lower = query.to_lowercase();
-        let results: Vec<FpfChunk> = store
+        let results: Vec<FpfChunk> = state
+            .fpf_chunks
             .iter()
             .filter(|c| {
                 c.title.to_lowercase().contains(&query_lower)
@@ -372,19 +349,18 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn get_fpf_section(&self, section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
-        let store = self
+        let state = self.state.read().await;
+        Ok(state
             .fpf_chunks
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(store.iter().find(|c| c.section_id == section_id).cloned())
+            .iter()
+            .find(|c| c.section_id == section_id)
+            .cloned())
     }
 
     async fn list_fpf_sections(&self) -> anyhow::Result<Vec<FpfChunkSummary>> {
-        let store = self
+        let state = self.state.read().await;
+        Ok(state
             .fpf_chunks
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        Ok(store
             .iter()
             .map(|c| FpfChunkSummary {
                 section_id: c.section_id.clone(),
@@ -395,11 +371,8 @@ impl StorageDriver for InMemoryStore {
     }
 
     async fn clear_fpf(&self) -> anyhow::Result<()> {
-        let mut store = self
-            .fpf_chunks
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        store.clear();
+        let mut state = self.state.write().await;
+        state.fpf_chunks.clear();
         Ok(())
     }
 }
@@ -459,7 +432,7 @@ mod tests {
         create_with_id(&store, "RFC", "RFC One", "body2").await;
         create_with_id(&store, "PRD", "PRD Two", "body3").await;
 
-        // No filter — all 3
+        // No filter -- all 3
         let all = store.list_artifacts(None).await.unwrap();
         assert_eq!(all.len(), 3);
 
@@ -669,7 +642,7 @@ mod tests {
     async fn test_find_stale() {
         let store = InMemoryStore::new();
 
-        // Create artifact with expired valid_until
+        // Create artifact with expired valid_until (RFC3339 format)
         let id = store.next_id("PRD").await.unwrap();
         let art = NewArtifact {
             id: id.clone(),
@@ -684,10 +657,25 @@ mod tests {
         };
         store.create_artifact(&art).await.unwrap();
 
+        // Create artifact with expired valid_until (NaiveDate format)
+        let id_naive = store.next_id("PRD").await.unwrap();
+        let art_naive = NewArtifact {
+            id: id_naive.clone(),
+            kind: "PRD".to_string(),
+            status: "active".to_string(),
+            title: "Stale Naive".to_string(),
+            body: "old naive".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: Some("2020-06-15".to_string()),
+        };
+        store.create_artifact(&art_naive).await.unwrap();
+
         // Create artifact without valid_until
-        let id2 = store.next_id("PRD").await.unwrap();
-        let art2 = NewArtifact {
-            id: id2,
+        let id3 = store.next_id("PRD").await.unwrap();
+        let art3 = NewArtifact {
+            id: id3,
             kind: "PRD".to_string(),
             status: "active".to_string(),
             title: "Fresh".to_string(),
@@ -697,11 +685,27 @@ mod tests {
             parent_epic: None,
             valid_until: None,
         };
-        store.create_artifact(&art2).await.unwrap();
+        store.create_artifact(&art3).await.unwrap();
+
+        // Create artifact with future valid_until
+        let id4 = store.next_id("PRD").await.unwrap();
+        let art4 = NewArtifact {
+            id: id4,
+            kind: "PRD".to_string(),
+            status: "active".to_string(),
+            title: "Future".to_string(),
+            body: "still valid".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: Some("2099-12-31T23:59:59Z".to_string()),
+        };
+        store.create_artifact(&art4).await.unwrap();
 
         let stale = store.find_stale().await.unwrap();
-        assert_eq!(stale.len(), 1);
+        assert_eq!(stale.len(), 2);
         assert_eq!(stale[0].id, id);
+        assert_eq!(stale[1].id, id_naive);
     }
 
     #[tokio::test]
@@ -769,5 +773,24 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].kind, "RFC");
         assert_eq!(records[0].body, "b2");
+    }
+
+    #[tokio::test]
+    async fn test_parse_date_helper() {
+        // RFC3339
+        let d1 = parse_date("2020-01-01T00:00:00Z");
+        assert!(d1.is_some());
+
+        // NaiveDate
+        let d2 = parse_date("2020-06-15");
+        assert!(d2.is_some());
+
+        // Invalid
+        let d3 = parse_date("not-a-date");
+        assert!(d3.is_none());
+
+        // RFC3339 with offset
+        let d4 = parse_date("2020-01-01T00:00:00+03:00");
+        assert!(d4.is_some());
     }
 }

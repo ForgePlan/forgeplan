@@ -144,6 +144,15 @@ impl StorageDriver for LanceDriver {
         self.store.update_embedding(id, embedding).await
     }
 
+    #[cfg(feature = "semantic-search")]
+    async fn vector_search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+        self.store.vector_search(query_embedding, limit).await
+    }
+
     // ── FPF Knowledge Base ───────────────────────────────────────────
 
     fn has_fpf(&self) -> bool {

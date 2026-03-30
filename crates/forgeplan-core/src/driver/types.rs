@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 /// Entry in the agent memory log (decisions, context, insights).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryEntry {
     /// When the entry was created.
     pub timestamp: DateTime<Utc>,
@@ -19,7 +19,7 @@ pub struct MemoryEntry {
 }
 
 /// Category of a memory entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MemoryKind {
     /// A decision that was made.
     Decision,
