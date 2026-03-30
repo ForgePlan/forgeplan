@@ -82,6 +82,28 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [x] Configurable chunk_size via config.yaml (default 2000)
 - [ ] **Future**: Reciprocal Rank Fusion (RRF) for production-grade hybrid search
 
+### P0: CLI Quality Remediation (PROB-016, 3-agent deep audit)
+**Wave 1 — BROKEN** (commands produce wrong results):
+- [ ] **B1**: `deprecate --reason` silently discards reason — store it
+- [ ] **B2**: `update --status active` bypasses lifecycle gates — delegate to activate
+- [ ] **B3**: 4 LLM commands (generate/reason/decompose/capture) — pre-flight API key check
+- [ ] **B4**: `review` says "Ready" but activate blocks — check same gates
+
+**Wave 2 — SAFETY** (data loss / dangling refs):
+- [ ] **N1**: `delete` no dependents check — warn before delete
+- [ ] **N7**: `supports` missing from VALID_RELATIONS
+- [ ] **N8**: `init --force` no data loss warning
+- [ ] **N9**: `unlink` doesn't update projection
+
+**Wave 3 — CORRECTNESS** (wrong behavior):
+- [ ] **N2**: `new` depth=standard for note/evidence — should be tactical
+- [ ] **N3**: `supersede` link direction + replacement validation
+- [ ] **N4**: `score --all --json` prints text before JSON
+- [ ] **N5**: `update --depth` silently does nothing — remove flag or error
+- [ ] **N6**: `order/blocked` treats informs as blocking
+
+**Deferred** (→ future): fgr/blindspots redundancy, graph filtering, drift adoption, export embeddings
+
 ### P1: Driver Abstraction — RFC-003
 - [x] **Phase 1**: StorageDriver trait + LanceDriver + InMemoryStore + factory — PR #61 merged
 - [x] **Phase 1 audit**: 3 agents, 13 findings, 7 fixed (C1-C3, H1, H3, M1, M2)
