@@ -16,6 +16,7 @@ pub async fn run(
     query: &str,
     kind: Option<&str>,
     mode: SearchMode,
+    limit: usize,
     json: bool,
 ) -> anyhow::Result<()> {
     if query.trim().is_empty() {
@@ -24,7 +25,7 @@ pub async fn run(
     match mode {
         SearchMode::Keyword => run_keyword(query, kind, json).await,
         SearchMode::Semantic => run_semantic_only(query, kind, json).await,
-        SearchMode::Smart => run_smart(query, kind, json).await,
+        SearchMode::Smart => run_smart(query, kind, limit, json).await,
     }
 }
 
@@ -165,7 +166,7 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
 
 /// Smart search: keyword + semantic + graph boosters.
 /// Graceful degradation: if embeddings unavailable, uses keyword only + hint.
-async fn run_smart(query: &str, kind: Option<&str>, json: bool) -> anyhow::Result<()> {
+async fn run_smart(query: &str, kind: Option<&str>, limit: usize, json: bool) -> anyhow::Result<()> {
     use forgeplan_core::graph::knowledge::KnowledgeGraph;
     use forgeplan_core::search::smart;
 
@@ -194,7 +195,7 @@ async fn run_smart(query: &str, kind: Option<&str>, json: bool) -> anyhow::Resul
         query,
         semantic_scores.as_ref(),
         graph.as_ref(),
-        20,
+        limit,
     );
 
     // Apply kind filter post-scoring (so boosters still use full graph)
