@@ -28,3 +28,9 @@ arrow-schema = "57"
 futures = "0.3"
 async-trait = "0.1"
 petgraph = "0.8"
+
+[profile.release]
+strip = true          # strip debug symbols (-16%)
+lto = "thin"          # link-time optimization (smaller + faster)
+codegen-units = 1     # better optimization (slower build)
+opt-level = "z"       # optimize for size (vs "3" = speed)
