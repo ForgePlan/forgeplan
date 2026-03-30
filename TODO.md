@@ -79,6 +79,14 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] `forgeplan search --smart` — keyword + vector + graph combined
 - [ ] Configurable embedding model via config.yaml (done: BGE-M3 default)
 
+### P1: Driver Abstraction — RFC-003
+- [x] **Phase 1**: StorageDriver trait + LanceDriver + InMemoryStore + factory — PR #61 merged
+- [x] **Phase 1 audit**: 3 agents, 13 findings, 7 fixed (C1-C3, H1, H3, M1, M2)
+- [ ] **Phase 1 deferred** (PROB-015): H2 EmbedDriver, H4 ISP split, M3-M5, test gaps
+- [ ] **Phase 2**: MemoryDriver (file log) + forgeplan remember/recall
+- [ ] **Phase 3**: SQLite driver + feature flags
+- [ ] **Phase 4**: Config-driven selection + forgeplan init shows drivers
+
 ### P2: Architecture — Files as Source of Truth (ADR-003, v0.13)
 - [ ] Invert direction: .md files = truth, LanceDB = index
 - [ ] File watcher (notify crate) for auto-reindex
@@ -87,7 +95,7 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] Links in frontmatter `related:` field (not separate DB table)
 
 ### P2: Polish
-- [ ] Binary size optimization (LanceDB feature flags / strip)
+- [x] Binary size optimization — release profile 163MB→41MB (-75%)
 - [ ] fpf.rs миграция на common::store() (6 functions)
 - [ ] coverage.rs, scan_import.rs миграция на common::open_store()
 
