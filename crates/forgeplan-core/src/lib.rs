@@ -12,6 +12,7 @@ pub mod journal;
 pub mod lifecycle;
 pub mod llm;
 pub mod error;
+pub mod gaps;
 pub mod graph;
 pub mod link;
 pub mod progress;
