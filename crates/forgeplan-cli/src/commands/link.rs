@@ -40,3 +40,13 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
     println!("Linked: {} --{}--> {}", source_id, relation, target_id);
     Ok(())
 }
+
+pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> anyhow::Result<()> {
+    let relation = link::normalize_relation(relation)?;
+    let (_ws, store) = common::open_store().await?;
+
+    store.delete_relation(source_id, target_id, &relation).await?;
+
+    println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
+    Ok(())
+}

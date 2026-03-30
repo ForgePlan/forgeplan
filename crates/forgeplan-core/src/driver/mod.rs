@@ -86,6 +86,14 @@ pub trait StorageDriver: Send + Sync {
         relation: &str,
     ) -> anyhow::Result<()>;
 
+    /// Remove a specific relation between two artifacts.
+    async fn delete_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()>;
+
     /// Get outgoing relations for an artifact (source -> targets).
     /// Returns `Vec<(target_id, relation_type)>`.
     async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>>;

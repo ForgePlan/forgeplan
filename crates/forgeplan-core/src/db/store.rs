@@ -365,6 +365,23 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Remove a specific relation between two artifacts.
+    pub async fn delete_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        let filter = format!(
+            "source_id = '{}' AND target_id = '{}' AND relation_type = '{}'",
+            source.replace('\'', "''"),
+            target.replace('\'', "''"),
+            relation.replace('\'', "''"),
+        );
+        self.relations.delete(&filter).await?;
+        Ok(())
+    }
+
     /// Get all relations for an artifact (as source).
     /// Returns Vec<(target_id, relation_type)>.
     pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {

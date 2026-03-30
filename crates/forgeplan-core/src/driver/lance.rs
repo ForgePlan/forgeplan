@@ -104,6 +104,15 @@ impl StorageDriver for LanceDriver {
         self.store.add_relation(source, target, relation).await
     }
 
+    async fn delete_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        self.store.delete_relation(source, target, relation).await
+    }
+
     async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         self.store.get_relations(id).await
     }

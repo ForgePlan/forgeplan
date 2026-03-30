@@ -235,6 +235,21 @@ impl StorageDriver for InMemoryStore {
         Ok(())
     }
 
+    async fn delete_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        let mut state = self.state.write().await;
+        let before = state.relations.len();
+        state.relations.retain(|(s, t, r)| !(s == source && t == target && r == relation));
+        if state.relations.len() == before {
+            anyhow::bail!("relation not found: {source} -> {target} ({relation})");
+        }
+        Ok(())
+    }
+
     async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let state = self.state.read().await;
         Ok(state

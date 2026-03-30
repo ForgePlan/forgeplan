@@ -78,6 +78,16 @@ enum Commands {
         #[arg(long, default_value = "informs")]
         relation: String,
     },
+    /// Remove a relation between two artifacts
+    Unlink {
+        /// Source artifact ID
+        source: String,
+        /// Target artifact ID
+        target: String,
+        /// Relationship type to remove
+        #[arg(long, default_value = "informs")]
+        relation: String,
+    },
     /// Generate mermaid dependency graph of linked artifacts
     Graph {
         /// Output as JSON for machine consumption
@@ -398,6 +408,11 @@ async fn main() -> anyhow::Result<()> {
             target,
             relation,
         } => commands::link::run(&source, &target, &relation).await,
+        Commands::Unlink {
+            source,
+            target,
+            relation,
+        } => commands::link::run_unlink(&source, &target, &relation).await,
         Commands::Graph { json } => commands::graph::run(json).await,
         Commands::Search {
             query,
