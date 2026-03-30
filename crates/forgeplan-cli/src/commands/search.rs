@@ -18,9 +18,12 @@ pub async fn run(
     mode: SearchMode,
     json: bool,
 ) -> anyhow::Result<()> {
+    if query.trim().is_empty() {
+        anyhow::bail!("Search query cannot be empty.");
+    }
     match mode {
         SearchMode::Keyword => run_keyword(query, kind, json).await,
-        SearchMode::Semantic => run_semantic_only(query, json).await,
+        SearchMode::Semantic => run_semantic_only(query, kind, json).await,
         SearchMode::Smart => run_smart(query, kind, json).await,
     }
 }
@@ -93,7 +96,7 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
 }
 
 /// Semantic-only search (vector similarity).
-async fn run_semantic_only(query: &str, json: bool) -> anyhow::Result<()> {
+async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyhow::Result<()> {
     #[cfg(feature = "semantic-search")]
     {
         use forgeplan_core::embed::Embedder;
@@ -102,7 +105,12 @@ async fn run_semantic_only(query: &str, json: bool) -> anyhow::Result<()> {
 
         let mut embedder = Embedder::new()?;
         let query_vec = embedder.embed(query)?;
-        let hits = store.vector_search(&query_vec, 10).await?;
+        let all_hits = store.vector_search(&query_vec, 50).await?;
+        let hits: Vec<_> = if let Some(k) = kind {
+            all_hits.into_iter().filter(|r| r.kind.eq_ignore_ascii_case(k)).take(10).collect()
+        } else {
+            all_hits.into_iter().take(10).collect()
+        };
 
         if hits.is_empty() {
             if json {
@@ -144,10 +152,11 @@ async fn run_semantic_only(query: &str, json: bool) -> anyhow::Result<()> {
     }
     #[cfg(not(feature = "semantic-search"))]
     {
-        let _ = (query, json);
+        let _ = (query, kind, json);
         anyhow::bail!(
             "Semantic search not available. Rebuild with: \
-             cargo build --features semantic-search"
+             cargo build --features semantic-search\n\
+             For automatic fallback, use smart search (default) without --semantic."
         );
     }
 }
@@ -214,12 +223,13 @@ async fn run_smart(query: &str, kind: Option<&str>, json: bool) -> anyhow::Resul
                     "kind": r.kind,
                     "status": r.status,
                     "title": r.title,
-                    "score": format!("{:.2}", r.score),
-                    "keyword_score": format!("{:.2}", r.keyword_score),
-                    "semantic_score": format!("{:.2}", r.semantic_score),
-                    "r_eff": format!("{:.2}", r.r_eff),
-                    "graph_centrality": format!("{:.2}", r.graph_centrality),
+                    "score": (r.score * 100.0).round() / 100.0,
+                    "keyword_score": (r.keyword_score * 100.0).round() / 100.0,
+                    "semantic_score": (r.semantic_score * 100.0).round() / 100.0,
+                    "r_eff": (r.r_eff * 100.0).round() / 100.0,
+                    "graph_centrality": (r.graph_centrality * 100.0).round() / 100.0,
                     "mode": "smart",
+                    "semantic_available": has_embeddings,
                 })
             })
             .collect();

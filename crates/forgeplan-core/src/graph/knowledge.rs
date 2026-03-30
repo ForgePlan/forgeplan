@@ -183,8 +183,9 @@ impl KnowledgeGraph {
         self.graph.edge_count()
     }
 
-    /// Normalized degree centrality for an artifact: (in_degree + out_degree) / (N - 1).
+    /// Normalized degree centrality for an artifact: (unique_neighbors) / (N - 1).
     ///
+    /// Deduplicates parallel edges (multiple relation types between same pair).
     /// Returns 0.0 for unknown IDs or graphs with fewer than 2 nodes.
     /// Result is in [0.0, 1.0] — suitable as a search booster.
     pub fn degree_centrality(&self, id: &str) -> f64 {
@@ -195,15 +196,14 @@ impl KnowledgeGraph {
         let Some(&idx) = self.index.get(id) else {
             return 0.0;
         };
-        let in_deg = self
-            .graph
-            .neighbors_directed(idx, Direction::Incoming)
-            .count();
-        let out_deg = self
-            .graph
-            .neighbors_directed(idx, Direction::Outgoing)
-            .count();
-        (in_deg + out_deg) as f64 / (n - 1) as f64
+        let mut unique_neighbors = std::collections::HashSet::new();
+        for neighbor in self.graph.neighbors_directed(idx, Direction::Incoming) {
+            unique_neighbors.insert(neighbor);
+        }
+        for neighbor in self.graph.neighbors_directed(idx, Direction::Outgoing) {
+            unique_neighbors.insert(neighbor);
+        }
+        unique_neighbors.len() as f64 / (n - 1) as f64
     }
 }
 
@@ -422,6 +422,25 @@ mod tests {
         let kg = KnowledgeGraph::from_parts(nodes, vec![]);
         // N < 2 => 0.0
         assert_eq!(kg.degree_centrality("PRD-001"), 0.0);
+    }
+
+    #[test]
+    fn degree_centrality_parallel_edges_deduped() {
+        let nodes = vec![
+            make_node("PRD-001", "prd", "active"),
+            make_node("RFC-001", "rfc", "active"),
+        ];
+        // Two parallel edges: RFC-001 -> PRD-001 with different relation types
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("RFC-001".into(), "PRD-001".into(), "informs".into()),
+        ];
+        let kg = KnowledgeGraph::from_parts(nodes, edges);
+
+        // PRD-001 has 1 unique neighbor (RFC-001), not 2
+        let c = kg.degree_centrality("PRD-001");
+        assert!(c <= 1.0, "centrality must be <= 1.0 even with parallel edges");
+        assert!((c - 1.0).abs() < 0.001, "1 unique neighbor / (2-1) = 1.0");
     }
 
     #[test]

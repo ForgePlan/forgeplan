@@ -35,14 +35,16 @@ pub struct SmartSearchResult {
 /// Case-insensitive matching.
 pub fn keyword_score(record: &ArtifactRecord, query: &str) -> f64 {
     let q = query.to_lowercase();
+    if q.trim().is_empty() {
+        return 0.0;
+    }
     let title_lower = record.title.to_lowercase();
-    let body_lower = record.body.to_lowercase();
 
     if title_lower == q {
         1.0
     } else if title_lower.contains(&q) {
         0.8
-    } else if body_lower.contains(&q) {
+    } else if record.body.to_lowercase().contains(&q) {
         0.5
     } else {
         0.0
@@ -62,14 +64,15 @@ pub fn combined_score(
     is_active: bool,
     graph_centrality: f64,
 ) -> f64 {
-    let base = keyword.max(semantic);
+    let safe = |v: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let base = safe(keyword).max(safe(semantic));
     if base == 0.0 {
         return 0.0;
     }
     let boost = 1.0
-        + (r_eff.clamp(0.0, 1.0) * 0.2)
+        + (safe(r_eff) * 0.2)
         + (if is_active { 0.1 } else { 0.0 })
-        + (graph_centrality.clamp(0.0, 1.0) * 0.1);
+        + (safe(graph_centrality) * 0.1);
     base * boost
 }
 
@@ -116,7 +119,12 @@ pub fn smart_search(
         })
         .collect();
 
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.id.cmp(&b.id))
+    });
     results.truncate(limit);
     results
 }
@@ -276,9 +284,132 @@ mod tests {
     }
 
     #[test]
-    fn smart_search_empty_query_returns_nothing() {
+    fn keyword_no_match_returns_nothing() {
         let records = vec![make_record("PRD-001", "Auth", "body", "active", 0.0)];
         let results = smart_search(&records, "zzz-no-match", None, None, 10);
         assert!(results.is_empty());
+    }
+
+    // ── audit findings: edge cases ──────────────────────────────────
+
+    #[test]
+    fn keyword_empty_query_returns_zero() {
+        let r = make_record("PRD-001", "Auth", "body", "active", 0.0);
+        assert_eq!(keyword_score(&r, ""), 0.0);
+        assert_eq!(keyword_score(&r, "  "), 0.0);
+    }
+
+    #[test]
+    fn combined_nan_inputs_return_finite() {
+        let score = combined_score(f64::NAN, 0.5, 0.5, true, 0.5);
+        assert!(score.is_finite(), "NaN keyword should be sanitized");
+
+        let score2 = combined_score(0.5, f64::NAN, 0.5, true, 0.5);
+        assert!(score2.is_finite(), "NaN semantic should be sanitized");
+
+        let score3 = combined_score(0.5, 0.5, f64::NAN, true, 0.5);
+        assert!(score3.is_finite(), "NaN r_eff should be sanitized");
+
+        let score4 = combined_score(0.5, 0.5, 0.5, true, f64::NAN);
+        assert!(score4.is_finite(), "NaN centrality should be sanitized");
+    }
+
+    #[test]
+    fn combined_infinity_inputs_sanitized() {
+        // INFINITY is not finite → safe() returns 0.0 → base = 0.0 → early return 0.0
+        let score = combined_score(f64::INFINITY, 0.0, 0.0, false, 0.0);
+        assert!(score.is_finite());
+        assert_eq!(score, 0.0, "infinite keyword treated as no match");
+
+        // With a valid semantic, infinity keyword is ignored, semantic used as base
+        let score2 = combined_score(f64::INFINITY, 0.8, 0.0, false, 0.0);
+        assert!(score2.is_finite());
+        assert!((score2 - 0.8).abs() < 0.001, "valid semantic used as base");
+    }
+
+    #[test]
+    fn combined_negative_inputs_clamped() {
+        let score = combined_score(0.5, 0.0, -1.0, false, -1.0);
+        // negative r_eff and centrality clamped to 0.0, boost = 1.0
+        assert!((score - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn smart_search_empty_records() {
+        let results = smart_search(&[], "auth", None, None, 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn smart_search_empty_query() {
+        let records = vec![make_record("PRD-001", "Auth", "body", "active", 0.0)];
+        let results = smart_search(&records, "", None, None, 10);
+        assert!(results.is_empty(), "empty query should return nothing");
+    }
+
+    #[test]
+    fn smart_search_limit_zero() {
+        let records = vec![make_record("PRD-001", "Auth", "", "active", 0.0)];
+        let results = smart_search(&records, "auth", None, None, 0);
+        assert!(results.is_empty(), "limit=0 returns nothing");
+    }
+
+    #[test]
+    fn smart_search_nan_r_eff_handled() {
+        let records = vec![make_record("PRD-001", "Auth", "", "active", f64::NAN)];
+        let results = smart_search(&records, "auth", None, None, 10);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].score.is_finite(), "NaN r_eff must not corrupt score");
+    }
+
+    #[test]
+    fn smart_search_all_three_signals() {
+        use crate::graph::knowledge::{ArtifactNode, KnowledgeGraph};
+
+        let records = vec![
+            make_record("PRD-001", "Auth System", "", "active", 0.0),
+            make_record("PRD-002", "Perf System", "", "active", 1.0),
+        ];
+
+        // PRD-002 has high semantic, high r_eff, high centrality but no keyword match
+        // PRD-001 has keyword match but no semantic, no r_eff, no centrality
+        let mut sem = HashMap::new();
+        sem.insert("PRD-002".to_string(), 0.95);
+
+        let nodes = vec![
+            ArtifactNode { id: "PRD-001".into(), kind: "prd".into(), status: "active".into() },
+            ArtifactNode { id: "PRD-002".into(), kind: "prd".into(), status: "active".into() },
+            ArtifactNode { id: "RFC-001".into(), kind: "rfc".into(), status: "active".into() },
+        ];
+        let edges = vec![
+            ("RFC-001".into(), "PRD-002".into(), "based_on".into()),
+        ];
+        let graph = KnowledgeGraph::from_parts(nodes, edges);
+
+        let results = smart_search(&records, "auth", Some(&sem), Some(&graph), 10);
+        assert_eq!(results.len(), 2);
+        // PRD-002: sem=0.95 * boost(r_eff=1.0, active, centrality=0.5)
+        // PRD-001: kw=0.8 * boost(r_eff=0.0, active, centrality=0.0)
+        assert_eq!(results[0].id, "PRD-002", "semantic+boosters should outrank keyword-only");
+    }
+
+    #[test]
+    fn smart_search_sort_stability_tiebreaker() {
+        let records = vec![
+            make_record("PRD-002", "Auth", "", "active", 0.0),
+            make_record("PRD-001", "Auth", "", "active", 0.0),
+        ];
+        let results = smart_search(&records, "auth", None, None, 10);
+        assert_eq!(results.len(), 2);
+        // Same score — tiebreaker by id ascending
+        assert_eq!(results[0].id, "PRD-001");
+        assert_eq!(results[1].id, "PRD-002");
+    }
+
+    #[test]
+    fn keyword_unicode_cyrillic() {
+        let r = make_record("PRD-001", "Аутентификация", "Логин через OAuth", "active", 0.0);
+        assert_eq!(keyword_score(&r, "аутентификация"), 1.0);
+        assert!((keyword_score(&r, "логин") - 0.5).abs() < 0.001);
     }
 }
