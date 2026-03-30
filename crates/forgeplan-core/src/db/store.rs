@@ -51,6 +51,26 @@ pub struct ArtifactRecord {
     pub updated_at: String,
 }
 
+/// Vector search result: an artifact record paired with its distance from the query.
+///
+/// `distance` is the raw value from LanceDB (L2 or cosine distance).
+/// For cosine distance: 0.0 = identical, 2.0 = opposite.
+/// Convert to similarity via `similarity()` method.
+#[derive(Debug, Clone)]
+pub struct VectorSearchHit {
+    pub record: ArtifactRecord,
+    pub distance: f64,
+}
+
+impl VectorSearchHit {
+    /// Convert cosine distance to similarity score in [0.0, 1.0].
+    ///
+    /// cosine_distance ∈ [0, 2], similarity = 1.0 - distance/2.0
+    pub fn similarity(&self) -> f64 {
+        (1.0 - self.distance / 2.0).clamp(0.0, 1.0)
+    }
+}
+
 impl ArtifactRecord {
     /// Build the text used for embedding: title + first `chunk_size` chars of body.
     ///
@@ -552,34 +572,38 @@ impl LanceStore {
     }
 
     /// Vector similarity search using pre-computed embedding.
-    /// Returns artifacts sorted by cosine distance (closest first).
+    /// Returns artifacts with distance scores, sorted by cosine distance (closest first).
     #[cfg(feature = "semantic-search")]
     pub async fn vector_search(
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+    ) -> anyhow::Result<Vec<VectorSearchHit>> {
         use lancedb::query::QueryBase;
 
         let results = self
             .artifacts
             .vector_search(query_embedding)
             .map_err(|e| anyhow::anyhow!("Vector search failed: {e}"))?
+            .distance_type(lancedb::DistanceType::Cosine)
             .limit(limit)
             .execute()
             .await?;
 
         let batches: Vec<_> = futures::StreamExt::collect::<Vec<_>>(results).await;
-        let mut records = Vec::new();
+        let mut hits = Vec::new();
         for batch_result in batches {
             let batch = batch_result?;
             for row in 0..batch.num_rows() {
                 if let Some(record) = extract_record(&batch, row) {
-                    records.push(record);
+                    let distance = get_f32(&batch, "_distance", row)
+                        .map(|d| d as f64)
+                        .unwrap_or(1.0); // fallback: mid-range distance
+                    hits.push(VectorSearchHit { record, distance });
                 }
             }
         }
-        Ok(records)
+        Ok(hits)
     }
 
     /// Update the embedding column for an artifact.
@@ -958,6 +982,23 @@ fn get_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String
             None
         } else {
             Some(arr.value(row).to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/// Read a Float32 column value from a RecordBatch row.
+fn get_f32(batch: &RecordBatch, col: &str, row: usize) -> Option<f32> {
+    let array = batch.column_by_name(col)?;
+    if let Some(arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::Float32Array>()
+    {
+        if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row))
         }
     } else {
         None
@@ -1656,5 +1697,68 @@ mod tests {
         let text_small = record.embedding_text(500);
         let body_small = text_small.strip_prefix("Title ").unwrap();
         assert_eq!(body_small.len(), 500, "body should respect custom chunk_size");
+    }
+
+    // ── VectorSearchHit similarity ──────────────────────────────────
+
+    fn make_record(id: &str) -> ArtifactRecord {
+        ArtifactRecord {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "Draft".to_string(),
+            title: "Test".to_string(),
+            body: String::new(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn similarity_identical_vectors() {
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 0.0, // cosine distance 0 = identical
+        };
+        assert_eq!(hit.similarity(), 1.0);
+    }
+
+    #[test]
+    fn similarity_opposite_vectors() {
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 2.0, // cosine distance 2 = opposite
+        };
+        assert_eq!(hit.similarity(), 0.0);
+    }
+
+    #[test]
+    fn similarity_mid_distance() {
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 1.0, // cosine distance 1 = orthogonal
+        };
+        assert!((hit.similarity() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn similarity_clamps_out_of_range() {
+        // Distance > 2.0 (shouldn't happen, but defensive)
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 3.0,
+        };
+        assert_eq!(hit.similarity(), 0.0);
+
+        // Negative distance (shouldn't happen)
+        let hit2 = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: -0.5,
+        };
+        assert_eq!(hit2.similarity(), 1.0);
     }
 }

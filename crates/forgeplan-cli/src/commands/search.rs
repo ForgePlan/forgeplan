@@ -107,7 +107,7 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
         let query_vec = embedder.embed(query)?;
         let all_hits = store.vector_search(&query_vec, 50).await?;
         let hits: Vec<_> = if let Some(k) = kind {
-            all_hits.into_iter().filter(|r| r.kind.eq_ignore_ascii_case(k)).take(10).collect()
+            all_hits.into_iter().filter(|h| h.record.kind.eq_ignore_ascii_case(k)).take(10).collect()
         } else {
             all_hits.into_iter().take(10).collect()
         };
@@ -125,12 +125,14 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
         if json {
             let json_data: Vec<_> = hits
                 .iter()
-                .map(|r| {
+                .map(|h| {
                     serde_json::json!({
-                        "id": r.id,
-                        "kind": r.kind,
-                        "status": r.status,
-                        "title": r.title,
+                        "id": h.record.id,
+                        "kind": h.record.kind,
+                        "status": h.record.status,
+                        "title": h.record.title,
+                        "similarity": (h.similarity() * 100.0).round() / 100.0,
+                        "distance": (h.distance * 1000.0).round() / 1000.0,
                         "mode": "semantic",
                     })
                 })
@@ -144,8 +146,8 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
             hits.len(),
             query
         );
-        for record in &hits {
-            println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
+        for h in &hits {
+            println!("  {:.2}  {} [{}] \"{}\"", h.similarity(), h.record.id, h.record.kind, h.record.title);
         }
 
         Ok(())
@@ -292,14 +294,10 @@ async fn get_semantic_scores(
             _ => return (None, false),
         };
 
-        // Normalize cosine distances to similarity scores [0..1]
-        // LanceDB returns distance (lower = more similar), convert to similarity
+        // Use real cosine similarity from LanceDB distance column
         let mut map = std::collections::HashMap::new();
-        let max_rank = hits.len() as f64;
-        for (i, record) in hits.iter().enumerate() {
-            // Rank-based score: top result = 1.0, last = close to 0
-            let score = 1.0 - (i as f64 / max_rank);
-            map.insert(record.id.clone(), score);
+        for hit in &hits {
+            map.insert(hit.record.id.clone(), hit.similarity());
         }
 
         (Some(map), true)

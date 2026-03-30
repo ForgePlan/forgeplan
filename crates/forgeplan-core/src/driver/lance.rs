@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact};
+use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact, VectorSearchHit};
 use crate::driver::StorageDriver;
 
 /// LanceDB-backed storage driver.
@@ -158,7 +158,7 @@ impl StorageDriver for LanceDriver {
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+    ) -> anyhow::Result<Vec<VectorSearchHit>> {
         self.store.vector_search(query_embedding, limit).await
     }
 
