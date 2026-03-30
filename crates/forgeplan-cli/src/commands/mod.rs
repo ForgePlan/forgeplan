@@ -10,10 +10,12 @@ pub mod decay;
 pub mod decompose;
 pub mod delete;
 pub mod deprecate;
+pub mod embed;
 pub mod drift;
 pub mod export;
 
 pub mod fgr;
+pub mod gaps;
 pub mod fpf;
 pub mod generate;
 pub mod get;

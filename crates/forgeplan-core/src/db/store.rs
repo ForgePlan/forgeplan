@@ -52,6 +52,15 @@ pub struct ArtifactRecord {
 }
 
 impl ArtifactRecord {
+    /// Build the text used for embedding: id + title + first 300 chars of body.
+    ///
+    /// This ensures semantic search can find artifacts based on body content
+    /// (FR, Goals, Problem sections), not just the title.
+    pub fn embedding_text(&self) -> String {
+        let body_preview: String = self.body.chars().take(300).collect();
+        format!("{} {} {}", self.id, self.title, body_preview)
+    }
+
     /// Convert to a lightweight ArtifactSummary (drops body and most metadata).
     pub fn to_summary(&self) -> ArtifactSummary {
         ArtifactSummary {
@@ -1593,5 +1602,54 @@ mod tests {
         store.update_r_eff_score("PRD-003", 1.0).await.unwrap();
         let r = store.get_record("PRD-003").await.unwrap().unwrap();
         assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "1.0 should stay 1.0");
+    }
+
+    #[test]
+    fn embedding_text_includes_id_title_and_body_preview() {
+        let record = ArtifactRecord {
+            id: "PRD-042".to_string(),
+            kind: "prd".to_string(),
+            status: "Draft".to_string(),
+            title: "Authentication Module".to_string(),
+            body: "## Problem\nUsers cannot log in with OAuth2.\n## Goals\nSupport Google and GitHub OAuth.".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let text = record.embedding_text();
+        assert!(text.contains("PRD-042"), "should contain artifact id");
+        assert!(text.contains("Authentication Module"), "should contain title");
+        assert!(text.contains("OAuth2"), "should contain body content");
+        assert!(text.contains("Google and GitHub"), "should contain body goals");
+    }
+
+    #[test]
+    fn embedding_text_truncates_long_body_at_300_chars() {
+        let long_body = "x".repeat(500);
+        let record = ArtifactRecord {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "Draft".to_string(),
+            title: "Title".to_string(),
+            body: long_body,
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let text = record.embedding_text();
+        // "PRD-001 Title " = 15 chars + 300 body chars = 315
+        // But we count chars, not bytes, so check total body part
+        let body_part = text.strip_prefix("PRD-001 Title ").unwrap();
+        assert_eq!(body_part.len(), 300, "body should be truncated to 300 chars");
     }
 }

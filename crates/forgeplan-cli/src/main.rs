@@ -241,6 +241,8 @@ enum Commands {
     /// FPF Knowledge Base — dashboard, ingest, search, sections
     #[command(subcommand)]
     Fpf(FpfCommands),
+    /// Show pipeline compliance gaps by depth
+    Gaps,
     /// Show F-G-R quality scores (Formality, Granularity, Reliability)
     Fgr {
         /// Artifact ID (scores all if omitted)
@@ -346,6 +348,8 @@ enum Commands {
     },
     /// Run schema migrations on existing workspace
     Migrate,
+    /// Generate embeddings for all artifacts (semantic search)
+    Embed,
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -488,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
             FpfCommands::List => commands::fpf::run_list().await,
             FpfCommands::Status => commands::fpf::run_status().await,
         },
+        Commands::Gaps => commands::gaps::run().await,
         Commands::Fgr { id, json } => commands::fgr::run(id.as_deref(), json).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
@@ -500,6 +505,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Order { json } => commands::order::run(json).await,
         Commands::Migrate => commands::migrate::run().await,
+        Commands::Embed => commands::embed::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

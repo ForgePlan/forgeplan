@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 
 use crate::db::store::LanceStore;
@@ -99,6 +100,31 @@ impl KnowledgeGraph {
         }
 
         Self { graph, index }
+    }
+
+    /// Get neighbors with their relation types.
+    /// Returns (neighbor_node, relation_type, direction).
+    pub fn neighbors_with_relations(&self, id: &str) -> Vec<(&ArtifactNode, &str, Direction)> {
+        let Some(&idx) = self.index.get(id) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            let edges = self.graph.edges_directed(idx, direction);
+            for edge in edges {
+                let neighbor_idx = match direction {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
+                };
+                let neighbor_node = &self.graph[neighbor_idx];
+                let relation = edge.weight().relation.as_str();
+                result.push((neighbor_node, relation, direction));
+            }
+        }
+
+        result
     }
 
     /// Get all neighbors of an artifact (both outgoing and incoming directions).
@@ -286,6 +312,47 @@ mod tests {
 
         // Nothing depends on ADR-001
         assert!(kg.impact_of("ADR-001").is_empty());
+    }
+
+    #[test]
+    fn neighbors_with_relations_returns_type_and_direction() {
+        let nodes = vec![
+            make_node("PRD-001", "prd", "active"),
+            make_node("RFC-001", "rfc", "active"),
+            make_node("EVID-001", "evidence", "active"),
+        ];
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("EVID-001".into(), "PRD-001".into(), "informs".into()),
+        ];
+        let kg = KnowledgeGraph::from_parts(nodes, edges);
+
+        let result = kg.neighbors_with_relations("PRD-001");
+        assert_eq!(result.len(), 2);
+
+        // Both are incoming edges to PRD-001
+        for (node, relation, direction) in &result {
+            assert_eq!(*direction, Direction::Incoming);
+            match node.id.as_str() {
+                "RFC-001" => assert_eq!(*relation, "based_on"),
+                "EVID-001" => assert_eq!(*relation, "informs"),
+                other => panic!("Unexpected neighbor: {other}"),
+            }
+        }
+
+        // RFC-001 has outgoing edge to PRD-001
+        let rfc_result = kg.neighbors_with_relations("RFC-001");
+        assert_eq!(rfc_result.len(), 1);
+        assert_eq!(rfc_result[0].0.id, "PRD-001");
+        assert_eq!(rfc_result[0].1, "based_on");
+        assert_eq!(rfc_result[0].2, Direction::Outgoing);
+    }
+
+    #[test]
+    fn neighbors_with_relations_empty_for_missing_id() {
+        let nodes = vec![make_node("PRD-001", "prd", "active")];
+        let kg = KnowledgeGraph::from_parts(nodes, vec![]);
+        assert!(kg.neighbors_with_relations("NONEXISTENT").is_empty());
     }
 
     #[test]
