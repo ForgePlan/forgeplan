@@ -7,13 +7,17 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
     let store = common::store().await?;
     let result = lifecycle::review(&store, id).await?;
 
-    // Styled output instead of plain Display
+    // Styled output — distinguish MUST errors from gate warnings
     if result.can_activate {
         println!("  {}", style("Review PASSED").green().bold());
         println!("  {}", style("Ready to activate").green());
-    } else {
+    } else if !result.must_findings.is_empty() {
         println!("  {}", style("Review FAILED").red().bold());
-        println!("  {}", style("Fix MUST issues first").red());
+        println!("  {}", style("Fix MUST validation errors first").red());
+    } else {
+        // Gates failed but no MUST errors — methodology gates (evidence, body length)
+        println!("  {}", style("Review BLOCKED").yellow().bold());
+        println!("  {}", style("Methodology gates not met (see warnings below)").yellow());
     }
 
     if !result.must_findings.is_empty() {

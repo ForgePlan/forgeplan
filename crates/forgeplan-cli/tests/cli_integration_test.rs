@@ -506,12 +506,12 @@ fn delete_requires_confirmation() {
         .assert()
         .success();
 
-    // Without --yes, should warn but not delete
+    // Without --yes, should fail with confirmation prompt (exit code 1)
     forgeplan()
         .args(["delete", "PRD-001"])
         .current_dir(tmp.path())
         .assert()
-        .success()
+        .failure()
         .stderr(predicate::str::contains("--yes"));
 
     // Artifact should still exist

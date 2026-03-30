@@ -27,19 +27,20 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
             eprintln!("    {} --{}--> {}", source, rel, id);
         }
         if !yes {
-            eprintln!("  Use --yes to confirm deletion despite dependents.");
-            return Ok(());
+            anyhow::bail!(
+                "{} has {} dependent(s). Use --yes to confirm deletion despite dependents.",
+                id,
+                dependents.len()
+            );
         }
         eprintln!("  Proceeding with --yes despite dependents.");
     }
 
     if !yes {
-        eprintln!(
-            "  About to delete {} \"{}\" (kind: {}, status: {})",
-            record.id, record.title, record.kind, record.status
+        anyhow::bail!(
+            "About to delete {} \"{}\". This cannot be undone. Use --yes to confirm.",
+            record.id, record.title
         );
-        eprintln!("  This cannot be undone. Use --yes to confirm.");
-        return Ok(());
     }
 
     // Delete from LanceDB

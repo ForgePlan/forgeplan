@@ -262,13 +262,13 @@ pub async fn supersede(
 
     transitions::validate_transition(&record.status, "superseded")?;
 
-    // Warn if replacement is itself superseded or deprecated (chain risk)
+    // Block if replacement is itself superseded or deprecated (chain risk)
     let mut warnings = Vec::new();
     if replacement.status == "superseded" || replacement.status == "deprecated" {
-        warnings.push(format!(
-            "Warning: replacement {} is already {} — consider using a different replacement",
+        anyhow::bail!(
+            "Replacement {} is already {}. Choose an active or draft artifact as replacement.",
             replacement_id, replacement.status
-        ));
+        );
     }
 
     // Create supersedes link
