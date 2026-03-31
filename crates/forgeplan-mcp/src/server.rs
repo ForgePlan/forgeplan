@@ -730,8 +730,12 @@ impl ForgeplanServer {
             return Ok(err_result(&format!("{e}")));
         }
 
-        // Update markdown projection
+        // Sync file→LanceDB (preserve user edits), then re-render projection
         if let Ok(Some(record)) = store.get_record(&p.source).await {
+            let _ = projection::sync_file_to_store(&store, &ws, &record).await;
+            // Re-read after sync
+            let record = store.get_record(&p.source).await
+                .unwrap_or(Some(record)).unwrap();
             let links = store.get_relations(&p.source).await.unwrap_or_default();
             let _ = projection::render_projection(
                 &ws, &record.id, &record.kind, &record.title, &record.status,
@@ -778,13 +782,19 @@ impl ForgeplanServer {
         };
 
         // Verify exists
-        if store.get_record(&p.id).await.map_err(|e| McpError::internal_error(format!("{e}"), None))?.is_none() {
-            return Ok(err_result(&format!("Artifact '{}' not found", p.id)));
-        }
+        let pre_record = store.get_record(&p.id).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let pre_record = match pre_record {
+            Some(r) => r,
+            None => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+        };
 
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
             return Ok(err_result("Nothing to update. Provide status, title, or body."));
         }
+
+        // Sync file→LanceDB BEFORE mutations — capture user edits
+        let _ = projection::sync_file_to_store(&store, &ws, &pre_record).await;
 
         if p.status.is_some() || p.title.is_some() {
             store
