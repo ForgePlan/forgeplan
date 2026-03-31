@@ -32,13 +32,12 @@ pub async fn run(
         }
     }
 
-    // Depth update not supported — fail explicitly instead of silently continuing
+    // Depth update
     if let Some(d) = depth {
-        // Validate the value first for a better error message
         let _: forgeplan_core::artifact::types::Mode = d
             .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Use: tactical, standard, deep", d))?;
-        anyhow::bail!("Depth update not yet supported. Use `forgeplan new` with the correct depth.");
+            .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Valid: tactical, standard, deep, critical", d))?;
+        store.update_depth(id, d).await?;
     }
 
     // Sync file→LanceDB BEFORE any mutations — capture user edits from the OLD file
