@@ -194,10 +194,13 @@ fn infer_task_type(item: &WorkItem) -> TaskType {
 
     let infra_keywords = ["deploy", "k8s", "docker", "ci/cd", "pipeline", "infrastructure",
         "kubernetes", "helm", "terraform", "vault", "registry", "runner", "namespace"];
-    let design_keywords = ["design", "ux", "ui", "layout", "wireframe", "prototype", "mockup"];
-    let coordination_keywords = ["meeting", "review", "discuss", "plan", "coordinate", "align"];
+    let design_keywords = ["wireframe", "prototype", "mockup", "figma", "sketch",
+        "visual design", "user interface design", "responsive layout"];
+    let coordination_keywords = ["meeting", "discuss", "coordinate", "align", "stakeholder",
+        "handoff", "onboard", "workshop"];
     let coding_keywords = ["implement", "create", "add", "build", "write", "develop", "parse",
-        "extract", "calculate", "score", "validate", "convert", "format"];
+        "extract", "calculate", "score", "validate", "convert", "format", "configure",
+        "customize", "specify", "run", "show", "display", "list", "update", "delete"];
 
     let infra_hits = infra_keywords.iter().filter(|kw| desc.contains(*kw)).count();
     let design_hits = design_keywords.iter().filter(|kw| desc.contains(*kw)).count();
@@ -265,9 +268,24 @@ mod tests {
 
     #[test]
     fn design_task_detected() {
-        let item = work_item("FR-005", "Design UI layout for dashboard", "Should");
+        let item = work_item("FR-005", "Create wireframe prototype for dashboard mockup", "Should");
         let scored = score_single(&item);
         assert_eq!(scored.task_type, TaskType::DesignCoding);
+    }
+
+    #[test]
+    fn customize_is_coding_not_design() {
+        // "customize" was incorrectly classified as design in old keyword list
+        let item = work_item("FR-006", "User can customize Level 1 prompt template", "Should");
+        let scored = score_single(&item);
+        assert_eq!(scored.task_type, TaskType::PureCoding);
+    }
+
+    #[test]
+    fn show_capabilities_is_coding() {
+        let item = work_item("FR-007", "System can show routing capabilities", "Should");
+        let scored = score_single(&item);
+        assert_eq!(scored.task_type, TaskType::PureCoding);
     }
 
     #[test]
