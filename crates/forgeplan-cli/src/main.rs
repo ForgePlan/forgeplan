@@ -457,6 +457,9 @@ enum FpfCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file (if exists) for API keys and config overrides
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match cli.command {

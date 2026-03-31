@@ -30,6 +30,7 @@ async-trait = "0.1"
 petgraph = "0.8"
 notify = "7"
 notify-debouncer-mini = "0.5"
+dotenvy = "0.15"
 
 [profile.release]
 strip = true          # strip debug symbols (-16%)
