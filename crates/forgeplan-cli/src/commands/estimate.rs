@@ -91,7 +91,13 @@ pub async fn run(
 
     // Determine highlight grade
     let highlight_grade = if my_grade {
-        let domain = infer_domain(&record.kind);
+        let domain = if llm_score {
+            // LLM-assisted domain inference when --llm-score is active
+            let llm_config = common::config().ok().and_then(|c| c.llm);
+            infer_domain_with_llm(&record.title, &record.body, llm_config.as_ref()).await
+        } else {
+            infer_domain(&record.title, &record.body)
+        };
         let resolved = config.resolve_grade(&domain);
         if !json {
             eprintln!(
@@ -163,11 +169,95 @@ fn load_estimate_config() -> EstimateConfig {
     }
 }
 
-/// Infer work domain from artifact kind for grade profile lookup.
-fn infer_domain(kind: &str) -> String {
-    match kind {
-        "prd" | "epic" | "spec" => "backend".to_string(),
-        "rfc" | "adr" => "backend".to_string(),
-        _ => "default".to_string(),
+/// LLM-assisted domain inference. Falls back to keyword-based if LLM unavailable.
+async fn infer_domain_with_llm(
+    title: &str,
+    body: &str,
+    llm_config: Option<&forgeplan_core::config::types::LlmConfig>,
+) -> String {
+    // Try frontmatter first (same as non-LLM path)
+    if let Some(domain) = extract_frontmatter_domain(body) {
+        let d = domain.to_lowercase();
+        if !d.contains('/') && !d.is_empty() && d != "general" {
+            return d;
+        }
     }
+
+    // Try LLM classification
+    if let Some(config) = llm_config {
+        let snippet: String = body.chars().take(300).collect();
+        let prompt = format!(
+            "Classify this artifact into exactly ONE domain. Reply with ONLY the domain name, nothing else.\n\
+             Domains: backend, frontend, devops, ai_ml, default\n\n\
+             Title: {}\nBody: {}",
+            title, snippet
+        );
+        {
+            let client = forgeplan_core::llm::LlmClient::new(config.clone());
+            if let Ok(response) = client.generate(&prompt, Some("You are a domain classifier. Reply with exactly one word.")).await {
+                let domain = response.trim().to_lowercase().replace(' ', "_");
+                let valid = ["backend", "frontend", "devops", "ai_ml"];
+                if valid.contains(&domain.as_str()) {
+                    return domain;
+                }
+            }
+        }
+    }
+
+    // Fallback to keyword-based
+    infer_domain(title, body)
+}
+
+/// Infer work domain from artifact content for grade profile lookup.
+/// Priority: frontmatter `domain:` field > keyword inference from title+body > "default".
+fn infer_domain(title: &str, body: &str) -> String {
+    // 1. Try frontmatter domain: field
+    if let Some(domain) = extract_frontmatter_domain(body) {
+        let d = domain.to_lowercase();
+        // Skip template placeholders
+        if !d.contains('/') && !d.is_empty() && d != "general" {
+            return d;
+        }
+    }
+
+    // 2. Keyword inference from title + body (first 500 chars for performance)
+    let text = format!("{} {}", title, &body[..body.len().min(500)]).to_lowercase();
+
+    let domains = [
+        ("devops", &["k8s", "docker", "ci/cd", "deploy", "helm", "terraform", "kubernetes",
+            "pipeline", "infrastructure", "namespace", "registry", "runner"][..]),
+        ("frontend", &["react", "css", "ui", "component", "layout", "frontend", "tailwind",
+            "responsive", "browser", "dom", "jsx", "tsx", "next.js"][..]),
+        ("ai_ml", &["llm", "embedding", "model", "prompt", "ml", "ai", "vector",
+            "semantic", "scoring", "neural", "training", "inference"][..]),
+        ("backend", &["api", "database", "endpoint", "service", "backend", "crud",
+            "rest", "graphql", "grpc", "migration", "schema", "query"][..]),
+    ];
+
+    let mut best_domain = "default";
+    let mut best_score = 0usize;
+
+    for (domain, keywords) in &domains {
+        let score = keywords.iter().filter(|kw| text.contains(**kw)).count();
+        if score > best_score {
+            best_score = score;
+            best_domain = domain;
+        }
+    }
+
+    best_domain.to_string()
+}
+
+/// Extract `domain:` value from YAML frontmatter in body.
+fn extract_frontmatter_domain(body: &str) -> Option<String> {
+    for line in body.lines().take(30) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("domain:") {
+            let value = trimmed[7..].trim().trim_matches('"').trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
