@@ -359,6 +359,20 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Update the depth column of an artifact.
+    pub async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("depth", &format!("'{}'", depth.replace('\'', "''")))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Update r_eff_score for an artifact. Verifies the artifact exists first.
     pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
         let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
