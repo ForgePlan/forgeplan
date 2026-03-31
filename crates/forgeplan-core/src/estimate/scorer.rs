@@ -108,6 +108,7 @@ mod tests {
             description: desc.to_string(),
             category: "Core".to_string(),
             priority: priority.to_string(),
+            source: crate::estimate::types::ItemSource::Fr,
         }
     }
 

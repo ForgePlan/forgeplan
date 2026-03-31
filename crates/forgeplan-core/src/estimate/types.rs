@@ -156,6 +156,15 @@ impl fmt::Display for TaskType {
     }
 }
 
+/// Source of a work item — allows typed filtering instead of string prefix checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ItemSource {
+    /// Functional Requirement from PRD table
+    Fr,
+    /// Phase checklist item from RFC
+    Phase,
+}
+
 /// A single work item extracted from an artifact (FR from PRD or Phase step from RFC).
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkItem {
@@ -163,6 +172,7 @@ pub struct WorkItem {
     pub description: String,
     pub category: String,
     pub priority: String,
+    pub source: ItemSource,
 }
 
 /// A work item with assigned complexity and task type.
