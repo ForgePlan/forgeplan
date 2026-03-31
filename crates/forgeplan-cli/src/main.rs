@@ -81,6 +81,9 @@ enum Commands {
         /// Use LLM-based complexity scoring instead of rule-based heuristics
         #[arg(long)]
         llm_score: bool,
+        /// Manual complexity overrides: FR-001=5,FR-002=3 (Fibonacci: 1,2,3,5,8,13)
+        #[arg(long)]
+        complexity: Option<String>,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -479,8 +482,8 @@ async fn main() -> anyhow::Result<()> {
                 commands::score::run(id.as_deref(), json).await
             }
         }
-        Commands::Estimate { id, grade, my_grade, llm_score, json } => {
-            commands::estimate::run(&id, grade.as_deref(), my_grade, llm_score, json).await
+        Commands::Estimate { id, grade, my_grade, llm_score, complexity, json } => {
+            commands::estimate::run(&id, grade.as_deref(), my_grade, llm_score, complexity.as_deref(), json).await
         }
         Commands::Link {
             source,

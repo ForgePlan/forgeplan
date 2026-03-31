@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 
 use forgeplan_core::estimate::{calculator, confidence, display, extractor, scorer};
-use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
+use forgeplan_core::estimate::types::{Complexity, EstimateConfig, Grade, ItemSource, ScoredItem};
 
 use crate::commands::common;
 
@@ -10,6 +12,7 @@ pub async fn run(
     grade: Option<&str>,
     my_grade: bool,
     llm_score: bool,
+    complexity_overrides: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let store = common::store().await?;
@@ -30,7 +33,7 @@ pub async fn run(
     }
 
     // Score complexity: LLM L1 (opt-in) or rule-based L0 (default)
-    let scored_items = if llm_score {
+    let mut scored_items = if llm_score {
         let llm_config = common::require_llm_config()?;
         if !json {
             eprintln!(
@@ -43,17 +46,34 @@ pub async fn run(
         scorer::score_items(&work_items)
     };
 
+    // Apply manual complexity overrides (highest priority per ADR-004)
+    if let Some(overrides) = complexity_overrides {
+        let map = parse_complexity_overrides(overrides)?;
+        apply_overrides(&mut scored_items, &map);
+        if !json {
+            eprintln!("  Applied {} manual complexity override(s)", map.len());
+        }
+    }
+
     // Calculate confidence
     let fr_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Fr).collect();
     let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
+
+    // Check linked Spec and Evidence for confidence boost
+    let relations = store.get_relations(&record.id).await.unwrap_or_default();
+    let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
+    let all_rels: Vec<_> = relations.iter().chain(incoming.iter()).collect();
+
+    let has_spec = all_rels.iter().any(|(target, _)| target.to_uppercase().starts_with("SPEC-"));
+    let has_evidence = all_rels.iter().any(|(target, _)| target.to_uppercase().starts_with("EVID-"));
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
         fr_items.len(),
         !phase_items.is_empty(),
         phase_items.len(),
-        false, // TODO: check linked Spec
-        false, // TODO: check linked Evidence
+        has_spec,
+        has_evidence,
     );
 
     // Build config from .forgeplan/config.yaml or defaults
@@ -94,6 +114,39 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Parse "FR-001=5,FR-002=3" into HashMap<String, Complexity>.
+fn parse_complexity_overrides(input: &str) -> Result<HashMap<String, Complexity>> {
+    let mut map = HashMap::new();
+    for pair in input.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = pair.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Invalid complexity override '{}'. Format: FR-001=5", pair);
+        }
+        let id = parts[0].trim().to_string();
+        let value: u32 = parts[1].trim().parse()
+            .map_err(|_| anyhow::anyhow!("Invalid number '{}' in complexity override", parts[1].trim()))?;
+        let complexity = Complexity::from_value(value)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Invalid Fibonacci value {}. Valid: 1, 2, 3, 5, 8, 13", value
+            ))?;
+        map.insert(id, complexity);
+    }
+    Ok(map)
+}
+
+/// Apply manual overrides to scored items — override has highest priority.
+fn apply_overrides(items: &mut [ScoredItem], overrides: &HashMap<String, Complexity>) {
+    for item in items.iter_mut() {
+        if let Some(complexity) = overrides.get(&item.id) {
+            item.complexity = *complexity;
+        }
+    }
 }
 
 /// Load EstimateConfig from .forgeplan/config.yaml, falling back to defaults.
