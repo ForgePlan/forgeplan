@@ -1,5 +1,4 @@
 use crate::commands::common;
-use crate::ui;
 
 /// Rebuild LanceDB index from .md files (files-first, RFC-004).
 ///

@@ -263,7 +263,7 @@ pub async fn supersede(
     transitions::validate_transition(&record.status, "superseded")?;
 
     // Block if replacement is itself superseded or deprecated (chain risk)
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     if replacement.status == "superseded" || replacement.status == "deprecated" {
         anyhow::bail!(
             "Replacement {} is already {}. Choose an active or draft artifact as replacement.",

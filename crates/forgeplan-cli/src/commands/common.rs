@@ -55,6 +55,7 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
 }
 
 /// Open storage using driver trait (new API — will replace open_store over time).
+#[allow(dead_code)]
 pub async fn open_driver() -> anyhow::Result<std::sync::Arc<dyn forgeplan_core::driver::StorageDriver>> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
