@@ -271,6 +271,71 @@ fn default_safety_margin() -> f64 {
     0.50
 }
 
+impl EstimateConfig {
+    /// Build EstimateConfig from YAML config, falling back to defaults for missing fields.
+    pub fn from_yaml(yaml: &crate::config::types::EstimateConfigYaml) -> Self {
+        let mut config = Self::default();
+
+        // Override grade multipliers
+        if let Some(ref overrides) = yaml.grade_multipliers {
+            for (key, value) in overrides {
+                if let Ok(grade) = key.parse::<Grade>() {
+                    config.grade_multipliers.insert(grade, *value);
+                }
+            }
+        }
+
+        // Override AI task multipliers
+        if let Some(ref overrides) = yaml.ai_task_multipliers {
+            let task_map: HashMap<&str, TaskType> = [
+                ("pure_coding", TaskType::PureCoding),
+                ("coding_infra", TaskType::CodingInfra),
+                ("design_coding", TaskType::DesignCoding),
+                ("pure_infra", TaskType::PureInfra),
+                ("coordination", TaskType::Coordination),
+            ].into_iter().collect();
+
+            for (key, value) in overrides {
+                if let Some(tt) = task_map.get(key.as_str()) {
+                    config.ai_task_multipliers.insert(*tt, *value);
+                }
+            }
+        }
+
+        if let Some(v) = yaml.review_overhead {
+            config.review_overhead = v;
+        }
+        if let Some(v) = yaml.safety_margin {
+            config.safety_margin = v;
+        }
+
+        // Grade profile
+        if let Some(ref profile) = yaml.grade_profile {
+            for (domain, grade_str) in &profile.domains {
+                if domain == "default" {
+                    if let Ok(g) = grade_str.parse::<Grade>() {
+                        config.grade_profile.default_grade = g;
+                    }
+                } else if let Ok(g) = grade_str.parse::<Grade>() {
+                    config.grade_profile.domains.insert(domain.clone(), g);
+                }
+            }
+        }
+
+        config
+    }
+
+    /// Resolve the grade for a given domain using the grade profile.
+    /// Falls back to default_grade if domain not in profile.
+    pub fn resolve_grade(&self, domain: &str) -> Grade {
+        self.grade_profile
+            .domains
+            .get(domain)
+            .copied()
+            .unwrap_or(self.grade_profile.default_grade)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +448,63 @@ mod tests {
         assert_eq!(profile.domains.get("backend"), Some(&Grade::Middle));
         assert_eq!(profile.domains.get("devops"), Some(&Grade::Senior));
         assert_eq!(profile.domains.get("frontend"), None);
+    }
+
+    #[test]
+    fn from_yaml_overrides_grade_multipliers() {
+        use crate::config::types::{EstimateConfigYaml, GradeProfileYaml};
+
+        let yaml = EstimateConfigYaml {
+            grade_multipliers: Some([
+                ("junior".to_string(), 3.0),
+            ].into_iter().collect()),
+            grade_profile: Some(GradeProfileYaml {
+                domains: [
+                    ("backend".to_string(), "middle".to_string()),
+                    ("devops".to_string(), "senior".to_string()),
+                    ("default".to_string(), "middle".to_string()),
+                ].into_iter().collect(),
+            }),
+            ..Default::default()
+        };
+
+        let config = EstimateConfig::from_yaml(&yaml);
+        assert_eq!(config.grade_multipliers[&Grade::Junior], 3.0); // overridden
+        assert_eq!(config.grade_multipliers[&Grade::Senior], 1.0); // default kept
+        assert_eq!(config.grade_profile.domains["backend"], Grade::Middle);
+        assert_eq!(config.grade_profile.domains["devops"], Grade::Senior);
+        assert_eq!(config.grade_profile.default_grade, Grade::Middle); // "default" key
+    }
+
+    #[test]
+    fn from_yaml_empty_uses_defaults() {
+        use crate::config::types::EstimateConfigYaml;
+
+        let yaml = EstimateConfigYaml::default();
+        let config = EstimateConfig::from_yaml(&yaml);
+        assert_eq!(config.grade_multipliers[&Grade::Senior], 1.0);
+        assert_eq!(config.review_overhead, 0.30);
+        assert_eq!(config.grade_profile.default_grade, Grade::Senior);
+    }
+
+    #[test]
+    fn resolve_grade_uses_profile() {
+        use crate::config::types::{EstimateConfigYaml, GradeProfileYaml};
+
+        let yaml = EstimateConfigYaml {
+            grade_profile: Some(GradeProfileYaml {
+                domains: [
+                    ("backend".to_string(), "middle".to_string()),
+                    ("devops".to_string(), "senior".to_string()),
+                    ("default".to_string(), "junior".to_string()),
+                ].into_iter().collect(),
+            }),
+            ..Default::default()
+        };
+
+        let config = EstimateConfig::from_yaml(&yaml);
+        assert_eq!(config.resolve_grade("backend"), Grade::Middle);
+        assert_eq!(config.resolve_grade("devops"), Grade::Senior);
+        assert_eq!(config.resolve_grade("unknown"), Grade::Junior); // falls back to "default"
     }
 }
