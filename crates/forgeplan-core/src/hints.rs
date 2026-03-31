@@ -103,16 +103,24 @@ pub fn score_hints(
 }
 
 /// Hints for `forgeplan get` output.
+/// Accepts typed enums for kind and depth for compile-time safety.
 pub fn get_hints(
     status: &str,
-    kind: &str,
+    kind: &crate::artifact::types::ArtifactKind,
     has_links: bool,
-    depth: &str,
+    depth: &crate::artifact::types::Mode,
 ) -> Vec<Hint> {
     let mut hints = Vec::new();
+    let kind_str = kind_to_str(kind);
+    let depth_str = match depth {
+        crate::artifact::types::Mode::Tactical => "tactical",
+        crate::artifact::types::Mode::Standard => "standard",
+        crate::artifact::types::Mode::Deep => "deep",
+        crate::artifact::types::Mode::Note => "note",
+    };
 
     if status == "draft" {
-        let next = match kind {
+        let next = match kind_str {
             "prd" => "Fill MUST sections (Problem, Goals, FR, Target Users), then: forgeplan validate",
             "rfc" => "Fill Summary, Motivation, Options, Implementation Phases, then: forgeplan validate",
             "adr" => "Fill Context, Decision, Consequences, then: forgeplan validate",
@@ -122,14 +130,14 @@ pub fn get_hints(
         hints.push(Hint::suggestion(format!("Status is draft — next: {}", next)));
     }
 
-    if !has_links && status != "deprecated" && kind != "memory" {
+    if !has_links && status != "deprecated" && kind_str != "memory" {
         hints.push(
             Hint::info("No links — artifact is an orphan")
-                .with_action(format!("forgeplan link <this-id> <parent-id> --relation refines"))
+                .with_action("forgeplan link <this-id> <parent-id> --relation refines")
         );
     }
 
-    if depth == "standard" && (kind == "prd") && !has_links {
+    if depth_str == "standard" && kind_str == "prd" && !has_links {
         hints.push(
             Hint::suggestion("Standard PRD should have linked RFC")
                 .with_action("forgeplan new rfc \"<title>\" && forgeplan link RFC-XXX <this-id> --relation based_on")
@@ -144,18 +152,19 @@ pub fn review_hints(
     has_evidence: bool,
     is_stub: bool,
     has_must_errors: bool,
-    kind: &str,
+    kind: &crate::artifact::types::ArtifactKind,
 ) -> Vec<Hint> {
     let mut hints = Vec::new();
 
     if is_stub {
+        let action = match kind_to_str(kind) {
+            "prd" => "Fill: Problem, Goals, Non-Goals, Target Users, FR",
+            "rfc" => "Fill: Summary, Motivation, Goals, Options, Implementation Phases",
+            _ => "Fill all required sections",
+        };
         hints.push(
             Hint::warning("Artifact is a stub — MUST sections not filled")
-                .with_action(match kind {
-                    "prd" => "Fill: Problem, Goals, Non-Goals, Target Users, FR",
-                    "rfc" => "Fill: Summary, Motivation, Goals, Options, Implementation Phases",
-                    _ => "Fill all required sections",
-                })
+                .with_action(action)
         );
     }
 
@@ -194,6 +203,23 @@ pub fn search_hints(query: &str, result_count: usize) -> Vec<Hint> {
     hints
 }
 
+fn kind_to_str(kind: &crate::artifact::types::ArtifactKind) -> &'static str {
+    use crate::artifact::types::ArtifactKind;
+    match kind {
+        ArtifactKind::Prd => "prd",
+        ArtifactKind::Epic => "epic",
+        ArtifactKind::Spec => "spec",
+        ArtifactKind::Rfc => "rfc",
+        ArtifactKind::Adr => "adr",
+        ArtifactKind::Note => "note",
+        ArtifactKind::ProblemCard => "problem",
+        ArtifactKind::SolutionPortfolio => "solution",
+        ArtifactKind::EvidencePack => "evidence",
+        ArtifactKind::RefreshReport => "refresh",
+        ArtifactKind::Memory => "memory",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,21 +248,24 @@ mod tests {
 
     #[test]
     fn get_hints_draft_prd() {
-        let hints = get_hints("draft", "prd", false, "standard");
-        assert!(hints.len() >= 2); // draft + orphan + maybe RFC suggestion
+        use crate::artifact::types::{ArtifactKind, Mode};
+        let hints = get_hints("draft", &ArtifactKind::Prd, false, &Mode::Standard);
+        assert!(hints.len() >= 2);
         assert!(hints[0].message.contains("draft"));
     }
 
     #[test]
     fn get_hints_active_with_links() {
-        let hints = get_hints("active", "prd", true, "standard");
+        use crate::artifact::types::{ArtifactKind, Mode};
+        let hints = get_hints("active", &ArtifactKind::Prd, true, &Mode::Standard);
         assert!(hints.is_empty());
     }
 
     #[test]
     fn review_hints_stub() {
-        let hints = review_hints(false, true, false, "prd");
-        assert!(hints.len() >= 2); // stub + no evidence
+        use crate::artifact::types::ArtifactKind;
+        let hints = review_hints(false, true, false, &ArtifactKind::Prd);
+        assert!(hints.len() >= 2);
         assert!(hints[0].message.contains("stub"));
     }
 
