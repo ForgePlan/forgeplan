@@ -32,18 +32,16 @@ pub async fn render_projection(
     let filename = format!("{}-{}.md", id, slug);
     let filepath = dir.join(&filename);
 
-    // Files-first: if file exists and body was edited by user, preserve file body
+    // Files-first (RFC-004): ALWAYS preserve file body if file exists and has content.
+    // Only frontmatter is updated from LanceDB. Body comes from the file on disk.
+    // This prevents data loss when `forgeplan link` or `forgeplan update` re-renders the projection.
     let effective_body = if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => {
                 if let Ok((_fm, file_body)) = frontmatter::parse_frontmatter(&file_content) {
-                    let file_body_trimmed = file_body.trim();
-                    let db_body_trimmed = body.trim();
-                    if !file_body_trimmed.is_empty()
-                        && file_body_trimmed != db_body_trimmed
-                    {
-                        // File body differs from LanceDB body — user edited the file.
-                        // Preserve the file version.
+                    if !file_body.trim().is_empty() {
+                        // File has content — always use it, regardless of whether it
+                        // matches LanceDB. The file is the source of truth for body.
                         file_body.to_string()
                     } else {
                         body.to_string()
@@ -338,7 +336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_projection_overwrites_when_body_matches() {
+    async fn render_projection_updates_frontmatter_preserves_body() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
 
@@ -350,7 +348,7 @@ mod tests {
             None, None, None, body, &[],
         ).await.unwrap();
 
-        // Re-render with same body but updated status — should overwrite (body unchanged)
+        // Re-render with same body but updated status — frontmatter updates, body preserved from file
         let path = render_projection(
             &ws, "PRD-001", "prd", "Test", "active", "standard",
             None, None, None, body, &[],
@@ -358,6 +356,43 @@ mod tests {
 
         let result = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(result.contains("status: active"), "status should be updated");
+        assert!(result.contains("Same content"), "body should be preserved from file");
+    }
+
+    #[tokio::test]
+    async fn render_projection_preserves_file_body_even_when_db_has_template() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        let template_body = "## Template\n\n{placeholder}";
+
+        // Step 1: create projection with template
+        let path = render_projection(
+            &ws, "RFC-001", "rfc", "My RFC", "draft", "standard",
+            None, None, None, template_body, &[],
+        ).await.unwrap();
+
+        // Step 2: user edits file with real content (270 lines)
+        let user_content = format!(
+            "---\nid: RFC-001\ntitle: My RFC\nkind: rfc\nstatus: draft\ndepth: standard\n---\n\n{}\n",
+            "## Summary\n\nReal RFC content with 270 lines of architecture.\n\n## Motivation\n\nThis is important because...\n\n## Proposed Direction\n\nWe should do X."
+        );
+        tokio::fs::write(&path, user_content).await.unwrap();
+
+        // Step 3: forgeplan link re-renders with TEMPLATE body from LanceDB (the bug scenario)
+        let path2 = render_projection(
+            &ws, "RFC-001", "rfc", "My RFC", "draft", "standard",
+            None, None, None, template_body, // <-- LanceDB still has template!
+            &[("PRD-011".to_string(), "based_on".to_string())],
+        ).await.unwrap();
+
+        // Verify: file body preserved, NOT reset to template
+        let result = tokio::fs::read_to_string(&path2).await.unwrap();
+        assert!(result.contains("Real RFC content"), "user body must be preserved after link");
+        assert!(result.contains("This is important"), "motivation must survive");
+        assert!(!result.contains("{placeholder}"), "template must NOT overwrite user content");
+        // Frontmatter updated with link
+        assert!(result.contains("PRD-011"), "link should be in frontmatter");
     }
 
     #[tokio::test]
