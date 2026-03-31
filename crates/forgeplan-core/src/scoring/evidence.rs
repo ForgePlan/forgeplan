@@ -49,10 +49,18 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
 }
 
 /// Extract a simple "key: value" from body text.
+///
+/// Skips markdown table rows (lines starting with `|`) and HTML comments
+/// to avoid matching template placeholder values like `| CL | 0 / 1 / 2 / 3 |`.
+/// Only matches standalone `key: value` lines (structured fields).
 pub fn extract_field(body: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     for line in body.lines() {
         let trimmed = line.trim();
+        // Skip markdown table rows and HTML comments — these are template placeholders
+        if trimmed.starts_with('|') || trimmed.starts_with("<!--") {
+            continue;
+        }
         if let Some(rest) = trimmed.strip_prefix(&prefix) {
             let val = rest.trim();
             if !val.is_empty() {
@@ -79,5 +87,74 @@ mod tests {
     fn extract_field_with_whitespace() {
         let body = "  verdict:   Weakens  \n";
         assert_eq!(extract_field(body, "verdict"), Some("Weakens".into()));
+    }
+
+    #[test]
+    fn extract_field_ignores_table_rows() {
+        let body = "| Type | measurement / test / benchmark / audit |\n| Verdict | supports / weakens / refutes |\n| CL | 0 / 1 / 2 / 3 |\n";
+        // Table rows should NOT match any field
+        assert_eq!(extract_field(body, "type"), None);
+        assert_eq!(extract_field(body, "verdict"), None);
+        assert_eq!(extract_field(body, "congruence_level"), None);
+    }
+
+    #[test]
+    fn extract_field_ignores_html_comments() {
+        let body = "<!-- congruence_level: 0 | 1 | 2 | 3 -->\ncongruence_level: 3\n";
+        assert_eq!(extract_field(body, "congruence_level"), Some("3".into()));
+    }
+
+    #[test]
+    fn extract_field_structured_field_wins_over_template_placeholders() {
+        // Simulates body with template table AND user-added structured fields
+        let body = r#"| Field | Value |
+|-------|-------|
+| Status | Draft |
+| Type | measurement / test / benchmark / audit |
+| Verdict | supports / weakens / refutes |
+| CL | 0 / 1 / 2 / 3 |
+
+## Structured Fields
+
+evidence_type: test
+verdict: supports
+congruence_level: 3
+"#;
+        assert_eq!(extract_field(body, "verdict"), Some("supports".into()));
+        assert_eq!(extract_field(body, "congruence_level"), Some("3".into()));
+        assert_eq!(extract_field(body, "evidence_type"), Some("test".into()));
+    }
+
+    #[test]
+    fn parse_evidence_with_template_placeholders_returns_cl3() {
+        // Body has both template table placeholders AND structured fields
+        let body = r#"| Type | measurement / test / benchmark / audit |
+| Verdict | supports / weakens / refutes |
+| CL | 0 / 1 / 2 / 3 |
+
+## Structured Fields
+
+evidence_type: test
+verdict: supports
+congruence_level: 3
+"#;
+        let record = ArtifactRecord {
+            id: "EVID-001".into(),
+            kind: "evidence".into(),
+            status: "draft".into(),
+            title: "Test evidence".into(),
+            body: body.into(),
+            depth: "tactical".into(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let item = parse_evidence_from_record(&record);
+        assert_eq!(item.congruence_level, 3, "Should be CL3, not CL0");
+        assert!(matches!(item.verdict, Verdict::Supports));
+        assert!(matches!(item.evidence_type, EvidenceType::Test));
     }
 }
