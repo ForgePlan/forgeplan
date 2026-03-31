@@ -199,5 +199,6 @@ fn kind_display(kind: &forgeplan_core::artifact::types::ArtifactKind) -> &'stati
         ArtifactKind::SolutionPortfolio => "Solution",
         ArtifactKind::EvidencePack => "Evidence",
         ArtifactKind::RefreshReport => "Refresh",
+        ArtifactKind::Memory => "Memory",
     }
 }

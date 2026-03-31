@@ -9,7 +9,7 @@ pub const FORGEPLAN_DIR: &str = ".forgeplan";
 /// All artifact subdirectories created inside `.forgeplan/`.
 pub const ARTIFACT_DIRS: &[&str] = &[
     "prds", "epics", "specs", "rfcs", "adrs", "problems", "solutions", "evidence", "notes",
-    "refresh",
+    "refresh", "memory",
 ];
 
 /// Initialize a `.forgeplan/` workspace in the given directory.

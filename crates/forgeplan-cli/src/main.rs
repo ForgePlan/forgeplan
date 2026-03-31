@@ -372,6 +372,34 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Save a memory (fact, convention, procedure) for later recall
+    Remember {
+        /// Text to remember (omit for --list or --forget)
+        text: Option<String>,
+        /// Memory category: fact, convention, procedure, insight
+        #[arg(long, short)]
+        category: Option<String>,
+        /// List all memories
+        #[arg(long)]
+        list: bool,
+        /// Forget (delete) a memory by ID
+        #[arg(long)]
+        forget: Option<String>,
+    },
+    /// Recall memories — search, filter, list
+    Recall {
+        /// Search query (substring match in title/body)
+        query: Option<String>,
+        /// Filter by category
+        #[arg(long, short)]
+        category: Option<String>,
+        /// Max results (default: 10)
+        #[arg(long, short = 'n', default_value = "10")]
+        limit: usize,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Watch .forgeplan/ files and sync changes to LanceDB in real time
     Watch,
     /// Start MCP server (stdio transport) for AI agent integration
@@ -542,6 +570,17 @@ async fn main() -> anyhow::Result<()> {
         Commands::Embed => commands::embed::run().await,
         Commands::Log { id, limit, source, json } => {
             commands::log_cmd::run(id.as_deref(), source.as_deref(), limit, json).await
+        }
+        Commands::Remember { text, category, list, forget } => {
+            commands::remember::run(
+                text.as_deref(),
+                category.as_deref(),
+                list,
+                forget.as_deref(),
+            ).await
+        }
+        Commands::Recall { query, category, limit, json } => {
+            commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await
         }
         Commands::Watch => commands::watch::run().await,
         Commands::Serve => {
