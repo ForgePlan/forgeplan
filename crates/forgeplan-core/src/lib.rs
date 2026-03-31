@@ -10,6 +10,7 @@ pub mod embed;
 pub mod estimate;
 pub mod fpf;
 pub mod health;
+pub mod hints;
 pub mod journal;
 pub mod lifecycle;
 pub mod llm;
