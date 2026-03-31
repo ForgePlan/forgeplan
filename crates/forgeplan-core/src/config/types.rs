@@ -16,6 +16,8 @@ pub struct Config {
     pub storage: Option<StorageConfig>,
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
+    #[serde(default)]
+    pub estimate: Option<EstimateConfigYaml>,
 }
 
 impl Default for Config {
@@ -30,8 +32,38 @@ impl Default for Config {
             embedding: None,
             storage: None,
             memory: None,
+            estimate: None,
         }
     }
+}
+
+/// Estimate engine configuration — YAML-friendly version.
+/// All fields optional with sensible defaults. Converts to EstimateConfig for runtime use.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EstimateConfigYaml {
+    /// Per-domain grade profile: "backend" → "middle", "devops" → "senior"
+    #[serde(default)]
+    pub grade_profile: Option<GradeProfileYaml>,
+    /// Override grade multipliers: "junior" → 2.0, etc.
+    #[serde(default)]
+    pub grade_multipliers: Option<std::collections::HashMap<String, f64>>,
+    /// Override AI task-type multipliers: "pure_coding" → 0.10, etc.
+    #[serde(default)]
+    pub ai_task_multipliers: Option<std::collections::HashMap<String, f64>>,
+    /// Fraction of AI time added for human review (default: 0.30 = 30%)
+    #[serde(default)]
+    pub review_overhead: Option<f64>,
+    /// Sprint load threshold — warn if capacity exceeds this (default: 0.50 = 50%)
+    #[serde(default)]
+    pub safety_margin: Option<f64>,
+}
+
+/// User's grade profile — maps work domains to developer grades.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GradeProfileYaml {
+    /// Domain → grade string (e.g., "backend" → "middle")
+    #[serde(flatten)]
+    pub domains: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

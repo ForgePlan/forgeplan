@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use forgeplan_core::estimate::{calculator, confidence, display, extractor, scorer};
-use forgeplan_core::estimate::types::{EstimateConfig, Grade};
+use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
 
 use crate::commands::common;
 
@@ -32,8 +32,8 @@ pub async fn run(
     let scored_items = scorer::score_items(&work_items);
 
     // Calculate confidence
-    let fr_items: Vec<_> = work_items.iter().filter(|w| w.id.starts_with("FR-")).collect();
-    let phase_items: Vec<_> = work_items.iter().filter(|w| w.id.starts_with("P")).collect();
+    let fr_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Fr).collect();
+    let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
@@ -44,8 +44,8 @@ pub async fn run(
         false, // TODO: check linked Evidence
     );
 
-    // Build config (defaults for now, TODO: read from config.yaml)
-    let config = EstimateConfig::default();
+    // Build config from .forgeplan/config.yaml or defaults
+    let config = load_estimate_config();
 
     // Calculate hours
     let result = calculator::calculate(
@@ -59,8 +59,15 @@ pub async fn run(
 
     // Determine highlight grade
     let highlight_grade = if my_grade {
-        // TODO: read from config grade profile + artifact domain
-        Some(Grade::Senior)
+        let domain = infer_domain(&record.kind);
+        let resolved = config.resolve_grade(&domain);
+        if !json {
+            eprintln!(
+                "  Using grade: {} (domain: {}, from config grade_profile)",
+                resolved, domain
+            );
+        }
+        Some(resolved)
     } else if let Some(g) = grade {
         Some(g.parse::<Grade>().map_err(|e| anyhow::anyhow!("{}", e))?)
     } else {
@@ -75,4 +82,27 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Load EstimateConfig from .forgeplan/config.yaml, falling back to defaults.
+fn load_estimate_config() -> EstimateConfig {
+    match common::config() {
+        Ok(cfg) => {
+            if let Some(ref yaml) = cfg.estimate {
+                EstimateConfig::from_yaml(yaml)
+            } else {
+                EstimateConfig::default()
+            }
+        }
+        Err(_) => EstimateConfig::default(),
+    }
+}
+
+/// Infer work domain from artifact kind for grade profile lookup.
+fn infer_domain(kind: &str) -> String {
+    match kind {
+        "prd" | "epic" | "spec" => "backend".to_string(),
+        "rfc" | "adr" => "backend".to_string(),
+        _ => "default".to_string(),
+    }
 }
