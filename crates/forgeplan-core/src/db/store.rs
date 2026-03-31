@@ -989,6 +989,7 @@ fn get_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String
 }
 
 /// Read a Float32 column value from a RecordBatch row.
+#[cfg(feature = "semantic-search")]
 fn get_f32(batch: &RecordBatch, col: &str, row: usize) -> Option<f32> {
     let array = batch.column_by_name(col)?;
     if let Some(arr) = array

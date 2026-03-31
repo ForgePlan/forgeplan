@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact, VectorSearchHit};
+#[cfg(feature = "semantic-search")]
+use crate::db::store::VectorSearchHit;
+use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact};
 use crate::driver::StorageDriver;
 
 /// LanceDB-backed storage driver.
