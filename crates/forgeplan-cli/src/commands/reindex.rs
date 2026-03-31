@@ -88,6 +88,31 @@ pub async fn run() -> anyhow::Result<()> {
                     synced += 1;
                 }
             }
+
+            // Restore links from frontmatter (F8 fix)
+            if let Some(links_val) = fm.get("links") {
+                if let Some(links_arr) = links_val.as_sequence() {
+                    let existing_relations = store.get_relations(&id).await.unwrap_or_default();
+                    for link in links_arr {
+                        let target = link.get("target").and_then(|v| v.as_str());
+                        let relation = link.get("relation").and_then(|v| v.as_str());
+                        if let (Some(t), Some(r)) = (target, relation) {
+                            // Skip if relation already exists
+                            let already_exists = existing_relations
+                                .iter()
+                                .any(|(et, er)| et == t && er == r);
+                            if !already_exists {
+                                if let Err(e) = store.add_relation(&id, t, r).await {
+                                    eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
+                                } else {
+                                    println!("  LINK {} --{}--> {}", id, r, t);
+                                    synced += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
