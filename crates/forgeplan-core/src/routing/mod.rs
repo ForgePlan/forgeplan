@@ -296,6 +296,7 @@ fn kind_display(kind: &ArtifactKind) -> &'static str {
         ArtifactKind::SolutionPortfolio => "Solution",
         ArtifactKind::EvidencePack => "Evidence",
         ArtifactKind::RefreshReport => "Refresh",
+        ArtifactKind::Memory => "Memory",
     }
 }
 
