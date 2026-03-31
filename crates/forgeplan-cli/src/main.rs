@@ -358,6 +358,22 @@ enum Commands {
     Reindex,
     /// Generate embeddings for all artifacts (semantic search)
     Embed,
+    /// Show change log — audit trail of artifact mutations
+    Log {
+        /// Filter by artifact ID
+        id: Option<String>,
+        /// Maximum number of entries (default: 20)
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
+        /// Filter by source (cli, file_edit, git_sync, reindex)
+        #[arg(long)]
+        source: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Watch .forgeplan/ files and sync changes to LanceDB in real time
+    Watch,
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -524,6 +540,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Migrate => commands::migrate::run().await,
         Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,
+        Commands::Log { id, limit, source, json } => {
+            commands::log_cmd::run(id.as_deref(), source.as_deref(), limit, json).await
+        }
+        Commands::Watch => commands::watch::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

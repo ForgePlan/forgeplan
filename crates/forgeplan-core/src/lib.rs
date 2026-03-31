@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod changelog;
 pub mod config;
 pub mod coverage;
 pub mod db;

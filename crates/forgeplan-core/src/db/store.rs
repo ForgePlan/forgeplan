@@ -11,6 +11,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::Table;
 
 use crate::artifact::store::ArtifactSummary;
+use crate::changelog::ChangeLogEntry;
 use crate::db::{convert, migrate, schema};
 
 /// Filter for listing artifacts.
@@ -167,6 +168,7 @@ pub struct LanceStore {
     evidence: Table,
     relations: Table,
     fpf_spec: Option<Table>,
+    change_log: Option<Table>,
 }
 
 impl LanceStore {
@@ -184,12 +186,17 @@ impl LanceStore {
         // Run migrations (idempotent — safe on every open)
         migrate::run_migrations(&artifacts, &relations).await?;
 
+        // Ensure change_log table exists (migration for older workspaces)
+        migrate::ensure_change_log(&db).await?;
+        let change_log = db.open_table("change_log").execute().await.ok();
+
         Ok(Self {
             _db: db,
             artifacts,
             evidence,
             relations,
             fpf_spec,
+            change_log,
         })
     }
 
@@ -229,10 +236,18 @@ impl LanceStore {
             db.create_table("fpf_spec", vec![batch]).execute().await?;
         }
 
+        // Create change_log table if not present
+        if !existing_tables.contains(&"change_log".to_string()) {
+            let schema = schema::change_log_schema();
+            let batch = empty_change_log_batch(schema.clone())?;
+            db.create_table("change_log", vec![batch]).execute().await?;
+        }
+
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
         let relations = db.open_table("relations").execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
+        let change_log = db.open_table("change_log").execute().await.ok();
 
         Ok(Self {
             _db: db,
@@ -240,6 +255,7 @@ impl LanceStore {
             evidence,
             relations,
             fpf_spec,
+            change_log,
         })
     }
 
@@ -723,6 +739,74 @@ impl LanceStore {
         Ok(results)
     }
 
+    // ── Change Log ───────────────────────────────────────────────────
+
+    /// Insert a change log entry.
+    pub async fn log_change(&self, entry: &ChangeLogEntry) -> anyhow::Result<()> {
+        let table = self
+            .change_log
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("change_log table not initialized. Run `forgeplan init -y` to recreate workspace."))?;
+
+        let batch = RecordBatch::try_new(
+            schema::change_log_schema(),
+            vec![
+                Arc::new(StringArray::from(vec![entry.timestamp.as_str()])),
+                Arc::new(StringArray::from(vec![entry.artifact_id.as_str()])),
+                Arc::new(StringArray::from(vec![entry.action.as_str()])),
+                Arc::new(StringArray::from(vec![entry.field.as_deref()])),
+                Arc::new(StringArray::from(vec![entry.old_value.as_deref()])),
+                Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
+                Arc::new(StringArray::from(vec![entry.source.as_str()])),
+            ],
+        )?;
+
+        table.add(vec![batch]).execute().await?;
+        Ok(())
+    }
+
+    /// Query change log entries with optional artifact filter and source filter.
+    pub async fn get_change_log(
+        &self,
+        artifact_id: Option<&str>,
+        source: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ChangeLogEntry>> {
+        let table = self
+            .change_log
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("change_log table not initialized"))?;
+
+        let mut conditions: Vec<String> = Vec::new();
+        if let Some(aid) = artifact_id {
+            conditions.push(format!("artifact_id = '{}'", aid.replace('\'', "''")));
+        }
+        if let Some(src) = source {
+            conditions.push(format!("source = '{}'", src.replace('\'', "''")));
+        }
+
+        let mut query = table.query();
+        if !conditions.is_empty() {
+            query = query.only_if(conditions.join(" AND "));
+        }
+
+        let batches = collect_batches(query.execute().await?).await?;
+        let mut results: Vec<ChangeLogEntry> = Vec::new();
+
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                if let Some(entry) = extract_change_log_entry(batch, row) {
+                    results.push(entry);
+                }
+            }
+        }
+
+        // Sort by timestamp descending (newest first)
+        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        results.truncate(limit);
+        Ok(results)
+    }
+
     // ── FPF Knowledge Base ───────────────────────────────────────────
 
     /// Check if FPF knowledge base is loaded.
@@ -1106,6 +1190,45 @@ fn empty_relations_batch(
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(Int32Array::from(Vec::<Option<i32>>::new())), // congruence_level
+        ],
+    )
+}
+
+/// Extract a ChangeLogEntry from a RecordBatch row.
+fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLogEntry> {
+    let timestamp = get_string(batch, "timestamp", row)?;
+    let artifact_id = get_string(batch, "artifact_id", row)?;
+    let action = get_string(batch, "action", row)?;
+    let field = get_string(batch, "field", row);
+    let old_value = get_string(batch, "old_value", row);
+    let new_value = get_string(batch, "new_value", row);
+    let source = get_string(batch, "source", row)?;
+
+    Some(ChangeLogEntry {
+        timestamp,
+        artifact_id,
+        action,
+        field,
+        old_value,
+        new_value,
+        source,
+    })
+}
+
+/// Create an empty RecordBatch for change_log.
+fn empty_change_log_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // timestamp
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // artifact_id
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // action
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // field (nullable)
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // old_value (nullable)
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // source
         ],
     )
 }
