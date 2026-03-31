@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use forgeplan_core::estimate::{calculator, confidence, display, extractor, scorer};
-use forgeplan_core::estimate::types::{EstimateConfig, Grade};
+use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
 
 use crate::commands::common;
 
@@ -32,8 +32,8 @@ pub async fn run(
     let scored_items = scorer::score_items(&work_items);
 
     // Calculate confidence
-    let fr_items: Vec<_> = work_items.iter().filter(|w| w.id.starts_with("FR-")).collect();
-    let phase_items: Vec<_> = work_items.iter().filter(|w| w.id.starts_with("P")).collect();
+    let fr_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Fr).collect();
+    let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
@@ -59,8 +59,11 @@ pub async fn run(
 
     // Determine highlight grade
     let highlight_grade = if my_grade {
-        // TODO: read from config grade profile + artifact domain
-        Some(Grade::Senior)
+        anyhow::bail!(
+            "--my-grade is not yet configured.\n\
+             Set estimate.grade_profile in .forgeplan/config.yaml, or use --grade <level>.\n\
+             Valid grades: junior, middle, senior, principal, ai"
+        );
     } else if let Some(g) = grade {
         Some(g.parse::<Grade>().map_err(|e| anyhow::anyhow!("{}", e))?)
     } else {

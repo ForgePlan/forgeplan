@@ -42,12 +42,27 @@ fn calculate_item(scored: &ScoredItem, config: &EstimateConfig) -> EstimateItem 
     let mut hours = HashMap::new();
 
     for grade in Grade::all() {
-        let multiplier = config
+        let grade_mult = config
             .grade_multipliers
             .get(grade)
             .copied()
             .unwrap_or(grade.default_multiplier());
-        hours.insert(*grade, base_hours * multiplier);
+
+        let effective_hours = if *grade == Grade::Ai {
+            // AI gets task-type-specific multiplier on top of grade multiplier
+            let task_mult = config
+                .ai_task_multipliers
+                .get(&scored.task_type)
+                .copied()
+                .unwrap_or(scored.task_type.ai_multiplier());
+            let ai_hours = base_hours * task_mult;
+            // Add review overhead (human reviewing AI output)
+            ai_hours * (1.0 + config.review_overhead)
+        } else {
+            base_hours * grade_mult
+        };
+
+        hours.insert(*grade, effective_hours);
     }
 
     let senior_hours = base_hours;
@@ -66,7 +81,7 @@ fn calculate_item(scored: &ScoredItem, config: &EstimateConfig) -> EstimateItem 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::estimate::types::{Complexity, TaskType};
+    use crate::estimate::types::{Complexity, ScoredItem, TaskType};
 
     fn default_config() -> EstimateConfig {
         EstimateConfig::default()
@@ -100,7 +115,25 @@ mod tests {
         assert_eq!(item.hours[&Grade::Middle], 12.0);   // 8 × 1.5
         assert_eq!(item.hours[&Grade::Senior], 8.0);    // 8 × 1.0
         assert!((item.hours[&Grade::Principal] - 5.6).abs() < 0.01); // 8 × 0.7
-        assert!((item.hours[&Grade::Ai] - 3.2).abs() < 0.01);       // 8 × 0.4
+        // AI: base_hours(8) × task_ai_mult(0.10 for PureCoding) × (1 + review_overhead(0.30))
+        // = 8 × 0.10 × 1.30 = 1.04
+        assert!((item.hours[&Grade::Ai] - 1.04).abs() < 0.01);
+    }
+
+    #[test]
+    fn ai_uses_task_type_multiplier() {
+        let items = vec![ScoredItem {
+            id: "FR-001".to_string(),
+            description: "Infra task".to_string(),
+            complexity: Complexity::Medium, // 8h base
+            task_type: TaskType::PureInfra, // AI ×0.50
+        }];
+        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![]);
+
+        // AI: 8 × 0.50 × 1.30 = 5.2
+        assert!((result.items[0].hours[&Grade::Ai] - 5.2).abs() < 0.01);
+        // Senior unchanged: 8 × 1.0
+        assert_eq!(result.items[0].hours[&Grade::Senior], 8.0);
     }
 
     #[test]
@@ -155,6 +188,7 @@ mod tests {
         assert_eq!(result.confidence_reasons.len(), 2);
     }
 
+    #[test]
     #[test]
     fn missing_grade_in_config_uses_default() {
         let mut config = default_config();

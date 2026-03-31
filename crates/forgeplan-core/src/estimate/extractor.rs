@@ -1,6 +1,8 @@
+use std::sync::OnceLock;
+
 use regex::Regex;
 
-use super::types::WorkItem;
+use super::types::{ItemSource, WorkItem};
 
 /// Extract work items from an artifact's markdown body.
 /// Supports: FR table rows from PRD, Phase checklist items from RFC.
@@ -19,9 +21,10 @@ pub fn extract_work_items(body: &str) -> Vec<WorkItem> {
 /// Extract FR rows from a markdown table in PRD.
 /// Expected format: | FR-001 | Core | Must | [Actor] can [capability] | Journey 1 |
 fn extract_fr_table(body: &str) -> Vec<WorkItem> {
-    let re = Regex::new(
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(
         r"(?m)^\|\s*(FR-\d+)\s*\|\s*(\w[\w\s]*?)\s*\|\s*(Must|Should|Could|Won't)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|"
-    ).expect("valid regex");
+    ).expect("valid regex"));
 
     re.captures_iter(body)
         .map(|cap| WorkItem {
@@ -29,6 +32,7 @@ fn extract_fr_table(body: &str) -> Vec<WorkItem> {
             description: cap[4].trim().to_string(),
             category: cap[2].trim().to_string(),
             priority: cap[3].trim().to_string(),
+            source: ItemSource::Fr,
         })
         .collect()
 }
@@ -37,9 +41,10 @@ fn extract_fr_table(body: &str) -> Vec<WorkItem> {
 /// Expected format: - [ ] **1.1** Description here
 ///                  - [x] **2.3** Already done
 fn extract_phase_items(body: &str) -> Vec<WorkItem> {
-    let re = Regex::new(
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(
         r"(?m)^- \[[ x]\] \*\*(\d+\.\d+)\*\*\s+(.+)$"
-    ).expect("valid regex");
+    ).expect("valid regex"));
 
     re.captures_iter(body)
         .map(|cap| WorkItem {
@@ -47,6 +52,7 @@ fn extract_phase_items(body: &str) -> Vec<WorkItem> {
             description: cap[2].trim().to_string(),
             category: "Implementation".to_string(),
             priority: "Must".to_string(),
+            source: ItemSource::Phase,
         })
         .collect()
 }
