@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::types::{ItemSource, WorkItem};
+use super::types::{EstimateHint, HintLevel, ItemSource, WorkItem};
 
 /// Extract work items from an artifact's markdown body.
 /// Supports: FR table rows from PRD, Phase checklist items from RFC.
@@ -16,6 +16,72 @@ pub fn extract_work_items(body: &str) -> Vec<WorkItem> {
     items.extend(extract_phase_items(body));
 
     items
+}
+
+/// Collect hints about artifact quality issues affecting estimates.
+pub fn collect_hints(body: &str, extracted_count: usize, kind: &str) -> Vec<EstimateHint> {
+    let mut hints = Vec::new();
+
+    // Detect template placeholder FRs that were filtered out
+    let total_fr_rows = count_fr_rows(body);
+    let template_count = total_fr_rows.saturating_sub(extracted_count);
+    if template_count > 0 {
+        hints.push(EstimateHint {
+            level: HintLevel::Warning,
+            message: format!(
+                "{} FR row(s) contain template placeholders (\"[Actor] can [capability]\") and were skipped",
+                template_count
+            ),
+            action: Some(format!(
+                "Fill in FR descriptions in the PRD with real requirements"
+            )),
+        });
+    }
+
+    // No items at all
+    if extracted_count == 0 {
+        let suggestion = match kind {
+            "prd" => "Add FR table: | FR-001 | Core | Must | User can ... | Journey 1 |",
+            "rfc" => "Add Phase checklist: - [ ] **1.1** Description",
+            _ => "Add FR table to PRD or Phase checklist to RFC",
+        };
+        hints.push(EstimateHint {
+            level: HintLevel::Warning,
+            message: "No estimable work items found".to_string(),
+            action: Some(suggestion.to_string()),
+        });
+    }
+
+    // Low item count
+    if extracted_count > 0 && extracted_count <= 2 {
+        hints.push(EstimateHint {
+            level: HintLevel::Info,
+            message: format!("Only {} item(s) — estimate may be incomplete", extracted_count),
+            action: Some("Consider breaking down into more granular FR/Phase items".to_string()),
+        });
+    }
+
+    // Confidence boost suggestions
+    let has_fr = body.contains("| FR-");
+    let has_phases = body.contains("- [ ] **") || body.contains("- [x] **");
+    if has_fr && !has_phases {
+        hints.push(EstimateHint {
+            level: HintLevel::Suggestion,
+            message: "Create an RFC with Implementation Phases for +25% confidence".to_string(),
+            action: Some("forgeplan new rfc \"<title>\"".to_string()),
+        });
+    }
+
+    hints
+}
+
+/// Count total FR table rows (including template placeholders).
+fn count_fr_rows(body: &str) -> usize {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(
+        r"(?m)^\|\s*FR-\d+\s*\|"
+    ).expect("valid regex"));
+    re.find_iter(body).count()
 }
 
 /// Extract FR rows from a markdown table in PRD.

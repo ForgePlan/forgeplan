@@ -26,9 +26,37 @@ pub async fn run(
     // Extract work items from artifact body
     let work_items = extractor::extract_work_items(&record.body);
 
-    if work_items.is_empty() && !json {
-        println!("  No FR or Phase items found in {}.", id);
-        println!("  Add FR table to PRD or Phase checklist to RFC.");
+    // Collect hints about artifact quality
+    let hints = extractor::collect_hints(&record.body, work_items.len(), &record.kind);
+
+    if work_items.is_empty() {
+        if json {
+            // In JSON mode, return empty result with hints
+            let result = forgeplan_core::estimate::types::EstimateResult {
+                artifact_id: record.id.clone(),
+                artifact_title: record.title.clone(),
+                items: vec![],
+                totals: std::collections::HashMap::new(),
+                total_score: 0.0,
+                confidence: 0.0,
+                confidence_reasons: vec![],
+                hints,
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            println!("  No estimable items found in {}.", id);
+            for hint in &hints {
+                let prefix = match hint.level {
+                    forgeplan_core::estimate::types::HintLevel::Warning => "!",
+                    forgeplan_core::estimate::types::HintLevel::Info => "i",
+                    forgeplan_core::estimate::types::HintLevel::Suggestion => "*",
+                };
+                println!("  {} {}", prefix, hint.message);
+                if let Some(ref action) = hint.action {
+                    println!("    -> {}", action);
+                }
+            }
+        }
         return Ok(());
     }
 
@@ -87,6 +115,7 @@ pub async fn run(
         &config,
         conf,
         conf_reasons,
+        hints,
     );
 
     // Determine highlight grade

@@ -207,6 +207,28 @@ pub struct EstimateResult {
     pub total_score: f64,
     pub confidence: f64,
     pub confidence_reasons: Vec<String>,
+    /// Actionable hints — warnings, suggestions, methodology nudges.
+    /// Shown in CLI output and included in JSON for AI agents.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<EstimateHint>,
+}
+
+/// A hint/warning/suggestion attached to an estimate.
+#[derive(Debug, Clone, Serialize)]
+pub struct EstimateHint {
+    pub level: HintLevel,
+    pub message: String,
+    /// Suggested next action (forgeplan command or description)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HintLevel {
+    Warning,
+    Info,
+    Suggestion,
 }
 
 /// Per-domain grade mapping for a user.
