@@ -32,11 +32,6 @@ pub async fn run(
         }
     }
 
-    // Update metadata (status, title)
-    if status.is_some() || title.is_some() {
-        store.update_artifact(id, status, title).await?;
-    }
-
     // Depth update not supported — fail explicitly instead of silently continuing
     if let Some(d) = depth {
         // Validate the value first for a better error message
@@ -44,6 +39,15 @@ pub async fn run(
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Use: tactical, standard, deep", d))?;
         anyhow::bail!("Depth update not yet supported. Use `forgeplan new` with the correct depth.");
+    }
+
+    // Sync file→LanceDB BEFORE any mutations — capture user edits from the OLD file
+    // (must happen before title change which removes the old projection file)
+    projection::sync_file_to_store(&store, &ws, &original).await?;
+
+    // Update metadata (status, title)
+    if status.is_some() || title.is_some() {
+        store.update_artifact(id, status, title).await?;
     }
 
     // Update body
@@ -64,13 +68,6 @@ pub async fn run(
     if title.is_some() {
         let _ = projection::remove_projection(&ws, id, &original.kind).await;
     }
-
-    // Sync file→LanceDB if user edited the file before this command
-    let pre_sync = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' disappeared after update", id))?;
-    projection::sync_file_to_store(&store, &ws, &pre_sync).await?;
 
     // Re-render projection with synced data
     let updated = store
