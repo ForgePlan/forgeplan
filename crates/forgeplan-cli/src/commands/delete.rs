@@ -10,13 +10,37 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
-    if !yes {
+    // Check for dependents (other artifacts linking TO this one)
+    let all_relations = store.get_all_relations().await?;
+    let dependents: Vec<_> = all_relations
+        .iter()
+        .filter(|(_, target, _)| target.eq_ignore_ascii_case(id))
+        .collect();
+
+    if !dependents.is_empty() {
         eprintln!(
-            "  About to delete {} \"{}\" (kind: {}, status: {})",
-            record.id, record.title, record.kind, record.status
+            "  WARNING: {} has {} dependent(s):",
+            id,
+            dependents.len()
         );
-        eprintln!("  This cannot be undone. Use --yes to confirm.");
-        return Ok(());
+        for (source, _, rel) in &dependents {
+            eprintln!("    {} --{}--> {}", source, rel, id);
+        }
+        if !yes {
+            anyhow::bail!(
+                "{} has {} dependent(s). Use --yes to confirm deletion despite dependents.",
+                id,
+                dependents.len()
+            );
+        }
+        eprintln!("  Proceeding with --yes despite dependents.");
+    }
+
+    if !yes {
+        anyhow::bail!(
+            "About to delete {} \"{}\". This cannot be undone. Use --yes to confirm.",
+            record.id, record.title
+        );
     }
 
     // Delete from LanceDB

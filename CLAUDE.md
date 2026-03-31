@@ -112,10 +112,11 @@ GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
    - `Skill("m01-ownership")` — borrow checker issues
    - `Skill("m06-error-handling")` — Result, Option, anyhow patterns
    - `Skill("m07-concurrency")` — async/Send/Sync issues
-2. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
-3. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
-4. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
-5. **Используй `/forge`** для structured workflow (route → create → validate → code)
+2. **Каждая новая `pub fn` = тест сразу** — НЕ переходи к следующей функции без теста. Hook `commit-test-check.sh` блокирует коммит без тестов.
+3. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
+4. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
+5. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
+6. **Используй `/forge`** для structured workflow (route → create → validate → code)
 
 ### ОБЯЗАТЕЛЬНО на session start:
 
@@ -357,10 +358,30 @@ git checkout -b feat/my-feature
 - **Description на английском** (для совместимости), body на русском (для контекста)
 - **Не коммить напрямую в main или dev** — всегда через feature branch + PR
 
-#### PR и merge:
+#### PR pipeline (ОБЯЗАТЕЛЬНО — PR создаётся ТОЛЬКО после всех шагов):
+
+```
+Code → Audit → Fix → Test → Lint → PR
+```
+
+1. **Code** — реализация фичи/фикса на feature branch
+2. **Audit** — минимум 2 агента (code review + test coverage), `/audit` со skills
+3. **Fix** — исправить все HIGH/CRITICAL findings из аудита
+4. **Test** — `cargo test` ВСЕ pass (кроме known preexisting failures)
+5. **Lint** — `cargo check` = 0 warnings, 0 errors
+6. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
+7. **PR** — только после шагов 1-6
+
+**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, всё работает".
+
+#### PR formatting:
+- **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
 - **PR title** = `[ARTIFACT-ID] description` — `[PRD-018] OpenSpec DAG integration`
-- **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
-- **feat/* → dev**: Squash merge (чистая история) — `gh pr create --base dev`
+- **PR body** = Summary (bullets) + Refs (артефакты) + Test plan + Audit results
+- **feat/* → dev**: Merge commit (НЕ squash!) — squash теряет поздние коммиты
+- **НИКОГДА не пушить в ветку после merge PR** — коммиты будут потеряны
+- **Перед merge**: убедиться что ВСЕ коммиты pushed: `git log origin/dev..HEAD`
+- **После merge**: сразу `git checkout dev && git pull` и проверить что изменения на месте
 - **release/* → main**: Merge commit (сохраняет историю RC) — `gh pr create --base main`
 - **НЕ удалять ветки после merge** — feature и release branches сохраняются как история
 - **После merge в main**: tag + sync dev from main (`git checkout dev && git merge main`)

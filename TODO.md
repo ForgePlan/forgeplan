@@ -1,13 +1,42 @@
 # TODO — Forgeplan
 
-## Current: v0.10.1 Released
+## Current: v0.12-dev (post-v0.11.0)
 
 ### Stats
-- ~35 CLI commands, 28 MCP tools, 318 tests
-- 56 dogfood artifacts (43 active, 8 draft, 5 deprecated)
-- 20,121 LOC Rust
-- v0.10.1 tagged, PRs #35-#41 merged
-- Health: clean (0 blind spots, 0 orphans, 0 at risk)
+- 45 CLI commands, 35 MCP tools, ~540 tests
+- 107 dogfood artifacts (63 active, 37 draft, 8 deprecated)
+- ~25K LOC Rust, 41MB release binary
+- PRs #60-#74 merged
+- Smart search by default (keyword + semantic + graph boosters)
+- MCP methodology hints (_next_action in tool responses)
+- 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
+- Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
+- MemoryDriver: remember/recall commands (RFC-003 Phase 2)
+
+### P0: Estimate Engine (PRD-022) ✅
+- [x] PRD-022 shaped + validated (8 FR, 3 journeys)
+- [x] RFC-005 architecture (3 phases, 12 tasks)
+- [x] ADR-004 hybrid approach (rule-based L0 + LLM L1)
+- [x] Phase 1: types, extractor, scorer, calculator, display (35 tests)
+- [x] Phase 2: confidence, CLI estimate command (39 tests)
+- [x] 2-agent audit: 2 CRITICAL + 4 HIGH fixed (50 tests)
+- [x] Config integration: grade_profile, multipliers, --my-grade
+- [x] FORGEPLAN-GUIDE: Estimate Engine section
+- [x] Evidence EVID-036 linked, PRD-022 + RFC-005 + ADR-004 activated
+
+### P0: MemoryDriver (RFC-003 Phase 2) ✅
+- [x] remember/recall CLI commands
+- [x] ArtifactKind::Memory with mem- prefix
+- [x] DRY helpers in common.rs + 3 tests
+
+### P0: Integrity Issues (PROB-012 dogfood audit) ✅
+- [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
+- [x] **R_eff divergence** — update_r_eff_score() persists to LanceDB, NaN guard
+- [x] **health vs journal inconsistency** — expanded blind spots + decision kinds aligned
+- [x] **coverage 0%** — Affected Files section added to templates + backfilled 18 active PRD/RFC/ADR
+- [x] **route underestimates** — 4 keyword triggers + 2 heuristics added
+
+Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 403 tests.
 
 ---
 
@@ -20,14 +49,20 @@
 | PROB-003 | Done | Dead statuses → solved by PRD-007 lifecycle | ✅ |
 | PROB-004 | Done | Agent drift → solved by PRD-010 hooks | ✅ |
 | PROB-005 | Done | Cold start → solved by PRD-012 init --scan | ✅ |
+| PROB-006 | Done | Routing misses UX scope → solved by PROB-012 keyword expansion | ✅ |
+| PROB-009 | Deprecated | F-G-R Granularity → future PRD scope | ⚠️ |
+| PROB-010 | Tracked | Markdown projections not updated → design decision (ADR-002) | 📋 |
+| PROB-012 | Done | Feature integrity gap → 5 fixes, 2 audit rounds | ✅ |
+| PROB-013 | Done | R_eff includes deprecated/draft in chain → skip non-active | ✅ |
 
 ---
 
 ## Backlog (приоритизированный)
 
-### P0: Broken
-- [ ] **Embed feature fix** — fastembed API change broke `--all-features` (3 compiler errors)
+### P1: Embed & Distribution
+- [ ] **Embed feature fix** — fastembed API v5 broke `--all-features` (upstream dep, feature flag propagation fixed in PROB-012)
   - Блокирует: semantic/vector search (PRD-018)
+  - Downgraded from P0→P1: feature flag chain fixed, actual fix depends on fastembed upstream
 
 ### P1: Distribution & Adoption
 - [ ] brew tap formula (macOS)
@@ -36,9 +71,75 @@
 - [ ] `fpl` alias symlink in install
 - [ ] Publish to crates.io (`cargo install forgeplan`)
 
+### P2: Integrity Follow-up (from FPF audit) ✅
+- [x] **Read-back verify** in update_r_eff_score — pre-check with get_record before update
+- [x] **DRY decision_kinds** — DECISION_KINDS_EVIDENCE + DECISION_KINDS_JOURNAL in types.rs
+- [x] **Coverage batch-update** — `forgeplan coverage --backfill` (18 artifacts updated)
+- [x] **PROB-013** — R_eff skip deprecated/draft in recursive chain (ADR-002)
+- [x] **Tree visual** — evidence/note show `··` instead of `0.00`
+- [x] **METHODOLOGY-COURSE.md** — Chapter 8 added (tree, coverage, hooks, R_eff rules)
+- [ ] **PRD-019 Layer 3** — MCP session state machine (next sprint)
+
+### P2: Route & Enforcement (from usability testing)
+- [x] **Route gap**: added "new command/feature" keywords (English)
+- [x] **Batch score CLI**: `forgeplan score --all` implemented
+- [x] **LLM-first route**: 3-level routing (L0 keywords, L1 LLM classify, L2 FPF ADI reasoning) — PRD-020, 444 tests
+- [ ] **PRD-019 Layer 3**: MCP session state machine — агент не может пропустить Shape phase
+- [x] **Duplicate notes cleanup**: NOTE-004 deprecated (duplicate of NOTE-005)
+
+### P1: Smart Search (PROB-014, v0.12)
+- [x] **F1 (P0)**: Embed title + body snippet — embedding_text() + forgeplan embed command
+- [x] **F2 (P0)**: Graph walk shows relation types — neighbors_with_relations()
+- [x] **F3 (P1)**: `forgeplan embed` — batch embed all artifacts (persistent in LanceDB)
+- [x] **F4 (P1)**: Smart search — text-first + boosters (Algolia-style, not weighted sum). EVID-033.
+- [x] **F5 (P1)**: `forgeplan gaps` — 18 MUST gaps found on real data! Audit: 4 fixes.
+- [ ] **F6 (P2)**: Fix evidence blind spots (EVID-015, EVID-025, EVID-026, EVID-027)
+- [x] `forgeplan search --semantic` — vector-only search
+- [x] `forgeplan search` — smart by default (keyword + semantic + R_eff + status + graph boosters)
+- [x] `forgeplan search --keyword` — forced keyword grep
+- [x] Configurable embedding model via config.yaml (BGE-M3 default)
+- [x] Configurable chunk_size via config.yaml (default 2000)
+- [ ] **Future**: Reciprocal Rank Fusion (RRF) for production-grade hybrid search
+
+### P0: CLI Quality Remediation (PROB-016, 3-agent deep audit) ✅
+**Wave 1 — BROKEN** (6-agent team sprint, PR #65):
+- [x] **B1**: `deprecate --reason` stores reason in body (## Deprecation section)
+- [x] **B2**: `update --status active` blocked — must use `forgeplan activate`
+- [x] **B3**: 4 LLM commands — pre-flight API key check via `require_llm_config()`
+- [x] **B4**: `review` checks evidence+stub gates (same as activate)
+
+**Wave 2 — SAFETY**:
+- [x] **N1**: `delete` checks dependents, warns + requires --yes
+- [x] **N7**: `supports` added to VALID_RELATIONS
+- [x] **N8**: `init --force` warns about data loss
+- [x] **N9**: `unlink` updates projection
+
+**Wave 3 — CORRECTNESS**:
+- [x] **N2**: `new` depth=tactical for note/evidence/problem/solution/refresh
+- [x] **N3**: `supersede` warns if replacement already superseded/deprecated
+- [x] **N4**: `score --all --json` clean JSON output
+- [x] **N5**: `update --depth` bails with error
+- [x] **N6**: `order/blocked` structural relations only (informs doesn't block)
+
+EVID-034. 532 tests. **Deferred**: fgr/blindspots redundancy, graph filtering, drift adoption, export embeddings
+
+### P1: Driver Abstraction — RFC-003
+- [x] **Phase 1**: StorageDriver trait + LanceDriver + InMemoryStore + factory — PR #61 merged
+- [x] **Phase 1 audit**: 3 agents, 13 findings, 7 fixed (C1-C3, H1, H3, M1, M2)
+- [ ] **Phase 1 deferred** (PROB-015): H2 EmbedDriver, H4 ISP split, M3-M5, test gaps
+- [x] **Phase 2**: MemoryDriver (remember/recall) — PR #72 merged
+- [ ] **Phase 3**: SQLite driver + feature flags
+- [ ] **Phase 4**: Config-driven selection + forgeplan init shows drivers
+
+### P2: Architecture — Files as Source of Truth (ADR-003, v0.13)
+- [ ] Invert direction: .md files = truth, LanceDB = index
+- [ ] File watcher (notify crate) for auto-reindex
+- [ ] `forgeplan reindex` — one-time full re-sync from .md files
+- [ ] R_eff computed on-the-fly from evidence files (not stored)
+- [ ] Links in frontmatter `related:` field (not separate DB table)
+
 ### P2: Polish
-- [ ] Binary size optimization (LanceDB feature flags / strip)
-- [ ] Markdown projection sync on `forgeplan update` (not just `new`)
+- [x] Binary size optimization — release profile 163MB→41MB (-75%)
 - [ ] fpf.rs миграция на common::store() (6 functions)
 - [ ] coverage.rs, scan_import.rs миграция на common::open_store()
 

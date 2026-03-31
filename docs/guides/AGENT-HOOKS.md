@@ -114,6 +114,69 @@ Add to `.claude/settings.json`:
 }
 ```
 
+## Safety Hook (Forge Mode)
+
+Блокирует опасные команды даже в yolo/acceptEdits режиме:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/forge-safety-hook.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`forge-safety-hook.sh` проверяет blacklist:
+- `git push --force` / `git push -f`
+- `git reset --hard`
+- `rm -rf /` / `rm -rf ~`
+- `cargo publish`
+- `DROP TABLE`
+
+При обнаружении — exit 2, команда блокируется. Агент получает сообщение: "BLOCKED by forge-safety-hook".
+
+### Три зоны доверия (FPF B.3)
+
+| Зона | Управляется | Механизм |
+|------|-------------|----------|
+| **Green** (безопасно) | `settings.local.json` allow | Wildcard whitelist: `Bash(cargo:*)` |
+| **Yellow** (обратимо) | Claude Code acceptEdits | Файловые операции авто-разрешены |
+| **Red** (необратимо) | `forge-safety-hook.sh` | PreToolUse blacklist блокирует |
+
+## Methodology Hook (Skill Activation)
+
+Напоминает о доступных методологических командах:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-activation-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Выводит: доступные skills (/forge, /fpf-simple), правила методологии (Shape → Validate → Code → Evidence → Activate), напоминание про Rust skills.
+
 ## Best Practices
 
 1. **Start with health** — the SessionStart hook gives the agent situational awareness

@@ -242,6 +242,11 @@ Then  [результат]
 
 ---
 
+## Affected Files
+
+- crates/forgeplan-core/src/**
+- crates/forgeplan-cli/src/**
+
 ## Related Artifacts
 
 | Artifact | Relation | Status |

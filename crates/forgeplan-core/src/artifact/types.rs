@@ -2,7 +2,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 /// All artifact kinds supported by Forgeplan.
-/// 5 from Quint-code + 5 new for Forgeplan = 10 types.
+/// 5 from Quint-code + 6 new for Forgeplan = 11 types.
 /// DecisionRecord merged into ADR (ADR at deep+ depth includes DDR fields).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +19,9 @@ pub enum ArtifactKind {
     Spec,
     Rfc,
     Adr,
+    /// Lightweight project memory — shared bookmarks, no lifecycle overhead.
+    /// Stored in .forgeplan/memory/, indexed in LanceDB as kind=memory.
+    Memory,
 }
 
 impl std::str::FromStr for ArtifactKind {
@@ -35,10 +38,19 @@ impl std::str::FromStr for ArtifactKind {
             "solution" | "solutionportfolio" => Ok(Self::SolutionPortfolio),
             "evidence" | "evidencepack" => Ok(Self::EvidencePack),
             "refresh" | "refreshreport" => Ok(Self::RefreshReport),
+            "memory" => Ok(Self::Memory),
             other => Err(crate::error::ForgeplanError::InvalidKind(other.to_string())),
         }
     }
 }
+
+/// Kinds that represent decisions requiring evidence for health blind-spot checks.
+/// Excludes: note (ephemeral), evidence (IS evidence), refresh (meta-evaluation).
+pub const DECISION_KINDS_EVIDENCE: &[&str] = &["prd", "rfc", "adr", "epic", "spec", "problem", "solution"];
+
+/// Kinds shown in the decision journal timeline.
+/// Includes note (captured decisions) in addition to evidence-requiring kinds.
+pub const DECISION_KINDS_JOURNAL: &[&str] = &["adr", "note", "prd", "rfc", "epic", "spec", "problem", "solution"];
 
 impl ArtifactKind {
     /// Returns the ID prefix for this kind (e.g., "prd-", "epic-").
@@ -54,6 +66,7 @@ impl ArtifactKind {
             Self::Spec => "spec-",
             Self::Rfc => "rfc-",
             Self::Adr => "adr-",
+            Self::Memory => "mem-",
         }
     }
 
@@ -70,6 +83,7 @@ impl ArtifactKind {
             Self::EvidencePack => "evidence",
             Self::Note => "notes",
             Self::RefreshReport => "refresh",
+            Self::Memory => "memory",
         }
     }
 
@@ -86,7 +100,13 @@ impl ArtifactKind {
             Self::EvidencePack => "evidence",
             Self::Note => "note",
             Self::RefreshReport => "refresh",
+            Self::Memory => "memory",
         }
+    }
+
+    /// Whether this kind is a memory (excluded from health/gaps/score/validation).
+    pub fn is_memory(&self) -> bool {
+        matches!(self, Self::Memory)
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::artifact::types::DECISION_KINDS_JOURNAL;
 use crate::db::store::{ArtifactFilter, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
@@ -22,7 +23,7 @@ pub async fn build_journal(
     risk_only: bool,
 ) -> anyhow::Result<Vec<JournalEntry>> {
     // Decision-type artifacts: adr, note, problem, solution
-    let decision_kinds = ["adr", "note", "problem", "solution"];
+    let decision_kinds = DECISION_KINDS_JOURNAL;
 
     let records = if let Some(kind) = kind_filter {
         let filter = ArtifactFilter {

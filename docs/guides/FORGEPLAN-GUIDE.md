@@ -159,6 +159,9 @@ forgeplan review PRD-001
 | `forgeplan validate [id]` | Проверить полноту | `forgeplan validate PRD-001` |
 | `forgeplan score [id]` | R_eff quality score | `forgeplan score PRD-001` |
 | `forgeplan fgr [id]` | F-G-R scores (Formality, Granularity, Reliability) | `forgeplan fgr` |
+| `forgeplan estimate <id>` | Effort estimate по грейдам (Jun/Mid/Sen/PS/AI) | `forgeplan estimate PRD-022` |
+| `forgeplan estimate <id> --grade mid` | Подсветить конкретный грейд | `forgeplan estimate PRD-022 --grade junior` |
+| `forgeplan estimate <id> --my-grade` | Грейд из config grade_profile | `forgeplan estimate PRD-022 --my-grade` |
 
 ### Lifecycle
 
@@ -209,6 +212,133 @@ forgeplan serve  # запустить MCP server (stdio transport)
 ```
 
 26 MCP tools — все команды выше доступны через MCP protocol.
+
+---
+
+## Estimate Engine — оценка трудозатрат
+
+### Зачем
+
+Превращает документацию (FR в PRD, Phases в RFC) в эстимейты трудозатрат. Не нужна отдельная Excel-таблица — estimate живёт рядом с артефактами.
+
+### Базовая команда
+
+```bash
+forgeplan estimate PRD-022
+```
+
+Выводит таблицу:
+
+```
+Estimate for PRD-022: AI Estimation Engine
+Confidence: 40%
+
+  ID      Description                  Cmpl   Jun    Mid  Senior    PS     AI
+  ---------------------------------------------------------------------------
+  FR-001  User can run estimate          3    16h    12h    8.0h  5.6h   1.0h
+  FR-002  System extracts work items     3    16h    12h    8.0h  5.6h   1.0h
+  FR-003  Fibonacci complexity           2    10h   7.5h    5.0h  3.5h   0.7h
+  ---------------------------------------------------------------------------
+  TOTAL                                  8    42h    32h     21h   15h   2.7h
+                                              5.3d   3.9d   2.6d  1.8d  0.3d
+```
+
+### Флаги
+
+```bash
+forgeplan estimate PRD-022 --grade middle   # подсветить конкретный грейд
+forgeplan estimate PRD-022 --my-grade       # грейд из config.yaml (домен-aware)
+forgeplan estimate PRD-022 --json           # машинный вывод
+```
+
+### Модель расчёта
+
+**Base = Senior** (baseline ×1.0). Все грейды — множители от Senior:
+
+| Грейд | Множитель | Пример (Medium=8h Senior) |
+|-------|-----------|---------------------------|
+| Junior | ×2.0 | 16h |
+| Middle | ×1.5 | 12h |
+| **Senior** | **×1.0** | **8h** (baseline) |
+| Principal | ×0.7 | 5.6h |
+| AI | task-type | 1.0h (PureCoding) |
+
+**AI считается по-другому** — учитывает тип задачи:
+
+| Тип задачи | AI множитель | Пример (8h base) | С review (+30%) |
+|------------|-------------|-------------------|-----------------|
+| PureCoding | ×0.10 | 0.8h | **1.04h** |
+| CodingInfra | ×0.25 | 2.0h | 2.6h |
+| DesignCoding | ×0.30 | 2.4h | 3.1h |
+| PureInfra | ×0.50 | 4.0h | 5.2h |
+| Coordination | ×1.00 | 8.0h | 10.4h |
+
+**Fibonacci complexity** (1, 2, 3, 5, 8, 13) → base Senior hours (3h, 5h, 8h, 13h, 21h, 34h).
+
+**Confidence** зависит от полноты артефакта:
+- Есть FR в PRD: +30%
+- Есть Implementation Phases в RFC: +25%
+- Есть Spec: +15%
+- Есть evidence из прошлых задач: +20%
+
+### Настройка в config.yaml
+
+Раскомментируй и настрой под себя:
+
+```yaml
+# .forgeplan/config.yaml
+estimate:
+  grade_profile:
+    backend: middle        # твой грейд в бэкенде
+    frontend: junior       # твой грейд во фронте
+    devops: senior         # твой грейд в devops
+    ai_ml: principal       # твой грейд в AI/ML
+    default: senior        # fallback для незнакомых доменов
+  grade_multipliers:       # override defaults если нужно
+    junior: 2.0
+    middle: 1.5
+    senior: 1.0
+    principal: 0.7
+    ai: 0.4
+  ai_task_multipliers:     # скорость AI по типам задач
+    pure_coding: 0.10      # AI делает кодинг в ~10x быстрее
+    coding_infra: 0.25     # код + инфраструктура
+    design_coding: 0.30    # дизайн + реализация
+    pure_infra: 0.50       # чистая инфра (K8s, CI/CD)
+    coordination: 1.00     # meetings — AI не помогает
+  review_overhead: 0.30    # +30% к AI time на human review
+  safety_margin: 0.50      # предупреждать если спринт > 50%
+```
+
+После настройки `--my-grade` автоматически подставит правильный грейд:
+
+```bash
+forgeplan estimate PRD-022 --my-grade
+# → "Using grade: Middle (domain: backend, from config grade_profile)"
+```
+
+### Multi-grade профиль: зачем
+
+Ты можешь быть **Senior в DevOps** и **Junior во Frontend** одновременно. Одна задача на K8s занимает 5h (Senior), а такая же по сложности задача на React — 10h (Junior). Forgeplan учитывает это через `grade_profile`.
+
+### Рабочий цикл с estimate
+
+```bash
+# 1. Создал PRD с FR
+forgeplan new prd "Auth System"
+# → заполнил FR-001..FR-005
+
+# 2. Оценил трудозатрат
+forgeplan estimate PRD-022
+# → Senior: 52h (6.5 дней), AI: 6.9h (0.9 дня)
+
+# 3. Создал RFC, дополнил estimate
+forgeplan estimate RFC-005
+# → 12 phase steps, confidence +25%
+
+# 4. Планируешь спринт с safety margin 40-50%
+# Senior capacity = 80h/sprint → берём задач на 40h max
+```
 
 ---
 
@@ -399,6 +529,59 @@ npx skills add ForgePlan/forgeplan --skill forge
 ```
 
 28 MCP tools всего. 6 core покрывают 90% workflow.
+
+---
+
+## Forge Mode — permission model для AI агентов
+
+При работе с AI агентами (Claude Code, Cursor) в автономном режиме используйте **Forge Mode** — модель разрешений с 3 зонами доверия (FPF B.3 Trust Calculus):
+
+| Зона | Что | Режим | Примеры |
+|------|-----|-------|---------|
+| **Green** | Read-only + build + test + forgeplan | Авто-разрешено | `cargo test`, `forgeplan health`, `git status` |
+| **Yellow** | Создание/редакция файлов, git add/commit | Авто-разрешено (acceptEdits) | Write, Edit, `git add`, `git commit` |
+| **Red** | Необратимые действия | **BLOCKED** | `git push --force`, `rm -rf /`, `cargo publish` |
+
+### Настройка (Claude Code)
+
+1. **Whitelist** в `settings.local.json` — wildcard patterns:
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)", "Bash(forgeplan:*)", "Bash(git:*)",
+      "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)",
+      "mcp__hindsight__memory_recall", "mcp__hindsight__memory_retain"
+    ]
+  }
+}
+```
+
+2. **Safety hook** в `.claude/hooks/forge-safety-hook.sh` — PreToolUse blacklist:
+```bash
+# Blocked даже в yolo mode:
+# git push --force, git reset --hard, rm -rf /, cargo publish
+```
+
+3. **Режим Claude Code**: `acceptEdits` (файлы авто, bash через whitelist)
+
+### /forge-cycle — полный FPF-aligned dev cycle
+
+Команда `/forge-cycle PRD-XXX` запускает 8-фазный цикл:
+
+```
+Phase 0: OBSERVE    → forgeplan health + stale + fpf (что происходит?)
+Phase 1: ROUTE      → forgeplan route (какой depth?)
+Phase 2: SPRINT     → /sprint (план волн)
+Phase 3: BUILD      → /team-up (реализация с Rust skills)
+Phase 4: AUDIT      → /audit (adversarial review, MUST find issues)
+Phase 5: FIXES      → /team-up (исправления по аудиту)
+Phase 6: EVIDENCE   → forgeplan new evidence + score + activate
+Phase 7: COMMIT     → git commit + PR + hindsight
+Phase 8: NEXT       → forgeplan health → следующая фича
+```
+
+**FPF auto-resolve**: при конфликтах/выборах агент автоматически применяет ADI cycle (Abduction → Deduction → Induction) + WLNK + Reversibility check. Спрашивает пользователя только при необратимых решениях.
 
 ---
 

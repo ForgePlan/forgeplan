@@ -22,3 +22,4 @@ node_modules/
 
 # Local todo files
 todo/
+crates/forgeplan-core/.fastembed_cache/

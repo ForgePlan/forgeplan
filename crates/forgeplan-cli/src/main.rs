@@ -59,8 +59,25 @@ enum Commands {
     },
     /// Compute R_eff quality score for decisions with evidence
     Score {
-        /// Artifact ID
+        /// Artifact ID (omit with --all to score everything)
         id: Option<String>,
+        /// Score all active decision artifacts and update cached R_eff
+        #[arg(long)]
+        all: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Estimate effort for an artifact based on FR and Phase items
+    Estimate {
+        /// Artifact ID to estimate
+        id: String,
+        /// Override grade for all items (junior|middle|senior|principal|ai)
+        #[arg(long)]
+        grade: Option<String>,
+        /// Use grade profile from config (domain-aware)
+        #[arg(long)]
+        my_grade: bool,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -75,22 +92,38 @@ enum Commands {
         #[arg(long, default_value = "informs")]
         relation: String,
     },
+    /// Remove a relation between two artifacts
+    Unlink {
+        /// Source artifact ID
+        source: String,
+        /// Target artifact ID
+        target: String,
+        /// Relationship type to remove
+        #[arg(long, default_value = "informs")]
+        relation: String,
+    },
     /// Generate mermaid dependency graph of linked artifacts
     Graph {
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
     },
-    /// Search artifacts by keyword (or --semantic for vector similarity search)
+    /// Search artifacts (smart by default: keyword + semantic + boosters)
     Search {
         /// Search query
         query: String,
         /// Filter by kind
         #[arg(long, short = 't')]
         r#type: Option<String>,
-        /// Use semantic (vector) search instead of substring match
-        #[arg(long)]
+        /// Force keyword-only search (substring grep)
+        #[arg(long, conflicts_with = "semantic")]
+        keyword: bool,
+        /// Force semantic-only search (vector similarity)
+        #[arg(long, conflicts_with = "keyword")]
         semantic: bool,
+        /// Max results to return (default: 20)
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -183,13 +216,16 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// Suggest depth level and artifact pipeline for a task description (rule-based, no LLM)
+    /// Suggest depth level and artifact pipeline for a task description
     Route {
         /// Task description in natural language
         description: String,
-        /// Optional: use LLM to explain the routing decision
+        /// Optional: use LLM to explain the routing decision (deprecated, use --level 1)
         #[arg(long)]
         explain: bool,
+        /// Routing level: 0 = keywords (default), 1 = LLM-classified
+        #[arg(long)]
+        level: Option<u8>,
     },
     /// Review an artifact — run validation and show lifecycle checklist
     Review {
@@ -225,6 +261,8 @@ enum Commands {
     /// FPF Knowledge Base — dashboard, ingest, search, sections
     #[command(subcommand)]
     Fpf(FpfCommands),
+    /// Show pipeline compliance gaps by depth
+    Gaps,
     /// Show F-G-R quality scores (Formality, Granularity, Reliability)
     Fgr {
         /// Artifact ID (scores all if omitted)
@@ -240,7 +278,11 @@ enum Commands {
         path: Option<String>,
     },
     /// Show decision coverage per code module
-    Coverage,
+    Coverage {
+        /// Backfill "Affected Files" section into artifacts missing it
+        #[arg(long)]
+        backfill: bool,
+    },
     /// Check for drifted decisions (affected files changed after decision)
     Drift {
         /// Output as JSON for machine consumption
@@ -307,6 +349,17 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Show artifact hierarchy as ASCII tree
+    Tree {
+        /// Root artifact ID (shows all roots if omitted)
+        id: Option<String>,
+        /// Maximum depth (default: unlimited)
+        #[arg(long, default_value = "99")]
+        depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show artifacts in topological order (dependency order)
     Order {
         /// Output as JSON for machine consumption
@@ -315,6 +368,54 @@ enum Commands {
     },
     /// Run schema migrations on existing workspace
     Migrate,
+    /// Rebuild LanceDB index from .md files (files-first sync)
+    Reindex,
+    /// Generate embeddings for all artifacts (semantic search)
+    Embed,
+    /// Show change log — audit trail of artifact mutations
+    Log {
+        /// Filter by artifact ID
+        id: Option<String>,
+        /// Maximum number of entries (default: 20)
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
+        /// Filter by source (cli, file_edit, git_sync, reindex)
+        #[arg(long)]
+        source: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a memory (fact, convention, procedure) for later recall
+    Remember {
+        /// Text to remember (omit for --list or --forget)
+        text: Option<String>,
+        /// Memory category: fact, convention, procedure, insight
+        #[arg(long, short)]
+        category: Option<String>,
+        /// List all memories
+        #[arg(long)]
+        list: bool,
+        /// Forget (delete) a memory by ID
+        #[arg(long)]
+        forget: Option<String>,
+    },
+    /// Recall memories — search, filter, list
+    Recall {
+        /// Search query (substring match in title/body)
+        query: Option<String>,
+        /// Filter by category
+        #[arg(long, short)]
+        category: Option<String>,
+        /// Max results (default: 10)
+        #[arg(long, short = 'n', default_value = "10")]
+        limit: usize,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Watch .forgeplan/ files and sync changes to LanceDB in real time
+    Watch,
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -365,20 +466,43 @@ async fn main() -> anyhow::Result<()> {
         Commands::Validate { id, json, adversarial } => {
             commands::validate::run(id.as_deref(), json, adversarial).await
         }
-        Commands::Score { id, json } => commands::score::run(id.as_deref(), json).await,
+        Commands::Score { id, all, json } => {
+            if all {
+                commands::score::run_all(json).await
+            } else {
+                commands::score::run(id.as_deref(), json).await
+            }
+        }
+        Commands::Estimate { id, grade, my_grade, json } => {
+            commands::estimate::run(&id, grade.as_deref(), my_grade, json).await
+        }
         Commands::Link {
             source,
             target,
             relation,
         } => commands::link::run(&source, &target, &relation).await,
+        Commands::Unlink {
+            source,
+            target,
+            relation,
+        } => commands::link::run_unlink(&source, &target, &relation).await,
         Commands::Graph { json } => commands::graph::run(json).await,
         Commands::Search {
             query,
             r#type,
+            keyword,
             semantic,
+            limit,
             json,
         } => {
-            commands::search::run(&query, r#type.as_deref(), semantic, json).await
+            let mode = if keyword {
+                commands::search::SearchMode::Keyword
+            } else if semantic {
+                commands::search::SearchMode::Semantic
+            } else {
+                commands::search::SearchMode::Smart
+            };
+            commands::search::run(&query, r#type.as_deref(), mode, limit, json).await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
@@ -414,7 +538,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
         Commands::Scan { path } => commands::coverage::run_scan(path.as_deref()).await,
-        Commands::Coverage => commands::coverage::run_coverage().await,
+        Commands::Coverage { backfill } => {
+            if backfill {
+                commands::coverage::run_backfill().await
+            } else {
+                commands::coverage::run_coverage().await
+            }
+        }
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
@@ -425,7 +555,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Route {
             description,
             explain,
-        } => commands::route::run(&description, explain).await,
+            level,
+        } => commands::route::run(&description, explain, level).await,
         Commands::Review { id } => commands::review::run(&id).await,
         Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
@@ -439,6 +570,7 @@ async fn main() -> anyhow::Result<()> {
             FpfCommands::List => commands::fpf::run_list().await,
             FpfCommands::Status => commands::fpf::run_status().await,
         },
+        Commands::Gaps => commands::gaps::run().await,
         Commands::Fgr { id, json } => commands::fgr::run(id.as_deref(), json).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
@@ -446,8 +578,28 @@ async fn main() -> anyhow::Result<()> {
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
         Commands::ScanImport { path, dry_run } => commands::scan_import::run(path.as_deref(), dry_run).await,
+        Commands::Tree { id, depth, json } => {
+            commands::tree::run(id.as_deref(), depth, json).await
+        }
         Commands::Order { json } => commands::order::run(json).await,
         Commands::Migrate => commands::migrate::run().await,
+        Commands::Reindex => commands::reindex::run().await,
+        Commands::Embed => commands::embed::run().await,
+        Commands::Log { id, limit, source, json } => {
+            commands::log_cmd::run(id.as_deref(), source.as_deref(), limit, json).await
+        }
+        Commands::Remember { text, category, list, forget } => {
+            commands::remember::run(
+                text.as_deref(),
+                category.as_deref(),
+                list,
+                forget.as_deref(),
+            ).await
+        }
+        Commands::Recall { query, category, limit, json } => {
+            commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await
+        }
+        Commands::Watch => commands::watch::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

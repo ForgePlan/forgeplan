@@ -26,8 +26,11 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
     // Add relation in LanceDB
     store.add_relation(source_id, target_id, &relation).await?;
 
-    // Update projection with new link
+    // Sync file→LanceDB if user edited the file, then update projection
     if let Some(record) = store.get_record(source_id).await? {
+        forgeplan_core::projection::sync_file_to_store(&store, &ws, &record).await?;
+        // Re-read record after potential sync
+        let record = store.get_record(source_id).await?.unwrap();
         let all_relations = store.get_relations(source_id).await?;
         let links: Vec<(String, String)> = all_relations;
         forgeplan_core::projection::render_projection(
@@ -38,5 +41,28 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
     }
 
     println!("Linked: {} --{}--> {}", source_id, relation, target_id);
+    Ok(())
+}
+
+pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> anyhow::Result<()> {
+    let relation = link::normalize_relation(relation)?;
+    let (ws, store) = common::open_store().await?;
+
+    store.delete_relation(source_id, target_id, &relation).await?;
+
+    // Sync file→LanceDB if user edited the file, then update projection
+    if let Some(record) = store.get_record(source_id).await? {
+        forgeplan_core::projection::sync_file_to_store(&store, &ws, &record).await?;
+        let record = store.get_record(source_id).await?.unwrap();
+        let all_relations = store.get_relations(source_id).await?;
+        let links: Vec<(String, String)> = all_relations;
+        forgeplan_core::projection::render_projection(
+            &ws, &record.id, &record.kind, &record.title, &record.status,
+            &record.depth, record.author.as_deref(), record.parent_epic.as_deref(),
+            record.valid_until.as_deref(), &record.body, &links,
+        ).await?;
+    }
+
+    println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
     Ok(())
 }

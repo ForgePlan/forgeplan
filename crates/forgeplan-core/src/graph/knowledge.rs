@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 
 use crate::db::store::LanceStore;
@@ -36,21 +37,22 @@ pub struct KnowledgeGraph {
 impl KnowledgeGraph {
     /// Build a knowledge graph by loading all artifacts and relations from the store.
     pub async fn from_store(store: &LanceStore) -> anyhow::Result<Self> {
-        let records = store.list_records(None).await?;
+        // Use list_artifacts (summary, no body) to avoid loading full bodies into memory
+        let artifacts = store.list_artifacts(None).await?;
         let relations = store.get_all_relations().await?;
 
         let mut graph = DiGraph::new();
         let mut index = HashMap::new();
 
         // Add all artifacts as nodes.
-        for record in &records {
+        for artifact in &artifacts {
             let node = ArtifactNode {
-                id: record.id.clone(),
-                kind: record.kind.clone(),
-                status: record.status.clone(),
+                id: artifact.id.clone(),
+                kind: artifact.kind.clone(),
+                status: artifact.status.clone(),
             };
             let idx = graph.add_node(node);
-            index.insert(record.id.clone(), idx);
+            index.insert(artifact.id.clone(), idx);
         }
 
         // Add all relations as directed edges (source -> target).
@@ -98,6 +100,31 @@ impl KnowledgeGraph {
         }
 
         Self { graph, index }
+    }
+
+    /// Get neighbors with their relation types.
+    /// Returns (neighbor_node, relation_type, direction).
+    pub fn neighbors_with_relations(&self, id: &str) -> Vec<(&ArtifactNode, &str, Direction)> {
+        let Some(&idx) = self.index.get(id) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            let edges = self.graph.edges_directed(idx, direction);
+            for edge in edges {
+                let neighbor_idx = match direction {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
+                };
+                let neighbor_node = &self.graph[neighbor_idx];
+                let relation = edge.weight().relation.as_str();
+                result.push((neighbor_node, relation, direction));
+            }
+        }
+
+        result
     }
 
     /// Get all neighbors of an artifact (both outgoing and incoming directions).
@@ -154,6 +181,29 @@ impl KnowledgeGraph {
     /// Total number of relation edges in the graph.
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
+    }
+
+    /// Normalized degree centrality for an artifact: (unique_neighbors) / (N - 1).
+    ///
+    /// Deduplicates parallel edges (multiple relation types between same pair).
+    /// Returns 0.0 for unknown IDs or graphs with fewer than 2 nodes.
+    /// Result is in [0.0, 1.0] — suitable as a search booster.
+    pub fn degree_centrality(&self, id: &str) -> f64 {
+        let n = self.graph.node_count();
+        if n < 2 {
+            return 0.0;
+        }
+        let Some(&idx) = self.index.get(id) else {
+            return 0.0;
+        };
+        let mut unique_neighbors = std::collections::HashSet::new();
+        for neighbor in self.graph.neighbors_directed(idx, Direction::Incoming) {
+            unique_neighbors.insert(neighbor);
+        }
+        for neighbor in self.graph.neighbors_directed(idx, Direction::Outgoing) {
+            unique_neighbors.insert(neighbor);
+        }
+        unique_neighbors.len() as f64 / (n - 1) as f64
     }
 }
 
@@ -288,10 +338,109 @@ mod tests {
     }
 
     #[test]
+    fn neighbors_with_relations_returns_type_and_direction() {
+        let nodes = vec![
+            make_node("PRD-001", "prd", "active"),
+            make_node("RFC-001", "rfc", "active"),
+            make_node("EVID-001", "evidence", "active"),
+        ];
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("EVID-001".into(), "PRD-001".into(), "informs".into()),
+        ];
+        let kg = KnowledgeGraph::from_parts(nodes, edges);
+
+        let result = kg.neighbors_with_relations("PRD-001");
+        assert_eq!(result.len(), 2);
+
+        // Both are incoming edges to PRD-001
+        for (node, relation, direction) in &result {
+            assert_eq!(*direction, Direction::Incoming);
+            match node.id.as_str() {
+                "RFC-001" => assert_eq!(*relation, "based_on"),
+                "EVID-001" => assert_eq!(*relation, "informs"),
+                other => panic!("Unexpected neighbor: {other}"),
+            }
+        }
+
+        // RFC-001 has outgoing edge to PRD-001
+        let rfc_result = kg.neighbors_with_relations("RFC-001");
+        assert_eq!(rfc_result.len(), 1);
+        assert_eq!(rfc_result[0].0.id, "PRD-001");
+        assert_eq!(rfc_result[0].1, "based_on");
+        assert_eq!(rfc_result[0].2, Direction::Outgoing);
+    }
+
+    #[test]
+    fn neighbors_with_relations_empty_for_missing_id() {
+        let nodes = vec![make_node("PRD-001", "prd", "active")];
+        let kg = KnowledgeGraph::from_parts(nodes, vec![]);
+        assert!(kg.neighbors_with_relations("NONEXISTENT").is_empty());
+    }
+
+    #[test]
     fn get_returns_none_for_missing_id() {
         let nodes = vec![make_node("PRD-001", "prd", "active")];
         let kg = KnowledgeGraph::from_parts(nodes, vec![]);
         assert!(kg.get("NONEXISTENT").is_none());
+    }
+
+    #[test]
+    fn degree_centrality_basic() {
+        let nodes = vec![
+            make_node("PRD-001", "prd", "active"),
+            make_node("RFC-001", "rfc", "active"),
+            make_node("EVID-001", "evidence", "active"),
+            make_node("ADR-001", "adr", "active"),
+        ];
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("EVID-001".into(), "PRD-001".into(), "informs".into()),
+            ("ADR-001".into(), "RFC-001".into(), "decides".into()),
+        ];
+        let kg = KnowledgeGraph::from_parts(nodes, edges);
+
+        // PRD-001: 2 incoming edges, 0 outgoing => degree = 2 / (4-1) = 0.667
+        let prd_c = kg.degree_centrality("PRD-001");
+        assert!((prd_c - 2.0 / 3.0).abs() < 0.001);
+
+        // RFC-001: 1 outgoing + 1 incoming => degree = 2 / 3 = 0.667
+        let rfc_c = kg.degree_centrality("RFC-001");
+        assert!((rfc_c - 2.0 / 3.0).abs() < 0.001);
+
+        // ADR-001: 1 outgoing, 0 incoming => degree = 1 / 3 = 0.333
+        let adr_c = kg.degree_centrality("ADR-001");
+        assert!((adr_c - 1.0 / 3.0).abs() < 0.001);
+
+        // Unknown ID => 0.0
+        assert_eq!(kg.degree_centrality("NONEXISTENT"), 0.0);
+    }
+
+    #[test]
+    fn degree_centrality_single_node() {
+        let nodes = vec![make_node("PRD-001", "prd", "active")];
+        let kg = KnowledgeGraph::from_parts(nodes, vec![]);
+        // N < 2 => 0.0
+        assert_eq!(kg.degree_centrality("PRD-001"), 0.0);
+    }
+
+    #[test]
+    fn degree_centrality_parallel_edges_deduped() {
+        let nodes = vec![
+            make_node("PRD-001", "prd", "active"),
+            make_node("RFC-001", "rfc", "active"),
+        ];
+        // Two parallel edges: RFC-001 -> PRD-001 with different relation types
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("RFC-001".into(), "PRD-001".into(), "informs".into()),
+        ];
+        let kg = KnowledgeGraph::from_parts(nodes, edges);
+
+        // PRD-001 has 1 unique neighbor (RFC-001), not 2
+        let c = kg.degree_centrality("PRD-001");
+        assert!(c <= 1.0, "centrality must be <= 1.0 even with parallel edges");
+        assert!((c - 1.0).abs() < 0.001, "1 unique neighbor / (2-1) = 1.0");
     }
 
     #[test]

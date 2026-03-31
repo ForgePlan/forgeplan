@@ -1,3 +1,5 @@
+pub mod smart;
+
 use std::path::Path;
 
 use regex::RegexBuilder;

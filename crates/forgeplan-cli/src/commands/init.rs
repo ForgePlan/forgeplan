@@ -35,6 +35,25 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             return Ok(());
         }
 
+        // Warn about data loss before --force reinit
+        if non_interactive {
+            eprintln!(
+                "WARNING: --force will delete ALL artifacts in .forgeplan/. \
+                 Run `forgeplan export` first to backup."
+            );
+        } else {
+            let proceed = cliclack::confirm(
+                "WARNING: --force will delete ALL artifacts in .forgeplan/. \
+                 Run `forgeplan export` first to backup. Continue?"
+            )
+            .initial_value(false)
+            .interact()?;
+            if !proceed {
+                eprintln!("  Aborted. Run `forgeplan export` to backup first.");
+                return Ok(());
+            }
+        }
+
         // [SECURITY] Guard against symlink attack and workspace outside cwd
         safe_remove_workspace(&existing, &cwd).await?;
     }

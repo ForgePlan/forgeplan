@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::artifact::types::DECISION_KINDS_EVIDENCE;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
@@ -144,14 +145,15 @@ fn find_blind_spots(
     let mut spots = Vec::new();
 
     for record in records {
-        let is_decision_type = matches!(
-            record.kind.as_str(),
-            "prd" | "rfc" | "adr" | "epic"
-        );
+        let is_decision_type = DECISION_KINDS_EVIDENCE.contains(&record.kind.as_str());
 
         // Only flag active/accepted artifacts as blind spots.
         // Draft artifacts are still being worked on — evidence not expected yet.
-        let needs_evidence = record.status != "draft";
+        // Deprecated/superseded artifacts no longer need evidence.
+        let needs_evidence = !matches!(
+            record.status.as_str(),
+            "draft" | "deprecated" | "superseded"
+        );
 
         if is_decision_type && needs_evidence && !artifact_has_evidence(&record.id, evidence_records, outgoing) {
             spots.push(BlindSpot {
@@ -440,6 +442,86 @@ mod tests {
 
         let spots = find_blind_spots(&refs, &evidence, &outgoing);
         assert!(spots.is_empty()); // note is not a decision-type
+    }
+
+    #[test]
+    fn active_problem_without_evidence_is_blind_spot() {
+        let mut record = make_record("PROB-001", "problem");
+        record.status = "active".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert_eq!(spots.len(), 1);
+        assert_eq!(spots[0].id, "PROB-001");
+    }
+
+    #[test]
+    fn active_solution_without_evidence_is_blind_spot() {
+        let mut record = make_record("SOL-001", "solution");
+        record.status = "active".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert_eq!(spots.len(), 1);
+        assert_eq!(spots[0].id, "SOL-001");
+    }
+
+    #[test]
+    fn deprecated_artifact_without_evidence_is_not_blind_spot() {
+        let mut record = make_record("PRD-002", "prd");
+        record.status = "deprecated".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty()); // deprecated artifacts don't need evidence
+    }
+
+    #[test]
+    fn superseded_artifact_without_evidence_is_not_blind_spot() {
+        let mut record = make_record("PRD-003", "prd");
+        record.status = "superseded".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty()); // superseded artifacts don't need evidence
+    }
+
+    #[test]
+    fn evidence_artifact_never_flagged_as_blind_spot() {
+        let mut record = make_record("EVID-001", "evidence");
+        record.status = "active".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty(), "evidence kind should never be a blind spot");
+    }
+
+    #[test]
+    fn refresh_artifact_never_flagged_as_blind_spot() {
+        let mut record = make_record("REF-001", "refresh");
+        record.status = "active".into();
+        let records = vec![record];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence: Vec<ArtifactRecord> = vec![];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(spots.is_empty(), "refresh kind should never be a blind spot");
     }
 
     #[test]

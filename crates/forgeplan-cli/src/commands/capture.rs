@@ -4,15 +4,13 @@ use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::llm::capture;
 use forgeplan_core::projection;
-use forgeplan_core::workspace::load_config;
 
 use crate::commands::common;
 
 pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
     let (workspace, store) = common::open_store().await?;
 
-    let config = load_config(&workspace)?;
-    let llm_config = config.llm.unwrap_or_default().with_env_overrides();
+    let llm_config = common::require_llm_config()?;
 
     println!(
         "  Capturing decision with {}/{}...",

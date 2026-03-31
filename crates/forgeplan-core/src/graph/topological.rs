@@ -15,16 +15,36 @@ pub struct TopologicalResult {
     pub blocked: Vec<(String, Vec<String>)>,
 }
 
+/// Structural relation types that imply dependency (blocking).
+/// Informational relations like "informs" and "supports" do NOT block.
+const STRUCTURAL_RELATIONS: &[&str] = &["based_on", "refines", "supersedes", "contradicts"];
+
+/// Check if a relation type is structural (blocking).
+pub fn is_structural_relation(relation: &str) -> bool {
+    STRUCTURAL_RELATIONS.contains(&relation.to_lowercase().as_str())
+}
+
 /// Run Kahn's algorithm on artifact relations.
 ///
 /// `edges`: (from, to, relation_type) — "from" depends on "to"
 /// `active_ids`: set of artifact IDs that are considered "done" (active status)
+///
+/// Only structural relations (based_on, refines, supersedes, contradicts) are treated
+/// as blocking dependencies. Informational relations (informs, supports) are excluded.
 ///
 /// Returns topological order + cycle detection + ready/blocked classification.
 pub fn kahn_sort(
     edges: &[(String, String, String)],
     active_ids: &HashSet<String>,
 ) -> TopologicalResult {
+    // Filter to structural (blocking) relations only
+    let structural_edges: Vec<_> = edges
+        .iter()
+        .filter(|(_, _, rel)| is_structural_relation(rel))
+        .cloned()
+        .collect();
+    let edges = structural_edges.as_slice();
+
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     let mut in_degree: HashMap<String, usize> = HashMap::new();
     let mut all_nodes: HashSet<String> = HashSet::new();
@@ -151,6 +171,7 @@ fn detect_cycle_paths(
 }
 
 /// Get blocked status for a specific artifact.
+/// Only structural relations are considered blocking.
 pub fn get_blocked_by(
     artifact_id: &str,
     edges: &[(String, String, String)],
@@ -158,7 +179,7 @@ pub fn get_blocked_by(
 ) -> Vec<String> {
     edges
         .iter()
-        .filter(|(from, _, _)| from == artifact_id)
+        .filter(|(from, _, rel)| from == artifact_id && is_structural_relation(rel))
         .map(|(_, to, _)| to.clone())
         .filter(|dep| !active_ids.contains(dep))
         .collect()
@@ -171,8 +192,8 @@ mod tests {
     #[test]
     fn linear_chain_sorted_correctly() {
         let edges = vec![
-            ("A".into(), "B".into(), "depends_on".into()),
-            ("B".into(), "C".into(), "depends_on".into()),
+            ("A".into(), "B".into(), "based_on".into()),
+            ("B".into(), "C".into(), "based_on".into()),
         ];
         let result = kahn_sort(&edges, &HashSet::new());
         // A depends on B, B depends on C → order: A, B, C (roots first in Kahn's)
@@ -188,10 +209,10 @@ mod tests {
     #[test]
     fn diamond_dependency() {
         let edges = vec![
-            ("D".into(), "B".into(), "depends_on".into()),
-            ("D".into(), "C".into(), "depends_on".into()),
-            ("B".into(), "A".into(), "depends_on".into()),
-            ("C".into(), "A".into(), "depends_on".into()),
+            ("D".into(), "B".into(), "based_on".into()),
+            ("D".into(), "C".into(), "based_on".into()),
+            ("B".into(), "A".into(), "based_on".into()),
+            ("C".into(), "A".into(), "based_on".into()),
         ];
         let result = kahn_sort(&edges, &HashSet::new());
         // in_degree: D=0, B=1, C=1, A=2
@@ -204,8 +225,8 @@ mod tests {
     #[test]
     fn cycle_detected() {
         let edges = vec![
-            ("A".into(), "B".into(), "depends_on".into()),
-            ("B".into(), "A".into(), "depends_on".into()),
+            ("A".into(), "B".into(), "based_on".into()),
+            ("B".into(), "A".into(), "based_on".into()),
         ];
         let result = kahn_sort(&edges, &HashSet::new());
         assert!(!result.cycles.is_empty());
@@ -261,11 +282,44 @@ mod tests {
     }
 
     #[test]
+    fn informational_relations_do_not_block() {
+        // EVID-001 --informs--> PRD-001: should NOT make PRD-001 blocked
+        let edges = vec![
+            ("EVID-001".into(), "PRD-001".into(), "informs".into()),
+            ("EVID-002".into(), "PRD-001".into(), "supports".into()),
+        ];
+        let result = kahn_sort(&edges, &HashSet::new());
+        // Informational relations are excluded, so no edges => no nodes in graph
+        assert!(result.blocked.is_empty(), "informational relations should not block");
+        assert!(result.order.is_empty(), "no structural edges => empty graph");
+
+        // get_blocked_by should also ignore informational relations
+        let blocked = get_blocked_by("EVID-001", &edges, &HashSet::new());
+        assert!(blocked.is_empty(), "informs should not count as blocking");
+    }
+
+    #[test]
+    fn structural_relations_do_block() {
+        let edges = vec![
+            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
+            ("EVID-001".into(), "PRD-001".into(), "informs".into()),
+        ];
+        let result = kahn_sort(&edges, &HashSet::new());
+        // Only based_on edge should be in the graph
+        assert_eq!(result.order.len(), 2, "should have RFC-001 and PRD-001");
+        assert!(result.blocked.iter().any(|(id, _)| id == "RFC-001"),
+            "RFC-001 should be blocked by PRD-001 via based_on");
+        // EVID-001 should NOT appear at all (its only relation is informational)
+        assert!(!result.order.contains(&"EVID-001".to_string()),
+            "EVID-001 should not be in the graph (only has informational relation)");
+    }
+
+    #[test]
     fn three_node_cycle() {
         let edges = vec![
-            ("A".into(), "B".into(), "depends_on".into()),
-            ("B".into(), "C".into(), "depends_on".into()),
-            ("C".into(), "A".into(), "depends_on".into()),
+            ("A".into(), "B".into(), "based_on".into()),
+            ("B".into(), "C".into(), "based_on".into()),
+            ("C".into(), "A".into(), "based_on".into()),
         ];
         let result = kahn_sort(&edges, &HashSet::new());
         assert!(result.order.is_empty());

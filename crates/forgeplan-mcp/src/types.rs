@@ -70,6 +70,9 @@ pub struct NewArtifactResponse {
     pub kind: String,
     pub title: String,
     pub filepath: String,
+    /// Methodology hint: what to do next after creating this artifact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _next_action: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -106,6 +109,9 @@ pub struct ValidateResponse {
     pub total_passed: usize,
     pub total_errors: usize,
     pub total_warnings: usize,
+    /// Methodology hint: what to do after validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _next_action: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

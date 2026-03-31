@@ -11,6 +11,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::Table;
 
 use crate::artifact::store::ArtifactSummary;
+use crate::changelog::ChangeLogEntry;
 use crate::db::{convert, migrate, schema};
 
 /// Filter for listing artifacts.
@@ -51,7 +52,37 @@ pub struct ArtifactRecord {
     pub updated_at: String,
 }
 
+/// Vector search result: an artifact record paired with its distance from the query.
+///
+/// `distance` is the raw value from LanceDB (L2 or cosine distance).
+/// For cosine distance: 0.0 = identical, 2.0 = opposite.
+/// Convert to similarity via `similarity()` method.
+#[derive(Debug, Clone)]
+pub struct VectorSearchHit {
+    pub record: ArtifactRecord,
+    pub distance: f64,
+}
+
+impl VectorSearchHit {
+    /// Convert cosine distance to similarity score in [0.0, 1.0].
+    ///
+    /// cosine_distance ∈ [0, 2], similarity = 1.0 - distance/2.0
+    pub fn similarity(&self) -> f64 {
+        (1.0 - self.distance / 2.0).clamp(0.0, 1.0)
+    }
+}
+
 impl ArtifactRecord {
+    /// Build the text used for embedding: title + first `chunk_size` chars of body.
+    ///
+    /// ID is excluded — it has no semantic meaning and pollutes the vector space.
+    /// Default chunk_size=2000 captures Problem/Goals/FR sections.
+    /// Configurable via `embedding.chunk_size` in config.yaml.
+    pub fn embedding_text(&self, chunk_size: usize) -> String {
+        let body_preview: String = self.body.chars().take(chunk_size).collect();
+        format!("{} {}", self.title, body_preview)
+    }
+
     /// Convert to a lightweight ArtifactSummary (drops body and most metadata).
     pub fn to_summary(&self) -> ArtifactSummary {
         ArtifactSummary {
@@ -137,6 +168,7 @@ pub struct LanceStore {
     evidence: Table,
     relations: Table,
     fpf_spec: Option<Table>,
+    change_log: Option<Table>,
 }
 
 impl LanceStore {
@@ -154,12 +186,17 @@ impl LanceStore {
         // Run migrations (idempotent — safe on every open)
         migrate::run_migrations(&artifacts, &relations).await?;
 
+        // Ensure change_log table exists (migration for older workspaces)
+        migrate::ensure_change_log(&db).await?;
+        let change_log = db.open_table("change_log").execute().await.ok();
+
         Ok(Self {
             _db: db,
             artifacts,
             evidence,
             relations,
             fpf_spec,
+            change_log,
         })
     }
 
@@ -199,10 +236,18 @@ impl LanceStore {
             db.create_table("fpf_spec", vec![batch]).execute().await?;
         }
 
+        // Create change_log table if not present
+        if !existing_tables.contains(&"change_log".to_string()) {
+            let schema = schema::change_log_schema();
+            let batch = empty_change_log_batch(schema.clone())?;
+            db.create_table("change_log", vec![batch]).execute().await?;
+        }
+
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
         let relations = db.open_table("relations").execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
+        let change_log = db.open_table("change_log").execute().await.ok();
 
         Ok(Self {
             _db: db,
@@ -210,6 +255,7 @@ impl LanceStore {
             evidence,
             relations,
             fpf_spec,
+            change_log,
         })
     }
 
@@ -313,6 +359,25 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Update r_eff_score for an artifact. Verifies the artifact exists first.
+    pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
+        let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
+        // Verify artifact exists before update (LanceDB update is silent no-op on missing ID)
+        if self.get_record(id).await?.is_none() {
+            anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
+        }
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("r_eff_score", &format!("{score}"))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Delete an artifact by ID.
     pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
@@ -343,6 +408,23 @@ impl LanceStore {
         let batch = convert::relation_to_batch(source, target, relation, &now)?;
 
         self.relations.add(vec![batch]).execute().await?;
+        Ok(())
+    }
+
+    /// Remove a specific relation between two artifacts.
+    pub async fn delete_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        let filter = format!(
+            "source_id = '{}' AND target_id = '{}' AND relation_type = '{}'",
+            source.replace('\'', "''"),
+            target.replace('\'', "''"),
+            relation.replace('\'', "''"),
+        );
+        self.relations.delete(&filter).await?;
         Ok(())
     }
 
@@ -506,34 +588,38 @@ impl LanceStore {
     }
 
     /// Vector similarity search using pre-computed embedding.
-    /// Returns artifacts sorted by cosine distance (closest first).
+    /// Returns artifacts with distance scores, sorted by cosine distance (closest first).
     #[cfg(feature = "semantic-search")]
     pub async fn vector_search(
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+    ) -> anyhow::Result<Vec<VectorSearchHit>> {
         use lancedb::query::QueryBase;
 
         let results = self
             .artifacts
             .vector_search(query_embedding)
             .map_err(|e| anyhow::anyhow!("Vector search failed: {e}"))?
+            .distance_type(lancedb::DistanceType::Cosine)
             .limit(limit)
             .execute()
             .await?;
 
         let batches: Vec<_> = futures::StreamExt::collect::<Vec<_>>(results).await;
-        let mut records = Vec::new();
+        let mut hits = Vec::new();
         for batch_result in batches {
             let batch = batch_result?;
             for row in 0..batch.num_rows() {
                 if let Some(record) = extract_record(&batch, row) {
-                    records.push(record);
+                    let distance = get_f32(&batch, "_distance", row)
+                        .map(|d| d as f64)
+                        .unwrap_or(1.0); // fallback: mid-range distance
+                    hits.push(VectorSearchHit { record, distance });
                 }
             }
         }
-        Ok(records)
+        Ok(hits)
     }
 
     /// Update the embedding column for an artifact.
@@ -650,6 +736,74 @@ impl LanceStore {
                 }
             }
         }
+        Ok(results)
+    }
+
+    // ── Change Log ───────────────────────────────────────────────────
+
+    /// Insert a change log entry.
+    pub async fn log_change(&self, entry: &ChangeLogEntry) -> anyhow::Result<()> {
+        let table = self
+            .change_log
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("change_log table not initialized. Run `forgeplan init -y` to recreate workspace."))?;
+
+        let batch = RecordBatch::try_new(
+            schema::change_log_schema(),
+            vec![
+                Arc::new(StringArray::from(vec![entry.timestamp.as_str()])),
+                Arc::new(StringArray::from(vec![entry.artifact_id.as_str()])),
+                Arc::new(StringArray::from(vec![entry.action.as_str()])),
+                Arc::new(StringArray::from(vec![entry.field.as_deref()])),
+                Arc::new(StringArray::from(vec![entry.old_value.as_deref()])),
+                Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
+                Arc::new(StringArray::from(vec![entry.source.as_str()])),
+            ],
+        )?;
+
+        table.add(vec![batch]).execute().await?;
+        Ok(())
+    }
+
+    /// Query change log entries with optional artifact filter and source filter.
+    pub async fn get_change_log(
+        &self,
+        artifact_id: Option<&str>,
+        source: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ChangeLogEntry>> {
+        let table = self
+            .change_log
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("change_log table not initialized"))?;
+
+        let mut conditions: Vec<String> = Vec::new();
+        if let Some(aid) = artifact_id {
+            conditions.push(format!("artifact_id = '{}'", aid.replace('\'', "''")));
+        }
+        if let Some(src) = source {
+            conditions.push(format!("source = '{}'", src.replace('\'', "''")));
+        }
+
+        let mut query = table.query();
+        if !conditions.is_empty() {
+            query = query.only_if(conditions.join(" AND "));
+        }
+
+        let batches = collect_batches(query.execute().await?).await?;
+        let mut results: Vec<ChangeLogEntry> = Vec::new();
+
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                if let Some(entry) = extract_change_log_entry(batch, row) {
+                    results.push(entry);
+                }
+            }
+        }
+
+        // Sort by timestamp descending (newest first)
+        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        results.truncate(limit);
         Ok(results)
     }
 
@@ -918,6 +1072,24 @@ fn get_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String
     }
 }
 
+/// Read a Float32 column value from a RecordBatch row.
+#[cfg(feature = "semantic-search")]
+fn get_f32(batch: &RecordBatch, col: &str, row: usize) -> Option<f32> {
+    let array = batch.column_by_name(col)?;
+    if let Some(arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::Float32Array>()
+    {
+        if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row))
+        }
+    } else {
+        None
+    }
+}
+
 /// Read a Float64 column value from a RecordBatch row.
 fn get_f64(batch: &RecordBatch, col: &str, row: usize) -> Option<f64> {
     let array = batch.column_by_name(col)?;
@@ -1018,6 +1190,45 @@ fn empty_relations_batch(
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(Int32Array::from(Vec::<Option<i32>>::new())), // congruence_level
+        ],
+    )
+}
+
+/// Extract a ChangeLogEntry from a RecordBatch row.
+fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLogEntry> {
+    let timestamp = get_string(batch, "timestamp", row)?;
+    let artifact_id = get_string(batch, "artifact_id", row)?;
+    let action = get_string(batch, "action", row)?;
+    let field = get_string(batch, "field", row);
+    let old_value = get_string(batch, "old_value", row);
+    let new_value = get_string(batch, "new_value", row);
+    let source = get_string(batch, "source", row)?;
+
+    Some(ChangeLogEntry {
+        timestamp,
+        artifact_id,
+        action,
+        field,
+        old_value,
+        new_value,
+        source,
+    })
+}
+
+/// Create an empty RecordBatch for change_log.
+fn empty_change_log_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // timestamp
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // artifact_id
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // action
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // field (nullable)
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // old_value (nullable)
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
+            Arc::new(StringArray::from(Vec::<&str>::new())),       // source
         ],
     )
 }
@@ -1482,5 +1693,196 @@ mod tests {
         assert!(map.contains_key("r_eff_score"));
         assert!(map.contains_key("created_at"));
         assert!(map.contains_key("updated_at"));
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_persists() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+
+        // Default r_eff_score is 0.0
+        let before = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert!((before.r_eff_score - 0.0).abs() < f64::EPSILON);
+
+        store.update_r_eff_score("PRD-001", 0.85).await.unwrap();
+
+        let after = store.get_record("PRD-001").await.unwrap().unwrap();
+        assert!((after.r_eff_score - 0.85).abs() < f64::EPSILON);
+        // updated_at should have changed
+        assert_ne!(before.updated_at, after.updated_at);
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_missing_id_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.update_r_eff_score("NONEXISTENT-999", 0.5).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "Error should mention 'not found'"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_nan_becomes_zero() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store.update_r_eff_score("PRD-002", f64::NAN).await.unwrap();
+
+        let record = store.get_record("PRD-002").await.unwrap().unwrap();
+        assert!((record.r_eff_score - 0.0).abs() < f64::EPSILON, "NaN should become 0.0");
+    }
+
+    #[tokio::test]
+    async fn update_r_eff_score_clamps_out_of_range() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&sample_artifact("PRD-003")).await.unwrap();
+
+        // Above range → clamped to 1.0
+        store.update_r_eff_score("PRD-003", 2.5).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "2.5 should clamp to 1.0");
+
+        // Below range → clamped to 0.0
+        store.update_r_eff_score("PRD-003", -0.5).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "-0.5 should clamp to 0.0");
+
+        // Infinity → clamped to 1.0
+        store.update_r_eff_score("PRD-003", f64::INFINITY).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "Infinity should clamp to 1.0");
+
+        // Boundary: exact 0.0 and 1.0
+        store.update_r_eff_score("PRD-003", 0.0).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "0.0 should stay 0.0");
+
+        store.update_r_eff_score("PRD-003", 1.0).await.unwrap();
+        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "1.0 should stay 1.0");
+    }
+
+    #[test]
+    fn embedding_text_includes_id_title_and_body_preview() {
+        let record = ArtifactRecord {
+            id: "PRD-042".to_string(),
+            kind: "prd".to_string(),
+            status: "Draft".to_string(),
+            title: "Authentication Module".to_string(),
+            body: "## Problem\nUsers cannot log in with OAuth2.\n## Goals\nSupport Google and GitHub OAuth.".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let text = record.embedding_text(2000);
+        assert!(!text.contains("PRD-042"), "should NOT contain artifact id (no semantic value)");
+        assert!(text.contains("Authentication Module"), "should contain title");
+        assert!(text.contains("OAuth2"), "should contain body content");
+        assert!(text.contains("Google and GitHub"), "should contain body goals");
+    }
+
+    #[test]
+    fn embedding_text_truncates_body_at_chunk_size() {
+        let long_body = "x".repeat(5000);
+        let record = ArtifactRecord {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "Draft".to_string(),
+            title: "Title".to_string(),
+            body: long_body,
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        // Default chunk_size=2000
+        let text = record.embedding_text(2000);
+        let body_part = text.strip_prefix("Title ").unwrap();
+        assert_eq!(body_part.len(), 2000, "body should be truncated to chunk_size");
+
+        // Custom chunk_size=500
+        let text_small = record.embedding_text(500);
+        let body_small = text_small.strip_prefix("Title ").unwrap();
+        assert_eq!(body_small.len(), 500, "body should respect custom chunk_size");
+    }
+
+    // ── VectorSearchHit similarity ──────────────────────────────────
+
+    fn make_record(id: &str) -> ArtifactRecord {
+        ArtifactRecord {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "Draft".to_string(),
+            title: "Test".to_string(),
+            body: String::new(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn similarity_identical_vectors() {
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 0.0, // cosine distance 0 = identical
+        };
+        assert_eq!(hit.similarity(), 1.0);
+    }
+
+    #[test]
+    fn similarity_opposite_vectors() {
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 2.0, // cosine distance 2 = opposite
+        };
+        assert_eq!(hit.similarity(), 0.0);
+    }
+
+    #[test]
+    fn similarity_mid_distance() {
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 1.0, // cosine distance 1 = orthogonal
+        };
+        assert!((hit.similarity() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn similarity_clamps_out_of_range() {
+        // Distance > 2.0 (shouldn't happen, but defensive)
+        let hit = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: 3.0,
+        };
+        assert_eq!(hit.similarity(), 0.0);
+
+        // Negative distance (shouldn't happen)
+        let hit2 = VectorSearchHit {
+            record: make_record("PRD-001"),
+            distance: -0.5,
+        };
+        assert_eq!(hit2.similarity(), 1.0);
     }
 }

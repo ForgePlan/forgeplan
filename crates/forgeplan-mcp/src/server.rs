@@ -426,11 +426,14 @@ impl ForgeplanServer {
         .await
         .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
+        let hint = methodology_hint_after_new(template_key, &id);
+
         Ok(json_result(&NewArtifactResponse {
             id,
             kind: template_key.into(),
             title: p.title,
             filepath: filepath.display().to_string(),
+            _next_action: Some(hint),
         }))
     }
 
@@ -556,12 +559,21 @@ impl ForgeplanServer {
             results.push(ValidationResultDto::from(result));
         }
 
+        let hint = if total_errors > 0 {
+            Some("Fix MUST errors above, then re-validate. Do NOT code until validate PASS.".into())
+        } else if total_passed == to_validate.len() {
+            Some("All passed! Now implement, then create evidence and link it.".into())
+        } else {
+            None
+        };
+
         Ok(json_result(&ValidateResponse {
             total_artifacts: to_validate.len(),
             total_passed,
             total_errors,
             total_warnings,
             results,
+            _next_action: hint,
         }))
     }
 
@@ -718,8 +730,12 @@ impl ForgeplanServer {
             return Ok(err_result(&format!("{e}")));
         }
 
-        // Update markdown projection
+        // Sync file→LanceDB (preserve user edits), then re-render projection
         if let Ok(Some(record)) = store.get_record(&p.source).await {
+            let _ = projection::sync_file_to_store(&store, &ws, &record).await;
+            // Re-read after sync
+            let record = store.get_record(&p.source).await
+                .unwrap_or(Some(record)).unwrap();
             let links = store.get_relations(&p.source).await.unwrap_or_default();
             let _ = projection::render_projection(
                 &ws, &record.id, &record.kind, &record.title, &record.status,
@@ -766,13 +782,19 @@ impl ForgeplanServer {
         };
 
         // Verify exists
-        if store.get_record(&p.id).await.map_err(|e| McpError::internal_error(format!("{e}"), None))?.is_none() {
-            return Ok(err_result(&format!("Artifact '{}' not found", p.id)));
-        }
+        let pre_record = store.get_record(&p.id).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let pre_record = match pre_record {
+            Some(r) => r,
+            None => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+        };
 
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
             return Ok(err_result("Nothing to update. Provide status, title, or body."));
         }
+
+        // Sync file→LanceDB BEFORE mutations — capture user edits
+        let _ = projection::sync_file_to_store(&store, &ws, &pre_record).await;
 
         if p.status.is_some() || p.title.is_some() {
             store
@@ -847,17 +869,43 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Rule-based, instant, no LLM needed.")]
+    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0).")]
     async fn forgeplan_route(
         &self,
         Parameters(p): Parameters<RouteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = forgeplan_core::routing::route(&p.description);
+        // Try Level 1 (LLM) if workspace has LLM config, with FPF context if available
+        let result = if let Ok(ws) = self.require_workspace().await {
+            if let Ok(config) = workspace::load_config(&ws) {
+                if let Some(llm_cfg) = config.llm {
+                    let llm_cfg = llm_cfg.with_env_overrides();
+                    // Try to build FPF context from store
+                    let fpf_ctx = if let Ok(store) = self.require_store().await {
+                        forgeplan_core::llm::reason::build_fpf_context(
+                            &store, &p.description, "",
+                        ).await.ok().flatten()
+                    } else {
+                        None
+                    };
+                    forgeplan_core::routing::route_with_llm_and_context(
+                        &p.description, &llm_cfg, fpf_ctx.as_deref(),
+                    ).await
+                } else {
+                    forgeplan_core::routing::route(&p.description)
+                }
+            } else {
+                forgeplan_core::routing::route(&p.description)
+            }
+        } else {
+            forgeplan_core::routing::route(&p.description)
+        };
         Ok(json_result(&serde_json::json!({
             "depth": format!("{:?}", result.depth),
             "pipeline": result.pipeline.iter().map(|k| k.template_key()).collect::<Vec<_>>(),
             "triggers": result.triggers.iter().map(|t| &t.id).collect::<Vec<_>>(),
             "confidence": result.confidence,
+            "level": result.level,
+            "explanation": result.explanation,
             "display": format!("{result}"),
         })))
     }
@@ -918,10 +966,11 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
-            Ok(dependents) => Ok(json_result(&serde_json::json!({
+            Ok(result) => Ok(json_result(&serde_json::json!({
                 "superseded": p.id,
                 "replacement": p.by,
-                "dependents_affected": dependents,
+                "dependents_affected": result.dependents,
+                "warnings": result.warnings,
             }))),
             Err(e) => Ok(err_result(&e.to_string())),
         }
@@ -1841,10 +1890,35 @@ impl rmcp::ServerHandler for ForgeplanServer {
             .with_instructions(
                 "Forgeplan MCP server: manage structured project artifacts \
                  (PRDs, RFCs, ADRs, Epics, Specs) with quality scoring, \
-                 validation, dependency graphs, and search.",
+                 validation, dependency graphs, and search.\n\n\
+                 IMPORTANT: Tool responses may include a `_next_action` field. \
+                 When present, follow this hint — it guides the correct methodology workflow: \
+                 Shape → Validate → Code → Evidence → Activate.",
             )
     }
 }
 
 // Evidence parsing delegated to forgeplan_core::scoring::evidence
 use forgeplan_core::scoring::evidence::parse_evidence_from_record;
+
+// ── Methodology hints ──────────────────────────────────────────
+
+/// Generate a methodology hint based on artifact kind after creation.
+fn methodology_hint_after_new(kind: &str, id: &str) -> String {
+    match kind {
+        "prd" | "rfc" | "adr" | "spec" | "epic" => format!(
+            "Fill ALL MUST sections, then: forgeplan validate {id}. \
+             Do NOT start coding until validate PASS."
+        ),
+        "evidence" => format!(
+            "Add structured fields (verdict, congruence_level, evidence_type) to body, \
+             then: forgeplan link {id} <TARGET> --relation informs"
+        ),
+        "problem" => format!(
+            "Describe the problem with context. \
+             Then: forgeplan link {id} <RELATED> --relation identifies"
+        ),
+        "note" => "Notes auto-expire in 90 days. Link to related artifacts if relevant.".into(),
+        _ => format!("Next: forgeplan validate {id}"),
+    }
+}

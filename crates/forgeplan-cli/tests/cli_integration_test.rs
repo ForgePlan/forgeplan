@@ -440,22 +440,21 @@ fn update_changes_status() {
         .assert()
         .success();
 
-    // Update status
+    // Direct --status active is blocked (B2 fix: must use forgeplan activate)
     forgeplan()
         .args(["update", "PRD-001", "--status", "active"])
         .current_dir(tmp.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Updated"))
-        .stdout(predicate::str::contains("active"));
+        .failure()
+        .stderr(predicate::str::contains("forgeplan activate"));
 
-    // Verify via get
+    // Non-active status changes still work
     forgeplan()
-        .args(["get", "PRD-001"])
+        .args(["update", "PRD-001", "--status", "deprecated"])
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("active"));
+        .stdout(predicate::str::contains("Updated"));
 }
 
 #[test]
@@ -507,12 +506,12 @@ fn delete_requires_confirmation() {
         .assert()
         .success();
 
-    // Without --yes, should warn but not delete
+    // Without --yes, should fail with confirmation prompt (exit code 1)
     forgeplan()
         .args(["delete", "PRD-001"])
         .current_dir(tmp.path())
         .assert()
-        .success()
+        .failure()
         .stderr(predicate::str::contains("--yes"));
 
     // Artifact should still exist
@@ -591,9 +590,9 @@ fn full_workflow_dogfood() {
         .success()
         .stdout(predicate::str::contains("User Authentication"));
 
-    // 6. Update status to active
+    // 6. Activate via lifecycle (update --status active is blocked)
     forgeplan()
-        .args(["update", "PRD-001", "--status", "active"])
+        .args(["activate", "PRD-001", "--force"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -742,8 +741,8 @@ fn e2e_activate_unblocks_dependent() {
     let before = String::from_utf8_lossy(&output.stdout);
     assert!(before.contains("Blocked") || before.contains("blocked"), "RFC should be blocked before activate");
 
-    // Activate PRD
-    forgeplan().args(["activate", "PRD-001"]).current_dir(tmp.path()).assert().success();
+    // Activate PRD (--force because test PRD has short body and no evidence)
+    forgeplan().args(["activate", "PRD-001", "--force"]).current_dir(tmp.path()).assert().success();
 
     // After activate: RFC should be ready
     let output2 = forgeplan()
@@ -1140,9 +1139,9 @@ fn e2e_supersede_workflow() {
     let tmp = TempDir::new().unwrap();
     forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
-    // Create and activate old PRD
+    // Create and activate old PRD (--force because test PRD has short body and no evidence)
     forgeplan().args(["new", "prd", "Old Feature"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["activate", "PRD-001"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["activate", "PRD-001", "--force"]).current_dir(tmp.path()).assert().success();
 
     // Create new PRD
     forgeplan().args(["new", "prd", "New Feature"]).current_dir(tmp.path()).assert().success();
@@ -1613,8 +1612,8 @@ fn activation_gate_rejects_invalid() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("MUST") || stderr.contains("error") || stderr.contains("Validation") || stderr.contains("validation"),
-        "Error should mention MUST/error/validation, got stderr: {}", stderr
+        stderr.contains("MUST") || stderr.contains("error") || stderr.contains("Validation") || stderr.contains("validation") || stderr.contains("Cannot activate"),
+        "Error should mention rejection, got stderr: {}", stderr
     );
 }
 
@@ -1752,4 +1751,287 @@ fn context_command_human_output() {
         stdout.contains("F-G-R"),
         "Human output should contain 'F-G-R:', got: {}", stdout
     );
+}
+
+#[test]
+fn tree_shows_hierarchy() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create epic and PRD
+    forgeplan()
+        .args(["new", "epic", "My Epic"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("EPIC-001"));
+
+    forgeplan()
+        .args(["new", "prd", "My Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // Link PRD -> Epic (child relation)
+    forgeplan()
+        .args(["link", "PRD-001", "EPIC-001", "--relation", "refines"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Run tree — should show both artifacts in hierarchy
+    let output = forgeplan()
+        .args(["tree"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "tree should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("EPIC-001"),
+        "tree should contain EPIC-001, got: {}", stdout
+    );
+    assert!(
+        stdout.contains("PRD-001"),
+        "tree should contain PRD-001, got: {}", stdout
+    );
+    assert!(
+        stdout.contains("My Epic"),
+        "tree should contain epic title, got: {}", stdout
+    );
+}
+
+#[test]
+fn tree_json_is_valid() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "JSON Tree Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["tree", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "tree --json should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("tree --json output should be valid JSON: {}. Got: {}", e, stdout));
+
+    assert!(parsed.is_array(), "root should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert!(!arr.is_empty(), "array should have at least one root");
+
+    let first = &arr[0];
+    assert_eq!(first["id"], "PRD-001");
+    assert_eq!(first["kind"], "prd");
+    assert!(first["children"].is_array(), "children should be an array");
+}
+
+// ─── PROB-012 E2E Tests: Integrity Fixes ────────────────────────────
+
+#[test]
+fn e2e_reff_write_back_persists_to_tree() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD + evidence + link
+    forgeplan().args(["new", "prd", "Write-back Test"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "Proof"]).current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Score should compute R_eff and persist it
+    forgeplan().args(["score", "PRD-001"])
+        .current_dir(tmp.path()).assert().success()
+        .stdout(predicate::str::contains("R_eff"));
+
+    // Tree should show the persisted R_eff (not 0.00)
+    let tree_output = forgeplan()
+        .args(["tree", "--json"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let tree_json: serde_json::Value = serde_json::from_slice(&tree_output.stdout)
+        .expect("valid tree JSON");
+    let nodes = tree_json.as_array().unwrap();
+    let prd = nodes.iter().find(|n| n["id"] == "PRD-001").expect("PRD-001 in tree");
+    let r_eff = prd["r_eff"].as_f64().unwrap_or(0.0);
+    assert!(r_eff > 0.0, "R_eff should be persisted after score, got {r_eff}");
+}
+
+#[test]
+fn e2e_route_p0_issues_not_tactical() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Route with severity + integrity keywords should NOT be Tactical
+    forgeplan()
+        .args(["route", "Fix 5 P0 integrity issues in scoring system"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tactical").not());
+}
+
+#[test]
+fn e2e_health_shows_problem_blind_spot() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create active problem without evidence
+    forgeplan().args(["new", "problem", "Test Problem"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Activate it (problems don't require validation gate)
+    forgeplan().args(["activate", "PROB-001"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Health should show blind spot for active problem without evidence
+    forgeplan().args(["health"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Blind spots: 1")
+            .or(predicate::str::contains("PROB-001")));
+}
+
+#[test]
+fn e2e_journal_excludes_deprecated_from_warning() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create note, activate, then deprecate (lifecycle: draft→active→deprecated)
+    forgeplan().args(["new", "note", "Old Decision"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["activate", "NOTE-001"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["deprecate", "NOTE-001", "--reason", "outdated"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Journal should NOT count deprecated as "no evidence"
+    let output = forgeplan()
+        .args(["journal"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // If deprecated is the only artifact, "no evidence" warning should be 0 or absent
+    assert!(
+        !stdout.contains("1 decision(s) without any evidence"),
+        "Deprecated note should not count in no-evidence warning"
+    );
+}
+
+#[test]
+fn e2e_coverage_backfill_adds_section() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create PRD and strip Affected Files from body (simulate pre-template artifact)
+    forgeplan().args(["new", "prd", "Backfill Target"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["update", "PRD-001", "--body", "## Problem\n\nNo affected files section here."])
+        .current_dir(tmp.path()).assert().success();
+
+    // Force activate
+    forgeplan().args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Run backfill — should find PRD-001 missing section
+    forgeplan().args(["coverage", "--backfill"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // Get artifact and verify body contains Affected Files
+    let output = forgeplan()
+        .args(["get", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("valid JSON");
+    let body = json["body"].as_str().unwrap_or("");
+    assert!(body.contains("## Affected Files"), "Body should contain Affected Files section");
+    assert!(body.contains("/**"), "Should use glob patterns, not ...");
+
+    // Idempotent: second run should say "All active..."
+    forgeplan().args(["coverage", "--backfill"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already have"));
+}
+
+#[test]
+fn e2e_score_missing_id_shows_warning_not_crash() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Score nonexistent artifact should fail gracefully
+    forgeplan()
+        .args(["score", "NONEXISTENT-999"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found")
+            .or(predicate::str::contains("Not found")));
+}
+
+#[test]
+fn e2e_reff_skips_deprecated_dependency() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+
+    // Create: PRD depends_on PROB, PROB has evidence, then deprecate PROB
+    forgeplan().args(["new", "problem", "Old Problem"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "prd", "Depends on old problem"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["new", "evidence", "PRD proof"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Link: PRD → PROB (based_on), EVID → PRD (informs)
+    forgeplan().args(["link", "PRD-001", "PROB-001", "--relation", "based_on"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Activate and deprecate PROB
+    forgeplan().args(["activate", "PROB-001"])
+        .current_dir(tmp.path()).assert().success();
+    forgeplan().args(["deprecate", "PROB-001", "--reason", "resolved"])
+        .current_dir(tmp.path()).assert().success();
+
+    // Score PRD-001 — should NOT be dragged to 0 by deprecated PROB-001
+    let output = forgeplan()
+        .args(["score", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output().unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("valid JSON");
+    let r_eff = json["r_eff"].as_f64().unwrap_or(0.0);
+    assert!(r_eff > 0.0, "R_eff should be > 0 when dependency is deprecated, got {r_eff}");
 }
