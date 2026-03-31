@@ -68,6 +68,20 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Estimate effort for an artifact based on FR and Phase items
+    Estimate {
+        /// Artifact ID to estimate
+        id: String,
+        /// Override grade for all items (junior|middle|senior|principal|ai)
+        #[arg(long)]
+        grade: Option<String>,
+        /// Use grade profile from config (domain-aware)
+        #[arg(long)]
+        my_grade: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Link two artifacts with a typed relationship
     Link {
         /// Source artifact ID
@@ -430,6 +444,9 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 commands::score::run(id.as_deref(), json).await
             }
+        }
+        Commands::Estimate { id, grade, my_grade, json } => {
+            commands::estimate::run(&id, grade.as_deref(), my_grade, json).await
         }
         Commands::Link {
             source,

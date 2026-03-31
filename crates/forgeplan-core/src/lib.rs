@@ -7,6 +7,7 @@ pub mod depth;
 pub mod driver;
 pub mod drift;
 pub mod embed;
+pub mod estimate;
 pub mod fpf;
 pub mod health;
 pub mod journal;
