@@ -354,6 +354,8 @@ enum Commands {
     },
     /// Run schema migrations on existing workspace
     Migrate,
+    /// Rebuild LanceDB index from .md files (files-first sync)
+    Reindex,
     /// Generate embeddings for all artifacts (semantic search)
     Embed,
     /// Start MCP server (stdio transport) for AI agent integration
@@ -520,6 +522,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Order { json } => commands::order::run(json).await,
         Commands::Migrate => commands::migrate::run().await,
+        Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;

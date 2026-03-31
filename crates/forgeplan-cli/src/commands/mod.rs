@@ -31,6 +31,7 @@ pub mod new;
 pub mod order;
 pub mod progress;
 pub mod reason;
+pub mod reindex;
 pub mod review;
 pub mod route;
 pub mod scan_import;

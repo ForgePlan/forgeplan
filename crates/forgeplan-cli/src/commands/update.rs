@@ -65,7 +65,14 @@ pub async fn run(
         let _ = projection::remove_projection(&ws, id, &original.kind).await;
     }
 
-    // Re-render projection
+    // Sync file→LanceDB if user edited the file before this command
+    let pre_sync = store
+        .get_record(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' disappeared after update", id))?;
+    projection::sync_file_to_store(&store, &ws, &pre_sync).await?;
+
+    // Re-render projection with synced data
     let updated = store
         .get_record(id)
         .await?
