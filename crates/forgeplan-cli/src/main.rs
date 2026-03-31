@@ -78,6 +78,9 @@ enum Commands {
         /// Use grade profile from config (domain-aware)
         #[arg(long)]
         my_grade: bool,
+        /// Use LLM-based complexity scoring instead of rule-based heuristics
+        #[arg(long)]
+        llm_score: bool,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -473,8 +476,8 @@ async fn main() -> anyhow::Result<()> {
                 commands::score::run(id.as_deref(), json).await
             }
         }
-        Commands::Estimate { id, grade, my_grade, json } => {
-            commands::estimate::run(&id, grade.as_deref(), my_grade, json).await
+        Commands::Estimate { id, grade, my_grade, llm_score, json } => {
+            commands::estimate::run(&id, grade.as_deref(), my_grade, llm_score, json).await
         }
         Commands::Link {
             source,

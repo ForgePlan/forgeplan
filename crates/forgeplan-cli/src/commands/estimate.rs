@@ -9,6 +9,7 @@ pub async fn run(
     id: &str,
     grade: Option<&str>,
     my_grade: bool,
+    llm_score: bool,
     json: bool,
 ) -> Result<()> {
     let store = common::store().await?;
@@ -28,8 +29,19 @@ pub async fn run(
         return Ok(());
     }
 
-    // Score complexity (rule-based L0)
-    let scored_items = scorer::score_items(&work_items);
+    // Score complexity: LLM L1 (opt-in) or rule-based L0 (default)
+    let scored_items = if llm_score {
+        let llm_config = common::require_llm_config()?;
+        if !json {
+            eprintln!(
+                "  Using LLM scorer ({}/{}). Fallback to rules if LLM fails.",
+                llm_config.provider, llm_config.model
+            );
+        }
+        scorer::score_items_with_llm(&work_items, &llm_config).await
+    } else {
+        scorer::score_items(&work_items)
+    };
 
     // Calculate confidence
     let fr_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Fr).collect();
