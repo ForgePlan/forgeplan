@@ -92,9 +92,6 @@ fn infer_task_type(item: &WorkItem) -> TaskType {
     if infra_hits > 0 {
         return TaskType::PureInfra;
     }
-    if design_hits > 0 && coding_hits > 0 {
-        return TaskType::DesignCoding;
-    }
     if design_hits > 0 {
         return TaskType::DesignCoding;
     }

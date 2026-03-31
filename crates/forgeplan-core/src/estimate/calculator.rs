@@ -154,4 +154,16 @@ mod tests {
         assert_eq!(result.confidence, 0.65);
         assert_eq!(result.confidence_reasons.len(), 2);
     }
+
+    #[test]
+    fn missing_grade_in_config_uses_default() {
+        let mut config = default_config();
+        config.grade_multipliers.remove(&Grade::Junior); // remove Junior
+
+        let items = vec![scored("FR-001", Complexity::Trivial)]; // 3h Senior
+        let result = calculate("PRD-001", "Test", &items, &config, 0.5, vec![]);
+
+        // Junior falls back to default multiplier 2.0
+        assert_eq!(result.items[0].hours[&Grade::Junior], 6.0); // 3 × 2.0
+    }
 }
