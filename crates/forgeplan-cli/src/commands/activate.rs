@@ -34,5 +34,19 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         println!("  Activated {id} (draft → active)");
     }
 
+    // Hints: suggest evidence if not linked
+    if let Some(record) = store.get_record(id).await? {
+        let rels = store.get_relations(id).await.unwrap_or_default();
+        let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
+        let has_evidence = rels.iter().chain(incoming.iter())
+            .any(|(t, _)| t.to_uppercase().starts_with("EVID-"));
+        let kind: forgeplan_core::artifact::types::ArtifactKind = record.kind.parse()
+            .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
+        let hints = forgeplan_core::hints::activate_hints(true, has_evidence, &kind);
+        if !hints.is_empty() {
+            print!("{}", forgeplan_core::hints::format_hints(&hints));
+        }
+    }
+
     Ok(())
 }

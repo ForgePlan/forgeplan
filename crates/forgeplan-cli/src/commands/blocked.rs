@@ -31,9 +31,15 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             println!("  {} is NOT blocked (all dependencies met)", artifact_id);
         } else {
             println!("  {} is BLOCKED by:", artifact_id);
+            let mut blocker_pairs = Vec::new();
             for dep in &blocked_by {
                 let status = if active_ids.contains(dep) { "active" } else { "draft" };
                 println!("    -> {} ({})", dep, status);
+                blocker_pairs.push((dep.clone(), status.to_string()));
+            }
+            let hints = forgeplan_core::hints::blocked_hints(&blocker_pairs);
+            if !hints.is_empty() {
+                print!("{}", forgeplan_core::hints::format_hints(&hints));
             }
         }
     } else {

@@ -203,6 +203,55 @@ pub fn search_hints(query: &str, result_count: usize) -> Vec<Hint> {
     hints
 }
 
+/// Hints for `forgeplan activate` when activation fails.
+pub fn activate_hints(
+    validation_passed: bool,
+    has_evidence: bool,
+    kind: &crate::artifact::types::ArtifactKind,
+) -> Vec<Hint> {
+    let mut hints = Vec::new();
+
+    if !validation_passed {
+        hints.push(
+            Hint::warning("Validation gate failed — fix MUST errors before activating")
+                .with_action("forgeplan validate <id>")
+        );
+    }
+
+    if !has_evidence && matches!(kind,
+        crate::artifact::types::ArtifactKind::Prd
+        | crate::artifact::types::ArtifactKind::Rfc
+        | crate::artifact::types::ArtifactKind::Adr
+    ) {
+        hints.push(
+            Hint::suggestion("Link evidence before activating for non-zero R_eff")
+                .with_action("forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX <id> --relation informs")
+        );
+    }
+
+    hints
+}
+
+/// Hints for `forgeplan blocked` — suggest how to unblock.
+pub fn blocked_hints(blocked_by: &[(String, String)]) -> Vec<Hint> {
+    let mut hints = Vec::new();
+
+    let draft_blockers: Vec<_> = blocked_by.iter()
+        .filter(|(_, status)| status == "draft")
+        .collect();
+
+    if !draft_blockers.is_empty() {
+        for (id, _) in &draft_blockers {
+            hints.push(
+                Hint::suggestion(format!("Activate draft dependency {}", id))
+                    .with_action(format!("forgeplan review {} && forgeplan activate {}", id, id))
+            );
+        }
+    }
+
+    hints
+}
+
 fn kind_to_str(kind: &crate::artifact::types::ArtifactKind) -> &'static str {
     use crate::artifact::types::ArtifactKind;
     match kind {
@@ -274,6 +323,32 @@ mod tests {
         let hints = search_hints("nonexistent", 0);
         assert_eq!(hints.len(), 3);
         assert!(hints[0].message.contains("No results"));
+    }
+
+    #[test]
+    fn activate_hints_no_evidence_prd() {
+        use crate::artifact::types::ArtifactKind;
+        let hints = activate_hints(true, false, &ArtifactKind::Prd);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].message.contains("evidence"));
+    }
+
+    #[test]
+    fn activate_hints_all_good() {
+        use crate::artifact::types::ArtifactKind;
+        let hints = activate_hints(true, true, &ArtifactKind::Prd);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn blocked_hints_draft_dependency() {
+        let blockers = vec![
+            ("ADR-002".to_string(), "draft".to_string()),
+            ("RFC-001".to_string(), "active".to_string()),
+        ];
+        let hints = blocked_hints(&blockers);
+        assert_eq!(hints.len(), 1); // only draft blocker gets a hint
+        assert!(hints[0].message.contains("ADR-002"));
     }
 
     #[test]
