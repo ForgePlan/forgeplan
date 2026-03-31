@@ -358,10 +358,26 @@ git checkout -b feat/my-feature
 - **Description на английском** (для совместимости), body на русском (для контекста)
 - **Не коммить напрямую в main или dev** — всегда через feature branch + PR
 
-#### PR и merge:
+#### PR pipeline (ОБЯЗАТЕЛЬНО — PR создаётся ТОЛЬКО после всех шагов):
+
+```
+Code → Audit → Fix → Test → Lint → PR
+```
+
+1. **Code** — реализация фичи/фикса на feature branch
+2. **Audit** — минимум 2 агента (code review + test coverage), `/audit` со skills
+3. **Fix** — исправить все HIGH/CRITICAL findings из аудита
+4. **Test** — `cargo test` ВСЕ pass (кроме known preexisting failures)
+5. **Lint** — `cargo check` = 0 warnings, 0 errors
+6. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
+7. **PR** — только после шагов 1-6
+
+**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, всё работает".
+
+#### PR formatting:
 - **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
 - **PR title** = `[ARTIFACT-ID] description` — `[PRD-018] OpenSpec DAG integration`
-- **PR body** = Summary (bullets) + Refs (артефакты) + Test plan
+- **PR body** = Summary (bullets) + Refs (артефакты) + Test plan + Audit results
 - **feat/* → dev**: Merge commit (НЕ squash!) — squash теряет поздние коммиты
 - **НИКОГДА не пушить в ветку после merge PR** — коммиты будут потеряны
 - **Перед merge**: убедиться что ВСЕ коммиты pushed: `git log origin/dev..HEAD`
