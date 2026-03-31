@@ -291,6 +291,26 @@ mod tests {
     }
 
     #[test]
+    fn grade_parse_error() {
+        let err = "expert".parse::<Grade>();
+        assert!(err.is_err());
+        let msg = "expert".parse::<Grade>().unwrap_err();
+        assert!(msg.contains("Unknown grade"), "Error should mention 'Unknown grade': {}", msg);
+
+        assert!("".parse::<Grade>().is_err());
+        assert!("INVALID".parse::<Grade>().is_err());
+    }
+
+    #[test]
+    fn grade_profile_fallback_to_default() {
+        let profile = GradeProfile::default();
+        let grade = profile.domains.get("unknown_domain")
+            .copied()
+            .unwrap_or(profile.default_grade);
+        assert_eq!(grade, Grade::Senior); // default fallback
+    }
+
+    #[test]
     fn complexity_fibonacci_values() {
         assert_eq!(Complexity::Trivial.value(), 1);
         assert_eq!(Complexity::Simple.value(), 2);
