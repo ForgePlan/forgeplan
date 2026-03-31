@@ -100,6 +100,20 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
     println!("  ID:      {}", id);
     println!("  Kind:    {}", template_key);
     println!("  Title:   {}", title);
+
+    // Next-step hint based on kind
+    let hint = match template_key {
+        "prd" => Some("Next: fill Problem, Goals, Non-Goals, Target Users, FR sections → forgeplan validate"),
+        "rfc" => Some("Next: fill Summary, Motivation, Goals, Options, Implementation Phases → forgeplan validate"),
+        "adr" => Some("Next: fill Context, Decision, Consequences → forgeplan validate"),
+        "evidence" => Some("Next: fill Structured Fields (verdict, congruence_level, evidence_type) → forgeplan activate"),
+        "epic" => Some("Next: fill Vision, Children PRDs, Progress → forgeplan validate"),
+        _ => None,
+    };
+    if let Some(h) = hint {
+        println!("\n  * {}", h);
+    }
+
     Ok(())
 }
 
