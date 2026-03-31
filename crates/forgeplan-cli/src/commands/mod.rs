@@ -11,6 +11,7 @@ pub mod decompose;
 pub mod delete;
 pub mod deprecate;
 pub mod embed;
+pub mod estimate;
 pub mod drift;
 pub mod export;
 
