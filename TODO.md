@@ -3,13 +3,31 @@
 ## Current: v0.12-dev (post-v0.11.0)
 
 ### Stats
-- 43 CLI commands, 35 MCP tools, 532 tests
-- 91 dogfood artifacts (59 active, 25 draft, 7 deprecated)
-- ~24K LOC Rust, 41MB release binary
-- PRs #60-#65 merged (smart search, cosine distance, MCP hints, 13 CLI quality fixes)
+- 45 CLI commands, 35 MCP tools, ~540 tests
+- 107 dogfood artifacts (63 active, 37 draft, 8 deprecated)
+- ~25K LOC Rust, 41MB release binary
+- PRs #60-#74 merged
 - Smart search by default (keyword + semantic + graph boosters)
 - MCP methodology hints (_next_action in tool responses)
 - 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
+- Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
+- MemoryDriver: remember/recall commands (RFC-003 Phase 2)
+
+### P0: Estimate Engine (PRD-022) ✅
+- [x] PRD-022 shaped + validated (8 FR, 3 journeys)
+- [x] RFC-005 architecture (3 phases, 12 tasks)
+- [x] ADR-004 hybrid approach (rule-based L0 + LLM L1)
+- [x] Phase 1: types, extractor, scorer, calculator, display (35 tests)
+- [x] Phase 2: confidence, CLI estimate command (39 tests)
+- [x] 2-agent audit: 2 CRITICAL + 4 HIGH fixed (50 tests)
+- [x] Config integration: grade_profile, multipliers, --my-grade
+- [x] FORGEPLAN-GUIDE: Estimate Engine section
+- [x] Evidence EVID-036 linked, PRD-022 + RFC-005 + ADR-004 activated
+
+### P0: MemoryDriver (RFC-003 Phase 2) ✅
+- [x] remember/recall CLI commands
+- [x] ArtifactKind::Memory with mem- prefix
+- [x] DRY helpers in common.rs + 3 tests
 
 ### P0: Integrity Issues (PROB-012 dogfood audit) ✅
 - [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
@@ -109,7 +127,7 @@ EVID-034. 532 tests. **Deferred**: fgr/blindspots redundancy, graph filtering, d
 - [x] **Phase 1**: StorageDriver trait + LanceDriver + InMemoryStore + factory — PR #61 merged
 - [x] **Phase 1 audit**: 3 agents, 13 findings, 7 fixed (C1-C3, H1, H3, M1, M2)
 - [ ] **Phase 1 deferred** (PROB-015): H2 EmbedDriver, H4 ISP split, M3-M5, test gaps
-- [ ] **Phase 2**: MemoryDriver (file log) + forgeplan remember/recall
+- [x] **Phase 2**: MemoryDriver (remember/recall) — PR #72 merged
 - [ ] **Phase 3**: SQLite driver + feature flags
 - [ ] **Phase 4**: Config-driven selection + forgeplan init shows drivers
 
