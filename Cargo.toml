@@ -28,6 +28,8 @@ arrow-schema = "57"
 futures = "0.3"
 async-trait = "0.1"
 petgraph = "0.8"
+notify = "7"
+notify-debouncer-mini = "0.5"
 
 [profile.release]
 strip = true          # strip debug symbols (-16%)

@@ -114,6 +114,28 @@ pub fn fpf_spec_schema() -> Arc<Schema> {
     ]))
 }
 
+/// Arrow schema for the `change_log` table — audit trail of artifact changes.
+///
+/// Columns:
+/// - timestamp     Utf8 (not null) — ISO datetime (RFC 3339)
+/// - artifact_id   Utf8 (not null) — which artifact changed
+/// - action        Utf8 (not null) — create/update/delete/link/unlink
+/// - field         Utf8 (nullable) — which field changed (status, body, title)
+/// - old_value     Utf8 (nullable) — previous value (hash for body)
+/// - new_value     Utf8 (nullable) — new value (hash for body)
+/// - source        Utf8 (not null) — cli/file_edit/git_sync/reindex
+pub fn change_log_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("timestamp", DataType::Utf8, false),
+        Field::new("artifact_id", DataType::Utf8, false),
+        Field::new("action", DataType::Utf8, false),
+        Field::new("field", DataType::Utf8, true),
+        Field::new("old_value", DataType::Utf8, true),
+        Field::new("new_value", DataType::Utf8, true),
+        Field::new("source", DataType::Utf8, false),
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
