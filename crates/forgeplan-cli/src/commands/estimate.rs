@@ -220,8 +220,10 @@ fn infer_domain(title: &str, body: &str) -> String {
         }
     }
 
-    // 2. Keyword inference from title + body (first 500 chars for performance)
-    let text = format!("{} {}", title, &body[..body.len().min(500)]).to_lowercase();
+    // 2. Keyword inference from title + body (skip frontmatter, take 1000 chars of content)
+    let content = body.split("---").skip(2).collect::<Vec<_>>().join(" ");
+    let snippet: String = content.chars().take(1000).collect();
+    let text = format!("{} {}", title, snippet).to_lowercase();
 
     let domains = [
         ("devops", &["k8s", "docker", "ci/cd", "deploy", "helm", "terraform", "kubernetes",
