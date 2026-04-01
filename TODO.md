@@ -68,6 +68,10 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [x] **RFC-005 3.2**: estimate MCP tool — grade param wired (Sprint 1 housekeeping).
 - [ ] **1 STUB artifact**: unidentified, low priority.
 - [ ] **e2e_coverage_backfill test**: pre-existing failure, unrelated to v0.12 changes.
+- [ ] **Self-link allowed** (PROB-019): `link PRD-001 PRD-001` → OK. Potential graph cycles.
+- [ ] **Runbook outdated** (NOTE-031): 6 discrepancies vs v0.12.0. Needs update.
+- [ ] **LLM tests not run**: Wave 10 tests 10.1-10.5 skipped (no API key configured).
+- [ ] **--semantic feature flag**: `search --semantic` fails at runtime if not compiled with `semantic-search`.
 
 ---
 
@@ -87,7 +91,8 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 | PROB-013 | Deleted | R_eff skip non-active → implemented in ADR-002, deleted | ✅ |
 | PROB-014 | Deprecated | Smart search gaps → fixed v0.12, real cosine | ✅ |
 | PROB-016 | Deprecated | CLI quality → 13 fixes, 6-agent audit | ✅ |
-| PROB-018 | P0 | E2E Smoke Test Findings — 3 bugs (scan path, unlink, lifecycle msg) | In Progress |
+| PROB-018 | Done | E2E Smoke Test Findings — 3 bugs fixed, 4-agent audit, PR #85 | ✅ |
+| PROB-019 | P2 | Self-link allowed — potential graph cycles | Open |
 
 ---
 
