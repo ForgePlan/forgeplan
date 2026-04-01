@@ -1,17 +1,18 @@
 # TODO — Forgeplan
 
-## Current: v0.12-dev (post-v0.11.0)
+## Current: v0.12.0 (released 2026-04-01)
 
 ### Stats
-- 45 CLI commands, 35 MCP tools, ~540 tests
-- 107 dogfood artifacts (63 active, 37 draft, 8 deprecated)
-- ~25K LOC Rust, 41MB release binary
-- PRs #60-#74 merged
-- Smart search by default (keyword + semantic + graph boosters)
-- MCP methodology hints (_next_action in tool responses)
-- 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
-- Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
+- 47 CLI commands, 35 MCP tools, 521+ tests
+- 108 dogfood artifacts (64 active, 34 draft, 8 deprecated)
+- ~26K LOC Rust, 41MB release binary
+- PRs #60-#82 merged (v0.11.1 + v0.12.0)
+- 0 MUST gaps, 2 orphans (memory, by design)
+- Estimate engine: multi-grade effort scoring, LLM scorer, config, domain inference
+- Hints system: 9 commands with contextual suggestions
 - MemoryDriver: remember/recall commands (RFC-003 Phase 2)
+- Evidence parser fix: CL0→CL3 for structured fields
+- Files-first: body always from file (link body reset fix)
 
 ### P0: Estimate Engine (PRD-022) ✅
 - [x] PRD-022 shaped + validated (8 FR, 3 journeys)
@@ -28,6 +29,26 @@
 - [x] remember/recall CLI commands
 - [x] ArtifactKind::Memory with mem- prefix
 - [x] DRY helpers in common.rs + 3 tests
+
+### P0: Quality Cycle Sprint (v0.12.0) ✅
+- [x] 17 MUST gaps → 0 (enable --depth update)
+- [x] Evidence parser: ignores template placeholders (CL0→CL3)
+- [x] LLM scorer (RFC-005 Phase 3): --llm-score flag, PR #79
+- [x] Hints system: 9 commands, 11 tests, shared hints.rs
+- [x] Domain inference: frontmatter → keywords → LLM (3-level)
+- [x] Manual complexity override: --complexity "FR-001=8"
+- [x] Spec/Evidence confidence boost: +15%/+20%
+- [x] forgeplan link body reset fix (PR #75)
+- [x] dotenvy for .env API keys
+- [x] Template FR filtering, keyword TaskType improvements
+- [x] 40 commands smoke-tested
+- [x] Release v0.12.0 tagged + installed
+
+### Known Issues
+- [ ] **changelog commit_hash**: LanceDB schema migration — old workspaces lack `commit_hash` column. `forgeplan update` logs warning. Fix: reinit workspace or add column migration.
+- [ ] **RFC-005 3.2**: estimate MCP tool not implemented (CLI only). Tracked in RFC-005.
+- [ ] **1 STUB artifact**: unidentified, low priority.
+- [ ] **e2e_coverage_backfill test**: pre-existing failure, unrelated to v0.12 changes.
 
 ### P0: Integrity Issues (PROB-012 dogfood audit) ✅
 - [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
