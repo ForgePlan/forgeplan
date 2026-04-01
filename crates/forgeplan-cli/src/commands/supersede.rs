@@ -23,6 +23,8 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
         ).await?;
     }
 
+    common::log_change_field(&store, id, "update", "status", Some("active"), Some("superseded"), "cli").await;
+
     println!("  Superseded {id} → {by}");
 
     for w in &result.warnings {

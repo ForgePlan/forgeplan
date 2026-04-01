@@ -40,6 +40,8 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
         ).await?;
     }
 
+    common::log_change_field(&store, source_id, "link", "relation", None, Some(&format!("{}:{}", target_id, relation)), "cli").await;
+
     println!("Linked: {} --{}--> {}", source_id, relation, target_id);
     Ok(())
 }
@@ -62,6 +64,8 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
             record.valid_until.as_deref(), &record.body, &links,
         ).await?;
     }
+
+    common::log_change_field(&store, source_id, "unlink", "relation", Some(&format!("{}:{}", target_id, relation)), None, "cli").await;
 
     println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
     Ok(())

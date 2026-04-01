@@ -23,6 +23,8 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         ).await?;
     }
 
+    common::log_change_field(&store, id, "update", "status", Some("draft"), Some("active"), "cli").await;
+
     if result.forced {
         println!("  Activated {id} (draft → active)");
         println!(

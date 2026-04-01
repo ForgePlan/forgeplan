@@ -96,6 +96,9 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
     .await
     .with_context(|| format!("Failed to write projection for {}", id))?;
 
+    // Log creation in change_log
+    common::log_change(&store, &id, "create", "cli").await;
+
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);
     println!("  Kind:    {}", template_key);

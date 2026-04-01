@@ -23,6 +23,8 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
         ).await?;
     }
 
+    common::log_change_field(&store, id, "update", "status", Some("active"), Some("deprecated"), "cli").await;
+
     println!("  Deprecated {id}: {reason}");
 
     if !dependents.is_empty() {

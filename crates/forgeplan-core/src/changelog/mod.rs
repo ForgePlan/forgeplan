@@ -18,3 +18,31 @@ pub struct ChangeLogEntry {
     /// cli, file_edit, git_sync, reindex
     pub source: String,
 }
+
+impl ChangeLogEntry {
+    /// Create a new entry with current timestamp.
+    pub fn new(artifact_id: &str, action: &str, source: &str) -> Self {
+        Self {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            artifact_id: artifact_id.to_string(),
+            action: action.to_string(),
+            field: None,
+            old_value: None,
+            new_value: None,
+            source: source.to_string(),
+        }
+    }
+
+    /// Set the field that changed.
+    pub fn with_field(mut self, field: &str) -> Self {
+        self.field = Some(field.to_string());
+        self
+    }
+
+    /// Set old and new values.
+    pub fn with_values(mut self, old: Option<&str>, new: Option<&str>) -> Self {
+        self.old_value = old.map(|s| s.to_string());
+        self.new_value = new.map(|s| s.to_string());
+        self
+    }
+}
