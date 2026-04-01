@@ -220,6 +220,10 @@ impl StorageDriver for InMemoryStore {
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        // Self-link guard (PROB-019)
+        if source.eq_ignore_ascii_case(target) {
+            anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
+        }
         let mut state = self.state.write().await;
         // Reject duplicates
         let exists = state
@@ -551,6 +555,11 @@ mod tests {
 
         // Duplicate rejection
         assert!(store.add_relation(&prd, &rfc, "informs").await.is_err());
+
+        // Self-link rejection (PROB-019)
+        assert!(store.add_relation(&prd, &prd, "informs").await.is_err());
+        // Case-insensitive self-link
+        assert!(store.add_relation(&prd, &prd.to_uppercase(), "informs").await.is_err());
     }
 
     #[tokio::test]
