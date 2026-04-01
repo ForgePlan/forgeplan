@@ -1896,6 +1896,8 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<EstimateParams>,
     ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::estimate::{calculator, confidence, extractor, scorer, types::*};
+
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -1904,10 +1906,25 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
-            Err(e) => return Ok(err_result(&format!("Failed to get artifact: {e}"))),
+            Err(e) => return Ok(err_result(&format!("Failed to retrieve artifact: {e}"))),
         };
 
-        use forgeplan_core::estimate::{calculator, confidence, extractor, scorer, types::*};
+        // Validate grade param early (C1: 3 agents flagged)
+        if let Some(ref grade_str) = p.grade {
+            if grade_str.parse::<Grade>().is_err() {
+                return Ok(err_result(&format!(
+                    "Invalid grade '{}'. Valid: junior, middle, senior, principal, ai",
+                    grade_str
+                )));
+            }
+        }
+
+        // Validate complexity param length (security W2: DoS protection)
+        if let Some(ref c) = p.complexity {
+            if c.len() > 4096 {
+                return Ok(err_result("complexity parameter too long (max 4096 chars)"));
+            }
+        }
 
         let work_items = extractor::extract_work_items(&record.body);
         let hints = extractor::collect_hints(&record.body, work_items.len(), &record.kind);
@@ -1926,15 +1943,21 @@ impl ForgeplanServer {
             return Ok(json_result(&result));
         }
 
+        // Load config once (C3: 4 agents flagged double read)
+        let ws_config = {
+            let ws_guard = self.workspace_path.read().await;
+            if let Some(ref ws) = *ws_guard {
+                forgeplan_core::workspace::load_config(ws).ok()
+            } else {
+                None
+            }
+        };
+
         // Score: LLM or rule-based
         let mut scored_items = if p.llm_score.unwrap_or(false) {
-            if let Some(ref ws) = *self.workspace_path.read().await {
-                if let Ok(config) = forgeplan_core::workspace::load_config(ws) {
-                    if let Some(llm) = config.llm {
-                        scorer::score_items_with_llm(&work_items, &llm).await
-                    } else {
-                        scorer::score_items(&work_items)
-                    }
+            if let Some(ref cfg) = ws_config {
+                if let Some(ref llm) = cfg.llm {
+                    scorer::score_items_with_llm(&work_items, llm).await
                 } else {
                     scorer::score_items(&work_items)
                 }
@@ -1945,19 +1968,35 @@ impl ForgeplanServer {
             scorer::score_items(&work_items)
         };
 
-        // Manual complexity overrides
+        // Manual complexity overrides with validation (C2: 2 agents flagged)
         if let Some(ref overrides_str) = p.complexity {
             for pair in overrides_str.split(',') {
-                let parts: Vec<&str> = pair.trim().splitn(2, '=').collect();
-                if parts.len() == 2 {
-                    if let Ok(val) = parts[1].trim().parse::<u32>() {
-                        if let Some(cmpl) = Complexity::from_value(val) {
-                            for item in scored_items.iter_mut() {
-                                if item.id == parts[0].trim() {
-                                    item.complexity = cmpl;
-                                }
-                            }
-                        }
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                let parts: Vec<&str> = pair.splitn(2, '=').collect();
+                if parts.len() != 2 {
+                    return Ok(err_result(&format!(
+                        "Invalid complexity override '{}'. Format: FR-001=5", pair
+                    )));
+                }
+                let val: u32 = match parts[1].trim().parse() {
+                    Ok(v) => v,
+                    Err(_) => return Ok(err_result(&format!(
+                        "Invalid number '{}' in complexity override", parts[1].trim()
+                    ))),
+                };
+                let cmpl = match Complexity::from_value(val) {
+                    Some(c) => c,
+                    None => return Ok(err_result(&format!(
+                        "Invalid Fibonacci value {}. Valid: 1, 2, 3, 5, 8, 13", val
+                    ))),
+                };
+                let target_id = parts[0].trim();
+                for item in scored_items.iter_mut() {
+                    if item.id == target_id {
+                        item.complexity = cmpl;
                     }
                 }
             }
@@ -1970,9 +2009,9 @@ impl ForgeplanServer {
         let rels = store.get_relations(&record.id).await.unwrap_or_default();
         let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
         let has_spec = rels.iter().chain(incoming.iter())
-            .any(|(t, _)| t.to_uppercase().starts_with("SPEC-"));
+            .any(|(id, _)| id.to_uppercase().starts_with("SPEC-"));
         let has_evidence = rels.iter().chain(incoming.iter())
-            .any(|(t, _)| t.to_uppercase().starts_with("EVID-"));
+            .any(|(id, _)| id.to_uppercase().starts_with("EVID-"));
 
         let (conf, conf_reasons) = confidence::score_confidence(
             fr_count > 0, fr_count,
@@ -1980,25 +2019,27 @@ impl ForgeplanServer {
             has_spec, has_evidence,
         );
 
-        let config = if let Some(ref ws) = *self.workspace_path.read().await {
-            if let Ok(cfg) = forgeplan_core::workspace::load_config(ws) {
-                if let Some(ref yaml) = cfg.estimate {
-                    EstimateConfig::from_yaml(yaml)
-                } else {
-                    EstimateConfig::default()
-                }
+        // Build estimate config from workspace
+        let config = if let Some(ref cfg) = ws_config {
+            if let Some(ref yaml) = cfg.estimate {
+                EstimateConfig::from_yaml(yaml)
             } else {
                 EstimateConfig::default()
             }
         } else {
             EstimateConfig::default()
         };
+
         let result = calculator::calculate(
             &record.id, &record.title, &scored_items, &config,
             conf, conf_reasons, hints,
         );
 
-        let mut result_json = serde_json::to_value(&result).unwrap_or_default();
+        // Build JSON response with optional grade hint (C4: proper error handling)
+        let mut result_json = match serde_json::to_value(&result) {
+            Ok(v) => v,
+            Err(e) => return Ok(err_result(&format!("Serialization error: {e}"))),
+        };
         if let Some(ref grade_str) = p.grade {
             result_json["highlighted_grade"] = serde_json::Value::String(grade_str.clone());
         }
