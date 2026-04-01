@@ -21,10 +21,10 @@ pub async fn run(
 
     // Header
     println!(
-        "{:<18} {:<10} {:<9} {:<8} {:<20} {}",
-        "TIMESTAMP", "ARTIFACT", "ACTION", "FIELD", "CHANGE", "SOURCE"
+        "{:<18} {:<10} {:<9} {:<8} {:<20} {:<10} {}",
+        "TIMESTAMP", "ARTIFACT", "ACTION", "FIELD", "CHANGE", "SOURCE", "COMMIT"
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(90));
 
     for entry in &entries {
         // Shorten timestamp: "2026-03-31T10:15:00+00:00" → "2026-03-31 10:15"
@@ -48,9 +48,11 @@ pub async fn run(
             (None, None) => "-".to_string(),
         };
 
+        let commit = entry.commit_hash.as_deref().unwrap_or("-");
+
         println!(
-            "{:<18} {:<10} {:<9} {:<8} {:<20} {}",
-            ts, entry.artifact_id, entry.action, field, change, entry.source
+            "{:<18} {:<10} {:<9} {:<8} {:<20} {:<10} {}",
+            ts, entry.artifact_id, entry.action, field, change, entry.source, commit
         );
     }
 

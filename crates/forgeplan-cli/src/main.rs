@@ -422,6 +422,12 @@ enum Commands {
     },
     /// Watch .forgeplan/ files and sync changes to LanceDB in real time
     Watch,
+    /// Sync artifact changes from git operations (pull/merge) into LanceDB
+    GitSync {
+        /// Git ref to diff against (default: ORIG_HEAD from last pull/merge)
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -609,6 +615,7 @@ async fn main() -> anyhow::Result<()> {
             commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await
         }
         Commands::Watch => commands::watch::run().await,
+        Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await
