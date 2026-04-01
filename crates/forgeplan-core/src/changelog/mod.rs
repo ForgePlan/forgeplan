@@ -17,6 +17,8 @@ pub struct ChangeLogEntry {
     pub new_value: Option<String>,
     /// cli, file_edit, git_sync, reindex
     pub source: String,
+    /// Git commit hash (short, 7 chars) — set when source is git_sync
+    pub commit_hash: Option<String>,
 }
 
 impl ChangeLogEntry {
@@ -30,6 +32,7 @@ impl ChangeLogEntry {
             old_value: None,
             new_value: None,
             source: source.to_string(),
+            commit_hash: None,
         }
     }
 
@@ -43,6 +46,12 @@ impl ChangeLogEntry {
     pub fn with_values(mut self, old: Option<&str>, new: Option<&str>) -> Self {
         self.old_value = old.map(|s| s.to_string());
         self.new_value = new.map(|s| s.to_string());
+        self
+    }
+
+    /// Set git commit hash (short form, 7 chars).
+    pub fn with_commit(mut self, hash: &str) -> Self {
+        self.commit_hash = Some(hash.to_string());
         self
     }
 }

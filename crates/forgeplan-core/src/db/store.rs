@@ -772,6 +772,7 @@ impl LanceStore {
                 Arc::new(StringArray::from(vec![entry.old_value.as_deref()])),
                 Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
                 Arc::new(StringArray::from(vec![entry.source.as_str()])),
+                Arc::new(StringArray::from(vec![entry.commit_hash.as_deref()])),
             ],
         )?;
 
@@ -1217,6 +1218,7 @@ fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLog
     let old_value = get_string(batch, "old_value", row);
     let new_value = get_string(batch, "new_value", row);
     let source = get_string(batch, "source", row)?;
+    let commit_hash = get_string(batch, "commit_hash", row);
 
     Some(ChangeLogEntry {
         timestamp,
@@ -1226,6 +1228,7 @@ fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLog
         old_value,
         new_value,
         source,
+        commit_hash,
     })
 }
 
@@ -1243,6 +1246,7 @@ fn empty_change_log_batch(
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // old_value (nullable)
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
             Arc::new(StringArray::from(Vec::<&str>::new())),       // source
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash (nullable)
         ],
     )
 }

@@ -16,6 +16,7 @@ pub mod lifecycle;
 pub mod llm;
 pub mod error;
 pub mod gaps;
+pub mod git;
 pub mod graph;
 pub mod link;
 pub mod progress;

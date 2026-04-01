@@ -124,6 +124,7 @@ pub fn fpf_spec_schema() -> Arc<Schema> {
 /// - old_value     Utf8 (nullable) — previous value (hash for body)
 /// - new_value     Utf8 (nullable) — new value (hash for body)
 /// - source        Utf8 (not null) — cli/file_edit/git_sync/reindex
+/// - commit_hash   Utf8 (nullable) — git commit hash (short, 7 chars)
 pub fn change_log_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("timestamp", DataType::Utf8, false),
@@ -133,6 +134,7 @@ pub fn change_log_schema() -> Arc<Schema> {
         Field::new("old_value", DataType::Utf8, true),
         Field::new("new_value", DataType::Utf8, true),
         Field::new("source", DataType::Utf8, false),
+        Field::new("commit_hash", DataType::Utf8, true),
     ]))
 }
 

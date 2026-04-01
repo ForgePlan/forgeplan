@@ -20,6 +20,7 @@ pub mod gaps;
 pub mod fpf;
 pub mod generate;
 pub mod get;
+pub mod git_sync;
 pub mod graph;
 pub mod health;
 pub mod import_cmd;
