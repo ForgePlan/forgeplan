@@ -256,6 +256,21 @@ struct GenerateParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct EstimateParams {
+    /// Artifact ID to estimate
+    id: String,
+    /// Override grade for all items: junior, middle, senior, principal, ai
+    #[serde(default)]
+    grade: Option<String>,
+    /// Use LLM-based complexity scoring instead of rule-based heuristics
+    #[serde(default)]
+    llm_score: Option<bool>,
+    /// Manual complexity overrides: "FR-001=5,FR-002=3"
+    #[serde(default)]
+    complexity: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
     /// Search query (case-insensitive substring)
     query: String,
@@ -1874,6 +1889,123 @@ impl ForgeplanServer {
             });
 
         Ok(json_result(&report))
+    }
+
+    #[tool(description = "Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring.")]
+    async fn forgeplan_estimate(
+        &self,
+        Parameters(p): Parameters<EstimateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Err(e) => return Ok(err_result(&format!("Failed to get artifact: {e}"))),
+        };
+
+        use forgeplan_core::estimate::{calculator, confidence, extractor, scorer, types::*};
+
+        let work_items = extractor::extract_work_items(&record.body);
+        let hints = extractor::collect_hints(&record.body, work_items.len(), &record.kind);
+
+        if work_items.is_empty() {
+            let result = EstimateResult {
+                artifact_id: record.id.clone(),
+                artifact_title: record.title.clone(),
+                items: vec![],
+                totals: std::collections::HashMap::new(),
+                total_score: 0.0,
+                confidence: 0.0,
+                confidence_reasons: vec![],
+                hints,
+            };
+            return Ok(json_result(&result));
+        }
+
+        // Score: LLM or rule-based
+        let mut scored_items = if p.llm_score.unwrap_or(false) {
+            if let Some(ref ws) = *self.workspace_path.read().await {
+                if let Ok(config) = forgeplan_core::workspace::load_config(ws) {
+                    if let Some(llm) = config.llm {
+                        scorer::score_items_with_llm(&work_items, &llm).await
+                    } else {
+                        scorer::score_items(&work_items)
+                    }
+                } else {
+                    scorer::score_items(&work_items)
+                }
+            } else {
+                scorer::score_items(&work_items)
+            }
+        } else {
+            scorer::score_items(&work_items)
+        };
+
+        // Manual complexity overrides
+        if let Some(ref overrides_str) = p.complexity {
+            for pair in overrides_str.split(',') {
+                let parts: Vec<&str> = pair.trim().splitn(2, '=').collect();
+                if parts.len() == 2 {
+                    if let Ok(val) = parts[1].trim().parse::<u32>() {
+                        if let Some(cmpl) = Complexity::from_value(val) {
+                            for item in scored_items.iter_mut() {
+                                if item.id == parts[0].trim() {
+                                    item.complexity = cmpl;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Confidence
+        let fr_count = work_items.iter().filter(|w| w.source == ItemSource::Fr).count();
+        let phase_count = work_items.iter().filter(|w| w.source == ItemSource::Phase).count();
+
+        let rels = store.get_relations(&record.id).await.unwrap_or_default();
+        let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
+        let has_spec = rels.iter().chain(incoming.iter())
+            .any(|(t, _)| t.to_uppercase().starts_with("SPEC-"));
+        let has_evidence = rels.iter().chain(incoming.iter())
+            .any(|(t, _)| t.to_uppercase().starts_with("EVID-"));
+
+        let (conf, conf_reasons) = confidence::score_confidence(
+            fr_count > 0, fr_count,
+            phase_count > 0, phase_count,
+            has_spec, has_evidence,
+        );
+
+        let config = if let Some(ref ws) = *self.workspace_path.read().await {
+            if let Ok(cfg) = forgeplan_core::workspace::load_config(ws) {
+                if let Some(ref yaml) = cfg.estimate {
+                    EstimateConfig::from_yaml(yaml)
+                } else {
+                    EstimateConfig::default()
+                }
+            } else {
+                EstimateConfig::default()
+            }
+        } else {
+            EstimateConfig::default()
+        };
+        let result = calculator::calculate(
+            &record.id, &record.title, &scored_items, &config,
+            conf, conf_reasons, hints,
+        );
+
+        let mut result_json = serde_json::to_value(&result).unwrap_or_default();
+        if let Some(ref grade_str) = p.grade {
+            result_json["highlighted_grade"] = serde_json::Value::String(grade_str.clone());
+        }
+        match serde_json::to_string_pretty(&result_json) {
+            Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("Serialization error: {e}"))])),
+        }
     }
 }
 

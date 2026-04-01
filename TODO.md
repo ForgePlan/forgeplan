@@ -29,6 +29,20 @@
 - [x] ArtifactKind::Memory with mem- prefix
 - [x] DRY helpers in common.rs + 3 tests
 
+### P0: Quality Cycle Sprint (v0.12.0) ✅
+- [x] 17 MUST gaps → 0 (enable --depth update)
+- [x] Evidence parser: ignores template placeholders (CL0→CL3)
+- [x] LLM scorer (RFC-005 Phase 3): --llm-score flag, PR #79
+- [x] Hints system: 9 commands, 11 tests, shared hints.rs
+- [x] Domain inference: frontmatter → keywords → LLM (3-level)
+- [x] Manual complexity override: --complexity "FR-001=8"
+- [x] Spec/Evidence confidence boost: +15%/+20%
+- [x] forgeplan link body reset fix (PR #75)
+- [x] dotenvy for .env API keys
+- [x] Template FR filtering, keyword TaskType improvements
+- [x] 40 commands smoke-tested
+- [x] Release v0.12.0 tagged + installed
+
 ### P0: Integrity Issues (PROB-012 dogfood audit) ✅
 - [x] **Semantic search broken** — feature flag propagated CLI→core via Cargo.toml
 - [x] **R_eff divergence** — update_r_eff_score() persists to LanceDB, NaN guard
@@ -37,6 +51,14 @@
 - [x] **route underestimates** — 4 keyword triggers + 2 heuristics added
 
 Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 403 tests.
+
+---
+
+## Known Issues
+- [ ] **changelog commit_hash**: LanceDB schema migration — old workspaces lack `commit_hash` column. `forgeplan update` logs warning. Fix: reinit workspace or add column migration.
+- [x] **RFC-005 3.2**: estimate MCP tool — grade param wired (Sprint 1 housekeeping).
+- [ ] **1 STUB artifact**: unidentified, low priority.
+- [ ] **e2e_coverage_backfill test**: pre-existing failure, unrelated to v0.12 changes.
 
 ---
 
@@ -49,11 +71,13 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 | PROB-003 | Done | Dead statuses → solved by PRD-007 lifecycle | ✅ |
 | PROB-004 | Done | Agent drift → solved by PRD-010 hooks | ✅ |
 | PROB-005 | Done | Cold start → solved by PRD-012 init --scan | ✅ |
-| PROB-006 | Done | Routing misses UX scope → solved by PROB-012 keyword expansion | ✅ |
+| PROB-006 | Deprecated | Routing misses UX scope → fixed v0.11, keywords expanded | ✅ |
 | PROB-009 | Deprecated | F-G-R Granularity → future PRD scope | ⚠️ |
-| PROB-010 | Tracked | Markdown projections not updated → design decision (ADR-002) | 📋 |
-| PROB-012 | Done | Feature integrity gap → 5 fixes, 2 audit rounds | ✅ |
-| PROB-013 | Done | R_eff includes deprecated/draft in chain → skip non-active | ✅ |
+| PROB-010 | Deprecated | Markdown projections → fixed by RFC-004 files-first | ✅ |
+| PROB-012 | Deprecated | Feature integrity gap → 5 fixes, 2 audit rounds | ✅ |
+| PROB-013 | Deleted | R_eff skip non-active → implemented in ADR-002, deleted | ✅ |
+| PROB-014 | Deprecated | Smart search gaps → fixed v0.12, real cosine | ✅ |
+| PROB-016 | Deprecated | CLI quality → 13 fixes, 6-agent audit | ✅ |
 
 ---
 
@@ -78,7 +102,7 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [x] **PROB-013** — R_eff skip deprecated/draft in recursive chain (ADR-002)
 - [x] **Tree visual** — evidence/note show `··` instead of `0.00`
 - [x] **METHODOLOGY-COURSE.md** — Chapter 8 added (tree, coverage, hooks, R_eff rules)
-- [ ] **PRD-019 Layer 3** — MCP session state machine (next sprint)
+- [ ] **PRD-019 Layer 3** — MCP session state machine (backlog, PRD-019 activated)
 
 ### P2: Route & Enforcement (from usability testing)
 - [x] **Route gap**: added "new command/feature" keywords (English)
@@ -131,12 +155,14 @@ EVID-034. 532 tests. **Deferred**: fgr/blindspots redundancy, graph filtering, d
 - [ ] **Phase 3**: SQLite driver + feature flags
 - [ ] **Phase 4**: Config-driven selection + forgeplan init shows drivers
 
-### P2: Architecture — Files as Source of Truth (ADR-003, v0.13)
-- [ ] Invert direction: .md files = truth, LanceDB = index
-- [ ] File watcher (notify crate) for auto-reindex
-- [ ] `forgeplan reindex` — one-time full re-sync from .md files
-- [ ] R_eff computed on-the-fly from evidence files (not stored)
-- [ ] Links in frontmatter `related:` field (not separate DB table)
+### P2: Architecture — Files as Source of Truth (ADR-003, RFC-004) ✅
+- [x] Invert direction: .md files = truth, LanceDB = index (RFC-004 Phase 1, PR #67)
+- [x] File watcher (notify crate) for auto-reindex (RFC-004 Phase 2, PR #69)
+- [x] `forgeplan reindex` — one-time full re-sync from .md files (PR #71)
+- [x] R_eff computed on-the-fly from evidence files (not stored)
+- [x] Links in frontmatter `related:` field (RFC-004 Phase 1)
+- [x] Change log tracking (RFC-004 Phase 3, PR #69)
+- [x] Git-sync integration (RFC-004 Phase 4, PRs #80-#81)
 
 ### P2: Polish
 - [x] Binary size optimization — release profile 163MB→41MB (-75%)
