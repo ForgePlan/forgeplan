@@ -88,12 +88,15 @@ pub async fn run(
     let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
 
     // Check linked Spec and Evidence for confidence boost
-    let relations = store.get_relations(&record.id).await.unwrap_or_default();
+    // Outgoing: this artifact → target (e.g., PRD → SPEC)
+    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
+    // Incoming: source → this artifact (e.g., EVID → PRD)
     let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
-    let all_rels: Vec<_> = relations.iter().chain(incoming.iter()).collect();
 
-    let has_spec = all_rels.iter().any(|(target, _)| target.to_uppercase().starts_with("SPEC-"));
-    let has_evidence = all_rels.iter().any(|(target, _)| target.to_uppercase().starts_with("EVID-"));
+    let has_spec = outgoing.iter().any(|(target, _)| target.to_uppercase().starts_with("SPEC-"))
+        || incoming.iter().any(|(source, _)| source.to_uppercase().starts_with("SPEC-"));
+    let has_evidence = outgoing.iter().any(|(target, _)| target.to_uppercase().starts_with("EVID-"))
+        || incoming.iter().any(|(source, _)| source.to_uppercase().starts_with("EVID-"));
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
@@ -280,10 +283,21 @@ fn infer_domain(title: &str, body: &str) -> String {
 }
 
 /// Extract `domain:` value from YAML frontmatter in body.
+/// Only searches within a `---` delimited frontmatter block to avoid matching body text.
 fn extract_frontmatter_domain(body: &str) -> Option<String> {
+    let mut in_frontmatter = false;
     for line in body.lines().take(30) {
         let trimmed = line.trim();
-        if trimmed.starts_with("domain:") {
+        if trimmed == "---" {
+            if !in_frontmatter {
+                in_frontmatter = true;
+                continue;
+            } else {
+                // End of frontmatter
+                break;
+            }
+        }
+        if in_frontmatter && trimmed.starts_with("domain:") {
             let value = trimmed[7..].trim().trim_matches('"').trim();
             if !value.is_empty() {
                 return Some(value.to_string());
