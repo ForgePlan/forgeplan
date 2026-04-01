@@ -31,14 +31,14 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     common::log_change_field(&store, id, "update", "status", Some(&old_status), Some("active"), "cli").await;
 
     if result.forced {
-        println!("  Activated {id} (draft → active)");
+        println!("  Activated {id} ({old_status} → active)");
         println!(
             "  Warning: Activated with {} validation error{}",
             result.must_errors.len(),
             if result.must_errors.len() == 1 { "" } else { "s" }
         );
     } else {
-        println!("  Activated {id} (draft → active)");
+        println!("  Activated {id} ({old_status} → active)");
     }
 
     // Hints: suggest evidence if not linked

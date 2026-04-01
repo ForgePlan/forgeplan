@@ -2035,3 +2035,89 @@ fn e2e_reff_skips_deprecated_dependency() {
     let r_eff = json["r_eff"].as_f64().unwrap_or(0.0);
     assert!(r_eff > 0.0, "R_eff should be > 0 when dependency is deprecated, got {r_eff}");
 }
+
+// -----------------------------------------------------------------------
+// BUG-001: scan --path outside project root → exit 1
+// -----------------------------------------------------------------------
+
+#[test]
+fn scan_path_traversal_rejected() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["scan", "--path", "/tmp"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("outside project root").or(
+            predicate::str::contains("does not exist"),
+        ));
+}
+
+#[test]
+fn scan_path_relative_traversal_rejected() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["scan", "--path", "../../etc"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+// -----------------------------------------------------------------------
+// BUG-002: unlink non-existent relation → exit 1
+// -----------------------------------------------------------------------
+
+#[test]
+fn unlink_nonexistent_relation_fails() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Test PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["unlink", "PRD-001", "RFC-999", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+// -----------------------------------------------------------------------
+// BUG-003: activate shows real old_status, not hardcoded "draft"
+// -----------------------------------------------------------------------
+
+#[test]
+fn activate_shows_correct_transition_status() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create and activate a note (no validation gate)
+    forgeplan()
+        .args(["new", "note", "Test Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft → active"));
+}

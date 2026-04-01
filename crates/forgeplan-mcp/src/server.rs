@@ -19,6 +19,7 @@ use forgeplan_core::link;
 use forgeplan_core::progress;
 use forgeplan_core::projection;
 use forgeplan_core::artifact::frontmatter::Frontmatter;
+use forgeplan_core::estimate::{calculator, confidence, domain, extractor, overrides, scorer, types::*};
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem};
 use forgeplan_core::template::{get_embedded_template, render_template};
@@ -70,6 +71,25 @@ impl ForgeplanServer {
             .await
             .clone()
             .ok_or_else(|| "Workspace not initialized. Call forgeplan_init first.".into())
+    }
+
+    /// Load workspace config once. Returns None if workspace not initialized or config missing.
+    async fn load_workspace_config(&self) -> Option<forgeplan_core::config::types::Config> {
+        let ws_guard = self.workspace_path.read().await;
+        let ws = ws_guard.as_ref()?;
+        forgeplan_core::workspace::load_config(ws).ok()
+    }
+
+    /// Build EstimateConfig from workspace config, falling back to defaults.
+    fn build_estimate_config(
+        &self,
+        ws_config: &Option<forgeplan_core::config::types::Config>,
+    ) -> EstimateConfig {
+        ws_config
+            .as_ref()
+            .and_then(|cfg| cfg.estimate.as_ref())
+            .map(EstimateConfig::from_yaml)
+            .unwrap_or_default()
     }
 }
 
@@ -253,6 +273,24 @@ struct GenerateParams {
     kind: String,
     /// Natural language description of what to generate
     description: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct EstimateParams {
+    /// Artifact ID to estimate
+    id: String,
+    /// Override grade for all items: junior, middle, senior, principal, ai
+    #[serde(default)]
+    grade: Option<String>,
+    /// Auto-detect grade from config grade_profile + artifact domain inference
+    #[serde(default)]
+    my_grade: Option<bool>,
+    /// Use LLM-based complexity scoring instead of rule-based heuristics
+    #[serde(default)]
+    llm_score: Option<bool>,
+    /// Manual complexity overrides: "FR-001=5,FR-002=3"
+    #[serde(default)]
+    complexity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1874,6 +1912,138 @@ impl ForgeplanServer {
             });
 
         Ok(json_result(&report))
+    }
+
+    #[tool(description = "Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring.")]
+    async fn forgeplan_estimate(
+        &self,
+        Parameters(p): Parameters<EstimateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Err(e) => return Ok(err_result(&format!("Failed to retrieve artifact: {e}"))),
+        };
+
+        // Validate grade param early
+        if let Some(ref grade_str) = p.grade {
+            if grade_str.parse::<Grade>().is_err() {
+                return Ok(err_result(&format!(
+                    "Invalid grade '{}'. Valid: junior, middle, senior, principal, ai",
+                    grade_str
+                )));
+            }
+        }
+
+        // Validate complexity param length (DoS protection)
+        if let Some(ref c) = p.complexity {
+            if c.len() > 4096 {
+                return Ok(err_result("complexity parameter too long (max 4096 chars)"));
+            }
+        }
+
+        let work_items = extractor::extract_work_items(&record.body);
+        let hints = extractor::collect_hints(&record.body, work_items.len(), &record.kind);
+
+        if work_items.is_empty() {
+            let result = EstimateResult {
+                artifact_id: record.id.clone(),
+                artifact_title: record.title.clone(),
+                items: vec![],
+                totals: std::collections::HashMap::new(),
+                total_score: 0.0,
+                confidence: 0.0,
+                confidence_reasons: vec![],
+                hints,
+            };
+            return Ok(json_result(&result));
+        }
+
+        // Load config once from workspace
+        let ws_config = self.load_workspace_config().await;
+
+        // Score: LLM or rule-based
+        let llm_config = ws_config.as_ref().and_then(|c| c.llm.as_ref());
+        let mut scored_items = if p.llm_score.unwrap_or(false) {
+            if let Some(llm) = llm_config {
+                scorer::score_items_with_llm(&work_items, llm).await
+            } else {
+                scorer::score_items(&work_items)
+            }
+        } else {
+            scorer::score_items(&work_items)
+        };
+
+        // Manual complexity overrides via shared core logic
+        if let Some(ref overrides_str) = p.complexity {
+            match overrides::parse_complexity_overrides(overrides_str) {
+                Ok(map) => overrides::apply_overrides(&mut scored_items, &map),
+                Err(e) => return Ok(err_result(&e.to_string())),
+            }
+        }
+
+        // Confidence — log relation errors instead of swallowing
+        let fr_count = work_items.iter().filter(|w| w.source == ItemSource::Fr).count();
+        let phase_count = work_items.iter().filter(|w| w.source == ItemSource::Phase).count();
+
+        let rels = match store.get_relations(&record.id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Failed to get relations for {}: {e}", record.id);
+                vec![]
+            }
+        };
+        let incoming = match store.get_incoming_relations(&record.id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Failed to get incoming relations for {}: {e}", record.id);
+                vec![]
+            }
+        };
+        let has_spec = rels.iter().chain(incoming.iter())
+            .any(|(id, _)| id.to_uppercase().starts_with("SPEC-"));
+        let has_evidence = rels.iter().chain(incoming.iter())
+            .any(|(id, _)| id.to_uppercase().starts_with("EVID-"));
+
+        let (conf, conf_reasons) = confidence::score_confidence(
+            fr_count > 0, fr_count,
+            phase_count > 0, phase_count,
+            has_spec, has_evidence,
+        );
+
+        // Build estimate config from workspace
+        let config = self.build_estimate_config(&ws_config);
+
+        let result = calculator::calculate(
+            &record.id, &record.title, &scored_items, &config,
+            conf, conf_reasons, hints,
+        );
+
+        // Build JSON response with optional grade hint
+        let mut result_json = match serde_json::to_value(&result) {
+            Ok(v) => v,
+            Err(e) => return Ok(err_result(&format!("Serialization error: {e}"))),
+        };
+
+        // Resolve highlighted grade: explicit grade > my_grade (auto-domain) > none
+        if let Some(ref grade_str) = p.grade {
+            result_json["highlighted_grade"] = serde_json::Value::String(grade_str.clone());
+        } else if p.my_grade.unwrap_or(false) {
+            let inferred_domain = domain::infer_domain(&record.title, &record.body);
+            let resolved = config.resolve_grade(&inferred_domain);
+            result_json["highlighted_grade"] = serde_json::Value::String(resolved.to_string());
+            result_json["inferred_domain"] = serde_json::Value::String(inferred_domain);
+        }
+
+        match serde_json::to_string_pretty(&result_json) {
+            Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("Serialization error: {e}"))])),
+        }
     }
 }
 
