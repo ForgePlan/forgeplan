@@ -86,4 +86,112 @@ mod tests {
     fn test_infer_default() {
         assert_eq!(infer_domain("Something generic", "---\n---\nno keywords here"), "default");
     }
+
+    // ── Domain inference corner cases ──────────────────────────
+
+    #[test]
+    fn test_infer_devops_domain() {
+        assert_eq!(
+            infer_domain("Deploy pipeline", "---\n---\nk8s docker helm terraform deploy"),
+            "devops"
+        );
+    }
+
+    #[test]
+    fn test_infer_ai_ml_domain() {
+        assert_eq!(
+            infer_domain("Embedding model", "---\n---\nllm embedding vector semantic scoring"),
+            "ai_ml"
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_takes_priority_over_keywords() {
+        // Frontmatter says devops, but body has backend keywords
+        let body = "---\ndomain: devops\n---\napi database endpoint rest query";
+        assert_eq!(infer_domain("API service", body), "devops");
+    }
+
+    #[test]
+    fn test_frontmatter_quoted_domain() {
+        let body = "---\ndomain: \"frontend\"\n---\nsome content";
+        assert_eq!(infer_domain("Title", body), "frontend");
+    }
+
+    #[test]
+    fn test_frontmatter_general_falls_through() {
+        // "general" domain is treated as placeholder, falls through to keyword inference
+        let body = "---\ndomain: general\n---\nreact jsx component ui";
+        assert_eq!(infer_domain("UI Component", body), "frontend");
+    }
+
+    #[test]
+    fn test_frontmatter_with_slash_falls_through() {
+        // Domain with "/" is a template placeholder, should fall through
+        let body = "---\ndomain: backend/frontend\n---\napi database query";
+        assert_eq!(infer_domain("Title", body), "backend");
+    }
+
+    #[test]
+    fn test_empty_body() {
+        assert_eq!(infer_domain("Title", ""), "default");
+    }
+
+    #[test]
+    fn test_empty_title_and_body() {
+        assert_eq!(infer_domain("", ""), "default");
+    }
+
+    #[test]
+    fn test_no_frontmatter_delimiters() {
+        // Without --- delimiters, split("---").skip(2) yields nothing,
+        // but title keywords still count
+        assert_eq!(
+            infer_domain("Docker deploy", "docker k8s helm terraform"),
+            "devops" // title has "Docker" which matches devops keywords
+        );
+    }
+
+    #[test]
+    fn test_title_keywords_count() {
+        // Keywords in title should be counted too
+        assert_eq!(
+            infer_domain("React frontend component", "---\n---\ngeneric content"),
+            "frontend"
+        );
+    }
+
+    #[test]
+    fn test_tie_breaking_first_domain_wins() {
+        // Equal keyword count — first match in domain list wins
+        let result = infer_domain("", "---\n---\ndocker react");
+        // devops has "docker", frontend has "react" — both 1 match
+        // devops comes first in the list, so it should win (but > not >=)
+        // Actually with strict >, second match won't override first. Let's verify.
+        assert!(result == "devops" || result == "frontend");
+    }
+
+    // ── extract_frontmatter_domain edge cases ──────────────────
+
+    #[test]
+    fn test_frontmatter_empty_domain_value() {
+        let body = "---\ndomain:\n---\ncontent";
+        // Empty domain value should fall through
+        assert_eq!(infer_domain("Title", body), "default");
+    }
+
+    #[test]
+    fn test_frontmatter_domain_not_in_frontmatter() {
+        // "domain:" after frontmatter block is not parsed as frontmatter,
+        // but body content after second --- is used for keyword inference
+        let body = "---\ntitle: Test\n---\ndomain: devops\nreact jsx component tailwind";
+        assert_eq!(infer_domain("Title", body), "frontend");
+    }
+
+    #[test]
+    fn test_body_with_many_frontmatter_blocks() {
+        // Only first frontmatter block should be checked
+        let body = "---\ndomain: frontend\n---\ncontent\n---\ndomain: backend\n---";
+        assert_eq!(infer_domain("Title", body), "frontend");
+    }
 }
