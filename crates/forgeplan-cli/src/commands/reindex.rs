@@ -58,6 +58,7 @@ pub async fn run() -> anyhow::Result<()> {
                     // Compare body — sync if different
                     if record.body.trim() != body.trim() {
                         store.update_body(&id, &body).await?;
+                        common::log_change(&store, &id, "update", "reindex").await;
                         println!("  SYNC {} — body updated from file", id);
                         synced += 1;
                     } else {
@@ -84,6 +85,7 @@ pub async fn run() -> anyhow::Result<()> {
                     };
 
                     store.create_artifact(&artifact).await?;
+                    common::log_change(&store, &id, "create", "reindex").await;
                     println!("  NEW  {} — created from file", id);
                     synced += 1;
                 }
@@ -116,6 +118,47 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
-    println!("\nReindex complete: {} synced, {} unchanged, {} errors.", synced, skipped, errors);
+    // Phase 2: Remove DB records whose .md file no longer exists (files-first cleanup)
+    let mut removed = 0usize;
+    let all_records = store.list_records(None).await?;
+    for record in &all_records {
+        let kind: forgeplan_core::artifact::types::ArtifactKind =
+            match record.kind.parse() {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+        let dir = ws.join(kind.dir_name());
+        let slug = forgeplan_core::artifact::types::slugify(&record.title);
+        let filename = format!("{}-{}.md", record.id, slug);
+        let filepath = dir.join(&filename);
+
+        if !filepath.exists() {
+            // Double-check: maybe file exists with different slug (title changed)
+            let mut found = false;
+            if dir.exists() {
+                if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+                    while let Ok(Some(entry)) = rd.next_entry().await {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.to_uppercase().starts_with(&record.id.to_uppercase()) && name.ends_with(".md") {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !found {
+                store.delete_artifact(&record.id).await?;
+                common::log_change(&store, &record.id, "delete", "reindex").await;
+                println!("  DEL  {} — no .md file found, removed from DB", record.id);
+                removed += 1;
+            }
+        }
+    }
+
+    println!(
+        "\nReindex complete: {} synced, {} unchanged, {} removed, {} errors.",
+        synced, skipped, removed, errors
+    );
     Ok(())
 }
