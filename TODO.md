@@ -19,8 +19,8 @@
 - [x] **BUG-002 (P2):** `unlink` не проверяет существование связи — added existence check (link.rs)
 - [x] **BUG-003 (P3):** lifecycle transition message "draft → active" hardcoded — uses old_status (activate.rs)
 - [x] 2 new unit tests for delete_relation (store.rs)
-- [ ] Create Evidence EVID-040 + link to PROB-018
-- [ ] Audit + PR
+- [x] Create Evidence EVID-040 + link to PROB-018
+- [x] Audit (4-agent: logic+security+rust+task) + PR #85 merged
 
 ### P0: Estimate Engine (PRD-022) ✅
 - [x] PRD-022 shaped + validated (8 FR, 3 journeys)
