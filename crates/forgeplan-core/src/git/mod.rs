@@ -58,7 +58,8 @@ pub fn changed_artifact_files(
             ".forgeplan/",
         ])
         .current_dir(repo_root)
-        .output()?;
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run git (is git installed?): {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -183,12 +183,12 @@ impl LanceStore {
         let relations = db.open_table("relations").execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
 
-        // Run migrations (idempotent — safe on every open)
-        migrate::run_migrations(&artifacts, &relations).await?;
-
         // Ensure change_log table exists (migration for older workspaces)
         migrate::ensure_change_log(&db).await?;
         let change_log = db.open_table("change_log").execute().await.ok();
+
+        // Run migrations (idempotent — safe on every open)
+        migrate::run_migrations(&artifacts, &relations, change_log.as_ref()).await?;
 
         Ok(Self {
             _db: db,

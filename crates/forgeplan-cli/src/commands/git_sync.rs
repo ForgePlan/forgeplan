@@ -164,7 +164,9 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 synced += 1;
             }
             _ => {
-                // R (rename), C (copy), etc. — treat as modified
+                // R (rename), C (copy), etc. — skip silently.
+                // Renames produce two-path output that our parser doesn't handle.
+                // The renamed file will be picked up on next reindex.
                 continue;
             }
         }
@@ -182,8 +184,11 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
 fn extract_id_from_path(path: &str) -> Option<String> {
     let filename = path.rsplit('/').next()?;
     let stem = filename.strip_suffix(".md")?;
-    // ID is everything before the first '-' after the prefix
-    // e.g., "PRD-001-auth-system" → "PRD-001"
+    // mem- IDs are full slugs (mem-llm-routing), not "PREFIX-NNN"
+    if stem.starts_with("mem-") {
+        return Some(stem.to_string());
+    }
+    // Standard IDs: PREFIX-NNN-slug → "PREFIX-NNN"
     let parts: Vec<&str> = stem.splitn(3, '-').collect();
     if parts.len() >= 2 {
         Some(format!("{}-{}", parts[0], parts[1]))
@@ -223,8 +228,19 @@ mod tests {
 
     #[test]
     fn extract_id_basic() {
-        // Actually test the real logic
         assert_eq!(extract_id_from_path("prds/PRD-001-foo.md"), Some("PRD-001".to_string()));
         assert_eq!(extract_id_from_path("RFC-004-bar.md"), Some("RFC-004".to_string()));
+    }
+
+    #[test]
+    fn extract_id_memory_slug() {
+        assert_eq!(
+            extract_id_from_path(".forgeplan/memory/mem-llm-routing.md"),
+            Some("mem-llm-routing".to_string())
+        );
+        assert_eq!(
+            extract_id_from_path(".forgeplan/memory/mem-api-prefix-is-v1.md"),
+            Some("mem-api-prefix-is-v1".to_string())
+        );
     }
 }
