@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::types::{ItemSource, WorkItem};
+use super::types::{EstimateHint, HintLevel, ItemSource, WorkItem};
 
 /// Extract work items from an artifact's markdown body.
 /// Supports: FR table rows from PRD, Phase checklist items from RFC.
@@ -18,6 +18,72 @@ pub fn extract_work_items(body: &str) -> Vec<WorkItem> {
     items
 }
 
+/// Collect hints about artifact quality issues affecting estimates.
+pub fn collect_hints(body: &str, extracted_count: usize, kind: &str) -> Vec<EstimateHint> {
+    let mut hints = Vec::new();
+
+    // Detect template placeholder FRs that were filtered out
+    let total_fr_rows = count_fr_rows(body);
+    let template_count = total_fr_rows.saturating_sub(extracted_count);
+    if template_count > 0 {
+        hints.push(EstimateHint {
+            level: HintLevel::Warning,
+            message: format!(
+                "{} FR row(s) contain template placeholders (\"[Actor] can [capability]\") and were skipped",
+                template_count
+            ),
+            action: Some(format!(
+                "Fill in FR descriptions in the PRD with real requirements"
+            )),
+        });
+    }
+
+    // No items at all
+    if extracted_count == 0 {
+        let suggestion = match kind {
+            "prd" => "Add FR table: | FR-001 | Core | Must | User can ... | Journey 1 |",
+            "rfc" => "Add Phase checklist: - [ ] **1.1** Description",
+            _ => "Add FR table to PRD or Phase checklist to RFC",
+        };
+        hints.push(EstimateHint {
+            level: HintLevel::Warning,
+            message: "No estimable work items found".to_string(),
+            action: Some(suggestion.to_string()),
+        });
+    }
+
+    // Low item count
+    if extracted_count > 0 && extracted_count <= 2 {
+        hints.push(EstimateHint {
+            level: HintLevel::Info,
+            message: format!("Only {} item(s) — estimate may be incomplete", extracted_count),
+            action: Some("Consider breaking down into more granular FR/Phase items".to_string()),
+        });
+    }
+
+    // Confidence boost suggestions
+    let has_fr = body.contains("| FR-");
+    let has_phases = body.contains("- [ ] **") || body.contains("- [x] **");
+    if has_fr && !has_phases {
+        hints.push(EstimateHint {
+            level: HintLevel::Suggestion,
+            message: "Create an RFC with Implementation Phases for +25% confidence".to_string(),
+            action: Some("forgeplan new rfc \"<title>\"".to_string()),
+        });
+    }
+
+    hints
+}
+
+/// Count total FR table rows (including template placeholders).
+fn count_fr_rows(body: &str) -> usize {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(
+        r"(?m)^\|\s*FR-\d+\s*\|"
+    ).expect("valid regex"));
+    re.find_iter(body).count()
+}
+
 /// Extract FR rows from a markdown table in PRD.
 /// Expected format: | FR-001 | Core | Must | [Actor] can [capability] | Journey 1 |
 fn extract_fr_table(body: &str) -> Vec<WorkItem> {
@@ -27,26 +93,47 @@ fn extract_fr_table(body: &str) -> Vec<WorkItem> {
     ).expect("valid regex"));
 
     re.captures_iter(body)
-        .map(|cap| WorkItem {
-            id: cap[1].to_string(),
-            description: cap[4].trim().to_string(),
-            category: cap[2].trim().to_string(),
-            priority: cap[3].trim().to_string(),
-            source: ItemSource::Fr,
+        .filter_map(|cap| {
+            let desc = cap[4].trim().to_string();
+            // Skip template placeholders — unfilled FR are noise
+            if is_template_placeholder(&desc) {
+                return None;
+            }
+            Some(WorkItem {
+                id: cap[1].to_string(),
+                description: desc,
+                category: cap[2].trim().to_string(),
+                priority: cap[3].trim().to_string(),
+                source: ItemSource::Fr,
+            })
         })
         .collect()
 }
 
+/// Detect template placeholder descriptions that were never filled in.
+fn is_template_placeholder(desc: &str) -> bool {
+    let d = desc.trim();
+    d == "[Actor] can [capability]"
+        || d.starts_with("{")
+        || d.starts_with("[Actor]")
+        || d == "..."
+        || d == "TBD"
+        || d.is_empty()
+}
+
 /// Extract Phase checklist items from RFC.
-/// Expected format: - [ ] **1.1** Description here
-///                  - [x] **2.3** Already done
+/// Supports multiple formats:
+///   - [ ] **1.1** Description        (standard forgeplan format)
+///   - [ ] Step 1: Description         (simple checklist)
+///   - [ ] Description                 (plain checklist, auto-numbered)
 fn extract_phase_items(body: &str) -> Vec<WorkItem> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(
+    // Format 1: - [ ] **1.1** Description (standard)
+    static RE_STANDARD: OnceLock<Regex> = OnceLock::new();
+    let re_standard = RE_STANDARD.get_or_init(|| Regex::new(
         r"(?m)^- \[[ x]\] \*\*(\d+\.\d+)\*\*\s+(.+)$"
     ).expect("valid regex"));
 
-    re.captures_iter(body)
+    let mut items: Vec<WorkItem> = re_standard.captures_iter(body)
         .map(|cap| WorkItem {
             id: format!("P{}", cap[1].to_string()),
             description: cap[2].trim().to_string(),
@@ -54,7 +141,36 @@ fn extract_phase_items(body: &str) -> Vec<WorkItem> {
             priority: "Must".to_string(),
             source: ItemSource::Phase,
         })
-        .collect()
+        .collect();
+
+    // If standard format found items, return them
+    if !items.is_empty() {
+        return items;
+    }
+
+    // Format 2: - [ ] Description (plain checklist, under ## Implementation / ## Phase headers)
+    static RE_PLAIN: OnceLock<Regex> = OnceLock::new();
+    let re_plain = RE_PLAIN.get_or_init(|| Regex::new(
+        r"(?m)^- \[[ x]\]\s+(.+)$"
+    ).expect("valid regex"));
+
+    let mut counter = 0u32;
+    for cap in re_plain.captures_iter(body) {
+        let desc = cap[1].trim().to_string();
+        if is_template_placeholder(&desc) {
+            continue;
+        }
+        counter += 1;
+        items.push(WorkItem {
+            id: format!("P0.{}", counter),
+            description: desc,
+            category: "Implementation".to_string(),
+            priority: "Must".to_string(),
+            source: ItemSource::Phase,
+        });
+    }
+
+    items
 }
 
 #[cfg(test)]
@@ -127,5 +243,54 @@ mod tests {
         let body = "# Just a title\n\nSome regular text without FR or Phase items.";
         let items = extract_work_items(body);
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn template_fr_rows_are_filtered_out() {
+        let body = r#"
+| ID | Category | Priority | Requirement | Journey |
+|----|----------|----------|-------------|---------|
+| FR-001 | Core | Must | [Actor] can [capability] | Journey 1 |
+| FR-002 | Core | Must | User can search artifacts by keyword | Journey 1 |
+| FR-003 | UX | Should | [Actor] can [capability] | Journey 2 |
+"#;
+        let items = extract_fr_table(body);
+        assert_eq!(items.len(), 1, "Only filled FR should be extracted");
+        assert_eq!(items[0].id, "FR-002");
+        assert!(items[0].description.contains("search"));
+    }
+
+    #[test]
+    fn plain_checklist_fallback() {
+        let body = r#"
+## Implementation Phases
+
+### Phase 1: Core
+- [ ] Set up project structure
+- [x] Define data model
+- [ ] Implement CRUD operations
+
+### Phase 2: Polish
+- [ ] Add error handling
+"#;
+        let items = extract_phase_items(body);
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].id, "P0.1");
+        assert!(items[0].description.contains("project structure"));
+        assert_eq!(items[2].id, "P0.3");
+        assert!(items[2].description.contains("CRUD"));
+    }
+
+    #[test]
+    fn standard_format_takes_priority_over_plain() {
+        let body = r#"
+- [ ] **1.1** Create types.rs
+- [ ] **1.2** Create parser.rs
+- [ ] Some plain checklist item
+"#;
+        let items = extract_phase_items(body);
+        // Standard format found — plain items ignored
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "P1.1");
     }
 }

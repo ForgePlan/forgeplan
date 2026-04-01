@@ -7,7 +7,7 @@ use lancedb::table::NewColumnTransform;
 use lancedb::Table;
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Run all pending migrations on the artifacts table.
 /// Idempotent — safe to run multiple times.
@@ -78,6 +78,7 @@ pub async fn ensure_change_log(
                 Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
                 Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
                 Arc::new(StringArray::from(Vec::<&str>::new())),
+                Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash
             ],
         ).map_err(|e: ArrowError| anyhow::anyhow!("Failed to create change_log batch: {}", e))?;
         db.create_table("change_log", vec![batch]).execute().await?;
@@ -86,9 +87,37 @@ pub async fn ensure_change_log(
     Ok(())
 }
 
+/// Migrate existing change_log table to add commit_hash column (v2→v3).
+pub async fn migrate_change_log(table: &Table) -> anyhow::Result<()> {
+    let schema = table.schema().await?;
+    let field_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+
+    if !field_names.contains(&"commit_hash".to_string()) {
+        eprintln!("[migrate] Adding commit_hash column to change_log");
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![(
+                    "commit_hash".to_string(),
+                    "CAST(NULL AS STRING)".to_string(),
+                )]),
+                None,
+            )
+            .await?;
+    }
+
+    Ok(())
+}
+
 /// Run all migrations on all tables. Call from LanceStore::open().
-pub async fn run_migrations(artifacts: &Table, relations: &Table) -> anyhow::Result<()> {
+pub async fn run_migrations(
+    artifacts: &Table,
+    relations: &Table,
+    change_log: Option<&Table>,
+) -> anyhow::Result<()> {
     migrate_artifacts(artifacts).await?;
     migrate_relations(relations).await?;
+    if let Some(cl) = change_log {
+        migrate_change_log(cl).await?;
+    }
     Ok(())
 }

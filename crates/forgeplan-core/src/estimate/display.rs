@@ -108,6 +108,22 @@ pub fn format_table(result: &EstimateResult, highlight_grade: Option<Grade>) -> 
         ));
     }
 
+    // Hints
+    if !result.hints.is_empty() {
+        out.push('\n');
+        for hint in &result.hints {
+            let prefix = match hint.level {
+                super::types::HintLevel::Warning => "!",
+                super::types::HintLevel::Info => "i",
+                super::types::HintLevel::Suggestion => "*",
+            };
+            out.push_str(&format!("  {} {}\n", prefix, hint.message));
+            if let Some(ref action) = hint.action {
+                out.push_str(&format!("    -> {}\n", action));
+            }
+        }
+    }
+
     out
 }
 
@@ -164,6 +180,7 @@ mod tests {
             total_score: 24.0,
             confidence: 0.75,
             confidence_reasons: vec!["has FR".to_string(), "no RFC phases".to_string()],
+            hints: vec![],
         }
     }
 
@@ -218,6 +235,7 @@ mod tests {
             total_score: 0.0,
             confidence: 0.0,
             confidence_reasons: vec![],
+            hints: vec![],
         };
         let output = format_table(&result, None);
         assert!(output.contains("No work items found"));

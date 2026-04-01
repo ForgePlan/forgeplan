@@ -39,6 +39,8 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
             println!("[]");
         } else {
             ui::info(&format!("No results for \"{}\"", query));
+            let hints = forgeplan_core::hints::search_hints(query, 0);
+            print!("{}", forgeplan_core::hints::format_hints(&hints));
         }
         return Ok(());
     }
@@ -179,6 +181,8 @@ async fn run_smart(query: &str, kind: Option<&str>, limit: usize, json: bool) ->
             println!("[]");
         } else {
             ui::info("No artifacts found.");
+            let hints = forgeplan_core::hints::search_hints(query, 0);
+            print!("{}", forgeplan_core::hints::format_hints(&hints));
         }
         return Ok(());
     }
@@ -213,6 +217,8 @@ async fn run_smart(query: &str, kind: Option<&str>, limit: usize, json: bool) ->
             println!("[]");
         } else {
             ui::info(&format!("No results for \"{}\"", query));
+            let hints = forgeplan_core::hints::search_hints(query, 0);
+            print!("{}", forgeplan_core::hints::format_hints(&hints));
         }
         return Ok(());
     }

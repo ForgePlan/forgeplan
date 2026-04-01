@@ -10,6 +10,7 @@ pub fn calculate(
     config: &EstimateConfig,
     confidence: f64,
     confidence_reasons: Vec<String>,
+    hints: Vec<super::types::EstimateHint>,
 ) -> EstimateResult {
     let items: Vec<EstimateItem> = scored_items
         .iter()
@@ -34,6 +35,7 @@ pub fn calculate(
         total_score,
         confidence,
         confidence_reasons,
+        hints,
     }
 }
 
@@ -99,7 +101,7 @@ mod tests {
     #[test]
     fn single_item_senior_baseline() {
         let items = vec![scored("FR-001", Complexity::Medium)];
-        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![], vec![]);
 
         let senior_hours = result.items[0].hours[&Grade::Senior];
         assert_eq!(senior_hours, 8.0); // Medium = 8h Senior
@@ -108,7 +110,7 @@ mod tests {
     #[test]
     fn grade_multipliers_applied() {
         let items = vec![scored("FR-001", Complexity::Medium)];
-        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![], vec![]);
 
         let item = &result.items[0];
         assert_eq!(item.hours[&Grade::Junior], 16.0);  // 8 × 2.0
@@ -128,7 +130,7 @@ mod tests {
             complexity: Complexity::Medium, // 8h base
             task_type: TaskType::PureInfra, // AI ×0.50
         }];
-        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![], vec![]);
 
         // AI: 8 × 0.50 × 1.30 = 5.2
         assert!((result.items[0].hours[&Grade::Ai] - 5.2).abs() < 0.01);
@@ -142,7 +144,7 @@ mod tests {
             scored("FR-001", Complexity::Medium),   // 8h Senior
             scored("FR-002", Complexity::Complex),   // 13h Senior
         ];
-        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![], vec![]);
 
         assert_eq!(result.totals[&Grade::Senior], 21.0); // 8 + 13
         assert_eq!(result.totals[&Grade::Junior], 42.0);  // 21 × 2.0
@@ -151,7 +153,7 @@ mod tests {
     #[test]
     fn score_calculation() {
         let items = vec![scored("FR-001", Complexity::Complex)];
-        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &default_config(), 0.75, vec![], vec![]);
 
         // Score = complexity_value × senior_hours = 5 × 13 = 65
         assert_eq!(result.items[0].score, 65.0);
@@ -164,7 +166,7 @@ mod tests {
         config.grade_multipliers.insert(Grade::Junior, 3.0); // override
 
         let items = vec![scored("FR-001", Complexity::Trivial)]; // 3h Senior
-        let result = calculate("PRD-001", "Test", &items, &config, 0.5, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &config, 0.5, vec![], vec![]);
 
         assert_eq!(result.items[0].hours[&Grade::Junior], 9.0); // 3 × 3.0
         assert_eq!(result.items[0].hours[&Grade::Senior], 3.0); // unchanged
@@ -172,7 +174,7 @@ mod tests {
 
     #[test]
     fn empty_items() {
-        let result = calculate("PRD-001", "Test", &[], &default_config(), 0.0, vec![]);
+        let result = calculate("PRD-001", "Test", &[], &default_config(), 0.0, vec![], vec![]);
         assert!(result.items.is_empty());
         assert!(result.totals.is_empty());
         assert_eq!(result.total_score, 0.0);
@@ -182,7 +184,7 @@ mod tests {
     fn confidence_passed_through() {
         let result = calculate(
             "PRD-001", "Test", &[], &default_config(),
-            0.65, vec!["has FR".to_string(), "no RFC phases".to_string()],
+            0.65, vec!["has FR".to_string(), "no RFC phases".to_string()], vec![],
         );
         assert_eq!(result.confidence, 0.65);
         assert_eq!(result.confidence_reasons.len(), 2);
@@ -195,7 +197,7 @@ mod tests {
         config.grade_multipliers.remove(&Grade::Junior); // remove Junior
 
         let items = vec![scored("FR-001", Complexity::Trivial)]; // 3h Senior
-        let result = calculate("PRD-001", "Test", &items, &config, 0.5, vec![]);
+        let result = calculate("PRD-001", "Test", &items, &config, 0.5, vec![], vec![]);
 
         // Junior falls back to default multiplier 2.0
         assert_eq!(result.items[0].hours[&Grade::Junior], 6.0); // 3 × 2.0

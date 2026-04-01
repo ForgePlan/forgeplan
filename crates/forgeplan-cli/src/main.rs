@@ -78,6 +78,12 @@ enum Commands {
         /// Use grade profile from config (domain-aware)
         #[arg(long)]
         my_grade: bool,
+        /// Use LLM-based complexity scoring instead of rule-based heuristics
+        #[arg(long)]
+        llm_score: bool,
+        /// Manual complexity overrides: FR-001=5,FR-002=3 (Fibonacci: 1,2,3,5,8,13)
+        #[arg(long)]
+        complexity: Option<String>,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -416,6 +422,12 @@ enum Commands {
     },
     /// Watch .forgeplan/ files and sync changes to LanceDB in real time
     Watch,
+    /// Sync artifact changes from git operations (pull/merge) into LanceDB
+    GitSync {
+        /// Git ref to diff against (default: ORIG_HEAD from last pull/merge)
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
 }
@@ -454,6 +466,9 @@ enum FpfCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file (if exists) for API keys and config overrides
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -473,8 +488,8 @@ async fn main() -> anyhow::Result<()> {
                 commands::score::run(id.as_deref(), json).await
             }
         }
-        Commands::Estimate { id, grade, my_grade, json } => {
-            commands::estimate::run(&id, grade.as_deref(), my_grade, json).await
+        Commands::Estimate { id, grade, my_grade, llm_score, complexity, json } => {
+            commands::estimate::run(&id, grade.as_deref(), my_grade, llm_score, complexity.as_deref(), json).await
         }
         Commands::Link {
             source,
@@ -600,6 +615,7 @@ async fn main() -> anyhow::Result<()> {
             commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await
         }
         Commands::Watch => commands::watch::run().await,
+        Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
         Commands::Serve => {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await

@@ -183,12 +183,12 @@ impl LanceStore {
         let relations = db.open_table("relations").execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
 
-        // Run migrations (idempotent — safe on every open)
-        migrate::run_migrations(&artifacts, &relations).await?;
-
         // Ensure change_log table exists (migration for older workspaces)
         migrate::ensure_change_log(&db).await?;
         let change_log = db.open_table("change_log").execute().await.ok();
+
+        // Run migrations (idempotent — safe on every open)
+        migrate::run_migrations(&artifacts, &relations, change_log.as_ref()).await?;
 
         Ok(Self {
             _db: db,
@@ -356,6 +356,20 @@ impl LanceStore {
             builder = builder.column("title", &format!("'{}'", t.replace('\'', "''")));
         }
         builder.execute().await?;
+        Ok(())
+    }
+
+    /// Update the depth column of an artifact.
+    pub async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("depth", &format!("'{}'", depth.replace('\'', "''")))
+            .execute()
+            .await?;
         Ok(())
     }
 
@@ -758,6 +772,7 @@ impl LanceStore {
                 Arc::new(StringArray::from(vec![entry.old_value.as_deref()])),
                 Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
                 Arc::new(StringArray::from(vec![entry.source.as_str()])),
+                Arc::new(StringArray::from(vec![entry.commit_hash.as_deref()])),
             ],
         )?;
 
@@ -1203,6 +1218,7 @@ fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLog
     let old_value = get_string(batch, "old_value", row);
     let new_value = get_string(batch, "new_value", row);
     let source = get_string(batch, "source", row)?;
+    let commit_hash = get_string(batch, "commit_hash", row);
 
     Some(ChangeLogEntry {
         timestamp,
@@ -1212,6 +1228,7 @@ fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLog
         old_value,
         new_value,
         source,
+        commit_hash,
     })
 }
 
@@ -1229,6 +1246,7 @@ fn empty_change_log_batch(
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // old_value (nullable)
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
             Arc::new(StringArray::from(Vec::<&str>::new())),       // source
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash (nullable)
         ],
     )
 }

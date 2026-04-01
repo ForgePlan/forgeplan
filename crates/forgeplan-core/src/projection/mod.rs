@@ -24,6 +24,42 @@ pub async fn render_projection(
     body: &str,
     links: &[(String, String)],
 ) -> anyhow::Result<PathBuf> {
+    render_projection_inner(workspace, id, kind, title, status, depth, author, parent_epic, valid_until, body, links, false).await
+}
+
+/// Like render_projection, but `force_body = true` uses the passed body
+/// instead of reading from file. Used by `update --body` to ensure the
+/// CLI-provided body takes precedence over the file on disk.
+pub async fn render_projection_with_body(
+    workspace: &Path,
+    id: &str,
+    kind: &str,
+    title: &str,
+    status: &str,
+    depth: &str,
+    author: Option<&str>,
+    parent_epic: Option<&str>,
+    valid_until: Option<&str>,
+    body: &str,
+    links: &[(String, String)],
+) -> anyhow::Result<PathBuf> {
+    render_projection_inner(workspace, id, kind, title, status, depth, author, parent_epic, valid_until, body, links, true).await
+}
+
+async fn render_projection_inner(
+    workspace: &Path,
+    id: &str,
+    kind: &str,
+    title: &str,
+    status: &str,
+    depth: &str,
+    author: Option<&str>,
+    parent_epic: Option<&str>,
+    valid_until: Option<&str>,
+    body: &str,
+    links: &[(String, String)],
+    force_body: bool,
+) -> anyhow::Result<PathBuf> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
     tokio::fs::create_dir_all(&dir).await?;
@@ -32,16 +68,16 @@ pub async fn render_projection(
     let filename = format!("{}-{}.md", id, slug);
     let filepath = dir.join(&filename);
 
-    // Files-first (RFC-004): ALWAYS preserve file body if file exists and has content.
+    // Files-first (RFC-004): preserve file body if file exists and has content.
     // Only frontmatter is updated from LanceDB. Body comes from the file on disk.
-    // This prevents data loss when `forgeplan link` or `forgeplan update` re-renders the projection.
-    let effective_body = if filepath.exists() {
+    // Exception: force_body=true (from `update --body`) uses the passed body.
+    let effective_body = if force_body {
+        body.to_string()
+    } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => {
                 if let Ok((_fm, file_body)) = frontmatter::parse_frontmatter(&file_content) {
                     if !file_body.trim().is_empty() {
-                        // File has content — always use it, regardless of whether it
-                        // matches LanceDB. The file is the source of truth for body.
                         file_body.to_string()
                     } else {
                         body.to_string()
@@ -430,5 +466,29 @@ mod tests {
 
         let result = read_file_body_if_newer(&ws, "PRD-001", "prd", "Test", body).await;
         assert!(result.is_none(), "should return None when body matches");
+    }
+
+    #[tokio::test]
+    async fn render_projection_with_body_overrides_file() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        // Step 1: create projection with template body
+        let template_body = "## Template\n\n{placeholder}";
+        render_projection(
+            &ws, "PRD-001", "prd", "Test", "draft", "standard",
+            None, None, None, template_body, &[],
+        ).await.unwrap();
+
+        // Step 2: render_projection_with_body should override file content
+        let new_body = "## Problem\n\nNew body from CLI update.";
+        let path = render_projection_with_body(
+            &ws, "PRD-001", "prd", "Test", "draft", "standard",
+            None, None, None, new_body, &[],
+        ).await.unwrap();
+
+        let result = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(result.contains("New body from CLI update"), "force_body must override file");
+        assert!(!result.contains("{placeholder}"), "old file body must not survive");
     }
 }

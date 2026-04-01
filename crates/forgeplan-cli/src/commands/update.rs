@@ -32,13 +32,12 @@ pub async fn run(
         }
     }
 
-    // Depth update not supported — fail explicitly instead of silently continuing
+    // Depth update
     if let Some(d) = depth {
-        // Validate the value first for a better error message
         let _: forgeplan_core::artifact::types::Mode = d
             .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Use: tactical, standard, deep", d))?;
-        anyhow::bail!("Depth update not yet supported. Use `forgeplan new` with the correct depth.");
+            .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Valid: tactical, standard, deep, critical", d))?;
+        store.update_depth(id, d).await?;
     }
 
     // Sync file→LanceDB BEFORE any mutations — capture user edits from the OLD file
@@ -51,9 +50,8 @@ pub async fn run(
     }
 
     // Update body
-    if let Some(b) = body {
+    let body_updated = if let Some(b) = body {
         let body_content = if b.starts_with('@') {
-            // Read from file
             let path = &b[1..];
             tokio::fs::read_to_string(path)
                 .await
@@ -62,34 +60,67 @@ pub async fn run(
             b.to_string()
         };
         store.update_body(id, &body_content).await?;
-    }
+        true
+    } else {
+        false
+    };
 
     // Remove old projection file (title change → different slug → stale file)
     if title.is_some() {
         let _ = projection::remove_projection(&ws, id, &original.kind).await;
     }
 
-    // Re-render projection with synced data
+    // Re-render projection
     let updated = store
         .get_record(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' disappeared after update", id))?;
-
     let links = store.get_relations(id).await.unwrap_or_default();
-    projection::render_projection(
-        &ws,
-        &updated.id,
-        &updated.kind,
-        &updated.title,
-        &updated.status,
-        &updated.depth,
-        updated.author.as_deref(),
-        updated.parent_epic.as_deref(),
-        updated.valid_until.as_deref(),
-        &updated.body,
-        &links,
-    )
-    .await?;
+
+    if body_updated {
+        // Body was explicitly set via CLI — use render_projection_with_body
+        // to override file-on-disk (files-first normally reads from file).
+        projection::render_projection_with_body(
+            &ws,
+            &updated.id,
+            &updated.kind,
+            &updated.title,
+            &updated.status,
+            &updated.depth,
+            updated.author.as_deref(),
+            updated.parent_epic.as_deref(),
+            updated.valid_until.as_deref(),
+            &updated.body,
+            &links,
+        )
+        .await?;
+    } else {
+        projection::render_projection(
+            &ws,
+            &updated.id,
+            &updated.kind,
+            &updated.title,
+            &updated.status,
+            &updated.depth,
+            updated.author.as_deref(),
+            updated.parent_epic.as_deref(),
+            updated.valid_until.as_deref(),
+            &updated.body,
+            &links,
+        )
+        .await?;
+    }
+
+    // Log changes
+    if let Some(s) = status {
+        common::log_change_field(&store, id, "update", "status", Some(&original.status), Some(s), "cli").await;
+    }
+    if let Some(t) = title {
+        common::log_change_field(&store, id, "update", "title", Some(&original.title), Some(t), "cli").await;
+    }
+    if body.is_some() {
+        common::log_change_field(&store, id, "update", "body", None, None, "cli").await;
+    }
 
     println!("  Updated: {}", id);
     if let Some(s) = status {

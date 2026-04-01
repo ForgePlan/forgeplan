@@ -293,6 +293,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         ui::warning("Add evidence with `forgeplan new evidence`");
     }
 
+    // Contextual hints
+    let has_evidence = !evidence_items.is_empty();
+    let cl0_count = evidence_items.iter().filter(|e| e.congruence_level == 0).count();
+    let score_hints = forgeplan_core::hints::score_hints(report.r_eff, has_evidence, cl0_count);
+    if !score_hints.is_empty() {
+        print!("{}", forgeplan_core::hints::format_hints(&score_hints));
+    }
+
     println!();
 
     Ok(())
