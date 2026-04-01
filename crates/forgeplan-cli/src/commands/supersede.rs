@@ -6,6 +6,10 @@ use crate::commands::common;
 pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
+    let old_status = store.get_record(id).await?
+        .map(|r| r.status)
+        .unwrap_or_else(|| "active".to_string());
+
     // Sync file→LanceDB before lifecycle call (preserve user edits)
     if let Some(record) = store.get_record(id).await? {
         projection::sync_file_to_store(&store, &ws, &record).await?;
@@ -23,7 +27,7 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
         ).await?;
     }
 
-    common::log_change_field(&store, id, "update", "status", Some("active"), Some("superseded"), "cli").await;
+    common::log_change_field(&store, id, "update", "status", Some(&old_status), Some("superseded"), "cli").await;
 
     println!("  Superseded {id} → {by}");
 

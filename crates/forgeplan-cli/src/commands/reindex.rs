@@ -139,7 +139,8 @@ pub async fn run() -> anyhow::Result<()> {
                 if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
                     while let Ok(Some(entry)) = rd.next_entry().await {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        if name.to_uppercase().starts_with(&record.id.to_uppercase()) && name.ends_with(".md") {
+                        let id_prefix = format!("{}-", record.id.to_uppercase());
+                        if name.to_uppercase().starts_with(&id_prefix) && name.ends_with(".md") {
                             found = true;
                             break;
                         }

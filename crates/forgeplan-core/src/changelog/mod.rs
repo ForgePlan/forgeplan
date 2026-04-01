@@ -46,3 +46,38 @@ impl ChangeLogEntry {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_basic() {
+        let entry = ChangeLogEntry::new("PRD-001", "create", "cli");
+        assert_eq!(entry.artifact_id, "PRD-001");
+        assert_eq!(entry.action, "create");
+        assert_eq!(entry.source, "cli");
+        assert!(entry.field.is_none());
+        assert!(entry.old_value.is_none());
+        assert!(!entry.timestamp.is_empty());
+    }
+
+    #[test]
+    fn builder_chain() {
+        let entry = ChangeLogEntry::new("PRD-001", "update", "cli")
+            .with_field("status")
+            .with_values(Some("draft"), Some("active"));
+        assert_eq!(entry.field, Some("status".to_string()));
+        assert_eq!(entry.old_value, Some("draft".to_string()));
+        assert_eq!(entry.new_value, Some("active".to_string()));
+    }
+
+    #[test]
+    fn builder_partial_values() {
+        let entry = ChangeLogEntry::new("EVID-001", "link", "reindex")
+            .with_field("relation")
+            .with_values(None, Some("PRD-001:informs"));
+        assert!(entry.old_value.is_none());
+        assert_eq!(entry.new_value, Some("PRD-001:informs".to_string()));
+    }
+}

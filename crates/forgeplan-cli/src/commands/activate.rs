@@ -6,6 +6,11 @@ use crate::commands::common;
 pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
+    // Capture old status before transition
+    let old_status = store.get_record(id).await?
+        .map(|r| r.status)
+        .unwrap_or_else(|| "draft".to_string());
+
     // Sync file→LanceDB before lifecycle call (preserve user edits)
     if let Some(record) = store.get_record(id).await? {
         projection::sync_file_to_store(&store, &ws, &record).await?;
@@ -23,7 +28,7 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         ).await?;
     }
 
-    common::log_change_field(&store, id, "update", "status", Some("draft"), Some("active"), "cli").await;
+    common::log_change_field(&store, id, "update", "status", Some(&old_status), Some("active"), "cli").await;
 
     if result.forced {
         println!("  Activated {id} (draft → active)");

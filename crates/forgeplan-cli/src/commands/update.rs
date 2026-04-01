@@ -119,7 +119,7 @@ pub async fn run(
         common::log_change_field(&store, id, "update", "title", Some(&original.title), Some(t), "cli").await;
     }
     if body.is_some() {
-        common::log_change(&store, id, "update", "cli").await;
+        common::log_change_field(&store, id, "update", "body", None, None, "cli").await;
     }
 
     println!("  Updated: {}", id);

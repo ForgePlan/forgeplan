@@ -116,9 +116,12 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
 }
 
 /// Log a change to the change_log table (best-effort, never fails the command).
+/// May reference deleted artifacts by design (audit trail).
 pub async fn log_change(store: &LanceStore, artifact_id: &str, action: &str, source: &str) {
     let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source);
-    let _ = store.log_change(&entry).await;
+    if let Err(e) = store.log_change(&entry).await {
+        eprintln!("  Warning: changelog write failed for {}: {}", artifact_id, e);
+    }
 }
 
 /// Log a change with field + values (best-effort).
@@ -134,7 +137,9 @@ pub async fn log_change_field(
     let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source)
         .with_field(field)
         .with_values(old_value, new_value);
-    let _ = store.log_change(&entry).await;
+    if let Err(e) = store.log_change(&entry).await {
+        eprintln!("  Warning: changelog write failed for {}: {}", artifact_id, e);
+    }
 }
 
 /// Open storage using driver trait (new API — will replace open_store over time).
