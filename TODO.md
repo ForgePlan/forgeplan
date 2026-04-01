@@ -1,17 +1,26 @@
 # TODO — Forgeplan
 
-## Current: v0.12-dev (post-v0.11.0)
+## Current: v0.12-dev (post-v0.12.0)
 
 ### Stats
-- 45 CLI commands, 35 MCP tools, ~540 tests
-- 107 dogfood artifacts (63 active, 37 draft, 8 deprecated)
+- 52 CLI commands, 35 MCP tools, ~693 tests
+- 109 dogfood artifacts (68 active, 26 draft, 13 deprecated)
 - ~25K LOC Rust, 41MB release binary
-- PRs #60-#74 merged
+- PRs #60-#84 merged
+- E2E smoke test: 193 tests, 92.7% pass rate (179 PASS, 8 FAIL, 6 SKIP)
 - Smart search by default (keyword + semantic + graph boosters)
 - MCP methodology hints (_next_action in tool responses)
 - 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
 - Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
 - MemoryDriver: remember/recall commands (RFC-003 Phase 2)
+
+### P0: E2E Bug Fixes — Sprint 2 (PROB-018)
+- [x] **BUG-001 (P1 Security):** `scan --path /tmp` path traversal — added project root boundary validation (coverage.rs)
+- [x] **BUG-002 (P2):** `unlink` не проверяет существование связи — added existence check (link.rs)
+- [x] **BUG-003 (P3):** lifecycle transition message "draft → active" hardcoded — uses old_status (activate.rs)
+- [x] 2 new unit tests for delete_relation (store.rs)
+- [ ] Create Evidence EVID-040 + link to PROB-018
+- [ ] Audit + PR
 
 ### P0: Estimate Engine (PRD-022) ✅
 - [x] PRD-022 shaped + validated (8 FR, 3 journeys)
@@ -78,6 +87,7 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 | PROB-013 | Deleted | R_eff skip non-active → implemented in ADR-002, deleted | ✅ |
 | PROB-014 | Deprecated | Smart search gaps → fixed v0.12, real cosine | ✅ |
 | PROB-016 | Deprecated | CLI quality → 13 fixes, 6-agent audit | ✅ |
+| PROB-018 | P0 | E2E Smoke Test Findings — 3 bugs (scan path, unlink, lifecycle msg) | In Progress |
 
 ---
 
@@ -169,9 +179,33 @@ EVID-034. 532 tests. **Deferred**: fgr/blindspots redundancy, graph filtering, d
 - [ ] fpf.rs миграция на common::store() (6 functions)
 - [ ] coverage.rs, scan_import.rs миграция на common::open_store()
 
-### P3: Integrations
+### P2: CLI UX Polish (NOTE-029, from E2E findings)
+- [ ] `forgeplan links PRD-001` — show all relations for an artifact (1 day)
+- [ ] `forgeplan validate --ci` — exit 1 on MUST errors for CI/CD (1 day)
+- [ ] `forgeplan doctor` — check workspace, LLM key, feature flags (2 days)
+- [ ] Document `capture` as LLM-dependent in --help
+- [ ] Error consistency: choose idempotent vs strict philosophy
+- [ ] Document case-sensitive IDs
+
+### P2: Agent Memory Engine (NOTE-025, Direction A — HIGH R_eff)
+- [ ] Test `forgeplan serve` as MCP server in Claude Code
+- [ ] Claude Code plugin: /fp-validate, /fp-context, /fp-score skills
+- [ ] `capture` offline mode (create Note/ADR without LLM)
+- [ ] `forgeplan watch --emit-events` — JSON event stream for agents
+
+### P2: CI/CD Architecture Linter (NOTE-026, Direction B)
+- [ ] `forgeplan health --fail-on` — configurable thresholds
+- [ ] GitHub Action: `uses: forgeplan/action@v1`
+
+### P3: Ruflo/Gastown Integration (NOTE-027)
+- [ ] MCP config example for Ruflo (.agents/config.toml)
+- [ ] Architecture-guardian custom agent YAML
+- [ ] Gastown directive template
+
+### P3: Task Tracker Bridges (NOTE-028)
 - [ ] Bidirectional sync with task trackers (Linear, Jira, Orchestra)
 - [ ] Export to GitHub Issues / Linear tasks
+- [ ] Webhook on activate/supersede events
 
 ### Phase 5: Desktop App
 - [ ] Tauri 2.0 + React frontend (shared Rust core)

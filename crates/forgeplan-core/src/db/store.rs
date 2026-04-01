@@ -1903,4 +1903,22 @@ mod tests {
         };
         assert_eq!(hit2.similarity(), 1.0);
     }
+
+    #[tokio::test]
+    async fn delete_relation_nonexistent_is_silent() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let result = store.delete_relation("PRD-001", "RFC-001", "informs").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_relation_removes_existing() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        assert_eq!(store.get_relations("PRD-001").await.unwrap().len(), 1);
+        store.delete_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        assert!(store.get_relations("PRD-001").await.unwrap().is_empty());
+    }
 }
