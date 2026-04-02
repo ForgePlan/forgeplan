@@ -229,7 +229,7 @@ impl StorageDriver for InMemoryStore {
         let exists = state
             .relations
             .iter()
-            .any(|(s, t, r)| s == source && t == target && r == relation);
+            .any(|(s, t, r)| s.eq_ignore_ascii_case(source) && t.eq_ignore_ascii_case(target) && r == relation);
         if exists {
             anyhow::bail!("relation already exists: {source} -> {target} ({relation})");
         }
