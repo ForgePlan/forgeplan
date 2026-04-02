@@ -42,6 +42,9 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     println!("  Reopened {id} → deprecated");
     println!("  Created {} ({}, draft) with lineage from {id}", result.new_id, result.new_kind);
     println!("  Link: {} --based_on--> {id}", result.new_id);
+    println!();
+    println!("  * Next: fill required sections in {}", result.new_id);
+    println!("    -> forgeplan validate {}", result.new_id);
 
     Ok(())
 }
