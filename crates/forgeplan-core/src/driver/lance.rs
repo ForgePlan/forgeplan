@@ -1,4 +1,4 @@
-//! LanceDB implementation of StorageDriver.
+//! LanceDB implementation of storage traits.
 //! Thin wrapper delegating all calls to the existing LanceStore.
 
 use std::path::Path;
@@ -7,7 +7,7 @@ use crate::artifact::store::ArtifactSummary;
 #[cfg(feature = "semantic-search")]
 use crate::db::store::VectorSearchHit;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact};
-use crate::driver::StorageDriver;
+use crate::driver::{ArtifactStorage, RelationStorage, SearchStorage, VectorStorage, FpfStorage};
 
 /// LanceDB-backed storage driver.
 pub struct LanceDriver {
@@ -26,26 +26,10 @@ impl LanceDriver {
     }
 }
 
+// ── ArtifactStorage ─────────────────────────────────────────────────────────
+
 #[async_trait::async_trait]
-impl StorageDriver for LanceDriver {
-    // ── Lifecycle ────────────────────────────────────────────────────
-
-    async fn open(workspace_path: &Path) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        LanceDriver::open(workspace_path).await
-    }
-
-    async fn init(workspace_path: &Path) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        LanceDriver::init(workspace_path).await
-    }
-
-    // ── Artifact CRUD ────────────────────────────────────────────────
-
+impl ArtifactStorage for LanceDriver {
     async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         self.store.create_artifact(artifact).await
     }
@@ -78,8 +62,6 @@ impl StorageDriver for LanceDriver {
         self.store.delete_artifact(id).await
     }
 
-    // ── Full records ─────────────────────────────────────────────────
-
     async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
         self.store.get_record(id).await
     }
@@ -94,9 +76,12 @@ impl StorageDriver for LanceDriver {
     async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
         self.store.update_body(id, body).await
     }
+}
 
-    // ── Relations ────────────────────────────────────────────────────
+// ── RelationStorage ─────────────────────────────────────────────────────────
 
+#[async_trait::async_trait]
+impl RelationStorage for LanceDriver {
     async fn add_relation(
         &self,
         source: &str,
@@ -126,9 +111,12 @@ impl StorageDriver for LanceDriver {
     async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
         self.store.get_all_relations().await
     }
+}
 
-    // ── Search ───────────────────────────────────────────────────────
+// ── SearchStorage ───────────────────────────────────────────────────────────
 
+#[async_trait::async_trait]
+impl SearchStorage for LanceDriver {
     async fn search_body(
         &self,
         query: &str,
@@ -144,9 +132,12 @@ impl StorageDriver for LanceDriver {
     async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String> {
         self.store.next_id(kind_prefix).await
     }
+}
 
-    // ── Vectors ──────────────────────────────────────────────────────
+// ── VectorStorage ───────────────────────────────────────────────────────────
 
+#[async_trait::async_trait]
+impl VectorStorage for LanceDriver {
     fn supports_vectors(&self) -> bool {
         true
     }
@@ -163,9 +154,12 @@ impl StorageDriver for LanceDriver {
     ) -> anyhow::Result<Vec<VectorSearchHit>> {
         self.store.vector_search(query_embedding, limit).await
     }
+}
 
-    // ── FPF Knowledge Base ───────────────────────────────────────────
+// ── FpfStorage ──────────────────────────────────────────────────────────────
 
+#[async_trait::async_trait]
+impl FpfStorage for LanceDriver {
     fn has_fpf(&self) -> bool {
         self.store.has_fpf()
     }
@@ -194,10 +188,21 @@ impl StorageDriver for LanceDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::StorageDriver;
 
     /// Verify that LanceDriver can be used as `&dyn StorageDriver`.
     #[allow(dead_code)]
     fn assert_lance_driver_is_storage_driver(_: &dyn StorageDriver) {}
+
+    /// Verify sub-traits are object-safe.
+    #[allow(dead_code)]
+    fn assert_sub_traits_object_safe(
+        _a: &dyn ArtifactStorage,
+        _r: &dyn RelationStorage,
+        _s: &dyn SearchStorage,
+        _v: &dyn VectorStorage,
+        _f: &dyn FpfStorage,
+    ) {}
 
     #[tokio::test]
     async fn lance_driver_open_tempdir() {
@@ -206,8 +211,6 @@ mod tests {
 
         // First init to create tables
         let driver = LanceDriver::init(ws).await.unwrap();
-        // Verify FPF defaults to false (no fpf_spec table created by default init)
-        // has_fpf depends on whether init creates fpf_spec table
         let _ = driver.has_fpf();
 
         // Re-open existing workspace
@@ -220,7 +223,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let driver = LanceDriver::init(tmp.path()).await.unwrap();
         let dyn_ref: &dyn StorageDriver = &driver;
-        // Should be able to call trait methods through dyn reference
         let artifacts = dyn_ref.list_artifacts(None).await.unwrap();
         assert!(artifacts.is_empty());
     }
