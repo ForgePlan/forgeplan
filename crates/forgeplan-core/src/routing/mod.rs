@@ -31,7 +31,7 @@ pub struct RoutingResult {
 }
 
 /// An alternative routing suggestion with reasoning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RouteAlternative {
     /// Alternative depth level.
     pub depth: Mode,
@@ -176,7 +176,7 @@ pub fn route(description: &str) -> RoutingResult {
 ///
 /// Returns one lower and one higher alternative (where possible),
 /// each with reasoning explaining when that alternative would be appropriate.
-pub fn generate_alternatives(primary: &Mode, signals: &[Signal]) -> Vec<RouteAlternative> {
+pub(crate) fn generate_alternatives(primary: &Mode, signals: &[Signal]) -> Vec<RouteAlternative> {
     let mut alts = Vec::with_capacity(2);
 
     match primary {
@@ -764,5 +764,58 @@ mod tests {
         let alts = generate_alternatives(&Mode::Deep, &signals);
         assert_eq!(alts.len(), 2);
         assert!(alts.iter().any(|a| matches!(a.depth, Mode::Standard)));
+    }
+
+    #[test]
+    fn test_note_alternatives_are_standard_and_deep() {
+        let alts = generate_alternatives(&Mode::Note, &[]);
+        assert_eq!(alts.len(), 2, "Note should produce exactly 2 alternatives");
+        let depths: Vec<_> = alts.iter().map(|a| &a.depth).collect();
+        assert!(depths.contains(&&Mode::Standard), "Note should offer Standard");
+        assert!(depths.contains(&&Mode::Deep), "Note should offer Deep");
+        // Note must NOT offer Tactical (same empty pipeline = reflexive loop)
+        assert!(!depths.contains(&&Mode::Tactical), "Note must not offer Tactical");
+    }
+
+    #[test]
+    fn test_all_modes_produce_exactly_two_alternatives() {
+        for (mode, label) in [
+            (Mode::Note, "Note"),
+            (Mode::Tactical, "Tactical"),
+            (Mode::Standard, "Standard"),
+            (Mode::Deep, "Deep"),
+        ] {
+            let alts = generate_alternatives(&mode, &[]);
+            assert_eq!(alts.len(), 2, "{label} should produce exactly 2 alternatives");
+        }
+    }
+
+    #[test]
+    fn test_display_includes_alternatives_section() {
+        let result = route("Fix a typo");
+        let display = format!("{result}");
+        assert!(display.contains("## Alternatives"), "Display should render Alternatives section");
+        assert!(display.contains("Standard"), "Should list Standard as alternative");
+    }
+
+    #[test]
+    fn test_calibrate_artifact_has_alternatives() {
+        let result = calibrate_artifact("## FR\n- [ ] FR-001\n- [ ] FR-002\n- [ ] FR-003\n- [ ] FR-004\n", 3, true);
+        assert_eq!(result.alternatives.len(), 2, "calibrate_artifact should populate alternatives");
+    }
+
+    #[test]
+    fn test_alternatives_never_match_primary() {
+        for (mode, label) in [
+            (Mode::Note, "Note"),
+            (Mode::Tactical, "Tactical"),
+            (Mode::Standard, "Standard"),
+            (Mode::Deep, "Deep"),
+        ] {
+            let alts = generate_alternatives(&mode, &[]);
+            for alt in &alts {
+                assert_ne!(alt.depth, mode, "{label} alternative should not equal primary depth");
+            }
+        }
     }
 }
