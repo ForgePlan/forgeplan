@@ -139,7 +139,7 @@ impl SearchStorage for LanceDriver {
 #[async_trait::async_trait]
 impl VectorStorage for LanceDriver {
     fn supports_vectors(&self) -> bool {
-        true
+        cfg!(feature = "semantic-search")
     }
 
     async fn update_embedding(&self, id: &str, embedding: &[f32]) -> anyhow::Result<()> {
@@ -215,7 +215,8 @@ mod tests {
 
         // Re-open existing workspace
         let driver2 = LanceDriver::open(ws).await.unwrap();
-        assert!(driver2.supports_vectors());
+        // supports_vectors() is true only when semantic-search feature is enabled
+        assert_eq!(driver2.supports_vectors(), cfg!(feature = "semantic-search"));
     }
 
     #[tokio::test]

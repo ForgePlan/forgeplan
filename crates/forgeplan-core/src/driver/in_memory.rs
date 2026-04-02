@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact};
-use crate::driver::{ArtifactStorage, RelationStorage, SearchStorage, FpfStorage};
+use crate::driver::{ArtifactStorage, FpfStorage, RelationStorage, SearchStorage, VectorStorage};
 
 /// Internal state behind a single RwLock to avoid TOCTOU races.
 struct InMemoryState {
@@ -344,7 +344,7 @@ impl SearchStorage for InMemoryStore {
 // ── VectorStorage (defaults — InMemory doesn't support vectors) ─────────────
 
 #[async_trait::async_trait]
-impl crate::driver::VectorStorage for InMemoryStore {}
+impl VectorStorage for InMemoryStore {}
 
 // ── FpfStorage ──────────────────────────────────────────────────────────────
 
