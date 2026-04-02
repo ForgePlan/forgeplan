@@ -9,8 +9,8 @@ use crate::commands::estimate::load_estimate_config;
 
 /// Compare estimated hours with actual hours to calibrate estimation accuracy.
 pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> Result<()> {
-    if actual_hours <= 0.0 {
-        anyhow::bail!("Actual hours must be positive");
+    if !actual_hours.is_finite() || actual_hours <= 0.0 {
+        anyhow::bail!("Actual hours must be a positive finite number (got: {})", actual_hours);
     }
 
     let store = common::store().await?;
