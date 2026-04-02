@@ -2,7 +2,11 @@
 name = "forgeplan-core"
 version.workspace = true
 edition.workspace = true
-description = "Core library for Forgeplan — artifact types, scoring, validation"
+license.workspace = true
+repository.workspace = true
+description = "Core library for Forgeplan — artifact types, scoring, validation, storage drivers"
+keywords = ["project-management", "decision-records", "methodology", "artifacts"]
+categories = ["development-tools"]
 
 [dependencies]
 serde.workspace = true
