@@ -150,10 +150,29 @@ enum Commands {
     },
     /// Show evidence decay impact on R_eff scores
     Decay,
+    /// Compare estimated vs actual hours — calibrate estimation accuracy
+    CalibrateEstimate {
+        /// Artifact ID to calibrate
+        id: String,
+        /// Actual hours spent
+        #[arg(long)]
+        actual_hours: f64,
+        /// Grade to compare (junior, mid, senior). Defaults to total score.
+        #[arg(long)]
+        grade: Option<String>,
+    },
     /// Suggest depth level (Tactical/Standard/Deep/Critical) based on artifact content
     Calibrate {
         /// Artifact ID (checks all if omitted)
         id: Option<String>,
+    },
+    /// Promote a memory to a full artifact (e.g., forgeplan promote mem-xxx --kind prd)
+    Promote {
+        /// Memory ID to promote (e.g., mem-auth-decisions)
+        memory_id: String,
+        /// Target artifact kind: prd, rfc, adr, note, problem, etc.
+        #[arg(long)]
+        kind: String,
     },
     /// Generate an artifact using AI from a natural language description
     Generate {
@@ -542,6 +561,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
+        Commands::CalibrateEstimate { id, actual_hours, grade } => {
+            commands::calibrate_estimate::run(&id, actual_hours, grade.as_deref()).await
+        }
+        Commands::Promote { memory_id, kind } => commands::promote::run(&memory_id, &kind).await,
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
         }

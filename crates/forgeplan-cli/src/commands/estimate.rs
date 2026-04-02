@@ -153,7 +153,7 @@ pub async fn run(
 }
 
 /// Load EstimateConfig from .forgeplan/config.yaml, falling back to defaults.
-fn load_estimate_config() -> EstimateConfig {
+pub fn load_estimate_config() -> EstimateConfig {
     match common::config() {
         Ok(cfg) => {
             if let Some(ref yaml) = cfg.estimate {
