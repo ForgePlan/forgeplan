@@ -1884,13 +1884,14 @@ fn e2e_route_p0_issues_not_tactical() {
     let tmp = TempDir::new().unwrap();
     forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
 
-    // Route with severity + integrity keywords should NOT be Tactical
+    // Route with severity + integrity keywords should NOT have Tactical as primary depth
+    // (Tactical may appear in Alternatives section — that's expected)
     forgeplan()
         .args(["route", "Fix 5 P0 integrity issues in scoring system"])
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Tactical").not());
+        .stdout(predicate::str::contains("## Depth: Deep"));
 }
 
 #[test]

@@ -104,6 +104,27 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
         );
     }
 
+    // Alternatives
+    if !result.alternatives.is_empty() {
+        println!();
+        println!("{}", style("## Alternatives").bold());
+        for (i, alt) in result.alternatives.iter().enumerate() {
+            let alt_depth = depth_display(&alt.depth);
+            let alt_pipeline = if alt.pipeline.is_empty() {
+                "None".to_string()
+            } else {
+                alt.pipeline.iter().map(|k| kind_display(k)).collect::<Vec<_>>().join(" → ")
+            };
+            println!(
+                "  {}. {} ({}) — {}",
+                i + 1,
+                ui::styled_depth(alt_depth),
+                style(&alt_pipeline).dim(),
+                style(&alt.reasoning).dim()
+            );
+        }
+    }
+
     // LLM explanation (Level 1)
     if let Some(ref explanation) = result.explanation {
         println!();
