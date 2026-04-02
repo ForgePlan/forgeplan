@@ -8,6 +8,10 @@
 # Supports: Linux x86_64, macOS arm64, macOS x86_64.
 # Requires: curl or wget.
 #
+# Security note: piping to sh executes unverified remote code.
+# For verified install, use: cargo install forgeplan-cli
+# Or download manually from https://github.com/ForgePlan/forgeplan/releases
+#
 # Exit codes:
 #   0 — success
 #   1 — unsupported OS or architecture
