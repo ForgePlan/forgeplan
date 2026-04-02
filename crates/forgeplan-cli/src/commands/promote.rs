@@ -88,7 +88,9 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     let mem_filename = format!("{}-{}.md", record.id, mem_slug);
     let mem_filepath = workspace.join(ArtifactKind::Memory.dir_name()).join(&mem_filename);
     if mem_filepath.exists() {
-        tokio::fs::remove_file(&mem_filepath).await.ok();
+        if let Err(e) = tokio::fs::remove_file(&mem_filepath).await {
+            eprintln!("  Warning: could not remove memory file {}: {}", mem_filepath.display(), e);
+        }
     }
 
     println!(
