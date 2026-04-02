@@ -945,6 +945,11 @@ impl ForgeplanServer {
             "level": result.level,
             "explanation": result.explanation,
             "display": format!("{result}"),
+            "_alternatives": result.alternatives.iter().map(|a| serde_json::json!({
+                "depth": format!("{:?}", a.depth),
+                "pipeline": a.pipeline.iter().map(|k| k.template_key()).collect::<Vec<_>>(),
+                "reasoning": a.reasoning,
+            })).collect::<Vec<_>>(),
         })))
     }
 
