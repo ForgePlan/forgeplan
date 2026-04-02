@@ -359,6 +359,20 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Update the valid_until column of an artifact (ADR-005: renew).
+    pub async fn update_valid_until(&self, id: &str, valid_until: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("valid_until", &format!("'{}'", valid_until.replace('\'', "''")))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Update the depth column of an artifact.
     pub async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
