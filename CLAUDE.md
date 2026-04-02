@@ -182,14 +182,27 @@ evidence_type: measurement
 
 Без structured fields R_eff parser не найдёт данные и выставит CL0 (penalty 0.9).
 
-### Lifecycle commands:
+### Lifecycle commands (ADR-005 v2):
 
 ```bash
 forgeplan review <id>              # проверить готовность
 forgeplan activate <id>            # draft → active (validation gate)
-forgeplan supersede <id> --by <new> # active → superseded + chain warnings
-forgeplan deprecate <id> --reason "..." # active → deprecated
+forgeplan supersede <id> --by <new> # active → superseded (TERMINAL)
+forgeplan deprecate <id> --reason "..." # active/stale → deprecated (TERMINAL)
+forgeplan renew <id> --reason --until  # stale → active (extend validity)
+forgeplan reopen <id> --reason         # stale/active → deprecated + NEW draft (lineage)
 ```
+
+State machine:
+```
+draft → active → superseded (terminal)
+               → deprecated (terminal)
+               → stale → active (renew)
+                       → deprecated + NEW draft (reopen)
+```
+
+**Terminal**: deprecated и superseded — никогда не переходят в другие статусы.
+**Stale**: артефакт устарел (valid_until expired). `renew` продлевает, `reopen` создаёт новый.
 
 Notes и Problems не требуют validation gate для activation.
 PRD, RFC, ADR, Epic, Spec — MUST rules должны пройти.
@@ -597,7 +610,7 @@ crates/
 │   ├── graph/                    ← mermaid dependency graph
 │   ├── health/                   ← project health dashboard
 │   ├── journal/                  ← decision journal with R_eff
-│   ├── lifecycle/                ← review → activate → supersede/deprecate
+│   ├── lifecycle/                ← review → activate → supersede/deprecate/stale/renew/reopen (ADR-005)
 │   ├── link/                     ← typed artifact relationships
 │   ├── llm/                      ← LLM integration (generate, reason, route, capture)
 │   ├── progress/                 ← checkbox parser + ASCII progress bars

@@ -3,16 +3,17 @@
 ## Current: v0.12-dev (post-v0.12.0)
 
 ### Stats
-- 52 CLI commands, 35 MCP tools, ~693 tests
-- 109 dogfood artifacts (68 active, 26 draft, 13 deprecated)
-- ~25K LOC Rust, 41MB release binary
-- PRs #60-#84 merged
+- 54 CLI commands, 35 MCP tools, 716 tests
+- 124 dogfood artifacts (74 active, 32 draft, 16 deprecated)
+- ~26K LOC Rust, 41MB release binary
+- PRs #60-#85 merged
 - E2E smoke test: 193 tests, 92.7% pass rate (179 PASS, 8 FAIL, 6 SKIP)
 - Smart search by default (keyword + semantic + graph boosters)
 - MCP methodology hints (_next_action in tool responses)
 - 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
 - Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
 - MemoryDriver: remember/recall commands (RFC-003 Phase 2)
+- Lifecycle v2: stale/renew/reopen, terminal deprecated/superseded (ADR-005)
 
 ### P0: E2E Bug Fixes — Sprint 2 (PROB-018)
 - [x] **BUG-001 (P1 Security):** `scan --path /tmp` path traversal — added project root boundary validation (coverage.rs)
@@ -21,6 +22,17 @@
 - [x] 2 new unit tests for delete_relation (store.rs)
 - [x] Create Evidence EVID-040 + link to PROB-018
 - [x] Audit (4-agent: logic+security+rust+task) + PR #85 merged
+
+### P0: Lifecycle v2 — Sprint 3 (ADR-005) ✅
+- [x] ADR-005 shaped + validated (new state machine design)
+- [x] Phase 1: stale status + terminal deprecated/superseded (transitions.rs, 15 tests)
+- [x] Phase 2: renew() + reopen() core logic (lifecycle/mod.rs, 10 tests)
+- [x] Phase 3: CLI commands (renew.rs, reopen.rs)
+- [x] PROB-019: self-link guard (store.rs + in_memory.rs, 4 tests)
+- [x] 5-agent audit: 8 findings fixed (date validation, reason sanitization, atomicity)
+- [x] EVID-041 (PROB-019) + EVID-042 (ADR-005) linked + activated
+- [x] ADR-005 activated, R_eff = 0.80
+- [x] PR #85 merged
 
 ### P0: Estimate Engine (PRD-022) ✅
 - [x] PRD-022 shaped + validated (8 FR, 3 journeys)
