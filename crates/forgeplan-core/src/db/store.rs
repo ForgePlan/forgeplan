@@ -359,6 +359,20 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Update the valid_until column of an artifact (ADR-005: renew).
+    pub async fn update_valid_until(&self, id: &str, valid_until: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("updated_at", &format!("'{}'", now))
+            .column("valid_until", &format!("'{}'", valid_until.replace('\'', "''")))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Update the depth column of an artifact.
     pub async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
@@ -406,6 +420,11 @@ impl LanceStore {
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        // Self-link guard (PROB-019)
+        if source.eq_ignore_ascii_case(target) {
+            anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
+        }
+
         // Dedup: check if relation already exists
         let existing = self.get_relations(source).await?;
         let duplicate = existing.iter().any(|(t, r)| {
@@ -1391,6 +1410,25 @@ mod tests {
         let targets: Vec<&str> = relations.iter().map(|(t, _)| t.as_str()).collect();
         assert!(targets.contains(&"RFC-001"));
         assert!(targets.contains(&"ADR-001"));
+    }
+
+    #[tokio::test]
+    async fn self_link_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.add_relation("PRD-001", "PRD-001", "informs").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Self-link not allowed"));
+    }
+
+    #[tokio::test]
+    async fn self_link_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let result = store.add_relation("PRD-001", "prd-001", "informs").await;
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------

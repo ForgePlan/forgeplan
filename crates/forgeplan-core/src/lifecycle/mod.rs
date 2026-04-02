@@ -263,7 +263,10 @@ pub async fn supersede(
     transitions::validate_transition(&record.status, "superseded")?;
 
     // Block if replacement is itself superseded or deprecated (chain risk)
-    let warnings = Vec::new();
+    let mut warnings = Vec::new();
+    if replacement.status == "draft" {
+        warnings.push(format!("Replacement {} is still draft — activate before using", replacement_id));
+    }
     if replacement.status == "superseded" || replacement.status == "deprecated" {
         anyhow::bail!(
             "Replacement {} is already {}. Choose an active or draft artifact as replacement.",
@@ -295,7 +298,7 @@ pub async fn supersede(
     })
 }
 
-/// Deprecate an artifact: Active → Deprecated with reason.
+/// Deprecate an artifact: Active/Stale → Deprecated with reason.
 pub async fn deprecate(
     store: &LanceStore,
     artifact_id: &str,
@@ -327,6 +330,154 @@ pub async fn deprecate(
         .collect();
 
     Ok(dependents)
+}
+
+/// Result of a renew operation.
+#[derive(Debug, Clone)]
+pub struct RenewResult {
+    pub artifact_id: String,
+    pub old_valid_until: Option<String>,
+    pub new_valid_until: String,
+}
+
+/// Sanitize user-provided reason: strip newlines (prevent markdown injection), limit length.
+fn sanitize_reason(reason: &str) -> String {
+    reason.trim().replace('\n', " ").chars().take(500).collect()
+}
+
+/// Validate date format (YYYY-MM-DD). Returns parsed date or error.
+fn validate_date(date_str: &str) -> anyhow::Result<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("Invalid date format: '{}'. Expected YYYY-MM-DD", date_str))
+}
+
+/// Renew a stale artifact: Stale → Active, extend valid_until (ADR-005).
+pub async fn renew(
+    store: &LanceStore,
+    artifact_id: &str,
+    reason: &str,
+    new_valid_until: &str,
+) -> anyhow::Result<RenewResult> {
+    // Validate date format early (audit C1: 2 agents)
+    validate_date(new_valid_until)?;
+
+    let record = store
+        .get_record(artifact_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
+
+    transitions::validate_transition(&record.status, "active")?;
+
+    let old_valid_until = record.valid_until.clone();
+    let safe_reason = sanitize_reason(reason);
+
+    // Append renewal section to body
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let renewal_section = format!(
+        "\n\n## Renewal ({today})\n\nReason: {safe_reason}\nExtended until: {new_valid_until}"
+    );
+    let new_body = format!("{}{}", record.body, renewal_section);
+    store.update_body(artifact_id, &new_body).await?;
+
+    // Update status and valid_until
+    store
+        .update_artifact(artifact_id, Some("active"), None)
+        .await?;
+    store
+        .update_valid_until(artifact_id, new_valid_until)
+        .await?;
+
+    Ok(RenewResult {
+        artifact_id: artifact_id.to_string(),
+        old_valid_until,
+        new_valid_until: new_valid_until.to_string(),
+    })
+}
+
+/// Result of a reopen operation.
+#[derive(Debug, Clone)]
+pub struct ReopenResult {
+    pub old_id: String,
+    pub new_id: String,
+    pub new_kind: String,
+}
+
+/// Reopen an artifact: creates a NEW draft artifact linked to the old one.
+/// Old artifact → deprecated. New artifact = same kind, draft, with lineage (ADR-005).
+///
+/// Operation order: validate all preconditions → create new → deprecate old (audit C3: atomicity).
+pub async fn reopen(
+    store: &LanceStore,
+    artifact_id: &str,
+    reason: &str,
+    new_id: &str,
+) -> anyhow::Result<ReopenResult> {
+    let record = store
+        .get_record(artifact_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
+
+    // Reopen requires stale or active as source status (ADR-005).
+    // Terminal states cannot be reopened — user must create fresh artifact.
+    if record.status != "stale" && record.status != "active" {
+        if transitions::is_terminal(&record.status) {
+            anyhow::bail!(
+                "Cannot reopen {}: status '{}' is terminal.\n\
+                 Use `forgeplan new {} \"...\"` to create a fresh artifact.",
+                artifact_id, record.status, record.kind
+            );
+        }
+        anyhow::bail!(
+            "Cannot reopen {}: status '{}'. Reopen requires active or stale.",
+            artifact_id, record.status
+        );
+    }
+
+    // Check new_id doesn't already exist (audit logic C3: race condition guard)
+    if store.get_record(new_id).await?.is_some() {
+        anyhow::bail!("Cannot reopen: artifact '{}' already exists. Try again.", new_id);
+    }
+
+    let safe_reason = sanitize_reason(reason);
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+
+    // Step 1: Create new artifact FIRST (before deprecating old — audit C3: atomicity)
+    let lineage = format!(
+        "## Lineage\n\nReopened from: {artifact_id}\nReason: {safe_reason}\n\n\
+         Previous title: {}\n\n---\n",
+        record.title
+    );
+    let new_artifact = crate::db::store::NewArtifact {
+        id: new_id.to_string(),
+        kind: record.kind.clone(),
+        status: "draft".to_string(),
+        title: format!("{} (reopened)", record.title),
+        body: lineage,
+        depth: record.depth.clone(),
+        author: record.author.clone(),
+        parent_epic: record.parent_epic.clone(),
+        valid_until: None,
+    };
+    store.create_artifact(&new_artifact).await?;
+
+    // Step 2: Link new → old (based_on)
+    store.add_relation(new_id, artifact_id, "based_on").await?;
+
+    // Step 3: Deprecate the old artifact (after new is safely created)
+    let deprecation_section = format!(
+        "\n\n## Reopened ({today})\n\nReason: {safe_reason}\nReplacement: {new_id}"
+    );
+    let new_body = format!("{}{}", record.body, deprecation_section);
+    store.update_body(artifact_id, &new_body).await?;
+    store
+        .update_artifact(artifact_id, Some("deprecated"), None)
+        .await?;
+
+    Ok(ReopenResult {
+        old_id: artifact_id.to_string(),
+        new_id: new_id.to_string(),
+        new_kind: record.kind,
+    })
 }
 
 #[cfg(test)]
@@ -415,5 +566,165 @@ mod tests {
             "body should contain the reason text, got: {}",
             record.body
         );
+    }
+
+    // ── Renew tests (ADR-005) ──────────────────────────────────
+
+    fn stale_prd(id: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "stale".to_string(),
+            title: format!("Stale PRD {id}"),
+            body: "This PRD has expired evidence and needs review.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: Some("2026-01-01".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn renew_stale_to_active() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&stale_prd("PRD-100")).await.unwrap();
+
+        let result = renew(&store, "PRD-100", "still relevant, updated evidence", "2026-12-01").await.unwrap();
+
+        assert_eq!(result.artifact_id, "PRD-100");
+        assert_eq!(result.new_valid_until, "2026-12-01");
+
+        let record = store.get_record("PRD-100").await.unwrap().unwrap();
+        assert_eq!(record.status, "active");
+        assert!(record.body.contains("## Renewal"));
+        assert!(record.body.contains("still relevant"));
+    }
+
+    #[tokio::test]
+    async fn renew_active_fails() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&active_note("NOTE-100")).await.unwrap();
+
+        let result = renew(&store, "NOTE-100", "try renew active", "2027-01-01").await;
+        assert!(result.is_err(), "renew on active artifact should fail");
+    }
+
+    #[tokio::test]
+    async fn renew_invalid_date_fails() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&stale_prd("PRD-110")).await.unwrap();
+
+        let result = renew(&store, "PRD-110", "reason", "not-a-date").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid date format"));
+    }
+
+    #[tokio::test]
+    async fn renew_sanitizes_reason() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&stale_prd("PRD-120")).await.unwrap();
+
+        renew(&store, "PRD-120", "reason\n\n## Injected Section\nevil", "2027-01-01").await.unwrap();
+        let record = store.get_record("PRD-120").await.unwrap().unwrap();
+        // Newlines stripped — "## Injected" can't start a new markdown heading
+        assert!(!record.body.contains("\n## Injected"), "reason newlines should be sanitized");
+    }
+
+    #[tokio::test]
+    async fn reopen_new_id_conflict_fails() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&stale_prd("PRD-300")).await.unwrap();
+        store.create_artifact(&active_note("PRD-301")).await.unwrap();
+
+        // PRD-301 already exists — reopen should fail early
+        let result = reopen(&store, "PRD-300", "reason", "PRD-301").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+        // Old artifact should still be stale (not deprecated)
+        let old = store.get_record("PRD-300").await.unwrap().unwrap();
+        assert_eq!(old.status, "stale", "old artifact should remain stale on failure");
+    }
+
+    #[tokio::test]
+    async fn renew_deprecated_fails() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = active_note("NOTE-101");
+        art.status = "deprecated".to_string();
+        store.create_artifact(&art).await.unwrap();
+
+        let result = renew(&store, "NOTE-101", "try to renew", "2027-01-01").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("reopen"));
+    }
+
+    // ── Reopen tests (ADR-005) ─────────────────────────────────
+
+    #[tokio::test]
+    async fn reopen_stale_creates_new_and_deprecates_old() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&stale_prd("PRD-200")).await.unwrap();
+
+        let result = reopen(&store, "PRD-200", "need different approach", "PRD-201").await.unwrap();
+
+        assert_eq!(result.old_id, "PRD-200");
+        assert_eq!(result.new_id, "PRD-201");
+        assert_eq!(result.new_kind, "prd");
+
+        // Old artifact is now deprecated
+        let old = store.get_record("PRD-200").await.unwrap().unwrap();
+        assert_eq!(old.status, "deprecated");
+        assert!(old.body.contains("## Reopened"));
+        assert!(old.body.contains("PRD-201"));
+
+        // New artifact is draft with lineage
+        let new = store.get_record("PRD-201").await.unwrap().unwrap();
+        assert_eq!(new.status, "draft");
+        assert_eq!(new.kind, "prd");
+        assert!(new.title.contains("reopened"));
+        assert!(new.body.contains("## Lineage"));
+        assert!(new.body.contains("PRD-200"));
+
+        // Link exists: new → old
+        let rels = store.get_relations("PRD-201").await.unwrap();
+        assert!(rels.iter().any(|(t, r)| t == "PRD-200" && r == "based_on"));
+    }
+
+    #[tokio::test]
+    async fn reopen_deprecated_fails() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = active_note("NOTE-200");
+        art.status = "deprecated".to_string();
+        store.create_artifact(&art).await.unwrap();
+
+        let result = reopen(&store, "NOTE-200", "try again", "NOTE-201").await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // deprecated→deprecated is invalid transition; error hints at reopen
+        assert!(err_msg.contains("Invalid transition") || err_msg.contains("terminal"),
+            "Expected transition error, got: {err_msg}");
+    }
+
+    #[tokio::test]
+    async fn reopen_active_works() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&active_note("NOTE-300")).await.unwrap();
+
+        // Reopen from active (manual trigger — user decides to start fresh)
+        let _result = reopen(&store, "NOTE-300", "rethinking approach", "NOTE-301").await.unwrap();
+
+        let old = store.get_record("NOTE-300").await.unwrap().unwrap();
+        assert_eq!(old.status, "deprecated");
+
+        let new = store.get_record("NOTE-301").await.unwrap().unwrap();
+        assert_eq!(new.status, "draft");
     }
 }

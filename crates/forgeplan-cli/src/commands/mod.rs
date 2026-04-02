@@ -37,6 +37,8 @@ pub mod reason;
 pub mod recall;
 pub mod reindex;
 pub mod remember;
+pub mod renew;
+pub mod reopen;
 pub mod review;
 pub mod route;
 pub mod scan_import;

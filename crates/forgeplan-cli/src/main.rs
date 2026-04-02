@@ -254,11 +254,30 @@ enum Commands {
         #[arg(long)]
         by: String,
     },
-    /// Deprecate an artifact (active → deprecated) with reason
+    /// Deprecate an artifact (active/stale → deprecated) with reason
     Deprecate {
         /// Artifact ID
         id: String,
         /// Reason for deprecation
+        #[arg(long)]
+        reason: String,
+    },
+    /// Renew a stale artifact (stale → active) with extended validity
+    Renew {
+        /// Artifact ID
+        id: String,
+        /// Reason for renewal
+        #[arg(long)]
+        reason: String,
+        /// New valid_until date (YYYY-MM-DD)
+        #[arg(long)]
+        until: String,
+    },
+    /// Reopen an artifact — creates a NEW draft artifact, deprecates the old one
+    Reopen {
+        /// Artifact ID to reopen
+        id: String,
+        /// Reason for reopening
         #[arg(long)]
         reason: String,
     },
@@ -576,6 +595,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
+        Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
+        Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,
         Commands::Fpf(sub) => match sub {
             FpfCommands::Dashboard => commands::fpf::run_dashboard().await,
