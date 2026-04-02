@@ -1,7 +1,18 @@
 //! Storage driver traits for pluggable backends (LanceDB, SQLite, InMemory).
 //!
-//! These traits abstract the storage, embedding, memory, and LLM layers
-//! so that implementations can be swapped without changing business logic.
+//! Traits follow ISP (Interface Segregation Principle) — each trait has a single
+//! bounded context. Backends implement only the traits they support.
+//!
+//! ## Trait hierarchy
+//!
+//! - `ArtifactStorage` — CRUD operations on artifacts (REQUIRED)
+//! - `RelationStorage` — typed relations between artifacts (REQUIRED)
+//! - `SearchStorage`   — keyword search, stale detection, ID generation (REQUIRED)
+//! - `VectorStorage`   — embedding storage and vector similarity (OPTIONAL, has defaults)
+//! - `FpfStorage`      — FPF knowledge base chunks (OPTIONAL, has defaults)
+//!
+//! `StorageDriver` = supertrait combining all 5. Blanket-implemented for any type
+//! that implements all 5 traits. Existing `dyn StorageDriver` usage is unchanged.
 
 pub mod factory;
 pub mod in_memory;
@@ -14,28 +25,11 @@ pub use types::*;
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact, VectorSearchHit};
 
-use std::path::Path;
+// ── Core traits (REQUIRED for any backend) ──────────────────────────────────
 
-/// Core storage abstraction over artifact CRUD, relations, search, scoring, and FPF.
-///
-/// Every pub async method on `LanceStore` is mirrored here so that any backend
-/// (LanceDB, SQLite, in-memory) can fulfil the contract.
+/// Artifact CRUD — create, read, update, delete artifacts and their records.
 #[async_trait::async_trait]
-pub trait StorageDriver: Send + Sync {
-    // ── Lifecycle ────────────────────────────────────────────────────
-
-    /// Open an existing workspace at `workspace_path`.
-    async fn open(workspace_path: &Path) -> anyhow::Result<Self>
-    where
-        Self: Sized;
-
-    /// Create tables / schema if needed, then open the store.
-    async fn init(workspace_path: &Path) -> anyhow::Result<Self>
-    where
-        Self: Sized;
-
-    // ── Artifact CRUD ────────────────────────────────────────────────
-
+pub trait ArtifactStorage: Send + Sync {
     /// Insert a new artifact, returning its ID.
     async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String>;
 
@@ -62,8 +56,6 @@ pub trait StorageDriver: Send + Sync {
     /// Delete an artifact by ID.
     async fn delete_artifact(&self, id: &str) -> anyhow::Result<()>;
 
-    // ── Full records ─────────────────────────────────────────────────
-
     /// Get a single artifact by ID as a full record. Returns `None` if not found.
     async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>>;
 
@@ -75,9 +67,11 @@ pub trait StorageDriver: Send + Sync {
 
     /// Update the body column of an artifact.
     async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()>;
+}
 
-    // ── Relations ────────────────────────────────────────────────────
-
+/// Typed relations between artifacts — dependency graph.
+#[async_trait::async_trait]
+pub trait RelationStorage: Send + Sync {
     /// Add a typed relation between two artifacts. Rejects duplicates.
     async fn add_relation(
         &self,
@@ -105,9 +99,11 @@ pub trait StorageDriver: Send + Sync {
     /// Get all relations across all artifacts.
     /// Returns `Vec<(source_id, target_id, relation_type)>`.
     async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>>;
+}
 
-    // ── Search ───────────────────────────────────────────────────────
-
+/// Keyword search, stale detection, and sequential ID generation.
+#[async_trait::async_trait]
+pub trait SearchStorage: Send + Sync {
     /// Search artifacts by body/title content (case-insensitive substring).
     async fn search_body(
         &self,
@@ -120,16 +116,21 @@ pub trait StorageDriver: Send + Sync {
 
     /// Compute the next sequential ID for a given kind prefix (e.g. "PRD" -> "PRD-003").
     async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String>;
+}
 
-    // ── Vectors (optional) ───────────────────────────────────────────
+// ── Optional traits (have default implementations) ──────────────────────────
 
+/// Vector embedding storage and similarity search.
+///
+/// Backends that don't support vectors get no-op defaults automatically.
+#[async_trait::async_trait]
+pub trait VectorStorage: Send + Sync {
     /// Whether this backend supports vector similarity search.
     fn supports_vectors(&self) -> bool {
         false
     }
 
     /// Vector similarity search using a pre-computed embedding.
-    /// Returns hits with distance scores for real similarity computation.
     async fn vector_search(
         &self,
         _query_embedding: &[f32],
@@ -142,9 +143,13 @@ pub trait StorageDriver: Send + Sync {
     async fn update_embedding(&self, _id: &str, _embedding: &[f32]) -> anyhow::Result<()> {
         Ok(())
     }
+}
 
-    // ── FPF Knowledge Base (optional) ────────────────────────────────
-
+/// FPF (First Principles Framework) knowledge base storage.
+///
+/// Backends that don't support FPF get no-op defaults automatically.
+#[async_trait::async_trait]
+pub trait FpfStorage: Send + Sync {
     /// Whether FPF knowledge base is available.
     fn has_fpf(&self) -> bool {
         false
@@ -179,6 +184,23 @@ pub trait StorageDriver: Send + Sync {
     }
 }
 
+// ── Supertrait — backward compatible ────────────────────────────────────────
+
+/// Combined storage driver — any type implementing all 5 traits is a StorageDriver.
+///
+/// This supertrait exists for backward compatibility with existing code that uses
+/// `dyn StorageDriver`. New code should prefer specific trait bounds
+/// (e.g., `impl ArtifactStorage`) when only a subset of operations is needed.
+pub trait StorageDriver: ArtifactStorage + RelationStorage + SearchStorage + VectorStorage + FpfStorage {}
+
+/// Blanket implementation — any type that implements all 5 sub-traits IS a StorageDriver.
+impl<T> StorageDriver for T
+where
+    T: ArtifactStorage + RelationStorage + SearchStorage + VectorStorage + FpfStorage,
+{}
+
+// ── Embedding driver ────────────────────────────────────────────────────────
+
 /// Embedding driver — wraps a text embedding model.
 pub trait EmbedDriver: Send {
     /// Embed a single text string into a vector.
@@ -194,25 +216,29 @@ pub trait EmbedDriver: Send {
     fn model_name(&self) -> &str;
 }
 
-/// Agent memory driver — log and recall contextual entries across sessions.
-#[async_trait::async_trait]
-pub trait MemoryDriver: Send + Sync {
-    /// Append a memory entry.
-    async fn log(&self, entry: MemoryEntry) -> anyhow::Result<()>;
+/// No-op embedding driver — returns empty vectors. Used as fallback when
+/// semantic-search feature is disabled or no model is configured.
+pub struct NoOpEmbedDriver;
 
-    /// Recall entries matching a query, up to `limit`.
-    async fn recall(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>>;
+impl EmbedDriver for NoOpEmbedDriver {
+    fn embed(&mut self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        Ok(Vec::new())
+    }
 
-    /// Get the most recent entries.
-    async fn recent(&self, count: usize) -> anyhow::Result<Vec<MemoryEntry>>;
+    fn embed_batch(&mut self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(vec![Vec::new(); texts.len()])
+    }
+
+    fn dim(&self) -> usize {
+        0
+    }
+
+    fn model_name(&self) -> &str {
+        "noop"
+    }
 }
 
-/// LLM driver — unified text generation interface.
-#[async_trait::async_trait]
-pub trait LlmDriver: Send + Sync {
-    /// Generate text from a prompt with an optional system message.
-    async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String>;
-}
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -222,17 +248,37 @@ mod tests {
     #[allow(dead_code)]
     fn assert_storage_driver_object_safe(_: &dyn StorageDriver) {}
 
+    /// Verify that each sub-trait is object-safe.
+    #[allow(dead_code)]
+    fn assert_artifact_storage_object_safe(_: &dyn ArtifactStorage) {}
+
+    #[allow(dead_code)]
+    fn assert_relation_storage_object_safe(_: &dyn RelationStorage) {}
+
+    #[allow(dead_code)]
+    fn assert_search_storage_object_safe(_: &dyn SearchStorage) {}
+
+    #[allow(dead_code)]
+    fn assert_vector_storage_object_safe(_: &dyn VectorStorage) {}
+
+    #[allow(dead_code)]
+    fn assert_fpf_storage_object_safe(_: &dyn FpfStorage) {}
+
     /// Verify that EmbedDriver is object-safe.
     #[allow(dead_code)]
     fn assert_embed_driver_object_safe(_: &dyn EmbedDriver) {}
 
-    /// Verify that MemoryDriver is object-safe.
-    #[allow(dead_code)]
-    fn assert_memory_driver_object_safe(_: &dyn MemoryDriver) {}
+    #[test]
+    fn noop_embed_driver_works() {
+        let mut driver = NoOpEmbedDriver;
+        let vec = driver.embed("test").unwrap();
+        assert!(vec.is_empty());
+        assert_eq!(driver.dim(), 0);
+        assert_eq!(driver.model_name(), "noop");
 
-    /// Verify that LlmDriver is object-safe.
-    #[allow(dead_code)]
-    fn assert_llm_driver_object_safe(_: &dyn LlmDriver) {}
+        let batch = driver.embed_batch(&["a", "b"]).unwrap();
+        assert_eq!(batch.len(), 2);
+    }
 
     #[test]
     fn memory_kind_equality() {
