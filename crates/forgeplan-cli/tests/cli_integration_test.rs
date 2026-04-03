@@ -2627,3 +2627,272 @@ fn activate_shows_correct_transition_status() {
         .success()
         .stdout(predicate::str::contains("draft → active"));
 }
+
+// -----------------------------------------------------------------------
+// PROB-020: Cascade delete removes relations
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_delete_cascades_relations() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create two notes and link them
+    forgeplan()
+        .args(["new", "note", "Parent Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Child Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["link", "NOTE-001", "NOTE-002", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Delete parent — should cascade relations
+    forgeplan()
+        .args(["delete", "NOTE-001", "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Child should still exist but not show phantom relation
+    forgeplan()
+        .args(["get", "NOTE-002"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Child Note"));
+}
+
+// -----------------------------------------------------------------------
+// PROB-020: Deprecated artifact does not block dependents
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_deprecated_does_not_block() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create two notes, link, activate both
+    forgeplan()
+        .args(["new", "note", "Dependency"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Dependent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["activate", "NOTE-002"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["link", "NOTE-002", "NOTE-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Deprecate the dependency
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "no longer needed"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Blocked should NOT show NOTE-002 as blocked
+    forgeplan()
+        .args(["blocked"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No blocked artifacts"));
+}
+
+// -----------------------------------------------------------------------
+// ADR-005: Full lifecycle draft → active → deprecated (terminal)
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_full_lifecycle_deprecate() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Lifecycle Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // draft → active
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft → active"));
+
+    // active → deprecated (terminal)
+    forgeplan()
+        .args([
+            "deprecate",
+            "NOTE-001",
+            "--reason",
+            "replaced by new approach",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deprecated"));
+
+    // Verify status is deprecated
+    forgeplan()
+        .args(["get", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deprecated"));
+}
+
+// -----------------------------------------------------------------------
+// ADR-005: draft → deprecated directly is NOT allowed
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_draft_cannot_deprecate_directly() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Draft Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // draft → deprecated should fail
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "test"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid transition"));
+}
+
+// -----------------------------------------------------------------------
+// PROB-020: topological order excludes deprecated
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_order_excludes_deprecated() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create chain: NOTE-001 → NOTE-002 → NOTE-003
+    for title in &["First", "Second", "Third"] {
+        forgeplan()
+            .args(["new", "note", title])
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+
+    for note in &["NOTE-001", "NOTE-002", "NOTE-003"] {
+        forgeplan()
+            .args(["activate", note])
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+
+    forgeplan()
+        .args(["link", "NOTE-002", "NOTE-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["link", "NOTE-003", "NOTE-002", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Deprecate middle node
+    forgeplan()
+        .args(["deprecate", "NOTE-002", "--reason", "skipped"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Order should still work without error
+    forgeplan()
+        .args(["order"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+// -----------------------------------------------------------------------
+// Sprint 8 S1: route rejects empty input
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_empty_route_rejected() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["route", ""])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty"));
+}
