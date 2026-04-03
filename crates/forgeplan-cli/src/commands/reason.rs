@@ -1,7 +1,17 @@
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::llm::reason;
+use forgeplan_core::llm::reason::ArtifactContext;
 
 use crate::commands::common;
+
+/// Architecture hint injected into ADI prompt so the LLM knows the tech stack.
+const ARCHITECTURE_HINT: &str = "\
+Forgeplan is a Rust CLI + MCP server. \
+Storage: LanceDB (embedded, tables + vectors). \
+Architecture: forgeplan-core (shared library) + forgeplan-cli + forgeplan-mcp. \
+Driver traits: StorageDriver, EmbedDriver, MemoryDriver, LlmDriver. \
+Embedding: local BGE-M3 via fastembed (no API needed). \
+Files in .forgeplan/ are authoritative, LanceDB syncs from them.";
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
     let (_ws, store) = common::open_store().await?;
@@ -11,6 +21,16 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         .get_record(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+
+    // Build artifact context from store metadata
+    let relations = store.get_relations(&record.id).await.unwrap_or_default();
+    let artifact_context = ArtifactContext {
+        status: record.status.clone(),
+        depth: record.depth.clone(),
+        r_eff_score: record.r_eff_score,
+        relations,
+        architecture_hint: Some(ARCHITECTURE_HINT.to_string()),
+    };
 
     // Build FPF context if requested
     let fpf_context = if fpf {
@@ -44,6 +64,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         &record.kind,
         &record.body,
         fpf_context.as_deref(),
+        Some(&artifact_context),
     )
     .await?;
 

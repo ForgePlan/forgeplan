@@ -5,39 +5,43 @@ use crate::llm::LlmClient;
 
 const ADI_SYSTEM_PROMPT: &str = r#"You are a structured reasoning engine using the FPF ADI cycle (Abduction → Deduction → Induction).
 
-Given an artifact (PRD, RFC, Problem Card, etc.), perform structured analysis:
+Given an artifact (PRD, RFC, Problem Card, etc.) WITH its project context (status, depth, relations, architecture), perform structured analysis.
+
+CRITICAL RULES:
+- Use the provided project context to ground your hypotheses in reality. Do NOT propose approaches that contradict the existing architecture.
+- Every confidence rating MUST include a 1-2 sentence justification explaining WHY that level was chosen.
+- If relations show this artifact depends on or is informed by other artifacts, reference them.
 
 ## Phase 1: Abduction (Generate Hypotheses)
 Generate 3+ distinct hypotheses or approaches. For each:
 - State the hypothesis clearly
 - Identify key assumptions
-- Note what evidence would support or refute it
+- Rate confidence with justification (e.g., "High — aligns with existing LanceDB storage layer")
 
 ## Phase 2: Deduction (Evaluate Each)
 For each hypothesis:
-- Apply logical consequences
+- Apply logical consequences considering the existing codebase
 - Identify risks and failure modes
-- Assess feasibility (Low/Medium/High)
+- Assess feasibility (Low/Medium/High) with justification
 - Note missing evidence
 
 ## Phase 3: Induction (Synthesize)
 - Rank hypotheses by strength of evidence
 - Identify the recommended approach
-- State confidence level (Low/Medium/High)
+- State confidence level with justification
 - List remaining unknowns and next steps
 
-Format your response as structured Markdown with clear ## headers for each phase.
 Write in the same language as the artifact.
 
 IMPORTANT: Return your analysis as JSON with this schema:
 {
-  "hypotheses": [{"id": "H1", "description": "...", "assumptions": ["..."], "confidence": "Low|Medium|High"}],
-  "deductions": [{"hypothesis_id": "H1", "consequence": "...", "risks": ["..."], "feasibility": "Low|Medium|High"}],
+  "hypotheses": [{"id": "H1", "description": "...", "assumptions": ["..."], "confidence": "High — justification here"}],
+  "deductions": [{"hypothesis_id": "H1", "consequence": "...", "risks": ["..."], "feasibility": "High — justification here"}],
   "evidence_needed": [{"for_hypothesis": "H1", "test": "...", "effort": "Low|Medium|High"}],
   "recommendation": "...",
-  "confidence": "Low|Medium|High"
+  "confidence": "High — justification here"
 }
-If you cannot produce JSON, fall back to the Markdown format above."#;
+If you cannot produce JSON, fall back to Markdown."#;
 
 // --- ADI structured output types ---
 
@@ -184,6 +188,39 @@ pub async fn build_fpf_context(
     Ok(Some(context))
 }
 
+/// Artifact metadata for enriching the ADI prompt context.
+#[derive(Debug, Clone, Default)]
+pub struct ArtifactContext {
+    pub status: String,
+    pub depth: String,
+    pub r_eff_score: f64,
+    /// Related artifacts: (target_id, relation_type)
+    pub relations: Vec<(String, String)>,
+    /// Brief project architecture summary
+    pub architecture_hint: Option<String>,
+}
+
+/// Build the metadata section for the ADI user prompt.
+pub fn build_metadata_section(ctx: &ArtifactContext) -> String {
+    let mut section = String::from("\n\n## Project Context\n\n");
+    section.push_str(&format!("- **Status**: {}\n", ctx.status));
+    section.push_str(&format!("- **Depth**: {}\n", ctx.depth));
+    section.push_str(&format!("- **R_eff score**: {:.2}\n", ctx.r_eff_score));
+
+    if !ctx.relations.is_empty() {
+        section.push_str("\n### Relations\n\n");
+        for (target, rel_type) in &ctx.relations {
+            section.push_str(&format!("- {} → {} ({})\n", target, rel_type, target));
+        }
+    }
+
+    if let Some(hint) = &ctx.architecture_hint {
+        section.push_str(&format!("\n### Architecture\n\n{}\n", hint));
+    }
+
+    section
+}
+
 /// Run ADI reasoning cycle on an artifact.
 /// Returns both the raw response string and the parsed AdiOutput.
 pub async fn reason(
@@ -193,6 +230,7 @@ pub async fn reason(
     artifact_kind: &str,
     artifact_body: &str,
     fpf_context: Option<&str>,
+    artifact_context: Option<&ArtifactContext>,
 ) -> anyhow::Result<(String, AdiOutput)> {
     let client = LlmClient::new(config.clone());
 
@@ -208,6 +246,10 @@ pub async fn reason(
         body = artifact_body,
     );
 
+    if let Some(ctx) = artifact_context {
+        prompt.push_str(&build_metadata_section(ctx));
+    }
+
     if let Some(ctx) = fpf_context {
         prompt.push_str(ctx);
     }
@@ -216,4 +258,79 @@ pub async fn reason(
     let response = client.generate(&prompt, Some(&system)).await?;
     let adi_output = parse_adi_output(&response);
     Ok((response, adi_output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_metadata_section_includes_all_fields() {
+        let ctx = ArtifactContext {
+            status: "active".to_string(),
+            depth: "standard".to_string(),
+            r_eff_score: 0.85,
+            relations: vec![
+                ("RFC-001".to_string(), "implements".to_string()),
+                ("EPIC-001".to_string(), "parent".to_string()),
+            ],
+            architecture_hint: Some("Rust CLI with LanceDB".to_string()),
+        };
+        let section = build_metadata_section(&ctx);
+        assert!(section.contains("**Status**: active"));
+        assert!(section.contains("**Depth**: standard"));
+        assert!(section.contains("**R_eff score**: 0.85"));
+        assert!(section.contains("RFC-001"));
+        assert!(section.contains("implements"));
+        assert!(section.contains("EPIC-001"));
+        assert!(section.contains("Rust CLI with LanceDB"));
+    }
+
+    #[test]
+    fn build_metadata_section_no_relations() {
+        let ctx = ArtifactContext {
+            status: "draft".to_string(),
+            depth: "tactical".to_string(),
+            r_eff_score: 0.0,
+            relations: vec![],
+            architecture_hint: None,
+        };
+        let section = build_metadata_section(&ctx);
+        assert!(section.contains("**Status**: draft"));
+        assert!(!section.contains("### Relations"));
+        assert!(!section.contains("### Architecture"));
+    }
+
+    #[test]
+    fn build_metadata_section_zero_r_eff() {
+        let ctx = ArtifactContext::default();
+        let section = build_metadata_section(&ctx);
+        assert!(section.contains("**R_eff score**: 0.00"));
+    }
+
+    #[test]
+    fn parse_adi_output_valid_json() {
+        let json = r#"{"hypotheses":[{"id":"H1","description":"test","assumptions":[],"confidence":"High — good reason"}],"deductions":[],"evidence_needed":[],"recommendation":"do H1","confidence":"High — justified"}"#;
+        let output = parse_adi_output(json);
+        assert!(output.raw_markdown.is_none());
+        assert_eq!(output.hypotheses.len(), 1);
+        assert_eq!(output.hypotheses[0].id, "H1");
+        assert!(output.confidence.contains("High"));
+    }
+
+    #[test]
+    fn parse_adi_output_with_code_fence() {
+        let json = "```json\n{\"hypotheses\":[],\"deductions\":[],\"evidence_needed\":[],\"recommendation\":\"none\",\"confidence\":\"Low\"}\n```";
+        let output = parse_adi_output(json);
+        assert!(output.raw_markdown.is_none());
+        assert_eq!(output.confidence, "Low");
+    }
+
+    #[test]
+    fn parse_adi_output_invalid_falls_back() {
+        let bad = "This is not JSON at all, just free text analysis.";
+        let output = parse_adi_output(bad);
+        assert!(output.raw_markdown.is_some());
+        assert!(output.hypotheses.is_empty());
+    }
 }

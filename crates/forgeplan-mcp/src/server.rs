@@ -1580,8 +1580,19 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
+        // Build artifact context for enriched ADI prompt
+        let relations = store.get_relations(&record.id).await.unwrap_or_default();
+        let artifact_context = forgeplan_core::llm::reason::ArtifactContext {
+            status: record.status.clone(),
+            depth: record.depth.clone(),
+            r_eff_score: record.r_eff_score,
+            relations,
+            architecture_hint: None, // MCP callers are AI agents — they already know the architecture
+        };
+
         let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
             &llm_config, &record.id, &record.title, &record.kind, &record.body, None,
+            Some(&artifact_context),
         )
         .await
         .map_err(|e| McpError::internal_error(format!("ADI reasoning failed: {e}"), None))?;
