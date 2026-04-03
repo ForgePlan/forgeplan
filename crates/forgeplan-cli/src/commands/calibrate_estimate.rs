@@ -106,8 +106,10 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
         println!("  {} Slightly optimistic ({:.0}% accuracy). Acceptable range.", style("i").dim(), accuracy_pct);
     } else if ratio < 0.5 {
         println!("  {} Finished {:.1}x faster. Estimates may be too conservative.", style("*").green(), 1.0 / ratio);
+    } else if ratio < 0.7 {
+        println!("  {} Finished faster than expected ({:.0}% of estimate). Estimates may be conservative.", style("i").dim(), ratio * 100.0);
     } else {
-        println!("  {} Good calibration — within 10-30% of actual.", style("*").green());
+        println!("  {} Good calibration — within 30% of actual.", style("*").green());
     }
     println!();
 

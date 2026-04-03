@@ -112,12 +112,16 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          sleep 30
-          cargo publish -p forgeplan-mcp --no-verify
+          for i in 1 2 3; do
+            sleep 60
+            cargo publish -p forgeplan-mcp --no-verify && break || echo "Retry $i..."
+          done
 
       - name: Publish forgeplan-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          sleep 30
-          cargo publish -p forgeplan-cli --no-verify
+          for i in 1 2 3; do
+            sleep 60
+            cargo publish -p forgeplan-cli --no-verify && break || echo "Retry $i..."
+          done
