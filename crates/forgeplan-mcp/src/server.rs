@@ -1222,6 +1222,88 @@ impl ForgeplanServer {
         Ok(json_result(&GraphResponse { mermaid }))
     }
 
+    #[tool(description = "Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts).")]
+    async fn forgeplan_blocked(
+        &self,
+        Parameters(p): Parameters<BlockedParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let relations = store.get_all_relations().await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let resolved_ids: HashSet<String> = records.iter()
+            .filter(|r| r.status == "active" || r.status == "deprecated" || r.status == "superseded")
+            .map(|r| r.id.clone())
+            .collect();
+
+        use forgeplan_core::graph::topological;
+
+        if let Some(artifact_id) = &p.id {
+            let blocked_by = topological::get_blocked_by(artifact_id, &relations, &resolved_ids);
+            let is_blocked = !blocked_by.is_empty();
+            let resp = BlockedResponse {
+                blocked: if is_blocked {
+                    vec![BlockedEntry { id: artifact_id.clone(), blocked_by }]
+                } else { vec![] },
+                ready_count: if is_blocked { 0 } else { 1 },
+                blocked_count: if is_blocked { 1 } else { 0 },
+                cycles: vec![],
+            };
+            Ok(json_result(&resp))
+        } else {
+            let result = topological::kahn_sort(&relations, &resolved_ids);
+            let resp = BlockedResponse {
+                blocked: result.blocked.into_iter()
+                    .map(|(id, deps)| BlockedEntry { id, blocked_by: deps })
+                    .collect(),
+                ready_count: result.ready.len(),
+                blocked_count: result.cycles.len(), // overwritten below
+                cycles: result.cycles,
+            };
+            let blocked_count = resp.blocked.len();
+            let resp = BlockedResponse { blocked_count, ..resp };
+            Ok(json_result(&resp))
+        }
+    }
+
+    #[tool(description = "Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only.")]
+    async fn forgeplan_order(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let relations = store.get_all_relations().await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let resolved_ids: HashSet<String> = records.iter()
+            .filter(|r| r.status == "active" || r.status == "deprecated" || r.status == "superseded")
+            .map(|r| r.id.clone())
+            .collect();
+
+        use forgeplan_core::graph::topological;
+        let result = topological::kahn_sort(&relations, &resolved_ids);
+
+        let resp = OrderResponse {
+            order: result.order,
+            ready: result.ready,
+            blocked: result.blocked.into_iter()
+                .map(|(id, deps)| BlockedEntry { id, blocked_by: deps })
+                .collect(),
+            cycles: result.cycles,
+        };
+
+        Ok(json_result(&resp))
+    }
+
     #[tool(description = "Search artifacts by keyword (case-insensitive substring match on title and body). Returns matching artifacts with highlighted lines.")]
     async fn forgeplan_search(
         &self,

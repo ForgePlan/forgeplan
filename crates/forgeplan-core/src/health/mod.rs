@@ -75,10 +75,11 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         }
     };
 
-    // Non-evidence artifacts only
+    // Non-evidence, non-memory artifacts only.
+    // Evidence is tracked separately. Memory artifacts are standalone by design.
     let non_evidence: Vec<&ArtifactRecord> = all
         .iter()
-        .filter(|r| r.kind != "evidence")
+        .filter(|r| r.kind != "evidence" && r.kind != "memory")
         .collect();
 
     let orphans = find_orphans(&non_evidence, &outgoing, &incoming);

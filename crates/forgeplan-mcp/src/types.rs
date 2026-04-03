@@ -151,6 +151,34 @@ pub struct GraphResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BlockedParams {
+    /// Optional artifact ID to check. If omitted, shows all blocked artifacts.
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BlockedResponse {
+    pub blocked: Vec<BlockedEntry>,
+    pub ready_count: usize,
+    pub blocked_count: usize,
+    pub cycles: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BlockedEntry {
+    pub id: String,
+    pub blocked_by: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct OrderResponse {
+    pub order: Vec<String>,
+    pub ready: Vec<String>,
+    pub blocked: Vec<BlockedEntry>,
+    pub cycles: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResponse {
     pub results: Vec<SearchResultDto>,
     pub total: usize,

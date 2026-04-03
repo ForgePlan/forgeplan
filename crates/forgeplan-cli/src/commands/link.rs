@@ -50,15 +50,13 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
     let relation = link::normalize_relation(relation)?;
     let (ws, store) = common::open_store().await?;
 
-    // Verify source exists
-    if store.get_artifact(source_id).await?.is_none() {
-        anyhow::bail!("Source artifact '{}' not found", source_id);
-    }
-
-    // Check relation exists before deleting (case-insensitive target match)
-    let existing = store.get_relations(source_id).await?;
-    let found = existing.iter().any(|(t, r)| {
-        t.eq_ignore_ascii_case(target_id) && r == &relation
+    // Check relation exists before deleting.
+    // Use get_all_relations for resilient lookup (works even if source artifact is deleted).
+    let all_rels = store.get_all_relations().await?;
+    let found = all_rels.iter().any(|(s, t, r)| {
+        s.eq_ignore_ascii_case(source_id)
+            && t.eq_ignore_ascii_case(target_id)
+            && r == &relation
     });
     if !found {
         anyhow::bail!(

@@ -5,6 +5,10 @@ use forgeplan_core::workspace;
 use crate::ui;
 
 pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow::Result<()> {
+    if description.trim().is_empty() {
+        anyhow::bail!("Task description cannot be empty. Usage: forgeplan route \"describe your task\"");
+    }
+
     // Determine effective level:
     // --level flag takes priority, --explain implies level 1,
     // otherwise auto-detect: use Level 1 if LLM config with API key is available

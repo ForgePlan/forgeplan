@@ -111,6 +111,10 @@ impl RelationStorage for LanceDriver {
     async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
         self.store.get_all_relations().await
     }
+
+    async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+        self.store.delete_relations_for_artifact(id).await
+    }
 }
 
 // ── SearchStorage ───────────────────────────────────────────────────────────
