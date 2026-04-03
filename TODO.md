@@ -3,17 +3,29 @@
 ## Current: v0.12-dev (post-v0.12.0)
 
 ### Stats
-- 54 CLI commands, 35 MCP tools, 716 tests
-- 124 dogfood artifacts (74 active, 32 draft, 16 deprecated)
-- ~26K LOC Rust, 41MB release binary
-- PRs #60-#85 merged
-- E2E smoke test: 193 tests, 92.7% pass rate (179 PASS, 8 FAIL, 6 SKIP)
+- 56 CLI commands, 37 MCP tools, 740 tests
+- 131 dogfood artifacts (80 active, 28 draft, 18 deprecated)
+- ~26K LOC Rust, 43MB release binary
+- PRs #60-#95 merged
+- E2E: 83 commands tested (clean tempdir + real workspace), 0 failures
 - Smart search by default (keyword + semantic + graph boosters)
 - MCP methodology hints (_next_action in tool responses)
 - 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
 - Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
 - MemoryDriver: remember/recall commands (RFC-003 Phase 2)
 - Lifecycle v2: stale/renew/reopen, terminal deprecated/superseded (ADR-005)
+
+### P0: Graph Integrity — Sprint 8 (PROB-020) ✅
+- [x] BUG-1 (P1): blocked/order treated deprecated as blockers → resolved_ids
+- [x] BUG-2 (P1): delete cascade relations + phantom PROB-013 cleanup
+- [x] BUG-2b: unlink resilient for phantom relations
+- [x] 5-agent audit: 2 critical + 5 warnings → all fixed
+- [x] 2 new MCP tools: forgeplan_blocked + forgeplan_order
+- [x] validate_id_for_filter() whitelist, DRY common::resolved_ids()
+- [x] O(n²)→O(n) order.rs, double scan eliminated, TOCTOU fixed
+- [x] route "" rejects empty, memory excluded from orphan detection
+- [x] 83 E2E commands tested, E2E-TEST-PLAN.md created
+- [x] PROB-020 active, EVID-047 linked, R_eff=1.00, PR #95
 
 ### P0: E2E Bug Fixes — Sprint 2 (PROB-018)
 - [x] **BUG-001 (P1 Security):** `scan --path /tmp` path traversal — added project root boundary validation (coverage.rs)
