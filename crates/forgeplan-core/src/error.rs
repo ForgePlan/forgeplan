@@ -15,7 +15,9 @@ pub enum ForgeplanError {
     #[error("invalid artifact kind: {0}")]
     InvalidKind(String),
 
-    #[error("invalid relation type: {0} (valid: informs, based_on, supersedes, contradicts, refines)")]
+    #[error(
+        "invalid relation type: {0} (valid: informs, based_on, supersedes, contradicts, refines)"
+    )]
     InvalidRelation(String),
 
     #[error("link already exists: {from} --{relation}--> {to}")]
@@ -53,7 +55,10 @@ mod tests {
     #[test]
     fn workspace_not_found_display() {
         let err = ForgeplanError::WorkspaceNotFound;
-        assert_eq!(err.to_string(), "workspace not found: run `forgeplan init` first");
+        assert_eq!(
+            err.to_string(),
+            "workspace not found: run `forgeplan init` first"
+        );
     }
 
     #[test]

@@ -71,10 +71,7 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
             }
 
             let item = parse_evidence_from_record(ev);
-            let is_expired = item
-                .valid_until
-                .map(|dt| now > dt)
-                .unwrap_or(false);
+            let is_expired = item.valid_until.map(|dt| now > dt).unwrap_or(false);
 
             if is_expired {
                 let valid_until_str = ev.valid_until.as_deref().unwrap_or("unknown");
@@ -131,4 +128,3 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
 
     Ok(entries)
 }
-

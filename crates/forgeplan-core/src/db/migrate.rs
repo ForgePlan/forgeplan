@@ -3,8 +3,8 @@
 //! Each migration is idempotent: checks if column exists before adding.
 //! Version tracked in config.yaml as `schema_version`.
 
-use lancedb::table::NewColumnTransform;
 use lancedb::Table;
+use lancedb::table::NewColumnTransform;
 
 /// Current schema version. Increment when adding migrations.
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
@@ -58,14 +58,12 @@ pub async fn migrate_relations(table: &Table) -> anyhow::Result<()> {
 /// Ensure the change_log table exists. Called from LanceStore::open().
 /// Unlike other migrations, this creates the table if missing (since older workspaces
 /// don't have it). The table handle is passed as Option — None means "not found".
-pub async fn ensure_change_log(
-    db: &lancedb::connection::Connection,
-) -> anyhow::Result<()> {
+pub async fn ensure_change_log(db: &lancedb::connection::Connection) -> anyhow::Result<()> {
     let tables = db.table_names().execute().await?;
     if !tables.contains(&"change_log".to_string()) {
-        use std::sync::Arc;
         use arrow_array::{RecordBatch, StringArray};
         use arrow_schema::ArrowError;
+        use std::sync::Arc;
 
         let schema = super::schema::change_log_schema();
         let batch = RecordBatch::try_new(
@@ -80,7 +78,8 @@ pub async fn ensure_change_log(
                 Arc::new(StringArray::from(Vec::<&str>::new())),
                 Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash
             ],
-        ).map_err(|e: ArrowError| anyhow::anyhow!("Failed to create change_log batch: {}", e))?;
+        )
+        .map_err(|e: ArrowError| anyhow::anyhow!("Failed to create change_log batch: {}", e))?;
         db.create_table("change_log", vec![batch]).execute().await?;
         eprintln!("[migrate] Created change_log table");
     }

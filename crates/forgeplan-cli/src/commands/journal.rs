@@ -15,12 +15,19 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
     }
 
     println!();
-    println!("Decision Journal{}", if risk { " (at-risk only)" } else { "" });
+    println!(
+        "Decision Journal{}",
+        if risk { " (at-risk only)" } else { "" }
+    );
     println!("{}", "═".repeat(50));
     println!();
 
     for entry in &entries {
-        let date = entry.created_at.split('T').next().unwrap_or(&entry.created_at);
+        let date = entry
+            .created_at
+            .split('T')
+            .next()
+            .unwrap_or(&entry.created_at);
         let is_terminal = entry.status == "deprecated" || entry.status == "superseded";
         let risk_indicator = if entry.evidence_count == 0 && !is_terminal {
             " ⚠ NO EVIDENCE"
@@ -47,16 +54,14 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
     }
 
     // Summary
-    let no_evidence = entries.iter()
+    let no_evidence = entries
+        .iter()
         .filter(|e| e.evidence_count == 0)
         .filter(|e| e.status != "deprecated" && e.status != "superseded")
         .count();
     if no_evidence > 0 {
         println!();
-        println!(
-            "  ⚠ {} decision(s) without any evidence",
-            no_evidence
-        );
+        println!("  ⚠ {} decision(s) without any evidence", no_evidence);
     }
 
     println!();

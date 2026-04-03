@@ -2,7 +2,9 @@ use forgeplan_core::artifact::store::ArtifactSummary;
 use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::validation::{Finding, ValidationResult};
 
-use crate::types::{ArtifactRecordDto, ArtifactSummaryDto, ValidationFindingDto, ValidationResultDto};
+use crate::types::{
+    ArtifactRecordDto, ArtifactSummaryDto, ValidationFindingDto, ValidationResultDto,
+};
 
 impl From<ArtifactSummary> for ArtifactSummaryDto {
     fn from(s: ArtifactSummary) -> Self {

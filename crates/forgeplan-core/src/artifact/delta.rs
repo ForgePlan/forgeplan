@@ -228,10 +228,19 @@ Changed from 30 to 60 minutes.
     #[test]
     fn delta_summary_all_types() {
         let delta = DeltaSpec {
-            added: vec![DeltaRequirement { name: "A".into(), body: "".into() }],
+            added: vec![DeltaRequirement {
+                name: "A".into(),
+                body: "".into(),
+            }],
             modified: vec![
-                DeltaRequirement { name: "B".into(), body: "".into() },
-                DeltaRequirement { name: "C".into(), body: "".into() },
+                DeltaRequirement {
+                    name: "B".into(),
+                    body: "".into(),
+                },
+                DeltaRequirement {
+                    name: "C".into(),
+                    body: "".into(),
+                },
             ],
             removed: vec!["D".into()],
         };

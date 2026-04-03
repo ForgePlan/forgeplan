@@ -72,8 +72,7 @@ pub fn list_sections(body: &str) -> Vec<Section> {
                     nested_heading = false;
                 } else {
                     // Nested heading (e.g. ### under ##) — render as content.
-                    current_content
-                        .push_str(&format!("{} ", "#".repeat(new_level as usize)));
+                    current_content.push_str(&format!("{} ", "#".repeat(new_level as usize)));
                     nested_heading = true;
                 }
                 in_heading = true;

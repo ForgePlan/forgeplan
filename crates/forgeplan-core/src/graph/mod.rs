@@ -76,8 +76,12 @@ pub fn render_mermaid(edges: &[Edge]) -> String {
     let mut nodes: BTreeMap<String, &str> = BTreeMap::new();
     for edge in edges {
         // Detect kind from ID prefix
-        nodes.entry(edge.from.clone()).or_insert(kind_from_id(&edge.from));
-        nodes.entry(edge.to.clone()).or_insert(kind_from_id(&edge.to));
+        nodes
+            .entry(edge.from.clone())
+            .or_insert(kind_from_id(&edge.from));
+        nodes
+            .entry(edge.to.clone())
+            .or_insert(kind_from_id(&edge.to));
     }
 
     // Render edges
@@ -118,12 +122,19 @@ pub fn render_mermaid(edges: &[Edge]) -> String {
 
 fn kind_from_id(id: &str) -> &'static str {
     let upper = id.to_uppercase();
-    if upper.starts_with("EPIC") { "epic" }
-    else if upper.starts_with("PRD") { "prd" }
-    else if upper.starts_with("RFC") { "rfc" }
-    else if upper.starts_with("ADR") { "adr" }
-    else if upper.starts_with("SPEC") { "spec" }
-    else { "other" }
+    if upper.starts_with("EPIC") {
+        "epic"
+    } else if upper.starts_with("PRD") {
+        "prd"
+    } else if upper.starts_with("RFC") {
+        "rfc"
+    } else if upper.starts_with("ADR") {
+        "adr"
+    } else if upper.starts_with("SPEC") {
+        "spec"
+    } else {
+        "other"
+    }
 }
 
 #[cfg(test)]

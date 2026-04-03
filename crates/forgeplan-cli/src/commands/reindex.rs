@@ -34,14 +34,15 @@ pub async fn run() -> anyhow::Result<()> {
                 }
             };
 
-            let (fm, body) = match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("  SKIP {}: parse error: {}", path.display(), e);
-                    errors += 1;
-                    continue;
-                }
-            };
+            let (fm, body) =
+                match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  SKIP {}: parse error: {}", path.display(), e);
+                        errors += 1;
+                        continue;
+                    }
+                };
 
             let id = match fm.get("id").and_then(|v| v.as_str()) {
                 Some(id) => id.to_string(),
@@ -67,10 +68,16 @@ pub async fn run() -> anyhow::Result<()> {
                 }
                 None => {
                     // Artifact in file but not in LanceDB — create it
-                    let kind = fm.get("kind").and_then(|v| v.as_str()).unwrap_or(dir_name.trim_end_matches('s'));
+                    let kind = fm
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(dir_name.trim_end_matches('s'));
                     let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("draft");
                     let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or(&id);
-                    let depth = fm.get("depth").and_then(|v| v.as_str()).unwrap_or("standard");
+                    let depth = fm
+                        .get("depth")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("standard");
 
                     let artifact = forgeplan_core::db::store::NewArtifact {
                         id: id.clone(),
@@ -80,8 +87,14 @@ pub async fn run() -> anyhow::Result<()> {
                         body: body.to_string(),
                         depth: depth.to_string(),
                         author: fm.get("author").and_then(|v| v.as_str()).map(String::from),
-                        parent_epic: fm.get("parent_epic").and_then(|v| v.as_str()).map(String::from),
-                        valid_until: fm.get("valid_until").and_then(|v| v.as_str()).map(String::from),
+                        parent_epic: fm
+                            .get("parent_epic")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        valid_until: fm
+                            .get("valid_until")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                     };
 
                     store.create_artifact(&artifact).await?;
@@ -100,9 +113,8 @@ pub async fn run() -> anyhow::Result<()> {
                         let relation = link.get("relation").and_then(|v| v.as_str());
                         if let (Some(t), Some(r)) = (target, relation) {
                             // Skip if relation already exists
-                            let already_exists = existing_relations
-                                .iter()
-                                .any(|(et, er)| et == t && er == r);
+                            let already_exists =
+                                existing_relations.iter().any(|(et, er)| et == t && er == r);
                             if !already_exists {
                                 if let Err(e) = store.add_relation(&id, t, r).await {
                                     eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
@@ -122,11 +134,10 @@ pub async fn run() -> anyhow::Result<()> {
     let mut removed = 0usize;
     let all_records = store.list_records(None).await?;
     for record in &all_records {
-        let kind: forgeplan_core::artifact::types::ArtifactKind =
-            match record.kind.parse() {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
+        let kind: forgeplan_core::artifact::types::ArtifactKind = match record.kind.parse() {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
         let dir = ws.join(kind.dir_name());
         let slug = forgeplan_core::artifact::types::slugify(&record.title);
         let filename = format!("{}-{}.md", record.id, slug);

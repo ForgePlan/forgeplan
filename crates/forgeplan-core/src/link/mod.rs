@@ -5,11 +5,7 @@ use crate::error::ForgeplanError;
 
 /// Add a typed link to an artifact's frontmatter.
 /// Writes the updated file back to disk.
-pub async fn add_link(
-    artifact_path: &Path,
-    target_id: &str,
-    relation: &str,
-) -> anyhow::Result<()> {
+pub async fn add_link(artifact_path: &Path, target_id: &str, relation: &str) -> anyhow::Result<()> {
     // Normalize target to uppercase for consistent storage and dedup
     let target_id = target_id.to_uppercase();
     let content = tokio::fs::read_to_string(artifact_path).await?;
@@ -35,10 +31,15 @@ pub async fn add_link(
 
         if already_exists {
             return Err(ForgeplanError::LinkExists {
-                from: fm.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+                from: fm
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
                 relation: relation.to_string(),
                 to: target_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         let mut entry = serde_yml::Mapping::new();
@@ -149,8 +150,7 @@ links:
   - target: RFC-002
     relation: based_on
 "#;
-        let fm: crate::artifact::frontmatter::Frontmatter =
-            serde_yml::from_str(yaml).unwrap();
+        let fm: crate::artifact::frontmatter::Frontmatter = serde_yml::from_str(yaml).unwrap();
         let links = list_links(&fm);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0], ("PRD-001".to_string(), "informs".to_string()));
@@ -160,8 +160,7 @@ links:
     #[test]
     fn list_links_non_sequence_links_field() {
         let yaml = r#"links: "not-a-sequence""#;
-        let fm: crate::artifact::frontmatter::Frontmatter =
-            serde_yml::from_str(yaml).unwrap();
+        let fm: crate::artifact::frontmatter::Frontmatter = serde_yml::from_str(yaml).unwrap();
         // Non-sequence links field should return empty vec
         assert!(list_links(&fm).is_empty());
     }

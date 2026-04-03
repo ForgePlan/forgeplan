@@ -56,7 +56,10 @@ pub fn collect_hints(body: &str, extracted_count: usize, kind: &str) -> Vec<Esti
     if extracted_count > 0 && extracted_count <= 2 {
         hints.push(EstimateHint {
             level: HintLevel::Info,
-            message: format!("Only {} item(s) — estimate may be incomplete", extracted_count),
+            message: format!(
+                "Only {} item(s) — estimate may be incomplete",
+                extracted_count
+            ),
             action: Some("Consider breaking down into more granular FR/Phase items".to_string()),
         });
     }
@@ -78,9 +81,7 @@ pub fn collect_hints(body: &str, extracted_count: usize, kind: &str) -> Vec<Esti
 /// Count total FR table rows (including template placeholders).
 fn count_fr_rows(body: &str) -> usize {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(
-        r"(?m)^\|\s*FR-\d+\s*\|"
-    ).expect("valid regex"));
+    let re = RE.get_or_init(|| Regex::new(r"(?m)^\|\s*FR-\d+\s*\|").expect("valid regex"));
     re.find_iter(body).count()
 }
 
@@ -129,11 +130,12 @@ fn is_template_placeholder(desc: &str) -> bool {
 fn extract_phase_items(body: &str) -> Vec<WorkItem> {
     // Format 1: - [ ] **1.1** Description (standard)
     static RE_STANDARD: OnceLock<Regex> = OnceLock::new();
-    let re_standard = RE_STANDARD.get_or_init(|| Regex::new(
-        r"(?m)^- \[[ x]\] \*\*(\d+\.\d+)\*\*\s+(.+)$"
-    ).expect("valid regex"));
+    let re_standard = RE_STANDARD.get_or_init(|| {
+        Regex::new(r"(?m)^- \[[ x]\] \*\*(\d+\.\d+)\*\*\s+(.+)$").expect("valid regex")
+    });
 
-    let mut items: Vec<WorkItem> = re_standard.captures_iter(body)
+    let mut items: Vec<WorkItem> = re_standard
+        .captures_iter(body)
         .map(|cap| WorkItem {
             id: format!("P{}", cap[1].to_string()),
             description: cap[2].trim().to_string(),
@@ -150,9 +152,8 @@ fn extract_phase_items(body: &str) -> Vec<WorkItem> {
 
     // Format 2: - [ ] Description (plain checklist, under ## Implementation / ## Phase headers)
     static RE_PLAIN: OnceLock<Regex> = OnceLock::new();
-    let re_plain = RE_PLAIN.get_or_init(|| Regex::new(
-        r"(?m)^- \[[ x]\]\s+(.+)$"
-    ).expect("valid regex"));
+    let re_plain =
+        RE_PLAIN.get_or_init(|| Regex::new(r"(?m)^- \[[ x]\]\s+(.+)$").expect("valid regex"));
 
     let mut counter = 0u32;
     for cap in re_plain.captures_iter(body) {
@@ -301,9 +302,15 @@ mod tests {
 "#;
         let hints = collect_hints(body, 0, "prd");
         // Should get template warning + RFC suggestion, but NOT "no items found" (F3 fix)
-        assert!(hints.iter().any(|h| h.message.contains("template placeholders")));
-        assert!(!hints.iter().any(|h| h.message.contains("No estimable")),
-            "Should NOT show 'no items' when templates exist — user already has FR table");
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.message.contains("template placeholders"))
+        );
+        assert!(
+            !hints.iter().any(|h| h.message.contains("No estimable")),
+            "Should NOT show 'no items' when templates exist — user already has FR table"
+        );
     }
 
     #[test]
@@ -323,7 +330,13 @@ mod tests {
     fn collect_hints_rfc_kind_suggestion() {
         let body = "# No FR or phases";
         let hints = collect_hints(body, 0, "rfc");
-        assert!(hints[0].action.as_ref().unwrap().contains("Phase checklist"));
+        assert!(
+            hints[0]
+                .action
+                .as_ref()
+                .unwrap()
+                .contains("Phase checklist")
+        );
     }
 
     #[test]

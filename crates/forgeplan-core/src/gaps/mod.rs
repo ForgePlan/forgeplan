@@ -84,9 +84,7 @@ pub async fn find_gaps(store: &LanceStore) -> anyhow::Result<Vec<Gap>> {
     Ok(gaps)
 }
 
-fn build_relation_index(
-    relations: &[(String, String, String)],
-) -> (RelationIndex, RelationIndex) {
+fn build_relation_index(relations: &[(String, String, String)]) -> (RelationIndex, RelationIndex) {
     let mut outgoing: RelationIndex = BTreeMap::new();
     let mut incoming: RelationIndex = BTreeMap::new();
     for (from, to, rel) in relations {
@@ -108,10 +106,8 @@ fn build_linked_kinds_map(
     outgoing: &RelationIndex,
     incoming: &RelationIndex,
 ) -> BTreeMap<String, Vec<String>> {
-    let id_to_kind: BTreeMap<String, String> = all
-        .iter()
-        .map(|r| (r.id.clone(), r.kind.clone()))
-        .collect();
+    let id_to_kind: BTreeMap<String, String> =
+        all.iter().map(|r| (r.id.clone(), r.kind.clone())).collect();
 
     let mut result: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
@@ -259,9 +255,9 @@ fn check_active_without_evidence(
         return;
     }
 
-    let has_evidence = evidence_records.iter().any(|ev| {
-        is_evidence_linked(&record.id, &ev.id, outgoing)
-    });
+    let has_evidence = evidence_records
+        .iter()
+        .any(|ev| is_evidence_linked(&record.id, &ev.id, outgoing));
 
     if !has_evidence {
         gaps.push(Gap {
@@ -287,7 +283,10 @@ fn check_active_without_evidence(
                 artifact_id: record.id.clone(),
                 artifact_title: record.title.clone(),
                 severity: GapSeverity::Should,
-                message: format!("{} active but R_eff={:.2} (weak evidence)", record.id, score),
+                message: format!(
+                    "{} active but R_eff={:.2} (weak evidence)",
+                    record.id, score
+                ),
             });
         }
     }
@@ -313,7 +312,10 @@ fn check_stale_draft(record: &ArtifactRecord, gaps: &mut Vec<Gap>) {
                 artifact_id: record.id.clone(),
                 artifact_title: record.title.clone(),
                 severity: GapSeverity::Could,
-                message: format!("{} draft for {}+ days — stale?", record.id, STALE_DRAFT_DAYS),
+                message: format!(
+                    "{} draft for {}+ days — stale?",
+                    record.id, STALE_DRAFT_DAYS
+                ),
             });
         }
     }
@@ -344,19 +346,23 @@ fn check_orphan(
 }
 
 /// Check if evidence is linked to an artifact (in either direction).
-fn is_evidence_linked(
-    artifact_id: &str,
-    evidence_id: &str,
-    outgoing: &RelationIndex,
-) -> bool {
+fn is_evidence_linked(artifact_id: &str, evidence_id: &str, outgoing: &RelationIndex) -> bool {
     let ev_to_art = outgoing
         .get(evidence_id)
-        .map(|links| links.iter().any(|(t, _)| t.eq_ignore_ascii_case(artifact_id)))
+        .map(|links| {
+            links
+                .iter()
+                .any(|(t, _)| t.eq_ignore_ascii_case(artifact_id))
+        })
         .unwrap_or(false);
 
     let art_to_ev = outgoing
         .get(artifact_id)
-        .map(|links| links.iter().any(|(t, _)| t.eq_ignore_ascii_case(evidence_id)))
+        .map(|links| {
+            links
+                .iter()
+                .any(|(t, _)| t.eq_ignore_ascii_case(evidence_id))
+        })
         .unwrap_or(false);
 
     ev_to_art || art_to_ev
@@ -479,7 +485,10 @@ mod tests {
     fn test_linked_artifact_not_orphan() {
         let record = make_record("RFC-001", "rfc", "active", "standard");
         let mut outgoing: RelationIndex = BTreeMap::new();
-        outgoing.insert("RFC-001".into(), vec![("PRD-001".into(), "based_on".into())]);
+        outgoing.insert(
+            "RFC-001".into(),
+            vec![("PRD-001".into(), "based_on".into())],
+        );
         let incoming: RelationIndex = BTreeMap::new();
         let mut gaps = Vec::new();
 

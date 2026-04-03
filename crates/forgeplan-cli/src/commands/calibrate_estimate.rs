@@ -1,8 +1,8 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::estimate::{calculator, confidence, extractor, scorer};
 use forgeplan_core::estimate::types::ItemSource;
+use forgeplan_core::estimate::{calculator, confidence, extractor, scorer};
 
 use crate::commands::common;
 use crate::commands::estimate::load_estimate_config;
@@ -10,7 +10,10 @@ use crate::commands::estimate::load_estimate_config;
 /// Compare estimated hours with actual hours to calibrate estimation accuracy.
 pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> Result<()> {
     if !actual_hours.is_finite() || actual_hours <= 0.0 {
-        anyhow::bail!("Actual hours must be a positive finite number (got: {})", actual_hours);
+        anyhow::bail!(
+            "Actual hours must be a positive finite number (got: {})",
+            actual_hours
+        );
     }
 
     let store = common::store().await?;
@@ -29,16 +32,33 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
 
     let scored_items = scorer::score_items(&work_items);
 
-    let fr_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Fr).collect();
-    let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
+    let fr_items: Vec<_> = work_items
+        .iter()
+        .filter(|w| w.source == ItemSource::Fr)
+        .collect();
+    let phase_items: Vec<_> = work_items
+        .iter()
+        .filter(|w| w.source == ItemSource::Phase)
+        .collect();
 
     let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
-    let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
+    let incoming = store
+        .get_incoming_relations(&record.id)
+        .await
+        .unwrap_or_default();
 
-    let has_spec = outgoing.iter().any(|(t, _)| t.to_uppercase().starts_with("SPEC-"))
-        || incoming.iter().any(|(s, _)| s.to_uppercase().starts_with("SPEC-"));
-    let has_evidence = outgoing.iter().any(|(t, _)| t.to_uppercase().starts_with("EVID-"))
-        || incoming.iter().any(|(s, _)| s.to_uppercase().starts_with("EVID-"));
+    let has_spec = outgoing
+        .iter()
+        .any(|(t, _)| t.to_uppercase().starts_with("SPEC-"))
+        || incoming
+            .iter()
+            .any(|(s, _)| s.to_uppercase().starts_with("SPEC-"));
+    let has_evidence = outgoing
+        .iter()
+        .any(|(t, _)| t.to_uppercase().starts_with("EVID-"))
+        || incoming
+            .iter()
+            .any(|(s, _)| s.to_uppercase().starts_with("EVID-"));
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
@@ -65,7 +85,9 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
     // Find estimated hours for requested grade
     let estimated = if let Some(grade_str) = grade {
         let grade_lower = grade_str.to_lowercase();
-        result.totals.iter()
+        result
+            .totals
+            .iter()
             .find(|(g, _)| format!("{:?}", g).to_lowercase().contains(&grade_lower))
             .map(|(_, v)| *v)
             .unwrap_or(result.total_score)
@@ -79,13 +101,21 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
 
     // Calculate ratio
     let ratio = actual_hours / estimated;
-    let accuracy_pct = if ratio > 1.0 { (1.0 / ratio) * 100.0 } else { ratio * 100.0 };
+    let accuracy_pct = if ratio > 1.0 {
+        (1.0 / ratio) * 100.0
+    } else {
+        ratio * 100.0
+    };
 
     // Display
     println!();
     println!("{} — {}", style(artifact_id).bold(), record.title);
     println!("{}", "─".repeat(50));
-    println!("  Estimated:  {:.1}h (confidence {:.0}%)", estimated, result.confidence * 100.0);
+    println!(
+        "  Estimated:  {:.1}h (confidence {:.0}%)",
+        estimated,
+        result.confidence * 100.0
+    );
     println!("  Actual:     {:.1}h", actual_hours);
     println!();
 
@@ -101,15 +131,36 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
     println!();
 
     if ratio > 1.5 {
-        println!("  {} Estimates are {:.1}x optimistic for {} tasks. Add {:.1}x buffer.", style("!").yellow(), ratio, record.kind, ratio);
+        println!(
+            "  {} Estimates are {:.1}x optimistic for {} tasks. Add {:.1}x buffer.",
+            style("!").yellow(),
+            ratio,
+            record.kind,
+            ratio
+        );
     } else if ratio > 1.1 {
-        println!("  {} Slightly optimistic ({:.0}% accuracy). Acceptable range.", style("i").dim(), accuracy_pct);
+        println!(
+            "  {} Slightly optimistic ({:.0}% accuracy). Acceptable range.",
+            style("i").dim(),
+            accuracy_pct
+        );
     } else if ratio < 0.5 {
-        println!("  {} Finished {:.1}x faster. Estimates may be too conservative.", style("*").green(), 1.0 / ratio);
+        println!(
+            "  {} Finished {:.1}x faster. Estimates may be too conservative.",
+            style("*").green(),
+            1.0 / ratio
+        );
     } else if ratio < 0.7 {
-        println!("  {} Finished faster than expected ({:.0}% of estimate). Estimates may be conservative.", style("i").dim(), ratio * 100.0);
+        println!(
+            "  {} Finished faster than expected ({:.0}% of estimate). Estimates may be conservative.",
+            style("i").dim(),
+            ratio * 100.0
+        );
     } else {
-        println!("  {} Good calibration — within 30% of actual.", style("*").green());
+        println!(
+            "  {} Good calibration — within 30% of actual.",
+            style("*").green()
+        );
     }
     println!();
 

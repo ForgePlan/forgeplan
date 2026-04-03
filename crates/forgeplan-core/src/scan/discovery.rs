@@ -30,7 +30,14 @@ const SCAN_DIRS: &[&str] = &[
 /// Skips files inside `.forgeplan/`, `node_modules/`, `.git/`, `target/`.
 pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile>> {
     let mut results = Vec::new();
-    let skip_dirs = [".forgeplan", "node_modules", ".git", "target", "vendor", ".venv"];
+    let skip_dirs = [
+        ".forgeplan",
+        "node_modules",
+        ".git",
+        "target",
+        "vendor",
+        ".venv",
+    ];
 
     // Scan standard doc directories
     for dir_name in SCAN_DIRS {
@@ -69,10 +76,7 @@ pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile
                         continue;
                     }
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        let relative = path
-                            .strip_prefix(root)
-                            .unwrap_or(&path)
-                            .to_path_buf();
+                        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
                         results.push(DiscoveredFile {
                             path: path.clone(),
                             relative_path: relative,
@@ -122,10 +126,7 @@ fn collect_markdown_recursive_depth(
             }
         }
         if path.is_dir() {
-            let dir_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !skip_dirs.contains(&dir_name) {
                 collect_markdown_recursive_depth(&path, root, skip_dirs, results, depth + 1)?;
             }
@@ -136,10 +137,7 @@ fn collect_markdown_recursive_depth(
                 continue;
             }
             if let Ok(content) = std::fs::read_to_string(&path) {
-                let relative = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_path_buf();
+                let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
                 results.push(DiscoveredFile {
                     path: path.clone(),
                     relative_path: relative,

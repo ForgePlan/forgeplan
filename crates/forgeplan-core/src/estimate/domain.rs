@@ -15,14 +15,75 @@ pub fn infer_domain(title: &str, body: &str) -> String {
     let text = format!("{} {}", title, snippet).to_lowercase();
 
     let domains = [
-        ("devops", &["k8s", "docker", "ci/cd", "deploy", "helm", "terraform", "kubernetes",
-            "pipeline", "infrastructure", "namespace", "registry", "runner"][..]),
-        ("frontend", &["react", "css", "ui", "component", "layout", "frontend", "tailwind",
-            "responsive", "browser", "dom", "jsx", "tsx", "next.js"][..]),
-        ("ai_ml", &["llm", "embedding", "model", "prompt", "ml", "ai", "vector",
-            "semantic", "scoring", "neural", "training", "inference"][..]),
-        ("backend", &["api", "database", "endpoint", "service", "backend", "crud",
-            "rest", "graphql", "grpc", "migration", "schema", "query"][..]),
+        (
+            "devops",
+            &[
+                "k8s",
+                "docker",
+                "ci/cd",
+                "deploy",
+                "helm",
+                "terraform",
+                "kubernetes",
+                "pipeline",
+                "infrastructure",
+                "namespace",
+                "registry",
+                "runner",
+            ][..],
+        ),
+        (
+            "frontend",
+            &[
+                "react",
+                "css",
+                "ui",
+                "component",
+                "layout",
+                "frontend",
+                "tailwind",
+                "responsive",
+                "browser",
+                "dom",
+                "jsx",
+                "tsx",
+                "next.js",
+            ][..],
+        ),
+        (
+            "ai_ml",
+            &[
+                "llm",
+                "embedding",
+                "model",
+                "prompt",
+                "ml",
+                "ai",
+                "vector",
+                "semantic",
+                "scoring",
+                "neural",
+                "training",
+                "inference",
+            ][..],
+        ),
+        (
+            "backend",
+            &[
+                "api",
+                "database",
+                "endpoint",
+                "service",
+                "backend",
+                "crud",
+                "rest",
+                "graphql",
+                "grpc",
+                "migration",
+                "schema",
+                "query",
+            ][..],
+        ),
     ];
 
     let mut best_domain = "default";
@@ -68,12 +129,24 @@ mod tests {
 
     #[test]
     fn test_infer_backend_domain() {
-        assert_eq!(infer_domain("API endpoint for users", "---\n---\nREST api database query"), "backend");
+        assert_eq!(
+            infer_domain(
+                "API endpoint for users",
+                "---\n---\nREST api database query"
+            ),
+            "backend"
+        );
     }
 
     #[test]
     fn test_infer_frontend_domain() {
-        assert_eq!(infer_domain("React component", "---\n---\nreact jsx tailwind ui component"), "frontend");
+        assert_eq!(
+            infer_domain(
+                "React component",
+                "---\n---\nreact jsx tailwind ui component"
+            ),
+            "frontend"
+        );
     }
 
     #[test]
@@ -84,7 +157,10 @@ mod tests {
 
     #[test]
     fn test_infer_default() {
-        assert_eq!(infer_domain("Something generic", "---\n---\nno keywords here"), "default");
+        assert_eq!(
+            infer_domain("Something generic", "---\n---\nno keywords here"),
+            "default"
+        );
     }
 
     // ── Domain inference corner cases ──────────────────────────
@@ -92,7 +168,10 @@ mod tests {
     #[test]
     fn test_infer_devops_domain() {
         assert_eq!(
-            infer_domain("Deploy pipeline", "---\n---\nk8s docker helm terraform deploy"),
+            infer_domain(
+                "Deploy pipeline",
+                "---\n---\nk8s docker helm terraform deploy"
+            ),
             "devops"
         );
     }
@@ -100,7 +179,10 @@ mod tests {
     #[test]
     fn test_infer_ai_ml_domain() {
         assert_eq!(
-            infer_domain("Embedding model", "---\n---\nllm embedding vector semantic scoring"),
+            infer_domain(
+                "Embedding model",
+                "---\n---\nllm embedding vector semantic scoring"
+            ),
             "ai_ml"
         );
     }

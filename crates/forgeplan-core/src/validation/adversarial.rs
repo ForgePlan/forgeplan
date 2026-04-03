@@ -29,10 +29,7 @@ pub fn adversarial_checks(body: &str, kind: &str) -> Vec<Finding> {
                 findings.push(Finding {
                     rule_id: "adversarial-vague".into(),
                     severity: Severity::Should,
-                    message: format!(
-                        "Vague word '{}' without measurable metric nearby",
-                        word
-                    ),
+                    message: format!("Vague word '{}' without measurable metric nearby", word),
                     section: None,
                 });
                 break; // one finding per vague category
@@ -87,8 +84,8 @@ pub fn adversarial_checks(body: &str, kind: &str) -> Vec<Finding> {
         findings.push(Finding {
             rule_id: "adversarial-too-clean".into(),
             severity: Severity::Could,
-            message:
-                "Adversarial found 0 issues — either perfect or review was insufficient".into(),
+            message: "Adversarial found 0 issues — either perfect or review was insufficient"
+                .into(),
             section: None,
         });
     }
@@ -123,33 +120,37 @@ mod tests {
     #[test]
     fn rfc_without_alternatives() {
         let findings = adversarial_checks("## Proposal\nUse Redis for caching.", "rfc");
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "adversarial-no-alternatives"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "adversarial-no-alternatives")
+        );
     }
 
     #[test]
     fn rfc_with_alternatives_ok() {
         let body = "## Proposal\nUse Redis.\n## Alternative\nUse Memcached.";
         let findings = adversarial_checks(body, "rfc");
-        assert!(!findings
-            .iter()
-            .any(|f| f.rule_id == "adversarial-no-alternatives"));
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.rule_id == "adversarial-no-alternatives")
+        );
     }
 
     #[test]
     fn prd_without_risks() {
         let findings = adversarial_checks("## Goals\nBuild auth system.", "prd");
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "adversarial-no-risks"));
+        assert!(findings.iter().any(|f| f.rule_id == "adversarial-no-risks"));
     }
 
     #[test]
     fn adr_without_tradeoffs() {
         let findings = adversarial_checks("## Decision\nUse Rust.", "adr");
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "adversarial-no-tradeoffs"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "adversarial-no-tradeoffs")
+        );
     }
 }

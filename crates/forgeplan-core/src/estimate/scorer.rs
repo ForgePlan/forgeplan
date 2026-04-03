@@ -47,7 +47,10 @@ pub fn parse_llm_line(line: &str) -> Option<(String, Complexity, TaskType)> {
         return None;
     }
     let id = parts[0].to_string();
-    let complexity = parts[1].parse::<u32>().ok().and_then(Complexity::from_value)?;
+    let complexity = parts[1]
+        .parse::<u32>()
+        .ok()
+        .and_then(Complexity::from_value)?;
     let task_type = parse_task_type(parts[2])?;
     Some((id, complexity, task_type))
 }
@@ -65,10 +68,7 @@ fn parse_task_type(s: &str) -> Option<TaskType> {
 }
 
 /// Parse the full LLM response into a map of id -> (Complexity, TaskType).
-fn parse_llm_response(
-    response: &str,
-    items: &[WorkItem],
-) -> Vec<ScoredItem> {
+fn parse_llm_response(response: &str, items: &[WorkItem]) -> Vec<ScoredItem> {
     use std::collections::HashMap;
 
     // Build a lookup from parsed LLM lines
@@ -104,10 +104,7 @@ fn parse_llm_response(
 
 /// Score work items using an LLM (L1).
 /// Falls back to rule-based scoring if the LLM call fails.
-pub async fn score_items_with_llm(
-    items: &[WorkItem],
-    llm_config: &LlmConfig,
-) -> Vec<ScoredItem> {
+pub async fn score_items_with_llm(items: &[WorkItem], llm_config: &LlmConfig) -> Vec<ScoredItem> {
     if items.is_empty() {
         return Vec::new();
     }
@@ -145,21 +142,51 @@ fn infer_complexity(item: &WorkItem) -> Complexity {
 
     // High complexity indicators
     let hard_keywords = [
-        "migration", "redesign", "refactor", "integrate", "distributed",
-        "concurrent", "security", "encryption", "authentication", "state machine",
+        "migration",
+        "redesign",
+        "refactor",
+        "integrate",
+        "distributed",
+        "concurrent",
+        "security",
+        "encryption",
+        "authentication",
+        "state machine",
     ];
     let complex_keywords = [
-        "engine", "parser", "scoring", "search", "validation", "workflow",
-        "pipeline", "orchestrat", "aggregate", "transform",
+        "engine",
+        "parser",
+        "scoring",
+        "search",
+        "validation",
+        "workflow",
+        "pipeline",
+        "orchestrat",
+        "aggregate",
+        "transform",
     ];
     let medium_keywords = [
-        "extract", "convert", "calculate", "display", "format", "filter",
-        "sort", "command", "handler", "endpoint",
+        "extract",
+        "convert",
+        "calculate",
+        "display",
+        "format",
+        "filter",
+        "sort",
+        "command",
+        "handler",
+        "endpoint",
     ];
 
     let hard_count = hard_keywords.iter().filter(|kw| desc.contains(*kw)).count();
-    let complex_count = complex_keywords.iter().filter(|kw| desc.contains(*kw)).count();
-    let medium_count = medium_keywords.iter().filter(|kw| desc.contains(*kw)).count();
+    let complex_count = complex_keywords
+        .iter()
+        .filter(|kw| desc.contains(*kw))
+        .count();
+    let medium_count = medium_keywords
+        .iter()
+        .filter(|kw| desc.contains(*kw))
+        .count();
 
     // Priority boost: Must items tend to be more complex than Could
     let priority_boost: i32 = match item.priority.to_lowercase().as_str() {
@@ -170,7 +197,13 @@ fn infer_complexity(item: &WorkItem) -> Complexity {
     };
 
     // Description length contributes to complexity
-    let length_score: i32 = if words > 20 { 2 } else if words > 10 { 1 } else { 0 };
+    let length_score: i32 = if words > 20 {
+        2
+    } else if words > 10 {
+        1
+    } else {
+        0
+    };
 
     let raw_score = (hard_count as i32 * 3)
         + (complex_count as i32 * 2)
@@ -192,20 +225,82 @@ fn infer_complexity(item: &WorkItem) -> Complexity {
 fn infer_task_type(item: &WorkItem) -> TaskType {
     let desc = item.description.to_lowercase();
 
-    let infra_keywords = ["deploy", "k8s", "docker", "ci/cd", "pipeline", "infrastructure",
-        "kubernetes", "helm", "terraform", "vault", "registry", "runner", "namespace"];
-    let design_keywords = ["wireframe", "prototype", "mockup", "figma", "sketch",
-        "visual design", "user interface design", "responsive layout"];
-    let coordination_keywords = ["meeting", "discuss", "coordinate", "align", "stakeholder",
-        "handoff", "onboard", "workshop"];
-    let coding_keywords = ["implement", "create", "add", "build", "write", "develop", "parse",
-        "extract", "calculate", "score", "validate", "convert", "format", "configure",
-        "customize", "specify", "run", "show", "display", "list", "update", "delete"];
+    let infra_keywords = [
+        "deploy",
+        "k8s",
+        "docker",
+        "ci/cd",
+        "pipeline",
+        "infrastructure",
+        "kubernetes",
+        "helm",
+        "terraform",
+        "vault",
+        "registry",
+        "runner",
+        "namespace",
+    ];
+    let design_keywords = [
+        "wireframe",
+        "prototype",
+        "mockup",
+        "figma",
+        "sketch",
+        "visual design",
+        "user interface design",
+        "responsive layout",
+    ];
+    let coordination_keywords = [
+        "meeting",
+        "discuss",
+        "coordinate",
+        "align",
+        "stakeholder",
+        "handoff",
+        "onboard",
+        "workshop",
+    ];
+    let coding_keywords = [
+        "implement",
+        "create",
+        "add",
+        "build",
+        "write",
+        "develop",
+        "parse",
+        "extract",
+        "calculate",
+        "score",
+        "validate",
+        "convert",
+        "format",
+        "configure",
+        "customize",
+        "specify",
+        "run",
+        "show",
+        "display",
+        "list",
+        "update",
+        "delete",
+    ];
 
-    let infra_hits = infra_keywords.iter().filter(|kw| desc.contains(*kw)).count();
-    let design_hits = design_keywords.iter().filter(|kw| desc.contains(*kw)).count();
-    let coord_hits = coordination_keywords.iter().filter(|kw| desc.contains(*kw)).count();
-    let coding_hits = coding_keywords.iter().filter(|kw| desc.contains(*kw)).count();
+    let infra_hits = infra_keywords
+        .iter()
+        .filter(|kw| desc.contains(*kw))
+        .count();
+    let design_hits = design_keywords
+        .iter()
+        .filter(|kw| desc.contains(*kw))
+        .count();
+    let coord_hits = coordination_keywords
+        .iter()
+        .filter(|kw| desc.contains(*kw))
+        .count();
+    let coding_hits = coding_keywords
+        .iter()
+        .filter(|kw| desc.contains(*kw))
+        .count();
 
     if coord_hits > 0 && coding_hits == 0 {
         return TaskType::Coordination;
@@ -247,14 +342,25 @@ mod tests {
 
     #[test]
     fn complex_integration_task() {
-        let item = work_item("FR-002", "System can integrate distributed authentication with security encryption", "Must");
+        let item = work_item(
+            "FR-002",
+            "System can integrate distributed authentication with security encryption",
+            "Must",
+        );
         let scored = score_single(&item);
-        assert!(scored.complexity.value() >= 5, "Expected Complex+ for integration+security+encryption");
+        assert!(
+            scored.complexity.value() >= 5,
+            "Expected Complex+ for integration+security+encryption"
+        );
     }
 
     #[test]
     fn infra_task_detected() {
-        let item = work_item("FR-003", "Deploy to kubernetes namespace with helm charts", "Must");
+        let item = work_item(
+            "FR-003",
+            "Deploy to kubernetes namespace with helm charts",
+            "Must",
+        );
         let scored = score_single(&item);
         assert_eq!(scored.task_type, TaskType::PureInfra);
     }
@@ -268,7 +374,11 @@ mod tests {
 
     #[test]
     fn design_task_detected() {
-        let item = work_item("FR-005", "Create wireframe prototype for dashboard mockup", "Should");
+        let item = work_item(
+            "FR-005",
+            "Create wireframe prototype for dashboard mockup",
+            "Should",
+        );
         let scored = score_single(&item);
         assert_eq!(scored.task_type, TaskType::DesignCoding);
     }
@@ -276,7 +386,11 @@ mod tests {
     #[test]
     fn customize_is_coding_not_design() {
         // "customize" was incorrectly classified as design in old keyword list
-        let item = work_item("FR-006", "User can customize Level 1 prompt template", "Should");
+        let item = work_item(
+            "FR-006",
+            "User can customize Level 1 prompt template",
+            "Should",
+        );
         let scored = score_single(&item);
         assert_eq!(scored.task_type, TaskType::PureCoding);
     }
@@ -292,7 +406,11 @@ mod tests {
     fn score_multiple_items() {
         let items = vec![
             work_item("FR-001", "Add button", "Could"),
-            work_item("FR-002", "Implement distributed authentication engine with security", "Must"),
+            work_item(
+                "FR-002",
+                "Implement distributed authentication engine with security",
+                "Must",
+            ),
         ];
         let scored = score_items(&items);
         assert_eq!(scored.len(), 2);
@@ -321,11 +439,26 @@ mod tests {
 
     #[test]
     fn parse_llm_line_all_task_types() {
-        assert_eq!(parse_llm_line("A|1|pure_coding").unwrap().2, TaskType::PureCoding);
-        assert_eq!(parse_llm_line("B|2|coding_infra").unwrap().2, TaskType::CodingInfra);
-        assert_eq!(parse_llm_line("C|3|design_coding").unwrap().2, TaskType::DesignCoding);
-        assert_eq!(parse_llm_line("D|5|pure_infra").unwrap().2, TaskType::PureInfra);
-        assert_eq!(parse_llm_line("E|8|coordination").unwrap().2, TaskType::Coordination);
+        assert_eq!(
+            parse_llm_line("A|1|pure_coding").unwrap().2,
+            TaskType::PureCoding
+        );
+        assert_eq!(
+            parse_llm_line("B|2|coding_infra").unwrap().2,
+            TaskType::CodingInfra
+        );
+        assert_eq!(
+            parse_llm_line("C|3|design_coding").unwrap().2,
+            TaskType::DesignCoding
+        );
+        assert_eq!(
+            parse_llm_line("D|5|pure_infra").unwrap().2,
+            TaskType::PureInfra
+        );
+        assert_eq!(
+            parse_llm_line("E|8|coordination").unwrap().2,
+            TaskType::Coordination
+        );
     }
 
     #[test]
@@ -349,7 +482,11 @@ mod tests {
     fn parse_llm_response_with_fallback() {
         // Simulate an LLM response where only FR-001 is scored; FR-002 is missing
         let items = vec![
-            work_item("FR-001", "Implement auth system with security encryption", "Must"),
+            work_item(
+                "FR-001",
+                "Implement auth system with security encryption",
+                "Must",
+            ),
             work_item("FR-002", "Add button", "Could"),
         ];
         let llm_response = "FR-001|8|coding_infra\n";
@@ -370,9 +507,11 @@ mod tests {
 
     #[test]
     fn parse_llm_response_all_garbage_falls_back() {
-        let items = vec![
-            work_item("FR-001", "Build search engine with validation pipeline", "Must"),
-        ];
+        let items = vec![work_item(
+            "FR-001",
+            "Build search engine with validation pipeline",
+            "Must",
+        )];
         let llm_response = "This is not valid output at all\nNeither is this";
 
         let scored = parse_llm_response(llm_response, &items);

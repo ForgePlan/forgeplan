@@ -6,9 +6,9 @@ use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::ArrowError;
 use chrono::Utc;
 use futures::StreamExt;
+use lancedb::Table;
 use lancedb::connection::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::Table;
 
 use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
@@ -25,7 +25,10 @@ fn validate_id_for_filter(id: &str) -> anyhow::Result<()> {
     if !id.chars().next().unwrap_or(' ').is_ascii_alphabetic() {
         anyhow::bail!("Artifact ID must start with a letter: '{}'", id);
     }
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         anyhow::bail!(
             "Artifact ID contains invalid characters (allowed: a-z, A-Z, 0-9, -, _): '{}'",
             id
@@ -136,8 +139,14 @@ impl ArtifactRecord {
         if let Some(ref vu) = self.valid_until {
             map.insert("valid_until".to_string(), Value::String(vu.clone()));
         }
-        map.insert("created_at".to_string(), Value::String(self.created_at.clone()));
-        map.insert("updated_at".to_string(), Value::String(self.updated_at.clone()));
+        map.insert(
+            "created_at".to_string(),
+            Value::String(self.created_at.clone()),
+        );
+        map.insert(
+            "updated_at".to_string(),
+            Value::String(self.updated_at.clone()),
+        );
         map
     }
 }
@@ -150,12 +159,9 @@ pub fn compute_body_hash(body: &str) -> String {
     let bytes = body.as_bytes();
     let len = bytes.len();
     // Simple hash: sum of bytes with position weighting
-    let hash: u64 = bytes
-        .iter()
-        .enumerate()
-        .fold(0u64, |acc, (i, &b)| {
-            acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
-        });
+    let hash: u64 = bytes.iter().enumerate().fold(0u64, |acc, (i, &b)| {
+        acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
+    });
     format!("{:016x}-{:08x}", hash, len)
 }
 
@@ -196,7 +202,14 @@ impl LanceStore {
     /// Runs idempotent schema migrations on every open.
     pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
-        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
+        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "LanceDB path contains non-UTF-8 characters: {:?}",
+                lance_dir
+            )
+        })?)
+        .execute()
+        .await?;
 
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
@@ -225,7 +238,14 @@ impl LanceStore {
         let lance_dir = workspace_path.join("lance");
         tokio::fs::create_dir_all(&lance_dir).await?;
 
-        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters: {:?}", lance_dir))?).execute().await?;
+        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "LanceDB path contains non-UTF-8 characters: {:?}",
+                lance_dir
+            )
+        })?)
+        .execute()
+        .await?;
         let existing_tables = db.table_names().execute().await?;
 
         // Create artifacts table if not present
@@ -282,8 +302,15 @@ impl LanceStore {
     /// Insert a new artifact, returning its ID.
     pub async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         // Validate ID format — prevent path traversal and SQL injection
-        if !artifact.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            anyhow::bail!("Invalid artifact ID '{}': must contain only alphanumeric characters and hyphens", artifact.id);
+        if !artifact
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            anyhow::bail!(
+                "Invalid artifact ID '{}': must contain only alphanumeric characters and hyphens",
+                artifact.id
+            );
         }
 
         // Guard: check for duplicate ID
@@ -301,14 +328,8 @@ impl LanceStore {
     /// Get a single artifact by ID. Returns None if not found.
     pub async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
         let filter = format!("id = '{}'", id.replace('\'', "''"));
-        let batches = collect_batches(
-            self.artifacts
-                .query()
-                .only_if(filter)
-                .execute()
-                .await?,
-        )
-        .await?;
+        let batches =
+            collect_batches(self.artifacts.query().only_if(filter).execute().await?).await?;
 
         for batch in &batches {
             if batch.num_rows() == 0 {
@@ -387,7 +408,10 @@ impl LanceStore {
             .update()
             .only_if(predicate)
             .column("updated_at", &format!("'{}'", now))
-            .column("valid_until", &format!("'{}'", valid_until.replace('\'', "''")))
+            .column(
+                "valid_until",
+                &format!("'{}'", valid_until.replace('\'', "''")),
+            )
             .execute()
             .await?;
         Ok(())
@@ -409,7 +433,11 @@ impl LanceStore {
 
     /// Update r_eff_score for an artifact. Verifies the artifact exists first.
     pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
-        let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
+        let score = if score.is_nan() {
+            0.0
+        } else {
+            score.clamp(0.0, 1.0)
+        };
         // Verify artifact exists before update (LanceDB update is silent no-op on missing ID)
         if self.get_record(id).await?.is_none() {
             anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
@@ -450,13 +478,15 @@ impl LanceStore {
 
         // Dedup: check if relation already exists
         let existing = self.get_relations(source).await?;
-        let duplicate = existing.iter().any(|(t, r)| {
-            t.eq_ignore_ascii_case(target) && r == relation
-        });
+        let duplicate = existing
+            .iter()
+            .any(|(t, r)| t.eq_ignore_ascii_case(target) && r == relation);
         if duplicate {
             anyhow::bail!(
                 "Relation already exists: {} --{}--> {}",
-                source, relation, target
+                source,
+                relation,
+                target
             );
         }
 
@@ -501,14 +531,8 @@ impl LanceStore {
     /// Returns Vec<(target_id, relation_type)>.
     pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let filter = format!("source_id = '{}'", id.replace('\'', "''"));
-        let batches = collect_batches(
-            self.relations
-                .query()
-                .only_if(filter)
-                .execute()
-                .await?,
-        )
-        .await?;
+        let batches =
+            collect_batches(self.relations.query().only_if(filter).execute().await?).await?;
 
         let mut results = Vec::new();
         for batch in &batches {
@@ -522,10 +546,7 @@ impl LanceStore {
             if let (Some(targets), Some(rels)) = (target_col, rel_col) {
                 for i in 0..batch.num_rows() {
                     if !targets.is_null(i) && !rels.is_null(i) {
-                        results.push((
-                            targets.value(i).to_string(),
-                            rels.value(i).to_string(),
-                        ));
+                        results.push((targets.value(i).to_string(), rels.value(i).to_string()));
                     }
                 }
             }
@@ -537,14 +558,8 @@ impl LanceStore {
     /// Returns Vec<(source_id, relation_type)>.
     pub async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let filter = format!("target_id = '{}'", id.replace('\'', "''"));
-        let batches = collect_batches(
-            self.relations
-                .query()
-                .only_if(filter)
-                .execute()
-                .await?,
-        )
-        .await?;
+        let batches =
+            collect_batches(self.relations.query().only_if(filter).execute().await?).await?;
 
         let mut results = Vec::new();
         for batch in &batches {
@@ -558,10 +573,7 @@ impl LanceStore {
             if let (Some(sources), Some(rels)) = (source_col, rel_col) {
                 for i in 0..batch.num_rows() {
                     if !sources.is_null(i) && !rels.is_null(i) {
-                        results.push((
-                            sources.value(i).to_string(),
-                            rels.value(i).to_string(),
-                        ));
+                        results.push((sources.value(i).to_string(), rels.value(i).to_string()));
                     }
                 }
             }
@@ -576,14 +588,8 @@ impl LanceStore {
     /// Get a single artifact by ID as a full record. Returns None if not found.
     pub async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
         let filter = format!("id = '{}'", id.replace('\'', "''"));
-        let batches = collect_batches(
-            self.artifacts
-                .query()
-                .only_if(filter)
-                .execute()
-                .await?,
-        )
-        .await?;
+        let batches =
+            collect_batches(self.artifacts.query().only_if(filter).execute().await?).await?;
 
         for batch in &batches {
             if batch.num_rows() == 0 {
@@ -715,18 +721,20 @@ impl LanceStore {
     pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
         let today = chrono::Utc::now().date_naive();
         let all = self.list_records(None).await?;
-        let mut stale: Vec<ArtifactRecord> = all.into_iter().filter(|r| {
-            r.valid_until.as_ref().map_or(false, |vu| {
-                chrono::NaiveDate::parse_from_str(vu, "%Y-%m-%d")
-                    .or_else(|_| {
-                        // Try parsing as full ISO datetime and extract date
-                        chrono::DateTime::parse_from_rfc3339(vu)
-                            .map(|dt| dt.date_naive())
-                    })
-                    .map(|d| d < today)
-                    .unwrap_or(false)
+        let mut stale: Vec<ArtifactRecord> = all
+            .into_iter()
+            .filter(|r| {
+                r.valid_until.as_ref().map_or(false, |vu| {
+                    chrono::NaiveDate::parse_from_str(vu, "%Y-%m-%d")
+                        .or_else(|_| {
+                            // Try parsing as full ISO datetime and extract date
+                            chrono::DateTime::parse_from_rfc3339(vu).map(|dt| dt.date_naive())
+                        })
+                        .map(|d| d < today)
+                        .unwrap_or(false)
+                })
             })
-        }).collect();
+            .collect();
         stale.sort_by(|a, b| a.valid_until.cmp(&b.valid_until));
         Ok(stale)
     }
@@ -776,10 +784,7 @@ impl LanceStore {
     /// Get all relations across all artifacts.
     /// Returns Vec<(source_id, target_id, relation_type)>.
     pub async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
-        let batches = collect_batches(
-            self.relations.query().execute().await?,
-        )
-        .await?;
+        let batches = collect_batches(self.relations.query().execute().await?).await?;
 
         let mut results = Vec::new();
         for batch in &batches {
@@ -812,10 +817,11 @@ impl LanceStore {
 
     /// Insert a change log entry.
     pub async fn log_change(&self, entry: &ChangeLogEntry) -> anyhow::Result<()> {
-        let table = self
-            .change_log
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("change_log table not initialized. Run `forgeplan init -y` to recreate workspace."))?;
+        let table = self.change_log.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "change_log table not initialized. Run `forgeplan init -y` to recreate workspace."
+            )
+        })?;
 
         let batch = RecordBatch::try_new(
             schema::change_log_schema(),
@@ -886,10 +892,9 @@ impl LanceStore {
 
     /// Insert FPF chunks in batch.
     pub async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`"))?;
+        let table = self.fpf_spec.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
+        })?;
 
         let ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
         let section_ids: Vec<&str> = chunks.iter().map(|c| c.section_id.as_str()).collect();
@@ -941,19 +946,25 @@ impl LanceStore {
 
         let filter = if words.is_empty() {
             let escaped = query_lower.replace('\'', "''");
-            format!("LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'", escaped, escaped)
+            format!(
+                "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
+                escaped, escaped
+            )
         } else {
-            words.iter()
-                .map(|w| format!("(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')", w, w))
+            words
+                .iter()
+                .map(|w| {
+                    format!(
+                        "(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')",
+                        w, w
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(" OR ")
         };
 
         // Fetch ALL matching then rank (small dataset ~204 sections)
-        let batches = collect_batches(
-            table.query().only_if(filter).execute().await?,
-        )
-        .await?;
+        let batches = collect_batches(table.query().only_if(filter).execute().await?).await?;
 
         let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
         for batch in &batches {
@@ -969,7 +980,8 @@ impl LanceStore {
                         }
                         score += body_lower.matches(word.as_str()).count().min(20);
                     }
-                    let all_in_title = words.len() > 1 && words.iter().all(|w| title_lower.contains(w.as_str()));
+                    let all_in_title =
+                        words.len() > 1 && words.iter().all(|w| title_lower.contains(w.as_str()));
                     if all_in_title {
                         score += 100;
                     }
@@ -995,10 +1007,8 @@ impl LanceStore {
             .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
 
         let filter = format!("section_id = '{}'", section_id.replace('\'', "''"));
-        let batches = collect_batches(
-            table.query().only_if(filter).limit(1).execute().await?,
-        )
-        .await?;
+        let batches =
+            collect_batches(table.query().only_if(filter).limit(1).execute().await?).await?;
 
         for batch in &batches {
             if batch.num_rows() > 0 {
@@ -1146,10 +1156,7 @@ fn get_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String
 #[cfg(feature = "semantic-search")]
 fn get_f32(batch: &RecordBatch, col: &str, row: usize) -> Option<f32> {
     let array = batch.column_by_name(col)?;
-    if let Some(arr) = array
-        .as_any()
-        .downcast_ref::<arrow_array::Float32Array>()
-    {
+    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::Float32Array>() {
         if arr.is_null(row) {
             None
         } else {
@@ -1205,9 +1212,7 @@ fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
 }
 
 /// Create an empty RecordBatch for artifacts (used when initializing tables).
-fn empty_artifacts_batch(
-    schema: Arc<arrow_schema::Schema>,
-) -> Result<RecordBatch, ArrowError> {
+fn empty_artifacts_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
@@ -1230,9 +1235,7 @@ fn empty_artifacts_batch(
 }
 
 /// Create an empty RecordBatch for evidence.
-fn empty_evidence_batch(
-    schema: Arc<arrow_schema::Schema>,
-) -> Result<RecordBatch, ArrowError> {
+fn empty_evidence_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
@@ -1249,9 +1252,7 @@ fn empty_evidence_batch(
 }
 
 /// Create an empty RecordBatch for relations.
-fn empty_relations_batch(
-    schema: Arc<arrow_schema::Schema>,
-) -> Result<RecordBatch, ArrowError> {
+fn empty_relations_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
@@ -1288,38 +1289,34 @@ fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLog
 }
 
 /// Create an empty RecordBatch for change_log.
-fn empty_change_log_batch(
-    schema: Arc<arrow_schema::Schema>,
-) -> Result<RecordBatch, ArrowError> {
+fn empty_change_log_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // timestamp
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // artifact_id
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // action
+            Arc::new(StringArray::from(Vec::<&str>::new())), // timestamp
+            Arc::new(StringArray::from(Vec::<&str>::new())), // artifact_id
+            Arc::new(StringArray::from(Vec::<&str>::new())), // action
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // field (nullable)
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // old_value (nullable)
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // source
+            Arc::new(StringArray::from(Vec::<&str>::new())), // source
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash (nullable)
         ],
     )
 }
 
-fn empty_fpf_batch(
-    schema: Arc<arrow_schema::Schema>,
-) -> Result<RecordBatch, ArrowError> {
+fn empty_fpf_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // id
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // section_id
+            Arc::new(StringArray::from(Vec::<&str>::new())), // id
+            Arc::new(StringArray::from(Vec::<&str>::new())), // section_id
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // parent_section (nullable)
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // title
+            Arc::new(StringArray::from(Vec::<&str>::new())), // title
             Arc::new(arrow_array::LargeStringArray::from(Vec::<&str>::new())), // body
-            Arc::new(Int32Array::from(Vec::<i32>::new())),         // line_count
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // file_path
-            Arc::new(StringArray::from(Vec::<&str>::new())),       // created_at
+            Arc::new(Int32Array::from(Vec::<i32>::new())),   // line_count
+            Arc::new(StringArray::from(Vec::<&str>::new())), // file_path
+            Arc::new(StringArray::from(Vec::<&str>::new())), // created_at
         ],
     )
 }
@@ -1390,8 +1387,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
-        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-002"))
+            .await
+            .unwrap();
 
         let list = store.list_artifacts(None).await.unwrap();
         assert_eq!(list.len(), 2);
@@ -1405,7 +1408,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
 
         let mut rfc = sample_artifact("RFC-001");
         rfc.kind = "rfc".to_string();
@@ -1425,7 +1431,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
         store.delete_artifact("PRD-001").await.unwrap();
 
         let result = store.get_artifact("PRD-001").await.unwrap();
@@ -1437,8 +1446,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
-        store.add_relation("PRD-001", "ADR-001", "based_on").await.unwrap();
+        store
+            .add_relation("PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
+        store
+            .add_relation("PRD-001", "ADR-001", "based_on")
+            .await
+            .unwrap();
 
         let relations = store.get_relations("PRD-001").await.unwrap();
         assert_eq!(relations.len(), 2);
@@ -1455,7 +1470,12 @@ mod tests {
 
         let result = store.add_relation("PRD-001", "PRD-001", "informs").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Self-link not allowed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Self-link not allowed")
+        );
     }
 
     #[tokio::test]
@@ -1510,8 +1530,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
-        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-002"))
+            .await
+            .unwrap();
 
         let records = store.list_records(None).await.unwrap();
         assert_eq!(records.len(), 2);
@@ -1526,7 +1552,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
         let mut rfc = sample_artifact("RFC-001");
         rfc.kind = "rfc".to_string();
         store.create_artifact(&rfc).await.unwrap();
@@ -1624,7 +1653,10 @@ mod tests {
         store.create_artifact(&fresh).await.unwrap();
 
         // Create an artifact with no valid_until
-        store.create_artifact(&sample_artifact("PRD-003")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-003"))
+            .await
+            .unwrap();
 
         let stale_results = store.find_stale().await.unwrap();
         assert_eq!(stale_results.len(), 1);
@@ -1636,7 +1668,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
 
         let stale_results = store.find_stale().await.unwrap();
         assert!(stale_results.is_empty());
@@ -1656,8 +1691,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
-        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-002"))
+            .await
+            .unwrap();
 
         let id = store.next_id("PRD").await.unwrap();
         assert_eq!(id, "PRD-003");
@@ -1668,7 +1709,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
         let mut rfc = sample_artifact("RFC-001");
         rfc.kind = "rfc".to_string();
         store.create_artifact(&rfc).await.unwrap();
@@ -1685,7 +1729,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
 
         // Lowercase prefix should still find PRD-001
         let id = store.next_id("prd").await.unwrap();
@@ -1697,7 +1744,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
 
         store
             .update_body("PRD-001", "## Updated\n\nNew body content.")
@@ -1713,8 +1763,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
-        store.add_relation("PRD-002", "ADR-001", "based_on").await.unwrap();
+        store
+            .add_relation("PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
+        store
+            .add_relation("PRD-002", "ADR-001", "based_on")
+            .await
+            .unwrap();
 
         let all = store.get_all_relations().await.unwrap();
         assert_eq!(all.len(), 2);
@@ -1775,10 +1831,22 @@ mod tests {
         };
 
         let map = record.frontmatter_map();
-        assert_eq!(map.get("id").unwrap(), &serde_yml::Value::String("PRD-001".to_string()));
-        assert_eq!(map.get("kind").unwrap(), &serde_yml::Value::String("prd".to_string()));
-        assert_eq!(map.get("author").unwrap(), &serde_yml::Value::String("alice".to_string()));
-        assert_eq!(map.get("valid_until").unwrap(), &serde_yml::Value::String("2025-06-01".to_string()));
+        assert_eq!(
+            map.get("id").unwrap(),
+            &serde_yml::Value::String("PRD-001".to_string())
+        );
+        assert_eq!(
+            map.get("kind").unwrap(),
+            &serde_yml::Value::String("prd".to_string())
+        );
+        assert_eq!(
+            map.get("author").unwrap(),
+            &serde_yml::Value::String("alice".to_string())
+        );
+        assert_eq!(
+            map.get("valid_until").unwrap(),
+            &serde_yml::Value::String("2025-06-01".to_string())
+        );
         // parent_epic should not be present (None)
         assert!(map.get("parent_epic").is_none());
         // Should have all expected keys
@@ -1792,7 +1860,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-001")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-001"))
+            .await
+            .unwrap();
 
         // Default r_eff_score is 0.0
         let before = store.get_record("PRD-001").await.unwrap().unwrap();
@@ -1824,42 +1895,69 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&sample_artifact("PRD-002")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-002"))
+            .await
+            .unwrap();
         store.update_r_eff_score("PRD-002", f64::NAN).await.unwrap();
 
         let record = store.get_record("PRD-002").await.unwrap().unwrap();
-        assert!((record.r_eff_score - 0.0).abs() < f64::EPSILON, "NaN should become 0.0");
+        assert!(
+            (record.r_eff_score - 0.0).abs() < f64::EPSILON,
+            "NaN should become 0.0"
+        );
     }
 
     #[tokio::test]
     async fn update_r_eff_score_clamps_out_of_range() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
-        store.create_artifact(&sample_artifact("PRD-003")).await.unwrap();
+        store
+            .create_artifact(&sample_artifact("PRD-003"))
+            .await
+            .unwrap();
 
         // Above range → clamped to 1.0
         store.update_r_eff_score("PRD-003", 2.5).await.unwrap();
         let r = store.get_record("PRD-003").await.unwrap().unwrap();
-        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "2.5 should clamp to 1.0");
+        assert!(
+            (r.r_eff_score - 1.0).abs() < f64::EPSILON,
+            "2.5 should clamp to 1.0"
+        );
 
         // Below range → clamped to 0.0
         store.update_r_eff_score("PRD-003", -0.5).await.unwrap();
         let r = store.get_record("PRD-003").await.unwrap().unwrap();
-        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "-0.5 should clamp to 0.0");
+        assert!(
+            (r.r_eff_score - 0.0).abs() < f64::EPSILON,
+            "-0.5 should clamp to 0.0"
+        );
 
         // Infinity → clamped to 1.0
-        store.update_r_eff_score("PRD-003", f64::INFINITY).await.unwrap();
+        store
+            .update_r_eff_score("PRD-003", f64::INFINITY)
+            .await
+            .unwrap();
         let r = store.get_record("PRD-003").await.unwrap().unwrap();
-        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "Infinity should clamp to 1.0");
+        assert!(
+            (r.r_eff_score - 1.0).abs() < f64::EPSILON,
+            "Infinity should clamp to 1.0"
+        );
 
         // Boundary: exact 0.0 and 1.0
         store.update_r_eff_score("PRD-003", 0.0).await.unwrap();
         let r = store.get_record("PRD-003").await.unwrap().unwrap();
-        assert!((r.r_eff_score - 0.0).abs() < f64::EPSILON, "0.0 should stay 0.0");
+        assert!(
+            (r.r_eff_score - 0.0).abs() < f64::EPSILON,
+            "0.0 should stay 0.0"
+        );
 
         store.update_r_eff_score("PRD-003", 1.0).await.unwrap();
         let r = store.get_record("PRD-003").await.unwrap().unwrap();
-        assert!((r.r_eff_score - 1.0).abs() < f64::EPSILON, "1.0 should stay 1.0");
+        assert!(
+            (r.r_eff_score - 1.0).abs() < f64::EPSILON,
+            "1.0 should stay 1.0"
+        );
     }
 
     #[test]
@@ -1880,10 +1978,19 @@ mod tests {
         };
 
         let text = record.embedding_text(2000);
-        assert!(!text.contains("PRD-042"), "should NOT contain artifact id (no semantic value)");
-        assert!(text.contains("Authentication Module"), "should contain title");
+        assert!(
+            !text.contains("PRD-042"),
+            "should NOT contain artifact id (no semantic value)"
+        );
+        assert!(
+            text.contains("Authentication Module"),
+            "should contain title"
+        );
         assert!(text.contains("OAuth2"), "should contain body content");
-        assert!(text.contains("Google and GitHub"), "should contain body goals");
+        assert!(
+            text.contains("Google and GitHub"),
+            "should contain body goals"
+        );
     }
 
     #[test]
@@ -1907,12 +2014,20 @@ mod tests {
         // Default chunk_size=2000
         let text = record.embedding_text(2000);
         let body_part = text.strip_prefix("Title ").unwrap();
-        assert_eq!(body_part.len(), 2000, "body should be truncated to chunk_size");
+        assert_eq!(
+            body_part.len(),
+            2000,
+            "body should be truncated to chunk_size"
+        );
 
         // Custom chunk_size=500
         let text_small = record.embedding_text(500);
         let body_small = text_small.strip_prefix("Title ").unwrap();
-        assert_eq!(body_small.len(), 500, "body should respect custom chunk_size");
+        assert_eq!(
+            body_small.len(),
+            500,
+            "body should respect custom chunk_size"
+        );
     }
 
     // ── VectorSearchHit similarity ──────────────────────────────────
@@ -1990,9 +2105,15 @@ mod tests {
     async fn delete_relation_removes_existing() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
-        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        store
+            .add_relation("PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
         assert_eq!(store.get_relations("PRD-001").await.unwrap().len(), 1);
-        store.delete_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        store
+            .delete_relation("PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
         assert!(store.get_relations("PRD-001").await.unwrap().is_empty());
     }
 
@@ -2001,22 +2122,44 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
         // PRD-001 is source for two relations
-        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
-        store.add_relation("PRD-001", "ADR-001", "based_on").await.unwrap();
+        store
+            .add_relation("PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
+        store
+            .add_relation("PRD-001", "ADR-001", "based_on")
+            .await
+            .unwrap();
         // PRD-001 is target for one relation
-        store.add_relation("EVID-001", "PRD-001", "informs").await.unwrap();
+        store
+            .add_relation("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
         // Unrelated relation (should survive)
-        store.add_relation("RFC-001", "ADR-001", "refines").await.unwrap();
+        store
+            .add_relation("RFC-001", "ADR-001", "refines")
+            .await
+            .unwrap();
 
         let all = store.get_all_relations().await.unwrap();
         assert_eq!(all.len(), 4);
 
         // Cascade delete for PRD-001
-        store.delete_relations_for_artifact("PRD-001").await.unwrap();
+        store
+            .delete_relations_for_artifact("PRD-001")
+            .await
+            .unwrap();
 
         let remaining = store.get_all_relations().await.unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0], ("RFC-001".to_string(), "ADR-001".to_string(), "refines".to_string()));
+        assert_eq!(
+            remaining[0],
+            (
+                "RFC-001".to_string(),
+                "ADR-001".to_string(),
+                "refines".to_string()
+            )
+        );
     }
 
     #[tokio::test]
@@ -2024,7 +2167,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
         // Should not error on nonexistent artifact
-        store.delete_relations_for_artifact("NONEXISTENT").await.unwrap();
+        store
+            .delete_relations_for_artifact("NONEXISTENT")
+            .await
+            .unwrap();
         assert!(store.get_all_relations().await.unwrap().is_empty());
     }
 

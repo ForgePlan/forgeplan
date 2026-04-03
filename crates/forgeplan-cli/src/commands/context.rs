@@ -25,11 +25,17 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
 
     // 2. Parse kind and depth
     let kind: ArtifactKind = record.kind.parse().unwrap_or_else(|_| {
-        eprintln!("  Warning: unknown kind '{}', defaulting to Note", record.kind);
+        eprintln!(
+            "  Warning: unknown kind '{}', defaulting to Note",
+            record.kind
+        );
         ArtifactKind::Note
     });
     let depth: Mode = record.depth.parse().unwrap_or_else(|_| {
-        eprintln!("  Warning: unknown depth '{}', defaulting to Standard", record.depth);
+        eprintln!(
+            "  Warning: unknown depth '{}', defaulting to Standard",
+            record.depth
+        );
         Mode::Standard
     });
 
@@ -51,10 +57,8 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         status: None,
     };
     let all_evidence = store.list_records(Some(&evidence_filter)).await?;
-    let evidence_id_set: HashSet<String> = all_evidence
-        .iter()
-        .map(|r| r.id.to_uppercase())
-        .collect();
+    let evidence_id_set: HashSet<String> =
+        all_evidence.iter().map(|r| r.id.to_uppercase()).collect();
 
     for (target, rel) in &outgoing {
         if evidence_id_set.contains(&target.to_uppercase()) {
@@ -96,13 +100,11 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .valid_until
         .as_deref()
         .and_then(|s| {
-            NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .ok()
-                .or_else(|| {
-                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                        .ok()
-                        .map(|dt| dt.date())
-                })
+            NaiveDate::parse_from_str(s, "%Y-%m-%d").ok().or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.date())
+            })
         })
         .map(|d| Utc::now().date_naive() > d)
         .unwrap_or(false);
@@ -187,20 +189,26 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // --- Human-readable output ---
     ui::header(&record.id, &record.title);
 
-    ui::kv("Status", &format!(
-        "{} ({})",
-        ui::styled_status(&record.status),
-        derived.label(),
-    ));
+    ui::kv(
+        "Status",
+        &format!(
+            "{} ({})",
+            ui::styled_status(&record.status),
+            derived.label(),
+        ),
+    );
     ui::kv("Depth", &ui::styled_depth(&record.depth));
     ui::kv("R_eff", &ui::styled_reff(report.r_eff));
-    ui::kv("F-G-R", &format!(
-        "{} (F={:.1} G={:.1} R={:.1})",
-        fgr_score.grade(),
-        fgr_score.formality,
-        fgr_score.granularity,
-        fgr_score.reliability,
-    ));
+    ui::kv(
+        "F-G-R",
+        &format!(
+            "{} (F={:.1} G={:.1} R={:.1})",
+            fgr_score.grade(),
+            fgr_score.formality,
+            fgr_score.granularity,
+            fgr_score.reliability,
+        ),
+    );
 
     // Graph section
     ui::section("Graph");
@@ -208,13 +216,25 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         println!("    {:<14}{}", style("Parent:").dim(), p);
     }
     if !evidence_ids.is_empty() {
-        println!("    {:<14}{}", style("Evidence:").dim(), evidence_ids.join(", "));
+        println!(
+            "    {:<14}{}",
+            style("Evidence:").dim(),
+            evidence_ids.join(", ")
+        );
     }
     if !depends_on.is_empty() {
-        println!("    {:<14}{}", style("Depends on:").dim(), depends_on.join(", "));
+        println!(
+            "    {:<14}{}",
+            style("Depends on:").dim(),
+            depends_on.join(", ")
+        );
     }
     if !dependents.is_empty() {
-        println!("    {:<14}{}", style("Dependents:").dim(), dependents.join(", "));
+        println!(
+            "    {:<14}{}",
+            style("Dependents:").dim(),
+            dependents.join(", ")
+        );
     }
     if !related.is_empty() {
         println!("    {:<14}{}", style("Related:").dim(), related.join(", "));
@@ -289,10 +309,7 @@ fn build_suggestions(
     }
 
     if validation_passed && has_evidence && r_eff > 0.0 && status == "draft" {
-        suggestions.push(format!(
-            "Ready to activate — `forgeplan activate {}`",
-            id
-        ));
+        suggestions.push(format!("Ready to activate — `forgeplan activate {}`", id));
     }
 
     if fgr.formality < 0.4 {

@@ -69,7 +69,8 @@ fn detect_from_frontmatter(content: &str) -> Option<DetectionResult> {
 
 /// Tier 2: Detect from filename patterns like `PRD-001-title.md`, `RFC-002.md`.
 fn detect_from_filename(filename: &str) -> Option<DetectionResult> {
-    let name = filename.strip_suffix(".md")
+    let name = filename
+        .strip_suffix(".md")
         .or_else(|| filename.strip_suffix(".markdown"))
         .unwrap_or(filename);
     let upper = name.to_uppercase();
@@ -166,8 +167,10 @@ fn detect_from_content(content: &str) -> Option<DetectionResult> {
 
     // PRD indicators
     if (lower.contains("## problem") || lower.contains("## motivation"))
-        && (lower.contains("## goals") || lower.contains("## success criteria")
-            || lower.contains("## requirements") || lower.contains("## functional requirements"))
+        && (lower.contains("## goals")
+            || lower.contains("## success criteria")
+            || lower.contains("## requirements")
+            || lower.contains("## functional requirements"))
     {
         return Some(DetectionResult {
             kind: ArtifactKind::Prd,
@@ -178,7 +181,9 @@ fn detect_from_content(content: &str) -> Option<DetectionResult> {
     }
 
     // RFC indicators
-    if (lower.contains("## proposal") || lower.contains("## design") || lower.contains("## approach"))
+    if (lower.contains("## proposal")
+        || lower.contains("## design")
+        || lower.contains("## approach"))
         && (lower.contains("## alternatives") || lower.contains("## implementation"))
     {
         return Some(DetectionResult {
@@ -190,8 +195,11 @@ fn detect_from_content(content: &str) -> Option<DetectionResult> {
     }
 
     // Spec indicators
-    if (lower.contains("## api") || lower.contains("## endpoints") || lower.contains("## data model"))
-        && (lower.contains("## request") || lower.contains("## response")
+    if (lower.contains("## api")
+        || lower.contains("## endpoints")
+        || lower.contains("## data model"))
+        && (lower.contains("## request")
+            || lower.contains("## response")
             || lower.contains("## schema"))
     {
         return Some(DetectionResult {

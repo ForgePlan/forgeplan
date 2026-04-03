@@ -79,11 +79,7 @@ impl std::fmt::Display for PipelineStatus {
                 self.completed, self.total, self.percentage
             )?;
             if !self.remaining.is_empty() {
-                let names: Vec<&str> = self
-                    .remaining
-                    .iter()
-                    .map(|k| k.template_key())
-                    .collect();
+                let names: Vec<&str> = self.remaining.iter().map(|k| k.template_key()).collect();
                 write!(f, " — remaining: {}", names.join(", "))?;
             }
             Ok(())
@@ -116,10 +112,7 @@ mod tests {
 
     #[test]
     fn completion_all_done() {
-        let status = completion(
-            &Mode::Standard,
-            &[ArtifactKind::Prd, ArtifactKind::Rfc],
-        );
+        let status = completion(&Mode::Standard, &[ArtifactKind::Prd, ArtifactKind::Rfc]);
         assert_eq!(status.completed, 2);
         assert_eq!(status.remaining.len(), 0);
         assert!((status.percentage - 100.0).abs() < f64::EPSILON);

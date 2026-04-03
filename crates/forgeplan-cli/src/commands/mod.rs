@@ -1,24 +1,24 @@
-pub mod common;
 pub mod activate;
 pub mod blindspots;
 pub mod blocked;
 pub mod calibrate;
 pub mod calibrate_estimate;
 pub mod capture;
+pub mod common;
 pub mod context;
 pub mod coverage;
 pub mod decay;
 pub mod decompose;
 pub mod delete;
 pub mod deprecate;
+pub mod drift;
 pub mod embed;
 pub mod estimate;
-pub mod drift;
 pub mod export;
 
 pub mod fgr;
-pub mod gaps;
 pub mod fpf;
+pub mod gaps;
 pub mod generate;
 pub mod get;
 pub mod git_sync;

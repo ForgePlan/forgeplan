@@ -44,7 +44,9 @@ pub async fn find_stale(workspace: &Path) -> anyhow::Result<Vec<StaleArtifact>> 
                 if expiry < today {
                     let id = fm.get("id").and_then(|v| v.as_str()).unwrap_or_default();
                     let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or_default();
-                    let kind = fm.get("kind").and_then(|v| v.as_str())
+                    let kind = fm
+                        .get("kind")
+                        .and_then(|v| v.as_str())
                         .unwrap_or_else(|| dir_name.trim_end_matches('s'));
                     let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("Draft");
                     let days_expired = (today - expiry).num_days();
@@ -88,7 +90,13 @@ mod tests {
         ws
     }
 
-    fn write_artifact_with_expiry(ws: &std::path::Path, subdir: &str, filename: &str, id: &str, valid_until: Option<&str>) {
+    fn write_artifact_with_expiry(
+        ws: &std::path::Path,
+        subdir: &str,
+        filename: &str,
+        id: &str,
+        valid_until: Option<&str>,
+    ) {
         let expiry_line = match valid_until {
             Some(d) => format!("valid_until: {}\n", d),
             None => String::new(),

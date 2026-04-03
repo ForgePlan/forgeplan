@@ -78,13 +78,21 @@ pub fn compute_granularity(body: &str) -> f64 {
 
     // Check 1: Has Problem/Motivation section with > 20 words (with aliases)
     checks += 1.0;
-    if section_has_content(body, &["Problem", "Motivation", "Problem Statement", "Background"], 20) {
+    if section_has_content(
+        body,
+        &["Problem", "Motivation", "Problem Statement", "Background"],
+        20,
+    ) {
         score += 1.0;
     }
 
     // Check 2: Has Goals/Success Criteria (with aliases)
     checks += 1.0;
-    if section_has_content(body, &["Goals", "Success Criteria", "Objectives", "Outcomes"], 10) {
+    if section_has_content(
+        body,
+        &["Goals", "Success Criteria", "Objectives", "Outcomes"],
+        10,
+    ) {
         score += 1.0;
     }
 
@@ -110,11 +118,7 @@ pub fn compute_granularity(body: &str) -> f64 {
         score += 1.0;
     }
 
-    if checks > 0.0 {
-        score / checks
-    } else {
-        0.0
-    }
+    if checks > 0.0 { score / checks } else { 0.0 }
 }
 
 fn section_has_content(body: &str, headings: &[&str], min_words: usize) -> bool {
@@ -183,10 +187,7 @@ mod tests {
     #[test]
     fn granularity_empty_body_low() {
         let g = compute_granularity("");
-        assert!(
-            g == 0.0,
-            "Empty body should have zero granularity: {g}"
-        );
+        assert!(g == 0.0, "Empty body should have zero granularity: {g}");
     }
 
     #[test]
@@ -231,7 +232,8 @@ in the body so that check five passes as well with enough content.";
 
     #[test]
     fn section_has_content_works() {
-        let body = "## Motivation\n\nThis is enough words to pass the check here.\n\n## Other\n\nStuff.";
+        let body =
+            "## Motivation\n\nThis is enough words to pass the check here.\n\n## Other\n\nStuff.";
         assert!(section_has_content(body, &["Motivation", "Problem"], 5));
         assert!(!section_has_content(body, &["NonExistent"], 5));
     }

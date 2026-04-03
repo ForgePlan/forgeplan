@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
+use petgraph::Direction;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use petgraph::Direction;
 
 use crate::db::store::LanceStore;
 
@@ -57,8 +57,7 @@ impl KnowledgeGraph {
 
         // Add all relations as directed edges (source -> target).
         for (source_id, target_id, relation_type) in &relations {
-            if let (Some(&src_idx), Some(&tgt_idx)) = (index.get(source_id), index.get(target_id))
-            {
+            if let (Some(&src_idx), Some(&tgt_idx)) = (index.get(source_id), index.get(target_id)) {
                 graph.add_edge(
                     src_idx,
                     tgt_idx,
@@ -73,10 +72,7 @@ impl KnowledgeGraph {
     }
 
     /// Build a knowledge graph from pre-built nodes and edges (useful for testing).
-    pub fn from_parts(
-        nodes: Vec<ArtifactNode>,
-        edges: Vec<(String, String, String)>,
-    ) -> Self {
+    pub fn from_parts(nodes: Vec<ArtifactNode>, edges: Vec<(String, String, String)>) -> Self {
         let mut graph = DiGraph::new();
         let mut index = HashMap::new();
 
@@ -87,8 +83,7 @@ impl KnowledgeGraph {
         }
 
         for (source_id, target_id, relation_type) in &edges {
-            if let (Some(&src_idx), Some(&tgt_idx)) = (index.get(source_id), index.get(target_id))
-            {
+            if let (Some(&src_idx), Some(&tgt_idx)) = (index.get(source_id), index.get(target_id)) {
                 graph.add_edge(
                     src_idx,
                     tgt_idx,
@@ -137,7 +132,8 @@ impl KnowledgeGraph {
 
         for direction in [Direction::Outgoing, Direction::Incoming] {
             for neighbor_idx in self.graph.neighbors_directed(idx, direction) {
-                seen.entry(neighbor_idx).or_insert(&self.graph[neighbor_idx]);
+                seen.entry(neighbor_idx)
+                    .or_insert(&self.graph[neighbor_idx]);
             }
         }
 
@@ -301,9 +297,7 @@ mod tests {
             make_node("EVID-001", "evidence", "active"),
         ];
         // Edge goes FROM PRD TO evidence (reverse direction)
-        let edges = vec![
-            ("PRD-001".into(), "EVID-001".into(), "supported_by".into()),
-        ];
+        let edges = vec![("PRD-001".into(), "EVID-001".into(), "supported_by".into())];
         let kg = KnowledgeGraph::from_parts(nodes, edges);
 
         let evidence = kg.evidence_for("PRD-001");
@@ -439,7 +433,10 @@ mod tests {
 
         // PRD-001 has 1 unique neighbor (RFC-001), not 2
         let c = kg.degree_centrality("PRD-001");
-        assert!(c <= 1.0, "centrality must be <= 1.0 even with parallel edges");
+        assert!(
+            c <= 1.0,
+            "centrality must be <= 1.0 even with parallel edges"
+        );
         assert!((c - 1.0).abs() < 0.001, "1 unique neighbor / (2-1) = 1.0");
     }
 
@@ -447,9 +444,7 @@ mod tests {
     fn edges_with_unknown_nodes_are_skipped() {
         let nodes = vec![make_node("PRD-001", "prd", "active")];
         // Edge references RFC-001 which doesn't exist as a node
-        let edges = vec![
-            ("RFC-001".into(), "PRD-001".into(), "based_on".into()),
-        ];
+        let edges = vec![("RFC-001".into(), "PRD-001".into(), "based_on".into())];
         let kg = KnowledgeGraph::from_parts(nodes, edges);
 
         assert_eq!(kg.node_count(), 1);

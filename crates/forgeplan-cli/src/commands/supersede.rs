@@ -6,7 +6,9 @@ use crate::commands::common;
 pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
-    let old_status = store.get_record(id).await?
+    let old_status = store
+        .get_record(id)
+        .await?
         .map(|r| r.status)
         .unwrap_or_else(|| "active".to_string());
 
@@ -21,13 +23,31 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     if let Some(record) = store.get_record(id).await? {
         let links = store.get_relations(id).await.unwrap_or_default();
         projection::render_projection(
-            &ws, &record.id, &record.kind, &record.title, &record.status,
-            &record.depth, record.author.as_deref(), record.parent_epic.as_deref(),
-            record.valid_until.as_deref(), &record.body, &links,
-        ).await?;
+            &ws,
+            &record.id,
+            &record.kind,
+            &record.title,
+            &record.status,
+            &record.depth,
+            record.author.as_deref(),
+            record.parent_epic.as_deref(),
+            record.valid_until.as_deref(),
+            &record.body,
+            &links,
+        )
+        .await?;
     }
 
-    common::log_change_field(&store, id, "update", "status", Some(&old_status), Some("superseded"), "cli").await;
+    common::log_change_field(
+        &store,
+        id,
+        "update",
+        "status",
+        Some(&old_status),
+        Some("superseded"),
+        "cli",
+    )
+    .await;
 
     println!("  Superseded {id} → {by}");
 

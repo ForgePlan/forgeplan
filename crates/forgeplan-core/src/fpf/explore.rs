@@ -105,10 +105,8 @@ pub fn suggest(
                     );
                     if let Some(report) = find_report(&record.id) {
                         if !report.factors.is_empty() {
-                            reason.push_str(&format!(
-                                " ({} factors analyzed)",
-                                report.factors.len()
-                            ));
+                            reason
+                                .push_str(&format!(" ({} factors analyzed)", report.factors.len()));
                         }
                     }
                     actions.push(Action {
@@ -188,9 +186,7 @@ mod tests {
     fn strong_evidence_gets_exploit() {
         let records = vec![record("PRD-001", "active", 0.8)];
         let scores = vec![fgr("PRD-001", 0.8, 0.7, 0.8)];
-        let relations = vec![
-            ("PRD-001".into(), "RFC-001".into(), "informs".into()),
-        ];
+        let relations = vec![("PRD-001".into(), "RFC-001".into(), "informs".into())];
         let actions = suggest(&records, &scores, &relations, None);
 
         assert!(actions.iter().any(|a| a.action_type == "EXPLOIT"));

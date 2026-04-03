@@ -2,9 +2,9 @@
 //! Verifies that StorageDriver trait abstraction preserves behavior.
 
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
+use forgeplan_core::driver::StorageDriver;
 use forgeplan_core::driver::in_memory::InMemoryStore;
 use forgeplan_core::driver::lance::LanceDriver;
-use forgeplan_core::driver::StorageDriver;
 use tempfile::TempDir;
 
 /// Helper: create a NewArtifact with given fields.
@@ -44,10 +44,16 @@ async fn crud_lifecycle(driver: &dyn StorageDriver, label: &str) {
 
     // get
     let summary = driver.get_artifact(&id).await.unwrap();
-    assert!(summary.is_some(), "[{label}] artifact must exist after create");
+    assert!(
+        summary.is_some(),
+        "[{label}] artifact must exist after create"
+    );
     let summary = summary.unwrap();
     assert_eq!(summary.title, "Auth System", "[{label}] title mismatch");
-    assert_eq!(summary.status, "draft", "[{label}] default status should be draft");
+    assert_eq!(
+        summary.status, "draft",
+        "[{label}] default status should be draft"
+    );
 
     // update status
     driver
@@ -55,12 +61,18 @@ async fn crud_lifecycle(driver: &dyn StorageDriver, label: &str) {
         .await
         .unwrap();
     let updated = driver.get_artifact(&id).await.unwrap().unwrap();
-    assert_eq!(updated.status, "active", "[{label}] status should be updated");
+    assert_eq!(
+        updated.status, "active",
+        "[{label}] status should be updated"
+    );
 
     // delete
     driver.delete_artifact(&id).await.unwrap();
     let gone = driver.get_artifact(&id).await.unwrap();
-    assert!(gone.is_none(), "[{label}] artifact should be None after delete");
+    assert!(
+        gone.is_none(),
+        "[{label}] artifact should be None after delete"
+    );
 }
 
 #[tokio::test]
@@ -118,12 +130,20 @@ async fn relations(driver: &dyn StorageDriver, label: &str) {
     driver.add_relation(&prd, &rfc, "informs").await.unwrap();
 
     let outgoing = driver.get_relations(&prd).await.unwrap();
-    assert_eq!(outgoing.len(), 1, "[{label}] should have 1 outgoing relation");
+    assert_eq!(
+        outgoing.len(),
+        1,
+        "[{label}] should have 1 outgoing relation"
+    );
     assert_eq!(outgoing[0].0, rfc, "[{label}] target should be RFC");
     assert_eq!(outgoing[0].1, "informs", "[{label}] relation type mismatch");
 
     let incoming = driver.get_incoming_relations(&rfc).await.unwrap();
-    assert_eq!(incoming.len(), 1, "[{label}] should have 1 incoming relation");
+    assert_eq!(
+        incoming.len(),
+        1,
+        "[{label}] should have 1 incoming relation"
+    );
     assert_eq!(incoming[0].0, prd, "[{label}] source should be PRD");
 }
 
@@ -147,12 +167,22 @@ async fn search_body(driver: &dyn StorageDriver, label: &str) {
     create_with_next_id(driver, "RFC", "DB Schema", "PostgreSQL migration").await;
 
     let results = driver.search_body("oauth", None).await.unwrap();
-    assert_eq!(results.len(), 1, "[{label}] should find 1 result for 'oauth'");
-    assert_eq!(results[0].title, "Auth", "[{label}] found artifact should be Auth");
+    assert_eq!(
+        results.len(),
+        1,
+        "[{label}] should find 1 result for 'oauth'"
+    );
+    assert_eq!(
+        results[0].title, "Auth",
+        "[{label}] found artifact should be Auth"
+    );
 
     // No match
     let empty = driver.search_body("nonexistent_xyz", None).await.unwrap();
-    assert!(empty.is_empty(), "[{label}] should find nothing for gibberish query");
+    assert!(
+        empty.is_empty(),
+        "[{label}] should find nothing for gibberish query"
+    );
 }
 
 #[tokio::test]
@@ -246,10 +276,7 @@ async fn get_all_relations(driver: &dyn StorageDriver, label: &str) {
     let adr = create_with_next_id(driver, "ADR", "ADR", "body").await;
 
     driver.add_relation(&prd, &rfc, "informs").await.unwrap();
-    driver
-        .add_relation(&rfc, &adr, "implements")
-        .await
-        .unwrap();
+    driver.add_relation(&rfc, &adr, "implements").await.unwrap();
 
     let all = driver.get_all_relations().await.unwrap();
     assert_eq!(all.len(), 2, "[{label}] should have 2 relations total");
@@ -262,7 +289,10 @@ async fn get_all_relations(driver: &dyn StorageDriver, label: &str) {
         .iter()
         .any(|(s, t, r)| s == &rfc && t == &adr && r == "implements");
     assert!(has_informs, "[{label}] should contain informs relation");
-    assert!(has_implements, "[{label}] should contain implements relation");
+    assert!(
+        has_implements,
+        "[{label}] should contain implements relation"
+    );
 }
 
 #[tokio::test]

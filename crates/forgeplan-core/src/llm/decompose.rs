@@ -36,5 +36,7 @@ pub async fn decompose(
         body = prd_body,
     );
 
-    client.generate(&prompt, Some(DECOMPOSE_SYSTEM_PROMPT)).await
+    client
+        .generate(&prompt, Some(DECOMPOSE_SYSTEM_PROMPT))
+        .await
 }

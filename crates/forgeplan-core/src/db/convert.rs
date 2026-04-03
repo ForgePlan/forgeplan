@@ -30,7 +30,7 @@ pub(crate) fn artifact_to_batch_with_schema(
             Arc::new(StringArray::from(vec![artifact.status.as_str()])),
             Arc::new(StringArray::from(vec![artifact.title.as_str()])),
             Arc::new(arrow_array::LargeStringArray::from(vec![
-                artifact.body.as_str()
+                artifact.body.as_str(),
             ])),
             Arc::new(StringArray::from(vec![artifact.depth.as_str()])),
             Arc::new(StringArray::from(vec![artifact.author.as_deref()])),
@@ -121,7 +121,11 @@ pub(crate) fn make_null_embedding_col(len: usize) -> Arc<dyn Array> {
     use arrow_schema::Field;
 
     let item_field = Arc::new(Field::new("item", arrow_schema::DataType::Float32, true));
-    Arc::new(FixedSizeListArray::new_null(item_field, schema::EMBEDDING_DIM, len))
+    Arc::new(FixedSizeListArray::new_null(
+        item_field,
+        schema::EMBEDDING_DIM,
+        len,
+    ))
 }
 
 #[cfg(test)]

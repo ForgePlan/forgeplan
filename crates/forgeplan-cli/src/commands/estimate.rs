@@ -1,7 +1,9 @@
 use anyhow::Result;
 
-use forgeplan_core::estimate::{calculator, confidence, display, domain, extractor, overrides, scorer};
 use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
+use forgeplan_core::estimate::{
+    calculator, confidence, display, domain, extractor, overrides, scorer,
+};
 
 use crate::commands::common;
 
@@ -82,19 +84,36 @@ pub async fn run(
     }
 
     // Calculate confidence
-    let fr_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Fr).collect();
-    let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
+    let fr_items: Vec<_> = work_items
+        .iter()
+        .filter(|w| w.source == ItemSource::Fr)
+        .collect();
+    let phase_items: Vec<_> = work_items
+        .iter()
+        .filter(|w| w.source == ItemSource::Phase)
+        .collect();
 
     // Check linked Spec and Evidence for confidence boost
     // Outgoing: this artifact → target (e.g., PRD → SPEC)
     let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
     // Incoming: source → this artifact (e.g., EVID → PRD)
-    let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
+    let incoming = store
+        .get_incoming_relations(&record.id)
+        .await
+        .unwrap_or_default();
 
-    let has_spec = outgoing.iter().any(|(target, _)| target.to_uppercase().starts_with("SPEC-"))
-        || incoming.iter().any(|(source, _)| source.to_uppercase().starts_with("SPEC-"));
-    let has_evidence = outgoing.iter().any(|(target, _)| target.to_uppercase().starts_with("EVID-"))
-        || incoming.iter().any(|(source, _)| source.to_uppercase().starts_with("EVID-"));
+    let has_spec = outgoing
+        .iter()
+        .any(|(target, _)| target.to_uppercase().starts_with("SPEC-"))
+        || incoming
+            .iter()
+            .any(|(source, _)| source.to_uppercase().starts_with("SPEC-"));
+    let has_evidence = outgoing
+        .iter()
+        .any(|(target, _)| target.to_uppercase().starts_with("EVID-"))
+        || incoming
+            .iter()
+            .any(|(source, _)| source.to_uppercase().starts_with("EVID-"));
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
@@ -182,7 +201,13 @@ async fn infer_domain_with_llm(
             title, snippet
         );
         let client = forgeplan_core::llm::LlmClient::new(config.clone());
-        if let Ok(response) = client.generate(&prompt, Some("You are a domain classifier. Reply with exactly one word.")).await {
+        if let Ok(response) = client
+            .generate(
+                &prompt,
+                Some("You are a domain classifier. Reply with exactly one word."),
+            )
+            .await
+        {
             let d = response.trim().to_lowercase().replace(' ', "_");
             let valid = ["backend", "frontend", "devops", "ai_ml"];
             if valid.contains(&d.as_str()) {
@@ -194,4 +219,3 @@ async fn infer_domain_with_llm(
     // Fallback to keyword-based (includes frontmatter check)
     domain::infer_domain(title, body)
 }
-

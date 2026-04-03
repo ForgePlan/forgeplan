@@ -19,14 +19,26 @@ fn system_prompt(kind: &str) -> String {
 
 fn structure_hint(kind: &str) -> &'static str {
     match kind {
-        "prd" => "# Title\n## Summary\n## Motivation\n## Goals\n## Non-Goals\n## Functional Requirements\n## Non-Functional Requirements\n## Success Metrics",
-        "rfc" => "# Title\n## Summary\n## Motivation\n## Goals\n## Non-Goals\n## Architecture\n## Implementation Phases\n## Testing\n## References",
-        "adr" => "# Title\n## Context\n## Decision\n## Alternatives Considered\n## Consequences\n## References",
-        "epic" => "# Title\n## Summary\n## Goals\n## Children (PRDs)\n## Success Criteria\n## Timeline",
+        "prd" => {
+            "# Title\n## Summary\n## Motivation\n## Goals\n## Non-Goals\n## Functional Requirements\n## Non-Functional Requirements\n## Success Metrics"
+        }
+        "rfc" => {
+            "# Title\n## Summary\n## Motivation\n## Goals\n## Non-Goals\n## Architecture\n## Implementation Phases\n## Testing\n## References"
+        }
+        "adr" => {
+            "# Title\n## Context\n## Decision\n## Alternatives Considered\n## Consequences\n## References"
+        }
+        "epic" => {
+            "# Title\n## Summary\n## Goals\n## Children (PRDs)\n## Success Criteria\n## Timeline"
+        }
         "spec" => "# Title\n## Summary\n## Data Model\n## API Contracts\n## Events\n## Versioning",
         "problem" => "# Title\n## Signal\n## Context\n## Impact\n## Anti-Goodhart Indicators",
-        "solution" => "# Title\n## Problem Reference\n## Variants (2-3)\n## Weakest Link Analysis\n## Recommendation",
-        "evidence" => "# Title\n## Verdict\n## Methodology\n## Data\n## Congruence Level\n## Valid Until",
+        "solution" => {
+            "# Title\n## Problem Reference\n## Variants (2-3)\n## Weakest Link Analysis\n## Recommendation"
+        }
+        "evidence" => {
+            "# Title\n## Verdict\n## Methodology\n## Data\n## Congruence Level\n## Valid Until"
+        }
         _ => "# Title\n## Summary\n## Details",
     }
 }

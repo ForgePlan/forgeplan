@@ -6,7 +6,9 @@ use crate::ui;
 
 pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow::Result<()> {
     if description.trim().is_empty() {
-        anyhow::bail!("Task description cannot be empty. Usage: forgeplan route \"describe your task\"");
+        anyhow::bail!(
+            "Task description cannot be empty. Usage: forgeplan route \"describe your task\""
+        );
     }
 
     // Determine effective level:
@@ -24,7 +26,10 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
         // Level 1 or auto: try LLM, auto-escalate to Level 2 if Deep
         let r = try_llm_route(description).await;
         // Auto-escalate: if Level 1 says Deep and we're in auto mode, run Level 2
-        if r.level == 1 && matches!(r.depth, forgeplan_core::artifact::types::Mode::Deep) && level.is_none() {
+        if r.level == 1
+            && matches!(r.depth, forgeplan_core::artifact::types::Mode::Deep)
+            && level.is_none()
+        {
             try_llm_route_with_reasoning(description).await
         } else {
             r
@@ -51,10 +56,7 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
     // Styled pipeline
     println!("{}", style("## Pipeline").bold());
     if result.pipeline.is_empty() {
-        println!(
-            "{}",
-            style("None (tactical — just do it)").green()
-        );
+        println!("{}", style("None (tactical — just do it)").green());
     } else {
         let names: Vec<String> = result
             .pipeline
@@ -104,7 +106,11 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
         let first = kind_display(&result.pipeline[0]);
         println!(
             "  {}",
-            style(format!("forgeplan new {} \"<title>\"", first.to_lowercase())).cyan()
+            style(format!(
+                "forgeplan new {} \"<title>\"",
+                first.to_lowercase()
+            ))
+            .cyan()
         );
     }
 
@@ -117,7 +123,11 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
             let alt_pipeline = if alt.pipeline.is_empty() {
                 "None".to_string()
             } else {
-                alt.pipeline.iter().map(|k| kind_display(k)).collect::<Vec<_>>().join(" → ")
+                alt.pipeline
+                    .iter()
+                    .map(|k| kind_display(k))
+                    .collect::<Vec<_>>()
+                    .join(" → ")
             };
             println!(
                 "  {}. {} ({}) — {}",
