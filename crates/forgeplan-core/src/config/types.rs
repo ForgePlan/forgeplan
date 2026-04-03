@@ -86,6 +86,9 @@ pub struct LlmConfig {
     /// Temperature for LLM generation (0.0 = deterministic, 1.0 = creative)
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    /// Temperature override for `reason` command (structured ADI output benefits from lower temp)
+    #[serde(default)]
+    pub reason_temperature: Option<f32>,
 }
 
 fn default_provider() -> String {
@@ -113,6 +116,7 @@ impl Default for LlmConfig {
             base_url: None,
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
+            reason_temperature: None,
         }
     }
 }

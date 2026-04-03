@@ -194,8 +194,8 @@ pub struct ArtifactContext {
     pub status: String,
     pub depth: String,
     pub r_eff_score: f64,
-    /// Related artifacts: (target_id, relation_type)
-    pub relations: Vec<(String, String)>,
+    /// Related artifacts: (target_id, relation_type, title)
+    pub relations: Vec<(String, String, String)>,
     /// Brief project architecture summary
     pub architecture_hint: Option<String>,
 }
@@ -209,8 +209,12 @@ pub fn build_metadata_section(ctx: &ArtifactContext) -> String {
 
     if !ctx.relations.is_empty() {
         section.push_str("\n### Relations\n\n");
-        for (target, rel_type) in &ctx.relations {
-            section.push_str(&format!("- {} → {} ({})\n", target, rel_type, target));
+        for (target, rel_type, title) in &ctx.relations {
+            if title.is_empty() {
+                section.push_str(&format!("- {} ({})\n", target, rel_type));
+            } else {
+                section.push_str(&format!("- {} — \"{}\" ({})\n", target, title, rel_type));
+            }
         }
     }
 
@@ -232,7 +236,13 @@ pub async fn reason(
     fpf_context: Option<&str>,
     artifact_context: Option<&ArtifactContext>,
 ) -> anyhow::Result<(String, AdiOutput)> {
-    let client = LlmClient::new(config.clone());
+    // Lower temperature for structured reasoning — less creative noise
+    // Uses reason_temperature from config if set, otherwise caps at 0.3
+    let mut reason_config = config.clone();
+    reason_config.temperature = config
+        .reason_temperature
+        .unwrap_or_else(|| config.temperature.min(0.3));
+    let client = LlmClient::new(reason_config);
 
     let mut prompt = format!(
         "Analyze this {kind} artifact using the ADI cycle:\n\n\
@@ -271,8 +281,8 @@ mod tests {
             depth: "standard".to_string(),
             r_eff_score: 0.85,
             relations: vec![
-                ("RFC-001".to_string(), "implements".to_string()),
-                ("EPIC-001".to_string(), "parent".to_string()),
+                ("RFC-001".to_string(), "implements".to_string(), "CLI Architecture".to_string()),
+                ("EPIC-001".to_string(), "parent".to_string(), "Build Forgeplan".to_string()),
             ],
             architecture_hint: Some("Rust CLI with LanceDB".to_string()),
         };
@@ -282,8 +292,26 @@ mod tests {
         assert!(section.contains("**R_eff score**: 0.85"));
         assert!(section.contains("RFC-001"));
         assert!(section.contains("implements"));
+        assert!(section.contains("CLI Architecture"));
         assert!(section.contains("EPIC-001"));
+        assert!(section.contains("Build Forgeplan"));
         assert!(section.contains("Rust CLI with LanceDB"));
+    }
+
+    #[test]
+    fn build_metadata_section_relation_without_title() {
+        let ctx = ArtifactContext {
+            status: "draft".to_string(),
+            depth: "tactical".to_string(),
+            r_eff_score: 0.0,
+            relations: vec![
+                ("PRD-001".to_string(), "informs".to_string(), String::new()),
+            ],
+            architecture_hint: None,
+        };
+        let section = build_metadata_section(&ctx);
+        assert!(section.contains("PRD-001 (informs)"));
+        assert!(!section.contains("\"\""));
     }
 
     #[test]

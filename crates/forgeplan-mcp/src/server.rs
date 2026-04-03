@@ -1581,7 +1581,11 @@ impl ForgeplanServer {
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         // Build artifact context for enriched ADI prompt
-        let relations = store.get_relations(&record.id).await.unwrap_or_default();
+        let raw_relations = store.get_relations(&record.id).await.unwrap_or_default();
+        let relations: Vec<(String, String, String)> = raw_relations
+            .into_iter()
+            .map(|(id, rel)| (id, rel, String::new())) // MCP: no title lookup needed
+            .collect();
         let artifact_context = forgeplan_core::llm::reason::ArtifactContext {
             status: record.status.clone(),
             depth: record.depth.clone(),
