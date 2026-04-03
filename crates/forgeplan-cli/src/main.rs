@@ -150,10 +150,29 @@ enum Commands {
     },
     /// Show evidence decay impact on R_eff scores
     Decay,
+    /// Compare estimated vs actual hours — calibrate estimation accuracy
+    CalibrateEstimate {
+        /// Artifact ID to calibrate
+        id: String,
+        /// Actual hours spent
+        #[arg(long)]
+        actual_hours: f64,
+        /// Grade to compare (junior, mid, senior). Defaults to total score.
+        #[arg(long)]
+        grade: Option<String>,
+    },
     /// Suggest depth level (Tactical/Standard/Deep/Critical) based on artifact content
     Calibrate {
         /// Artifact ID (checks all if omitted)
         id: Option<String>,
+    },
+    /// Promote a memory to a full artifact (e.g., forgeplan promote mem-xxx --kind prd)
+    Promote {
+        /// Memory ID to promote (e.g., mem-auth-decisions)
+        memory_id: String,
+        /// Target artifact kind: prd, rfc, adr, note, problem, etc.
+        #[arg(long)]
+        kind: String,
     },
     /// Generate an artifact using AI from a natural language description
     Generate {
@@ -254,11 +273,30 @@ enum Commands {
         #[arg(long)]
         by: String,
     },
-    /// Deprecate an artifact (active → deprecated) with reason
+    /// Deprecate an artifact (active/stale → deprecated) with reason
     Deprecate {
         /// Artifact ID
         id: String,
         /// Reason for deprecation
+        #[arg(long)]
+        reason: String,
+    },
+    /// Renew a stale artifact (stale → active) with extended validity
+    Renew {
+        /// Artifact ID
+        id: String,
+        /// Reason for renewal
+        #[arg(long)]
+        reason: String,
+        /// New valid_until date (YYYY-MM-DD)
+        #[arg(long)]
+        until: String,
+    },
+    /// Reopen an artifact — creates a NEW draft artifact, deprecates the old one
+    Reopen {
+        /// Artifact ID to reopen
+        id: String,
+        /// Reason for reopening
         #[arg(long)]
         reason: String,
     },
@@ -523,6 +561,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
+        Commands::CalibrateEstimate { id, actual_hours, grade } => {
+            commands::calibrate_estimate::run(&id, actual_hours, grade.as_deref()).await
+        }
+        Commands::Promote { memory_id, kind } => commands::promote::run(&memory_id, &kind).await,
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
         }
@@ -576,6 +618,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
+        Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
+        Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,
         Commands::Fpf(sub) => match sub {
             FpfCommands::Dashboard => commands::fpf::run_dashboard().await,

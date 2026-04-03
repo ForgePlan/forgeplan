@@ -2,15 +2,19 @@
 name = "forgeplan-cli"
 version.workspace = true
 edition.workspace = true
-description = "CLI for Forgeplan — forge your plan"
+license.workspace = true
+repository.workspace = true
+description = "CLI for Forgeplan — forge your plan from idea to implementation"
+keywords = ["project-management", "decision-records", "cli", "methodology", "artifacts"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "forgeplan"
 path = "src/main.rs"
 
 [dependencies]
-forgeplan-core = { path = "../forgeplan-core" }
-forgeplan-mcp = { path = "../forgeplan-mcp" }
+forgeplan-core = { path = "../forgeplan-core", version = "0.13.0" }
+forgeplan-mcp = { path = "../forgeplan-mcp", version = "0.13.0" }
 clap = { version = "4", features = ["derive"] }
 anyhow.workspace = true
 chrono.workspace = true

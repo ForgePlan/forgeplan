@@ -6,9 +6,23 @@ use forgeplan_core::workspace;
 
 /// `forgeplan scan [--path <dir>]` — scan codebase for modules
 pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
+    let cwd = env::current_dir()?;
     let project_root = match path {
-        Some(p) => std::path::PathBuf::from(p),
-        None => env::current_dir()?,
+        Some(p) => {
+            let candidate = cwd.join(p);
+            let canonical = candidate.canonicalize().map_err(|e| {
+                anyhow::anyhow!("Scan path '{}' does not exist or is inaccessible: {}", p, e)
+            })?;
+            let canonical_root = cwd.canonicalize()?;
+            if !canonical.starts_with(&canonical_root) {
+                anyhow::bail!(
+                    "Scan path '{}' is outside project root. Path traversal rejected.",
+                    p
+                );
+            }
+            canonical
+        }
+        None => cwd,
     };
 
     println!("  Scanning {}...", project_root.display());

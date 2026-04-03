@@ -26,6 +26,19 @@ pub struct RoutingResult {
     pub level: u8,
     /// LLM explanation of the routing decision (only present at level 1).
     pub explanation: Option<String>,
+    /// Alternative depth/pipeline suggestions with reasoning.
+    pub alternatives: Vec<RouteAlternative>,
+}
+
+/// An alternative routing suggestion with reasoning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteAlternative {
+    /// Alternative depth level.
+    pub depth: Mode,
+    /// Pipeline for this depth.
+    pub pipeline: Vec<ArtifactKind>,
+    /// Why this alternative might be appropriate.
+    pub reasoning: String,
 }
 
 /// A signal extracted from input that influences depth.
@@ -97,6 +110,26 @@ impl std::fmt::Display for RoutingResult {
             writeln!(f, "```")?;
         }
 
+        if !self.alternatives.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "## Alternatives")?;
+            for (i, alt) in self.alternatives.iter().enumerate() {
+                let alt_pipeline = if alt.pipeline.is_empty() {
+                    "None".to_string()
+                } else {
+                    alt.pipeline.iter().map(|k| kind_display(k)).collect::<Vec<_>>().join(" → ")
+                };
+                writeln!(
+                    f,
+                    "{}. {} ({}) — {}",
+                    i + 1,
+                    depth_display(&alt.depth),
+                    alt_pipeline,
+                    alt.reasoning
+                )?;
+            }
+        }
+
         if let Some(ref explanation) = self.explanation {
             writeln!(f)?;
             writeln!(f, "## Explanation")?;
@@ -118,6 +151,7 @@ pub fn route(description: &str) -> RoutingResult {
             confidence: 0.0,
             level: 0,
             explanation: None,
+            alternatives: vec![],
         };
     }
 
@@ -125,6 +159,7 @@ pub fn route(description: &str) -> RoutingResult {
     let depth = rules::compute_depth(&signals);
     let pipeline = pipeline::for_depth(&depth);
     let confidence = rules::compute_confidence(&signals, &depth);
+    let alternatives = generate_alternatives(&depth, &signals);
 
     RoutingResult {
         depth,
@@ -133,7 +168,103 @@ pub fn route(description: &str) -> RoutingResult {
         confidence,
         level: 0,
         explanation: None,
+        alternatives,
     }
+}
+
+/// Generate 2 alternative depth suggestions based on primary depth and signals.
+///
+/// Returns one lower and one higher alternative (where possible),
+/// each with reasoning explaining when that alternative would be appropriate.
+pub(crate) fn generate_alternatives(primary: &Mode, signals: &[Signal]) -> Vec<RouteAlternative> {
+    let mut alts = Vec::with_capacity(2);
+
+    match primary {
+        Mode::Note => {
+            // Note → offer Standard (up) and Deep (far up)
+            // Note: skip Tactical — same empty pipeline as Note, reflexive loop
+            alts.push(RouteAlternative {
+                depth: Mode::Standard,
+                pipeline: pipeline::for_depth(&Mode::Standard),
+                reasoning: "If the note reveals a multi-day feature — create PRD + RFC".into(),
+            });
+            alts.push(RouteAlternative {
+                depth: Mode::Deep,
+                pipeline: pipeline::for_depth(&Mode::Deep),
+                reasoning: "If this involves security, breaking changes, or cross-team impact — full pipeline needed".into(),
+            });
+        }
+        Mode::Tactical => {
+            // Tactical → offer Standard (up) and Deep (far up)
+            alts.push(RouteAlternative {
+                depth: Mode::Standard,
+                pipeline: pipeline::for_depth(&Mode::Standard),
+                reasoning: "If there are multiple valid approaches or it spans 2+ days — use PRD + RFC".into(),
+            });
+            alts.push(RouteAlternative {
+                depth: Mode::Deep,
+                pipeline: pipeline::for_depth(&Mode::Deep),
+                reasoning: "If this affects public API, security, or is irreversible — full pipeline needed".into(),
+            });
+        }
+        Mode::Standard => {
+            // Standard → offer Tactical (down) and Deep (up)
+            let has_security = signals.iter().any(|s| s.id.contains("security"));
+
+            let lower_reason = if signals.is_empty() {
+                "If scope is limited to 1-2 files with obvious solution — skip artifacts".to_string()
+            } else {
+                let ids: Vec<&str> = signals.iter().map(|s| s.id.as_str()).collect();
+                format!(
+                    "If scope is smaller than signals suggest ({}) — skip artifacts",
+                    ids.join(", ")
+                )
+            };
+            alts.push(RouteAlternative {
+                depth: Mode::Tactical,
+                pipeline: pipeline::for_depth(&Mode::Tactical),
+                reasoning: lower_reason,
+            });
+
+            let higher_reason = if has_security {
+                "Security signals detected — if this touches auth/encryption, escalate to Deep (PRD + Spec + RFC + ADR)".into()
+            } else {
+                "If this affects public API, requires cross-team coordination, or is irreversible — escalate to Deep".into()
+            };
+            alts.push(RouteAlternative {
+                depth: Mode::Deep,
+                pipeline: pipeline::for_depth(&Mode::Deep),
+                reasoning: higher_reason,
+            });
+        }
+        Mode::Deep => {
+            // Deep → offer Standard (down) and Tactical (far down)
+            let has_breaking = signals.iter().any(|s| s.id.contains("breaking"));
+            let has_severity = signals.iter().any(|s| s.id.contains("severity"));
+
+            let standard_reason = if has_breaking || has_severity {
+                let ids: Vec<&str> = signals.iter().map(|s| s.id.as_str()).collect();
+                format!(
+                    "Signals ({}) push Deep, but if scope is contained (1 module, reversible) — Standard may suffice",
+                    ids.join(", ")
+                )
+            } else {
+                "If the change is reversible and touches fewer than 3 modules — Standard is enough".into()
+            };
+            alts.push(RouteAlternative {
+                depth: Mode::Standard,
+                pipeline: pipeline::for_depth(&Mode::Standard),
+                reasoning: standard_reason,
+            });
+            alts.push(RouteAlternative {
+                depth: Mode::Tactical,
+                pipeline: pipeline::for_depth(&Mode::Tactical),
+                reasoning: "If this turned out to be a simple config/flag change — just do it".into(),
+            });
+        }
+    }
+
+    alts
 }
 
 /// Route an existing artifact (post-factum calibration).
@@ -143,6 +274,7 @@ pub fn calibrate_artifact(body: &str, link_count: usize, has_epic: bool) -> Rout
     let depth = rules::compute_depth(&signals);
     let pipeline = pipeline::for_depth(&depth);
     let confidence = rules::compute_confidence(&signals, &depth);
+    let alternatives = generate_alternatives(&depth, &signals);
 
     RoutingResult {
         depth,
@@ -151,6 +283,7 @@ pub fn calibrate_artifact(body: &str, link_count: usize, has_epic: bool) -> Rout
         confidence,
         level: 0,
         explanation: None,
+        alternatives,
     }
 }
 
@@ -198,6 +331,7 @@ pub async fn route_with_llm_and_context(
             Ok(response) => match parse_llm_route_response(&response) {
                 Some((depth, explanation)) => {
                     let pipeline = pipeline::for_depth(&depth);
+                    let alternatives = generate_alternatives(&depth, &[]);
                     RoutingResult {
                         depth,
                         pipeline,
@@ -205,6 +339,7 @@ pub async fn route_with_llm_and_context(
                         confidence: 0.9,
                         level: 1,
                         explanation: Some(explanation),
+                        alternatives,
                     }
                 }
                 None => route(description),
@@ -357,6 +492,7 @@ pub async fn route_with_reasoning(
             if downgrade.contains("standard") && !downgrade.contains("deep") {
                 result.depth = Mode::Standard;
                 result.pipeline = pipeline::for_depth(&Mode::Standard);
+                result.alternatives = generate_alternatives(&Mode::Standard, &[]);
             }
 
             // Enrich result with Level 2 reasoning
@@ -545,5 +681,141 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(route_with_llm("", &config));
         assert_eq!(result.level, 0, "Empty input should skip LLM");
+    }
+
+    // ─── Alternatives Tests ────────────────────────────────────
+
+    #[test]
+    fn test_alternatives_always_two() {
+        let result = route("Fix a typo");
+        assert_eq!(result.alternatives.len(), 2, "Should always have 2 alternatives");
+    }
+
+    #[test]
+    fn test_tactical_alternatives_are_standard_and_deep() {
+        let result = route("Fix a typo");
+        assert!(matches!(result.depth, Mode::Tactical));
+        let alt_depths: Vec<_> = result.alternatives.iter().map(|a| &a.depth).collect();
+        assert!(alt_depths.contains(&&Mode::Standard), "Tactical should offer Standard alternative");
+        assert!(alt_depths.contains(&&Mode::Deep), "Tactical should offer Deep alternative");
+    }
+
+    #[test]
+    fn test_deep_alternatives_are_standard_and_tactical() {
+        let result = route("Implement OAuth2 authentication");
+        assert!(matches!(result.depth, Mode::Deep));
+        let alt_depths: Vec<_> = result.alternatives.iter().map(|a| &a.depth).collect();
+        assert!(alt_depths.contains(&&Mode::Standard), "Deep should offer Standard alternative");
+        assert!(alt_depths.contains(&&Mode::Tactical), "Deep should offer Tactical alternative");
+    }
+
+    #[test]
+    fn test_standard_alternatives_are_tactical_and_deep() {
+        let result = route("New feature for data model");
+        assert!(matches!(result.depth, Mode::Standard));
+        let alt_depths: Vec<_> = result.alternatives.iter().map(|a| &a.depth).collect();
+        assert!(alt_depths.contains(&&Mode::Tactical), "Standard should offer Tactical alternative");
+        assert!(alt_depths.contains(&&Mode::Deep), "Standard should offer Deep alternative");
+    }
+
+    #[test]
+    fn test_alternatives_have_reasoning() {
+        let result = route("Fix a typo in readme");
+        for alt in &result.alternatives {
+            assert!(!alt.reasoning.is_empty(), "Each alternative must have reasoning");
+        }
+    }
+
+    #[test]
+    fn test_alternatives_have_correct_pipelines() {
+        let result = route("Implement OAuth2 authentication");
+        for alt in &result.alternatives {
+            let expected_pipeline = pipeline::for_depth(&alt.depth);
+            assert_eq!(alt.pipeline, expected_pipeline, "Alternative pipeline should match its depth");
+        }
+    }
+
+    #[test]
+    fn test_deep_alternatives_mention_signals() {
+        let result = route("Critical security breaking change in auth");
+        assert!(matches!(result.depth, Mode::Deep));
+        // Standard alternative should mention signal context
+        let standard_alt = result.alternatives.iter().find(|a| matches!(a.depth, Mode::Standard)).unwrap();
+        assert!(
+            standard_alt.reasoning.contains("keyword:") || standard_alt.reasoning.contains("Signals") || standard_alt.reasoning.contains("signal"),
+            "Deep→Standard reasoning should reference signals: {:?}", standard_alt.reasoning
+        );
+    }
+
+    #[test]
+    fn test_empty_input_no_alternatives() {
+        let result = route("");
+        assert!(result.alternatives.is_empty(), "Empty input should have no alternatives");
+    }
+
+    #[test]
+    fn test_generate_alternatives_direct() {
+        let signals = vec![Signal {
+            id: "keyword:security".into(),
+            description: "Security".into(),
+            minimum_depth: Mode::Deep,
+            weight: 0.9,
+        }];
+        let alts = generate_alternatives(&Mode::Deep, &signals);
+        assert_eq!(alts.len(), 2);
+        assert!(alts.iter().any(|a| matches!(a.depth, Mode::Standard)));
+    }
+
+    #[test]
+    fn test_note_alternatives_are_standard_and_deep() {
+        let alts = generate_alternatives(&Mode::Note, &[]);
+        assert_eq!(alts.len(), 2, "Note should produce exactly 2 alternatives");
+        let depths: Vec<_> = alts.iter().map(|a| &a.depth).collect();
+        assert!(depths.contains(&&Mode::Standard), "Note should offer Standard");
+        assert!(depths.contains(&&Mode::Deep), "Note should offer Deep");
+        // Note must NOT offer Tactical (same empty pipeline = reflexive loop)
+        assert!(!depths.contains(&&Mode::Tactical), "Note must not offer Tactical");
+    }
+
+    #[test]
+    fn test_all_modes_produce_exactly_two_alternatives() {
+        for (mode, label) in [
+            (Mode::Note, "Note"),
+            (Mode::Tactical, "Tactical"),
+            (Mode::Standard, "Standard"),
+            (Mode::Deep, "Deep"),
+        ] {
+            let alts = generate_alternatives(&mode, &[]);
+            assert_eq!(alts.len(), 2, "{label} should produce exactly 2 alternatives");
+        }
+    }
+
+    #[test]
+    fn test_display_includes_alternatives_section() {
+        let result = route("Fix a typo");
+        let display = format!("{result}");
+        assert!(display.contains("## Alternatives"), "Display should render Alternatives section");
+        assert!(display.contains("Standard"), "Should list Standard as alternative");
+    }
+
+    #[test]
+    fn test_calibrate_artifact_has_alternatives() {
+        let result = calibrate_artifact("## FR\n- [ ] FR-001\n- [ ] FR-002\n- [ ] FR-003\n- [ ] FR-004\n", 3, true);
+        assert_eq!(result.alternatives.len(), 2, "calibrate_artifact should populate alternatives");
+    }
+
+    #[test]
+    fn test_alternatives_never_match_primary() {
+        for (mode, label) in [
+            (Mode::Note, "Note"),
+            (Mode::Tactical, "Tactical"),
+            (Mode::Standard, "Standard"),
+            (Mode::Deep, "Deep"),
+        ] {
+            let alts = generate_alternatives(&mode, &[]);
+            for alt in &alts {
+                assert_ne!(alt.depth, mode, "{label} alternative should not equal primary depth");
+            }
+        }
     }
 }

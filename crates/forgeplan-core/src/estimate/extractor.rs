@@ -38,8 +38,8 @@ pub fn collect_hints(body: &str, extracted_count: usize, kind: &str) -> Vec<Esti
         });
     }
 
-    // No items at all
-    if extracted_count == 0 {
+    // No items at all — but only if there weren't template placeholders (which have their own hint)
+    if extracted_count == 0 && template_count == 0 {
         let suggestion = match kind {
             "prd" => "Add FR table: | FR-001 | Core | Must | User can ... | Journey 1 |",
             "rfc" => "Add Phase checklist: - [ ] **1.1** Description",
@@ -89,7 +89,7 @@ fn count_fr_rows(body: &str) -> usize {
 fn extract_fr_table(body: &str) -> Vec<WorkItem> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(
-        r"(?m)^\|\s*(FR-\d+)\s*\|\s*(\w[\w\s]*?)\s*\|\s*(Must|Should|Could|Won't)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|"
+        r"(?m)^\|\s*(FR-\d+)\s*\|\s*([\w\-][\w\s\-]*?)\s*\|\s*(Must|Should|Could|Won't)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|"
     ).expect("valid regex"));
 
     re.captures_iter(body)
@@ -279,6 +279,65 @@ mod tests {
         assert!(items[0].description.contains("project structure"));
         assert_eq!(items[2].id, "P0.3");
         assert!(items[2].description.contains("CRUD"));
+    }
+
+    #[test]
+    fn collect_hints_no_items_no_templates() {
+        let body = "# Just a title\n\nSome text.";
+        let hints = collect_hints(body, 0, "prd");
+        // Should get "no estimable items" hint but NOT template warning
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].message.contains("No estimable"));
+        assert!(hints[0].action.as_ref().unwrap().contains("FR table"));
+    }
+
+    #[test]
+    fn collect_hints_all_templates_no_double_hint() {
+        let body = r#"
+| ID | Category | Priority | Requirement | Journey |
+|----|----------|----------|-------------|---------|
+| FR-001 | Core | Must | [Actor] can [capability] | Journey 1 |
+| FR-002 | Core | Must | [Actor] can [capability] | Journey 2 |
+"#;
+        let hints = collect_hints(body, 0, "prd");
+        // Should get template warning + RFC suggestion, but NOT "no items found" (F3 fix)
+        assert!(hints.iter().any(|h| h.message.contains("template placeholders")));
+        assert!(!hints.iter().any(|h| h.message.contains("No estimable")),
+            "Should NOT show 'no items' when templates exist — user already has FR table");
+    }
+
+    #[test]
+    fn collect_hints_low_item_count() {
+        let body = r#"
+| ID | Category | Priority | Requirement | Journey |
+|----|----------|----------|-------------|---------|
+| FR-001 | Core | Must | User can do X | Journey 1 |
+"#;
+        let hints = collect_hints(body, 1, "prd");
+        // Should get low count info + RFC suggestion
+        assert!(hints.iter().any(|h| h.message.contains("Only 1 item")));
+        assert!(hints.iter().any(|h| h.message.contains("RFC")));
+    }
+
+    #[test]
+    fn collect_hints_rfc_kind_suggestion() {
+        let body = "# No FR or phases";
+        let hints = collect_hints(body, 0, "rfc");
+        assert!(hints[0].action.as_ref().unwrap().contains("Phase checklist"));
+    }
+
+    #[test]
+    fn fr_regex_accepts_hyphenated_category() {
+        let body = r#"
+| ID | Category | Priority | Requirement | Journey |
+|----|----------|----------|-------------|---------|
+| FR-001 | Non-Core | Must | User can do X | Journey 1 |
+| FR-002 | API-Design | Should | System can do Y | Journey 2 |
+"#;
+        let items = extract_fr_table(body);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].category, "Non-Core");
+        assert_eq!(items[1].category, "API-Design");
     }
 
     #[test]

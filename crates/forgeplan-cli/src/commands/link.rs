@@ -50,6 +50,23 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
     let relation = link::normalize_relation(relation)?;
     let (ws, store) = common::open_store().await?;
 
+    // Verify source exists
+    if store.get_artifact(source_id).await?.is_none() {
+        anyhow::bail!("Source artifact '{}' not found", source_id);
+    }
+
+    // Check relation exists before deleting (case-insensitive target match)
+    let existing = store.get_relations(source_id).await?;
+    let found = existing.iter().any(|(t, r)| {
+        t.eq_ignore_ascii_case(target_id) && r == &relation
+    });
+    if !found {
+        anyhow::bail!(
+            "Relation '{}' from {} to {} not found",
+            relation, source_id, target_id
+        );
+    }
+
     store.delete_relation(source_id, target_id, &relation).await?;
 
     // Sync file→LanceDB if user edited the file, then update projection

@@ -51,7 +51,9 @@ fn calculate_item(scored: &ScoredItem, config: &EstimateConfig) -> EstimateItem 
             .unwrap_or(grade.default_multiplier());
 
         let effective_hours = if *grade == Grade::Ai {
-            // AI gets task-type-specific multiplier on top of grade multiplier
+            // AI uses task-type-specific multiplier (not grade_multiplier) because
+            // AI effort depends on task nature (coding vs infra), not experience level.
+            // The `ai` key in grade_multipliers is intentionally unused here.
             let task_mult = config
                 .ai_task_multipliers
                 .get(&scored.task_type)
@@ -190,7 +192,6 @@ mod tests {
         assert_eq!(result.confidence_reasons.len(), 2);
     }
 
-    #[test]
     #[test]
     fn missing_grade_in_config_uses_default() {
         let mut config = default_config();

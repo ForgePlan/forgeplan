@@ -77,11 +77,29 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn has_fr_but_zero_count_is_negative() {
         let (score, reasons) = score_confidence(true, 0, false, 0, false, false);
         assert!((score - 0.10).abs() < 0.01); // baseline only, has_fr=true but count=0 → no bonus
         assert!(reasons.iter().any(|r| r.contains("no FR")));
+    }
+
+    #[test]
+    fn has_rfc_phases_but_zero_count_no_bonus() {
+        let (score, reasons) = score_confidence(false, 0, true, 0, false, false);
+        assert!((score - 0.10).abs() < 0.01); // baseline only, phase_count=0 → no +25%
+        assert!(reasons.iter().any(|r| r.contains("no RFC")));
+    }
+
+    #[test]
+    fn spec_only() {
+        let (score, _) = score_confidence(false, 0, false, 0, true, false);
+        assert!((score - 0.25).abs() < 0.01); // 0.15 + 0.10 baseline
+    }
+
+    #[test]
+    fn evidence_only() {
+        let (score, _) = score_confidence(false, 0, false, 0, false, true);
+        assert!((score - 0.30).abs() < 0.01); // 0.20 + 0.10 baseline
     }
 
     #[test]

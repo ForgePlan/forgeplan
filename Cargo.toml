@@ -7,10 +7,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/user/forgeplan"
+repository = "https://github.com/ForgePlan/forgeplan"
+homepage = "https://github.com/ForgePlan/forgeplan"
 description = "Forge your plan — structured artifacts with quality scoring"
 
 [workspace.dependencies]

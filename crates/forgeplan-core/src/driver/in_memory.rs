@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact};
-use crate::driver::StorageDriver;
+use crate::driver::{ArtifactStorage, FpfStorage, RelationStorage, SearchStorage, VectorStorage};
 
 /// Internal state behind a single RwLock to avoid TOCTOU races.
 struct InMemoryState {
@@ -55,26 +55,22 @@ fn parse_date(s: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+impl InMemoryStore {
+    /// Open an existing workspace (no-op for in-memory).
+    pub async fn open(_workspace_path: &Path) -> anyhow::Result<Self> {
+        Ok(Self::new())
+    }
+
+    /// Create tables / schema if needed (no-op for in-memory).
+    pub async fn init(_workspace_path: &Path) -> anyhow::Result<Self> {
+        Ok(Self::new())
+    }
+}
+
+// ── ArtifactStorage ─────────────────────────────────────────────────────────
+
 #[async_trait::async_trait]
-impl StorageDriver for InMemoryStore {
-    // -- Lifecycle ------------------------------------------------------------
-
-    async fn open(_workspace_path: &Path) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self::new())
-    }
-
-    async fn init(_workspace_path: &Path) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self::new())
-    }
-
-    // -- Artifact CRUD --------------------------------------------------------
-
+impl ArtifactStorage for InMemoryStore {
     async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         let now = Utc::now().to_rfc3339();
         let record = ArtifactRecord {
@@ -212,20 +208,28 @@ impl StorageDriver for InMemoryStore {
         Ok(())
     }
 
-    // -- Relations ------------------------------------------------------------
+}
 
+// ── RelationStorage ─────────────────────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl RelationStorage for InMemoryStore {
     async fn add_relation(
         &self,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        // Self-link guard (PROB-019)
+        if source.eq_ignore_ascii_case(target) {
+            anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
+        }
         let mut state = self.state.write().await;
         // Reject duplicates
         let exists = state
             .relations
             .iter()
-            .any(|(s, t, r)| s == source && t == target && r == relation);
+            .any(|(s, t, r)| s.eq_ignore_ascii_case(source) && t.eq_ignore_ascii_case(target) && r == relation);
         if exists {
             anyhow::bail!("relation already exists: {source} -> {target} ({relation})");
         }
@@ -275,8 +279,12 @@ impl StorageDriver for InMemoryStore {
         Ok(state.relations.clone())
     }
 
-    // -- Search ---------------------------------------------------------------
+}
 
+// ── SearchStorage ───────────────────────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl SearchStorage for InMemoryStore {
     async fn search_body(
         &self,
         query: &str,
@@ -331,8 +339,17 @@ impl StorageDriver for InMemoryStore {
         Ok(format!("{}-{:03}", kind_prefix.to_uppercase(), *counter))
     }
 
-    // -- FPF Knowledge Base ---------------------------------------------------
+}
 
+// ── VectorStorage (defaults — InMemory doesn't support vectors) ─────────────
+
+#[async_trait::async_trait]
+impl VectorStorage for InMemoryStore {}
+
+// ── FpfStorage ──────────────────────────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl FpfStorage for InMemoryStore {
     fn has_fpf(&self) -> bool {
         self.state
             .try_read()
@@ -551,6 +568,11 @@ mod tests {
 
         // Duplicate rejection
         assert!(store.add_relation(&prd, &rfc, "informs").await.is_err());
+
+        // Self-link rejection (PROB-019)
+        assert!(store.add_relation(&prd, &prd, "informs").await.is_err());
+        // Case-insensitive self-link
+        assert!(store.add_relation(&prd, &prd.to_uppercase(), "informs").await.is_err());
     }
 
     #[tokio::test]

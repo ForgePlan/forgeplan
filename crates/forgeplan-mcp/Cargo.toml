@@ -2,7 +2,11 @@
 name = "forgeplan-mcp"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "MCP server for Forgeplan — expose artifact tools via Model Context Protocol"
+keywords = ["mcp", "model-context-protocol", "project-management", "artifacts"]
+categories = ["development-tools"]
 
 [[bin]]
 name = "forgeplan-mcp"
@@ -13,7 +17,7 @@ name = "forgeplan_mcp"
 path = "src/lib.rs"
 
 [dependencies]
-forgeplan-core = { path = "../forgeplan-core" }
+forgeplan-core = { path = "../forgeplan-core", version = "0.13.0" }
 rmcp = { version = "1.2", features = ["server", "transport-io"] }
 schemars = "0.8"
 serde.workspace = true

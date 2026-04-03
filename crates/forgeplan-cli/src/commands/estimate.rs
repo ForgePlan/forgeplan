@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
 
-use forgeplan_core::estimate::{calculator, confidence, display, extractor, scorer};
-use forgeplan_core::estimate::types::{Complexity, EstimateConfig, Grade, ItemSource, ScoredItem};
+use forgeplan_core::estimate::{calculator, confidence, display, domain, extractor, overrides, scorer};
+use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
 
 use crate::commands::common;
 
@@ -75,9 +73,9 @@ pub async fn run(
     };
 
     // Apply manual complexity overrides (highest priority per ADR-004)
-    if let Some(overrides) = complexity_overrides {
-        let map = parse_complexity_overrides(overrides)?;
-        apply_overrides(&mut scored_items, &map);
+    if let Some(overrides_str) = complexity_overrides {
+        let map = overrides::parse_complexity_overrides(overrides_str)?;
+        overrides::apply_overrides(&mut scored_items, &map);
         if !json {
             eprintln!("  Applied {} manual complexity override(s)", map.len());
         }
@@ -88,12 +86,15 @@ pub async fn run(
     let phase_items: Vec<_> = work_items.iter().filter(|w| w.source == ItemSource::Phase).collect();
 
     // Check linked Spec and Evidence for confidence boost
-    let relations = store.get_relations(&record.id).await.unwrap_or_default();
+    // Outgoing: this artifact → target (e.g., PRD → SPEC)
+    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
+    // Incoming: source → this artifact (e.g., EVID → PRD)
     let incoming = store.get_incoming_relations(&record.id).await.unwrap_or_default();
-    let all_rels: Vec<_> = relations.iter().chain(incoming.iter()).collect();
 
-    let has_spec = all_rels.iter().any(|(target, _)| target.to_uppercase().starts_with("SPEC-"));
-    let has_evidence = all_rels.iter().any(|(target, _)| target.to_uppercase().starts_with("EVID-"));
+    let has_spec = outgoing.iter().any(|(target, _)| target.to_uppercase().starts_with("SPEC-"))
+        || incoming.iter().any(|(source, _)| source.to_uppercase().starts_with("SPEC-"));
+    let has_evidence = outgoing.iter().any(|(target, _)| target.to_uppercase().starts_with("EVID-"))
+        || incoming.iter().any(|(source, _)| source.to_uppercase().starts_with("EVID-"));
 
     let (conf, conf_reasons) = confidence::score_confidence(
         !fr_items.is_empty(),
@@ -120,18 +121,18 @@ pub async fn run(
 
     // Determine highlight grade
     let highlight_grade = if my_grade {
-        let domain = if llm_score {
+        let d = if llm_score {
             // LLM-assisted domain inference when --llm-score is active
             let llm_config = common::config().ok().and_then(|c| c.llm);
             infer_domain_with_llm(&record.title, &record.body, llm_config.as_ref()).await
         } else {
-            infer_domain(&record.title, &record.body)
+            domain::infer_domain(&record.title, &record.body)
         };
-        let resolved = config.resolve_grade(&domain);
+        let resolved = config.resolve_grade(&d);
         if !json {
             eprintln!(
                 "  Using grade: {} (domain: {}, from config grade_profile)",
-                resolved, domain
+                resolved, d
             );
         }
         Some(resolved)
@@ -151,41 +152,8 @@ pub async fn run(
     Ok(())
 }
 
-/// Parse "FR-001=5,FR-002=3" into HashMap<String, Complexity>.
-fn parse_complexity_overrides(input: &str) -> Result<HashMap<String, Complexity>> {
-    let mut map = HashMap::new();
-    for pair in input.split(',') {
-        let pair = pair.trim();
-        if pair.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = pair.splitn(2, '=').collect();
-        if parts.len() != 2 {
-            anyhow::bail!("Invalid complexity override '{}'. Format: FR-001=5", pair);
-        }
-        let id = parts[0].trim().to_string();
-        let value: u32 = parts[1].trim().parse()
-            .map_err(|_| anyhow::anyhow!("Invalid number '{}' in complexity override", parts[1].trim()))?;
-        let complexity = Complexity::from_value(value)
-            .ok_or_else(|| anyhow::anyhow!(
-                "Invalid Fibonacci value {}. Valid: 1, 2, 3, 5, 8, 13", value
-            ))?;
-        map.insert(id, complexity);
-    }
-    Ok(map)
-}
-
-/// Apply manual overrides to scored items — override has highest priority.
-fn apply_overrides(items: &mut [ScoredItem], overrides: &HashMap<String, Complexity>) {
-    for item in items.iter_mut() {
-        if let Some(complexity) = overrides.get(&item.id) {
-            item.complexity = *complexity;
-        }
-    }
-}
-
 /// Load EstimateConfig from .forgeplan/config.yaml, falling back to defaults.
-fn load_estimate_config() -> EstimateConfig {
+pub fn load_estimate_config() -> EstimateConfig {
     match common::config() {
         Ok(cfg) => {
             if let Some(ref yaml) = cfg.estimate {
@@ -204,15 +172,7 @@ async fn infer_domain_with_llm(
     body: &str,
     llm_config: Option<&forgeplan_core::config::types::LlmConfig>,
 ) -> String {
-    // Try frontmatter first (same as non-LLM path)
-    if let Some(domain) = extract_frontmatter_domain(body) {
-        let d = domain.to_lowercase();
-        if !d.contains('/') && !d.is_empty() && d != "general" {
-            return d;
-        }
-    }
-
-    // Try LLM classification
+    // Try LLM classification (frontmatter checked first inside domain::infer_domain fallback)
     if let Some(config) = llm_config {
         let snippet: String = body.chars().take(300).collect();
         let prompt = format!(
@@ -221,74 +181,17 @@ async fn infer_domain_with_llm(
              Title: {}\nBody: {}",
             title, snippet
         );
-        {
-            let client = forgeplan_core::llm::LlmClient::new(config.clone());
-            if let Ok(response) = client.generate(&prompt, Some("You are a domain classifier. Reply with exactly one word.")).await {
-                let domain = response.trim().to_lowercase().replace(' ', "_");
-                let valid = ["backend", "frontend", "devops", "ai_ml"];
-                if valid.contains(&domain.as_str()) {
-                    return domain;
-                }
+        let client = forgeplan_core::llm::LlmClient::new(config.clone());
+        if let Ok(response) = client.generate(&prompt, Some("You are a domain classifier. Reply with exactly one word.")).await {
+            let d = response.trim().to_lowercase().replace(' ', "_");
+            let valid = ["backend", "frontend", "devops", "ai_ml"];
+            if valid.contains(&d.as_str()) {
+                return d;
             }
         }
     }
 
-    // Fallback to keyword-based
-    infer_domain(title, body)
+    // Fallback to keyword-based (includes frontmatter check)
+    domain::infer_domain(title, body)
 }
 
-/// Infer work domain from artifact content for grade profile lookup.
-/// Priority: frontmatter `domain:` field > keyword inference from title+body > "default".
-fn infer_domain(title: &str, body: &str) -> String {
-    // 1. Try frontmatter domain: field
-    if let Some(domain) = extract_frontmatter_domain(body) {
-        let d = domain.to_lowercase();
-        // Skip template placeholders
-        if !d.contains('/') && !d.is_empty() && d != "general" {
-            return d;
-        }
-    }
-
-    // 2. Keyword inference from title + body (skip frontmatter, take 1000 chars of content)
-    let content = body.split("---").skip(2).collect::<Vec<_>>().join(" ");
-    let snippet: String = content.chars().take(1000).collect();
-    let text = format!("{} {}", title, snippet).to_lowercase();
-
-    let domains = [
-        ("devops", &["k8s", "docker", "ci/cd", "deploy", "helm", "terraform", "kubernetes",
-            "pipeline", "infrastructure", "namespace", "registry", "runner"][..]),
-        ("frontend", &["react", "css", "ui", "component", "layout", "frontend", "tailwind",
-            "responsive", "browser", "dom", "jsx", "tsx", "next.js"][..]),
-        ("ai_ml", &["llm", "embedding", "model", "prompt", "ml", "ai", "vector",
-            "semantic", "scoring", "neural", "training", "inference"][..]),
-        ("backend", &["api", "database", "endpoint", "service", "backend", "crud",
-            "rest", "graphql", "grpc", "migration", "schema", "query"][..]),
-    ];
-
-    let mut best_domain = "default";
-    let mut best_score = 0usize;
-
-    for (domain, keywords) in &domains {
-        let score = keywords.iter().filter(|kw| text.contains(**kw)).count();
-        if score > best_score {
-            best_score = score;
-            best_domain = domain;
-        }
-    }
-
-    best_domain.to_string()
-}
-
-/// Extract `domain:` value from YAML frontmatter in body.
-fn extract_frontmatter_domain(body: &str) -> Option<String> {
-    for line in body.lines().take(30) {
-        let trimmed = line.trim();
-        if trimmed.starts_with("domain:") {
-            let value = trimmed[7..].trim().trim_matches('"').trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
