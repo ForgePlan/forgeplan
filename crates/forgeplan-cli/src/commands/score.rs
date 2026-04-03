@@ -33,7 +33,10 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
     }
 
     if !json {
-        println!("  Scoring {} active decision artifacts...", decision_records.len());
+        println!(
+            "  Scoring {} active decision artifacts...",
+            decision_records.len()
+        );
         println!();
     }
 
@@ -62,7 +65,10 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);
     } else {
-        let high = results.iter().filter(|r| r["r_eff"].as_f64().unwrap_or(0.0) >= 0.5).count();
+        let high = results
+            .iter()
+            .filter(|r| r["r_eff"].as_f64().unwrap_or(0.0) >= 0.5)
+            .count();
         let total = results.len();
         println!();
         println!("  {}/{} artifacts with R_eff >= 0.5", high, total);
@@ -128,11 +134,17 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
 
     // --- F-G-R computation ---
     let kind: ArtifactKind = target.kind.parse().unwrap_or_else(|_| {
-        eprintln!("  Warning: unknown kind '{}', defaulting to Note", target.kind);
+        eprintln!(
+            "  Warning: unknown kind '{}', defaulting to Note",
+            target.kind
+        );
         ArtifactKind::Note
     });
     let depth: Mode = target.depth.parse().unwrap_or_else(|_| {
-        eprintln!("  Warning: unknown depth '{}', defaulting to Standard", target.depth);
+        eprintln!(
+            "  Warning: unknown depth '{}', defaulting to Standard",
+            target.depth
+        );
         Mode::Standard
     });
     let frontmatter: Frontmatter = Frontmatter::new();
@@ -142,13 +154,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         .valid_until
         .as_deref()
         .and_then(|s| {
-            NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .ok()
-                .or_else(|| {
-                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                        .ok()
-                        .map(|dt| dt.date())
-                })
+            NaiveDate::parse_from_str(s, "%Y-%m-%d").ok().or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.date())
+            })
         })
         .map(|d| Utc::now().date_naive() > d)
         .unwrap_or(false);
@@ -246,7 +256,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             "AT RISK"
         };
 
-        ui::kv("R_eff", &format!("{} -- {}", ui::styled_reff(report.r_eff), status));
+        ui::kv(
+            "R_eff",
+            &format!("{} -- {}", ui::styled_reff(report.r_eff), status),
+        );
     }
 
     if let Some(ref wl) = report.weakest_link {
@@ -295,7 +308,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
 
     // Contextual hints
     let has_evidence = !evidence_items.is_empty();
-    let cl0_count = evidence_items.iter().filter(|e| e.congruence_level == 0).count();
+    let cl0_count = evidence_items
+        .iter()
+        .filter(|e| e.congruence_level == 0)
+        .count();
     let score_hints = forgeplan_core::hints::score_hints(report.r_eff, has_evidence, cl0_count);
     if !score_hints.is_empty() {
         print!("{}", forgeplan_core::hints::format_hints(&score_hints));
@@ -323,9 +339,7 @@ fn score_grade(v: f64) -> &'static str {
 
 /// Parse evidence fields from an ArtifactRecord's body.
 /// Evidence metadata is stored in the body as YAML-like fields.
-fn parse_evidence_from_record(
-    record: &forgeplan_core::db::store::ArtifactRecord,
-) -> EvidenceItem {
+fn parse_evidence_from_record(record: &forgeplan_core::db::store::ArtifactRecord) -> EvidenceItem {
     // Parse verdict from body (look for "verdict:" line)
     let verdict = extract_field(&record.body, "verdict")
         .map(|s| match s.to_lowercase().as_str() {
@@ -342,18 +356,15 @@ fn parse_evidence_from_record(
         .map(|v| v.min(3))
         .unwrap_or(0);
 
-    let valid_until = record
-        .valid_until
-        .as_deref()
-        .and_then(|s| {
-            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .or_else(|| {
-                    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                        .ok()
-                        .and_then(|d| d.and_hms_opt(23, 59, 59))
-                })
-        });
+    let valid_until = record.valid_until.as_deref().and_then(|s| {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+            .ok()
+            .or_else(|| {
+                NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|d| d.and_hms_opt(23, 59, 59))
+            })
+    });
 
     EvidenceItem {
         id: record.id.clone(),

@@ -74,7 +74,10 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
     let kind = record.kind.parse()?;
-    let depth = record.depth.parse().unwrap_or(crate::artifact::types::Mode::Standard);
+    let depth = record
+        .depth
+        .parse()
+        .unwrap_or(crate::artifact::types::Mode::Standard);
     let fm = record.frontmatter_map();
 
     let result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
@@ -120,11 +123,16 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
         }
 
         // Evidence check: no evidence linked = blind spot
-        let incoming = store.get_incoming_relations(artifact_id).await.unwrap_or_default();
-        let has_evidence = relations.iter().any(|(_, r)| r == "informs" || r == "supports")
-            || incoming.iter().any(|(source_id, _)| {
-                source_id.to_uppercase().starts_with("EVID-")
-            });
+        let incoming = store
+            .get_incoming_relations(artifact_id)
+            .await
+            .unwrap_or_default();
+        let has_evidence = relations
+            .iter()
+            .any(|(_, r)| r == "informs" || r == "supports")
+            || incoming
+                .iter()
+                .any(|(source_id, _)| source_id.to_uppercase().starts_with("EVID-"));
         if !has_evidence {
             warnings.push(
                 "No evidence linked — create evidence and link it before activating".to_string(),
@@ -186,24 +194,32 @@ pub async fn activate(
             "Cannot activate {}: body too short ({} chars). Fill required sections first.\n\
              Current state: STUB → need VALIDATED before ACTIVATED.\n\
              Run: forgeplan update {} --body \"...\"",
-            artifact_id, record.body.trim().len(), artifact_id
+            artifact_id,
+            record.body.trim().len(),
+            artifact_id
         );
     }
 
     // Methodology enforcement: evidence check (no evidence = blind spot)
     if !force {
         let relations = store.get_relations(artifact_id).await.unwrap_or_default();
-        let incoming = store.get_incoming_relations(artifact_id).await.unwrap_or_default();
-        let has_evidence = relations.iter().any(|(_, r)| r == "informs" || r == "supports")
-            || incoming.iter().any(|(source_id, _)| {
-                source_id.to_uppercase().starts_with("EVID-")
-            });
+        let incoming = store
+            .get_incoming_relations(artifact_id)
+            .await
+            .unwrap_or_default();
+        let has_evidence = relations
+            .iter()
+            .any(|(_, r)| r == "informs" || r == "supports")
+            || incoming
+                .iter()
+                .any(|(source_id, _)| source_id.to_uppercase().starts_with("EVID-"));
         if !has_evidence {
             anyhow::bail!(
                 "Cannot activate {}: no evidence linked. Create evidence first.\n\
                  Current state: VALIDATED → need EVIDENCED before ACTIVATED.\n\
                  Run: forgeplan new evidence \"...\" && forgeplan link EVID-XXX {} --relation informs",
-                artifact_id, artifact_id
+                artifact_id,
+                artifact_id
             );
         }
     }
@@ -214,7 +230,11 @@ pub async fn activate(
         let mut msg = format!(
             "Validation failed ({} MUST error{}):",
             review_result.must_findings.len(),
-            if review_result.must_findings.len() == 1 { "" } else { "s" }
+            if review_result.must_findings.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
         );
         for finding in &review_result.must_findings {
             msg.push_str(&format!("\n  - {finding}"));
@@ -265,12 +285,16 @@ pub async fn supersede(
     // Block if replacement is itself superseded or deprecated (chain risk)
     let mut warnings = Vec::new();
     if replacement.status == "draft" {
-        warnings.push(format!("Replacement {} is still draft — activate before using", replacement_id));
+        warnings.push(format!(
+            "Replacement {} is still draft — activate before using",
+            replacement_id
+        ));
     }
     if replacement.status == "superseded" || replacement.status == "deprecated" {
         anyhow::bail!(
             "Replacement {} is already {}. Choose an active or draft artifact as replacement.",
-            replacement_id, replacement.status
+            replacement_id,
+            replacement.status
         );
     }
 
@@ -424,18 +448,24 @@ pub async fn reopen(
             anyhow::bail!(
                 "Cannot reopen {}: status '{}' is terminal.\n\
                  Use `forgeplan new {} \"...\"` to create a fresh artifact.",
-                artifact_id, record.status, record.kind
+                artifact_id,
+                record.status,
+                record.kind
             );
         }
         anyhow::bail!(
             "Cannot reopen {}: status '{}'. Reopen requires active or stale.",
-            artifact_id, record.status
+            artifact_id,
+            record.status
         );
     }
 
     // Check new_id doesn't already exist (audit logic C3: race condition guard)
     if store.get_record(new_id).await?.is_some() {
-        anyhow::bail!("Cannot reopen: artifact '{}' already exists. Try again.", new_id);
+        anyhow::bail!(
+            "Cannot reopen: artifact '{}' already exists. Try again.",
+            new_id
+        );
     }
 
     let safe_reason = sanitize_reason(reason);
@@ -464,9 +494,8 @@ pub async fn reopen(
     store.add_relation(new_id, artifact_id, "based_on").await?;
 
     // Step 3: Deprecate the old artifact (after new is safely created)
-    let deprecation_section = format!(
-        "\n\n## Reopened ({today})\n\nReason: {safe_reason}\nReplacement: {new_id}"
-    );
+    let deprecation_section =
+        format!("\n\n## Reopened ({today})\n\nReason: {safe_reason}\nReplacement: {new_id}");
     let new_body = format!("{}{}", record.body, deprecation_section);
     store.update_body(artifact_id, &new_body).await?;
     store
@@ -549,7 +578,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
 
-        store.create_artifact(&active_note("NOTE-099")).await.unwrap();
+        store
+            .create_artifact(&active_note("NOTE-099"))
+            .await
+            .unwrap();
 
         let reason = "no longer needed";
         deprecate(&store, "NOTE-099", reason).await.unwrap();
@@ -590,7 +622,14 @@ mod tests {
         let store = make_store(&tmp).await;
         store.create_artifact(&stale_prd("PRD-100")).await.unwrap();
 
-        let result = renew(&store, "PRD-100", "still relevant, updated evidence", "2026-12-01").await.unwrap();
+        let result = renew(
+            &store,
+            "PRD-100",
+            "still relevant, updated evidence",
+            "2026-12-01",
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.artifact_id, "PRD-100");
         assert_eq!(result.new_valid_until, "2026-12-01");
@@ -605,7 +644,10 @@ mod tests {
     async fn renew_active_fails() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
-        store.create_artifact(&active_note("NOTE-100")).await.unwrap();
+        store
+            .create_artifact(&active_note("NOTE-100"))
+            .await
+            .unwrap();
 
         let result = renew(&store, "NOTE-100", "try renew active", "2027-01-01").await;
         assert!(result.is_err(), "renew on active artifact should fail");
@@ -619,7 +661,12 @@ mod tests {
 
         let result = renew(&store, "PRD-110", "reason", "not-a-date").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid date format"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid date format")
+        );
     }
 
     #[tokio::test]
@@ -628,10 +675,20 @@ mod tests {
         let store = make_store(&tmp).await;
         store.create_artifact(&stale_prd("PRD-120")).await.unwrap();
 
-        renew(&store, "PRD-120", "reason\n\n## Injected Section\nevil", "2027-01-01").await.unwrap();
+        renew(
+            &store,
+            "PRD-120",
+            "reason\n\n## Injected Section\nevil",
+            "2027-01-01",
+        )
+        .await
+        .unwrap();
         let record = store.get_record("PRD-120").await.unwrap().unwrap();
         // Newlines stripped — "## Injected" can't start a new markdown heading
-        assert!(!record.body.contains("\n## Injected"), "reason newlines should be sanitized");
+        assert!(
+            !record.body.contains("\n## Injected"),
+            "reason newlines should be sanitized"
+        );
     }
 
     #[tokio::test]
@@ -639,7 +696,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
         store.create_artifact(&stale_prd("PRD-300")).await.unwrap();
-        store.create_artifact(&active_note("PRD-301")).await.unwrap();
+        store
+            .create_artifact(&active_note("PRD-301"))
+            .await
+            .unwrap();
 
         // PRD-301 already exists — reopen should fail early
         let result = reopen(&store, "PRD-300", "reason", "PRD-301").await;
@@ -647,7 +707,10 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("already exists"));
         // Old artifact should still be stale (not deprecated)
         let old = store.get_record("PRD-300").await.unwrap().unwrap();
-        assert_eq!(old.status, "stale", "old artifact should remain stale on failure");
+        assert_eq!(
+            old.status, "stale",
+            "old artifact should remain stale on failure"
+        );
     }
 
     #[tokio::test]
@@ -671,7 +734,9 @@ mod tests {
         let store = make_store(&tmp).await;
         store.create_artifact(&stale_prd("PRD-200")).await.unwrap();
 
-        let result = reopen(&store, "PRD-200", "need different approach", "PRD-201").await.unwrap();
+        let result = reopen(&store, "PRD-200", "need different approach", "PRD-201")
+            .await
+            .unwrap();
 
         assert_eq!(result.old_id, "PRD-200");
         assert_eq!(result.new_id, "PRD-201");
@@ -708,18 +773,25 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         // deprecated→deprecated is invalid transition; error hints at reopen
-        assert!(err_msg.contains("Invalid transition") || err_msg.contains("terminal"),
-            "Expected transition error, got: {err_msg}");
+        assert!(
+            err_msg.contains("Invalid transition") || err_msg.contains("terminal"),
+            "Expected transition error, got: {err_msg}"
+        );
     }
 
     #[tokio::test]
     async fn reopen_active_works() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
-        store.create_artifact(&active_note("NOTE-300")).await.unwrap();
+        store
+            .create_artifact(&active_note("NOTE-300"))
+            .await
+            .unwrap();
 
         // Reopen from active (manual trigger — user decides to start fresh)
-        let _result = reopen(&store, "NOTE-300", "rethinking approach", "NOTE-301").await.unwrap();
+        let _result = reopen(&store, "NOTE-300", "rethinking approach", "NOTE-301")
+            .await
+            .unwrap();
 
         let old = store.get_record("NOTE-300").await.unwrap().unwrap();
         assert_eq!(old.status, "deprecated");

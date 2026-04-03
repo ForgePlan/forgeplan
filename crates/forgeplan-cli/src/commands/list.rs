@@ -32,19 +32,26 @@ pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>, json: b
     if json {
         let json_data: Vec<_> = artifacts
             .iter()
-            .map(|a| serde_json::json!({
-                "id": a.id,
-                "kind": a.kind,
-                "status": a.status,
-                "title": a.title,
-            }))
+            .map(|a| {
+                serde_json::json!({
+                    "id": a.id,
+                    "kind": a.kind,
+                    "status": a.status,
+                    "title": a.title,
+                })
+            })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
     }
 
     // Calculate column widths for alignment
-    let id_width = artifacts.iter().map(|a| a.id.len()).max().unwrap_or(6).max(2);
+    let id_width = artifacts
+        .iter()
+        .map(|a| a.id.len())
+        .max()
+        .unwrap_or(6)
+        .max(2);
     let kind_width = artifacts
         .iter()
         .map(|a| a.kind.len())

@@ -30,7 +30,8 @@ pub async fn run(compact: bool, json: bool) -> anyhow::Result<()> {
 
     if compact {
         // Compact mode for hooks/scripts
-        println!("Project: {} | Artifacts: {} | Blind spots: {} | Stale: {} | At risk: {}",
+        println!(
+            "Project: {} | Artifacts: {} | Blind spots: {} | Stale: {} | At risk: {}",
             config.project_name,
             report.total,
             report.blind_spots.len(),
@@ -45,11 +46,19 @@ pub async fn run(compact: bool, json: bool) -> anyhow::Result<()> {
 
     // Full dashboard
     println!();
-    println!("{} — {}", style("Forgeplan Health").bold(), style(&config.project_name).cyan());
+    println!(
+        "{} — {}",
+        style("Forgeplan Health").bold(),
+        style(&config.project_name).cyan()
+    );
     println!("{}", style("═".repeat(50)).dim());
 
     println!();
-    println!("  {}  {} total", style("Artifacts:").bold(), ui::styled_count(report.total, false));
+    println!(
+        "  {}  {} total",
+        style("Artifacts:").bold(),
+        ui::styled_count(report.total, false)
+    );
 
     if !report.by_kind.is_empty() {
         println!();
@@ -91,31 +100,57 @@ pub async fn run(compact: bool, json: bool) -> anyhow::Result<()> {
     // At Risk
     if !report.at_risk.is_empty() {
         println!();
-        println!("  {} At Risk ({}):", style("!").yellow().bold(), ui::styled_count(report.at_risk.len(), true));
+        println!(
+            "  {} At Risk ({}):",
+            style("!").yellow().bold(),
+            ui::styled_count(report.at_risk.len(), true)
+        );
         for item in &report.at_risk {
-            println!("    {} \"{}\" — {}", style(&item.id).yellow(), item.title, style(&item.reason).red());
+            println!(
+                "    {} \"{}\" — {}",
+                style(&item.id).yellow(),
+                item.title,
+                style(&item.reason).red()
+            );
         }
     }
 
     // Blind Spots
     if !report.blind_spots.is_empty() {
         println!();
-        println!("  {} Blind Spots ({}):", style("●").red().bold(), ui::styled_count(report.blind_spots.len(), true));
+        println!(
+            "  {} Blind Spots ({}):",
+            style("●").red().bold(),
+            ui::styled_count(report.blind_spots.len(), true)
+        );
         for spot in &report.blind_spots {
-            println!("    {} \"{}\" — {}", style(&spot.id).yellow(), spot.title, style(&spot.issue).red());
+            println!(
+                "    {} \"{}\" — {}",
+                style(&spot.id).yellow(),
+                spot.title,
+                style(&spot.issue).red()
+            );
         }
     }
 
     // Stale
     if report.stale_count > 0 {
         println!();
-        println!("  {} Stale: {} evidence expired", style("⏰").yellow(), ui::styled_count(report.stale_count, true));
+        println!(
+            "  {} Stale: {} evidence expired",
+            style("⏰").yellow(),
+            ui::styled_count(report.stale_count, true)
+        );
     }
 
     // Orphans
     if !report.orphans.is_empty() {
         println!();
-        println!("  {} Orphans ({}):", style("○").red(), ui::styled_count(report.orphans.len(), true));
+        println!(
+            "  {} Orphans ({}):",
+            style("○").red(),
+            ui::styled_count(report.orphans.len(), true)
+        );
         for id in &report.orphans {
             println!("    {} — {}", style(id).yellow(), style("no links").red());
         }
@@ -124,7 +159,11 @@ pub async fn run(compact: bool, json: bool) -> anyhow::Result<()> {
     // Next Actions
     if !report.next_actions.is_empty() {
         println!();
-        println!("  {} {}:", style("→").green().bold(), style("Next actions").bold());
+        println!(
+            "  {} {}:",
+            style("→").green().bold(),
+            style("Next actions").bold()
+        );
         for (i, action) in report.next_actions.iter().enumerate() {
             println!("    {}. {}", style(i + 1).green(), action);
         }

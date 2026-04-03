@@ -17,13 +17,16 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to stat '{}': {}", full_path.display(), e))?
         .len();
     if file_size > 100 * 1024 * 1024 {
-        anyhow::bail!("Import file too large ({} MB). Max 100 MB.", file_size / 1024 / 1024);
+        anyhow::bail!(
+            "Import file too large ({} MB). Max 100 MB.",
+            file_size / 1024 / 1024
+        );
     }
 
     let json = std::fs::read_to_string(&full_path)
         .map_err(|e| anyhow::anyhow!("Failed to read '{}': {}", full_path.display(), e))?;
-    let data: serde_json::Value = serde_json::from_str(&json)
-        .map_err(|e| anyhow::anyhow!("Invalid export JSON: {}", e))?;
+    let data: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| anyhow::anyhow!("Invalid export JSON: {}", e))?;
 
     let artifacts = data["artifacts"]
         .as_array()
@@ -50,15 +53,25 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
 
         // Validate kind against known types
         let raw_kind = art["kind"].as_str().unwrap_or("note");
-        let kind_str = if raw_kind.parse::<forgeplan_core::artifact::types::ArtifactKind>().is_err() {
-            eprintln!("  Warning: unknown kind '{}' for {}, defaulting to note", raw_kind, id);
+        let kind_str = if raw_kind
+            .parse::<forgeplan_core::artifact::types::ArtifactKind>()
+            .is_err()
+        {
+            eprintln!(
+                "  Warning: unknown kind '{}' for {}, defaulting to note",
+                raw_kind, id
+            );
             "note"
         } else {
             raw_kind
         };
         let raw_status = art["status"].as_str().unwrap_or("draft");
-        let status_str = if !matches!(raw_status, "draft" | "active" | "superseded" | "deprecated") {
-            eprintln!("  Warning: unknown status '{}' for {}, defaulting to draft", raw_status, id);
+        let status_str = if !matches!(raw_status, "draft" | "active" | "superseded" | "deprecated")
+        {
+            eprintln!(
+                "  Warning: unknown status '{}' for {}, defaulting to draft",
+                raw_status, id
+            );
             "draft"
         } else {
             raw_status

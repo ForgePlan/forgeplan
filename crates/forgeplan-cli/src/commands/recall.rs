@@ -23,8 +23,7 @@ pub async fn run(
     if let Some(q) = query {
         let q_lower = q.to_lowercase();
         records.retain(|r| {
-            r.title.to_lowercase().contains(&q_lower)
-                || r.body.to_lowercase().contains(&q_lower)
+            r.title.to_lowercase().contains(&q_lower) || r.body.to_lowercase().contains(&q_lower)
         });
     }
 

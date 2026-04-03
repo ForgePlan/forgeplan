@@ -235,11 +235,7 @@ mod tests {
 
     #[test]
     fn ready_vs_blocked() {
-        let edges = vec![(
-            "RFC-001".into(),
-            "PRD-001".into(),
-            "based_on".into(),
-        )];
+        let edges = vec![("RFC-001".into(), "PRD-001".into(), "based_on".into())];
         let mut active = HashSet::new();
         active.insert("PRD-001".to_string());
 
@@ -251,11 +247,7 @@ mod tests {
 
     #[test]
     fn blocked_when_dep_not_active() {
-        let edges = vec![(
-            "RFC-001".into(),
-            "PRD-001".into(),
-            "based_on".into(),
-        )];
+        let edges = vec![("RFC-001".into(), "PRD-001".into(), "based_on".into())];
         let result = kahn_sort(&edges, &HashSet::new());
         assert!(result.blocked.iter().any(|(id, _)| id == "RFC-001"));
     }
@@ -290,8 +282,14 @@ mod tests {
         ];
         let result = kahn_sort(&edges, &HashSet::new());
         // Informational relations are excluded, so no edges => no nodes in graph
-        assert!(result.blocked.is_empty(), "informational relations should not block");
-        assert!(result.order.is_empty(), "no structural edges => empty graph");
+        assert!(
+            result.blocked.is_empty(),
+            "informational relations should not block"
+        );
+        assert!(
+            result.order.is_empty(),
+            "no structural edges => empty graph"
+        );
 
         // get_blocked_by should also ignore informational relations
         let blocked = get_blocked_by("EVID-001", &edges, &HashSet::new());
@@ -307,55 +305,61 @@ mod tests {
         let result = kahn_sort(&edges, &HashSet::new());
         // Only based_on edge should be in the graph
         assert_eq!(result.order.len(), 2, "should have RFC-001 and PRD-001");
-        assert!(result.blocked.iter().any(|(id, _)| id == "RFC-001"),
-            "RFC-001 should be blocked by PRD-001 via based_on");
+        assert!(
+            result.blocked.iter().any(|(id, _)| id == "RFC-001"),
+            "RFC-001 should be blocked by PRD-001 via based_on"
+        );
         // EVID-001 should NOT appear at all (its only relation is informational)
-        assert!(!result.order.contains(&"EVID-001".to_string()),
-            "EVID-001 should not be in the graph (only has informational relation)");
+        assert!(
+            !result.order.contains(&"EVID-001".to_string()),
+            "EVID-001 should not be in the graph (only has informational relation)"
+        );
     }
 
     #[test]
     fn deprecated_does_not_block() {
         // PROB-010 (deprecated) should NOT block PRD-014
-        let edges = vec![
-            ("PRD-014".into(), "PROB-010".into(), "based_on".into()),
-        ];
+        let edges = vec![("PRD-014".into(), "PROB-010".into(), "based_on".into())];
         // resolved_ids includes deprecated artifacts
         let mut resolved = HashSet::new();
         resolved.insert("PROB-010".to_string()); // deprecated but resolved
 
         let result = kahn_sort(&edges, &resolved);
         // PRD-014 should NOT be blocked
-        assert!(result.blocked.is_empty(),
-            "deprecated artifact should not block: {:?}", result.blocked);
+        assert!(
+            result.blocked.is_empty(),
+            "deprecated artifact should not block: {:?}",
+            result.blocked
+        );
         assert!(result.ready.contains(&"PRD-014".to_string()));
     }
 
     #[test]
     fn superseded_does_not_block() {
         // PRD-002 (superseded) should NOT block RFC-001
-        let edges = vec![
-            ("RFC-001".into(), "PRD-002".into(), "based_on".into()),
-        ];
+        let edges = vec![("RFC-001".into(), "PRD-002".into(), "based_on".into())];
         let mut resolved = HashSet::new();
         resolved.insert("PRD-002".to_string()); // superseded but resolved
 
         let result = kahn_sort(&edges, &resolved);
-        assert!(result.blocked.is_empty(),
-            "superseded artifact should not block: {:?}", result.blocked);
+        assert!(
+            result.blocked.is_empty(),
+            "superseded artifact should not block: {:?}",
+            result.blocked
+        );
     }
 
     #[test]
     fn draft_still_blocks() {
         // Draft artifacts should still block
-        let edges = vec![
-            ("RFC-001".into(), "NOTE-015".into(), "based_on".into()),
-        ];
+        let edges = vec![("RFC-001".into(), "NOTE-015".into(), "based_on".into())];
         // NOTE-015 is draft, NOT in resolved set
         let resolved = HashSet::new();
         let result = kahn_sort(&edges, &resolved);
-        assert!(result.blocked.iter().any(|(id, _)| id == "RFC-001"),
-            "draft artifact should block");
+        assert!(
+            result.blocked.iter().any(|(id, _)| id == "RFC-001"),
+            "draft artifact should block"
+        );
     }
 
     #[test]
@@ -370,25 +374,30 @@ mod tests {
         resolved.insert("ADR-001".to_string()); // deprecated = resolved
         let result = kahn_sort(&edges, &resolved);
         let blocked_entry = result.blocked.iter().find(|(id, _)| id == "RFC-001");
-        assert!(blocked_entry.is_some(), "RFC-001 should be blocked by draft PRD-001");
+        assert!(
+            blocked_entry.is_some(),
+            "RFC-001 should be blocked by draft PRD-001"
+        );
         let blockers = &blocked_entry.unwrap().1;
         assert_eq!(blockers, &vec!["PRD-001".to_string()]);
-        assert!(!blockers.contains(&"ADR-001".to_string()),
-            "deprecated ADR-001 should NOT block");
+        assert!(
+            !blockers.contains(&"ADR-001".to_string()),
+            "deprecated ADR-001 should NOT block"
+        );
     }
 
     #[test]
     fn stale_blocks_by_design() {
         // Stale artifacts are NOT in resolved_ids — they should block.
         // This is intentional: stale = expired valid_until, needs renewal before it can unblock.
-        let edges = vec![
-            ("RFC-001".into(), "ADR-001".into(), "based_on".into()),
-        ];
+        let edges = vec![("RFC-001".into(), "ADR-001".into(), "based_on".into())];
         // ADR-001 is stale — NOT in resolved set
         let resolved = HashSet::new();
         let result = kahn_sort(&edges, &resolved);
-        assert!(result.blocked.iter().any(|(id, _)| id == "RFC-001"),
-            "stale artifact should block (by design — needs renew first)");
+        assert!(
+            result.blocked.iter().any(|(id, _)| id == "RFC-001"),
+            "stale artifact should block (by design — needs renew first)"
+        );
     }
 
     #[test]

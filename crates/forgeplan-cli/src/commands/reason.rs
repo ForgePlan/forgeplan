@@ -123,10 +123,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     if !json && !adi_output.evidence_needed.is_empty() {
         println!("\n  --- Next steps (evidence needed) ---");
         for ev in &adi_output.evidence_needed {
-            println!(
-                "  {} [{}]: {}",
-                ev.for_hypothesis, ev.effort, ev.test
-            );
+            println!("  {} [{}]: {}", ev.for_hypothesis, ev.effort, ev.test);
         }
         println!(
             "\n  Tip: forgeplan new evidence \"<description>\"  # then link to {}",

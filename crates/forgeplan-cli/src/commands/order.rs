@@ -77,7 +77,11 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     println!();
     let total = result.order.len();
-    let active_count = result.order.iter().filter(|id| active_ids.contains(*id)).count();
+    let active_count = result
+        .order
+        .iter()
+        .filter(|id| active_ids.contains(*id))
+        .count();
     let ready_count = result.ready.len().saturating_sub(active_count);
     let blocked_count = result.blocked.len();
     println!(

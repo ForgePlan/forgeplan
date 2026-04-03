@@ -24,7 +24,21 @@ pub async fn render_projection(
     body: &str,
     links: &[(String, String)],
 ) -> anyhow::Result<PathBuf> {
-    render_projection_inner(workspace, id, kind, title, status, depth, author, parent_epic, valid_until, body, links, false).await
+    render_projection_inner(
+        workspace,
+        id,
+        kind,
+        title,
+        status,
+        depth,
+        author,
+        parent_epic,
+        valid_until,
+        body,
+        links,
+        false,
+    )
+    .await
 }
 
 /// Like render_projection, but `force_body = true` uses the passed body
@@ -43,7 +57,21 @@ pub async fn render_projection_with_body(
     body: &str,
     links: &[(String, String)],
 ) -> anyhow::Result<PathBuf> {
-    render_projection_inner(workspace, id, kind, title, status, depth, author, parent_epic, valid_until, body, links, true).await
+    render_projection_inner(
+        workspace,
+        id,
+        kind,
+        title,
+        status,
+        depth,
+        author,
+        parent_epic,
+        valid_until,
+        body,
+        links,
+        true,
+    )
+    .await
 }
 
 async fn render_projection_inner(
@@ -93,7 +121,16 @@ async fn render_projection_inner(
     };
 
     let content = render_markdown(
-        id, kind, title, status, depth, author, parent_epic, valid_until, &effective_body, links,
+        id,
+        kind,
+        title,
+        status,
+        depth,
+        author,
+        parent_epic,
+        valid_until,
+        &effective_body,
+        links,
     )?;
     tokio::fs::write(&filepath, &content).await?;
 
@@ -166,10 +203,7 @@ fn render_markdown(
     links: &[(String, String)],
 ) -> anyhow::Result<String> {
     let mut fm = BTreeMap::new();
-    fm.insert(
-        "id".to_string(),
-        serde_yml::Value::String(id.to_string()),
-    );
+    fm.insert("id".to_string(), serde_yml::Value::String(id.to_string()));
     fm.insert(
         "title".to_string(),
         serde_yml::Value::String(title.to_string()),
@@ -264,7 +298,8 @@ mod tests {
             None,
             "## Summary\n\nThis is the body.",
             &[],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(content.starts_with("---\n"));
         assert!(content.contains("id: PRD-001"));
         assert!(content.contains("title: Auth System"));
@@ -279,7 +314,8 @@ mod tests {
         ];
         let content = render_markdown(
             "PRD-001", "prd", "Auth", "draft", "standard", None, None, None, "Body.", &links,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(content.contains("links:"));
         assert!(content.contains("target: RFC-001"));
         assert!(content.contains("relation: informs"));
@@ -288,9 +324,18 @@ mod tests {
     #[test]
     fn render_markdown_optional_fields_omitted() {
         let content = render_markdown(
-            "NOTE-001", "note", "Quick Note", "draft", "tactical", None, None, None, "Content.",
+            "NOTE-001",
+            "note",
+            "Quick Note",
+            "draft",
+            "tactical",
+            None,
+            None,
+            None,
+            "Content.",
             &[],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(!content.contains("author:"));
         assert!(!content.contains("parent_epic:"));
         assert!(!content.contains("valid_until:"));
@@ -347,9 +392,20 @@ mod tests {
         // Step 1: create projection with template body
         let template_body = "## Summary\n\n{Fill in summary here}";
         let path = render_projection(
-            &ws, "PRD-001", "prd", "Auth System", "draft", "standard",
-            None, None, None, template_body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Auth System",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            template_body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         // Step 2: user edits the file with real content
         let user_content = "---\nid: PRD-001\ntitle: Auth System\nkind: prd\nstatus: draft\ndepth: standard\n---\n\n## Summary\n\nReal user content that should be preserved.\n\n## Goals\n\n- Support OAuth2\n";
@@ -357,18 +413,40 @@ mod tests {
 
         // Step 3: forgeplan link triggers render_projection with LanceDB body (template)
         let path2 = render_projection(
-            &ws, "PRD-001", "prd", "Auth System", "draft", "standard",
-            None, None, None, template_body,
+            &ws,
+            "PRD-001",
+            "prd",
+            "Auth System",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            template_body,
             &[("RFC-001".to_string(), "based_on".to_string())],
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Verify: user body preserved, NOT overwritten with template
         let result = tokio::fs::read_to_string(&path2).await.unwrap();
-        assert!(result.contains("Real user content"), "user body must be preserved");
-        assert!(result.contains("Support OAuth2"), "user goals must be preserved");
-        assert!(!result.contains("{Fill in summary"), "template must NOT overwrite user content");
+        assert!(
+            result.contains("Real user content"),
+            "user body must be preserved"
+        );
+        assert!(
+            result.contains("Support OAuth2"),
+            "user goals must be preserved"
+        );
+        assert!(
+            !result.contains("{Fill in summary"),
+            "template must NOT overwrite user content"
+        );
         // But frontmatter should have the new link
-        assert!(result.contains("RFC-001"), "new link should be in frontmatter");
+        assert!(
+            result.contains("RFC-001"),
+            "new link should be in frontmatter"
+        );
     }
 
     #[tokio::test]
@@ -380,19 +458,47 @@ mod tests {
 
         // Create initial projection
         render_projection(
-            &ws, "PRD-001", "prd", "Test", "draft", "standard",
-            None, None, None, body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         // Re-render with same body but updated status — frontmatter updates, body preserved from file
         let path = render_projection(
-            &ws, "PRD-001", "prd", "Test", "active", "standard",
-            None, None, None, body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Test",
+            "active",
+            "standard",
+            None,
+            None,
+            None,
+            body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         let result = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(result.contains("status: active"), "status should be updated");
-        assert!(result.contains("Same content"), "body should be preserved from file");
+        assert!(
+            result.contains("status: active"),
+            "status should be updated"
+        );
+        assert!(
+            result.contains("Same content"),
+            "body should be preserved from file"
+        );
     }
 
     #[tokio::test]
@@ -404,9 +510,20 @@ mod tests {
 
         // Step 1: create projection with template
         let path = render_projection(
-            &ws, "RFC-001", "rfc", "My RFC", "draft", "standard",
-            None, None, None, template_body, &[],
-        ).await.unwrap();
+            &ws,
+            "RFC-001",
+            "rfc",
+            "My RFC",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            template_body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         // Step 2: user edits file with real content (270 lines)
         let user_content = format!(
@@ -417,16 +534,35 @@ mod tests {
 
         // Step 3: forgeplan link re-renders with TEMPLATE body from LanceDB (the bug scenario)
         let path2 = render_projection(
-            &ws, "RFC-001", "rfc", "My RFC", "draft", "standard",
-            None, None, None, template_body, // <-- LanceDB still has template!
+            &ws,
+            "RFC-001",
+            "rfc",
+            "My RFC",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            template_body, // <-- LanceDB still has template!
             &[("PRD-011".to_string(), "based_on".to_string())],
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Verify: file body preserved, NOT reset to template
         let result = tokio::fs::read_to_string(&path2).await.unwrap();
-        assert!(result.contains("Real RFC content"), "user body must be preserved after link");
-        assert!(result.contains("This is important"), "motivation must survive");
-        assert!(!result.contains("{placeholder}"), "template must NOT overwrite user content");
+        assert!(
+            result.contains("Real RFC content"),
+            "user body must be preserved after link"
+        );
+        assert!(
+            result.contains("This is important"),
+            "motivation must survive"
+        );
+        assert!(
+            !result.contains("{placeholder}"),
+            "template must NOT overwrite user content"
+        );
         // Frontmatter updated with link
         assert!(result.contains("PRD-011"), "link should be in frontmatter");
     }
@@ -438,9 +574,20 @@ mod tests {
 
         let db_body = "## Template\n\n{placeholder}";
         render_projection(
-            &ws, "PRD-001", "prd", "Test", "draft", "standard",
-            None, None, None, db_body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            db_body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         // Simulate user editing the file
         let prds = ws.join("prds");
@@ -460,9 +607,20 @@ mod tests {
 
         let body = "## Summary\n\nSame content.";
         render_projection(
-            &ws, "PRD-001", "prd", "Test", "draft", "standard",
-            None, None, None, body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         let result = read_file_body_if_newer(&ws, "PRD-001", "prd", "Test", body).await;
         assert!(result.is_none(), "should return None when body matches");
@@ -476,19 +634,47 @@ mod tests {
         // Step 1: create projection with template body
         let template_body = "## Template\n\n{placeholder}";
         render_projection(
-            &ws, "PRD-001", "prd", "Test", "draft", "standard",
-            None, None, None, template_body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            template_body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         // Step 2: render_projection_with_body should override file content
         let new_body = "## Problem\n\nNew body from CLI update.";
         let path = render_projection_with_body(
-            &ws, "PRD-001", "prd", "Test", "draft", "standard",
-            None, None, None, new_body, &[],
-        ).await.unwrap();
+            &ws,
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            new_body,
+            &[],
+        )
+        .await
+        .unwrap();
 
         let result = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(result.contains("New body from CLI update"), "force_body must override file");
-        assert!(!result.contains("{placeholder}"), "old file body must not survive");
+        assert!(
+            result.contains("New body from CLI update"),
+            "force_body must override file"
+        );
+        assert!(
+            !result.contains("{placeholder}"),
+            "old file body must not survive"
+        );
     }
 }

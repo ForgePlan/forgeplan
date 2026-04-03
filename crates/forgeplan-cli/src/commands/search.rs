@@ -110,7 +110,11 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
         let query_vec = embedder.embed(query)?;
         let all_hits = store.vector_search(&query_vec, 50).await?;
         let hits: Vec<_> = if let Some(k) = kind {
-            all_hits.into_iter().filter(|h| h.record.kind.eq_ignore_ascii_case(k)).take(10).collect()
+            all_hits
+                .into_iter()
+                .filter(|h| h.record.kind.eq_ignore_ascii_case(k))
+                .take(10)
+                .collect()
         } else {
             all_hits.into_iter().take(10).collect()
         };
@@ -150,7 +154,13 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
             query
         );
         for h in &hits {
-            println!("  {:.2}  {} [{}] \"{}\"", h.similarity(), h.record.id, h.record.kind, h.record.title);
+            println!(
+                "  {:.2}  {} [{}] \"{}\"",
+                h.similarity(),
+                h.record.id,
+                h.record.kind,
+                h.record.title
+            );
         }
 
         Ok(())
@@ -168,7 +178,12 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
 
 /// Smart search: keyword + semantic + graph boosters.
 /// Graceful degradation: if embeddings unavailable, uses keyword only + hint.
-async fn run_smart(query: &str, kind: Option<&str>, limit: usize, json: bool) -> anyhow::Result<()> {
+async fn run_smart(
+    query: &str,
+    kind: Option<&str>,
+    limit: usize,
+    json: bool,
+) -> anyhow::Result<()> {
     use forgeplan_core::graph::knowledge::KnowledgeGraph;
     use forgeplan_core::search::smart;
 
@@ -263,9 +278,7 @@ async fn run_smart(query: &str, kind: Option<&str>, limit: usize, json: bool) ->
 
         if !has_embeddings {
             println!();
-            println!(
-                "  Tip: run `forgeplan embed` to enable semantic search for better results."
-            );
+            println!("  Tip: run `forgeplan embed` to enable semantic search for better results.");
         }
     }
 
@@ -277,10 +290,7 @@ async fn run_smart(query: &str, kind: Option<&str>, limit: usize, json: bool) ->
 async fn get_semantic_scores(
     store: &forgeplan_core::db::store::LanceStore,
     query: &str,
-) -> (
-    Option<std::collections::HashMap<String, f64>>,
-    bool,
-) {
+) -> (Option<std::collections::HashMap<String, f64>>, bool) {
     #[cfg(feature = "semantic-search")]
     {
         use forgeplan_core::embed::Embedder;

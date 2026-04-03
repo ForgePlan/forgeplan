@@ -88,7 +88,11 @@ impl ArtifactStorage for InMemoryStore {
             updated_at: now,
         };
         let id = record.id.clone();
-        self.state.write().await.artifacts.insert(id.clone(), record);
+        self.state
+            .write()
+            .await
+            .artifacts
+            .insert(id.clone(), record);
         Ok(id)
     }
 
@@ -207,29 +211,22 @@ impl ArtifactStorage for InMemoryStore {
         record.updated_at = Utc::now().to_rfc3339();
         Ok(())
     }
-
 }
 
 // ── RelationStorage ─────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl RelationStorage for InMemoryStore {
-    async fn add_relation(
-        &self,
-        source: &str,
-        target: &str,
-        relation: &str,
-    ) -> anyhow::Result<()> {
+    async fn add_relation(&self, source: &str, target: &str, relation: &str) -> anyhow::Result<()> {
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
         }
         let mut state = self.state.write().await;
         // Reject duplicates
-        let exists = state
-            .relations
-            .iter()
-            .any(|(s, t, r)| s.eq_ignore_ascii_case(source) && t.eq_ignore_ascii_case(target) && r == relation);
+        let exists = state.relations.iter().any(|(s, t, r)| {
+            s.eq_ignore_ascii_case(source) && t.eq_ignore_ascii_case(target) && r == relation
+        });
         if exists {
             anyhow::bail!("relation already exists: {source} -> {target} ({relation})");
         }
@@ -247,7 +244,9 @@ impl RelationStorage for InMemoryStore {
     ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
         let before = state.relations.len();
-        state.relations.retain(|(s, t, r)| !(s == source && t == target && r == relation));
+        state
+            .relations
+            .retain(|(s, t, r)| !(s == source && t == target && r == relation));
         if state.relations.len() == before {
             anyhow::bail!("relation not found: {source} -> {target} ({relation})");
         }
@@ -281,9 +280,9 @@ impl RelationStorage for InMemoryStore {
 
     async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
-        state.relations.retain(|(s, t, _)| {
-            !s.eq_ignore_ascii_case(id) && !t.eq_ignore_ascii_case(id)
-        });
+        state
+            .relations
+            .retain(|(s, t, _)| !s.eq_ignore_ascii_case(id) && !t.eq_ignore_ascii_case(id));
         Ok(())
     }
 }
@@ -345,7 +344,6 @@ impl SearchStorage for InMemoryStore {
         *counter += 1;
         Ok(format!("{}-{:03}", kind_prefix.to_uppercase(), *counter))
     }
-
 }
 
 // ── VectorStorage (defaults — InMemory doesn't support vectors) ─────────────
@@ -518,10 +516,12 @@ mod tests {
         assert_eq!(record.body, "updated body");
 
         // Non-existent artifact
-        assert!(store
-            .update_artifact("NOPE-001", Some("x"), None)
-            .await
-            .is_err());
+        assert!(
+            store
+                .update_artifact("NOPE-001", Some("x"), None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -554,10 +554,7 @@ mod tests {
         let adr = create_with_id(&store, "ADR", "ADR", "body").await;
 
         store.add_relation(&prd, &rfc, "informs").await.unwrap();
-        store
-            .add_relation(&rfc, &adr, "implements")
-            .await
-            .unwrap();
+        store.add_relation(&rfc, &adr, "implements").await.unwrap();
 
         // Outgoing from prd
         let out = store.get_relations(&prd).await.unwrap();
@@ -579,7 +576,12 @@ mod tests {
         // Self-link rejection (PROB-019)
         assert!(store.add_relation(&prd, &prd, "informs").await.is_err());
         // Case-insensitive self-link
-        assert!(store.add_relation(&prd, &prd.to_uppercase(), "informs").await.is_err());
+        assert!(
+            store
+                .add_relation(&prd, &prd.to_uppercase(), "informs")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -587,7 +589,13 @@ mod tests {
         let store = InMemoryStore::new();
         create_with_id(&store, "PRD", "Auth System", "OAuth2 login flow").await;
         create_with_id(&store, "RFC", "DB Migration", "PostgreSQL schema changes").await;
-        create_with_id(&store, "PRD", "Search Feature", "Full-text search with PostgreSQL").await;
+        create_with_id(
+            &store,
+            "PRD",
+            "Search Feature",
+            "Full-text search with PostgreSQL",
+        )
+        .await;
 
         // Search by body content (case-insensitive)
         let results = store.search_body("postgresql", None).await.unwrap();

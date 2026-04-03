@@ -8,9 +8,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
-    let kind: ArtifactKind = kind_str
-        .parse()
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let (workspace, store) = common::open_store().await?;
 
@@ -27,7 +25,10 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
 
     let template_key = kind.template_key();
 
-    println!("  Generating {} with {} ({})...", template_key, llm_config.provider, llm_config.model);
+    println!(
+        "  Generating {} with {} ({})...",
+        template_key, llm_config.provider, llm_config.model
+    );
 
     // Generate body via LLM
     let body = generate_body(&llm_config, template_key, description, &title)
@@ -56,8 +57,17 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         .with_context(|| format!("Failed to create artifact {} in LanceDB", id))?;
 
     let filepath = projection::render_projection(
-        &workspace, &id, template_key, &title, "draft", "standard",
-        None, None, None, &body, &[],
+        &workspace,
+        &id,
+        template_key,
+        &title,
+        "draft",
+        "standard",
+        None,
+        None,
+        None,
+        &body,
+        &[],
     )
     .await
     .with_context(|| format!("Failed to write projection for {}", id))?;
@@ -66,7 +76,10 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
     println!("  ID:      {}", id);
     println!("  Kind:    {}", template_key);
     println!("  Title:   {}", title);
-    println!("  Source:  AI-generated ({}/{})", llm_config.provider, llm_config.model);
+    println!(
+        "  Source:  AI-generated ({}/{})",
+        llm_config.provider, llm_config.model
+    );
 
     Ok(())
 }

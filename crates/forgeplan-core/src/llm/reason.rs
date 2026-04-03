@@ -104,7 +104,10 @@ fn default_effort() -> String {
 pub fn parse_adi_output(response: &str) -> AdiOutput {
     // Strip code fences sequentially — each step feeds the next
     let s = response.trim();
-    let s = s.strip_prefix("```json").map(|r| r.trim_start()).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .map(|r| r.trim_start())
+        .unwrap_or(s);
     let s = s.strip_prefix("```").map(|r| r.trim_start()).unwrap_or(s);
     let s = s.strip_suffix("```").map(|r| r.trim_end()).unwrap_or(s);
     // Find first '{' for cases where LLM adds text before JSON
@@ -150,7 +153,12 @@ pub async fn build_fpf_context(
     let keywords: Vec<&str> = artifact_title
         .split_whitespace()
         .filter(|w| w.len() > 3 && w.chars().all(|c| c.is_alphanumeric()))
-        .filter(|w| !matches!(w.to_lowercase().as_str(), "the" | "and" | "for" | "with" | "from" | "that" | "this"))
+        .filter(|w| {
+            !matches!(
+                w.to_lowercase().as_str(),
+                "the" | "and" | "for" | "with" | "from" | "that" | "this"
+            )
+        })
         .take(5)
         .collect();
 
@@ -281,8 +289,16 @@ mod tests {
             depth: "standard".to_string(),
             r_eff_score: 0.85,
             relations: vec![
-                ("RFC-001".to_string(), "implements".to_string(), "CLI Architecture".to_string()),
-                ("EPIC-001".to_string(), "parent".to_string(), "Build Forgeplan".to_string()),
+                (
+                    "RFC-001".to_string(),
+                    "implements".to_string(),
+                    "CLI Architecture".to_string(),
+                ),
+                (
+                    "EPIC-001".to_string(),
+                    "parent".to_string(),
+                    "Build Forgeplan".to_string(),
+                ),
             ],
             architecture_hint: Some("Rust CLI with LanceDB".to_string()),
         };
@@ -304,9 +320,7 @@ mod tests {
             status: "draft".to_string(),
             depth: "tactical".to_string(),
             r_eff_score: 0.0,
-            relations: vec![
-                ("PRD-001".to_string(), "informs".to_string(), String::new()),
-            ],
+            relations: vec![("PRD-001".to_string(), "informs".to_string(), String::new())],
             architecture_hint: None,
         };
         let section = build_metadata_section(&ctx);

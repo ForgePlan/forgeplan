@@ -202,8 +202,10 @@ pub async fn r_eff_recursive(
 
     // ---- 2. Dependency scores -------------------------------------------
 
-    let dep_relation_types: HashSet<&str> =
-        ["informs", "based_on", "refines", "depends_on"].iter().copied().collect();
+    let dep_relation_types: HashSet<&str> = ["informs", "based_on", "refines", "depends_on"]
+        .iter()
+        .copied()
+        .collect();
 
     // Collect dependency IDs from outgoing relations.
     let deps: Vec<(String, String)> = outgoing
@@ -218,7 +220,10 @@ pub async fn r_eff_recursive(
     for (dep_id, rel_type) in &deps {
         // Skip non-active dependencies — draft/deprecated/superseded should not drag down R_eff
         if let Ok(Some(dep_record)) = store.get_record(dep_id).await {
-            if matches!(dep_record.status.as_str(), "draft" | "deprecated" | "superseded") {
+            if matches!(
+                dep_record.status.as_str(),
+                "draft" | "deprecated" | "superseded"
+            ) {
                 factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
                 continue;
             }
@@ -256,7 +261,9 @@ pub async fn r_eff_recursive(
         }
 
         if penalty > 0.0 {
-            factors.push(format!("CL penalty applied for {dep_id} (relation: {rel_type})"));
+            factors.push(format!(
+                "CL penalty applied for {dep_id} (relation: {rel_type})"
+            ));
         }
     }
 
@@ -342,12 +349,17 @@ mod tests {
 
     #[test]
     fn evidence_type_modifier_measurement_no_penalty() {
-        assert_eq!(evidence_type_to_cl_modifier(&EvidenceType::Measurement), 0.0);
+        assert_eq!(
+            evidence_type_to_cl_modifier(&EvidenceType::Measurement),
+            0.0
+        );
     }
 
     #[test]
     fn evidence_type_modifier_benchmark_slight_penalty() {
-        assert!((evidence_type_to_cl_modifier(&EvidenceType::Benchmark) - 0.1).abs() < f64::EPSILON);
+        assert!(
+            (evidence_type_to_cl_modifier(&EvidenceType::Benchmark) - 0.1).abs() < f64::EPSILON
+        );
     }
 
     #[test]
@@ -416,7 +428,9 @@ mod tests {
     #[test]
     fn score_evidence_full_expired_ignores_type() {
         use chrono::NaiveDate;
-        let past = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap().and_hms_opt(0, 0, 0);
+        let past = NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0);
         let e = EvidenceItem {
             id: "e1".into(),
             evidence_type: EvidenceType::Audit,
@@ -426,7 +440,10 @@ mod tests {
         };
         // Expired = 0.1, type penalty irrelevant
         let s = score_evidence_full(&e);
-        assert!((s - 0.1).abs() < f64::EPSILON, "Expired should be 0.1, got {s}");
+        assert!(
+            (s - 0.1).abs() < f64::EPSILON,
+            "Expired should be 0.1, got {s}"
+        );
     }
 
     // === PRD-016: AssuranceReport construction ===
@@ -487,6 +504,9 @@ mod tests {
         // e2: 1.0 - 0.1 = 0.9
         // min = 0.9
         let score = r_eff(&evidence);
-        assert!((score - 0.9).abs() < f64::EPSILON, "Expected 0.9, got {score}");
+        assert!(
+            (score - 0.9).abs() < f64::EPSILON,
+            "Expected 0.9, got {score}"
+        );
     }
 }

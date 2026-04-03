@@ -23,7 +23,9 @@ pub mod types;
 pub use types::*;
 
 use crate::artifact::store::ArtifactSummary;
-use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact, VectorSearchHit};
+use crate::db::store::{
+    ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact, VectorSearchHit,
+};
 
 // ── Core traits (REQUIRED for any backend) ──────────────────────────────────
 
@@ -73,12 +75,7 @@ pub trait ArtifactStorage: Send + Sync {
 #[async_trait::async_trait]
 pub trait RelationStorage: Send + Sync {
     /// Add a typed relation between two artifacts. Rejects duplicates.
-    async fn add_relation(
-        &self,
-        source: &str,
-        target: &str,
-        relation: &str,
-    ) -> anyhow::Result<()>;
+    async fn add_relation(&self, source: &str, target: &str, relation: &str) -> anyhow::Result<()>;
 
     /// Remove a specific relation between two artifacts.
     async fn delete_relation(
@@ -169,10 +166,7 @@ pub trait FpfStorage: Send + Sync {
     }
 
     /// Get a specific FPF section by section_id.
-    async fn get_fpf_section(
-        &self,
-        _section_id: &str,
-    ) -> anyhow::Result<Option<FpfChunk>> {
+    async fn get_fpf_section(&self, _section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
         Ok(None)
     }
 
@@ -194,13 +188,16 @@ pub trait FpfStorage: Send + Sync {
 /// This supertrait exists for backward compatibility with existing code that uses
 /// `dyn StorageDriver`. New code should prefer specific trait bounds
 /// (e.g., `impl ArtifactStorage`) when only a subset of operations is needed.
-pub trait StorageDriver: ArtifactStorage + RelationStorage + SearchStorage + VectorStorage + FpfStorage {}
+pub trait StorageDriver:
+    ArtifactStorage + RelationStorage + SearchStorage + VectorStorage + FpfStorage
+{
+}
 
 /// Blanket implementation — any type that implements all 5 sub-traits IS a StorageDriver.
-impl<T> StorageDriver for T
-where
-    T: ArtifactStorage + RelationStorage + SearchStorage + VectorStorage + FpfStorage,
-{}
+impl<T> StorageDriver for T where
+    T: ArtifactStorage + RelationStorage + SearchStorage + VectorStorage + FpfStorage
+{
+}
 
 // ── Embedding driver ────────────────────────────────────────────────────────
 

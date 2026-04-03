@@ -27,7 +27,8 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             println!("  {} is BLOCKED by:", artifact_id);
             let mut blocker_pairs = Vec::new();
             for dep in &blocked_by {
-                let status = all_records.iter()
+                let status = all_records
+                    .iter()
                     .find(|r| r.id.eq_ignore_ascii_case(dep))
                     .map(|r| r.status.as_str())
                     .unwrap_or("unknown");

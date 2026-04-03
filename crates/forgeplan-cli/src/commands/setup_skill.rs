@@ -3,8 +3,8 @@ use std::fs;
 use anyhow::Result;
 
 pub async fn run() -> Result<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
     let skill_dir = home.join(".claude").join("skills").join("forge");
     fs::create_dir_all(&skill_dir)?;

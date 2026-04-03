@@ -17,7 +17,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     if !report.blind_spots.is_empty() {
         println!();
-        println!("  Decisions without evidence ({}):", report.blind_spots.len());
+        println!(
+            "  Decisions without evidence ({}):",
+            report.blind_spots.len()
+        );
         for spot in &report.blind_spots {
             println!("    {} \"{}\"", spot.id, spot.title);
             println!("      → {}", spot.issue);

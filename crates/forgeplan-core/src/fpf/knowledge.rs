@@ -111,8 +111,17 @@ fn parse_section_header(content: &str, file_path: &Path) -> (String, String) {
     for line in content.lines().take(5) {
         let trimmed = line.trim();
         if let Some(caps) = heading_re.captures(trimmed) {
-            let section_id = caps.get(1).expect("group 1 present after match").as_str().to_string();
-            let title = caps.get(2).expect("group 2 present after match").as_str().trim().to_string();
+            let section_id = caps
+                .get(1)
+                .expect("group 1 present after match")
+                .as_str()
+                .to_string();
+            let title = caps
+                .get(2)
+                .expect("group 2 present after match")
+                .as_str()
+                .trim()
+                .to_string();
             return (section_id, title);
         }
     }
@@ -171,9 +180,5 @@ fn parse_section_header(content: &str, file_path: &Path) -> (String, String) {
 pub fn default_fpf_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let path = PathBuf::from(home).join(".claude/skills/fpf-simple/sections");
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    if path.exists() { Some(path) } else { None }
 }

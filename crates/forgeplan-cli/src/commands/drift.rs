@@ -5,7 +5,8 @@ use crate::commands::common;
 pub async fn run(json: bool) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
-    let workspace_root = ws.parent()
+    let workspace_root = ws
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("Workspace path has no parent directory"))?;
     let reports = drift::check_drift(&store, workspace_root).await?;
 

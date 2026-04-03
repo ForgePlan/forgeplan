@@ -1,7 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::types::{slugify, ArtifactKind};
+use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::projection;
 
@@ -13,9 +13,13 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     let (workspace, store) = common::open_store().await?;
 
     // Validate kind
-    let artifact_kind: ArtifactKind = kind
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Unknown artifact kind '{}': {}. Use: prd, rfc, adr, note, problem, etc.", kind, e))?;
+    let artifact_kind: ArtifactKind = kind.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "Unknown artifact kind '{}': {}. Use: prd, rfc, adr, note, problem, etc.",
+            kind,
+            e
+        )
+    })?;
 
     // Don't promote to memory (circular)
     if matches!(artifact_kind, ArtifactKind::Memory) {
@@ -29,7 +33,11 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", memory_id))?;
 
     if record.kind != "memory" {
-        anyhow::bail!("'{}' is not a memory (kind: {}). Only memories can be promoted.", memory_id, record.kind);
+        anyhow::bail!(
+            "'{}' is not a memory (kind: {}). Only memories can be promoted.",
+            memory_id,
+            record.kind
+        );
     }
 
     // Extract plain text from memory body (skip frontmatter)
@@ -86,10 +94,16 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     // Remove memory markdown file
     let mem_slug = slugify(&record.title);
     let mem_filename = format!("{}-{}.md", memory_id, mem_slug);
-    let mem_filepath = workspace.join(ArtifactKind::Memory.dir_name()).join(&mem_filename);
+    let mem_filepath = workspace
+        .join(ArtifactKind::Memory.dir_name())
+        .join(&mem_filename);
     if mem_filepath.exists() {
         if let Err(e) = tokio::fs::remove_file(&mem_filepath).await {
-            eprintln!("  Warning: could not remove memory file {}: {}", mem_filepath.display(), e);
+            eprintln!(
+                "  Warning: could not remove memory file {}: {}",
+                mem_filepath.display(),
+                e
+            );
         }
     }
 
@@ -100,7 +114,10 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         artifact_kind.template_key()
     );
     println!("  Title: \"{}\"", title);
-    println!("  Status: draft — fill required sections, then: forgeplan validate {}", new_id);
+    println!(
+        "  Status: draft — fill required sections, then: forgeplan validate {}",
+        new_id
+    );
 
     Ok(())
 }

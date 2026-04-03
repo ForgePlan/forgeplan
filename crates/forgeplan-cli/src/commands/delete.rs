@@ -18,11 +18,7 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
         .collect();
 
     if !dependents.is_empty() {
-        eprintln!(
-            "  WARNING: {} has {} dependent(s):",
-            id,
-            dependents.len()
-        );
+        eprintln!("  WARNING: {} has {} dependent(s):", id, dependents.len());
         for (source, _, rel) in &dependents {
             eprintln!("    {} --{}--> {}", source, rel, id);
         }
@@ -39,7 +35,8 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
     if !yes {
         anyhow::bail!(
             "About to delete {} \"{}\". This cannot be undone. Use --yes to confirm.",
-            record.id, record.title
+            record.id,
+            record.title
         );
     }
 

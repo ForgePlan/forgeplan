@@ -82,8 +82,14 @@ mod tests {
     #[test]
     fn extract_frontmatter_field_basic() {
         let body = "---\nid: \"mem-test\"\ncategory: fact\nstatus: active\n---\n\nHello world";
-        assert_eq!(extract_frontmatter_field(body, "category"), Some("fact".to_string()));
-        assert_eq!(extract_frontmatter_field(body, "id"), Some("mem-test".to_string()));
+        assert_eq!(
+            extract_frontmatter_field(body, "category"),
+            Some("fact".to_string())
+        );
+        assert_eq!(
+            extract_frontmatter_field(body, "id"),
+            Some("mem-test".to_string())
+        );
         assert_eq!(extract_frontmatter_field(body, "missing"), None);
     }
 
@@ -131,7 +137,10 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
 pub async fn log_change(store: &LanceStore, artifact_id: &str, action: &str, source: &str) {
     let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source);
     if let Err(e) = store.log_change(&entry).await {
-        eprintln!("  Warning: changelog write failed for {}: {}", artifact_id, e);
+        eprintln!(
+            "  Warning: changelog write failed for {}: {}",
+            artifact_id, e
+        );
     }
 }
 
@@ -149,13 +158,17 @@ pub async fn log_change_field(
         .with_field(field)
         .with_values(old_value, new_value);
     if let Err(e) = store.log_change(&entry).await {
-        eprintln!("  Warning: changelog write failed for {}: {}", artifact_id, e);
+        eprintln!(
+            "  Warning: changelog write failed for {}: {}",
+            artifact_id, e
+        );
     }
 }
 
 /// Open storage using driver trait (new API — will replace open_store over time).
 #[allow(dead_code)]
-pub async fn open_driver() -> anyhow::Result<std::sync::Arc<dyn forgeplan_core::driver::StorageDriver>> {
+pub async fn open_driver()
+-> anyhow::Result<std::sync::Arc<dyn forgeplan_core::driver::StorageDriver>> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ workspace found"))?;

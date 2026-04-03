@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::types::StorageConfig;
+use crate::driver::StorageDriver;
 use crate::driver::in_memory::InMemoryStore;
 use crate::driver::lance::LanceDriver;
-use crate::driver::StorageDriver;
 
 /// Create a StorageDriver based on config.
 /// Returns Arc<dyn StorageDriver> for shared ownership.

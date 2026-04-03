@@ -29,7 +29,10 @@ pub async fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyh
         let mut read_dir = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(rest) = name.to_uppercase().strip_prefix(&format!("{}-", kind_prefix)) {
+            if let Some(rest) = name
+                .to_uppercase()
+                .strip_prefix(&format!("{}-", kind_prefix))
+            {
                 if let Some(num_str) = rest.split('-').next() {
                     if let Ok(num) = num_str.parse::<u32>() {
                         max_num = max_num.max(num);
@@ -73,8 +76,7 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
                 let title = fm_string(&fm, "title");
                 let kind = fm_string(&fm, "kind")
                     .unwrap_or_else(|| dir_name.trim_end_matches('s').to_string());
-                let status =
-                    fm_string(&fm, "status").unwrap_or_else(|| "Draft".into());
+                let status = fm_string(&fm, "status").unwrap_or_else(|| "Draft".into());
                 if let Some(id) = id {
                     results.push(ArtifactSummary {
                         id,

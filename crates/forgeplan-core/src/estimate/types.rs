@@ -62,7 +62,10 @@ impl std::str::FromStr for Grade {
             "senior" | "sen" => Ok(Grade::Senior),
             "principal" | "ps" | "principal_senior" => Ok(Grade::Principal),
             "ai" => Ok(Grade::Ai),
-            other => Err(format!("Unknown grade: '{}'. Valid: junior, middle, senior, principal, ai", other)),
+            other => Err(format!(
+                "Unknown grade: '{}'. Valid: junior, middle, senior, principal, ai",
+                other
+            )),
         }
     }
 }
@@ -270,7 +273,10 @@ impl Default for EstimateConfig {
 }
 
 fn default_grade_multipliers() -> HashMap<Grade, f64> {
-    Grade::all().iter().map(|g| (*g, g.default_multiplier())).collect()
+    Grade::all()
+        .iter()
+        .map(|g| (*g, g.default_multiplier()))
+        .collect()
 }
 
 fn default_ai_task_multipliers() -> HashMap<TaskType, f64> {
@@ -315,7 +321,9 @@ impl EstimateConfig {
                 ("design_coding", TaskType::DesignCoding),
                 ("pure_infra", TaskType::PureInfra),
                 ("coordination", TaskType::Coordination),
-            ].into_iter().collect();
+            ]
+            .into_iter()
+            .collect();
 
             for (key, value) in overrides {
                 if let Some(tt) = task_map.get(key.as_str()) {
@@ -392,7 +400,11 @@ mod tests {
         let err = "expert".parse::<Grade>();
         assert!(err.is_err());
         let msg = "expert".parse::<Grade>().unwrap_err();
-        assert!(msg.contains("Unknown grade"), "Error should mention 'Unknown grade': {}", msg);
+        assert!(
+            msg.contains("Unknown grade"),
+            "Error should mention 'Unknown grade': {}",
+            msg
+        );
 
         assert!("".parse::<Grade>().is_err());
         assert!("INVALID".parse::<Grade>().is_err());
@@ -401,7 +413,9 @@ mod tests {
     #[test]
     fn grade_profile_fallback_to_default() {
         let profile = GradeProfile::default();
-        let grade = profile.domains.get("unknown_domain")
+        let grade = profile
+            .domains
+            .get("unknown_domain")
             .copied()
             .unwrap_or(profile.default_grade);
         assert_eq!(grade, Grade::Senior); // default fallback
@@ -477,15 +491,15 @@ mod tests {
         use crate::config::types::{EstimateConfigYaml, GradeProfileYaml};
 
         let yaml = EstimateConfigYaml {
-            grade_multipliers: Some([
-                ("junior".to_string(), 3.0),
-            ].into_iter().collect()),
+            grade_multipliers: Some([("junior".to_string(), 3.0)].into_iter().collect()),
             grade_profile: Some(GradeProfileYaml {
                 domains: [
                     ("backend".to_string(), "middle".to_string()),
                     ("devops".to_string(), "senior".to_string()),
                     ("default".to_string(), "middle".to_string()),
-                ].into_iter().collect(),
+                ]
+                .into_iter()
+                .collect(),
             }),
             ..Default::default()
         };
@@ -519,7 +533,9 @@ mod tests {
                     ("backend".to_string(), "middle".to_string()),
                     ("devops".to_string(), "senior".to_string()),
                     ("default".to_string(), "junior".to_string()),
-                ].into_iter().collect(),
+                ]
+                .into_iter()
+                .collect(),
             }),
             ..Default::default()
         };

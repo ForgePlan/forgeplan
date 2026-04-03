@@ -27,9 +27,8 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
 
     let fpf_path = match path {
         Some(p) => PathBuf::from(p),
-        None => knowledge::default_fpf_path().ok_or_else(|| {
-            anyhow::anyhow!("FPF spec not found. Use --path to specify location")
-        })?,
+        None => knowledge::default_fpf_path()
+            .ok_or_else(|| anyhow::anyhow!("FPF spec not found. Use --path to specify location"))?,
     };
 
     println!("  Ingesting FPF spec from {}...", fpf_path.display());
@@ -163,12 +162,19 @@ pub async fn run_status() -> anyhow::Result<()> {
             println!("  Ingested:  empty (run `forgeplan fpf ingest`)");
         } else {
             let total_lines: i32 = sections.iter().map(|s| s.line_count).sum();
-            println!("  Ingested:  {} sections, {} total lines", sections.len(), total_lines);
+            println!(
+                "  Ingested:  {} sections, {} total lines",
+                sections.len(),
+                total_lines
+            );
 
             // Staleness check
             if source_count > 0 && source_count != sections.len() {
-                println!("  Status:    STALE — source has {} files, ingested has {} sections",
-                    source_count, sections.len());
+                println!(
+                    "  Status:    STALE — source has {} files, ingested has {} sections",
+                    source_count,
+                    sections.len()
+                );
                 println!("  Action:    Run `forgeplan fpf ingest` to re-sync");
             } else if source_count > 0 {
                 println!("  Status:    UP TO DATE");

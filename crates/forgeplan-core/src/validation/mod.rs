@@ -49,11 +49,17 @@ impl ValidationResult {
     }
 
     pub fn error_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.severity == Severity::Must).count()
+        self.findings
+            .iter()
+            .filter(|f| f.severity == Severity::Must)
+            .count()
     }
 
     pub fn warning_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.severity == Severity::Should).count()
+        self.findings
+            .iter()
+            .filter(|f| f.severity == Severity::Should)
+            .count()
     }
 
     /// Number of rules that passed (for F-G-R formality score).

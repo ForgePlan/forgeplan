@@ -169,15 +169,16 @@ impl LlmConfig {
 
     /// Resolve API key from environment variable.
     pub fn resolve_api_key(&self) -> Option<String> {
-        let env_name = self.api_key_env.as_deref().or_else(|| {
-            match self.provider.as_str() {
+        let env_name = self
+            .api_key_env
+            .as_deref()
+            .or_else(|| match self.provider.as_str() {
                 "openai" => Some("OPENAI_API_KEY"),
                 "claude" => Some("ANTHROPIC_API_KEY"),
                 "gemini" => Some("GEMINI_API_KEY"),
                 "ollama" => None,
                 _ => None,
-            }
-        })?;
+            })?;
         std::env::var(env_name).ok()
     }
 

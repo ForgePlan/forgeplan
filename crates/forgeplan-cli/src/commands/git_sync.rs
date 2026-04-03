@@ -1,5 +1,5 @@
-use forgeplan_core::git;
 use forgeplan_core::artifact::frontmatter;
+use forgeplan_core::git;
 
 use crate::commands::common;
 
@@ -11,7 +11,8 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
     // Find repo root (parent of .forgeplan/)
-    let repo_root = ws.parent()
+    let repo_root = ws
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine repo root from workspace"))?;
 
     // Determine the reference point
@@ -19,22 +20,29 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         s.to_string()
     } else {
         // Try ORIG_HEAD (set after git pull/merge/rebase)
-        git::orig_head(repo_root)
-            .ok_or_else(|| anyhow::anyhow!(
+        git::orig_head(repo_root).ok_or_else(|| {
+            anyhow::anyhow!(
                 "No ORIG_HEAD found (no recent git pull/merge).\n\
                  Specify a ref: forgeplan git-sync --since HEAD~3"
-            ))?
+            )
+        })?
     };
 
-    let commit_hash = git::head_commit_hash(repo_root)
-        .unwrap_or_else(|| "unknown".to_string());
+    let commit_hash = git::head_commit_hash(repo_root).unwrap_or_else(|| "unknown".to_string());
 
-    println!("  Git sync: {}..HEAD (commit {})", since_ref.chars().take(10).collect::<String>(), commit_hash);
+    println!(
+        "  Git sync: {}..HEAD (commit {})",
+        since_ref.chars().take(10).collect::<String>(),
+        commit_hash
+    );
 
     let changed = git::changed_artifact_files(repo_root, &since_ref)?;
 
     if changed.is_empty() {
-        println!("  No .forgeplan/ files changed since {}.", since_ref.chars().take(10).collect::<String>());
+        println!(
+            "  No .forgeplan/ files changed since {}.",
+            since_ref.chars().take(10).collect::<String>()
+        );
         return Ok(());
     }
 
@@ -51,8 +59,10 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 if let Some(id) = extract_id_from_path(&file.path) {
                     if store.get_record(&id).await?.is_some() {
                         store.delete_artifact(&id).await?;
-                        let entry = forgeplan_core::changelog::ChangeLogEntry::new(&id, "delete", "git_sync")
-                            .with_commit(&commit_hash);
+                        let entry = forgeplan_core::changelog::ChangeLogEntry::new(
+                            &id, "delete", "git_sync",
+                        )
+                        .with_commit(&commit_hash);
                         if let Err(e) = store.log_change(&entry).await {
                             eprintln!("  Warning: changelog write failed for {}: {}", id, e);
                         }
@@ -105,7 +115,9 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                             if let Some(status) = fm.get("status").and_then(|v| v.as_str()) {
                                 let status_lower = status.to_lowercase();
                                 if record.status != status_lower {
-                                    store.update_artifact(&id, Some(&status_lower), None).await?;
+                                    store
+                                        .update_artifact(&id, Some(&status_lower), None)
+                                        .await?;
                                 }
                             }
                             "update"
@@ -118,7 +130,10 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         let kind = fm.get("kind").and_then(|v| v.as_str()).unwrap_or("note");
                         let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("draft");
                         let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or(&id);
-                        let depth = fm.get("depth").and_then(|v| v.as_str()).unwrap_or("standard");
+                        let depth = fm
+                            .get("depth")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("standard");
 
                         let artifact = forgeplan_core::db::store::NewArtifact {
                             id: id.clone(),
@@ -128,8 +143,14 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                             body: body.to_string(),
                             depth: depth.to_string(),
                             author: fm.get("author").and_then(|v| v.as_str()).map(String::from),
-                            parent_epic: fm.get("parent_epic").and_then(|v| v.as_str()).map(String::from),
-                            valid_until: fm.get("valid_until").and_then(|v| v.as_str()).map(String::from),
+                            parent_epic: fm
+                                .get("parent_epic")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            valid_until: fm
+                                .get("valid_until")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
                         };
 
                         store.create_artifact(&artifact).await?;
@@ -160,7 +181,10 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 }
 
                 let status_char = if action == "create" { "NEW " } else { "SYNC" };
-                println!("  {} {} (from git, commit {})", status_char, id, commit_hash);
+                println!(
+                    "  {} {} (from git, commit {})",
+                    status_char, id, commit_hash
+                );
                 synced += 1;
             }
             _ => {
@@ -228,8 +252,14 @@ mod tests {
 
     #[test]
     fn extract_id_basic() {
-        assert_eq!(extract_id_from_path("prds/PRD-001-foo.md"), Some("PRD-001".to_string()));
-        assert_eq!(extract_id_from_path("RFC-004-bar.md"), Some("RFC-004".to_string()));
+        assert_eq!(
+            extract_id_from_path("prds/PRD-001-foo.md"),
+            Some("PRD-001".to_string())
+        );
+        assert_eq!(
+            extract_id_from_path("RFC-004-bar.md"),
+            Some("RFC-004".to_string())
+        );
     }
 
     #[test]

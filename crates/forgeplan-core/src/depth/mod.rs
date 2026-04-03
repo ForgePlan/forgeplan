@@ -100,11 +100,7 @@ pub fn suggest_depth(record: &ArtifactRecord, link_count: usize) -> CalibrationR
     }
 
     // Signal 5: Body complexity (section count)
-    let section_count = record
-        .body
-        .lines()
-        .filter(|l| l.starts_with("## "))
-        .count();
+    let section_count = record.body.lines().filter(|l| l.starts_with("## ")).count();
 
     if section_count > 8 {
         signals.push(DepthSignal {

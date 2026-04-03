@@ -50,8 +50,17 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
     store.create_artifact(&artifact).await?;
 
     let filepath = projection::render_projection(
-        &workspace, &id, template_key, &title, "draft", "tactical",
-        None, None, None, &body, &[],
+        &workspace,
+        &id,
+        template_key,
+        &title,
+        "draft",
+        "tactical",
+        None,
+        None,
+        None,
+        &body,
+        &[],
     )
     .await?;
 

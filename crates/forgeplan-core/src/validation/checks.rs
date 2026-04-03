@@ -140,7 +140,10 @@ pub fn section_item_count(body: &str, heading: &str) -> usize {
                     || (trimmed.starts_with("| ")
                         && !trimmed.starts_with("|---")
                         && !trimmed.contains("| --- |")
-                        && !trimmed.chars().skip(1).all(|c| c == '-' || c == '|' || c == ' '))
+                        && !trimmed
+                            .chars()
+                            .skip(1)
+                            .all(|c| c == '-' || c == '|' || c == ' '))
             })
             .count()
     } else {
@@ -237,11 +240,7 @@ pub fn check_filler_phrases(body: &str) -> Vec<(String, String, usize)> {
             .chain(FILLER_REDUNDANT.iter())
         {
             if line_lower.contains(phrase) {
-                findings.push((
-                    phrase.to_string(),
-                    replacement.to_string(),
-                    line_num + 1,
-                ));
+                findings.push((phrase.to_string(), replacement.to_string(), line_num + 1));
             }
         }
     }
@@ -261,38 +260,85 @@ pub fn density_score(body: &str) -> f64 {
 /// BMAD Step 7: Implementation technology keywords by category.
 /// These should NOT appear in Functional Requirements.
 const TECH_KEYWORDS_FRONTEND: &[&str] = &[
-    "react", "vue", "angular", "svelte", "next.js", "nuxt", "gatsby",
-    "webpack", "vite", "tailwind", "bootstrap", "material-ui",
+    "react",
+    "vue",
+    "angular",
+    "svelte",
+    "next.js",
+    "nuxt",
+    "gatsby",
+    "webpack",
+    "vite",
+    "tailwind",
+    "bootstrap",
+    "material-ui",
 ];
 
 const TECH_KEYWORDS_BACKEND: &[&str] = &[
-    "express", "django", "rails", "spring", "laravel", "fastapi",
-    "nestjs", "flask", "gin", "actix", "axum", "rocket",
+    "express", "django", "rails", "spring", "laravel", "fastapi", "nestjs", "flask", "gin",
+    "actix", "axum", "rocket",
 ];
 
 const TECH_KEYWORDS_DATABASE: &[&str] = &[
-    "postgresql", "mysql", "mongodb", "redis", "dynamodb", "cassandra",
-    "sqlite", "elasticsearch", "neo4j", "cockroachdb", "lancedb",
+    "postgresql",
+    "mysql",
+    "mongodb",
+    "redis",
+    "dynamodb",
+    "cassandra",
+    "sqlite",
+    "elasticsearch",
+    "neo4j",
+    "cockroachdb",
+    "lancedb",
 ];
 
 const TECH_KEYWORDS_CLOUD: &[&str] = &[
-    "aws", "gcp", "azure", "cloudflare", "vercel", "netlify",
-    "heroku", "digitalocean", "fly.io",
+    "aws",
+    "gcp",
+    "azure",
+    "cloudflare",
+    "vercel",
+    "netlify",
+    "heroku",
+    "digitalocean",
+    "fly.io",
 ];
 
 const TECH_KEYWORDS_INFRA: &[&str] = &[
-    "docker", "kubernetes", "terraform", "ansible", "helm",
-    "nginx", "apache", "caddy", "traefik",
+    "docker",
+    "kubernetes",
+    "terraform",
+    "ansible",
+    "helm",
+    "nginx",
+    "apache",
+    "caddy",
+    "traefik",
 ];
 
 const TECH_KEYWORDS_AUTH: &[&str] = &[
-    "jwt", "oauth", "oauth2", "saml", "ldap", "keycloak",
-    "auth0", "cognito", "firebase auth",
+    "jwt",
+    "oauth",
+    "oauth2",
+    "saml",
+    "ldap",
+    "keycloak",
+    "auth0",
+    "cognito",
+    "firebase auth",
 ];
 
 const TECH_KEYWORDS_PROTOCOL: &[&str] = &[
-    "rest", "graphql", "grpc", "websocket", "mqtt", "amqp",
-    "kafka", "rabbitmq", "nats",
+    "rest",
+    "graphql",
+    "grpc",
+    "websocket",
+    "mqtt",
+    "amqp",
+    "kafka",
+    "rabbitmq",
+    "nats",
 ];
 
 /// Collect all tech keywords into a single list for matching.
@@ -448,14 +494,31 @@ pub fn extract_affected_files(body: &str) -> Vec<String> {
 
 /// BMAD Step 5: Subjective adjectives that need metrics.
 const SUBJECTIVE_ADJECTIVES: &[&str] = &[
-    "easy", "fast", "simple", "intuitive", "user-friendly", "responsive",
-    "quick", "efficient", "robust", "scalable", "seamless", "smooth",
+    "easy",
+    "fast",
+    "simple",
+    "intuitive",
+    "user-friendly",
+    "responsive",
+    "quick",
+    "efficient",
+    "robust",
+    "scalable",
+    "seamless",
+    "smooth",
 ];
 
 /// BMAD Step 5: Vague quantifiers without specifics.
 const VAGUE_QUANTIFIERS: &[&str] = &[
-    "multiple", "several", "some", "many", "few", "various", "number of",
-    "a lot", "numerous",
+    "multiple",
+    "several",
+    "some",
+    "many",
+    "few",
+    "various",
+    "number of",
+    "a lot",
+    "numerous",
 ];
 
 /// Check for subjective adjectives in FR/requirements sections.
@@ -557,8 +620,7 @@ pub fn check_fr_format(body: &str) -> Vec<(String, usize)> {
 
 /// Extract FR identifiers (e.g., "FR-001", "FR-002") from the FR section.
 pub fn extract_fr_ids(body: &str) -> Vec<String> {
-    static FR_ID_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"FR-\d+").unwrap());
+    static FR_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"FR-\d+").unwrap());
 
     let fr_section = match extract_fr_section(body) {
         Some(s) => s,
@@ -626,12 +688,16 @@ pub fn find_orphan_goals(body: &str) -> Vec<String> {
         .into_iter()
         .filter(|goal| {
             let goal_words: Vec<&str> = goal
-                .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_ascii_digit() || c == '.' || c == ' ')
+                .trim_start_matches(|c: char| {
+                    c == '-' || c == '*' || c.is_ascii_digit() || c == '.' || c == ' '
+                })
                 .split_whitespace()
                 .filter(|w| w.len() > 3) // Skip short words
                 .collect();
             // Goal is orphan if none of its significant words appear in FR
-            !goal_words.iter().any(|w| fr_lower.contains(&w.to_lowercase()))
+            !goal_words
+                .iter()
+                .any(|w| fr_lower.contains(&w.to_lowercase()))
         })
         .map(|l| l.trim().to_string())
         .collect()
@@ -654,7 +720,10 @@ pub fn domain_required_sections(domain: &str) -> Vec<(&'static str, &'static str
         ],
         "govtech" | "government" => vec![
             ("Compliance", "Government regulatory compliance"),
-            ("Accessibility", "Accessibility requirements (WCAG/Section 508)"),
+            (
+                "Accessibility",
+                "Accessibility requirements (WCAG/Section 508)",
+            ),
             ("Security", "Security clearance/classification"),
         ],
         "edtech" | "education" => vec![
@@ -678,7 +747,10 @@ pub fn project_type_recommended_sections(project_type: &str) -> Vec<(&'static st
         "api-backend" | "api" | "backend" => vec![
             ("API", "API contracts/endpoints"),
             ("Authentication", "Authentication/authorization approach"),
-            ("Performance", "Performance requirements (latency, throughput)"),
+            (
+                "Performance",
+                "Performance requirements (latency, throughput)",
+            ),
         ],
         "mobile-app" | "mobile" => vec![
             ("Platforms", "Supported platforms (iOS, Android)"),
@@ -716,7 +788,8 @@ mod tests {
 
     #[test]
     fn test_section_word_count() {
-        let body = "## Problem\n\nThis is a problem with five words here and more.\n\n## Goals\n\nGoal 1";
+        let body =
+            "## Problem\n\nThis is a problem with five words here and more.\n\n## Goals\n\nGoal 1";
         assert!(section_word_count(body, "Problem") >= 5);
     }
 

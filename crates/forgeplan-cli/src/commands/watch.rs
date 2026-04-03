@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 
 use crate::commands::common;
 
@@ -112,8 +112,7 @@ async fn sync_single_file(
     path: &std::path::Path,
 ) -> anyhow::Result<Option<String>> {
     let content = tokio::fs::read_to_string(path).await?;
-    let (fm, body) =
-        forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
+    let (fm, body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
 
     let id = fm
         .get("id")
@@ -126,11 +125,7 @@ async fn sync_single_file(
             // Use projection::sync_file_to_store for proper comparison
             let synced =
                 forgeplan_core::projection::sync_file_to_store(store, workspace, &record).await?;
-            if synced {
-                Ok(Some(id))
-            } else {
-                Ok(None)
-            }
+            if synced { Ok(Some(id)) } else { Ok(None) }
         }
         None => {
             // New file not in LanceDB — create artifact
@@ -143,14 +138,8 @@ async fn sync_single_file(
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .unwrap_or(dir_name.trim_end_matches('s'));
-            let status = fm
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("draft");
-            let title = fm
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&id);
+            let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("draft");
+            let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or(&id);
             let depth = fm
                 .get("depth")
                 .and_then(|v| v.as_str())

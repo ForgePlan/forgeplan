@@ -30,20 +30,18 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     let mut escalations = 0;
 
     for record in &to_check {
-        let link_count = store.get_relations(&record.id).await.unwrap_or_default().len();
+        let link_count = store
+            .get_relations(&record.id)
+            .await
+            .unwrap_or_default()
+            .len();
         let result = depth::suggest_depth(record, link_count);
 
         if id.is_some() || result.escalation_needed {
             println!();
-            println!(
-                "{} \"{}\"",
-                result.artifact_id, result.artifact_title
-            );
+            println!("{} \"{}\"", result.artifact_id, result.artifact_title);
             println!("{}", "─".repeat(50));
-            println!(
-                "  Current:   {:?}",
-                result.current_depth
-            );
+            println!("  Current:   {:?}", result.current_depth);
             println!(
                 "  Suggested: {:?}{}",
                 result.suggested_depth,
@@ -57,10 +55,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
             if !result.signals.is_empty() {
                 println!("  Signals:");
                 for s in &result.signals {
-                    println!(
-                        "    {:?} → {} ({})",
-                        s.minimum_depth, s.name, s.value
-                    );
+                    println!("    {:?} → {} ({})", s.minimum_depth, s.name, s.value);
                 }
             }
 
@@ -73,10 +68,7 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     if id.is_none() {
         println!();
         if escalations > 0 {
-            println!(
-                "{} artifact(s) need depth escalation.",
-                escalations
-            );
+            println!("{} artifact(s) need depth escalation.", escalations);
         } else {
             println!("All artifacts are at appropriate depth levels.");
         }

@@ -18,10 +18,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     for entry in &entries {
         let drop = entry.fresh_r_eff - entry.current_r_eff;
-        println!(
-            "  {} \"{}\"",
-            entry.artifact_id, entry.artifact_title
-        );
+        println!("  {} \"{}\"", entry.artifact_id, entry.artifact_title);
         println!(
             "    R_eff: {:.2} → {:.2} (drop: {:.2})",
             entry.fresh_r_eff, entry.current_r_eff, drop

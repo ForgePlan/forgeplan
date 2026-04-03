@@ -90,7 +90,10 @@ mod tests {
     #[test]
     fn confidence_no_signals() {
         let c = compute_confidence(&[], &Mode::Tactical);
-        assert!(c > 0.7, "No signals should give decent confidence for tactical");
+        assert!(
+            c > 0.7,
+            "No signals should give decent confidence for tactical"
+        );
     }
 
     #[test]
