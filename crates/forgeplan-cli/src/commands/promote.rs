@@ -85,7 +85,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
 
     // Remove memory markdown file
     let mem_slug = slugify(&record.title);
-    let mem_filename = format!("{}-{}.md", record.id, mem_slug);
+    let mem_filename = format!("{}-{}.md", memory_id, mem_slug);
     let mem_filepath = workspace.join(ArtifactKind::Memory.dir_name()).join(&mem_filename);
     if mem_filepath.exists() {
         if let Err(e) = tokio::fs::remove_file(&mem_filepath).await {

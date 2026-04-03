@@ -4,6 +4,11 @@ class Forgeplan < Formula
   license "MIT"
   version "1.0.0"
 
+  livecheck do
+    url :stable
+    regex(/^v?(\d+(?:\.\d+)+)$/i)
+  end
+
   on_macos do
     on_arm do
       url "https://github.com/ForgePlan/forgeplan/releases/download/v#{version}/forgeplan-aarch64-apple-darwin"
