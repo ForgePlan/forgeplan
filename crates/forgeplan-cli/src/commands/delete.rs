@@ -43,6 +43,17 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
         );
     }
 
+    // Cascade: delete all relations involving this artifact.
+    // Count from already-fetched data to avoid double table scan.
+    let relation_count = all_relations
+        .iter()
+        .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
+        .count();
+    if relation_count > 0 {
+        store.delete_relations_for_artifact(id).await?;
+        eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
+    }
+
     // Delete from LanceDB
     store.delete_artifact(id).await?;
 

@@ -99,6 +99,9 @@ pub trait RelationStorage: Send + Sync {
     /// Get all relations across all artifacts.
     /// Returns `Vec<(source_id, target_id, relation_type)>`.
     async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>>;
+
+    /// Remove ALL relations where artifact is source or target (cascade on delete).
+    async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()>;
 }
 
 /// Keyword search, stale detection, and sequential ID generation.

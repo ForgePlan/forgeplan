@@ -10,13 +10,16 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     let all_relations = store.get_all_relations().await?;
 
     let all_records = store.list_records(None).await?;
+    // For display: which are active
     let active_ids: HashSet<String> = all_records
         .iter()
         .filter(|r| r.status == "active")
         .map(|r| r.id.clone())
         .collect();
+    // For blocking logic: resolved = active + deprecated + superseded
+    let resolved_ids = common::resolved_ids(&all_records);
 
-    let result = topological::kahn_sort(&all_relations, &active_ids);
+    let result = topological::kahn_sort(&all_relations, &resolved_ids);
 
     if json {
         let data = serde_json::json!({
@@ -42,11 +45,11 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Build lookup sets for display
-    let blocked_ids: HashSet<&str> = result
+    // Build lookup maps for O(1) display (avoids O(n²) scan)
+    let blocked_map: std::collections::HashMap<&str, &Vec<String>> = result
         .blocked
         .iter()
-        .map(|(id, _)| id.as_str())
+        .map(|(id, deps)| (id.as_str(), deps))
         .collect();
 
     println!("  Artifacts in dependency order:");
@@ -54,7 +57,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     for id in &result.order {
         let marker = if active_ids.contains(id) {
             "v"
-        } else if blocked_ids.contains(id.as_str()) {
+        } else if blocked_map.contains_key(id.as_str()) {
             "x"
         } else {
             "o"
@@ -62,14 +65,9 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
         let status: String = if active_ids.contains(id) {
             "active".to_string()
-        } else if blocked_ids.contains(id.as_str()) {
-            let blockers: Vec<&str> = result
-                .blocked
-                .iter()
-                .find(|(bid, _)| bid == id)
-                .map(|(_, deps)| deps.iter().map(|s| s.as_str()).collect())
-                .unwrap_or_default();
-            format!("draft, blocked by {}", blockers.join(", "))
+        } else if let Some(blockers) = blocked_map.get(id.as_str()) {
+            let names: Vec<&str> = blockers.iter().map(|s| s.as_str()).collect();
+            format!("draft, blocked by {}", names.join(", "))
         } else {
             "draft, ready".to_string()
         };

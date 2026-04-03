@@ -14,6 +14,26 @@ use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
 use crate::db::{convert, migrate, schema};
 
+/// Validate that an artifact ID is safe for use in SQL-like filters.
+/// Accepts: `PREFIX-NNN` (e.g. PRD-001), `mem-slug-words` (e.g. mem-my-decision).
+/// Rejects IDs containing SQL operators, quotes, semicolons, or other injection vectors.
+fn validate_id_for_filter(id: &str) -> anyhow::Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("Artifact ID cannot be empty");
+    }
+    // Allow: alphanumeric, hyphens, underscores. Must start with a letter.
+    if !id.chars().next().unwrap_or(' ').is_ascii_alphabetic() {
+        anyhow::bail!("Artifact ID must start with a letter: '{}'", id);
+    }
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        anyhow::bail!(
+            "Artifact ID contains invalid characters (allowed: a-z, A-Z, 0-9, -, _): '{}'",
+            id
+        );
+    }
+    Ok(())
+}
+
 /// Filter for listing artifacts.
 #[derive(Debug, Default)]
 pub struct ArtifactFilter {
@@ -408,6 +428,7 @@ impl LanceStore {
 
     /// Delete an artifact by ID.
     pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
+        validate_id_for_filter(id)?;
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts.delete(&predicate).await?;
         Ok(())
@@ -420,6 +441,8 @@ impl LanceStore {
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        validate_id_for_filter(source)?;
+        validate_id_for_filter(target)?;
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
@@ -441,6 +464,19 @@ impl LanceStore {
         let batch = convert::relation_to_batch(source, target, relation, &now)?;
 
         self.relations.add(vec![batch]).execute().await?;
+        Ok(())
+    }
+
+    /// Remove ALL relations where artifact is source or target (cascade on delete).
+    /// Uses case-insensitive matching via `lower()` for consistency with Rust-side checks.
+    pub async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+        validate_id_for_filter(id)?;
+        let lower_id = id.to_ascii_lowercase().replace('\'', "''");
+        let filter = format!(
+            "lower(source_id) = '{}' OR lower(target_id) = '{}'",
+            lower_id, lower_id
+        );
+        self.relations.delete(&filter).await?;
         Ok(())
     }
 
@@ -1958,5 +1994,57 @@ mod tests {
         assert_eq!(store.get_relations("PRD-001").await.unwrap().len(), 1);
         store.delete_relation("PRD-001", "RFC-001", "informs").await.unwrap();
         assert!(store.get_relations("PRD-001").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_relations_for_artifact_cascades() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        // PRD-001 is source for two relations
+        store.add_relation("PRD-001", "RFC-001", "informs").await.unwrap();
+        store.add_relation("PRD-001", "ADR-001", "based_on").await.unwrap();
+        // PRD-001 is target for one relation
+        store.add_relation("EVID-001", "PRD-001", "informs").await.unwrap();
+        // Unrelated relation (should survive)
+        store.add_relation("RFC-001", "ADR-001", "refines").await.unwrap();
+
+        let all = store.get_all_relations().await.unwrap();
+        assert_eq!(all.len(), 4);
+
+        // Cascade delete for PRD-001
+        store.delete_relations_for_artifact("PRD-001").await.unwrap();
+
+        let remaining = store.get_all_relations().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0], ("RFC-001".to_string(), "ADR-001".to_string(), "refines".to_string()));
+    }
+
+    #[tokio::test]
+    async fn delete_relations_for_artifact_noop_when_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        // Should not error on nonexistent artifact
+        store.delete_relations_for_artifact("NONEXISTENT").await.unwrap();
+        assert!(store.get_all_relations().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn validate_id_accepts_valid_ids() {
+        assert!(validate_id_for_filter("PRD-001").is_ok());
+        assert!(validate_id_for_filter("RFC-002").is_ok());
+        assert!(validate_id_for_filter("EVID-047").is_ok());
+        assert!(validate_id_for_filter("mem-my-decision").is_ok());
+        assert!(validate_id_for_filter("NOTE-001").is_ok());
+        assert!(validate_id_for_filter("NONEXISTENT").is_ok());
+    }
+
+    #[test]
+    fn validate_id_rejects_injection_attempts() {
+        assert!(validate_id_for_filter("").is_err());
+        assert!(validate_id_for_filter("'; DROP TABLE--").is_err());
+        assert!(validate_id_for_filter("PRD-001' OR '1'='1").is_err());
+        assert!(validate_id_for_filter("123-invalid").is_err());
+        assert!(validate_id_for_filter("has space").is_err());
+        assert!(validate_id_for_filter("has;semicolon").is_err());
     }
 }

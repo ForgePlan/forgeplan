@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use forgeplan_core::config::types::Config;
-use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::db::store::{ArtifactRecord, LanceStore};
 use forgeplan_core::workspace;
 
 /// Open workspace store — shared boilerplate for all commands.
@@ -26,6 +27,16 @@ pub fn config() -> anyhow::Result<Config> {
 pub async fn store() -> anyhow::Result<LanceStore> {
     let (_, store) = open_store().await?;
     Ok(store)
+}
+
+/// Build set of "resolved" artifact IDs: active + deprecated + superseded.
+/// Only "draft" (and "stale") artifacts are considered unresolved and can block.
+pub fn resolved_ids(records: &[ArtifactRecord]) -> HashSet<String> {
+    records
+        .iter()
+        .filter(|r| r.status == "active" || r.status == "deprecated" || r.status == "superseded")
+        .map(|r| r.id.clone())
+        .collect()
 }
 
 /// Extract a field value from YAML frontmatter in a markdown body.

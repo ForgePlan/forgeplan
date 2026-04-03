@@ -279,6 +279,13 @@ impl RelationStorage for InMemoryStore {
         Ok(state.relations.clone())
     }
 
+    async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+        let mut state = self.state.write().await;
+        state.relations.retain(|(s, t, _)| {
+            !s.eq_ignore_ascii_case(id) && !t.eq_ignore_ascii_case(id)
+        });
+        Ok(())
+    }
 }
 
 // ── SearchStorage ───────────────────────────────────────────────────────────
