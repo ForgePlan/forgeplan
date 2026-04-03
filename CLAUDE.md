@@ -74,6 +74,11 @@ forgeplan route "описание задачи"   # определи depth и pi
 ### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
 
 ```bash
+# 0. Format + Lint
+cargo fmt                               # Форматирование
+cargo fmt -- --check                    # Проверка: 0 diffs
+cargo check                             # Компиляция: 0 warnings, 0 errors
+
 # 1. Unit tests
 cargo test                              # ВСЕ должны PASS
 
@@ -113,8 +118,9 @@ GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
    - `Skill("m06-error-handling")` — Result, Option, anyhow patterns
    - `Skill("m07-concurrency")` — async/Send/Sync issues
 2. **Каждая новая `pub fn` = тест сразу** — НЕ переходи к следующей функции без теста. Hook `commit-test-check.sh` блокирует коммит без тестов.
-3. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
-4. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
+3. **После написания кода** — `cargo fmt` + `cargo test` обязательны. Не коммить если тесты fail или fmt dirty
+4. **Перед коммитом** — `cargo fmt` (форматирование) + `cargo check` (линтинг). Hook `pre-commit-fmt.sh` блокирует коммит без форматирования
+5. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
 5. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
 6. **Используй `/forge`** для structured workflow (route → create → validate → code)
 
@@ -374,18 +380,19 @@ git checkout -b feat/my-feature
 #### PR pipeline (ОБЯЗАТЕЛЬНО — PR создаётся ТОЛЬКО после всех шагов):
 
 ```
-Code → Audit → Fix → Test → Lint → PR
+Code → Audit → Fix → Test → Fmt → Lint → PR
 ```
 
 1. **Code** — реализация фичи/фикса на feature branch
 2. **Audit** — минимум 2 агента (code review + test coverage), `/audit` со skills
 3. **Fix** — исправить все HIGH/CRITICAL findings из аудита
 4. **Test** — `cargo test` ВСЕ pass (кроме known preexisting failures)
-5. **Lint** — `cargo check` = 0 warnings, 0 errors
-6. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
-7. **PR** — только после шагов 1-6
+5. **Fmt** — `cargo fmt` (форматирование) → `cargo fmt -- --check` = 0 diffs. Hook `pre-commit-fmt.sh` блокирует коммит без форматирования
+6. **Lint** — `cargo check` = 0 warnings, 0 errors. Git pre-commit hook блокирует если не компилируется
+7. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
+8. **PR** — только после шагов 1-7
 
-**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, всё работает".
+**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, отформатировал, всё работает".
 
 #### PR formatting:
 - **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
