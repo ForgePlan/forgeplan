@@ -133,13 +133,38 @@ GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
 5. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
 6. **Используй `/forge`** для structured workflow (route → create → validate → code)
 
-### ОБЯЗАТЕЛЬНО на session start:
+### ОБЯЗАТЕЛЬНО ��а session start (Unified Workflow Protocol):
 
 ```bash
-forgeplan health
+# 1. Память — восстановить контекст
+memory_recall("Forgeplan")              # Hindsight: что было в прошлых сессиях
+
+# 2. Методология — состояние проекта
+forgeplan health                        # Blind spots, orphans, stale
+
+# 3. Задачи — что в работе (если Orchestra доступна)
+# mcp__orch__query_entities(type: "task", status: "in_progress")
+
+# 4. Синтез — определить следующее действие
 ```
 
 Если health показывает **blind spots** (active без evidence) или **orphans** (без связей) — **FIX ИХ ПЕРВЫМИ**, до начала новой работы. Не копи долг.
+
+### ОБЯЗАТЕЛЬНО: Unified Workflow (Forgeplan × Orchestra × Hindsight)
+
+Три системы работают как одна:
+- **Forgeplan** = ЧТО делать и ПОЧЕМУ (артефакты, quality, evidence)
+- **Orchestra** = КТО делает и КОГДА (задачи, сроки, назначения)
+- **Hindsight** = ПАМЯТЬ (контекст между сессиями)
+
+**Правила синхронизации:**
+1. Новый артефакт (PRD/RFC/PROB) → создать task в Orchestra (если доступна)
+2. `forgeplan activate` → mark task Done в Orchestra
+3. PR merged → обновить Orchestra task + `memory_retain` в Hindsight
+4. Конец спринта → `memory_retain` с итогами в Hindsight
+5. Если Orchestra недоступна — записать в TODO.md что нужно синхронизировать
+
+**Полный гайд**: `docs/guides/UNIFIED-WORKFLOW.md`
 
 ## Как пользоваться Forgeplan CLI (MCP-first)
 
