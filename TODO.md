@@ -7,7 +7,7 @@
 - 130 dogfood artifacts (83 active, 12 draft, 33 deprecated, 2 superseded)
 - ~26K LOC Rust, 43MB release binary
 - PRs #60-#96 merged
-- E2E: 93 commands tested (83 Wave 1-7 + 10 Wave 8 LLM), 0 failures
+- E2E: 139 commands tested (Waves 1-11 complete), 0 failures
 - LLM: gemini-3-flash-preview (benchmarked 4 models, 7 artifacts)
 - ADI reasoning: enriched prompt, justified confidence, reason_temperature
 - cargo fmt: entire codebase formatted, pre-commit hook enforces

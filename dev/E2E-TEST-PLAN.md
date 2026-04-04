@@ -422,3 +422,19 @@ forgeplan tree                        # EXPECT: renders all
 
 ### Run 2: Real workspace (date: ___)
 <!-- paste results here -->
+
+---
+
+## Execution Log
+
+### Run 1: Sprint 8 (2026-04-03)
+- Waves 1-7: 83 commands, 0 failures (clean tempdir + real workspace)
+- Known bugs found: 10 (all fixed in PR #95)
+
+### Run 2: Sprint 9 (2026-04-04)
+- Wave 8 (LLM): 10/10 pass (gemini-3-flash-preview)
+- Wave 9 (FPF KB): 9/9 pass (204 sections, search, dashboard)
+- Wave 10 (Memory+Data): 11/11 pass (remember/recall/forget, export/import, scan)
+- Wave 11 (Infra+Edge): 8/8 infra + 3/3 meta + 3/3 no-workspace + 1/1 corrupt + 1/1 stress(50 artifacts in 3s)
+
+### Total: 139 commands tested, 0 failures
