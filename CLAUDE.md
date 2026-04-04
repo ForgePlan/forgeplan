@@ -48,12 +48,21 @@ forgeplan route "описание задачи"   # определи depth и pi
 
 Если route говорит Standard+ → создай артефакт ПЕРЕД кодингом. Если Tactical → просто делай.
 
-### ОБЯЗАТЕЛЬНО при создании артефакта (Shape → Validate → Code):
+### ОБЯЗАТЕЛЬНО при создании артефакта (Shape → Validate → ADI → Code):
 
 1. **`forgeplan new prd "Title"`** — создаёт stub из шаблона
 2. **СРАЗУ заполни ВСЕ MUST секции** — Problem, Goals, Non-Goals, Target Users, Related, FR
 3. **`forgeplan validate PRD-XXX`** — убедись что PASS (0 MUST errors)
-4. **Только ПОСЛЕ validate PASS** — начинай писать код
+4. **ADI reasoning** (для Standard+ depth):
+   ```bash
+   forgeplan reason PRD-XXX           # 3+ гипотезы, justified confidence
+   ```
+   - Прочитай hypotheses — есть ли лучший подход чем первая мысль?
+   - Если все гипотезы сходятся → уверенно кодь
+   - Если есть конкурирующие подходы → обсуди с пользователем перед кодом
+   - Для Deep/Critical: ADI **ОБЯЗАТЕЛЕН**, нельзя пропускать
+   - Для Tactical: пропускай ADI
+5. **Только ПОСЛЕ validate PASS + ADI** — начинай писать код
 
 **НЕ оставляй PRD-заглушки.** Stub PRD без Problem/Goals = "решение без обоснования".
 
@@ -69,7 +78,7 @@ forgeplan route "описание задачи"   # определи depth и pi
 3. **Review и activate** — `forgeplan review PRD-XXX` → `forgeplan activate PRD-XXX`
 4. **Обнови прогресс** — чекбоксы FR `[x]` в PRD/RFC
 
-**Работа не закончена, пока: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.**
+**Работа не закончена, пока: PRD заполнен + validate PASS + ADI (для Standard+) + evidence создан + R_eff > 0 + activated.**
 
 ### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
 
@@ -224,14 +233,14 @@ Validator принимает синонимы для секций:
 
 ### Dogfood insights (из реального использования):
 
-1. **Shape → Validate → Code → Evidence → Activate** — полный цикл, не пропускай шаги
+1. **Shape → Validate → ADI → Code → Evidence → Activate** — полный цикл, не пропускай шаги. ADI обязателен для Standard+ depth
 2. **Создавай артефакт → СРАЗУ заполняй MUST секции** — stub PRD = долг, который копится
 3. **Evidence делает R_eff живым** — без evidence все scores = 0.0, health кричит "blind spot"
 4. **Не активируй без кода** — active PRD без реализации = ложное обещание
 5. **Не создавай все 10 типов** — реально используются 6: PRD, RFC, ADR, Note, Problem, Epic
 6. **route перед работой** — определяет depth и pipeline, экономит время
 7. **health на session start** — показывает orphans, blind spots; **fix их первыми**
-8. **Работа не закончена пока**: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated
+8. **Работа не закончена пока**: PRD заполнен + validate PASS + ADI (Standard+) + evidence создан + R_eff > 0 + activated
 
 ## Как пользоваться методологией (quick reference)
 
@@ -239,10 +248,10 @@ Validator принимает синонимы для секций:
 
 ### Routing — один вопрос определяет depth:
 ```
-Тривиально, обратимо за день?  → Tactical: ничего или Note
-Фича 1-3 дня, есть выбор?      → Standard: Brief/PRD → RFC
-Необратимо, 1-2 недели?        → Deep: PRD → Spec → RFC → ADR
-Кросс-команда, стратегия?       → Critical: Epic → PRD[] → Spec[] → RFC[] → ADR[]
+Тривиально, обратимо за день?  → Tactical: ничего или Note (без ADI)
+Фича 1-3 дня, есть выбор?      → Standard: Brief/PRD → RFC (ADI рекомендуется)
+Необратимо, 1-2 недели?        → Deep: PRD → Spec → RFC → ADR (ADI ОБЯЗАТЕЛЕН)
+Кросс-команда, стратегия?       → Critical: Epic → PRD[] → Spec[] → RFC[] → ADR[] (ADI + review)
 ```
 
 ### 5 артефактов = 5 вопросов:
@@ -573,12 +582,12 @@ R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
 - DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
 
 ### Depth Calibration
-| Complexity | Depth | Создаём |
-|-----------|-------|---------|
-| Quick fix, 1 файл | Tactical | Note или ничего |
-| Фича 1-3 дня | Standard | PRD (tactical) → RFC |
-| Новый модуль, 1-2 нед | Deep | PRD → Spec → RFC → ADR |
-| Подсистема, кросс-команда | Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] |
+| Complexity | Depth | Создаём | ADI |
+|-----------|-------|---------|:---:|
+| Quick fix, 1 файл | Tactical | Note или ничего | — |
+| Фича 1-3 дня | Standard | PRD (tactical) → RFC | рекомендуется |
+| Новый модуль, 1-2 нед | Deep | PRD → Spec → RFC → ADR | **обязателен** |
+| Подсистема, кросс-команда | Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] | **обязателен + review** |
 
 ### Workflow паттерны
 - **Adversarial Review** (BMAD) — reviewer MUST find problems; 0 issues = re-review
