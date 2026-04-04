@@ -34,8 +34,17 @@ const ESTIMATE_CONFIG_TEMPLATE: &str = r#"
 
 /// All artifact subdirectories created inside `.forgeplan/`.
 pub const ARTIFACT_DIRS: &[&str] = &[
-    "prds", "epics", "specs", "rfcs", "adrs", "problems", "solutions", "evidence", "notes",
-    "refresh", "memory",
+    "prds",
+    "epics",
+    "specs",
+    "rfcs",
+    "adrs",
+    "problems",
+    "solutions",
+    "evidence",
+    "notes",
+    "refresh",
+    "memory",
 ];
 
 /// Initialize a `.forgeplan/` workspace in the given directory.

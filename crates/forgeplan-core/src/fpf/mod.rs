@@ -28,13 +28,20 @@ pub struct FpfDashboard {
 
 impl std::fmt::Display for FpfDashboard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "=== FPF Dashboard ({} artifacts) ===", self.artifact_count)?;
+        writeln!(
+            f,
+            "=== FPF Dashboard ({} artifacts) ===",
+            self.artifact_count
+        )?;
         writeln!(f)?;
 
         // Bounded Contexts
         writeln!(f, "## Bounded Contexts")?;
         if self.contexts.is_empty() {
-            writeln!(f, "  No clusters detected (need more links between artifacts)")?;
+            writeln!(
+                f,
+                "  No clusters detected (need more links between artifacts)"
+            )?;
         } else {
             for ctx in &self.contexts {
                 writeln!(

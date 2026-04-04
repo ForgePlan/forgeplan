@@ -14,11 +14,7 @@ use crate::config::LlmConfig;
 /// Name is validated to prevent path traversal — only alphanumeric + hyphens allowed.
 pub fn load_prompt(name: &str, default: &str) -> String {
     // Reject names with path separators or traversal characters
-    if name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-        || name.is_empty()
-    {
+    if name.contains('/') || name.contains('\\') || name.contains("..") || name.is_empty() {
         return default.to_string();
     }
     let custom_path = std::path::Path::new(".forgeplan/prompts").join(format!("{name}.md"));
@@ -124,11 +120,7 @@ impl LlmClient {
     }
 
     /// Generate text from a prompt with optional system message.
-    pub async fn generate(
-        &self,
-        prompt: &str,
-        system: Option<&str>,
-    ) -> anyhow::Result<String> {
+    pub async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String> {
         if self.config.is_anthropic() {
             self.generate_anthropic(prompt, system).await
         } else {

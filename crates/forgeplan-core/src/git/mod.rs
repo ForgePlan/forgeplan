@@ -111,7 +111,11 @@ mod tests {
         let hash = head_commit_hash(Path::new("."));
         assert!(hash.is_some(), "should find HEAD in git repo");
         let h = hash.unwrap();
-        assert!(h.len() >= 7 && h.len() <= 12, "short hash should be 7-12 chars, got {}", h.len());
+        assert!(
+            h.len() >= 7 && h.len() <= 12,
+            "short hash should be 7-12 chars, got {}",
+            h.len()
+        );
     }
 
     #[test]

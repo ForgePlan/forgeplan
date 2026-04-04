@@ -15,9 +15,18 @@ pub async fn run() -> anyhow::Result<()> {
 
     ui::header("Forgeplan Gaps", "pipeline compliance");
 
-    let must_count = gaps.iter().filter(|g| g.severity == GapSeverity::Must).count();
-    let should_count = gaps.iter().filter(|g| g.severity == GapSeverity::Should).count();
-    let could_count = gaps.iter().filter(|g| g.severity == GapSeverity::Could).count();
+    let must_count = gaps
+        .iter()
+        .filter(|g| g.severity == GapSeverity::Must)
+        .count();
+    let should_count = gaps
+        .iter()
+        .filter(|g| g.severity == GapSeverity::Should)
+        .count();
+    let could_count = gaps
+        .iter()
+        .filter(|g| g.severity == GapSeverity::Could)
+        .count();
 
     println!();
     println!(

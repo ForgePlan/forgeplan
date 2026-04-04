@@ -134,7 +134,13 @@ mod tests {
     #[test]
     fn count_checkboxes_empty() {
         let c = count_checkboxes("");
-        assert_eq!(c, CheckboxCount { total: 0, completed: 0 });
+        assert_eq!(
+            c,
+            CheckboxCount {
+                total: 0,
+                completed: 0
+            }
+        );
     }
 
     #[test]
@@ -243,7 +249,10 @@ mod tests {
             id: "RFC-001".into(),
             title: "Test".into(),
             kind: "rfc".into(),
-            count: CheckboxCount { total: 4, completed: 3 },
+            count: CheckboxCount {
+                total: 4,
+                completed: 3,
+            },
         };
         assert_eq!(p.percent(), 75);
         assert!(!p.is_complete());
@@ -256,7 +265,10 @@ mod tests {
             id: "PRD-001".into(),
             title: "Done".into(),
             kind: "prd".into(),
-            count: CheckboxCount { total: 5, completed: 5 },
+            count: CheckboxCount {
+                total: 5,
+                completed: 5,
+            },
         };
         assert_eq!(p.percent(), 100);
         assert!(p.is_complete());
@@ -269,7 +281,10 @@ mod tests {
             id: "ADR-001".into(),
             title: "No tasks".into(),
             kind: "adr".into(),
-            count: CheckboxCount { total: 0, completed: 0 },
+            count: CheckboxCount {
+                total: 0,
+                completed: 0,
+            },
         };
         assert_eq!(p.percent(), 0);
         assert!(!p.is_complete());
@@ -282,7 +297,10 @@ mod tests {
             id: "RFC-002".into(),
             title: "New".into(),
             kind: "rfc".into(),
-            count: CheckboxCount { total: 5, completed: 0 },
+            count: CheckboxCount {
+                total: 5,
+                completed: 0,
+            },
         };
         assert_eq!(p.percent(), 0);
         assert_eq!(p.status_label(), "WIP");
@@ -294,7 +312,10 @@ mod tests {
             id: "RFC-001".into(),
             title: "CLI Arch".into(),
             kind: "rfc".into(),
-            count: CheckboxCount { total: 10, completed: 7 },
+            count: CheckboxCount {
+                total: 10,
+                completed: 7,
+            },
         };
         let line = format_progress_line(&p, 8);
         assert!(line.contains("RFC-001"));

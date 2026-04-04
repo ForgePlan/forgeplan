@@ -6,8 +6,10 @@ use std::path::Path;
 use crate::artifact::store::ArtifactSummary;
 #[cfg(feature = "semantic-search")]
 use crate::db::store::VectorSearchHit;
-use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact};
-use crate::driver::{ArtifactStorage, RelationStorage, SearchStorage, VectorStorage, FpfStorage};
+use crate::db::store::{
+    ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, LanceStore, NewArtifact,
+};
+use crate::driver::{ArtifactStorage, FpfStorage, RelationStorage, SearchStorage, VectorStorage};
 
 /// LanceDB-backed storage driver.
 pub struct LanceDriver {
@@ -82,12 +84,7 @@ impl ArtifactStorage for LanceDriver {
 
 #[async_trait::async_trait]
 impl RelationStorage for LanceDriver {
-    async fn add_relation(
-        &self,
-        source: &str,
-        target: &str,
-        relation: &str,
-    ) -> anyhow::Result<()> {
+    async fn add_relation(&self, source: &str, target: &str, relation: &str) -> anyhow::Result<()> {
         self.store.add_relation(source, target, relation).await
     }
 
@@ -110,6 +107,10 @@ impl RelationStorage for LanceDriver {
 
     async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
         self.store.get_all_relations().await
+    }
+
+    async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+        self.store.delete_relations_for_artifact(id).await
     }
 }
 
@@ -202,7 +203,8 @@ mod tests {
         _s: &dyn SearchStorage,
         _v: &dyn VectorStorage,
         _f: &dyn FpfStorage,
-    ) {}
+    ) {
+    }
 
     #[tokio::test]
     async fn lance_driver_open_tempdir() {
@@ -216,7 +218,10 @@ mod tests {
         // Re-open existing workspace
         let driver2 = LanceDriver::open(ws).await.unwrap();
         // supports_vectors() is true only when semantic-search feature is enabled
-        assert_eq!(driver2.supports_vectors(), cfg!(feature = "semantic-search"));
+        assert_eq!(
+            driver2.supports_vectors(),
+            cfg!(feature = "semantic-search")
+        );
     }
 
     #[tokio::test]

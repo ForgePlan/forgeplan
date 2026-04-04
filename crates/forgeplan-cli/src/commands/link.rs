@@ -34,13 +34,31 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
         let all_relations = store.get_relations(source_id).await?;
         let links: Vec<(String, String)> = all_relations;
         forgeplan_core::projection::render_projection(
-            &ws, &record.id, &record.kind, &record.title, &record.status,
-            &record.depth, record.author.as_deref(), record.parent_epic.as_deref(),
-            record.valid_until.as_deref(), &record.body, &links,
-        ).await?;
+            &ws,
+            &record.id,
+            &record.kind,
+            &record.title,
+            &record.status,
+            &record.depth,
+            record.author.as_deref(),
+            record.parent_epic.as_deref(),
+            record.valid_until.as_deref(),
+            &record.body,
+            &links,
+        )
+        .await?;
     }
 
-    common::log_change_field(&store, source_id, "link", "relation", None, Some(&format!("{}:{}", target_id, relation)), "cli").await;
+    common::log_change_field(
+        &store,
+        source_id,
+        "link",
+        "relation",
+        None,
+        Some(&format!("{}:{}", target_id, relation)),
+        "cli",
+    )
+    .await;
 
     println!("Linked: {} --{}--> {}", source_id, relation, target_id);
     Ok(())
@@ -50,24 +68,24 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
     let relation = link::normalize_relation(relation)?;
     let (ws, store) = common::open_store().await?;
 
-    // Verify source exists
-    if store.get_artifact(source_id).await?.is_none() {
-        anyhow::bail!("Source artifact '{}' not found", source_id);
-    }
-
-    // Check relation exists before deleting (case-insensitive target match)
-    let existing = store.get_relations(source_id).await?;
-    let found = existing.iter().any(|(t, r)| {
-        t.eq_ignore_ascii_case(target_id) && r == &relation
+    // Check relation exists before deleting.
+    // Use get_all_relations for resilient lookup (works even if source artifact is deleted).
+    let all_rels = store.get_all_relations().await?;
+    let found = all_rels.iter().any(|(s, t, r)| {
+        s.eq_ignore_ascii_case(source_id) && t.eq_ignore_ascii_case(target_id) && r == &relation
     });
     if !found {
         anyhow::bail!(
             "Relation '{}' from {} to {} not found",
-            relation, source_id, target_id
+            relation,
+            source_id,
+            target_id
         );
     }
 
-    store.delete_relation(source_id, target_id, &relation).await?;
+    store
+        .delete_relation(source_id, target_id, &relation)
+        .await?;
 
     // Sync file→LanceDB if user edited the file, then update projection
     if let Some(record) = store.get_record(source_id).await? {
@@ -76,13 +94,31 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
         let all_relations = store.get_relations(source_id).await?;
         let links: Vec<(String, String)> = all_relations;
         forgeplan_core::projection::render_projection(
-            &ws, &record.id, &record.kind, &record.title, &record.status,
-            &record.depth, record.author.as_deref(), record.parent_epic.as_deref(),
-            record.valid_until.as_deref(), &record.body, &links,
-        ).await?;
+            &ws,
+            &record.id,
+            &record.kind,
+            &record.title,
+            &record.status,
+            &record.depth,
+            record.author.as_deref(),
+            record.parent_epic.as_deref(),
+            record.valid_until.as_deref(),
+            &record.body,
+            &links,
+        )
+        .await?;
     }
 
-    common::log_change_field(&store, source_id, "unlink", "relation", Some(&format!("{}:{}", target_id, relation)), None, "cli").await;
+    common::log_change_field(
+        &store,
+        source_id,
+        "unlink",
+        "relation",
+        Some(&format!("{}:{}", target_id, relation)),
+        None,
+        "cli",
+    )
+    .await;
 
     println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
     Ok(())

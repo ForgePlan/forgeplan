@@ -2,8 +2,8 @@ use std::path::Path;
 
 use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
-use crate::scan::detect::{detect_kind, DetectionResult, DetectionTier};
-use crate::scan::discovery::{discover_markdown_files, DiscoveredFile};
+use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind};
+use crate::scan::discovery::{DiscoveredFile, discover_markdown_files};
 
 /// Options for scan-import operation.
 #[derive(Debug, Clone)]
@@ -72,7 +72,9 @@ pub async fn scan_and_import(
     let scan_root = if let Some(ref custom) = options.custom_path {
         let candidate = project_root.join(custom);
         let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
-        let canonical_root = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
+        let canonical_root = project_root
+            .canonicalize()
+            .unwrap_or(project_root.to_path_buf());
         if !canonical.starts_with(&canonical_root) {
             anyhow::bail!(
                 "Scan path '{}' is outside project root. Path traversal rejected.",
@@ -103,9 +105,7 @@ pub async fn scan_and_import(
         let detection = detect_kind(filename, &file.content);
 
         let entry = match detection {
-            Some(det) => {
-                process_detected_file(file, &det, store, options.dry_run).await
-            }
+            Some(det) => process_detected_file(file, &det, store, options.dry_run).await,
             None => {
                 unknown += 1;
                 ScanImportEntry {
@@ -262,9 +262,13 @@ mod tests {
         std::fs::write(
             docs.join("PRD-001-test.md"),
             "---\nkind: prd\nid: PRD-001\ntitle: Test\n---\n# Test",
-        ).unwrap();
+        )
+        .unwrap();
 
-        let opts = ScanImportOptions { dry_run: true, custom_path: None };
+        let opts = ScanImportOptions {
+            dry_run: true,
+            custom_path: None,
+        };
         let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
 
         assert_eq!(result.imported, 1); // preview count
@@ -280,7 +284,8 @@ mod tests {
         std::fs::write(
             docs.join("RFC-001-design.md"),
             "---\nkind: rfc\nid: RFC-001\ntitle: Design\n---\n# Design",
-        ).unwrap();
+        )
+        .unwrap();
 
         let opts = ScanImportOptions::default();
         let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
@@ -312,7 +317,8 @@ mod tests {
         std::fs::write(
             docs.join("PRD-001-dup.md"),
             "---\nkind: prd\nid: PRD-001\ntitle: Duplicate\n---\n# Dup",
-        ).unwrap();
+        )
+        .unwrap();
 
         let opts = ScanImportOptions::default();
         let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
@@ -344,7 +350,8 @@ mod tests {
         std::fs::write(
             docs.join("my-feature.md"),
             "---\nkind: prd\ntitle: My Feature\n---\n# Feature",
-        ).unwrap();
+        )
+        .unwrap();
 
         let opts = ScanImportOptions::default();
         let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();

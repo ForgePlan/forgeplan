@@ -19,8 +19,8 @@ pub fn validate_transition(current: &str, target: &str) -> anyhow::Result<()> {
         ("active", "deprecated") => true,
         // Stale lifecycle (ADR-005)
         ("active", "stale") => true,
-        ("stale", "active") => true,      // renew
-        ("stale", "deprecated") => true,   // reopen (old artifact) or manual deprecate
+        ("stale", "active") => true,     // renew
+        ("stale", "deprecated") => true, // reopen (old artifact) or manual deprecate
         _ => false,
     };
 
@@ -38,7 +38,9 @@ pub fn validate_transition(current: &str, target: &str) -> anyhow::Result<()> {
         };
         anyhow::bail!(
             "Invalid transition: {} → {} (allowed: draft→active, active→superseded/deprecated/stale, stale→active/deprecated){}",
-            current, target, hint
+            current,
+            target,
+            hint
         )
     }
 }
@@ -104,7 +106,11 @@ mod tests {
         let err = validate_transition("superseded", "active");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("superseded is terminal"), "Should explain terminal: {}", msg);
+        assert!(
+            msg.contains("superseded is terminal"),
+            "Should explain terminal: {}",
+            msg
+        );
     }
 
     #[test]

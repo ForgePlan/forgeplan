@@ -9,19 +9,11 @@ pub fn get_embedded_template(kind: &str) -> Option<&'static str> {
         "spec" => Some(include_str!("../../../../templates/spec/_TEMPLATE.md")),
         "rfc" => Some(include_str!("../../../../templates/rfc/_TEMPLATE.md")),
         "adr" => Some(include_str!("../../../../templates/adr/_TEMPLATE.md")),
-        "problem" => Some(include_str!(
-            "../../../../templates/problem/_TEMPLATE.md"
-        )),
-        "solution" => Some(include_str!(
-            "../../../../templates/solution/_TEMPLATE.md"
-        )),
-        "evidence" => Some(include_str!(
-            "../../../../templates/evidence/_TEMPLATE.md"
-        )),
+        "problem" => Some(include_str!("../../../../templates/problem/_TEMPLATE.md")),
+        "solution" => Some(include_str!("../../../../templates/solution/_TEMPLATE.md")),
+        "evidence" => Some(include_str!("../../../../templates/evidence/_TEMPLATE.md")),
         "note" => Some(include_str!("../../../../templates/note/_TEMPLATE.md")),
-        "refresh" => Some(include_str!(
-            "../../../../templates/refresh/_TEMPLATE.md"
-        )),
+        "refresh" => Some(include_str!("../../../../templates/refresh/_TEMPLATE.md")),
         _ => None,
     }
 }

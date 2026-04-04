@@ -1,8 +1,8 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
 use forgeplan_core::scan::detect::DetectionTier;
+use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
 
 use crate::commands::common;
 
@@ -19,7 +19,10 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
     };
 
     if dry_run {
-        println!("  {} Dry-run mode — no changes will be made\n", style("⊘").dim());
+        println!(
+            "  {} Dry-run mode — no changes will be made\n",
+            style("⊘").dim()
+        );
     }
 
     let result = scan_and_import(project_root, &store, &options).await?;
@@ -59,10 +62,7 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
             })
             .unwrap_or("-");
 
-        let id_str = entry
-            .artifact_id
-            .as_deref()
-            .unwrap_or("-");
+        let id_str = entry.artifact_id.as_deref().unwrap_or("-");
 
         let status_note = match &entry.status {
             ImportStatus::Skipped => " (exists)".to_string(),
@@ -95,10 +95,7 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
     );
 
     if dry_run && result.imported > 0 {
-        println!(
-            "\n  Run without {} to import.",
-            style("--dry-run").cyan()
-        );
+        println!("\n  Run without {} to import.", style("--dry-run").cyan());
     }
 
     Ok(())

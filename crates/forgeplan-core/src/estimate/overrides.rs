@@ -17,12 +17,17 @@ pub fn parse_complexity_overrides(input: &str) -> Result<HashMap<String, Complex
             anyhow::bail!("Invalid complexity override '{}'. Format: FR-001=5", pair);
         }
         let id = parts[0].trim().to_string();
-        let value: u32 = parts[1]
-            .trim()
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid number '{}' in complexity override", parts[1].trim()))?;
+        let value: u32 = parts[1].trim().parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid number '{}' in complexity override",
+                parts[1].trim()
+            )
+        })?;
         let complexity = Complexity::from_value(value).ok_or_else(|| {
-            anyhow::anyhow!("Invalid Fibonacci value {}. Valid: 1, 2, 3, 5, 8, 13", value)
+            anyhow::anyhow!(
+                "Invalid Fibonacci value {}. Valid: 1, 2, 3, 5, 8, 13",
+                value
+            )
         })?;
         map.insert(id, complexity);
     }
@@ -46,8 +51,8 @@ mod tests {
     fn test_parse_valid_overrides() {
         let map = parse_complexity_overrides("FR-001=5,FR-002=3").unwrap();
         assert_eq!(map.len(), 2);
-        assert_eq!(map["FR-001"], Complexity::Complex);  // 5 = Complex
-        assert_eq!(map["FR-002"], Complexity::Medium);   // 3 = Medium
+        assert_eq!(map["FR-001"], Complexity::Complex); // 5 = Complex
+        assert_eq!(map["FR-002"], Complexity::Medium); // 3 = Medium
     }
 
     #[test]
@@ -107,10 +112,14 @@ mod tests {
 
     #[test]
     fn test_parse_all_fibonacci_values() {
-        for (val, expected) in [(1, Complexity::Trivial), (2, Complexity::Simple),
-            (3, Complexity::Medium), (5, Complexity::Complex),
-            (8, Complexity::Hard), (13, Complexity::Epic)]
-        {
+        for (val, expected) in [
+            (1, Complexity::Trivial),
+            (2, Complexity::Simple),
+            (3, Complexity::Medium),
+            (5, Complexity::Complex),
+            (8, Complexity::Hard),
+            (13, Complexity::Epic),
+        ] {
             let input = format!("X={}", val);
             let map = parse_complexity_overrides(&input).unwrap();
             assert_eq!(map["X"], expected, "Failed for value {}", val);
@@ -198,20 +207,35 @@ mod tests {
     #[test]
     fn test_error_message_contains_invalid_value() {
         let err = parse_complexity_overrides("FR-001=abc").unwrap_err();
-        assert!(err.to_string().contains("abc"), "Error should mention the invalid value");
+        assert!(
+            err.to_string().contains("abc"),
+            "Error should mention the invalid value"
+        );
     }
 
     #[test]
     fn test_error_message_contains_invalid_fibonacci() {
         let err = parse_complexity_overrides("FR-001=7").unwrap_err();
-        assert!(err.to_string().contains("7"), "Error should mention the Fibonacci value");
-        assert!(err.to_string().contains("Valid"), "Error should list valid values");
+        assert!(
+            err.to_string().contains("7"),
+            "Error should mention the Fibonacci value"
+        );
+        assert!(
+            err.to_string().contains("Valid"),
+            "Error should list valid values"
+        );
     }
 
     #[test]
     fn test_error_message_contains_bad_format() {
         let err = parse_complexity_overrides("FR-001").unwrap_err();
-        assert!(err.to_string().contains("FR-001"), "Error should mention the bad pair");
-        assert!(err.to_string().contains("Format"), "Error should show expected format");
+        assert!(
+            err.to_string().contains("FR-001"),
+            "Error should mention the bad pair"
+        );
+        assert!(
+            err.to_string().contains("Format"),
+            "Error should show expected format"
+        );
     }
 }

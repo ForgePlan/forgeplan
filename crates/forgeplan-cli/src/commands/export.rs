@@ -62,7 +62,9 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
 
     println!(
         "Exported {} artifacts, {} relations to {}",
-        artifact_count, relation_count, full_path.display()
+        artifact_count,
+        relation_count,
+        full_path.display()
     );
 
     Ok(())

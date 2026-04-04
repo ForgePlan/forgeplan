@@ -4,7 +4,10 @@ mod ui;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "forgeplan", about = "Forge your plan -- structured artifacts with quality scoring")]
+#[command(
+    name = "forgeplan",
+    about = "Forge your plan -- structured artifacts with quality scoring"
+)]
 #[command(version, propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
@@ -512,13 +515,17 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
         Commands::New { kind, title } => commands::new::run(&kind, &title).await,
-        Commands::List { r#type, status, json } => {
-            commands::list::run(r#type.as_deref(), status.as_deref(), json).await
-        }
+        Commands::List {
+            r#type,
+            status,
+            json,
+        } => commands::list::run(r#type.as_deref(), status.as_deref(), json).await,
         Commands::Status => commands::status::run().await,
-        Commands::Validate { id, json, adversarial } => {
-            commands::validate::run(id.as_deref(), json, adversarial).await
-        }
+        Commands::Validate {
+            id,
+            json,
+            adversarial,
+        } => commands::validate::run(id.as_deref(), json, adversarial).await,
         Commands::Score { id, all, json } => {
             if all {
                 commands::score::run_all(json).await
@@ -526,8 +533,23 @@ async fn main() -> anyhow::Result<()> {
                 commands::score::run(id.as_deref(), json).await
             }
         }
-        Commands::Estimate { id, grade, my_grade, llm_score, complexity, json } => {
-            commands::estimate::run(&id, grade.as_deref(), my_grade, llm_score, complexity.as_deref(), json).await
+        Commands::Estimate {
+            id,
+            grade,
+            my_grade,
+            llm_score,
+            complexity,
+            json,
+        } => {
+            commands::estimate::run(
+                &id,
+                grade.as_deref(),
+                my_grade,
+                llm_score,
+                complexity.as_deref(),
+                json,
+            )
+            .await
         }
         Commands::Link {
             source,
@@ -561,9 +583,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
-        Commands::CalibrateEstimate { id, actual_hours, grade } => {
-            commands::calibrate_estimate::run(&id, actual_hours, grade.as_deref()).await
-        }
+        Commands::CalibrateEstimate {
+            id,
+            actual_hours,
+            grade,
+        } => commands::calibrate_estimate::run(&id, actual_hours, grade.as_deref()).await,
         Commands::Promote { memory_id, kind } => commands::promote::run(&memory_id, &kind).await,
         Commands::Generate { kind, description } => {
             commands::generate::run(&kind, &description).await
@@ -605,9 +629,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
-        Commands::Journal { r#type, risk } => {
-            commands::journal::run(r#type.as_deref(), risk).await
-        }
+        Commands::Journal { r#type, risk } => commands::journal::run(r#type.as_deref(), risk).await,
         Commands::Health { compact, json } => commands::health::run(compact, json).await,
         Commands::Route {
             description,
@@ -636,28 +658,40 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Export { output } => commands::export::run(output.as_deref()).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
-        Commands::ScanImport { path, dry_run } => commands::scan_import::run(path.as_deref(), dry_run).await,
-        Commands::Tree { id, depth, json } => {
-            commands::tree::run(id.as_deref(), depth, json).await
+        Commands::ScanImport { path, dry_run } => {
+            commands::scan_import::run(path.as_deref(), dry_run).await
         }
+        Commands::Tree { id, depth, json } => commands::tree::run(id.as_deref(), depth, json).await,
         Commands::Order { json } => commands::order::run(json).await,
         Commands::Migrate => commands::migrate::run().await,
         Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,
-        Commands::Log { id, limit, source, json } => {
-            commands::log_cmd::run(id.as_deref(), source.as_deref(), limit, json).await
-        }
-        Commands::Remember { text, category, list, forget } => {
+        Commands::Log {
+            id,
+            limit,
+            source,
+            json,
+        } => commands::log_cmd::run(id.as_deref(), source.as_deref(), limit, json).await,
+        Commands::Remember {
+            text,
+            category,
+            list,
+            forget,
+        } => {
             commands::remember::run(
                 text.as_deref(),
                 category.as_deref(),
                 list,
                 forget.as_deref(),
-            ).await
+            )
+            .await
         }
-        Commands::Recall { query, category, limit, json } => {
-            commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await
-        }
+        Commands::Recall {
+            query,
+            category,
+            limit,
+            json,
+        } => commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await,
         Commands::Watch => commands::watch::run().await,
         Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
         Commands::Serve => {

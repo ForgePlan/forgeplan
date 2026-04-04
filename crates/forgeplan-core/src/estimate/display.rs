@@ -46,8 +46,16 @@ pub fn format_table(result: &EstimateResult, highlight_grade: Option<Grade>) -> 
     // Table header
     out.push_str(&format!(
         "  {:<id_w$}  {:<desc_w$}  {:>4}  {:>6}  {:>6}  {:>6}  {:>6}  {:>6}\n",
-        "ID", "Description", "Cmpl", "Jun", "Mid", "Senior", "PS", "AI",
-        id_w = id_width, desc_w = desc_width,
+        "ID",
+        "Description",
+        "Cmpl",
+        "Jun",
+        "Mid",
+        "Senior",
+        "PS",
+        "AI",
+        id_w = id_width,
+        desc_w = desc_width,
     ));
     let line_width = id_width + desc_width + 50;
     out.push_str(&format!("  {}\n", "-".repeat(line_width)));
@@ -66,7 +74,8 @@ pub fn format_table(result: &EstimateResult, highlight_grade: Option<Grade>) -> 
             format_hours(item.hours.get(&Grade::Senior).copied().unwrap_or(0.0)),
             format_hours(item.hours.get(&Grade::Principal).copied().unwrap_or(0.0)),
             format_hours(item.hours.get(&Grade::Ai).copied().unwrap_or(0.0)),
-            id_w = id_width, desc_w = desc_width,
+            id_w = id_width,
+            desc_w = desc_width,
         ));
     }
 
@@ -76,26 +85,38 @@ pub fn format_table(result: &EstimateResult, highlight_grade: Option<Grade>) -> 
     // Totals
     out.push_str(&format!(
         "  {:<id_w$}  {:<desc_w$}  {:>4}  {:>5}h  {:>5}h  {:>5}h  {:>5}h  {:>5}h\n",
-        "TOTAL", "",
-        format!("{}", result.items.iter().map(|i| i.complexity.value()).sum::<u32>()),
+        "TOTAL",
+        "",
+        format!(
+            "{}",
+            result
+                .items
+                .iter()
+                .map(|i| i.complexity.value())
+                .sum::<u32>()
+        ),
         format_hours(result.totals.get(&Grade::Junior).copied().unwrap_or(0.0)),
         format_hours(result.totals.get(&Grade::Middle).copied().unwrap_or(0.0)),
         format_hours(result.totals.get(&Grade::Senior).copied().unwrap_or(0.0)),
         format_hours(result.totals.get(&Grade::Principal).copied().unwrap_or(0.0)),
         format_hours(result.totals.get(&Grade::Ai).copied().unwrap_or(0.0)),
-        id_w = id_width, desc_w = desc_width,
+        id_w = id_width,
+        desc_w = desc_width,
     ));
 
     // Days row
     out.push_str(&format!(
         "  {:<id_w$}  {:<desc_w$}  {:>4}  {:>5}d  {:>5}d  {:>5}d  {:>5}d  {:>5}d\n",
-        "", "", "",
+        "",
+        "",
+        "",
         format_days(result.totals.get(&Grade::Junior).copied().unwrap_or(0.0)),
         format_days(result.totals.get(&Grade::Middle).copied().unwrap_or(0.0)),
         format_days(result.totals.get(&Grade::Senior).copied().unwrap_or(0.0)),
         format_days(result.totals.get(&Grade::Principal).copied().unwrap_or(0.0)),
         format_days(result.totals.get(&Grade::Ai).copied().unwrap_or(0.0)),
-        id_w = id_width, desc_w = desc_width,
+        id_w = id_width,
+        desc_w = desc_width,
     ));
 
     // Confidence footer

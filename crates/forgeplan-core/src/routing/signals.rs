@@ -16,7 +16,19 @@ struct KeywordTrigger {
 const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     // Security / Compliance → Deep+
     KeywordTrigger {
-        keywords: &["security", "auth", "authentication", "authorization", "oauth", "jwt", "encryption", "compliance", "gdpr", "hipaa", "soc2"],
+        keywords: &[
+            "security",
+            "auth",
+            "authentication",
+            "authorization",
+            "oauth",
+            "jwt",
+            "encryption",
+            "compliance",
+            "gdpr",
+            "hipaa",
+            "soc2",
+        ],
         id: "keyword:security",
         description: "Security or compliance topic detected",
         min_depth: Mode::Deep,
@@ -24,7 +36,12 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Breaking changes → Deep+
     KeywordTrigger {
-        keywords: &["breaking change", "backwards compatibility", "migration", "deprecat"],
+        keywords: &[
+            "breaking change",
+            "backwards compatibility",
+            "migration",
+            "deprecat",
+        ],
         id: "keyword:breaking",
         description: "Breaking change or migration detected",
         min_depth: Mode::Deep,
@@ -32,7 +49,13 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Cross-team / Multi-team → Standard+
     KeywordTrigger {
-        keywords: &["cross-team", "multi-team", "multiple teams", "cross-service", "inter-service"],
+        keywords: &[
+            "cross-team",
+            "multi-team",
+            "multiple teams",
+            "cross-service",
+            "inter-service",
+        ],
         id: "keyword:cross_team",
         description: "Cross-team coordination needed",
         min_depth: Mode::Standard,
@@ -40,7 +63,14 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Public API → Deep+
     KeywordTrigger {
-        keywords: &["public api", "external api", "api contract", "api versioning", "openapi", "graphql schema"],
+        keywords: &[
+            "public api",
+            "external api",
+            "api contract",
+            "api versioning",
+            "openapi",
+            "graphql schema",
+        ],
         id: "keyword:public_api",
         description: "Public/external API changes",
         min_depth: Mode::Deep,
@@ -48,7 +78,12 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Data model / Schema → Standard+
     KeywordTrigger {
-        keywords: &["data model", "schema change", "database migration", "table alter"],
+        keywords: &[
+            "data model",
+            "schema change",
+            "database migration",
+            "table alter",
+        ],
         id: "keyword:data_model",
         description: "Data model or schema changes",
         min_depth: Mode::Standard,
@@ -56,7 +91,14 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Infrastructure → Standard+
     KeywordTrigger {
-        keywords: &["infrastructure", "deployment", "ci/cd", "kubernetes", "docker", "terraform"],
+        keywords: &[
+            "infrastructure",
+            "deployment",
+            "ci/cd",
+            "kubernetes",
+            "docker",
+            "terraform",
+        ],
         id: "keyword:infra",
         description: "Infrastructure changes",
         min_depth: Mode::Standard,
@@ -72,7 +114,19 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // New subsystem → Standard+
     KeywordTrigger {
-        keywords: &["new module", "new service", "new subsystem", "new crate", "new package", "new command", "new feature", "add feature", "implement feature", "new endpoint", "new api"],
+        keywords: &[
+            "new module",
+            "new service",
+            "new subsystem",
+            "new crate",
+            "new package",
+            "new command",
+            "new feature",
+            "add feature",
+            "implement feature",
+            "new endpoint",
+            "new api",
+        ],
         id: "keyword:new_subsystem",
         description: "New subsystem or module",
         min_depth: Mode::Standard,
@@ -80,7 +134,14 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Redesign / Overhaul → Standard+
     KeywordTrigger {
-        keywords: &["redesign", "overhaul", "rewrite", "refactor all", "rework", "revamp"],
+        keywords: &[
+            "redesign",
+            "overhaul",
+            "rewrite",
+            "refactor all",
+            "rework",
+            "revamp",
+        ],
         id: "keyword:redesign",
         description: "Major redesign or overhaul detected",
         min_depth: Mode::Standard,
@@ -96,7 +157,14 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Severity / Priority patterns → Deep+
     KeywordTrigger {
-        keywords: &["p0", "critical", "urgent", "high priority", "severity", "hotfix"],
+        keywords: &[
+            "p0",
+            "critical",
+            "urgent",
+            "high priority",
+            "severity",
+            "hotfix",
+        ],
         id: "keyword:severity",
         description: "High severity or priority issue detected",
         min_depth: Mode::Deep,
@@ -104,7 +172,14 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Integrity / Consistency patterns → Standard+
     KeywordTrigger {
-        keywords: &["inconsistency", "divergence", "integrity", "mismatch", "out of sync", "data loss"],
+        keywords: &[
+            "inconsistency",
+            "divergence",
+            "integrity",
+            "mismatch",
+            "out of sync",
+            "data loss",
+        ],
         id: "keyword:integrity",
         description: "Data integrity or consistency issue detected",
         min_depth: Mode::Standard,
@@ -112,7 +187,13 @@ const KEYWORD_TRIGGERS: &[KeywordTrigger] = &[
     },
     // Multi-issue patterns → Standard+
     KeywordTrigger {
-        keywords: &["multiple issues", "several bugs", "batch fix", "remediation", "audit findings"],
+        keywords: &[
+            "multiple issues",
+            "several bugs",
+            "batch fix",
+            "remediation",
+            "audit findings",
+        ],
         id: "keyword:multi_issue",
         description: "Multiple issues or batch remediation detected",
         min_depth: Mode::Standard,
@@ -168,7 +249,11 @@ pub fn extract(text: &str) -> Vec<Signal> {
     'issue_count: for word in ["issues", "bugs", "problems", "fixes", "errors"] {
         if let Some(pos) = lower.find(word) {
             // Word boundary: char before must be whitespace or start of string
-            let at_boundary = pos == 0 || lower.as_bytes().get(pos - 1).map_or(true, |b| !b.is_ascii_alphanumeric());
+            let at_boundary = pos == 0
+                || lower
+                    .as_bytes()
+                    .get(pos - 1)
+                    .map_or(true, |b| !b.is_ascii_alphanumeric());
             if !at_boundary {
                 continue;
             }
@@ -190,7 +275,8 @@ pub fn extract(text: &str) -> Vec<Signal> {
     }
 
     // Reversibility signal: explicit mentions
-    if lower.contains("irreversible") || lower.contains("cannot undo") || lower.contains("one-way") {
+    if lower.contains("irreversible") || lower.contains("cannot undo") || lower.contains("one-way")
+    {
         signals.push(Signal {
             id: "reversibility:low".into(),
             description: "Explicitly irreversible".into(),
@@ -287,7 +373,11 @@ mod tests {
     fn security_keyword_triggers_deep() {
         let signals = extract("We need to implement OAuth2 authentication for the API");
         assert!(signals.iter().any(|s| s.id == "keyword:security"));
-        assert!(signals.iter().any(|s| matches!(s.minimum_depth, Mode::Deep)));
+        assert!(
+            signals
+                .iter()
+                .any(|s| matches!(s.minimum_depth, Mode::Deep))
+        );
     }
 
     #[test]
@@ -343,7 +433,10 @@ mod tests {
     fn p0_integrity_issues_not_tactical() {
         let signals = extract("Fix 5 P0 integrity issues");
         // Should match severity (P0), integrity, and issue_count (5 issues)
-        assert!(!signals.is_empty(), "should not be empty for P0 integrity issues");
+        assert!(
+            !signals.is_empty(),
+            "should not be empty for P0 integrity issues"
+        );
         assert!(signals.iter().any(|s| s.id == "keyword:severity"));
         assert!(signals.iter().any(|s| s.id == "keyword:integrity"));
         assert!(signals.iter().any(|s| s.id == "heuristic:issue_count"));
@@ -354,7 +447,10 @@ mod tests {
         let signals = extract("Fix a typo in the readme");
         // "fix" alone triggers keyword:bug_fix, but no severity/integrity/density
         let non_bug = signals.iter().filter(|s| s.id != "keyword:bug_fix").count();
-        assert_eq!(non_bug, 0, "typo fix should not trigger severity or integrity");
+        assert_eq!(
+            non_bug, 0,
+            "typo fix should not trigger severity or integrity"
+        );
     }
 
     #[test]
@@ -373,13 +469,20 @@ mod tests {
     #[test]
     fn issue_count_heuristic() {
         let signals = extract("We found 5 issues in the codebase");
-        assert!(signals.iter().any(|s| s.id == "heuristic:issue_count" && s.description == "5 issues"));
+        assert!(
+            signals
+                .iter()
+                .any(|s| s.id == "heuristic:issue_count" && s.description == "5 issues")
+        );
     }
 
     #[test]
     fn issue_count_below_threshold() {
         let signals = extract("We found 2 issues in the codebase");
-        assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"), "2 issues should not trigger");
+        assert!(
+            !signals.iter().any(|s| s.id == "heuristic:issue_count"),
+            "2 issues should not trigger"
+        );
     }
 
     #[test]
@@ -409,31 +512,48 @@ mod tests {
     #[test]
     fn zero_issues_below_threshold() {
         let signals = extract("We found 0 issues");
-        assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"), "0 issues should not trigger");
+        assert!(
+            !signals.iter().any(|s| s.id == "heuristic:issue_count"),
+            "0 issues should not trigger"
+        );
     }
 
     #[test]
     fn number_after_word_not_matched() {
         // "issues 5" — number AFTER the word, not before
         let signals = extract("There are issues 5 of them critical");
-        assert!(!signals.iter().any(|s| s.id == "heuristic:issue_count"),
-            "Number after word should not trigger issue_count");
+        assert!(
+            !signals.iter().any(|s| s.id == "heuristic:issue_count"),
+            "Number after word should not trigger issue_count"
+        );
     }
 
     #[test]
     fn mixed_case_p0_triggers_severity() {
         let signals = extract("This is a P0 incident");
-        assert!(signals.iter().any(|s| s.id == "keyword:severity"), "P0 should trigger severity");
+        assert!(
+            signals.iter().any(|s| s.id == "keyword:severity"),
+            "P0 should trigger severity"
+        );
         // Also lowercase
         let signals2 = extract("this is a p0 incident");
-        assert!(signals2.iter().any(|s| s.id == "keyword:severity"), "p0 should trigger severity");
+        assert!(
+            signals2.iter().any(|s| s.id == "keyword:severity"),
+            "p0 should trigger severity"
+        );
     }
 
     #[test]
     fn no_duplicate_issue_count_signals() {
         // "5 issues and 3 bugs" — should only emit ONE issue_count signal
         let signals = extract("Found 5 issues and 3 bugs in the system");
-        let count = signals.iter().filter(|s| s.id == "heuristic:issue_count").count();
-        assert_eq!(count, 1, "Should emit exactly one issue_count signal, got {count}");
+        let count = signals
+            .iter()
+            .filter(|s| s.id == "heuristic:issue_count")
+            .count();
+        assert_eq!(
+            count, 1,
+            "Should emit exactly one issue_count signal, got {count}"
+        );
     }
 }

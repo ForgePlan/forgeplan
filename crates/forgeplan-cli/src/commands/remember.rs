@@ -1,7 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::types::{slugify, ArtifactKind};
+use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::projection;
 
@@ -43,7 +43,11 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let body = format!(
         "---\nid: \"{}\"\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: cli\n---\n\n{}",
-        id, category, title.replace('"', "\\\""), now, text
+        id,
+        category,
+        title.replace('"', "\\\""),
+        now,
+        text
     );
 
     // Create in LanceDB
@@ -76,11 +80,7 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
     )
     .await?;
 
-    println!(
-        "  Remembered: {} — \"{}\"",
-        style(&id).bold(),
-        title
-    );
+    println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
     Ok(())
 }
 
@@ -157,4 +157,3 @@ async fn run_forget(id: &str) -> Result<()> {
     println!("  Forgotten: {}", style(id).bold());
     Ok(())
 }
-

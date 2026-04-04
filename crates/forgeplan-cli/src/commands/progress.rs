@@ -9,7 +9,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let records = store.list_records(None).await?;
 
     if records.is_empty() {
-        if json { println!("[]"); } else { println!("No artifacts found."); }
+        if json {
+            println!("[]");
+        } else {
+            println!("No artifacts found.");
+        }
         return Ok(());
     }
 
@@ -40,9 +44,12 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         let upper = target_id.to_uppercase();
 
         // Find both progress and record in one pass
-        let found = records.iter().enumerate().find(|(_, r)| r.id.to_uppercase() == upper);
-        let (idx, record) = found
-            .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
+        let found = records
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.id.to_uppercase() == upper);
+        let (idx, record) =
+            found.ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
         let p = &all_progress[idx];
 
         println!();
@@ -75,10 +82,8 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     }
 
     // Filter to artifacts with checkboxes
-    let with_checkboxes: Vec<&ArtifactProgress> = all_progress
-        .iter()
-        .filter(|p| p.count.total > 0)
-        .collect();
+    let with_checkboxes: Vec<&ArtifactProgress> =
+        all_progress.iter().filter(|p| p.count.total > 0).collect();
 
     if with_checkboxes.is_empty() {
         println!("No artifacts with checkboxes found.");
@@ -131,10 +136,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         overall.total,
         (overall_ratio * 100.0).round() as u32,
     );
-    println!(
-        "  {} artifact(s) with checkboxes",
-        with_checkboxes.len()
-    );
+    println!("  {} artifact(s) with checkboxes", with_checkboxes.len());
     println!();
 
     Ok(())

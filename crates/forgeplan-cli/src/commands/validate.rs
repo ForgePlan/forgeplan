@@ -1,6 +1,6 @@
 use console::style;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
-use forgeplan_core::validation::{self, adversarial, Severity, ValidationResult};
+use forgeplan_core::validation::{self, Severity, ValidationResult, adversarial};
 
 use crate::commands::common;
 use crate::ui;

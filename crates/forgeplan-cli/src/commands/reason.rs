@@ -1,7 +1,31 @@
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::llm::reason;
+use forgeplan_core::llm::reason::ArtifactContext;
 
 use crate::commands::common;
+
+/// Default architecture hint when no custom file exists.
+const DEFAULT_ARCHITECTURE_HINT: &str = "\
+Forgeplan is a Rust CLI + MCP server. \
+Storage: LanceDB (embedded, tables + vectors). \
+Architecture: forgeplan-core (shared library) + forgeplan-cli + forgeplan-mcp. \
+Driver traits: StorageDriver, EmbedDriver, MemoryDriver, LlmDriver. \
+Embedding: local BGE-M3 via fastembed (no API needed). \
+Files in .forgeplan/ are authoritative, LanceDB syncs from them.";
+
+/// Load architecture hint: .forgeplan/prompts/architecture.md if exists, else default.
+fn load_architecture_hint() -> String {
+    let custom_path = std::path::Path::new(".forgeplan/prompts/architecture.md");
+    if custom_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(custom_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    DEFAULT_ARCHITECTURE_HINT.to_string()
+}
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
     let (_ws, store) = common::open_store().await?;
@@ -11,6 +35,27 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         .get_record(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+
+    // Build artifact context from store metadata, enriching relations with titles
+    let raw_relations = store.get_relations(&record.id).await.unwrap_or_default();
+    let mut relations = Vec::with_capacity(raw_relations.len());
+    for (target_id, rel_type) in &raw_relations {
+        let title = store
+            .get_record(target_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.title)
+            .unwrap_or_default();
+        relations.push((target_id.clone(), rel_type.clone(), title));
+    }
+    let artifact_context = ArtifactContext {
+        status: record.status.clone(),
+        depth: record.depth.clone(),
+        r_eff_score: record.r_eff_score,
+        relations,
+        architecture_hint: Some(load_architecture_hint()),
+    };
 
     // Build FPF context if requested
     let fpf_context = if fpf {
@@ -44,6 +89,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         &record.kind,
         &record.body,
         fpf_context.as_deref(),
+        Some(&artifact_context),
     )
     .await?;
 
@@ -71,6 +117,18 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         }
     } else {
         println!("{}", analysis);
+    }
+
+    // Suggest evidence creation for missing evidence items
+    if !json && !adi_output.evidence_needed.is_empty() {
+        println!("\n  --- Next steps (evidence needed) ---");
+        for ev in &adi_output.evidence_needed {
+            println!("  {} [{}]: {}", ev.for_hypothesis, ev.effort, ev.test);
+        }
+        println!(
+            "\n  Tip: forgeplan new evidence \"<description>\"  # then link to {}",
+            record.id
+        );
     }
 
     if save {

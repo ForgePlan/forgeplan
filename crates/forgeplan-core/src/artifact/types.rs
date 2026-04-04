@@ -46,11 +46,14 @@ impl std::str::FromStr for ArtifactKind {
 
 /// Kinds that represent decisions requiring evidence for health blind-spot checks.
 /// Excludes: note (ephemeral), evidence (IS evidence), refresh (meta-evaluation).
-pub const DECISION_KINDS_EVIDENCE: &[&str] = &["prd", "rfc", "adr", "epic", "spec", "problem", "solution"];
+pub const DECISION_KINDS_EVIDENCE: &[&str] =
+    &["prd", "rfc", "adr", "epic", "spec", "problem", "solution"];
 
 /// Kinds shown in the decision journal timeline.
 /// Includes note (captured decisions) in addition to evidence-requiring kinds.
-pub const DECISION_KINDS_JOURNAL: &[&str] = &["adr", "note", "prd", "rfc", "epic", "spec", "problem", "solution"];
+pub const DECISION_KINDS_JOURNAL: &[&str] = &[
+    "adr", "note", "prd", "rfc", "epic", "spec", "problem", "solution",
+];
 
 impl ArtifactKind {
     /// Returns the ID prefix for this kind (e.g., "prd-", "epic-").
@@ -166,9 +169,9 @@ impl std::str::FromStr for Mode {
             "tactical" => Ok(Self::Tactical),
             "standard" => Ok(Self::Standard),
             "deep" | "critical" => Ok(Self::Deep),
-            other => Err(crate::error::ForgeplanError::InvalidKind(
-                format!("invalid depth: {other}"),
-            )),
+            other => Err(crate::error::ForgeplanError::InvalidKind(format!(
+                "invalid depth: {other}"
+            ))),
         }
     }
 }
@@ -208,18 +211,42 @@ mod tests {
         assert_eq!("rfc".parse::<ArtifactKind>().unwrap(), ArtifactKind::Rfc);
         assert_eq!("adr".parse::<ArtifactKind>().unwrap(), ArtifactKind::Adr);
         assert_eq!("note".parse::<ArtifactKind>().unwrap(), ArtifactKind::Note);
-        assert_eq!("problem".parse::<ArtifactKind>().unwrap(), ArtifactKind::ProblemCard);
-        assert_eq!("solution".parse::<ArtifactKind>().unwrap(), ArtifactKind::SolutionPortfolio);
-        assert_eq!("evidence".parse::<ArtifactKind>().unwrap(), ArtifactKind::EvidencePack);
-        assert_eq!("refresh".parse::<ArtifactKind>().unwrap(), ArtifactKind::RefreshReport);
+        assert_eq!(
+            "problem".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::ProblemCard
+        );
+        assert_eq!(
+            "solution".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::SolutionPortfolio
+        );
+        assert_eq!(
+            "evidence".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::EvidencePack
+        );
+        assert_eq!(
+            "refresh".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::RefreshReport
+        );
     }
 
     #[test]
     fn from_str_aliases() {
-        assert_eq!("problemcard".parse::<ArtifactKind>().unwrap(), ArtifactKind::ProblemCard);
-        assert_eq!("solutionportfolio".parse::<ArtifactKind>().unwrap(), ArtifactKind::SolutionPortfolio);
-        assert_eq!("evidencepack".parse::<ArtifactKind>().unwrap(), ArtifactKind::EvidencePack);
-        assert_eq!("refreshreport".parse::<ArtifactKind>().unwrap(), ArtifactKind::RefreshReport);
+        assert_eq!(
+            "problemcard".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::ProblemCard
+        );
+        assert_eq!(
+            "solutionportfolio".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::SolutionPortfolio
+        );
+        assert_eq!(
+            "evidencepack".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::EvidencePack
+        );
+        assert_eq!(
+            "refreshreport".parse::<ArtifactKind>().unwrap(),
+            ArtifactKind::RefreshReport
+        );
     }
 
     #[test]

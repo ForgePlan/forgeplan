@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 description = "MCP server for Forgeplan — expose artifact tools via Model Context Protocol"
 keywords = ["mcp", "model-context-protocol", "project-management", "artifacts"]
 categories = ["development-tools"]

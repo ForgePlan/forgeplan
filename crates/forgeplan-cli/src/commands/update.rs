@@ -34,9 +34,12 @@ pub async fn run(
 
     // Depth update
     if let Some(d) = depth {
-        let _: forgeplan_core::artifact::types::Mode = d
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid depth '{}'. Valid: tactical, standard, deep, critical", d))?;
+        let _: forgeplan_core::artifact::types::Mode = d.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid depth '{}'. Valid: tactical, standard, deep, critical",
+                d
+            )
+        })?;
         store.update_depth(id, d).await?;
     }
 
@@ -113,10 +116,28 @@ pub async fn run(
 
     // Log changes
     if let Some(s) = status {
-        common::log_change_field(&store, id, "update", "status", Some(&original.status), Some(s), "cli").await;
+        common::log_change_field(
+            &store,
+            id,
+            "update",
+            "status",
+            Some(&original.status),
+            Some(s),
+            "cli",
+        )
+        .await;
     }
     if let Some(t) = title {
-        common::log_change_field(&store, id, "update", "title", Some(&original.title), Some(t), "cli").await;
+        common::log_change_field(
+            &store,
+            id,
+            "update",
+            "title",
+            Some(&original.title),
+            Some(t),
+            "cli",
+        )
+        .await;
     }
     if body.is_some() {
         common::log_change_field(&store, id, "update", "body", None, None, "cli").await;

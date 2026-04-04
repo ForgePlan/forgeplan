@@ -1,12 +1,11 @@
+use forgeplan_core::estimate::types::*;
+use forgeplan_core::estimate::{calculator, confidence, domain, extractor, overrides, scorer};
 /// Integration smoke test for the full estimate pipeline:
 /// extractor → scorer → overrides → calculator → domain inference
 ///
 /// Verifies that all components work together correctly end-to-end,
 /// including the DRY-refactored overrides and domain modules.
-
 use std::collections::HashMap;
-use forgeplan_core::estimate::{calculator, confidence, domain, extractor, overrides, scorer};
-use forgeplan_core::estimate::types::*;
 
 /// Realistic PRD body with FR table (like PRD-022).
 const PRD_BODY: &str = r#"---
@@ -61,7 +60,10 @@ fn smoke_prd_estimate_full_pipeline() {
     let scored = scorer::score_items(&items);
     assert_eq!(scored.len(), 3);
     for s in &scored {
-        assert!(s.complexity.value() >= 1, "Complexity should be at least Trivial");
+        assert!(
+            s.complexity.value() >= 1,
+            "Complexity should be at least Trivial"
+        );
     }
 
     // Step 3: Calculate estimates
@@ -94,12 +96,24 @@ fn smoke_prd_estimate_full_pipeline() {
 #[test]
 fn smoke_rfc_estimate_with_phases() {
     let items = extractor::extract_work_items(RFC_BODY);
-    assert!(items.len() >= 5, "Should extract at least 5 phase items, got {}", items.len());
+    assert!(
+        items.len() >= 5,
+        "Should extract at least 5 phase items, got {}",
+        items.len()
+    );
 
     let scored = scorer::score_items(&items);
     let config = EstimateConfig::default();
     let (conf, reasons) = confidence::score_confidence(false, 0, true, 5, false, false);
-    let result = calculator::calculate("RFC-TEST", "Test RFC", &scored, &config, conf, reasons, vec![]);
+    let result = calculator::calculate(
+        "RFC-TEST",
+        "Test RFC",
+        &scored,
+        &config,
+        conf,
+        reasons,
+        vec![],
+    );
 
     assert_eq!(result.artifact_id, "RFC-TEST");
     assert!(result.items.len() >= 5);
@@ -121,7 +135,10 @@ fn smoke_overrides_in_pipeline() {
     overrides::apply_overrides(&mut scored, &map);
 
     assert_eq!(scored[0].complexity, Complexity::Epic);
-    assert_ne!(scored[0].complexity, original, "Override should change complexity");
+    assert_ne!(
+        scored[0].complexity, original,
+        "Override should change complexity"
+    );
 
     // Calculate — FR-001 should now have Epic-level hours
     let config = EstimateConfig::default();
@@ -140,7 +157,10 @@ fn smoke_override_does_not_affect_other_items() {
     let map = overrides::parse_complexity_overrides("FR-001=13").unwrap();
     overrides::apply_overrides(&mut scored, &map);
 
-    assert_eq!(scored[1].complexity, fr002_before, "FR-002 should be unchanged");
+    assert_eq!(
+        scored[1].complexity, fr002_before,
+        "FR-002 should be unchanged"
+    );
 }
 
 // ── Domain inference integration ───────────────────────────
@@ -176,7 +196,10 @@ fn smoke_confidence_increases_with_spec_and_evidence() {
     let (with_both, _) = confidence::score_confidence(true, 3, false, 0, true, true);
 
     assert!(with_spec > base_conf, "Linked Spec should boost confidence");
-    assert!(with_both > with_spec, "Linked Evidence should boost further");
+    assert!(
+        with_both > with_spec,
+        "Linked Evidence should boost further"
+    );
     assert!(with_both <= 1.0, "Confidence should never exceed 1.0");
 }
 
@@ -234,8 +257,8 @@ fn negative_invalid_complexity_overrides() {
     assert!(overrides::parse_complexity_overrides("not-valid").is_err());
     assert!(overrides::parse_complexity_overrides("FR-001=abc").is_err());
     assert!(overrides::parse_complexity_overrides("FR-001=0").is_err());
-    assert!(overrides::parse_complexity_overrides("FR-001=4").is_err());  // not Fibonacci
-    assert!(overrides::parse_complexity_overrides("FR-001=7").is_err());  // not Fibonacci
+    assert!(overrides::parse_complexity_overrides("FR-001=4").is_err()); // not Fibonacci
+    assert!(overrides::parse_complexity_overrides("FR-001=7").is_err()); // not Fibonacci
     assert!(overrides::parse_complexity_overrides("FR-001=100").is_err());
 }
 

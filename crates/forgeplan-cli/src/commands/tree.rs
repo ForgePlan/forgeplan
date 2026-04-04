@@ -65,9 +65,15 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
 
         // Summary
         let total = all_records.len();
-        let active = all_records.values().filter(|r| r.status == "active").count();
+        let active = all_records
+            .values()
+            .filter(|r| r.status == "active")
+            .count();
         let draft = all_records.values().filter(|r| r.status == "draft").count();
-        let deprecated = all_records.values().filter(|r| r.status == "deprecated").count();
+        let deprecated = all_records
+            .values()
+            .filter(|r| r.status == "deprecated")
+            .count();
         println!("{}", style("─".repeat(80)).dim());
         println!(
             "  {} artifacts | {} active | {} draft | {} deprecated",
@@ -94,7 +100,10 @@ struct DisplayRecord {
 /// Build parent->children mapping from all relations and parent_epic fields.
 async fn build_hierarchy(
     store: &LanceStore,
-) -> anyhow::Result<(BTreeMap<String, Vec<String>>, BTreeMap<String, DisplayRecord>)> {
+) -> anyhow::Result<(
+    BTreeMap<String, Vec<String>>,
+    BTreeMap<String, DisplayRecord>,
+)> {
     let records = store.list_records(None).await?;
     let relations = store.get_all_relations().await?;
 
@@ -180,9 +189,15 @@ fn print_node_recursive(
     let prefix_width = line_prefix.chars().count();
     let id_width = id.len() + 3; // ID + ' "' + '"'
     let term_width = console::Term::stdout().size().1 as usize;
-    let available = term_width.saturating_sub(data_width + prefix_width + id_width + 2).max(10);
-    let title = records.get(id).map(|d| truncate(&d.title, available)).unwrap_or_else(|| "?".into());
-    println!("{}  {}{} \"{}\"",
+    let available = term_width
+        .saturating_sub(data_width + prefix_width + id_width + 2)
+        .max(10);
+    let title = records
+        .get(id)
+        .map(|d| truncate(&d.title, available))
+        .unwrap_or_else(|| "?".into());
+    println!(
+        "{}  {}{} \"{}\"",
         data_left,
         line_prefix,
         style(id).bold(),
@@ -198,7 +213,11 @@ fn print_node_recursive(
 
     for (i, child) in kids.iter().enumerate() {
         let is_last = i == kids.len() - 1;
-        let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " };
+        let connector = if is_last {
+            "\u{2514}\u{2500} "
+        } else {
+            "\u{251c}\u{2500} "
+        };
         let continuation = if is_last { "   " } else { "\u{2502}  " };
 
         print_node_recursive(
@@ -224,7 +243,10 @@ fn format_data_cols(id: &str, records: &BTreeMap<String, DisplayRecord>) -> Stri
     // Evidence, note, refresh don't have R_eff — show dash instead of bar
     let is_non_scorable = matches!(kind, "evidence" | "note" | "refresh");
     let (bar, reff_str) = if is_non_scorable {
-        (style("··········".to_string()).dim().to_string(), style(" ·· ").dim().to_string())
+        (
+            style("··········".to_string()).dim().to_string(),
+            style(" ·· ").dim().to_string(),
+        )
     } else {
         (reff_bar(r_eff), ui::styled_reff(r_eff))
     };
@@ -235,7 +257,12 @@ fn format_data_cols(id: &str, records: &BTreeMap<String, DisplayRecord>) -> Stri
 
     format!(
         "{}  {}  {}{}  {}{}",
-        bar, reff_str, status_styled, status_pad, style(kind).dim(), kind_pad,
+        bar,
+        reff_str,
+        status_styled,
+        status_pad,
+        style(kind).dim(),
+        kind_pad,
     )
 }
 
@@ -244,11 +271,7 @@ fn reff_bar(score: f64) -> String {
     let filled = (score * 10.0).round() as usize;
     let filled = filled.min(10);
     let empty = 10 - filled;
-    let bar = format!(
-        "{}{}",
-        "\u{2588}".repeat(filled),
-        "\u{2591}".repeat(empty)
-    );
+    let bar = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty));
     if score >= 0.5 {
         style(bar).green().to_string()
     } else if score >= 0.1 {
@@ -416,10 +439,7 @@ mod tests {
                 },
             ),
         ]);
-        let children_map = BTreeMap::from([(
-            "EPIC-001".to_string(),
-            vec!["PRD-001".to_string()],
-        )]);
+        let children_map = BTreeMap::from([("EPIC-001".to_string(), vec!["PRD-001".to_string()])]);
 
         let node = build_json_node("EPIC-001", &children_map, &records, 0, 99);
         let children = node["children"].as_array().unwrap();
@@ -430,8 +450,24 @@ mod tests {
     #[test]
     fn build_json_node_respects_depth() {
         let records = BTreeMap::from([
-            ("A-001".to_string(), DisplayRecord { kind: "prd".into(), title: "A".into(), status: "active".into(), r_eff: 0.0 }),
-            ("B-001".to_string(), DisplayRecord { kind: "rfc".into(), title: "B".into(), status: "active".into(), r_eff: 0.0 }),
+            (
+                "A-001".to_string(),
+                DisplayRecord {
+                    kind: "prd".into(),
+                    title: "A".into(),
+                    status: "active".into(),
+                    r_eff: 0.0,
+                },
+            ),
+            (
+                "B-001".to_string(),
+                DisplayRecord {
+                    kind: "rfc".into(),
+                    title: "B".into(),
+                    status: "active".into(),
+                    r_eff: 0.0,
+                },
+            ),
         ]);
         let children_map = BTreeMap::from([("A-001".to_string(), vec!["B-001".to_string()])]);
 

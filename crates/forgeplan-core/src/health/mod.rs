@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
+use crate::artifact::frontmatter::Frontmatter;
 use crate::artifact::types::DECISION_KINDS_EVIDENCE;
+use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
-use crate::artifact::frontmatter::Frontmatter;
-use crate::artifact::types::{ArtifactKind, Mode};
-use crate::status::derived::{derive_status, DerivedStatus};
+use crate::status::derived::{DerivedStatus, derive_status};
 use crate::validation;
 
 /// R_eff threshold below which an artifact is considered AT RISK.
@@ -75,10 +75,11 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         }
     };
 
-    // Non-evidence artifacts only
+    // Non-evidence, non-memory artifacts only.
+    // Evidence is tracked separately. Memory artifacts are standalone by design.
     let non_evidence: Vec<&ArtifactRecord> = all
         .iter()
-        .filter(|r| r.kind != "evidence")
+        .filter(|r| r.kind != "evidence" && r.kind != "memory")
         .collect();
 
     let orphans = find_orphans(&non_evidence, &outgoing, &incoming);
@@ -86,13 +87,11 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     let at_risk = find_at_risk(&non_evidence, &evidence_records, &outgoing);
 
     // Compute derived status for each non-evidence artifact
-    let by_derived_status = compute_derived_status_breakdown(
-        &non_evidence, &evidence_records, &outgoing,
-    );
+    let by_derived_status =
+        compute_derived_status_breakdown(&non_evidence, &evidence_records, &outgoing);
 
-    let next_actions = generate_next_actions(
-        total, &by_status, &blind_spots, stale_count, &orphans,
-    );
+    let next_actions =
+        generate_next_actions(total, &by_status, &blind_spots, stale_count, &orphans);
 
     Ok(HealthReport {
         total,
@@ -107,9 +106,7 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     })
 }
 
-fn build_relation_index(
-    relations: &[(String, String, String)],
-) -> (RelationIndex, RelationIndex) {
+fn build_relation_index(relations: &[(String, String, String)]) -> (RelationIndex, RelationIndex) {
     let mut outgoing: RelationIndex = BTreeMap::new();
     let mut incoming: RelationIndex = BTreeMap::new();
     for (from, to, rel) in relations {
@@ -155,7 +152,10 @@ fn find_blind_spots(
             "draft" | "deprecated" | "superseded"
         );
 
-        if is_decision_type && needs_evidence && !artifact_has_evidence(&record.id, evidence_records, outgoing) {
+        if is_decision_type
+            && needs_evidence
+            && !artifact_has_evidence(&record.id, evidence_records, outgoing)
+        {
             spots.push(BlindSpot {
                 id: record.id.clone(),
                 title: record.title.clone(),
@@ -188,7 +188,10 @@ fn find_at_risk(
                 at_risk.push(AtRiskArtifact {
                     id: record.id.clone(),
                     title: record.title.clone(),
-                    reason: format!("R_eff = {:.2} (below {:.1} threshold)", score, REFF_AT_RISK_THRESHOLD),
+                    reason: format!(
+                        "R_eff = {:.2} (below {:.1} threshold)",
+                        score, REFF_AT_RISK_THRESHOLD
+                    ),
                 });
             }
         }
@@ -257,7 +260,11 @@ fn compute_derived_status_breakdown(
             }
         }
         let has_evidence = !ev_items.is_empty();
-        let r_eff_score = if has_evidence { reff::r_eff(&ev_items) } else { 0.0 };
+        let r_eff_score = if has_evidence {
+            reff::r_eff(&ev_items)
+        } else {
+            0.0
+        };
 
         // Run validation to check if MUST rules pass
         let validation_passed = check_validation_passed(record);
@@ -302,10 +309,19 @@ fn check_validation_passed(record: &ArtifactRecord) -> bool {
     // Build a minimal YAML frontmatter from the record fields
     let mut fm = Frontmatter::new();
     fm.insert("id".into(), serde_yml::Value::String(record.id.clone()));
-    fm.insert("status".into(), serde_yml::Value::String(record.status.clone()));
-    fm.insert("title".into(), serde_yml::Value::String(record.title.clone()));
+    fm.insert(
+        "status".into(),
+        serde_yml::Value::String(record.status.clone()),
+    );
+    fm.insert(
+        "title".into(),
+        serde_yml::Value::String(record.title.clone()),
+    );
     fm.insert("kind".into(), serde_yml::Value::String(record.kind.clone()));
-    fm.insert("depth".into(), serde_yml::Value::String(record.depth.clone()));
+    fm.insert(
+        "depth".into(),
+        serde_yml::Value::String(record.depth.clone()),
+    );
     if let Some(ref author) = record.author {
         fm.insert("author".into(), serde_yml::Value::String(author.clone()));
     }
@@ -320,27 +336,31 @@ fn artifact_has_evidence(
     evidence_records: &[ArtifactRecord],
     outgoing: &RelationIndex,
 ) -> bool {
-    evidence_records.iter().any(|ev| {
-        is_evidence_linked(artifact_id, &ev.id, outgoing)
-    })
+    evidence_records
+        .iter()
+        .any(|ev| is_evidence_linked(artifact_id, &ev.id, outgoing))
 }
 
 /// Check if evidence is linked to an artifact (in either direction).
-fn is_evidence_linked(
-    artifact_id: &str,
-    evidence_id: &str,
-    outgoing: &RelationIndex,
-) -> bool {
+fn is_evidence_linked(artifact_id: &str, evidence_id: &str, outgoing: &RelationIndex) -> bool {
     // Evidence links TO artifact
     let ev_to_art = outgoing
         .get(evidence_id)
-        .map(|links| links.iter().any(|(t, _)| t.eq_ignore_ascii_case(artifact_id)))
+        .map(|links| {
+            links
+                .iter()
+                .any(|(t, _)| t.eq_ignore_ascii_case(artifact_id))
+        })
         .unwrap_or(false);
 
     // Artifact links TO evidence
     let art_to_ev = outgoing
         .get(artifact_id)
-        .map(|links| links.iter().any(|(t, _)| t.eq_ignore_ascii_case(evidence_id)))
+        .map(|links| {
+            links
+                .iter()
+                .any(|(t, _)| t.eq_ignore_ascii_case(evidence_id))
+        })
         .unwrap_or(false);
 
     ev_to_art || art_to_ev
@@ -370,15 +390,18 @@ mod tests {
 
     #[test]
     fn orphan_detection() {
-        let records = vec![
-            make_record("PRD-001", "prd"),
-            make_record("RFC-001", "rfc"),
-        ];
+        let records = vec![make_record("PRD-001", "prd"), make_record("RFC-001", "rfc")];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let mut outgoing: RelationIndex = BTreeMap::new();
-        outgoing.insert("RFC-001".into(), vec![("PRD-001".into(), "based_on".into())]);
+        outgoing.insert(
+            "RFC-001".into(),
+            vec![("PRD-001".into(), "based_on".into())],
+        );
         let mut incoming: RelationIndex = BTreeMap::new();
-        incoming.insert("PRD-001".into(), vec![("RFC-001".into(), "based_on".into())]);
+        incoming.insert(
+            "PRD-001".into(),
+            vec![("RFC-001".into(), "based_on".into())],
+        );
 
         let orphans = find_orphans(&refs, &outgoing, &incoming);
         // PRD-001 has incoming, RFC-001 has outgoing — neither orphan
@@ -427,7 +450,10 @@ mod tests {
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence = vec![make_record("EVID-001", "evidence")];
         let mut outgoing: RelationIndex = BTreeMap::new();
-        outgoing.insert("EVID-001".into(), vec![("PRD-001".into(), "informs".into())]);
+        outgoing.insert(
+            "EVID-001".into(),
+            vec![("PRD-001".into(), "informs".into())],
+        );
 
         let spots = find_blind_spots(&refs, &evidence, &outgoing);
         assert!(spots.is_empty());
@@ -508,7 +534,10 @@ mod tests {
         let outgoing: RelationIndex = BTreeMap::new();
 
         let spots = find_blind_spots(&refs, &evidence, &outgoing);
-        assert!(spots.is_empty(), "evidence kind should never be a blind spot");
+        assert!(
+            spots.is_empty(),
+            "evidence kind should never be a blind spot"
+        );
     }
 
     #[test]
@@ -521,7 +550,10 @@ mod tests {
         let outgoing: RelationIndex = BTreeMap::new();
 
         let spots = find_blind_spots(&refs, &evidence, &outgoing);
-        assert!(spots.is_empty(), "refresh kind should never be a blind spot");
+        assert!(
+            spots.is_empty(),
+            "refresh kind should never be a blind spot"
+        );
     }
 
     #[test]
@@ -529,7 +561,9 @@ mod tests {
         let mut by_status = BTreeMap::new();
         by_status.insert("draft".into(), 5);
         let blind_spots = vec![BlindSpot {
-            id: "X".into(), title: "X".into(), issue: "X".into(),
+            id: "X".into(),
+            title: "X".into(),
+            issue: "X".into(),
         }];
         let orphans = vec!["O1".into(), "O2".into()];
 

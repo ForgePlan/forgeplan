@@ -9,11 +9,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     let relations = store.get_all_relations().await?;
     let edges: Vec<graph::Edge> = relations
         .into_iter()
-        .map(|(from, to, relation)| graph::Edge {
-            from,
-            to,
-            relation,
-        })
+        .map(|(from, to, relation)| graph::Edge { from, to, relation })
         .collect();
 
     // Also add parent_epic edges from artifacts
@@ -34,7 +30,10 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     all_edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
 
     if json {
-        let data: Vec<_> = all_edges.iter().map(|e| serde_json::json!({"from": e.from, "to": e.to, "relation": e.relation})).collect();
+        let data: Vec<_> = all_edges
+            .iter()
+            .map(|e| serde_json::json!({"from": e.from, "to": e.to, "relation": e.relation}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&data)?);
         return Ok(());
     }

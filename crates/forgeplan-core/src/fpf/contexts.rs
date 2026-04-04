@@ -198,7 +198,12 @@ mod tests {
 
     #[test]
     fn connected_artifacts_form_cluster() {
-        let records = vec![record("PRD-001"), record("RFC-001"), record("ADR-001"), record("NOTE-001")];
+        let records = vec![
+            record("PRD-001"),
+            record("RFC-001"),
+            record("ADR-001"),
+            record("NOTE-001"),
+        ];
         let edges = vec![
             ("PRD-001".into(), "RFC-001".into()),
             ("RFC-001".into(), "ADR-001".into()),

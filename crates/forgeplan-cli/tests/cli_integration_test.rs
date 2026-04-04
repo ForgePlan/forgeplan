@@ -66,10 +66,7 @@ fn new_creates_artifact() {
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(entries.len(), 1);
-    assert!(entries[0]
-        .file_name()
-        .to_string_lossy()
-        .contains("PRD-001"));
+    assert!(entries[0].file_name().to_string_lossy().contains("PRD-001"));
 }
 
 #[test]
@@ -309,9 +306,21 @@ fn score_without_evidence() {
 fn duplicate_link_rejected() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "P"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "R"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "P"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "R"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // First link succeeds
     forgeplan()
@@ -333,7 +342,11 @@ fn duplicate_link_rejected() {
 fn validate_exits_nonzero_on_must_errors() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create a PRD via CLI (goes into LanceDB)
     forgeplan()
@@ -356,7 +369,11 @@ fn validate_exits_nonzero_on_must_errors() {
 fn stale_detects_expired_artifact() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create an evidence artifact via CLI (goes into LanceDB + projection)
     forgeplan()
@@ -397,7 +414,11 @@ fn no_workspace_gives_error() {
 fn get_reads_artifact() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "Get Test Feature"])
         .current_dir(tmp.path())
@@ -419,7 +440,11 @@ fn get_reads_artifact() {
 fn get_nonexistent_fails() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     forgeplan()
         .args(["get", "PRD-999"])
@@ -433,7 +458,11 @@ fn get_nonexistent_fails() {
 fn update_changes_status() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "Update Test"])
         .current_dir(tmp.path())
@@ -461,7 +490,11 @@ fn update_changes_status() {
 fn update_changes_title() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "rfc", "Old Title"])
         .current_dir(tmp.path())
@@ -480,7 +513,11 @@ fn update_changes_title() {
 fn update_nothing_fails() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "Test"])
         .current_dir(tmp.path())
@@ -499,7 +536,11 @@ fn update_nothing_fails() {
 fn delete_requires_confirmation() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "Delete Test"])
         .current_dir(tmp.path())
@@ -526,7 +567,11 @@ fn delete_requires_confirmation() {
 fn delete_with_yes_removes_artifact() {
     let tmp = TempDir::new().unwrap();
 
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "To Be Deleted"])
         .current_dir(tmp.path())
@@ -557,7 +602,11 @@ fn full_workflow_dogfood() {
     let tmp = TempDir::new().unwrap();
 
     // 1. Init
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // 2. Create PRD
     forgeplan()
@@ -676,11 +725,23 @@ fn full_workflow_dogfood() {
 #[test]
 fn e2e_blocked_shows_dependencies() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create PRD and RFC
-    forgeplan().args(["new", "prd", "Design Doc"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "Implementation Plan"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Design Doc"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "Implementation Plan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Link RFC depends on PRD
     forgeplan()
@@ -702,15 +763,39 @@ fn e2e_blocked_shows_dependencies() {
 #[test]
 fn e2e_order_shows_topological_sequence() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create chain: Epic → PRD → RFC
-    forgeplan().args(["new", "epic", "Platform"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Feature A"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "How to build A"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "epic", "Platform"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Feature A"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "How to build A"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
-    forgeplan().args(["link", "PRD-001", "EPIC-001", "--relation", "refines"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["link", "PRD-001", "EPIC-001", "--relation", "refines"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Order should list all 3
     forgeplan()
@@ -726,11 +811,27 @@ fn e2e_order_shows_topological_sequence() {
 #[test]
 fn e2e_activate_unblocks_dependent() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
-    forgeplan().args(["new", "prd", "Base Feature"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "How to build"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Base Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "How to build"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Before activate: RFC blocked
     let output = forgeplan()
@@ -739,10 +840,17 @@ fn e2e_activate_unblocks_dependent() {
         .output()
         .unwrap();
     let before = String::from_utf8_lossy(&output.stdout);
-    assert!(before.contains("Blocked") || before.contains("blocked"), "RFC should be blocked before activate");
+    assert!(
+        before.contains("Blocked") || before.contains("blocked"),
+        "RFC should be blocked before activate"
+    );
 
     // Activate PRD (--force because test PRD has short body and no evidence)
-    forgeplan().args(["activate", "PRD-001", "--force"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // After activate: RFC should be ready
     let output2 = forgeplan()
@@ -754,18 +862,35 @@ fn e2e_activate_unblocks_dependent() {
     // RFC-001 should no longer appear as blocked (PRD-001 is now active)
     assert!(
         !after.contains("RFC-001 <- blocked") || after.contains("Ready"),
-        "RFC should be unblocked after PRD activation, got: {}", after
+        "RFC should be unblocked after PRD activation, got: {}",
+        after
     );
 }
 
 #[test]
 fn e2e_graph_shows_mermaid_with_links() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
-    forgeplan().args(["new", "prd", "Feature"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "Plan"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "Plan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     forgeplan()
         .args(["graph"])
@@ -781,7 +906,11 @@ fn e2e_graph_shows_mermaid_with_links() {
 #[test]
 fn e2e_drift_runs_on_empty_workspace() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Drift should run even with no ADR/RFC
     forgeplan()
@@ -789,13 +918,20 @@ fn e2e_drift_runs_on_empty_workspace() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No active ADR/RFC").or(predicate::str::contains("affected_files")));
+        .stdout(
+            predicate::str::contains("No active ADR/RFC")
+                .or(predicate::str::contains("affected_files")),
+        );
 }
 
 #[test]
 fn e2e_migrate_idempotent() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // First migrate
     forgeplan()
@@ -820,10 +956,18 @@ fn e2e_full_methodology_cycle() {
     let tmp = TempDir::new().unwrap();
 
     // 1. Init
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // 2. Create PRD with full content
-    forgeplan().args(["new", "prd", "Auth System"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Auth System"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // 3. Fill PRD body with proper content (Problem, Goals, FR, etc.)
     let body = r#"# PRD-001: Auth System
@@ -924,8 +1068,16 @@ Users cannot authenticate. The system has no login mechanism, no session managem
 #[test]
 fn e2e_validation_catches_quality_issues() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Bad PRD"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Bad PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // PRD with subjective adjectives, tech leakage, filler phrases
     let bad_body = r#"# PRD-001: Bad PRD
@@ -973,28 +1125,41 @@ This is a simple problem statement that needs to be fixed quickly.
 
     // Should detect measurability issues (subjective adjectives)
     assert!(
-        stdout.contains("Subjective adjective") || stdout.contains("adjective") || stdout.contains("easy"),
-        "Should detect subjective adjectives like 'easy', got: {}", stdout
+        stdout.contains("Subjective adjective")
+            || stdout.contains("adjective")
+            || stdout.contains("easy"),
+        "Should detect subjective adjectives like 'easy', got: {}",
+        stdout
     );
 
     // Should detect implementation leakage
     assert!(
         stdout.contains("Tech names") || stdout.contains("React") || stdout.contains("PostgreSQL"),
-        "Should detect tech leakage (React, PostgreSQL), got: {}", stdout
+        "Should detect tech leakage (React, PostgreSQL), got: {}",
+        stdout
     );
 
     // Should detect filler phrases
     assert!(
         stdout.contains("filler") || stdout.contains("in order to"),
-        "Should detect filler phrases like 'in order to', got: {}", stdout
+        "Should detect filler phrases like 'in order to', got: {}",
+        stdout
     );
 }
 
 #[test]
 fn e2e_score_shows_fgr_breakdown() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Test Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Test Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Score should show F-G-R breakdown
     forgeplan()
@@ -1010,7 +1175,11 @@ fn e2e_score_shows_fgr_breakdown() {
 #[test]
 fn e2e_route_determines_depth() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Simple task → Tactical
     forgeplan()
@@ -1022,7 +1191,10 @@ fn e2e_route_determines_depth() {
 
     // Complex task with security keyword → Deep or Standard
     forgeplan()
-        .args(["route", "implement OAuth2 authentication with security audit and compliance review"])
+        .args([
+            "route",
+            "implement OAuth2 authentication with security audit and compliance review",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -1034,14 +1206,38 @@ fn e2e_route_determines_depth() {
 #[test]
 fn e2e_export_import_preserves_data() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create 3 artifacts with links
-    forgeplan().args(["new", "prd", "Feature A"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "Plan for A"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "evidence", "Tests pass"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "RFC-001", "PRD-001", "--relation", "based_on"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Feature A"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "Plan for A"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "evidence", "Tests pass"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Export
     let export_path = tmp.path().join("backup.json");
@@ -1064,7 +1260,11 @@ fn e2e_export_import_preserves_data() {
     std::fs::remove_dir_all(tmp.path().join(".forgeplan")).unwrap();
 
     // Re-init
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Import
     forgeplan()
@@ -1093,12 +1293,28 @@ fn e2e_export_import_preserves_data() {
 #[test]
 fn e2e_health_comprehensive() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create varied artifacts
-    forgeplan().args(["new", "prd", "Feature"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "problem", "Bug Report"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "note", "Quick Note"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "problem", "Bug Report"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "note", "Quick Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Health should show all kinds
     forgeplan()
@@ -1115,11 +1331,27 @@ fn e2e_health_comprehensive() {
 #[test]
 fn e2e_list_shows_all_artifact_types() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
-    forgeplan().args(["new", "prd", "My PRD"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "rfc", "My RFC"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "adr", "My ADR"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "My PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "My RFC"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "adr", "My ADR"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     forgeplan()
         .args(["list"])
@@ -1137,14 +1369,30 @@ fn e2e_list_shows_all_artifact_types() {
 #[test]
 fn e2e_supersede_workflow() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create and activate old PRD (--force because test PRD has short body and no evidence)
-    forgeplan().args(["new", "prd", "Old Feature"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["activate", "PRD-001", "--force"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Old Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create new PRD
-    forgeplan().args(["new", "prd", "New Feature"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "New Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Supersede old with new
     forgeplan()
@@ -1166,7 +1414,11 @@ fn e2e_supersede_workflow() {
 #[test]
 fn e2e_fpf_commands_available() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // FPF status before ingest
     forgeplan()
@@ -1194,10 +1446,18 @@ fn e2e_fpf_commands_available() {
 #[test]
 fn e2e_adr_contract_validation() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create ADR without contract sections
-    forgeplan().args(["new", "adr", "Use PostgreSQL"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "adr", "Use PostgreSQL"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Validate runs and produces result (PASS or warnings depending on depth)
     forgeplan()
@@ -1206,7 +1466,10 @@ fn e2e_adr_contract_validation() {
         .assert()
         .success()
         .stdout(predicate::str::contains("ADR-001"))
-        .stdout(predicate::str::contains("PASS").or(predicate::str::contains("error").or(predicate::str::contains("warning"))));
+        .stdout(
+            predicate::str::contains("PASS")
+                .or(predicate::str::contains("error").or(predicate::str::contains("warning"))),
+        );
 }
 
 // ─── Scan-Import E2E Tests ───────────────────────────────────────
@@ -1290,7 +1553,8 @@ fn scan_import_detects_by_filename() {
     std::fs::write(
         docs.join("RFC-001-api-redesign.md"),
         "# API Redesign\n\nWe should redesign the API.",
-    ).unwrap();
+    )
+    .unwrap();
 
     forgeplan()
         .args(["scan-import"])
@@ -1324,7 +1588,8 @@ fn scan_import_skips_existing_artifacts() {
     std::fs::write(
         docs.join("PRD-001-duplicate.md"),
         "---\nkind: prd\nid: PRD-001\ntitle: Duplicate\n---\n# Duplicate",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Import should skip
     forgeplan()
@@ -1350,7 +1615,8 @@ fn scan_import_handles_unknown_files() {
     std::fs::write(
         docs.join("random-notes.md"),
         "# Shopping List\n\n- Milk\n- Bread",
-    ).unwrap();
+    )
+    .unwrap();
 
     forgeplan()
         .args(["scan-import", "--dry-run"])
@@ -1404,15 +1670,18 @@ fn scan_import_multiple_types() {
     std::fs::write(
         docs.join("PRD-001-feature.md"),
         "---\nkind: prd\nid: PRD-001\ntitle: Feature\n---\n# Feature",
-    ).unwrap();
+    )
+    .unwrap();
     std::fs::write(
         docs.join("RFC-001-design.md"),
         "---\nkind: rfc\nid: RFC-001\ntitle: Design\n---\n# Design",
-    ).unwrap();
+    )
+    .unwrap();
     std::fs::write(
         docs.join("ADR-001-choice.md"),
         "---\nkind: adr\nid: ADR-001\ntitle: Choice\n---\n# Choice",
-    ).unwrap();
+    )
+    .unwrap();
 
     forgeplan()
         .args(["scan-import"])
@@ -1422,9 +1691,21 @@ fn scan_import_multiple_types() {
         .stdout(predicate::str::contains("3 imported"));
 
     // All three exist
-    forgeplan().args(["get", "PRD-001"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["get", "RFC-001"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["get", "ADR-001"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["get", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["get", "RFC-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["get", "ADR-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 }
 
 // ─── JSON Output Structural Tests ────────────────────────────────
@@ -1432,8 +1713,16 @@ fn scan_import_multiple_types() {
 #[test]
 fn json_get_is_valid_and_has_required_fields() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Test PRD"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Test PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     let output = forgeplan()
         .args(["get", "PRD-001", "--json"])
@@ -1453,8 +1742,16 @@ fn json_get_is_valid_and_has_required_fields() {
 #[test]
 fn json_score_is_valid_and_has_reff() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Test PRD"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Test PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     let output = forgeplan()
         .args(["score", "PRD-001", "--json"])
@@ -1471,8 +1768,16 @@ fn json_score_is_valid_and_has_reff() {
 #[test]
 fn json_list_is_valid_array() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Test"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     let output = forgeplan()
         .args(["list", "--json"])
@@ -1489,7 +1794,11 @@ fn json_list_is_valid_array() {
 #[test]
 fn json_health_has_required_fields() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     let output = forgeplan()
         .args(["health", "--json"])
@@ -1506,7 +1815,11 @@ fn json_health_has_required_fields() {
 #[test]
 fn json_blocked_is_valid() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     let output = forgeplan()
         .args(["blocked", "--json"])
@@ -1524,14 +1837,19 @@ fn json_blocked_is_valid() {
 #[test]
 fn scan_import_dry_run_does_not_persist() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     let docs = tmp.path().join("docs");
     std::fs::create_dir_all(&docs).unwrap();
     std::fs::write(
         docs.join("PRD-099-test.md"),
         "---\nkind: prd\nid: PRD-099\ntitle: Dry Run Test\n---\n# Test",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Dry-run should show preview
     forgeplan()
@@ -1554,11 +1872,23 @@ fn scan_import_dry_run_does_not_persist() {
 #[test]
 fn reff_finds_incoming_evidence() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create PRD and evidence
-    forgeplan().args(["new", "prd", "Target PRD"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "evidence", "Proof"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Target PRD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "evidence", "Proof"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Link evidence → PRD (incoming direction for PRD)
     forgeplan()
@@ -1581,7 +1911,11 @@ fn reff_finds_incoming_evidence() {
 #[test]
 fn activation_gate_rejects_invalid() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create PRD then strip its body to trigger MUST validation errors
     forgeplan()
@@ -1592,7 +1926,12 @@ fn activation_gate_rejects_invalid() {
 
     // Replace body with empty content — missing Problem, Goals, etc.
     forgeplan()
-        .args(["update", "PRD-001", "--body", "# Empty PRD\n\nNo sections here."])
+        .args([
+            "update",
+            "PRD-001",
+            "--body",
+            "# Empty PRD\n\nNo sections here.",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -1612,15 +1951,24 @@ fn activation_gate_rejects_invalid() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("MUST") || stderr.contains("error") || stderr.contains("Validation") || stderr.contains("validation") || stderr.contains("Cannot activate"),
-        "Error should mention rejection, got stderr: {}", stderr
+        stderr.contains("MUST")
+            || stderr.contains("error")
+            || stderr.contains("Validation")
+            || stderr.contains("validation")
+            || stderr.contains("Cannot activate"),
+        "Error should mention rejection, got stderr: {}",
+        stderr
     );
 }
 
 #[test]
 fn activation_gate_force_overrides() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create PRD then strip body to trigger MUST errors
     forgeplan()
@@ -1630,7 +1978,12 @@ fn activation_gate_force_overrides() {
         .success();
 
     forgeplan()
-        .args(["update", "PRD-001", "--body", "# Empty\n\nNo required sections."])
+        .args([
+            "update",
+            "PRD-001",
+            "--body",
+            "# Empty\n\nNo required sections.",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -1641,13 +1994,20 @@ fn activation_gate_force_overrides() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Warning").or(predicate::str::contains("forced").or(predicate::str::contains("Activated"))));
+        .stdout(
+            predicate::str::contains("Warning")
+                .or(predicate::str::contains("forced").or(predicate::str::contains("Activated"))),
+        );
 }
 
 #[test]
 fn activation_gate_passes_when_valid() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Notes skip validation gate (lightweight kind)
     forgeplan()
@@ -1668,7 +2028,11 @@ fn activation_gate_passes_when_valid() {
 #[test]
 fn health_shows_derived_status() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create a stub PRD
     forgeplan()
@@ -1687,14 +2051,19 @@ fn health_shows_derived_status() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("STUB") || stdout.contains("derived") || stdout.contains("By derived"),
-        "Health should show derived status info, got: {}", stdout
+        "Health should show derived status info, got: {}",
+        stdout
     );
 }
 
 #[test]
 fn context_command_json_output() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "Context Test"])
         .current_dir(tmp.path())
@@ -1713,17 +2082,33 @@ fn context_command_json_output() {
         serde_json::from_slice(&output.stdout).expect("context --json should produce valid JSON");
 
     // Verify all required top-level keys
-    assert!(json["artifact"].is_object(), "missing 'artifact' key in context JSON");
-    assert!(json["derived_status"].is_string(), "missing 'derived_status' key in context JSON");
-    assert!(json["graph"].is_object(), "missing 'graph' key in context JSON");
-    assert!(json["validation"].is_object(), "missing 'validation' key in context JSON");
+    assert!(
+        json["artifact"].is_object(),
+        "missing 'artifact' key in context JSON"
+    );
+    assert!(
+        json["derived_status"].is_string(),
+        "missing 'derived_status' key in context JSON"
+    );
+    assert!(
+        json["graph"].is_object(),
+        "missing 'graph' key in context JSON"
+    );
+    assert!(
+        json["validation"].is_object(),
+        "missing 'validation' key in context JSON"
+    );
     assert!(json["fgr"].is_object(), "missing 'fgr' key in context JSON");
 }
 
 #[test]
 fn context_command_human_output() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
     forgeplan()
         .args(["new", "prd", "Human Context Test"])
         .current_dir(tmp.path())
@@ -1741,15 +2126,18 @@ fn context_command_human_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("PRD-001"),
-        "Human output should contain artifact ID, got: {}", stdout
+        "Human output should contain artifact ID, got: {}",
+        stdout
     );
     assert!(
         stdout.contains("Status"),
-        "Human output should contain 'Status:', got: {}", stdout
+        "Human output should contain 'Status:', got: {}",
+        stdout
     );
     assert!(
         stdout.contains("F-G-R"),
-        "Human output should contain 'F-G-R:', got: {}", stdout
+        "Human output should contain 'F-G-R:', got: {}",
+        stdout
     );
 }
 
@@ -1797,15 +2185,18 @@ fn tree_shows_hierarchy() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("EPIC-001"),
-        "tree should contain EPIC-001, got: {}", stdout
+        "tree should contain EPIC-001, got: {}",
+        stdout
     );
     assert!(
         stdout.contains("PRD-001"),
-        "tree should contain PRD-001, got: {}", stdout
+        "tree should contain PRD-001, got: {}",
+        stdout
     );
     assert!(
         stdout.contains("My Epic"),
-        "tree should contain epic title, got: {}", stdout
+        "tree should contain epic title, got: {}",
+        stdout
     );
 }
 
@@ -1834,8 +2225,12 @@ fn tree_json_is_valid() {
     assert!(output.status.success(), "tree --json should succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("tree --json output should be valid JSON: {}. Got: {}", e, stdout));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "tree --json output should be valid JSON: {}. Got: {}",
+            e, stdout
+        )
+    });
 
     assert!(parsed.is_array(), "root should be an array");
     let arr = parsed.as_array().unwrap();
@@ -1852,37 +2247,66 @@ fn tree_json_is_valid() {
 #[test]
 fn e2e_reff_write_back_persists_to_tree() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create PRD + evidence + link
-    forgeplan().args(["new", "prd", "Write-back Test"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "evidence", "Proof"]).current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Write-back Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "evidence", "Proof"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Score should compute R_eff and persist it
-    forgeplan().args(["score", "PRD-001"])
-        .current_dir(tmp.path()).assert().success()
+    forgeplan()
+        .args(["score", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
         .stdout(predicate::str::contains("R_eff"));
 
     // Tree should show the persisted R_eff (not 0.00)
     let tree_output = forgeplan()
         .args(["tree", "--json"])
         .current_dir(tmp.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
 
-    let tree_json: serde_json::Value = serde_json::from_slice(&tree_output.stdout)
-        .expect("valid tree JSON");
+    let tree_json: serde_json::Value =
+        serde_json::from_slice(&tree_output.stdout).expect("valid tree JSON");
     let nodes = tree_json.as_array().unwrap();
-    let prd = nodes.iter().find(|n| n["id"] == "PRD-001").expect("PRD-001 in tree");
+    let prd = nodes
+        .iter()
+        .find(|n| n["id"] == "PRD-001")
+        .expect("PRD-001 in tree");
     let r_eff = prd["r_eff"].as_f64().unwrap_or(0.0);
-    assert!(r_eff > 0.0, "R_eff should be persisted after score, got {r_eff}");
+    assert!(
+        r_eff > 0.0,
+        "R_eff should be persisted after score, got {r_eff}"
+    );
 }
 
 #[test]
 fn e2e_route_p0_issues_not_tactical() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Route with severity + integrity keywords should NOT have Tactical as primary depth
     // (Tactical may appear in Alternatives section — that's expected)
@@ -1897,43 +2321,69 @@ fn e2e_route_p0_issues_not_tactical() {
 #[test]
 fn e2e_health_shows_problem_blind_spot() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create active problem without evidence
-    forgeplan().args(["new", "problem", "Test Problem"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "problem", "Test Problem"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Activate it (problems don't require validation gate)
-    forgeplan().args(["activate", "PROB-001"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["activate", "PROB-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Health should show blind spot for active problem without evidence
-    forgeplan().args(["health"])
+    forgeplan()
+        .args(["health"])
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Blind spots: 1")
-            .or(predicate::str::contains("PROB-001")));
+        .stdout(
+            predicate::str::contains("Blind spots: 1").or(predicate::str::contains("PROB-001")),
+        );
 }
 
 #[test]
 fn e2e_journal_excludes_deprecated_from_warning() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create note, activate, then deprecate (lifecycle: draft→active→deprecated)
-    forgeplan().args(["new", "note", "Old Decision"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["activate", "NOTE-001"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["deprecate", "NOTE-001", "--reason", "outdated"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "note", "Old Decision"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "outdated"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Journal should NOT count deprecated as "no evidence"
     let output = forgeplan()
         .args(["journal"])
         .current_dir(tmp.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // If deprecated is the only artifact, "no evidence" warning should be 0 or absent
@@ -1946,20 +2396,39 @@ fn e2e_journal_excludes_deprecated_from_warning() {
 #[test]
 fn e2e_coverage_backfill_adds_section() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create PRD and strip Affected Files from body (simulate pre-template artifact)
-    forgeplan().args(["new", "prd", "Backfill Target"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["update", "PRD-001", "--body", "## Problem\n\nNo affected files section here."])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "prd", "Backfill Target"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args([
+            "update",
+            "PRD-001",
+            "--body",
+            "## Problem\n\nNo affected files section here.",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Force activate
-    forgeplan().args(["activate", "PRD-001", "--force"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Run backfill — should find PRD-001 missing section
-    forgeplan().args(["coverage", "--backfill"])
+    forgeplan()
+        .args(["coverage", "--backfill"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -1969,16 +2438,20 @@ fn e2e_coverage_backfill_adds_section() {
     let output = forgeplan()
         .args(["get", "PRD-001", "--json"])
         .current_dir(tmp.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("valid JSON");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     let body = json["body"].as_str().unwrap_or("");
-    assert!(body.contains("## Affected Files"), "Body should contain Affected Files section");
+    assert!(
+        body.contains("## Affected Files"),
+        "Body should contain Affected Files section"
+    );
     assert!(body.contains("/**"), "Should use glob patterns, not ...");
 
     // Idempotent: second run should say "All active..."
-    forgeplan().args(["coverage", "--backfill"])
+    forgeplan()
+        .args(["coverage", "--backfill"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -1988,7 +2461,11 @@ fn e2e_coverage_backfill_adds_section() {
 #[test]
 fn e2e_score_missing_id_shows_warning_not_crash() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Score nonexistent artifact should fail gracefully
     forgeplan()
@@ -1996,45 +2473,72 @@ fn e2e_score_missing_id_shows_warning_not_crash() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not found")
-            .or(predicate::str::contains("Not found")));
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Not found")));
 }
 
 #[test]
 fn e2e_reff_skips_deprecated_dependency() {
     let tmp = TempDir::new().unwrap();
-    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Create: PRD depends_on PROB, PROB has evidence, then deprecate PROB
-    forgeplan().args(["new", "problem", "Old Problem"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "prd", "Depends on old problem"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["new", "evidence", "PRD proof"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["new", "problem", "Old Problem"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Depends on old problem"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "evidence", "PRD proof"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Link: PRD → PROB (based_on), EVID → PRD (informs)
-    forgeplan().args(["link", "PRD-001", "PROB-001", "--relation", "based_on"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["link", "PRD-001", "PROB-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Activate and deprecate PROB
-    forgeplan().args(["activate", "PROB-001"])
-        .current_dir(tmp.path()).assert().success();
-    forgeplan().args(["deprecate", "PROB-001", "--reason", "resolved"])
-        .current_dir(tmp.path()).assert().success();
+    forgeplan()
+        .args(["activate", "PROB-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["deprecate", "PROB-001", "--reason", "resolved"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     // Score PRD-001 — should NOT be dragged to 0 by deprecated PROB-001
     let output = forgeplan()
         .args(["score", "PRD-001", "--json"])
         .current_dir(tmp.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("valid JSON");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     let r_eff = json["r_eff"].as_f64().unwrap_or(0.0);
-    assert!(r_eff > 0.0, "R_eff should be > 0 when dependency is deprecated, got {r_eff}");
+    assert!(
+        r_eff > 0.0,
+        "R_eff should be > 0 when dependency is deprecated, got {r_eff}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -2050,9 +2554,10 @@ fn scan_path_traversal_rejected() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("outside project root").or(
-            predicate::str::contains("does not exist"),
-        ));
+        .stderr(
+            predicate::str::contains("outside project root")
+                .or(predicate::str::contains("does not exist")),
+        );
 }
 
 #[test]
@@ -2121,4 +2626,273 @@ fn activate_shows_correct_transition_status() {
         .assert()
         .success()
         .stdout(predicate::str::contains("draft → active"));
+}
+
+// -----------------------------------------------------------------------
+// PROB-020: Cascade delete removes relations
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_delete_cascades_relations() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create two notes and link them
+    forgeplan()
+        .args(["new", "note", "Parent Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Child Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["link", "NOTE-001", "NOTE-002", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Delete parent — should cascade relations
+    forgeplan()
+        .args(["delete", "NOTE-001", "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Child should still exist but not show phantom relation
+    forgeplan()
+        .args(["get", "NOTE-002"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Child Note"));
+}
+
+// -----------------------------------------------------------------------
+// PROB-020: Deprecated artifact does not block dependents
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_deprecated_does_not_block() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create two notes, link, activate both
+    forgeplan()
+        .args(["new", "note", "Dependency"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Dependent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["activate", "NOTE-002"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["link", "NOTE-002", "NOTE-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Deprecate the dependency
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "no longer needed"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Blocked should NOT show NOTE-002 as blocked
+    forgeplan()
+        .args(["blocked"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No blocked artifacts"));
+}
+
+// -----------------------------------------------------------------------
+// ADR-005: Full lifecycle draft → active → deprecated (terminal)
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_full_lifecycle_deprecate() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Lifecycle Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // draft → active
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft → active"));
+
+    // active → deprecated (terminal)
+    forgeplan()
+        .args([
+            "deprecate",
+            "NOTE-001",
+            "--reason",
+            "replaced by new approach",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deprecated"));
+
+    // Verify status is deprecated
+    forgeplan()
+        .args(["get", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deprecated"));
+}
+
+// -----------------------------------------------------------------------
+// ADR-005: draft → deprecated directly is NOT allowed
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_draft_cannot_deprecate_directly() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "note", "Draft Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // draft → deprecated should fail
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "test"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid transition"));
+}
+
+// -----------------------------------------------------------------------
+// PROB-020: topological order excludes deprecated
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_order_excludes_deprecated() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create chain: NOTE-001 → NOTE-002 → NOTE-003
+    for title in &["First", "Second", "Third"] {
+        forgeplan()
+            .args(["new", "note", title])
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+
+    for note in &["NOTE-001", "NOTE-002", "NOTE-003"] {
+        forgeplan()
+            .args(["activate", note])
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+
+    forgeplan()
+        .args(["link", "NOTE-002", "NOTE-001", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["link", "NOTE-003", "NOTE-002", "--relation", "based_on"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Deprecate middle node
+    forgeplan()
+        .args(["deprecate", "NOTE-002", "--reason", "skipped"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Order should still work without error
+    forgeplan()
+        .args(["order"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+// -----------------------------------------------------------------------
+// Sprint 8 S1: route rejects empty input
+// -----------------------------------------------------------------------
+
+#[test]
+fn e2e_empty_route_rejected() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["route", ""])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty"));
 }

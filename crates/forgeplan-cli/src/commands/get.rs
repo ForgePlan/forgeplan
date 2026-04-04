@@ -52,8 +52,14 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let relations = store.get_relations(id).await.unwrap_or_default();
     let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
     let has_links = !relations.is_empty() || !incoming.is_empty();
-    let kind: forgeplan_core::artifact::types::ArtifactKind = record.kind.parse().unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
-    let depth: forgeplan_core::artifact::types::Mode = record.depth.parse().unwrap_or(forgeplan_core::artifact::types::Mode::Standard);
+    let kind: forgeplan_core::artifact::types::ArtifactKind = record
+        .kind
+        .parse()
+        .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
+    let depth: forgeplan_core::artifact::types::Mode = record
+        .depth
+        .parse()
+        .unwrap_or(forgeplan_core::artifact::types::Mode::Standard);
     let get_hints = forgeplan_core::hints::get_hints(&record.status, &kind, has_links, &depth);
     if !get_hints.is_empty() {
         print!("{}", forgeplan_core::hints::format_hints(&get_hints));

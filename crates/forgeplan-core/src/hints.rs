@@ -26,15 +26,27 @@ pub enum HintLevel {
 
 impl Hint {
     pub fn warning(message: impl Into<String>) -> Self {
-        Self { level: HintLevel::Warning, message: message.into(), action: None }
+        Self {
+            level: HintLevel::Warning,
+            message: message.into(),
+            action: None,
+        }
     }
 
     pub fn info(message: impl Into<String>) -> Self {
-        Self { level: HintLevel::Info, message: message.into(), action: None }
+        Self {
+            level: HintLevel::Info,
+            message: message.into(),
+            action: None,
+        }
     }
 
     pub fn suggestion(message: impl Into<String>) -> Self {
-        Self { level: HintLevel::Suggestion, message: message.into(), action: None }
+        Self {
+            level: HintLevel::Suggestion,
+            message: message.into(),
+            action: None,
+        }
     }
 
     pub fn with_action(mut self, action: impl Into<String>) -> Self {
@@ -68,11 +80,7 @@ pub fn format_hints(hints: &[Hint]) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Hints for `forgeplan score` output.
-pub fn score_hints(
-    r_eff: f64,
-    has_evidence: bool,
-    evidence_cl0_count: usize,
-) -> Vec<Hint> {
+pub fn score_hints(r_eff: f64, has_evidence: bool, evidence_cl0_count: usize) -> Vec<Hint> {
     let mut hints = Vec::new();
 
     if !has_evidence {
@@ -95,7 +103,7 @@ pub fn score_hints(
     if r_eff > 0.0 && r_eff < 0.5 {
         hints.push(
             Hint::info("R_eff below 0.5 — decision is weakly supported")
-                .with_action("Add more evidence or improve congruence level (CL3 = same context)")
+                .with_action("Add more evidence or improve congruence level (CL3 = same context)"),
         );
     }
 
@@ -121,19 +129,28 @@ pub fn get_hints(
 
     if status == "draft" {
         let next = match kind_str {
-            "prd" => "Fill MUST sections (Problem, Goals, FR, Target Users), then: forgeplan validate",
-            "rfc" => "Fill Summary, Motivation, Options, Implementation Phases, then: forgeplan validate",
+            "prd" => {
+                "Fill MUST sections (Problem, Goals, FR, Target Users), then: forgeplan validate"
+            }
+            "rfc" => {
+                "Fill Summary, Motivation, Options, Implementation Phases, then: forgeplan validate"
+            }
             "adr" => "Fill Context, Decision, Consequences, then: forgeplan validate",
-            "evidence" => "Fill Structured Fields (verdict, congruence_level, evidence_type), then: forgeplan activate",
+            "evidence" => {
+                "Fill Structured Fields (verdict, congruence_level, evidence_type), then: forgeplan activate"
+            }
             _ => "Fill required sections, then: forgeplan validate",
         };
-        hints.push(Hint::suggestion(format!("Status is draft — next: {}", next)));
+        hints.push(Hint::suggestion(format!(
+            "Status is draft — next: {}",
+            next
+        )));
     }
 
     if !has_links && status != "deprecated" && kind_str != "memory" {
         hints.push(
             Hint::info("No links — artifact is an orphan")
-                .with_action("forgeplan link <this-id> <parent-id> --relation refines")
+                .with_action("forgeplan link <this-id> <parent-id> --relation refines"),
         );
     }
 
@@ -163,15 +180,14 @@ pub fn review_hints(
             _ => "Fill all required sections",
         };
         hints.push(
-            Hint::warning("Artifact is a stub — MUST sections not filled")
-                .with_action(action)
+            Hint::warning("Artifact is a stub — MUST sections not filled").with_action(action),
         );
     }
 
     if has_must_errors {
         hints.push(
             Hint::warning("Validation has MUST errors — fix before activating")
-                .with_action("forgeplan validate <id> to see specific errors")
+                .with_action("forgeplan validate <id> to see specific errors"),
         );
     }
 
@@ -193,11 +209,11 @@ pub fn search_hints(query: &str, result_count: usize) -> Vec<Hint> {
         hints.push(Hint::info(format!("No results for \"{}\"", query)));
         hints.push(
             Hint::suggestion("Try broader keywords or check spelling")
-                .with_action("forgeplan search \"<shorter query>\"")
+                .with_action("forgeplan search \"<shorter query>\""),
         );
-        hints.push(
-            Hint::suggestion("Search by kind: forgeplan list --type prd")
-        );
+        hints.push(Hint::suggestion(
+            "Search by kind: forgeplan list --type prd",
+        ));
     }
 
     hints
@@ -214,15 +230,18 @@ pub fn activate_hints(
     if !validation_passed {
         hints.push(
             Hint::warning("Validation gate failed — fix MUST errors before activating")
-                .with_action("forgeplan validate <id>")
+                .with_action("forgeplan validate <id>"),
         );
     }
 
-    if !has_evidence && matches!(kind,
-        crate::artifact::types::ArtifactKind::Prd
-        | crate::artifact::types::ArtifactKind::Rfc
-        | crate::artifact::types::ArtifactKind::Adr
-    ) {
+    if !has_evidence
+        && matches!(
+            kind,
+            crate::artifact::types::ArtifactKind::Prd
+                | crate::artifact::types::ArtifactKind::Rfc
+                | crate::artifact::types::ArtifactKind::Adr
+        )
+    {
         hints.push(
             Hint::suggestion("Link evidence before activating for non-zero R_eff")
                 .with_action("forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX <id> --relation informs")
@@ -236,15 +255,18 @@ pub fn activate_hints(
 pub fn blocked_hints(blocked_by: &[(String, String)]) -> Vec<Hint> {
     let mut hints = Vec::new();
 
-    let draft_blockers: Vec<_> = blocked_by.iter()
+    let draft_blockers: Vec<_> = blocked_by
+        .iter()
         .filter(|(_, status)| status == "draft")
         .collect();
 
     if !draft_blockers.is_empty() {
         for (id, _) in &draft_blockers {
             hints.push(
-                Hint::suggestion(format!("Activate draft dependency {}", id))
-                    .with_action(format!("forgeplan review {} && forgeplan activate {}", id, id))
+                Hint::suggestion(format!("Activate draft dependency {}", id)).with_action(format!(
+                    "forgeplan review {} && forgeplan activate {}",
+                    id, id
+                )),
             );
         }
     }

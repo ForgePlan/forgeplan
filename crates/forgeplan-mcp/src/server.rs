@@ -7,19 +7,21 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars;
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError};
+use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, LanceStore, NewArtifact};
+use forgeplan_core::estimate::{
+    calculator, confidence, domain, extractor, overrides, scorer, types::*,
+};
 use forgeplan_core::graph;
 use forgeplan_core::link;
 use forgeplan_core::progress;
 use forgeplan_core::projection;
-use forgeplan_core::artifact::frontmatter::Frontmatter;
-use forgeplan_core::estimate::{calculator, confidence, domain, extractor, overrides, scorer, types::*};
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem};
 use forgeplan_core::template::{get_embedded_template, render_template};
@@ -344,7 +346,9 @@ struct FpfSectionParams {
 
 #[tool_router]
 impl ForgeplanServer {
-    #[tool(description = "Initialize a new .forgeplan/ workspace. Creates LanceDB tables, config, and artifact subdirectories.")]
+    #[tool(
+        description = "Initialize a new .forgeplan/ workspace. Creates LanceDB tables, config, and artifact subdirectories."
+    )]
     async fn forgeplan_init(
         &self,
         Parameters(p): Parameters<InitParams>,
@@ -358,9 +362,9 @@ impl ForgeplanServer {
                     message: "Already initialized. Use force=true to reinitialize.".into(),
                 }));
             }
-            tokio::fs::remove_dir_all(&existing)
-                .await
-                .map_err(|e| McpError::internal_error(format!("Failed to remove workspace: {e}"), None))?;
+            tokio::fs::remove_dir_all(&existing).await.map_err(|e| {
+                McpError::internal_error(format!("Failed to remove workspace: {e}"), None)
+            })?;
         }
 
         let project_name = self
@@ -385,7 +389,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Create a new artifact from template. Generates a sequential ID (e.g., PRD-001), renders the template, stores in LanceDB, and writes a markdown projection.")]
+    #[tool(
+        description = "Create a new artifact from template. Generates a sequential ID (e.g., PRD-001), renders the template, stores in LanceDB, and writes a markdown projection."
+    )]
     async fn forgeplan_new(
         &self,
         Parameters(p): Parameters<NewParams>,
@@ -413,7 +419,11 @@ impl ForgeplanServer {
         let template_key = artifact_kind.template_key();
         let template = match get_embedded_template(template_key) {
             Some(t) => t,
-            None => return Ok(err_result(&format!("No template for kind '{template_key}'"))),
+            None => {
+                return Ok(err_result(&format!(
+                    "No template for kind '{template_key}'"
+                )));
+            }
         };
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
@@ -458,8 +468,17 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
 
         let filepath = projection::render_projection(
-            &ws, &id, template_key, &p.title, "draft", "standard",
-            None, None, None, &rendered, &[],
+            &ws,
+            &id,
+            template_key,
+            &p.title,
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            &rendered,
+            &[],
         )
         .await
         .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
@@ -475,7 +494,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact.")]
+    #[tool(
+        description = "List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact."
+    )]
     async fn forgeplan_list(
         &self,
         Parameters(p): Parameters<ListParams>,
@@ -508,7 +529,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Show project status dashboard — total artifacts, counts by kind and status.")]
+    #[tool(
+        description = "Show project status dashboard — total artifacts, counts by kind and status."
+    )]
     async fn forgeplan_status(&self) -> Result<CallToolResult, McpError> {
         let ws = match self.require_workspace().await {
             Ok(ws) => ws,
@@ -549,7 +572,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD).")]
+    #[tool(
+        description = "Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD)."
+    )]
     async fn forgeplan_validate(
         &self,
         Parameters(p): Parameters<ValidateParams>,
@@ -585,7 +610,10 @@ impl ForgeplanServer {
 
         for record in &to_validate {
             let fm = record.frontmatter_map();
-            let kind = record.kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
+            let kind = record
+                .kind
+                .parse::<ArtifactKind>()
+                .unwrap_or(ArtifactKind::Note);
             let depth = record.depth.parse::<Mode>().unwrap_or(Mode::Standard);
 
             let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
@@ -615,7 +643,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores).")]
+    #[tool(
+        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores)."
+    )]
     async fn forgeplan_score(
         &self,
         Parameters(p): Parameters<ScoreParams>,
@@ -739,7 +769,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines.")]
+    #[tool(
+        description = "Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines."
+    )]
     async fn forgeplan_link(
         &self,
         Parameters(p): Parameters<LinkParams>,
@@ -759,7 +791,12 @@ impl ForgeplanServer {
         };
 
         match store.get_artifact(&p.source).await {
-            Ok(None) => return Ok(err_result(&format!("Source artifact '{}' not found", p.source))),
+            Ok(None) => {
+                return Ok(err_result(&format!(
+                    "Source artifact '{}' not found",
+                    p.source
+                )));
+            }
             Err(e) => return Ok(err_result(&format!("{e}"))),
             _ => {}
         }
@@ -772,13 +809,24 @@ impl ForgeplanServer {
         if let Ok(Some(record)) = store.get_record(&p.source).await {
             let _ = projection::sync_file_to_store(&store, &ws, &record).await;
             // Re-read after sync
-            let record = store.get_record(&p.source).await
-                .unwrap_or(Some(record)).unwrap();
+            let record = store
+                .get_record(&p.source)
+                .await
+                .unwrap_or(Some(record))
+                .unwrap();
             let links = store.get_relations(&p.source).await.unwrap_or_default();
             let _ = projection::render_projection(
-                &ws, &record.id, &record.kind, &record.title, &record.status,
-                &record.depth, record.author.as_deref(), record.parent_epic.as_deref(),
-                record.valid_until.as_deref(), &record.body, &links,
+                &ws,
+                &record.id,
+                &record.kind,
+                &record.title,
+                &record.status,
+                &record.depth,
+                record.author.as_deref(),
+                record.parent_epic.as_deref(),
+                record.valid_until.as_deref(),
+                &record.body,
+                &links,
             )
             .await;
         }
@@ -805,7 +853,9 @@ impl ForgeplanServer {
         }
     }
 
-    #[tool(description = "Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update.")]
+    #[tool(
+        description = "Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update."
+    )]
     async fn forgeplan_update(
         &self,
         Parameters(p): Parameters<UpdateParams>,
@@ -820,7 +870,9 @@ impl ForgeplanServer {
         };
 
         // Verify exists
-        let pre_record = store.get_record(&p.id).await
+        let pre_record = store
+            .get_record(&p.id)
+            .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         let pre_record = match pre_record {
             Some(r) => r,
@@ -828,7 +880,9 @@ impl ForgeplanServer {
         };
 
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
-            return Ok(err_result("Nothing to update. Provide status, title, or body."));
+            return Ok(err_result(
+                "Nothing to update. Provide status, title, or body.",
+            ));
         }
 
         // Sync file→LanceDB BEFORE mutations — capture user edits
@@ -849,15 +903,26 @@ impl ForgeplanServer {
         }
 
         // Re-render projection
-        let updated = store.get_record(&p.id).await
+        let updated = store
+            .get_record(&p.id)
+            .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
         let links = store.get_relations(&p.id).await.unwrap_or_default();
         let _ = projection::render_projection(
-            &ws, &updated.id, &updated.kind, &updated.title, &updated.status,
-            &updated.depth, updated.author.as_deref(), updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(), &updated.body, &links,
-        ).await;
+            &ws,
+            &updated.id,
+            &updated.kind,
+            &updated.title,
+            &updated.status,
+            &updated.depth,
+            updated.author.as_deref(),
+            updated.parent_epic.as_deref(),
+            updated.valid_until.as_deref(),
+            &updated.body,
+            &links,
+        )
+        .await;
 
         Ok(json_result(&serde_json::json!({
             "id": p.id,
@@ -867,7 +932,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Delete an artifact from LanceDB and remove its markdown projection file.")]
+    #[tool(
+        description = "Delete an artifact from LanceDB and remove its markdown projection file."
+    )]
     async fn forgeplan_delete(
         &self,
         Parameters(p): Parameters<DeleteParams>,
@@ -907,7 +974,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0).")]
+    #[tool(
+        description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0)."
+    )]
     async fn forgeplan_route(
         &self,
         Parameters(p): Parameters<RouteParams>,
@@ -919,15 +988,19 @@ impl ForgeplanServer {
                     let llm_cfg = llm_cfg.with_env_overrides();
                     // Try to build FPF context from store
                     let fpf_ctx = if let Ok(store) = self.require_store().await {
-                        forgeplan_core::llm::reason::build_fpf_context(
-                            &store, &p.description, "",
-                        ).await.ok().flatten()
+                        forgeplan_core::llm::reason::build_fpf_context(&store, &p.description, "")
+                            .await
+                            .ok()
+                            .flatten()
                     } else {
                         None
                     };
                     forgeplan_core::routing::route_with_llm_and_context(
-                        &p.description, &llm_cfg, fpf_ctx.as_deref(),
-                    ).await
+                        &p.description,
+                        &llm_cfg,
+                        fpf_ctx.as_deref(),
+                    )
+                    .await
                 } else {
                     forgeplan_core::routing::route(&p.description)
                 }
@@ -953,7 +1026,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated.")]
+    #[tool(
+        description = "Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated."
+    )]
     async fn forgeplan_review(
         &self,
         Parameters(p): Parameters<ReviewParams>,
@@ -974,7 +1049,9 @@ impl ForgeplanServer {
         }
     }
 
-    #[tool(description = "Activate an artifact (draft → active). Requires all MUST validation rules to pass.")]
+    #[tool(
+        description = "Activate an artifact (draft → active). Requires all MUST validation rules to pass."
+    )]
     async fn forgeplan_activate(
         &self,
         Parameters(p): Parameters<ActivateParams>,
@@ -990,7 +1067,11 @@ impl ForgeplanServer {
                     msg.push_str(&format!(
                         "\nWarning: Activated with {} validation error{}",
                         result.must_errors.len(),
-                        if result.must_errors.len() == 1 { "" } else { "s" }
+                        if result.must_errors.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     ));
                 }
                 Ok(text_result(&msg))
@@ -999,7 +1080,9 @@ impl ForgeplanServer {
         }
     }
 
-    #[tool(description = "Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents.")]
+    #[tool(
+        description = "Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents."
+    )]
     async fn forgeplan_supersede(
         &self,
         Parameters(p): Parameters<SupersedeParams>,
@@ -1038,7 +1121,9 @@ impl ForgeplanServer {
         }
     }
 
-    #[tool(description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed.")]
+    #[tool(
+        description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed."
+    )]
     async fn forgeplan_health(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1066,7 +1151,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status.")]
+    #[tool(
+        description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status."
+    )]
     async fn forgeplan_journal(
         &self,
         Parameters(p): Parameters<JournalParams>,
@@ -1077,19 +1164,23 @@ impl ForgeplanServer {
         };
 
         let entries = forgeplan_core::journal::build_journal(
-            &store, p.kind.as_deref(), p.risk.unwrap_or(false),
+            &store,
+            p.kind.as_deref(),
+            p.risk.unwrap_or(false),
         )
         .await
         .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let dtos: Vec<serde_json::Value> = entries
             .iter()
-            .map(|e| serde_json::json!({
-                "id": e.id, "title": e.title, "kind": e.kind,
-                "created_at": e.created_at, "r_eff": e.r_eff,
-                "evidence_count": e.evidence_count,
-                "has_stale_evidence": e.has_stale_evidence,
-            }))
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id, "title": e.title, "kind": e.kind,
+                    "created_at": e.created_at, "r_eff": e.r_eff,
+                    "evidence_count": e.evidence_count,
+                    "has_stale_evidence": e.has_stale_evidence,
+                })
+            })
             .collect();
 
         Ok(json_result(&serde_json::json!({
@@ -1097,7 +1188,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections.")]
+    #[tool(
+        description = "Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections."
+    )]
     async fn forgeplan_blindspots(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1118,7 +1211,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider.")]
+    #[tool(
+        description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider."
+    )]
     async fn forgeplan_capture(
         &self,
         Parameters(p): Parameters<CaptureParams>,
@@ -1136,19 +1231,27 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
-        let (kind_str, body) = forgeplan_core::llm::capture::capture(
-            &llm_config, &p.decision, p.context.as_deref(),
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("Capture failed: {e}"), None))?;
+        let (kind_str, body) =
+            forgeplan_core::llm::capture::capture(&llm_config, &p.decision, p.context.as_deref())
+                .await
+                .map_err(|e| McpError::internal_error(format!("Capture failed: {e}"), None))?;
 
         let kind: ArtifactKind = kind_str.parse().unwrap_or(ArtifactKind::Note);
         let template_key = kind.template_key();
         let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-        let id = store.next_id(&prefix).await
+        let id = store
+            .next_id(&prefix)
+            .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
-        let title: String = p.decision.lines().next().unwrap_or(&p.decision).chars().take(80).collect();
+        let title: String = p
+            .decision
+            .lines()
+            .next()
+            .unwrap_or(&p.decision)
+            .chars()
+            .take(80)
+            .collect();
 
         let artifact = NewArtifact {
             id: id.clone(),
@@ -1162,13 +1265,25 @@ impl ForgeplanServer {
             valid_until: None,
         };
 
-        store.create_artifact(&artifact).await
+        store
+            .create_artifact(&artifact)
+            .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let filepath = projection::render_projection(
-            &ws, &id, template_key, &title, "draft", "tactical",
-            None, None, None, &body, &[],
-        ).await
+            &ws,
+            &id,
+            template_key,
+            &title,
+            "draft",
+            "tactical",
+            None,
+            None,
+            None,
+            &body,
+            &[],
+        )
+        .await
         .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         Ok(json_result(&serde_json::json!({
@@ -1182,7 +1297,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges.")]
+    #[tool(
+        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges."
+    )]
     async fn forgeplan_graph(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1222,7 +1339,127 @@ impl ForgeplanServer {
         Ok(json_result(&GraphResponse { mermaid }))
     }
 
-    #[tool(description = "Search artifacts by keyword (case-insensitive substring match on title and body). Returns matching artifacts with highlighted lines.")]
+    #[tool(
+        description = "Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts)."
+    )]
+    async fn forgeplan_blocked(
+        &self,
+        Parameters(p): Parameters<BlockedParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let resolved_ids: HashSet<String> = records
+            .iter()
+            .filter(|r| {
+                r.status == "active" || r.status == "deprecated" || r.status == "superseded"
+            })
+            .map(|r| r.id.clone())
+            .collect();
+
+        use forgeplan_core::graph::topological;
+
+        if let Some(artifact_id) = &p.id {
+            let blocked_by = topological::get_blocked_by(artifact_id, &relations, &resolved_ids);
+            let is_blocked = !blocked_by.is_empty();
+            let resp = BlockedResponse {
+                blocked: if is_blocked {
+                    vec![BlockedEntry {
+                        id: artifact_id.clone(),
+                        blocked_by,
+                    }]
+                } else {
+                    vec![]
+                },
+                ready_count: if is_blocked { 0 } else { 1 },
+                blocked_count: if is_blocked { 1 } else { 0 },
+                cycles: vec![],
+            };
+            Ok(json_result(&resp))
+        } else {
+            let result = topological::kahn_sort(&relations, &resolved_ids);
+            let resp = BlockedResponse {
+                blocked: result
+                    .blocked
+                    .into_iter()
+                    .map(|(id, deps)| BlockedEntry {
+                        id,
+                        blocked_by: deps,
+                    })
+                    .collect(),
+                ready_count: result.ready.len(),
+                blocked_count: result.cycles.len(), // overwritten below
+                cycles: result.cycles,
+            };
+            let blocked_count = resp.blocked.len();
+            let resp = BlockedResponse {
+                blocked_count,
+                ..resp
+            };
+            Ok(json_result(&resp))
+        }
+    }
+
+    #[tool(
+        description = "Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only."
+    )]
+    async fn forgeplan_order(&self) -> Result<CallToolResult, McpError> {
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        let resolved_ids: HashSet<String> = records
+            .iter()
+            .filter(|r| {
+                r.status == "active" || r.status == "deprecated" || r.status == "superseded"
+            })
+            .map(|r| r.id.clone())
+            .collect();
+
+        use forgeplan_core::graph::topological;
+        let result = topological::kahn_sort(&relations, &resolved_ids);
+
+        let resp = OrderResponse {
+            order: result.order,
+            ready: result.ready,
+            blocked: result
+                .blocked
+                .into_iter()
+                .map(|(id, deps)| BlockedEntry {
+                    id,
+                    blocked_by: deps,
+                })
+                .collect(),
+            cycles: result.cycles,
+        };
+
+        Ok(json_result(&resp))
+    }
+
+    #[tool(
+        description = "Search artifacts by keyword (case-insensitive substring match on title and body). Returns matching artifacts with highlighted lines."
+    )]
     async fn forgeplan_search(
         &self,
         Parameters(p): Parameters<SearchParams>,
@@ -1249,7 +1486,11 @@ impl ForgeplanServer {
                     .take(5)
                     .map(|(i, line)| {
                         if line.chars().count() > 120 {
-                            format!("L{}: {}...", i + 1, line.chars().take(120).collect::<String>())
+                            format!(
+                                "L{}: {}...",
+                                i + 1,
+                                line.chars().take(120).collect::<String>()
+                            )
                         } else {
                             format!("L{}: {}", i + 1, line.trim())
                         }
@@ -1269,7 +1510,9 @@ impl ForgeplanServer {
         Ok(json_result(&SearchResponse { results, total }))
     }
 
-    #[tool(description = "Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry.")]
+    #[tool(
+        description = "Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry."
+    )]
     async fn forgeplan_stale(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1307,7 +1550,9 @@ impl ForgeplanServer {
         Ok(json_result(&StaleResponse { stale, total }))
     }
 
-    #[tool(description = "Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages.")]
+    #[tool(
+        description = "Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages."
+    )]
     async fn forgeplan_progress(
         &self,
         Parameters(p): Parameters<ProgressParams>,
@@ -1368,7 +1613,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison.")]
+    #[tool(
+        description = "Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison."
+    )]
     async fn forgeplan_decay(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1407,7 +1654,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity.")]
+    #[tool(
+        description = "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity."
+    )]
     async fn forgeplan_calibrate(
         &self,
         Parameters(p): Parameters<CalibrateParams>,
@@ -1440,10 +1689,14 @@ impl ForgeplanServer {
         let mut total_escalations = 0;
 
         for record in &to_check {
-            let link_count = store.get_relations(&record.id).await.unwrap_or_else(|e| {
-                tracing::warn!("Failed to get relations for {}: {e}", record.id);
-                Vec::new()
-            }).len();
+            let link_count = store
+                .get_relations(&record.id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to get relations for {}: {e}", record.id);
+                    Vec::new()
+                })
+                .len();
             let cal = forgeplan_core::depth::suggest_depth(record, link_count);
 
             if cal.escalation_needed {
@@ -1474,7 +1727,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider.")]
+    #[tool(
+        description = "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider."
+    )]
     async fn forgeplan_reason(
         &self,
         Parameters(p): Parameters<ReasonParams>,
@@ -1498,8 +1753,28 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
+        // Build artifact context for enriched ADI prompt
+        let raw_relations = store.get_relations(&record.id).await.unwrap_or_default();
+        let relations: Vec<(String, String, String)> = raw_relations
+            .into_iter()
+            .map(|(id, rel)| (id, rel, String::new())) // MCP: no title lookup needed
+            .collect();
+        let artifact_context = forgeplan_core::llm::reason::ArtifactContext {
+            status: record.status.clone(),
+            depth: record.depth.clone(),
+            r_eff_score: record.r_eff_score,
+            relations,
+            architecture_hint: None, // MCP callers are AI agents — they already know the architecture
+        };
+
         let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
-            &llm_config, &record.id, &record.title, &record.kind, &record.body, None,
+            &llm_config,
+            &record.id,
+            &record.title,
+            &record.kind,
+            &record.body,
+            None,
+            Some(&artifact_context),
         )
         .await
         .map_err(|e| McpError::internal_error(format!("ADI reasoning failed: {e}"), None))?;
@@ -1513,7 +1788,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider.")]
+    #[tool(
+        description = "Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider."
+    )]
     async fn forgeplan_decompose(
         &self,
         Parameters(p): Parameters<DecomposeParams>,
@@ -1538,7 +1815,10 @@ impl ForgeplanServer {
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         let tasks = forgeplan_core::llm::decompose::decompose(
-            &llm_config, &record.id, &record.title, &record.body,
+            &llm_config,
+            &record.id,
+            &record.title,
+            &record.body,
         )
         .await
         .map_err(|e| McpError::internal_error(format!("Decompose failed: {e}"), None))?;
@@ -1552,7 +1832,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Generate an artifact using AI from a natural language description. Requires LLM provider configured in .forgeplan/config.yaml. Supports OpenAI, Claude, Gemini, Ollama, and any OpenAI-compatible endpoint.")]
+    #[tool(
+        description = "Generate an artifact using AI from a natural language description. Requires LLM provider configured in .forgeplan/config.yaml. Supports OpenAI, Claude, Gemini, Ollama, and any OpenAI-compatible endpoint."
+    )]
     async fn forgeplan_generate(
         &self,
         Parameters(p): Parameters<GenerateParams>,
@@ -1619,8 +1901,17 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let filepath = projection::render_projection(
-            &ws, &id, template_key, &title, "draft", "standard",
-            None, None, None, &body, &[],
+            &ws,
+            &id,
+            template_key,
+            &title,
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            &body,
+            &[],
         )
         .await
         .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
@@ -1635,7 +1926,9 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path.")]
+    #[tool(
+        description = "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path."
+    )]
     async fn forgeplan_export(
         &self,
         Parameters(p): Parameters<ExportParams>,
@@ -1712,7 +2005,9 @@ impl ForgeplanServer {
         Ok(json_result(&data))
     }
 
-    #[tool(description = "Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts.")]
+    #[tool(
+        description = "Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts."
+    )]
     async fn forgeplan_import(
         &self,
         Parameters(p): Parameters<ImportParams>,
@@ -1722,9 +2017,8 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let data: serde_json::Value = serde_json::from_str(&p.data).map_err(|e| {
-            McpError::internal_error(format!("Invalid JSON: {e}"), None)
-        })?;
+        let data: serde_json::Value = serde_json::from_str(&p.data)
+            .map_err(|e| McpError::internal_error(format!("Invalid JSON: {e}"), None))?;
 
         let artifacts = data["artifacts"]
             .as_array()
@@ -1791,7 +2085,9 @@ impl ForgeplanServer {
 
     // ── FPF Knowledge Base tools ────────────────────────────────
 
-    #[tool(description = "Search FPF (First Principles Framework) knowledge base for relevant patterns and concepts. Returns matching sections with titles and snippets.")]
+    #[tool(
+        description = "Search FPF (First Principles Framework) knowledge base for relevant patterns and concepts. Returns matching sections with titles and snippets."
+    )]
     async fn forgeplan_fpf_search(
         &self,
         Parameters(p): Parameters<FpfSearchParams>,
@@ -1802,7 +2098,9 @@ impl ForgeplanServer {
         };
 
         if !store.has_fpf() {
-            return Ok(err_result("FPF knowledge base not loaded. Run `forgeplan fpf ingest` first."));
+            return Ok(err_result(
+                "FPF knowledge base not loaded. Run `forgeplan fpf ingest` first.",
+            ));
         }
 
         let limit = p.limit.unwrap_or(5);
@@ -1813,16 +2111,29 @@ impl ForgeplanServer {
 
         Ok(json_result(&FpfSearchResponse {
             query: p.query,
-            results: results.iter().map(|c| FpfSearchHit {
-                section_id: c.section_id.clone(),
-                title: c.title.clone(),
-                snippet: c.body.lines().take(3).collect::<Vec<_>>().join(" ").chars().take(200).collect(),
-                line_count: c.line_count,
-            }).collect(),
+            results: results
+                .iter()
+                .map(|c| FpfSearchHit {
+                    section_id: c.section_id.clone(),
+                    title: c.title.clone(),
+                    snippet: c
+                        .body
+                        .lines()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(200)
+                        .collect(),
+                    line_count: c.line_count,
+                })
+                .collect(),
         }))
     }
 
-    #[tool(description = "Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1').")]
+    #[tool(
+        description = "Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1')."
+    )]
     async fn forgeplan_fpf_section(
         &self,
         Parameters(p): Parameters<FpfSectionParams>,
@@ -1844,7 +2155,9 @@ impl ForgeplanServer {
         }
     }
 
-    #[tool(description = "List all available FPF (First Principles Framework) sections in the knowledge base.")]
+    #[tool(
+        description = "List all available FPF (First Principles Framework) sections in the knowledge base."
+    )]
     async fn forgeplan_fpf_list(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1857,16 +2170,21 @@ impl ForgeplanServer {
         });
 
         Ok(json_result(&FpfListResponse {
-            sections: sections.iter().map(|s| FpfListItem {
-                section_id: s.section_id.clone(),
-                title: s.title.clone(),
-                line_count: s.line_count,
-            }).collect(),
+            sections: sections
+                .iter()
+                .map(|s| FpfListItem {
+                    section_id: s.section_id.clone(),
+                    title: s.title.clone(),
+                    line_count: s.line_count,
+                })
+                .collect(),
             total: sections.len(),
         }))
     }
 
-    #[tool(description = "Check for drifted decisions — affected files that changed after ADR/RFC was created.")]
+    #[tool(
+        description = "Check for drifted decisions — affected files that changed after ADR/RFC was created."
+    )]
     async fn forgeplan_drift(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1890,7 +2208,9 @@ impl ForgeplanServer {
         })))
     }
 
-    #[tool(description = "Show decision coverage per code module — which modules have architectural decisions and which are blind spots.")]
+    #[tool(
+        description = "Show decision coverage per code module — which modules have architectural decisions and which are blind spots."
+    )]
     async fn forgeplan_coverage(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
@@ -1919,7 +2239,9 @@ impl ForgeplanServer {
         Ok(json_result(&report))
     }
 
-    #[tool(description = "Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring.")]
+    #[tool(
+        description = "Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring."
+    )]
     async fn forgeplan_estimate(
         &self,
         Parameters(p): Parameters<EstimateParams>,
@@ -1993,8 +2315,14 @@ impl ForgeplanServer {
         }
 
         // Confidence — log relation errors instead of swallowing
-        let fr_count = work_items.iter().filter(|w| w.source == ItemSource::Fr).count();
-        let phase_count = work_items.iter().filter(|w| w.source == ItemSource::Phase).count();
+        let fr_count = work_items
+            .iter()
+            .filter(|w| w.source == ItemSource::Fr)
+            .count();
+        let phase_count = work_items
+            .iter()
+            .filter(|w| w.source == ItemSource::Phase)
+            .count();
 
         let rels = match store.get_relations(&record.id).await {
             Ok(r) => r,
@@ -2010,23 +2338,35 @@ impl ForgeplanServer {
                 vec![]
             }
         };
-        let has_spec = rels.iter().chain(incoming.iter())
+        let has_spec = rels
+            .iter()
+            .chain(incoming.iter())
             .any(|(id, _)| id.to_uppercase().starts_with("SPEC-"));
-        let has_evidence = rels.iter().chain(incoming.iter())
+        let has_evidence = rels
+            .iter()
+            .chain(incoming.iter())
             .any(|(id, _)| id.to_uppercase().starts_with("EVID-"));
 
         let (conf, conf_reasons) = confidence::score_confidence(
-            fr_count > 0, fr_count,
-            phase_count > 0, phase_count,
-            has_spec, has_evidence,
+            fr_count > 0,
+            fr_count,
+            phase_count > 0,
+            phase_count,
+            has_spec,
+            has_evidence,
         );
 
         // Build estimate config from workspace
         let config = self.build_estimate_config(&ws_config);
 
         let result = calculator::calculate(
-            &record.id, &record.title, &scored_items, &config,
-            conf, conf_reasons, hints,
+            &record.id,
+            &record.title,
+            &scored_items,
+            &config,
+            conf,
+            conf_reasons,
+            hints,
         );
 
         // Build JSON response with optional grade hint
@@ -2047,7 +2387,9 @@ impl ForgeplanServer {
 
         match serde_json::to_string_pretty(&result_json) {
             Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("Serialization error: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Serialization error: {e}"
+            ))])),
         }
     }
 }
@@ -2058,10 +2400,7 @@ impl ForgeplanServer {
 impl rmcp::ServerHandler for ForgeplanServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::default())
-            .with_server_info(Implementation::new(
-                "forgeplan",
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .with_server_info(Implementation::new("forgeplan", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Forgeplan MCP server: manage structured project artifacts \
                  (PRDs, RFCs, ADRs, Epics, Specs) with quality scoring, \

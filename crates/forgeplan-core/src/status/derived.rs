@@ -85,14 +85,22 @@ pub fn derive_status(
 fn has_must_sections(body: &str, kind: &str) -> bool {
     match kind {
         "prd" => {
-            section_present(body, &["Problem", "Motivation", "Problem Statement", "Background"])
-                && section_present(body, &["Goals", "Success Criteria", "Objectives"])
+            section_present(
+                body,
+                &["Problem", "Motivation", "Problem Statement", "Background"],
+            ) && section_present(body, &["Goals", "Success Criteria", "Objectives"])
                 && section_present(body, &["Functional Requirements", "FR"])
         }
         "rfc" => {
             section_present(body, &["Summary"])
-                && section_present(body, &["Motivation", "Problem", "Problem Statement", "Background"])
-                && section_present(body, &["Proposed", "Proposed Direction", "Proposed Solution"])
+                && section_present(
+                    body,
+                    &["Motivation", "Problem", "Problem Statement", "Background"],
+                )
+                && section_present(
+                    body,
+                    &["Proposed", "Proposed Direction", "Proposed Solution"],
+                )
         }
         "adr" => {
             section_present(body, &["Context"])
@@ -106,7 +114,16 @@ fn has_must_sections(body: &str, kind: &str) -> bool {
         }
         "spec" => {
             section_present(body, &["Summary"])
-                && section_present(body, &["API", "API Endpoints", "API Contracts", "Data Model", "Contracts"])
+                && section_present(
+                    body,
+                    &[
+                        "API",
+                        "API Endpoints",
+                        "API Contracts",
+                        "Data Model",
+                        "Contracts",
+                    ],
+                )
         }
         // Lightweight types: note, problem, solution, evidence, refresh
         // These are considered SHAPED if they have any meaningful content
@@ -321,7 +338,14 @@ Users need tracking.
     #[test]
     fn activated_takes_priority_over_everything() {
         // Even with evidence and validation, active status wins
-        let status = derive_status("active", "## Problem\n## Goals\n## FR", "prd", true, 1.0, true);
+        let status = derive_status(
+            "active",
+            "## Problem\n## Goals\n## FR",
+            "prd",
+            true,
+            1.0,
+            true,
+        );
         assert_eq!(status, DerivedStatus::Activated);
     }
 

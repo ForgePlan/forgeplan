@@ -64,7 +64,13 @@ pub fn combined_score(
     is_active: bool,
     graph_centrality: f64,
 ) -> f64 {
-    let safe = |v: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let safe = |v: f64| {
+        if v.is_finite() {
+            v.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
     let base = safe(keyword).max(safe(semantic));
     if base == 0.0 {
         return 0.0;
@@ -167,7 +173,13 @@ mod tests {
 
     #[test]
     fn keyword_body_match() {
-        let r = make_record("PRD-001", "Title", "OAuth2 integration needed", "active", 0.0);
+        let r = make_record(
+            "PRD-001",
+            "Title",
+            "OAuth2 integration needed",
+            "active",
+            0.0,
+        );
         assert!((keyword_score(&r, "oauth2") - 0.5).abs() < 0.001);
     }
 
@@ -206,7 +218,10 @@ mod tests {
     #[test]
     fn combined_uses_max_of_keyword_semantic() {
         let score = combined_score(0.5, 0.9, 0.0, false, 0.0);
-        assert!((score - 0.9).abs() < 0.001, "should use semantic (0.9) not keyword (0.5)");
+        assert!(
+            (score - 0.9).abs() < 0.001,
+            "should use semantic (0.9) not keyword (0.5)"
+        );
     }
 
     #[test]
@@ -256,7 +271,15 @@ mod tests {
     #[test]
     fn smart_search_respects_limit() {
         let records: Vec<_> = (0..20)
-            .map(|i| make_record(&format!("PRD-{i:03}"), &format!("Auth variant {i}"), "", "active", 0.0))
+            .map(|i| {
+                make_record(
+                    &format!("PRD-{i:03}"),
+                    &format!("Auth variant {i}"),
+                    "",
+                    "active",
+                    0.0,
+                )
+            })
             .collect();
         let results = smart_search(&records, "auth", None, None, 5);
         assert_eq!(results.len(), 5);
@@ -359,7 +382,10 @@ mod tests {
         let records = vec![make_record("PRD-001", "Auth", "", "active", f64::NAN)];
         let results = smart_search(&records, "auth", None, None, 10);
         assert_eq!(results.len(), 1);
-        assert!(results[0].score.is_finite(), "NaN r_eff must not corrupt score");
+        assert!(
+            results[0].score.is_finite(),
+            "NaN r_eff must not corrupt score"
+        );
     }
 
     #[test]
@@ -377,20 +403,33 @@ mod tests {
         sem.insert("PRD-002".to_string(), 0.95);
 
         let nodes = vec![
-            ArtifactNode { id: "PRD-001".into(), kind: "prd".into(), status: "active".into() },
-            ArtifactNode { id: "PRD-002".into(), kind: "prd".into(), status: "active".into() },
-            ArtifactNode { id: "RFC-001".into(), kind: "rfc".into(), status: "active".into() },
+            ArtifactNode {
+                id: "PRD-001".into(),
+                kind: "prd".into(),
+                status: "active".into(),
+            },
+            ArtifactNode {
+                id: "PRD-002".into(),
+                kind: "prd".into(),
+                status: "active".into(),
+            },
+            ArtifactNode {
+                id: "RFC-001".into(),
+                kind: "rfc".into(),
+                status: "active".into(),
+            },
         ];
-        let edges = vec![
-            ("RFC-001".into(), "PRD-002".into(), "based_on".into()),
-        ];
+        let edges = vec![("RFC-001".into(), "PRD-002".into(), "based_on".into())];
         let graph = KnowledgeGraph::from_parts(nodes, edges);
 
         let results = smart_search(&records, "auth", Some(&sem), Some(&graph), 10);
         assert_eq!(results.len(), 2);
         // PRD-002: sem=0.95 * boost(r_eff=1.0, active, centrality=0.5)
         // PRD-001: kw=0.8 * boost(r_eff=0.0, active, centrality=0.0)
-        assert_eq!(results[0].id, "PRD-002", "semantic+boosters should outrank keyword-only");
+        assert_eq!(
+            results[0].id, "PRD-002",
+            "semantic+boosters should outrank keyword-only"
+        );
     }
 
     #[test]
@@ -408,7 +447,13 @@ mod tests {
 
     #[test]
     fn keyword_unicode_cyrillic() {
-        let r = make_record("PRD-001", "Аутентификация", "Логин через OAuth", "active", 0.0);
+        let r = make_record(
+            "PRD-001",
+            "Аутентификация",
+            "Логин через OAuth",
+            "active",
+            0.0,
+        );
         assert_eq!(keyword_score(&r, "аутентификация"), 1.0);
         assert!((keyword_score(&r, "логин") - 0.5).abs() < 0.001);
     }

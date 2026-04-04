@@ -54,11 +54,21 @@ pub async fn search(
                 Some(id) => id.to_string(),
                 None => continue,
             };
-            let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let kind = fm.get("kind").and_then(|v| v.as_str())
+            let title = fm
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let kind = fm
+                .get("kind")
+                .and_then(|v| v.as_str())
                 .unwrap_or_else(|| dir_name.trim_end_matches('s'))
                 .to_string();
-            let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("Draft").to_string();
+            let status = fm
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Draft")
+                .to_string();
 
             // Apply kind filter
             if let Some(filter) = kind_filter {
@@ -125,7 +135,15 @@ mod tests {
         ws
     }
 
-    fn write_artifact(ws: &std::path::Path, subdir: &str, filename: &str, id: &str, kind: &str, title: &str, body: &str) {
+    fn write_artifact(
+        ws: &std::path::Path,
+        subdir: &str,
+        filename: &str,
+        id: &str,
+        kind: &str,
+        title: &str,
+        body: &str,
+    ) {
         let content = format!(
             "---\nid: {}\ntitle: {}\nkind: {}\nstatus: Draft\n---\n\n{}\n",
             id, title, kind, body
@@ -137,7 +155,15 @@ mod tests {
     async fn search_finds_match_in_title() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
-        write_artifact(&ws, "prds", "PRD-001-auth.md", "PRD-001", "prd", "Authentication System", "Some body content.");
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-001-auth.md",
+            "PRD-001",
+            "prd",
+            "Authentication System",
+            "Some body content.",
+        );
 
         let hits = search(&ws, "authentication", None).await.unwrap();
         assert_eq!(hits.len(), 1);
@@ -149,7 +175,15 @@ mod tests {
     async fn search_finds_match_in_body() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
-        write_artifact(&ws, "rfcs", "RFC-001-search.md", "RFC-001", "rfc", "Search Feature", "Implement full-text search with LanceDB.");
+        write_artifact(
+            &ws,
+            "rfcs",
+            "RFC-001-search.md",
+            "RFC-001",
+            "rfc",
+            "Search Feature",
+            "Implement full-text search with LanceDB.",
+        );
 
         let hits = search(&ws, "lancedb", None).await.unwrap();
         assert_eq!(hits.len(), 1);
@@ -161,7 +195,15 @@ mod tests {
     async fn search_is_case_insensitive() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
-        write_artifact(&ws, "prds", "PRD-002-perf.md", "PRD-002", "prd", "Performance Goals", "NFR requirements here.");
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-002-perf.md",
+            "PRD-002",
+            "prd",
+            "Performance Goals",
+            "NFR requirements here.",
+        );
 
         let hits = search(&ws, "PERFORMANCE", None).await.unwrap();
         assert_eq!(hits.len(), 1);
@@ -171,8 +213,24 @@ mod tests {
     async fn search_applies_kind_filter() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
-        write_artifact(&ws, "prds", "PRD-001-x.md", "PRD-001", "prd", "Shared Keyword", "");
-        write_artifact(&ws, "rfcs", "RFC-001-x.md", "RFC-001", "rfc", "Shared Keyword", "");
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-001-x.md",
+            "PRD-001",
+            "prd",
+            "Shared Keyword",
+            "",
+        );
+        write_artifact(
+            &ws,
+            "rfcs",
+            "RFC-001-x.md",
+            "RFC-001",
+            "rfc",
+            "Shared Keyword",
+            "",
+        );
 
         // Filter to only rfcs
         let hits = search(&ws, "shared keyword", Some("rfc")).await.unwrap();
@@ -184,7 +242,15 @@ mod tests {
     async fn search_returns_empty_when_no_match() {
         let tmp = TempDir::new().unwrap();
         let ws = setup_workspace(&tmp);
-        write_artifact(&ws, "prds", "PRD-001-x.md", "PRD-001", "prd", "Title Here", "Body here.");
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-001-x.md",
+            "PRD-001",
+            "prd",
+            "Title Here",
+            "Body here.",
+        );
 
         let hits = search(&ws, "nonexistent-term-xyz", None).await.unwrap();
         assert!(hits.is_empty());

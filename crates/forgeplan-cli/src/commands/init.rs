@@ -7,7 +7,7 @@ use console::style;
 
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
-use forgeplan_core::workspace::{find_workspace, init_workspace, FORGEPLAN_DIR};
+use forgeplan_core::workspace::{FORGEPLAN_DIR, find_workspace, init_workspace};
 
 use crate::ui;
 
@@ -44,7 +44,7 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
         } else {
             let proceed = cliclack::confirm(
                 "WARNING: --force will delete ALL artifacts in .forgeplan/. \
-                 Run `forgeplan export` first to backup. Continue?"
+                 Run `forgeplan export` first to backup. Continue?",
             )
             .initial_value(false)
             .interact()?;
@@ -109,8 +109,16 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
         .item("claude", "Claude Code", ".mcp.json + CLAUDE.md section")
         .item("cursor", "Cursor", ".mcp.json + .cursorrules")
         .item("codex", "Codex", "AGENTS.md (coming soon)")
-        .item("gemini", "Gemini CLI", ".gemini/settings.json (coming soon)")
-        .item("copilot", "GitHub Copilot", "copilot-instructions.md (coming soon)")
+        .item(
+            "gemini",
+            "Gemini CLI",
+            ".gemini/settings.json (coming soon)",
+        )
+        .item(
+            "copilot",
+            "GitHub Copilot",
+            "copilot-instructions.md (coming soon)",
+        )
         .interact()?;
 
     // Spinner — create workspace (with rollback on failure)
@@ -134,9 +142,15 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
     // Log "coming soon" for unimplemented agents
     for agent in &agents {
         match *agent {
-            "codex" => { cliclack::log::info("Codex: AGENTS.md support coming soon")?; }
-            "gemini" => { cliclack::log::info("Gemini CLI: config support coming soon")?; }
-            "copilot" => { cliclack::log::info("Copilot: instructions support coming soon")?; }
+            "codex" => {
+                cliclack::log::info("Codex: AGENTS.md support coming soon")?;
+            }
+            "gemini" => {
+                cliclack::log::info("Gemini CLI: config support coming soon")?;
+            }
+            "copilot" => {
+                cliclack::log::info("Copilot: instructions support coming soon")?;
+            }
             _ => {}
         }
     }
@@ -168,9 +182,7 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             }
         };
 
-        let hooks = settings_obj
-            .entry("hooks")
-            .or_insert(serde_json::json!({}));
+        let hooks = settings_obj.entry("hooks").or_insert(serde_json::json!({}));
 
         // Ensure hooks is an object
         if !hooks.is_object() {
@@ -216,7 +228,10 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
                     "timeout": 5
                 }]
             });
-            user_prompt.as_array_mut().expect("just ensured array").push(hook_entry);
+            user_prompt
+                .as_array_mut()
+                .expect("just ensured array")
+                .push(hook_entry);
             fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
             cliclack::log::success("SessionStart hook configured in .claude/settings.json")?;
             true
@@ -280,12 +295,11 @@ async fn init_with_rollback(cwd: &std::path::Path, project_name: &str) -> Result
 }
 
 /// Safely remove a workspace directory, guarding against symlinks and paths outside cwd.
-async fn safe_remove_workspace(
-    workspace: &std::path::Path,
-    cwd: &std::path::Path,
-) -> Result<()> {
+async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Path) -> Result<()> {
     // Guard: workspace must be inside cwd
-    let canonical_ws = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let canonical_ws = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     if !canonical_ws.starts_with(&canonical_cwd) {
         anyhow::bail!(
@@ -354,7 +368,10 @@ fn agent_display_name(agent: &str) -> &str {
 
 /// Run scan-import after init to discover and import existing docs.
 async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
-    println!("\n  {} Scanning for existing documents...", style("◉").cyan());
+    println!(
+        "\n  {} Scanning for existing documents...",
+        style("◉").cyan()
+    );
 
     let store = LanceStore::init(workspace).await?;
     let options = ScanImportOptions::default();

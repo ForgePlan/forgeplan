@@ -18,11 +18,7 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
         .collect();
 
     if !dependents.is_empty() {
-        eprintln!(
-            "  WARNING: {} has {} dependent(s):",
-            id,
-            dependents.len()
-        );
+        eprintln!("  WARNING: {} has {} dependent(s):", id, dependents.len());
         for (source, _, rel) in &dependents {
             eprintln!("    {} --{}--> {}", source, rel, id);
         }
@@ -39,8 +35,20 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
     if !yes {
         anyhow::bail!(
             "About to delete {} \"{}\". This cannot be undone. Use --yes to confirm.",
-            record.id, record.title
+            record.id,
+            record.title
         );
+    }
+
+    // Cascade: delete all relations involving this artifact.
+    // Count from already-fetched data to avoid double table scan.
+    let relation_count = all_relations
+        .iter()
+        .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
+        .count();
+    if relation_count > 0 {
+        store.delete_relations_for_artifact(id).await?;
+        eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
     }
 
     // Delete from LanceDB

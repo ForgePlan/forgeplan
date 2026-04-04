@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use forgeplan_core::graph::topological;
 
 use crate::commands::common;
@@ -10,14 +8,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let all_relations = store.get_all_relations().await?;
 
     let all_records = store.list_records(None).await?;
-    let active_ids: HashSet<String> = all_records
-        .iter()
-        .filter(|r| r.status == "active")
-        .map(|r| r.id.clone())
-        .collect();
+    let resolved_ids = common::resolved_ids(&all_records);
 
     if let Some(artifact_id) = id {
-        let blocked_by = topological::get_blocked_by(artifact_id, &all_relations, &active_ids);
+        let blocked_by = topological::get_blocked_by(artifact_id, &all_relations, &resolved_ids);
         if json {
             let data = serde_json::json!({
                 "id": artifact_id,
@@ -33,7 +27,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             println!("  {} is BLOCKED by:", artifact_id);
             let mut blocker_pairs = Vec::new();
             for dep in &blocked_by {
-                let status = if active_ids.contains(dep) { "active" } else { "draft" };
+                let status = all_records
+                    .iter()
+                    .find(|r| r.id.eq_ignore_ascii_case(dep))
+                    .map(|r| r.status.as_str())
+                    .unwrap_or("unknown");
                 println!("    -> {} ({})", dep, status);
                 blocker_pairs.push((dep.clone(), status.to_string()));
             }
@@ -43,7 +41,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             }
         }
     } else {
-        let result = topological::kahn_sort(&all_relations, &active_ids);
+        let result = topological::kahn_sort(&all_relations, &resolved_ids);
 
         if json {
             let data = serde_json::json!({

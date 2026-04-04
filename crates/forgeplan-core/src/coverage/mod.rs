@@ -64,10 +64,7 @@ async fn find_source_directories(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let dir_name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if dir_name.starts_with('.')
             || dir_name == "target"
             || dir_name == "node_modules"
@@ -113,7 +110,23 @@ async fn find_source_directories(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 fn is_source_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|ext| matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java" | "kt" | "swift" | "c" | "cpp" | "h"))
+        .map(|ext| {
+            matches!(
+                ext,
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "swift"
+                    | "c"
+                    | "cpp"
+                    | "h"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -127,7 +140,10 @@ async fn count_files_and_lines(dir: &Path) -> anyhow::Result<(usize, usize)> {
         let path = entry.path();
         if path.is_file() && is_source_file(&path) {
             // Skip files > 10 MB to prevent DoS
-            let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+            let size = tokio::fs::metadata(&path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
             if size > 10 * 1024 * 1024 {
                 continue;
             }
@@ -413,7 +429,10 @@ mod tests {
         store.create_artifact(&art).await.unwrap();
 
         let updated = backfill_affected_files(&store).await.unwrap();
-        assert!(updated.is_empty(), "Should skip artifact with Affected Scope alias");
+        assert!(
+            updated.is_empty(),
+            "Should skip artifact with Affected Scope alias"
+        );
     }
 
     #[tokio::test]

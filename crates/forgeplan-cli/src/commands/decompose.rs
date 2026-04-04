@@ -23,13 +23,7 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
         record.id, llm_config.provider, llm_config.model
     );
 
-    let tasks = decompose::decompose(
-        &llm_config,
-        &record.id,
-        &record.title,
-        &record.body,
-    )
-    .await?;
+    let tasks = decompose::decompose(&llm_config, &record.id, &record.title, &record.body).await?;
 
     println!("{}", tasks);
 

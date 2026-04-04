@@ -1,19 +1,57 @@
 # TODO — Forgeplan
 
-## Current: v0.12-dev (post-v0.12.0)
+## Current: v0.13-dev (post-v0.12.0)
 
 ### Stats
-- 54 CLI commands, 35 MCP tools, 716 tests
-- 124 dogfood artifacts (74 active, 32 draft, 16 deprecated)
-- ~26K LOC Rust, 41MB release binary
-- PRs #60-#85 merged
-- E2E smoke test: 193 tests, 92.7% pass rate (179 PASS, 8 FAIL, 6 SKIP)
-- Smart search by default (keyword + semantic + graph boosters)
-- MCP methodology hints (_next_action in tool responses)
-- 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
-- Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
-- MemoryDriver: remember/recall commands (RFC-003 Phase 2)
-- Lifecycle v2: stale/renew/reopen, terminal deprecated/superseded (ADR-005)
+- 56 CLI commands, 37 MCP tools, 753 tests (79 CLI integration, 612 core, 25 MCP)
+- 132 dogfood artifacts (85 active, 12 draft, 33 deprecated, 2 superseded)
+- ~26K LOC Rust, 43MB release binary
+- PRs #60-#97 merged
+- E2E: 139 commands tested (Waves 1-11 complete), 0 failures
+- LLM: gemini-3-flash-preview (benchmarked 4 models, 7 artifacts)
+- Distribution: cargo-dist v0.31.0, 5 targets, brew + install.sh + checksums
+- Pipeline: Code→Audit→Fix→Test→Fmt→Lint→Verify→PR
+- ADI mandatory for Standard+ depth (CLAUDE.md methodology update)
+
+### P0: Distribution Pipeline — Sprint 10 (PRD-023) ✅
+- [x] PRD-023 shaped + validated (8 FR, 4 journeys, 4 AC, Deep depth)
+- [x] ADI reasoning: 3 hypotheses → H1 cargo-dist selected (High confidence)
+- [x] cargo-dist v0.31.0 integrated (dist-workspace.toml, release.yml generated)
+- [x] 5 targets: macOS arm64/x86, Linux x86/musl, Windows x86
+- [x] Installers: shell (install.sh) + Homebrew (AiDogfood/homebrew-tap)
+- [x] Cargo.toml metadata: homepage, keywords, categories for crates.io
+- [x] 2-agent audit: 4C + 3H + 3M findings → all fixed
+- [x] Action versions @v6/@v7 → @v4 (cargo-dist v0.31.0 bug)
+- [x] .gitignore: dist manifest files added
+- [x] Embed fix resolved: fastembed v5.13.0 compiles (upstream fixed)
+- [x] EVID-050 active, R_eff=0.80, PR #97 merged
+- [x] 753 tests, 0 failures, project healthy
+
+### P0: ADI Quality + LLM + E2E + Cleanup — Sprint 9 (PROB-021) ✅
+- [x] PROB-021: ADI prompt enriched (metadata, relations+titles, architecture hint)
+- [x] System prompt: justified confidence, project context awareness
+- [x] reason_temperature config field, architecture hint from file
+- [x] evidence_needed → CLI "Next steps" UX
+- [x] Model benchmark: 4 models × 7 artifacts → gemini-3-flash-preview selected
+- [x] E2E Wave 8 (LLM): 10/10 pass (generate, reason, decompose, capture, context)
+- [x] Draft cleanup: 34→12 (7 deleted, 15 deprecated)
+- [x] cargo fmt entire codebase (122 files) + pre-commit-fmt.sh hook
+- [x] Pipeline updated: +Fmt step, ADI mandatory for Standard+
+- [x] 6 new E2E integration tests (cascade delete, lifecycle, deprecated blocking)
+- [x] EVID-048 active, R_eff=0.90, PR #96 merged
+- [x] 753 tests, 0 failures, project healthy
+
+### P0: Graph Integrity — Sprint 8 (PROB-020) ✅
+- [x] BUG-1 (P1): blocked/order treated deprecated as blockers → resolved_ids
+- [x] BUG-2 (P1): delete cascade relations + phantom PROB-013 cleanup
+- [x] BUG-2b: unlink resilient for phantom relations
+- [x] 5-agent audit: 2 critical + 5 warnings → all fixed
+- [x] 2 new MCP tools: forgeplan_blocked + forgeplan_order
+- [x] validate_id_for_filter() whitelist, DRY common::resolved_ids()
+- [x] O(n²)→O(n) order.rs, double scan eliminated, TOCTOU fixed
+- [x] route "" rejects empty, memory excluded from orphan detection
+- [x] 83 E2E commands tested, E2E-TEST-PLAN.md created
+- [x] PROB-020 active, EVID-047 linked, R_eff=1.00, PR #95
 
 ### P0: E2E Bug Fixes — Sprint 2 (PROB-018)
 - [x] **BUG-001 (P1 Security):** `scan --path /tmp` path traversal — added project root boundary validation (coverage.rs)
@@ -82,7 +120,7 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] **e2e_coverage_backfill test**: pre-existing failure, unrelated to v0.12 changes.
 - [x] **Self-link guard** (PROB-019): `link X X` rejected with "Self-link not allowed" (Sprint 3).
 - [x] **Runbook outdated** (NOTE-031): deprecated — file doesn't exist in repo, discrepancies noted in TODO.
-- [ ] **LLM tests not run**: Wave 10 tests 10.1-10.5 skipped (no API key configured).
+- [x] **LLM tests**: Wave 8 (10 commands) passed with gemini-3-flash-preview. Wave 10 edge cases still pending.
 - [ ] **--semantic feature flag**: `search --semantic` fails at runtime if not compiled with `semantic-search`.
 
 ---
@@ -105,22 +143,21 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 | PROB-016 | Deprecated | CLI quality → 13 fixes, 6-agent audit | ✅ |
 | PROB-018 | Done | E2E Smoke Test Findings — 3 bugs fixed, 4-agent audit, PR #85 | ✅ |
 | PROB-019 | Deprecated | Self-link guard added — case-insensitive check, 4 tests | ✅ |
+| PROB-020 | Done | Graph integrity — 10 bugs, 5-agent audit, cascade delete, PR #95 | ✅ |
+| PROB-021 | Done | ADI quality — enriched prompt, model benchmark, fmt hooks, PR #96 | ✅ |
 
 ---
 
 ## Backlog (приоритизированный)
 
-### P1: Embed & Distribution
-- [ ] **Embed feature fix** — fastembed API v5 broke `--all-features` (upstream dep, feature flag propagation fixed in PROB-012)
-  - Блокирует: semantic/vector search (PRD-018)
-  - Downgraded from P0→P1: feature flag chain fixed, actual fix depends on fastembed upstream
+### P1: Release v0.13.0 (Distribution)
+- [ ] Tag v0.13.0 → trigger first automated release via GH Actions
+- [ ] Verify brew install + install.sh on clean machine
+- [ ] `cargo publish` (manual, safety hook blocks)
 
-### P1: Distribution & Adoption
-- [ ] brew tap formula (macOS)
-- [ ] GitHub Actions release pipeline (cross-compile linux/windows/mac)
-- [ ] Install script (`curl -fsSL https://forgeplan.dev/install.sh | sh`)
-- [ ] `fpl` alias symlink in install
-- [ ] Publish to crates.io (`cargo install forgeplan`)
+### ~~P1: Embed & Distribution~~ ✅
+- [x] **Embed feature fix** — fastembed v5.13.0 compiles, upstream resolved
+- [x] **Distribution** — cargo-dist v0.31.0, PR #97 merged (Sprint 10)
 
 ### P2: Integrity Follow-up (from FPF audit) ✅
 - [x] **Read-back verify** in update_r_eff_score — pre-check with get_record before update

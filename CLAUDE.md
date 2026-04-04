@@ -48,12 +48,21 @@ forgeplan route "описание задачи"   # определи depth и pi
 
 Если route говорит Standard+ → создай артефакт ПЕРЕД кодингом. Если Tactical → просто делай.
 
-### ОБЯЗАТЕЛЬНО при создании артефакта (Shape → Validate → Code):
+### ОБЯЗАТЕЛЬНО при создании артефакта (Shape → Validate → ADI → Code):
 
 1. **`forgeplan new prd "Title"`** — создаёт stub из шаблона
 2. **СРАЗУ заполни ВСЕ MUST секции** — Problem, Goals, Non-Goals, Target Users, Related, FR
 3. **`forgeplan validate PRD-XXX`** — убедись что PASS (0 MUST errors)
-4. **Только ПОСЛЕ validate PASS** — начинай писать код
+4. **ADI reasoning** (для Standard+ depth):
+   ```bash
+   forgeplan reason PRD-XXX           # 3+ гипотезы, justified confidence
+   ```
+   - Прочитай hypotheses — есть ли лучший подход чем первая мысль?
+   - Если все гипотезы сходятся → уверенно кодь
+   - Если есть конкурирующие подходы → обсуди с пользователем перед кодом
+   - Для Deep/Critical: ADI **ОБЯЗАТЕЛЕН**, нельзя пропускать
+   - Для Tactical: пропускай ADI
+5. **Только ПОСЛЕ validate PASS + ADI** — начинай писать код
 
 **НЕ оставляй PRD-заглушки.** Stub PRD без Problem/Goals = "решение без обоснования".
 
@@ -69,11 +78,38 @@ forgeplan route "описание задачи"   # определи depth и pi
 3. **Review и activate** — `forgeplan review PRD-XXX` → `forgeplan activate PRD-XXX`
 4. **Обнови прогресс** — чекбоксы FR `[x]` в PRD/RFC
 
-**Работа не закончена, пока: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.**
+**Работа не закончена, пока: PRD заполнен + validate PASS + ADI (для Standard+) + evidence создан + R_eff > 0 + activated.**
+
+> **ПОЛНЫЙ ЦИКЛ (Standard+ depth) — не пропускай шаги:**
+> ```
+> 1. Session Start: memory_recall → forgeplan health → orch query
+> 2. Route: forgeplan route "задача" → определить depth
+> 3. Shape: forgeplan new prd → заполнить MUST секции
+> 4. Validate: forgeplan validate → PASS
+> 5. ADI: forgeplan reason → 3+ гипотезы (Deep/Critical: ОБЯЗАТЕЛЕН)
+> 6. Branch: git checkout -b feat/xxx
+> 7. Code: реализация + тест на каждую pub fn
+> 8. Test: cargo test → 0 failures
+> 9. Fmt: cargo fmt → cargo fmt --check = 0 diffs
+> 10. Lint: cargo check → 0 warnings
+> 11. Audit: /audit (2+ агента) → Fix all HIGH/CRITICAL
+> 12. Evidence: forgeplan new evidence → link → score (R_eff > 0)
+> 13. Activate: forgeplan activate
+> 14. PR: git push → gh pr create --base dev
+> 15. Merge: gh pr merge (merge commit, НЕ squash)
+> 16. Sync: orch task → Done + memory_retain в Hindsight
+> 17. Progress: TODO.md + RFC/PRD чекбоксы
+> ```
+> **Tactical depth**: Route → Branch → Code → Test → Fmt → Lint → Commit. Без артефакта, ADI, evidence, PR.
 
 ### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
 
 ```bash
+# 0. Format + Lint
+cargo fmt                               # Форматирование
+cargo fmt -- --check                    # Проверка: 0 diffs
+cargo check                             # Компиляция: 0 warnings, 0 errors
+
 # 1. Unit tests
 cargo test                              # ВСЕ должны PASS
 
@@ -113,18 +149,62 @@ GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
    - `Skill("m06-error-handling")` — Result, Option, anyhow patterns
    - `Skill("m07-concurrency")` — async/Send/Sync issues
 2. **Каждая новая `pub fn` = тест сразу** — НЕ переходи к следующей функции без теста. Hook `commit-test-check.sh` блокирует коммит без тестов.
-3. **После написания кода** — `cargo test` обязателен. Не коммить если тесты fail
-4. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
+3. **После написания кода** — `cargo fmt` + `cargo test` обязательны. Не коммить если тесты fail или fmt dirty
+4. **Перед коммитом** — `cargo fmt` (форматирование) + `cargo check` (линтинг). Hook `pre-commit-fmt.sh` блокирует коммит без форматирования
+5. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
 5. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
 6. **Используй `/forge`** для structured workflow (route → create → validate → code)
 
-### ОБЯЗАТЕЛЬНО на session start:
+### ОБЯЗАТЕЛЬНО ��а session start (Unified Workflow Protocol):
 
 ```bash
-forgeplan health
+# 1. Память — восстановить контекст
+memory_recall("Forgeplan")              # Hindsight: что было в прошлых сессиях
+
+# 2. Методология — состояние проекта
+forgeplan health                        # Blind spots, orphans, stale
+
+# 3. Задачи — что в работе (если Orchestra доступна)
+# mcp__orch__query_entities(type: "task", status: "in_progress")
+
+# 4. Синтез — определить следующее действие
 ```
 
 Если health показывает **blind spots** (active без evidence) или **orphans** (без связей) — **FIX ИХ ПЕРВЫМИ**, до начала новой работы. Не копи долг.
+
+### ОБЯЗАТЕЛЬНО: Unified Workflow (Forgeplan × Orchestra × Hindsight)
+
+Три системы работают как одна:
+- **Forgeplan** = ЧТО делать и ПОЧЕМУ (артефакты, quality, evidence)
+- **Orchestra** = КТО делает и КОГДА (задачи, сроки, назначения)
+- **Hindsight** = ПАМЯТЬ (контекст между сессиями)
+
+**Правила синхронизации:**
+1. Новый артефакт (PRD/RFC/PROB) → создать task в Orchestra (если доступна)
+2. `forgeplan activate` → mark task Done в Orchestra
+3. PR merged → обновить Orchestra task + `memory_retain` в Hindsight
+4. Конец спринта → `memory_retain` с итогами в Hindsight
+5. Если Orchestra недоступна — записать в TODO.md что нужно синхронизи��овать
+6. **Brownfield**: если много артефактов завершено до подключения Orchestra — создать одну milestone задачу `[EPIC-XXX] Title — N artifacts completed (pre-Orchestra)` вместо N отдельных Done-задач. Установить Phase=Done, Status=Done, Sprint="Sprint 1-N"
+
+**Правила создания задач в Orchestra:**
+
+Naming:
+- С артефактом: `[ARTIFACT-ID] описание` — `[PRD-019] MCP session state machine`
+- Bug без артефакта: описание + Tags: Bug — `Embed feature fix — fastembed API v5`
+- Feature без артефакта: описание + Tags: Feature — `Distribution — brew, GH Actions`
+
+Fields (обязательные):
+- **Status** — Backlog / To Do / Doing / Review / Done
+- **Phase** — Shape / Validate / Code / Evidence / Done (маппинг: Backlog=Shape, Doing=Code, Done=Done)
+- **Depth** — Tactical / Standard / Deep / Critical (из `forgeplan route`)
+- **Artifact** — ID артефакта (только если есть: `PRD-019`, `PROB-021`)
+- **Type** — тип артефакта (только если есть Artifact: PRD / RFC / ADR / Problem / Evidence)
+- **Sprint** — текущий спринт (проставлять при взятии в работу)
+- **Branch** — git branch (проставлять при создании ветки)
+- **Tags** — Bug / Feature / Docs / Update (для задач без артефакта)
+
+**Полный гайд**: `docs/guides/UNIFIED-WORKFLOW.md`
 
 ## Как пользоваться Forgeplan CLI (MCP-first)
 
@@ -218,14 +298,14 @@ Validator принимает синонимы для секций:
 
 ### Dogfood insights (из реального использования):
 
-1. **Shape → Validate → Code → Evidence → Activate** — полный цикл, не пропускай шаги
+1. **Shape → Validate → ADI → Code → Evidence → Activate** — полный цикл, не пропускай шаги. ADI обязателен для Standard+ depth
 2. **Создавай артефакт → СРАЗУ заполняй MUST секции** — stub PRD = долг, который копится
 3. **Evidence делает R_eff живым** — без evidence все scores = 0.0, health кричит "blind spot"
 4. **Не активируй без кода** — active PRD без реализации = ложное обещание
 5. **Не создавай все 10 типов** — реально используются 6: PRD, RFC, ADR, Note, Problem, Epic
 6. **route перед работой** — определяет depth и pipeline, экономит время
 7. **health на session start** — показывает orphans, blind spots; **fix их первыми**
-8. **Работа не закончена пока**: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated
+8. **Работа не закончена пока**: PRD заполнен + validate PASS + ADI (Standard+) + evidence создан + R_eff > 0 + activated
 
 ## Как пользоваться методологией (quick reference)
 
@@ -233,10 +313,10 @@ Validator принимает синонимы для секций:
 
 ### Routing — один вопрос определяет depth:
 ```
-Тривиально, обратимо за день?  → Tactical: ничего или Note
-Фича 1-3 дня, есть выбор?      → Standard: Brief/PRD → RFC
-Необратимо, 1-2 недели?        → Deep: PRD → Spec → RFC → ADR
-Кросс-команда, стратегия?       → Critical: Epic → PRD[] → Spec[] → RFC[] → ADR[]
+Тривиально, обратимо за день?  → Tactical: ничего или Note (без ADI)
+Фича 1-3 дня, есть выбор?      → Standard: Brief/PRD → RFC (ADI рекомендуется)
+Необратимо, 1-2 недели?        → Deep: PRD → Spec → RFC → ADR (ADI ОБЯЗАТЕЛЕН)
+Кросс-команда, стратегия?       → Critical: Epic → PRD[] → Spec[] → RFC[] → ADR[] (ADI + review)
 ```
 
 ### 5 артефактов = 5 вопросов:
@@ -374,18 +454,19 @@ git checkout -b feat/my-feature
 #### PR pipeline (ОБЯЗАТЕЛЬНО — PR создаётся ТОЛЬКО после всех шагов):
 
 ```
-Code → Audit → Fix → Test → Lint → PR
+Code → Audit → Fix → Test → Fmt → Lint → PR
 ```
 
 1. **Code** — реализация фичи/фикса на feature branch
 2. **Audit** — минимум 2 агента (code review + test coverage), `/audit` со skills
 3. **Fix** — исправить все HIGH/CRITICAL findings из аудита
 4. **Test** — `cargo test` ВСЕ pass (кроме known preexisting failures)
-5. **Lint** — `cargo check` = 0 warnings, 0 errors
-6. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
-7. **PR** — только после шагов 1-6
+5. **Fmt** — `cargo fmt` (форматирование) → `cargo fmt -- --check` = 0 diffs. Hook `pre-commit-fmt.sh` блокирует коммит без форматирования
+6. **Lint** — `cargo check` = 0 warnings, 0 errors. Git pre-commit hook блокирует если не компилируется
+7. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
+8. **PR** — только после шагов 1-7
 
-**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, всё работает".
+**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, отформатировал, всё работает".
 
 #### PR formatting:
 - **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
@@ -566,12 +647,12 @@ R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
 - DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
 
 ### Depth Calibration
-| Complexity | Depth | Создаём |
-|-----------|-------|---------|
-| Quick fix, 1 файл | Tactical | Note или ничего |
-| Фича 1-3 дня | Standard | PRD (tactical) → RFC |
-| Новый модуль, 1-2 нед | Deep | PRD → Spec → RFC → ADR |
-| Подсистема, кросс-команда | Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] |
+| Complexity | Depth | Создаём | ADI |
+|-----------|-------|---------|:---:|
+| Quick fix, 1 файл | Tactical | Note или ничего | — |
+| Фича 1-3 дня | Standard | PRD (tactical) → RFC | рекомендуется |
+| Новый модуль, 1-2 нед | Deep | PRD → Spec → RFC → ADR | **обязателен** |
+| Подсистема, кросс-команда | Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] | **обязателен + review** |
 
 ### Workflow паттерны
 - **Adversarial Review** (BMAD) — reviewer MUST find problems; 0 issues = re-review
