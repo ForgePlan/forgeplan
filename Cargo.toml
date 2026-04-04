@@ -38,3 +38,7 @@ strip = true          # strip debug symbols (-16%)
 lto = "thin"          # link-time optimization (smaller + faster)
 codegen-units = 1     # better optimization (slower build)
 opt-level = "z"       # optimize for size (vs "3" = speed)
+
+# The profile that 'dist' will build with (inherits all release optimizations)
+[profile.dist]
+inherits = "release"
