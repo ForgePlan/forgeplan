@@ -27,3 +27,7 @@ node_modules/
 # Local todo files
 todo/
 crates/forgeplan-core/.fastembed_cache/
+
+# cargo-dist generated manifests
+dist-manifest.json
+plan-dist-manifest.json

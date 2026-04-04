@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 description = "CLI for Forgeplan — forge your plan from idea to implementation"
 keywords = ["project-management", "decision-records", "cli", "methodology", "artifacts"]
 categories = ["command-line-utilities", "development-tools"]

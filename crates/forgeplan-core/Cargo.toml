@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 description = "Core library for Forgeplan — artifact types, scoring, validation, storage drivers"
 keywords = ["project-management", "decision-records", "methodology", "artifacts"]
 categories = ["development-tools"]
