@@ -80,6 +80,28 @@ forgeplan route "описание задачи"   # определи depth и pi
 
 **Работа не закончена, пока: PRD заполнен + validate PASS + ADI (для Standard+) + evidence создан + R_eff > 0 + activated.**
 
+> **ПОЛНЫЙ ЦИКЛ (Standard+ depth) — не пропускай шаги:**
+> ```
+> 1. Session Start: memory_recall → forgeplan health → orch query
+> 2. Route: forgeplan route "задача" → определить depth
+> 3. Shape: forgeplan new prd → заполнить MUST секции
+> 4. Validate: forgeplan validate → PASS
+> 5. ADI: forgeplan reason → 3+ гипотезы (Deep/Critical: ОБЯЗАТЕЛЕН)
+> 6. Branch: git checkout -b feat/xxx
+> 7. Code: реализация + тест на каждую pub fn
+> 8. Test: cargo test → 0 failures
+> 9. Fmt: cargo fmt → cargo fmt --check = 0 diffs
+> 10. Lint: cargo check → 0 warnings
+> 11. Audit: /audit (2+ агента) → Fix all HIGH/CRITICAL
+> 12. Evidence: forgeplan new evidence → link → score (R_eff > 0)
+> 13. Activate: forgeplan activate
+> 14. PR: git push → gh pr create --base dev
+> 15. Merge: gh pr merge (merge commit, НЕ squash)
+> 16. Sync: orch task → Done + memory_retain в Hindsight
+> 17. Progress: TODO.md + RFC/PRD чекбоксы
+> ```
+> **Tactical depth**: Route → Branch → Code → Test → Fmt → Lint → Commit. Без артефакта, ADI, evidence, PR.
+
 ### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
 
 ```bash
