@@ -25,9 +25,7 @@
 - [x] .gitignore: dist manifest files added
 - [x] Embed fix resolved: fastembed v5.13.0 compiles (upstream fixed)
 - [x] EVID-050 active, R_eff=0.80, PR #97 merged
-- [ ] **NEXT**: Tag v0.13.0 → trigger first automated release
-- [ ] **NEXT**: Verify brew install + install.sh on clean machine
-- [ ] **NEXT**: `cargo publish` (manual, safety hook blocks)
+- [x] 753 tests, 0 failures, project healthy
 
 ### P0: ADI Quality + LLM + E2E + Cleanup — Sprint 9 (PROB-021) ✅
 - [x] PROB-021: ADI prompt enriched (metadata, relations+titles, architecture hint)
@@ -152,11 +150,14 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 
 ## Backlog (приоритизированный)
 
+### P1: Release v0.13.0 (Distribution)
+- [ ] Tag v0.13.0 → trigger first automated release via GH Actions
+- [ ] Verify brew install + install.sh on clean machine
+- [ ] `cargo publish` (manual, safety hook blocks)
+
 ### ~~P1: Embed & Distribution~~ ✅
 - [x] **Embed feature fix** — fastembed v5.13.0 compiles, upstream resolved
 - [x] **Distribution** — cargo-dist v0.31.0, PR #97 merged (Sprint 10)
-- [ ] **Publish to crates.io** — `cargo publish` (manual, after v0.13.0 tag)
-- [ ] **Verify install channels** — brew, install.sh, GH Release on clean machine
 
 ### P2: Integrity Follow-up (from FPF audit) ✅
 - [x] **Read-back verify** in update_r_eff_score — pre-check with get_record before update
