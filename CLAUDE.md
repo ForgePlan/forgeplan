@@ -186,6 +186,23 @@ forgeplan health                        # Blind spots, orphans, stale
 4. Конец спринта → `memory_retain` с итогами в Hindsight
 5. Если Orchestra недоступна — записать в TODO.md что нужно синхронизировать
 
+**Правила создания задач в Orchestra:**
+
+Naming:
+- С артефактом: `[ARTIFACT-ID] описание` — `[PRD-019] MCP session state machine`
+- Bug без артефакта: описание + Tags: Bug — `Embed feature fix — fastembed API v5`
+- Feature без артефакта: описание + Tags: Feature — `Distribution — brew, GH Actions`
+
+Fields (обязательные):
+- **Status** — Backlog / To Do / Doing / Review / Done
+- **Phase** — Shape / Validate / Code / Evidence / Done (маппинг: Backlog=Shape, Doing=Code, Done=Done)
+- **Depth** — Tactical / Standard / Deep / Critical (из `forgeplan route`)
+- **Artifact** — ID артефакта (только если есть: `PRD-019`, `PROB-021`)
+- **Type** — тип артефакта (только если есть Artifact: PRD / RFC / ADR / Problem / Evidence)
+- **Sprint** — текущий спринт (проставлять при взятии в работу)
+- **Branch** — git branch (проставлять при создании ветки)
+- **Tags** — Bug / Feature / Docs / Update (для задач без артефакта)
+
 **Полный гайд**: `docs/guides/UNIFIED-WORKFLOW.md`
 
 ## Как пользоваться Forgeplan CLI (MCP-first)
