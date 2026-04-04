@@ -3,17 +3,30 @@
 ## Current: v0.12-dev (post-v0.12.0)
 
 ### Stats
-- 56 CLI commands, 37 MCP tools, 740 tests
-- 131 dogfood artifacts (80 active, 28 draft, 18 deprecated)
+- 56 CLI commands, 37 MCP tools, 753 tests (79 CLI integration, 612 core, 25 MCP)
+- 130 dogfood artifacts (83 active, 12 draft, 33 deprecated, 2 superseded)
 - ~26K LOC Rust, 43MB release binary
-- PRs #60-#95 merged
-- E2E: 83 commands tested (clean tempdir + real workspace), 0 failures
-- Smart search by default (keyword + semantic + graph boosters)
-- MCP methodology hints (_next_action in tool responses)
-- 3-level routing: L0 keywords, L1 LLM classify, L2 FPF ADI reasoning
-- Estimate engine: multi-grade effort scoring (PRD-022, RFC-005, ADR-004)
-- MemoryDriver: remember/recall commands (RFC-003 Phase 2)
-- Lifecycle v2: stale/renew/reopen, terminal deprecated/superseded (ADR-005)
+- PRs #60-#96 merged
+- E2E: 93 commands tested (83 Wave 1-7 + 10 Wave 8 LLM), 0 failures
+- LLM: gemini-3-flash-preview (benchmarked 4 models, 7 artifacts)
+- ADI reasoning: enriched prompt, justified confidence, reason_temperature
+- cargo fmt: entire codebase formatted, pre-commit hook enforces
+- Pipeline: Code→Audit→Fix→Test→Fmt→Lint→Verify→PR
+- ADI mandatory for Standard+ depth (CLAUDE.md methodology update)
+
+### P0: ADI Quality + LLM + E2E + Cleanup — Sprint 9 (PROB-021) ✅
+- [x] PROB-021: ADI prompt enriched (metadata, relations+titles, architecture hint)
+- [x] System prompt: justified confidence, project context awareness
+- [x] reason_temperature config field, architecture hint from file
+- [x] evidence_needed → CLI "Next steps" UX
+- [x] Model benchmark: 4 models × 7 artifacts → gemini-3-flash-preview selected
+- [x] E2E Wave 8 (LLM): 10/10 pass (generate, reason, decompose, capture, context)
+- [x] Draft cleanup: 34→12 (7 deleted, 15 deprecated)
+- [x] cargo fmt entire codebase (122 files) + pre-commit-fmt.sh hook
+- [x] Pipeline updated: +Fmt step, ADI mandatory for Standard+
+- [x] 6 new E2E integration tests (cascade delete, lifecycle, deprecated blocking)
+- [x] EVID-048 active, R_eff=0.90, PR #96 merged
+- [x] 753 tests, 0 failures, project healthy
 
 ### P0: Graph Integrity — Sprint 8 (PROB-020) ✅
 - [x] BUG-1 (P1): blocked/order treated deprecated as blockers → resolved_ids
@@ -94,7 +107,7 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 - [ ] **e2e_coverage_backfill test**: pre-existing failure, unrelated to v0.12 changes.
 - [x] **Self-link guard** (PROB-019): `link X X` rejected with "Self-link not allowed" (Sprint 3).
 - [x] **Runbook outdated** (NOTE-031): deprecated — file doesn't exist in repo, discrepancies noted in TODO.
-- [ ] **LLM tests not run**: Wave 10 tests 10.1-10.5 skipped (no API key configured).
+- [x] **LLM tests**: Wave 8 (10 commands) passed with gemini-3-flash-preview. Wave 10 edge cases still pending.
 - [ ] **--semantic feature flag**: `search --semantic` fails at runtime if not compiled with `semantic-search`.
 
 ---
@@ -117,6 +130,8 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 | PROB-016 | Deprecated | CLI quality → 13 fixes, 6-agent audit | ✅ |
 | PROB-018 | Done | E2E Smoke Test Findings — 3 bugs fixed, 4-agent audit, PR #85 | ✅ |
 | PROB-019 | Deprecated | Self-link guard added — case-insensitive check, 4 tests | ✅ |
+| PROB-020 | Done | Graph integrity — 10 bugs, 5-agent audit, cascade delete, PR #95 | ✅ |
+| PROB-021 | Done | ADI quality — enriched prompt, model benchmark, fmt hooks, PR #96 | ✅ |
 
 ---
 
