@@ -184,7 +184,8 @@ forgeplan health                        # Blind spots, orphans, stale
 2. `forgeplan activate` → mark task Done в Orchestra
 3. PR merged → обновить Orchestra task + `memory_retain` в Hindsight
 4. Конец спринта → `memory_retain` с итогами в Hindsight
-5. Если Orchestra недоступна — записать в TODO.md что нужно синхронизировать
+5. Если Orchestra недоступна — записать в TODO.md что нужно синхронизи��овать
+6. **Brownfield**: если много артефактов завершено до подключения Orchestra — создать одну milestone задачу `[EPIC-XXX] Title — N artifacts completed (pre-Orchestra)` вместо N отдельных Done-задач. Установить Phase=Done, Status=Done, Sprint="Sprint 1-N"
 
 **Правила создания задач в Orchestra:**
 
