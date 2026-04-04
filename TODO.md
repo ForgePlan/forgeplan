@@ -1,18 +1,33 @@
 # TODO — Forgeplan
 
-## Current: v0.12-dev (post-v0.12.0)
+## Current: v0.13-dev (post-v0.12.0)
 
 ### Stats
 - 56 CLI commands, 37 MCP tools, 753 tests (79 CLI integration, 612 core, 25 MCP)
-- 130 dogfood artifacts (83 active, 12 draft, 33 deprecated, 2 superseded)
+- 132 dogfood artifacts (85 active, 12 draft, 33 deprecated, 2 superseded)
 - ~26K LOC Rust, 43MB release binary
-- PRs #60-#96 merged
+- PRs #60-#97 merged
 - E2E: 139 commands tested (Waves 1-11 complete), 0 failures
 - LLM: gemini-3-flash-preview (benchmarked 4 models, 7 artifacts)
-- ADI reasoning: enriched prompt, justified confidence, reason_temperature
-- cargo fmt: entire codebase formatted, pre-commit hook enforces
+- Distribution: cargo-dist v0.31.0, 5 targets, brew + install.sh + checksums
 - Pipeline: Code→Audit→Fix→Test→Fmt→Lint→Verify→PR
 - ADI mandatory for Standard+ depth (CLAUDE.md methodology update)
+
+### P0: Distribution Pipeline — Sprint 10 (PRD-023) ✅
+- [x] PRD-023 shaped + validated (8 FR, 4 journeys, 4 AC, Deep depth)
+- [x] ADI reasoning: 3 hypotheses → H1 cargo-dist selected (High confidence)
+- [x] cargo-dist v0.31.0 integrated (dist-workspace.toml, release.yml generated)
+- [x] 5 targets: macOS arm64/x86, Linux x86/musl, Windows x86
+- [x] Installers: shell (install.sh) + Homebrew (AiDogfood/homebrew-tap)
+- [x] Cargo.toml metadata: homepage, keywords, categories for crates.io
+- [x] 2-agent audit: 4C + 3H + 3M findings → all fixed
+- [x] Action versions @v6/@v7 → @v4 (cargo-dist v0.31.0 bug)
+- [x] .gitignore: dist manifest files added
+- [x] Embed fix resolved: fastembed v5.13.0 compiles (upstream fixed)
+- [x] EVID-050 active, R_eff=0.80, PR #97 merged
+- [ ] **NEXT**: Tag v0.13.0 → trigger first automated release
+- [ ] **NEXT**: Verify brew install + install.sh on clean machine
+- [ ] **NEXT**: `cargo publish` (manual, safety hook blocks)
 
 ### P0: ADI Quality + LLM + E2E + Cleanup — Sprint 9 (PROB-021) ✅
 - [x] PROB-021: ADI prompt enriched (metadata, relations+titles, architecture hint)
@@ -137,17 +152,11 @@ Fixed in commit d84bc69 (fix/prob-012-integrity-remediation). 2 audit rounds, 40
 
 ## Backlog (приоритизированный)
 
-### P1: Embed & Distribution
-- [ ] **Embed feature fix** — fastembed API v5 broke `--all-features` (upstream dep, feature flag propagation fixed in PROB-012)
-  - Блокирует: semantic/vector search (PRD-018)
-  - Downgraded from P0→P1: feature flag chain fixed, actual fix depends on fastembed upstream
-
-### P1: Distribution & Adoption
-- [ ] brew tap formula (macOS)
-- [ ] GitHub Actions release pipeline (cross-compile linux/windows/mac)
-- [ ] Install script (`curl -fsSL https://forgeplan.dev/install.sh | sh`)
-- [ ] `fpl` alias symlink in install
-- [ ] Publish to crates.io (`cargo install forgeplan`)
+### ~~P1: Embed & Distribution~~ ✅
+- [x] **Embed feature fix** — fastembed v5.13.0 compiles, upstream resolved
+- [x] **Distribution** — cargo-dist v0.31.0, PR #97 merged (Sprint 10)
+- [ ] **Publish to crates.io** — `cargo publish` (manual, after v0.13.0 tag)
+- [ ] **Verify install channels** — brew, install.sh, GH Release on clean machine
 
 ### P2: Integrity Follow-up (from FPF audit) ✅
 - [x] **Read-back verify** in update_r_eff_score — pre-check with get_record before update
