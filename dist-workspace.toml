@@ -18,3 +18,5 @@ tap = "AiDogfood/homebrew-tap"
 publish-jobs = ["homebrew"]
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }
+# Allow dirty CI files (we patched action versions v6→v4)
+allow-dirty = ["ci"]
