@@ -219,12 +219,20 @@ export default function CrystallizationAnimation({ progress }: Props) {
     centerDot.setAttribute('r', '12'); centerDot.setAttribute('fill', COLORS.ember); centerDot.setAttribute('opacity', '0');
     svg.appendChild(centerDot);
 
-    const brandText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    brandText.setAttribute('x', String(CX + 60)); brandText.setAttribute('y', String(CY + 8));
-    brandText.setAttribute('font-family', 'Space Grotesk, system-ui, sans-serif');
-    brandText.setAttribute('font-size', '42'); brandText.setAttribute('font-weight', '400');
-    brandText.setAttribute('fill', COLORS.fg); brandText.setAttribute('opacity', '0');
-    svg.appendChild(brandText);
+    // Brand text as two parts: "F" + dot (replaces "o") + "rge your plan"
+    const brandF = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    brandF.setAttribute('font-family', 'Space Grotesk, system-ui, sans-serif');
+    brandF.setAttribute('font-size', '42'); brandF.setAttribute('font-weight', '400');
+    brandF.setAttribute('fill', COLORS.fg); brandF.setAttribute('opacity', '0');
+    brandF.textContent = 'F';
+    svg.appendChild(brandF);
+
+    const brandRest = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    brandRest.setAttribute('font-family', 'Space Grotesk, system-ui, sans-serif');
+    brandRest.setAttribute('font-size', '42'); brandRest.setAttribute('font-weight', '400');
+    brandRest.setAttribute('fill', COLORS.fg); brandRest.setAttribute('opacity', '0');
+    svg.appendChild(brandRest);
+
 
     // === ANIMATION LOOP ===
     function tick() {
@@ -351,52 +359,57 @@ export default function CrystallizationAnimation({ progress }: Props) {
           isoLines[idx].setAttribute('opacity', String(isoOp));
         });
 
-        // Phase 4b: dot detaches from cube, flies to "o" position (88-93%)
-        // Text: "F  rge your plan" (double space for dot)
-        // "F" ≈ 22px wide at font-size 42, dot r=13 needs ~32px gap
+        // Layout: "F" + ● (dot) + "rge your plan"
         const textX = CX - 120;
-        const dotTargetX = textX + 32; // center of "o" gap
+        const baseY = CY + 8;                     // text baseline
+        const fWidth = 24;                         // "F" glyph width at 42px
+        const dotR = 12;                           // dot radius
+        const gap = 4;                             // space around dot
+        const dotTargetX = textX + fWidth + gap + dotR;  // dot center X
+        const rgeX = dotTargetX + dotR + gap;      // "rge your plan" start X
+        const textCenterY = baseY - 42 * 0.25;    // vertical center of lowercase (rge)
 
+        // Phase 4b: dot flies from cube to "o" position (88-93%)
         if (sp < 0.88) {
-          // Dot still in cube
           centerDot.setAttribute('cx', String(CX + sx));
           centerDot.setAttribute('cy', String(CY));
         } else {
-          // Dot detaches and flies to "o" position
-          const detachT = Math.min((sp - 0.88) / 0.05, 1);
-          const detachEased = 1 - Math.pow(1 - detachT, 3);
-          const dotX = (CX + sx) + (dotTargetX - (CX + sx)) * detachEased;
-          // Y: from cube center to vertical center of text line (baseline - 0.35*fontSize)
-          const textCenterY = CY + 8 - 42 * 0.35; // ≈ CY - 6.7
-          const dotY = CY + (textCenterY - CY) * detachEased;
-          centerDot.setAttribute('cx', String(dotX));
-          centerDot.setAttribute('cy', String(dotY));
+          const dt = Math.min((sp - 0.88) / 0.05, 1);
+          const de = 1 - Math.pow(1 - dt, 3);
+          centerDot.setAttribute('cx', String((CX + sx) + (dotTargetX - (CX + sx)) * de));
+          centerDot.setAttribute('cy', String(CY + (textCenterY - CY) * de));
         }
         centerDot.setAttribute('opacity', String(dotOp));
 
-        // Phase 4c: text "F rge your plan" typewriter (88-100%)
-        // "F" appears first, then "rge your plan" after dot arrives
-        brandText.setAttribute('x', String(textX));
-        brandText.setAttribute('y', String(CY + 8));
-
+        // Phase 4c: "F" + "rge your plan" typewriter (88-100%)
         if (sp > 0.88) {
-          const textT = Math.min((sp - 0.88) / 0.12, 1);
-          const textEased = 1 - Math.pow(1 - textT, 2);
-          // Text without "o" — dot IS the "o". Extra space for dot width
-          const full = 'F  rge your plan';
-          const chars = Math.floor(textEased * (full.length + 1));
-          brandText.textContent = full.substring(0, Math.min(chars, full.length));
-          brandText.setAttribute('opacity', String(Math.min(textEased * 3, 1)));
+          const tt = Math.min((sp - 0.88) / 0.12, 1);
+          const op = Math.min(tt * 3, 1);
+
+          // "F" appears first
+          brandF.setAttribute('x', String(textX));
+          brandF.setAttribute('y', String(baseY));
+          brandF.setAttribute('opacity', String(op));
+
+          // "rge your plan" typewriter with slight delay
+          const rest = 'rge your plan';
+          const chars = Math.max(0, Math.floor((tt - 0.12) / 0.88 * (rest.length + 1)));
+          brandRest.setAttribute('x', String(rgeX));
+          brandRest.setAttribute('y', String(baseY));
+          brandRest.textContent = rest.substring(0, Math.min(chars, rest.length));
+          brandRest.setAttribute('opacity', String(op));
         } else {
-          brandText.setAttribute('opacity', '0');
-          brandText.textContent = '';
+          brandF.setAttribute('opacity', '0');
+          brandRest.setAttribute('opacity', '0');
+          brandRest.textContent = '';
         }
       } else {
         // Before phase 4: everything at center
         centerDot.setAttribute('cx', String(CX));
         centerDot.setAttribute('cy', String(CY));
         centerDot.setAttribute('opacity', String(dotOp));
-        brandText.setAttribute('opacity', '0'); brandText.textContent = '';
+        brandF.setAttribute('opacity', '0');
+        brandRest.setAttribute('opacity', '0'); brandRest.textContent = '';
         hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
         ISO_DEFS.forEach((def, idx) => {
           const [vx, vy] = hexVertex(CX, CY, HEX_RADII[3], def.vertex);
