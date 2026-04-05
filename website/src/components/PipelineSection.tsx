@@ -46,16 +46,14 @@ export default function PipelineSection() {
       <div className="sticky top-[36px] overflow-hidden" style={{ height: 'calc(100vh - 36px)' }}>
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] h-full">
 
-          {/* Left: Pipeline timeline */}
-          <div className="relative flex flex-col justify-center p-8 lg:p-12 border-r border-forge-line">
-            {/* Timeline: vertical line + dots ON line + dashed horizontal to text */}
-            <div className="relative h-full flex flex-col justify-center">
+          {/* Left: Pipeline timeline — aligned with right side */}
+          <div className="relative flex flex-col p-8 lg:py-10 lg:px-12 border-r border-forge-line">
+            <div className="flex flex-col justify-between h-full">
               {/* Steps — line is built from each item's left border */}
               <div>
                 {STEPS.map((step, i) => {
                   const stepFade = fade(step.start, 0.08);
                   const isLast = i === STEPS.length - 1;
-                  const isFirst = i === 0;
                   return (
                     <div key={i} style={{ opacity: stepFade, transform: `translateY(${(1 - stepFade) * 10}px)` }}>
                       {/* Dot row: dot + dashed line + title */}
@@ -105,8 +103,8 @@ export default function PipelineSection() {
             </div>
           </div>
 
-          {/* Right: Git-like branching graph + ADI */}
-          <div className="relative flex flex-col justify-center p-6 lg:p-10">
+          {/* Right: Git-like branching graph + ADI — aligned with left */}
+          <div className="relative flex flex-col p-6 lg:py-10 lg:px-10">
             <div className="absolute inset-0 opacity-15 bg-dot-grid" aria-hidden="true" />
 
             <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-4 relative z-10" style={{ opacity: fade(0.12) }}>
