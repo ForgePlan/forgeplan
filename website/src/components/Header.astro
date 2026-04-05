@@ -1,23 +1,26 @@
 ---
-// Grid header with bordered cells — QF-inspired, forge-branded
+// Grid header — full size on hero, shrinks to compact bar after scroll
+// Two states:
+//   Full:    px-4 pt-4, h-[72px], floating with border, all elements full size
+//   Compact: px-0 pt-0, h-[36px], full-width solid bar, everything 2x smaller
 ---
 
-<header class="fixed top-0 z-50 w-full px-4 pt-4">
-  <div class="border border-forge-line bg-forge-bg grid h-[72px] grid-cols-[72px_1fr_auto_72px]">
+<header id="site-header" class="fixed top-0 z-50 w-full header-full">
+  <div class="header-inner border border-forge-line bg-forge-bg grid grid-cols-[72px_1fr_auto_72px]">
     <!-- Logo -->
     <a href="/" aria-label="Forgeplan home" class="flex items-center justify-center border-r border-forge-line">
-      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <svg class="header-logo" viewBox="0 0 28 28" fill="none" aria-hidden="true">
         <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7" stroke="var(--color-forge-ember)" stroke-width="1.5" fill="none"/>
       </svg>
     </a>
 
     <!-- Brand -->
-    <div class="flex items-center px-4 border-r border-forge-line">
-      <span class="font-heading text-[15px] font-semibold tracking-[3px] text-forge-fg">FORGEPLAN</span>
+    <div class="flex items-center border-r border-forge-line header-brand-cell">
+      <span class="header-brand font-heading font-semibold tracking-[3px] text-forge-fg">FORGEPLAN</span>
     </div>
 
     <!-- Nav grid -->
-    <nav aria-label="Primary navigation" class="hidden lg:grid lg:grid-cols-[repeat(4,110px)_140px_100px] h-full">
+    <nav aria-label="Primary navigation" class="hidden lg:grid h-full header-nav">
       <a href="/getting-started/installation" class="nav-cell border-r border-forge-line">Docs</a>
       <a href="https://github.com/ForgePlan/forgeplan" class="nav-cell border-r border-forge-line" rel="noopener noreferrer" target="_blank">GitHub</a>
       <a href="/methodology/overview" class="nav-cell border-r border-forge-line">Guides</a>
@@ -26,26 +29,135 @@
       <a href="#install" class="nav-cell text-forge-ember font-medium">Install</a>
     </nav>
 
-    <!-- Theme toggle (visual only for now) -->
+    <!-- Theme toggle -->
     <div class="flex items-center justify-center" aria-hidden="true">
-      <div class="relative w-[56px] h-[56px] rounded-full border-[1.5px] border-forge-fg overflow-hidden">
+      <div class="header-toggle relative rounded-full border-[1.5px] border-forge-fg overflow-hidden">
         <div class="absolute top-0 right-0 w-1/2 h-full bg-forge-fg"></div>
       </div>
     </div>
   </div>
 </header>
 
+<script>
+  // Shrink header when leaving hero section
+  const header = document.getElementById('site-header');
+  if (header) {
+    let compact = false;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const shouldBeCompact = !entry.isIntersecting;
+        if (shouldBeCompact !== compact) {
+          compact = shouldBeCompact;
+          header.classList.toggle('header-full', !compact);
+          header.classList.toggle('header-compact', compact);
+        }
+      },
+      { threshold: 0, rootMargin: '-88px 0px 0px 0px' }
+    );
+    const hero = document.getElementById('hero');
+    if (hero) observer.observe(hero);
+  }
+</script>
+
 <style>
+  /* === TRANSITION === */
+  .header-inner,
+  .header-logo,
+  .header-brand,
+  .header-toggle,
+  .header-brand-cell,
+  .nav-cell {
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  #site-header {
+    transition: padding 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* === FULL STATE (hero visible) === */
+  .header-full {
+    padding: 16px 16px 0 16px;
+  }
+
+  .header-full .header-inner {
+    height: 72px;
+    grid-template-columns: 72px 1fr auto 72px;
+  }
+
+  .header-full .header-logo {
+    width: 28px;
+    height: 28px;
+  }
+
+  .header-full .header-brand {
+    font-size: 15px;
+  }
+
+  .header-full .header-brand-cell {
+    padding: 0 16px;
+  }
+
+  .header-full .header-nav {
+    grid-template-columns: repeat(4, 110px) 140px 100px;
+  }
+
+  .header-full .header-toggle {
+    width: 56px;
+    height: 56px;
+  }
+
+  .header-full .nav-cell {
+    font-size: 13px;
+  }
+
+  /* === COMPACT STATE (scrolled past hero) === */
+  .header-compact {
+    padding: 0;
+  }
+
+  .header-compact .header-inner {
+    height: 36px;
+    grid-template-columns: 36px auto auto 36px;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+  }
+
+  .header-compact .header-logo {
+    width: 16px;
+    height: 16px;
+  }
+
+  .header-compact .header-brand {
+    font-size: 11px;
+  }
+
+  .header-compact .header-brand-cell {
+    padding: 0 10px;
+  }
+
+  .header-compact .header-nav {
+    grid-template-columns: repeat(4, 70px) 90px 70px;
+  }
+
+  .header-compact .header-toggle {
+    width: 24px;
+    height: 24px;
+  }
+
+  .header-compact .nav-cell {
+    font-size: 11px;
+  }
+
+  /* === NAV CELL HOVER === */
   .nav-cell {
     display: flex;
     align-items: center;
     justify-content: center;
     font-family: var(--font-body);
-    font-size: 13px;
     color: var(--color-forge-fg);
     position: relative;
     overflow: hidden;
-    transition: color 0.3s;
   }
 
   .nav-cell::before {

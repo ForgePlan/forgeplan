@@ -33,7 +33,7 @@ export default function PipelineSection() {
 
   return (
     <StickySection id="pipeline" scrollLength="130%" onProgress={handleProgress} className="border-b border-forge-line">
-      <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] h-screen">
+      <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] h-screen pt-[36px]">
         {/* Left: Big text */}
         <div className="flex flex-col justify-between p-8 lg:p-12 border-r border-forge-line">
           <h2 className="font-heading text-5xl lg:text-[72px] font-normal leading-none"
