@@ -50,9 +50,9 @@ export default function PipelineSection() {
           <div className="relative flex flex-col justify-center p-8 lg:p-12 border-r border-forge-line">
             {/* Timeline: vertical line + dots ON line + dashed horizontal to text */}
             <div className="relative h-full flex flex-col justify-center">
-              {/* Vertical line */}
-              <div className="absolute left-[32px] lg:left-[40px] top-[8%] bottom-[8%] w-[2px] bg-forge-line"
-                style={{ opacity: fade(0.02) }} />
+              {/* Vertical line — center at 38px (dot center = paddingLeft 31 + radius 7 = 38) */}
+              <div className="absolute top-[8%] bottom-[8%] w-[2px] bg-forge-line"
+                style={{ left: '37px', opacity: fade(0.02) }} />
 
               <div className="space-y-5 lg:space-y-7">
                 {STEPS.map((step, i) => {
@@ -60,8 +60,8 @@ export default function PipelineSection() {
                   const isLast = i === STEPS.length - 1;
                   return (
                     <div key={i} className="flex items-start gap-0" style={{ opacity: stepFade, transform: `translateY(${(1 - stepFade) * 10}px)` }}>
-                      {/* Dot ON the line */}
-                      <div className="flex-shrink-0 flex items-center" style={{ width: '40px', paddingLeft: '25px' }}>
+                      {/* Dot centered on line: paddingLeft=31, dot=14px, center=31+7=38px = line position */}
+                      <div className="flex-shrink-0 flex items-center" style={{ width: '45px', paddingLeft: '31px' }}>
                         <div className={`w-[14px] h-[14px] rounded-full border-2 ${
                           isLast ? 'border-forge-ember bg-forge-ember' : 'border-forge-fg bg-forge-bg'
                         }`} />
