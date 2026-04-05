@@ -26,7 +26,7 @@ pub async fn find_stale(workspace: &Path) -> anyhow::Result<Vec<StaleArtifact>> 
         let mut read_dir = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
             let content = tokio::fs::read_to_string(&path).await?;
@@ -40,27 +40,27 @@ pub async fn find_stale(workspace: &Path) -> anyhow::Result<Vec<StaleArtifact>> 
                 .and_then(|v| v.as_str())
                 .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
 
-            if let Some(expiry) = valid_until {
-                if expiry < today {
-                    let id = fm.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                    let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or_default();
-                    let kind = fm
-                        .get("kind")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| dir_name.trim_end_matches('s'));
-                    let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("Draft");
-                    let days_expired = (today - expiry).num_days();
-                    stale.push(StaleArtifact {
-                        artifact: ArtifactSummary {
-                            id: id.to_string(),
-                            title: title.to_string(),
-                            kind: kind.to_string(),
-                            status: status.to_string(),
-                        },
-                        valid_until: expiry,
-                        days_expired,
-                    });
-                }
+            if let Some(expiry) = valid_until
+                && expiry < today
+            {
+                let id = fm.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+                let kind = fm
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| dir_name.trim_end_matches('s'));
+                let status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("Draft");
+                let days_expired = (today - expiry).num_days();
+                stale.push(StaleArtifact {
+                    artifact: ArtifactSummary {
+                        id: id.to_string(),
+                        title: title.to_string(),
+                        kind: kind.to_string(),
+                        status: status.to_string(),
+                    },
+                    valid_until: expiry,
+                    days_expired,
+                });
             }
         }
     }

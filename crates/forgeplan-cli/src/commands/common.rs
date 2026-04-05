@@ -61,11 +61,7 @@ pub fn extract_plain_text(body: &str) -> String {
     let mut lines = Vec::new();
     for line in body.lines() {
         if line.trim() == "---" {
-            if !in_frontmatter {
-                in_frontmatter = true;
-            } else {
-                in_frontmatter = false;
-            }
+            in_frontmatter = !in_frontmatter;
             continue;
         }
         if !in_frontmatter {
@@ -73,37 +69,6 @@ pub fn extract_plain_text(body: &str) -> String {
         }
     }
     lines.join(" ").trim().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_frontmatter_field_basic() {
-        let body = "---\nid: \"mem-test\"\ncategory: fact\nstatus: active\n---\n\nHello world";
-        assert_eq!(
-            extract_frontmatter_field(body, "category"),
-            Some("fact".to_string())
-        );
-        assert_eq!(
-            extract_frontmatter_field(body, "id"),
-            Some("mem-test".to_string())
-        );
-        assert_eq!(extract_frontmatter_field(body, "missing"), None);
-    }
-
-    #[test]
-    fn extract_plain_text_skips_frontmatter() {
-        let body = "---\nid: test\nkind: memory\n---\n\nThis is the content.";
-        assert_eq!(extract_plain_text(body), "This is the content.");
-    }
-
-    #[test]
-    fn extract_plain_text_no_frontmatter() {
-        let body = "Just plain text here.";
-        assert_eq!(extract_plain_text(body), "Just plain text here.");
-    }
 }
 
 /// Load and validate LLM config — fails early with actionable message if not configured.
@@ -175,4 +140,35 @@ pub async fn open_driver()
     let config = workspace::load_config(&ws)?;
     let storage_config = config.storage.unwrap_or_default();
     forgeplan_core::driver::factory::create_storage(&storage_config, &ws).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_frontmatter_field_basic() {
+        let body = "---\nid: \"mem-test\"\ncategory: fact\nstatus: active\n---\n\nHello world";
+        assert_eq!(
+            extract_frontmatter_field(body, "category"),
+            Some("fact".to_string())
+        );
+        assert_eq!(
+            extract_frontmatter_field(body, "id"),
+            Some("mem-test".to_string())
+        );
+        assert_eq!(extract_frontmatter_field(body, "missing"), None);
+    }
+
+    #[test]
+    fn extract_plain_text_skips_frontmatter() {
+        let body = "---\nid: test\nkind: memory\n---\n\nThis is the content.";
+        assert_eq!(extract_plain_text(body), "This is the content.");
+    }
+
+    #[test]
+    fn extract_plain_text_no_frontmatter() {
+        let body = "Just plain text here.";
+        assert_eq!(extract_plain_text(body), "Just plain text here.");
+    }
 }

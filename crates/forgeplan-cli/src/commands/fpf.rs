@@ -194,15 +194,15 @@ async fn count_md_files(dir: &std::path::Path) -> usize {
     if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
         while let Ok(Some(entry)) = rd.next_entry().await {
             let p = entry.path();
-            if p.is_dir() {
-                if let Ok(mut sub) = tokio::fs::read_dir(&p).await {
-                    while let Ok(Some(sub_entry)) = sub.next_entry().await {
-                        let sp = sub_entry.path();
-                        if sp.extension().map_or(false, |e| e == "md")
-                            && sp.file_name().map_or(false, |n| n != "_index.md")
-                        {
-                            count += 1;
-                        }
+            if p.is_dir()
+                && let Ok(mut sub) = tokio::fs::read_dir(&p).await
+            {
+                while let Ok(Some(sub_entry)) = sub.next_entry().await {
+                    let sp = sub_entry.path();
+                    if sp.extension().is_some_and(|e| e == "md")
+                        && sp.file_name().is_some_and(|n| n != "_index.md")
+                    {
+                        count += 1;
                     }
                 }
             }
@@ -226,7 +226,7 @@ pub async fn run_list() -> anyhow::Result<()> {
     }
 
     println!();
-    println!("  {:10}  {:5}  {}", "Section", "Lines", "Title");
+    println!("  {:10}  {:5}  Title", "Section", "Lines");
     println!("  {}", "-".repeat(60));
     for s in &sections {
         println!("  {:10}  {:5}  {}", s.section_id, s.line_count, s.title);

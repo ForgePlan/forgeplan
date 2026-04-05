@@ -57,7 +57,7 @@ pub async fn run() -> anyhow::Result<()> {
                         continue;
                     }
                     let path = &event.path;
-                    if path.extension().map_or(true, |e| e != "md") {
+                    if path.extension().is_none_or(|e| e != "md") {
                         continue;
                     }
                     if !seen.insert(path.clone()) {

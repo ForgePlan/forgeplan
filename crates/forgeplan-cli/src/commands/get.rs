@@ -34,10 +34,10 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     if let Some(ref author) = record.author {
         ui::kv("Author", author);
     }
-    if let Some(ref epic) = record.parent_epic {
-        if !epic.is_empty() {
-            ui::kv("Parent Epic", epic);
-        }
+    if let Some(ref epic) = record.parent_epic
+        && !epic.is_empty()
+    {
+        ui::kv("Parent Epic", epic);
     }
     if let Some(ref vu) = record.valid_until {
         ui::kv("Valid Until", vu);

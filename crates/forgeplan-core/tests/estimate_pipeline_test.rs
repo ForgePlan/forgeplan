@@ -1,10 +1,10 @@
 use forgeplan_core::estimate::types::*;
 use forgeplan_core::estimate::{calculator, confidence, domain, extractor, overrides, scorer};
-/// Integration smoke test for the full estimate pipeline:
-/// extractor → scorer → overrides → calculator → domain inference
-///
-/// Verifies that all components work together correctly end-to-end,
-/// including the DRY-refactored overrides and domain modules.
+// Integration smoke test for the full estimate pipeline:
+// extractor → scorer → overrides → calculator → domain inference
+//
+// Verifies that all components work together correctly end-to-end,
+// including the DRY-refactored overrides and domain modules.
 
 /// Realistic PRD body with FR table (like PRD-022).
 const PRD_BODY: &str = r#"---

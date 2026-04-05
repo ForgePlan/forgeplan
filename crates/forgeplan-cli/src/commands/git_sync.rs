@@ -56,19 +56,18 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         match file.status {
             'D' => {
                 // File deleted in git — extract ID from filename
-                if let Some(id) = extract_id_from_path(&file.path) {
-                    if store.get_record(&id).await?.is_some() {
-                        store.delete_artifact(&id).await?;
-                        let entry = forgeplan_core::changelog::ChangeLogEntry::new(
-                            &id, "delete", "git_sync",
-                        )
-                        .with_commit(&commit_hash);
-                        if let Err(e) = store.log_change(&entry).await {
-                            eprintln!("  Warning: changelog write failed for {}: {}", id, e);
-                        }
-                        println!("  DEL  {} (removed in git)", id);
-                        deleted += 1;
+                if let Some(id) = extract_id_from_path(&file.path)
+                    && store.get_record(&id).await?.is_some()
+                {
+                    store.delete_artifact(&id).await?;
+                    let entry =
+                        forgeplan_core::changelog::ChangeLogEntry::new(&id, "delete", "git_sync")
+                            .with_commit(&commit_hash);
+                    if let Err(e) = store.log_change(&entry).await {
+                        eprintln!("  Warning: changelog write failed for {}: {}", id, e);
                     }
+                    println!("  DEL  {} (removed in git)", id);
+                    deleted += 1;
                 }
             }
             'A' | 'M' => {
@@ -159,17 +158,17 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 };
 
                 // Restore links from frontmatter
-                if let Some(links_val) = fm.get("links") {
-                    if let Some(links_arr) = links_val.as_sequence() {
-                        let existing = store.get_relations(&id).await.unwrap_or_default();
-                        for link in links_arr {
-                            let target = link.get("target").and_then(|v| v.as_str());
-                            let relation = link.get("relation").and_then(|v| v.as_str());
-                            if let (Some(t), Some(r)) = (target, relation) {
-                                if !existing.iter().any(|(et, er)| et == t && er == r) {
-                                    let _ = store.add_relation(&id, t, r).await;
-                                }
-                            }
+                if let Some(links_val) = fm.get("links")
+                    && let Some(links_arr) = links_val.as_sequence()
+                {
+                    let existing = store.get_relations(&id).await.unwrap_or_default();
+                    for link in links_arr {
+                        let target = link.get("target").and_then(|v| v.as_str());
+                        let relation = link.get("relation").and_then(|v| v.as_str());
+                        if let (Some(t), Some(r)) = (target, relation)
+                            && !existing.iter().any(|(et, er)| et == t && er == r)
+                        {
+                            let _ = store.add_relation(&id, t, r).await;
                         }
                     }
                 }

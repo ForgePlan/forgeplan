@@ -6,7 +6,7 @@ use super::types::{Complexity, ScoredItem, TaskType, WorkItem};
 /// Score work items with rule-based heuristics.
 /// Assigns Fibonacci complexity and task type based on description keywords.
 pub fn score_items(items: &[WorkItem]) -> Vec<ScoredItem> {
-    items.iter().map(|item| score_single(item)).collect()
+    items.iter().map(score_single).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -113,10 +113,7 @@ pub async fn score_items_with_llm(items: &[WorkItem], llm_config: &LlmConfig) ->
     let prompt = build_llm_prompt(items);
 
     match client.generate(&prompt, Some(LLM_SCORER_SYSTEM)).await {
-        Ok(response) => {
-            let scored = parse_llm_response(&response, items);
-            scored
-        }
+        Ok(response) => parse_llm_response(&response, items),
         Err(_) => {
             // LLM failed — graceful fallback to rule-based
             score_items(items)

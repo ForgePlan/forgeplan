@@ -49,7 +49,7 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
     // Styled depth
     println!(
         "## Depth: {}",
-        ui::styled_depth(&format!("{}", depth_display(&result.depth)))
+        ui::styled_depth(depth_display(&result.depth))
     );
     println!();
 
@@ -81,7 +81,7 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
                     "- {}: {} → {}+",
                     style(&t.id).yellow(),
                     t.description,
-                    ui::styled_depth(&format!("{}", depth_display(&t.minimum_depth)))
+                    ui::styled_depth(depth_display(&t.minimum_depth))
                 );
             }
         }

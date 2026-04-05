@@ -86,10 +86,10 @@ async fn find_source_directories(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
             // Skip symlinks to prevent traversal outside project
-            if let Ok(meta) = tokio::fs::symlink_metadata(&path).await {
-                if meta.file_type().is_symlink() {
-                    continue;
-                }
+            if let Ok(meta) = tokio::fs::symlink_metadata(&path).await
+                && meta.file_type().is_symlink()
+            {
+                continue;
             }
             if path.is_dir() {
                 stack.push(path);

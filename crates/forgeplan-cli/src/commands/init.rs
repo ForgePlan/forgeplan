@@ -289,7 +289,7 @@ async fn init_with_rollback(cwd: &std::path::Path, project_name: &str) -> Result
     if let Err(e) = LanceStore::init(&ws).await {
         // Rollback: remove partially created workspace
         let _ = tokio::fs::remove_dir_all(&ws).await;
-        return Err(e.into());
+        return Err(e);
     }
     Ok(())
 }

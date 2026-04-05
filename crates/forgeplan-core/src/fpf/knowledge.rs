@@ -54,7 +54,7 @@ pub async fn ingest_fpf_directory(sections_dir: &Path) -> anyhow::Result<Vec<Ing
         let mut md_files: Vec<PathBuf> = Vec::new();
         while let Some(entry) = files.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "md") {
+            if path.extension().is_some_and(|e| e == "md") {
                 let name = path
                     .file_name()
                     .unwrap_or_default()

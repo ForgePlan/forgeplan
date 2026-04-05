@@ -52,10 +52,10 @@ pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile
         for entry in entries.flatten() {
             let path = entry.path();
             // Skip symlinks
-            if let Ok(meta) = std::fs::symlink_metadata(&path) {
-                if meta.file_type().is_symlink() {
-                    continue;
-                }
+            if let Ok(meta) = std::fs::symlink_metadata(&path)
+                && meta.file_type().is_symlink()
+            {
+                continue;
             }
             if path.is_file() && has_markdown_ext(&path) {
                 // Skip oversized files
@@ -120,10 +120,10 @@ fn collect_markdown_recursive_depth(
     for entry in entries.flatten() {
         let path = entry.path();
         // Skip symlinks to prevent traversal outside project
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
-            if meta.file_type().is_symlink() {
-                continue;
-            }
+        if let Ok(meta) = std::fs::symlink_metadata(&path)
+            && meta.file_type().is_symlink()
+        {
+            continue;
         }
         if path.is_dir() {
             let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

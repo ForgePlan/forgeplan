@@ -32,12 +32,10 @@ pub async fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyh
             if let Some(rest) = name
                 .to_uppercase()
                 .strip_prefix(&format!("{}-", kind_prefix))
+                && let Some(num_str) = rest.split('-').next()
+                && let Ok(num) = num_str.parse::<u32>()
             {
-                if let Some(num_str) = rest.split('-').next() {
-                    if let Ok(num) = num_str.parse::<u32>() {
-                        max_num = max_num.max(num);
-                    }
-                }
+                max_num = max_num.max(num);
             }
         }
     }
@@ -67,7 +65,7 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
         let mut read_dir = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
             let content = tokio::fs::read_to_string(&path).await?;
@@ -93,10 +91,10 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
 }
 
 fn fm_string(fm: &Frontmatter, key: &str) -> Option<String> {
-    fm.get(key).and_then(|v| match v {
-        serde_yml::Value::String(s) => Some(s.clone()),
-        serde_yml::Value::Number(n) => Some(format!("{:?}", n)),
-        serde_yml::Value::Bool(b) => Some(format!("{}", b)),
-        _ => Some(format!("{:?}", v)),
+    fm.get(key).map(|v| match v {
+        serde_yml::Value::String(s) => s.clone(),
+        serde_yml::Value::Number(n) => format!("{:?}", n),
+        serde_yml::Value::Bool(b) => format!("{}", b),
+        _ => format!("{:?}", v),
     })
 }

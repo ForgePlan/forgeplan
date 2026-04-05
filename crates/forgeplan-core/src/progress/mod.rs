@@ -2,7 +2,7 @@
 ///
 /// Parses `- [ ]` / `- [x]` markers from markdown body
 /// and computes completion ratios with ASCII progress bars.
-
+///
 /// Result of counting checkboxes in markdown text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckboxCount {

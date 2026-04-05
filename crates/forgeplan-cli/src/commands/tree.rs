@@ -96,7 +96,6 @@ struct DisplayRecord {
 }
 
 /// Column width for the tree part (left side).
-
 /// Build parent->children mapping from all relations and parent_epic fields.
 async fn build_hierarchy(
     store: &LanceStore,
@@ -141,14 +140,15 @@ async fn build_hierarchy(
     }
 
     for r in &records {
-        if let Some(parent) = &r.parent_epic {
-            if !parent.is_empty() && !has_parent.contains(&r.id) {
-                has_parent.insert(r.id.clone());
-                children_map
-                    .entry(parent.clone())
-                    .or_default()
-                    .push(r.id.clone());
-            }
+        if let Some(parent) = &r.parent_epic
+            && !parent.is_empty()
+            && !has_parent.contains(&r.id)
+        {
+            has_parent.insert(r.id.clone());
+            children_map
+                .entry(parent.clone())
+                .or_default()
+                .push(r.id.clone());
         }
     }
 

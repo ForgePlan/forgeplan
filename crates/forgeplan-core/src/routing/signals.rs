@@ -253,22 +253,22 @@ pub fn extract(text: &str) -> Vec<Signal> {
                 || lower
                     .as_bytes()
                     .get(pos - 1)
-                    .map_or(true, |b| !b.is_ascii_alphanumeric());
+                    .is_none_or(|b| !b.is_ascii_alphanumeric());
             if !at_boundary {
                 continue;
             }
             let prefix = lower.get(..pos).unwrap_or("");
             for token in prefix.split_whitespace() {
-                if let Ok(n) = token.parse::<u32>() {
-                    if n > 2 {
-                        signals.push(Signal {
-                            id: "heuristic:issue_count".into(),
-                            description: format!("{n} {word}"),
-                            minimum_depth: Mode::Standard,
-                            weight: 0.7,
-                        });
-                        break 'issue_count;
-                    }
+                if let Ok(n) = token.parse::<u32>()
+                    && n > 2
+                {
+                    signals.push(Signal {
+                        id: "heuristic:issue_count".into(),
+                        description: format!("{n} {word}"),
+                        minimum_depth: Mode::Standard,
+                        weight: 0.7,
+                    });
+                    break 'issue_count;
                 }
             }
         }

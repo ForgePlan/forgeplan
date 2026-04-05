@@ -427,7 +427,7 @@ impl ForgeplanServer {
         };
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        let nnn = id.split('-').last().unwrap_or("001").to_string();
+        let nnn = id.split('-').next_back().unwrap_or("001").to_string();
 
         let mut vars = std::collections::HashMap::new();
         vars.insert("NNN".into(), nnn.clone());
@@ -699,7 +699,7 @@ impl ForgeplanServer {
             }
 
             let item = parse_evidence_from_record(ev);
-            let item_score = reff::r_eff(&[item.clone()]);
+            let item_score = reff::r_eff(std::slice::from_ref(&item));
             let expired = item
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
@@ -1322,14 +1322,14 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         for record in &records {
-            if let Some(parent) = &record.parent_epic {
-                if !parent.is_empty() {
-                    edges.push(graph::Edge {
-                        from: record.id.clone(),
-                        to: parent.clone(),
-                        relation: "belongs_to".into(),
-                    });
-                }
+            if let Some(parent) = &record.parent_epic
+                && !parent.is_empty()
+            {
+                edges.push(graph::Edge {
+                    from: record.id.clone(),
+                    to: parent.clone(),
+                    relation: "belongs_to".into(),
+                });
             }
         }
 
@@ -2068,10 +2068,11 @@ impl ForgeplanServer {
                 let source = rel["source"].as_str().unwrap_or_default();
                 let target = rel["target"].as_str().unwrap_or_default();
                 let relation = rel["relation"].as_str().unwrap_or("informs");
-                if !source.is_empty() && !target.is_empty() {
-                    if store.add_relation(source, target, relation).await.is_ok() {
-                        relations_imported += 1;
-                    }
+                if !source.is_empty()
+                    && !target.is_empty()
+                    && store.add_relation(source, target, relation).await.is_ok()
+                {
+                    relations_imported += 1;
                 }
             }
         }
@@ -2258,20 +2259,20 @@ impl ForgeplanServer {
         };
 
         // Validate grade param early
-        if let Some(ref grade_str) = p.grade {
-            if grade_str.parse::<Grade>().is_err() {
-                return Ok(err_result(&format!(
-                    "Invalid grade '{}'. Valid: junior, middle, senior, principal, ai",
-                    grade_str
-                )));
-            }
+        if let Some(ref grade_str) = p.grade
+            && grade_str.parse::<Grade>().is_err()
+        {
+            return Ok(err_result(&format!(
+                "Invalid grade '{}'. Valid: junior, middle, senior, principal, ai",
+                grade_str
+            )));
         }
 
         // Validate complexity param length (DoS protection)
-        if let Some(ref c) = p.complexity {
-            if c.len() > 4096 {
-                return Ok(err_result("complexity parameter too long (max 4096 chars)"));
-            }
+        if let Some(ref c) = p.complexity
+            && c.len() > 4096
+        {
+            return Ok(err_result("complexity parameter too long (max 4096 chars)"));
         }
 
         let work_items = extractor::extract_work_items(&record.body);
