@@ -2,17 +2,26 @@
 import Landing from '../layouts/Landing.astro';
 import Header from '../components/Header.astro';
 import Hero from '../components/Hero.astro';
-import Trust from '../components/Trust.astro';
-import Pipeline from '../components/Pipeline.astro';
 import Install from '../components/Install.astro';
+
+// React islands for sticky sections
+import TrustSection from '../components/TrustSection.tsx';
+import PipelineSection from '../components/PipelineSection.tsx';
 ---
 
 <Landing>
   <Header />
-  <main id="main-content" class="pt-[88px]">
+  <main id="main-content">
+    <!-- Hero: pinned 200% scroll, crystallization animation -->
     <Hero />
-    <Trust />
-    <Pipeline />
+
+    <!-- Trust: pinned 120% scroll, scoring rings animate -->
+    <TrustSection client:visible />
+
+    <!-- Pipeline: pinned 130% scroll, depth routing + ADI reveal -->
+    <PipelineSection client:visible />
+
+    <!-- Install: no pin, just shows -->
     <Install />
   </main>
 </Landing>
