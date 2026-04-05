@@ -50,9 +50,17 @@ export default function PipelineSection() {
           <div className="relative flex flex-col justify-center p-8 lg:p-12 border-r border-forge-line">
             {/* Timeline: vertical line + dots ON line + dashed horizontal to text */}
             <div className="relative h-full flex flex-col justify-center">
-              {/* Vertical line — center at 38px (dot center = paddingLeft 31 + radius 7 = 38) */}
-              <div className="absolute top-[8%] bottom-[8%] w-[2px] bg-forge-line"
-                style={{ left: '37px', opacity: fade(0.02) }} />
+              {/* Vertical line — starts at first dot, ends at last dot.
+                  5 items with space-y-7 (28px gap). Each item ~80px.
+                  First dot center ≈ 7px from top of items container.
+                  Line should span from first dot to last dot only. */}
+              <div className="absolute w-[2px] bg-forge-line"
+                style={{
+                  left: '37px',
+                  top: 'calc(50% - 210px)', // ~first dot position
+                  bottom: 'calc(50% - 210px)', // ~last dot position
+                  opacity: fade(0.02),
+                }} />
 
               <div className="space-y-5 lg:space-y-7">
                 {STEPS.map((step, i) => {
@@ -67,9 +75,9 @@ export default function PipelineSection() {
                         }`} />
                       </div>
 
-                      {/* Dashed horizontal line */}
-                      <div className="flex-shrink-0 border-t border-dashed border-forge-line self-center"
-                        style={{ width: '24px', marginTop: '1px', opacity: 0.5 }} />
+                      {/* Dashed horizontal connector: dot → title */}
+                      <div className="flex-shrink-0 self-center"
+                        style={{ width: '20px', height: '0px', borderTop: '1px dashed var(--forge-line)', opacity: 0.6, marginTop: '6px' }} />
 
                       {/* Text */}
                       <div className="pl-3">
