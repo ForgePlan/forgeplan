@@ -32,20 +32,21 @@ export default function StickySection({
       start: 'top top',
       end: `+=${scrollLength}`,
       pin: true,
-      scrub: true,
+      pinSpacing: true,  // adds spacer so next section doesn't overlap
       onUpdate: (self) => {
         onProgressRef.current?.(self.progress);
       },
     });
 
     return () => { trigger.kill(); };
-  }, [scrollLength]); // onProgress via ref, no re-registration
+  }, [scrollLength]);
 
   return (
     <section
       id={id}
       ref={containerRef}
-      className={`relative w-full overflow-hidden ${className}`}
+      className={`relative w-full overflow-hidden h-screen bg-forge-bg ${className}`}
+      style={{ zIndex: 10 }}
     >
       {children}
     </section>
