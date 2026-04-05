@@ -509,7 +509,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
           // Subtitle: "Structure. Evidence. Trust." — shuffle/decode effect
           subtitle.setAttribute('x', String(textX));
           subtitle.setAttribute('y', String(baseY + 28));
-          const subT = Math.max(0, (tt - 0.4) / 0.6); // starts at 40% of text phase
+          const subT = Math.max(0, (tt - 0.85) / 0.15); // starts only after full text visible
           if (subT > 0) {
             subtitle.setAttribute('opacity', String(Math.min(subT * 2, 1)));
             // Shuffle: each char resolves progressively
