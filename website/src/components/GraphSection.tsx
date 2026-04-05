@@ -119,7 +119,7 @@ export default function GraphSection() {
                 <span className="font-mono text-[9px] text-forge-dim">risk</span>
               </div>
             </div>
-            <svg className="w-full h-full max-w-[700px] max-h-[550px] relative z-10" viewBox="0 0 620 490" fill="none" aria-hidden="true">
+            <svg className="w-full h-full p-4 relative z-10" viewBox="0 0 620 490" fill="none" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
 
               {/* Edges */}
               {EDGES.map((edge, ei) => {
