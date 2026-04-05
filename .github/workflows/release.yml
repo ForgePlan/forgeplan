@@ -297,7 +297,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: true
-          repository: "AiDogfood/homebrew-tap"
+          repository: "ForgePlan/homebrew-tap"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       # So we have access to the formula
       - name: Fetch homebrew formulae
