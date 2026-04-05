@@ -226,8 +226,8 @@ export default function CrystallizationAnimation({ progress }: Props) {
         edge.setAttribute('x1', String(x1)); edge.setAttribute('y1', String(y1));
         edge.setAttribute('x2', String(x2)); edge.setAttribute('y2', String(y2));
         edge.setAttribute('stroke', COLORS.fg);
-        edge.setAttribute('stroke-width', '0.4');
-        edge.setAttribute('stroke-dasharray', '3 3');
+        edge.setAttribute('stroke-width', '1');
+        edge.setAttribute('stroke-dasharray', '4 4');
         edge.setAttribute('opacity', '0');
         svg.appendChild(edge);
         dagEdges.push(edge);
@@ -429,7 +429,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
       // DAG edges — appear after hex formation, fade with outer hexes
       dagEdges.forEach((edge) => {
         const dagAppear = Math.max(0, (sp - 0.60) / 0.1);
-        let dagOp = 0.3 * Math.min(dagAppear, 1);
+        let dagOp = 0.5 * Math.min(dagAppear, 1);
         if (sp > 0.72) dagOp *= Math.max(0, 1 - (sp - 0.72) / 0.1);
         edge.setAttribute('opacity', String(dagOp));
       });
