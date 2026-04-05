@@ -28,12 +28,12 @@ const EDGES = [
 ];
 
 const NODE_COLORS: Record<string, string> = {
-  epic: '#FF6B35',
-  prd: 'var(--forge-fg)',
-  rfc: 'var(--forge-fg)',
-  adr: 'var(--forge-fg)',
-  evidence: '#28C840',
-  problem: '#FF6B35',
+  epic: COLORS.ember,
+  prd: COLORS.fg,
+  rfc: COLORS.fg,
+  adr: COLORS.fg,
+  evidence: COLORS.green,
+  problem: COLORS.ember,
 };
 
 export default function GraphSection() {

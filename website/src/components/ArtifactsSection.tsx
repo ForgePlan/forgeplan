@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-// Design tokens used via CSS vars (Tailwind classes)
+import { COLORS } from '../tokens';
 
 const ARTIFACT_TYPES = [
   { id: 'PRD', name: 'PRD', desc: 'What you build and why', detail: 'Problem, goals, target users, functional requirements. Every FR: "[Actor] can [capability]" — no implementation leakage.', lifecycle: 'draft → active → superseded', color: 'fg' },
@@ -37,7 +37,7 @@ export default function ArtifactsSection() {
   const art = ARTIFACT_TYPES[selected];
 
   return (
-    <section id="artifacts" ref={sectionRef} className="relative w-full bg-forge-bg border-b border-forge-line" style={{ height: '250vh' }}>
+    <section id="artifacts" ref={sectionRef} className="relative w-full bg-forge-bg border-b border-forge-line" style={{ height: '300vh' }}>
       <div className="sticky top-[36px] overflow-hidden" style={{ height: 'calc(100vh - 36px)' }}>
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_480px] h-full">
 
@@ -48,7 +48,7 @@ export default function ArtifactsSection() {
                 ARTIFACT PREVIEW
               </p>
 
-              <h2 className="font-heading text-5xl lg:text-[64px] font-normal leading-none" style={{ opacity: fade(0.05) }}>
+              <h2 className="font-heading text-4xl lg:text-[52px] font-normal leading-none" style={{ opacity: fade(0.05) }}>
                 {art.name}
               </h2>
               <p className="text-lg text-forge-dim mt-2" style={{ opacity: fade(0.08) }}>
@@ -80,8 +80,11 @@ export default function ArtifactsSection() {
                 ))}
               </div>
 
-              <p className="font-mono text-[10px] tracking-[3px] text-forge-dim mt-6">
+              <p className="font-mono text-[10px] tracking-[3px] text-forge-dim mt-6" style={{ opacity: fade(0.55) }}>
                 SELECT AN ARTIFACT →
+              </p>
+              <p className="font-mono text-[10px] tracking-[3px] text-forge-dim mt-4" style={{ opacity: fade(0.65) }}>
+                ARTIFACT MODEL
               </p>
             </div>
           </div>
@@ -110,7 +113,7 @@ export default function ArtifactsSection() {
                     }`}
                     style={{
                       opacity: cardOpacity,
-                      borderLeftColor: isSelected ? '#FF6B35' : undefined,
+                      borderLeftColor: isSelected ? COLORS.ember : undefined,
                       borderLeftWidth: isSelected ? '3px' : undefined,
                     }}
                   >
@@ -124,7 +127,7 @@ export default function ArtifactsSection() {
                     </div>
                     <div className="mt-2 flex items-center gap-1.5">
                       <div className={`w-1.5 h-1.5 rounded-full ${isEmber ? 'bg-forge-ember' : 'bg-forge-dim'}`} />
-                      <span className="font-mono text-[8px] tracking-wider text-forge-dim">{type.id}</span>
+                      <span className="font-mono text-[10px] tracking-wider text-forge-dim">{type.id}</span>
                     </div>
                   </button>
                 );

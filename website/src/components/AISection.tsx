@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 
 const AI_COMMANDS = [
-  { cmd: 'forgeplan generate "Payment system auth"', output: 'Created: PRD-026\nDepth: Deep\nPipeline: PRD → Spec → RFC → ADR', start: 0.08 },
+  { cmd: 'forgeplan route "Payment system auth"', output: 'Depth: Deep\nPipeline: PRD → Spec → RFC → ADR\nConfidence: 92%', start: 0.08 },
   { cmd: 'forgeplan reason PRD-026', output: 'Hypothesis 1: JWT tokens with refresh\nHypothesis 2: Session-based with Redis\nHypothesis 3: OAuth2 delegation\n→ Testing predictions...', start: 0.25 },
   { cmd: 'forgeplan decompose PRD-026', output: 'RFC-010: Auth middleware design\nRFC-011: Token storage strategy\nRFC-012: Rate limiting approach', start: 0.42 },
 ];
@@ -78,7 +78,7 @@ export default function AISection() {
               </div>
             </div>
 
-            <p className="font-mono text-[10px] tracking-[3px] text-forge-dim mt-4" style={{ opacity: fade(0.85) }}>
+            <p className="font-mono text-[10px] tracking-[3px] text-forge-dim mt-4" style={{ opacity: fade(0.88) }}>
               MCP INTEGRATION
             </p>
           </div>
@@ -110,7 +110,7 @@ export default function AISection() {
             </div>
 
             {/* Bottom statement */}
-            <div className="border border-forge-ember p-4 mt-4" style={{ opacity: fade(0.82) }}>
+            <div className="border border-forge-ember p-4 mt-4" style={{ opacity: fade(0.76) }}>
               <p className="font-heading text-lg text-forge-ember">Structure + AI = Force Multiplier</p>
               <p className="text-xs text-forge-dim mt-1">
                 AI generates hypotheses. Forgeplan validates them. Evidence proves them. You decide.
