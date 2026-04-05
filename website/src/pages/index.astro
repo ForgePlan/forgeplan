@@ -15,11 +15,11 @@ import PipelineSection from '../components/PipelineSection.tsx';
     <!-- Hero: pinned 200% scroll, crystallization animation -->
     <Hero />
 
-    <!-- Trust: pinned 120% scroll, scoring rings animate -->
-    <TrustSection client:load />
+    <!-- Trust: pinned, scoring rings animate -->
+    <TrustSection client:visible />
 
-    <!-- Pipeline: pinned 130% scroll, depth routing + ADI reveal -->
-    <PipelineSection client:load />
+    <!-- Pipeline: pinned, depth routing + ADI reveal -->
+    <PipelineSection client:visible />
 
     <!-- Install: no pin, just shows -->
     <Install />

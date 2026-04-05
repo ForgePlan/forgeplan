@@ -1,15 +1,7 @@
 import { useEffect, useRef } from 'react';
+import { COLORS, hexVertex } from '../tokens';
 
-// Forge palette
-const COLORS = {
-  bg: '#0D0D0D',
-  fg: '#E8E8E8',
-  line: '#3A3A3A',
-  dim: '#949494',
-  ember: '#FF6B35',
-  surface: '#161616',
-};
-
+// --- Constants (module-level, never change) ---
 const ARTIFACTS = [
   { id: 'PRD', label: 'PRD', color: COLORS.fg },
   { id: 'RFC', label: 'RFC', color: COLORS.fg },
@@ -23,17 +15,26 @@ const ARTIFACTS = [
   { id: 'Refresh', label: 'Refresh', color: COLORS.dim },
 ];
 
-function hexVertex(cx: number, cy: number, r: number, i: number): [number, number] {
-  const angle = (Math.PI / 3) * i - Math.PI / 2;
-  return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
-}
-
-// --- Physics ---
+const W = 1440, H = 800;
+const CX = W / 2, CY = H / 2;
+const HEX_RADII = [200, 160, 120, 70];
 const MAX_SPEED = 0.35;
 const MAX_ANGULAR = 0.002;
 const COLLISION_DIST = 30;
+const COLLISION_EPSILON = 0.5; // prevents NaN from near-zero dist
 const WALL_PAD = 30;
+const DEFAULT_OX = 15, DEFAULT_OY = -12;
 
+const ISO_DEFS = [
+  { vertex: 5, dashed: false },
+  { vertex: 3, dashed: false },
+  { vertex: 0, dashed: true },
+  { vertex: 4, dashed: true },
+  { vertex: 2, dashed: true },
+  { vertex: 1, dashed: false },
+];
+
+// --- Physics types ---
 interface LineState {
   cx: number; cy: number;
   vx: number; vy: number;
@@ -70,7 +71,9 @@ function clamp(v: number, max: number): number {
   return Math.max(-max, Math.min(max, v));
 }
 
-function closestPointOnSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): [number, number] {
+function closestPointOnSegment(
+  px: number, py: number, ax: number, ay: number, bx: number, by: number
+): [number, number] {
   const dx = bx - ax, dy = by - ay;
   const lenSq = dx * dx + dy * dy;
   if (lenSq === 0) return [ax, ay];
@@ -78,57 +81,74 @@ function closestPointOnSegment(px: number, py: number, ax: number, ay: number, b
   return [ax + t * dx, ay + t * dy];
 }
 
-function segSegDist(a1x: number, a1y: number, a2x: number, a2y: number, b1x: number, b1y: number, b2x: number, b2y: number) {
-  const candidates = [
-    { cpA: [a1x, a1y] as [number, number], cpB: closestPointOnSegment(a1x, a1y, b1x, b1y, b2x, b2y) },
-    { cpA: [a2x, a2y] as [number, number], cpB: closestPointOnSegment(a2x, a2y, b1x, b1y, b2x, b2y) },
-    { cpA: closestPointOnSegment(b1x, b1y, a1x, a1y, a2x, a2y), cpB: [b1x, b1y] as [number, number] },
-    { cpA: closestPointOnSegment(b2x, b2y, a1x, a1y, a2x, a2y), cpB: [b2x, b2y] as [number, number] },
-  ].map(c => ({ ...c, dist: Math.hypot(c.cpA[0] - c.cpB[0], c.cpA[1] - c.cpB[1]) }));
-  candidates.sort((a, b) => a.dist - b.dist);
-  return candidates[0];
+// Zero-alloc min-distance between two segments (fixes GC pressure)
+function segSegDist(
+  a1x: number, a1y: number, a2x: number, a2y: number,
+  b1x: number, b1y: number, b2x: number, b2y: number
+): { dist: number; cpAx: number; cpAy: number; cpBx: number; cpBy: number } {
+  let minDist = Infinity, bestAx = 0, bestAy = 0, bestBx = 0, bestBy = 0;
+
+  // a1 → segB
+  const [p1x, p1y] = closestPointOnSegment(a1x, a1y, b1x, b1y, b2x, b2y);
+  let d = Math.hypot(a1x - p1x, a1y - p1y);
+  if (d < minDist) { minDist = d; bestAx = a1x; bestAy = a1y; bestBx = p1x; bestBy = p1y; }
+
+  // a2 → segB
+  const [p2x, p2y] = closestPointOnSegment(a2x, a2y, b1x, b1y, b2x, b2y);
+  d = Math.hypot(a2x - p2x, a2y - p2y);
+  if (d < minDist) { minDist = d; bestAx = a2x; bestAy = a2y; bestBx = p2x; bestBy = p2y; }
+
+  // b1 → segA
+  const [p3x, p3y] = closestPointOnSegment(b1x, b1y, a1x, a1y, a2x, a2y);
+  d = Math.hypot(b1x - p3x, b1y - p3y);
+  if (d < minDist) { minDist = d; bestAx = p3x; bestAy = p3y; bestBx = b1x; bestBy = b1y; }
+
+  // b2 → segA
+  const [p4x, p4y] = closestPointOnSegment(b2x, b2y, a1x, a1y, a2x, a2y);
+  d = Math.hypot(b2x - p4x, b2y - p4y);
+  if (d < minDist) { minDist = d; bestAx = p4x; bestAy = p4y; bestBx = b2x; bestBy = b2y; }
+
+  return { dist: minDist, cpAx: bestAx, cpAy: bestAy, cpBx: bestBx, cpBy: bestBy };
 }
 
+// Final positions for scroll convergence
+const FINAL_LINE_POS = ARTIFACTS.map((_, i) => {
+  const vi = i % 6;
+  const r = i < 6 ? HEX_RADII[0] : HEX_RADII[1];
+  const [x1, y1] = hexVertex(CX, CY, r, vi);
+  const [x2, y2] = hexVertex(CX, CY, r, (vi + 1) % 6);
+  const dirX = x1 - CX, dirY = y1 - CY;
+  const dirLen = Math.hypot(dirX, dirY) || 1; // guard zero
+  return { x1, y1, x2, y2, dotX: x1, dotY: y1, labelOffX: (dirX / dirLen) * 45, labelOffY: (dirY / dirLen) * 45 };
+});
+
+// --- Component ---
 interface Props {
-  /** Scroll progress 0..1, driven by parent StickySection */
   progress: number;
 }
 
 export default function CrystallizationAnimation({ progress }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const statesRef = useRef<LineState[]>([]);
-  const animatingRef = useRef(true);
   const progressRef = useRef(0);
+  const rafRef = useRef(0);
+  const animatingRef = useRef(true);
 
-  // Keep progress ref in sync
   progressRef.current = progress;
-
-  const W = 1440, H = 800;
-  const CX = W / 2, CY = H / 2;
-  const hexRadii = [200, 160, 120, 70];
-
-  const isoDefs = [
-    { vertex: 5, dashed: false },
-    { vertex: 3, dashed: false },
-    { vertex: 0, dashed: true },
-    { vertex: 4, dashed: true },
-    { vertex: 2, dashed: true },
-    { vertex: 1, dashed: false },
-  ];
-
-  const DEFAULT_OX = 15, DEFAULT_OY = -12;
 
   useEffect(() => {
     if (!svgRef.current) return;
+
+    // === REDUCED MOTION CHECK ===
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
     const svg = svgRef.current;
     animatingRef.current = true;
 
     const totalLines = ARTIFACTS.length + 6;
     const states: LineState[] = [];
     for (let i = 0; i < totalLines; i++) states.push(createLineState(W, H));
-    statesRef.current = states;
 
-    // --- Build SVG elements ---
+    // === BUILD SVG ELEMENTS ===
     const lines: SVGLineElement[] = [];
     states.forEach((_, idx) => {
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
@@ -157,7 +177,6 @@ export default function CrystallizationAnimation({ progress }: Props) {
       pointer.setAttribute('x2', String(DEFAULT_OX)); pointer.setAttribute('y2', String(DEFAULT_OY));
       pointer.setAttribute('stroke', art.color); pointer.setAttribute('stroke-width', '0.5'); pointer.setAttribute('opacity', '0.5');
       g.appendChild(pointer); labelPointers.push(pointer);
-
       const textLen = art.label.length * 7.5 + 12;
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       rect.setAttribute('x', String(DEFAULT_OX)); rect.setAttribute('y', String(DEFAULT_OY - 10));
@@ -166,7 +185,6 @@ export default function CrystallizationAnimation({ progress }: Props) {
       rect.setAttribute('stroke', art.color === COLORS.ember ? COLORS.ember : COLORS.line);
       rect.setAttribute('stroke-width', '0.5');
       g.appendChild(rect); labelRects.push(rect);
-
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       text.setAttribute('x', String(DEFAULT_OX + 6)); text.setAttribute('y', String(DEFAULT_OY + 4));
       text.setAttribute('font-family', 'Geist Mono, monospace'); text.setAttribute('font-size', '10');
@@ -176,7 +194,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
     });
 
     const hexElements: SVGPolygonElement[] = [];
-    hexRadii.forEach((r, i) => {
+    HEX_RADII.forEach((r, i) => {
       const points = Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, r, vi)).map(([x, y]) => `${x},${y}`).join(' ');
       const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
       poly.setAttribute('points', points); poly.setAttribute('fill', 'none');
@@ -187,8 +205,8 @@ export default function CrystallizationAnimation({ progress }: Props) {
     });
 
     const isoLines: SVGLineElement[] = [];
-    isoDefs.forEach((def) => {
-      const [vx, vy] = hexVertex(CX, CY, hexRadii[3], def.vertex);
+    ISO_DEFS.forEach((def) => {
+      const [vx, vy] = hexVertex(CX, CY, HEX_RADII[3], def.vertex);
       const isoLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       isoLine.setAttribute('x1', String(CX)); isoLine.setAttribute('y1', String(CY));
       isoLine.setAttribute('x2', String(vx)); isoLine.setAttribute('y2', String(vy));
@@ -211,38 +229,52 @@ export default function CrystallizationAnimation({ progress }: Props) {
     brandText.setAttribute('fill', COLORS.fg); brandText.setAttribute('opacity', '0');
     svg.appendChild(brandText);
 
-    // Final positions
-    const finalLinePos = ARTIFACTS.map((_, i) => {
-      const vi = i % 6;
-      const r = i < 6 ? hexRadii[0] : hexRadii[1];
-      const [x1, y1] = hexVertex(CX, CY, r, vi);
-      const [x2, y2] = hexVertex(CX, CY, r, (vi + 1) % 6);
-      const dirX = x1 - CX, dirY = y1 - CY;
-      const dirLen = Math.hypot(dirX, dirY);
-      return { x1, y1, x2, y2, dotX: x1, dotY: y1, labelOffX: (dirX / dirLen) * 45, labelOffY: (dirY / dirLen) * 45 };
-    });
+    // === REDUCED MOTION: show final state immediately ===
+    if (prefersReduced) {
+      // Show crystallized state without animation
+      progressRef.current = 1;
+      // Just show the final hex + brand text
+      hexElements[3].setAttribute('opacity', '0.7');
+      const fPoints = Array.from({ length: 6 }, (_, vi) => hexVertex(CX - 220, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' ');
+      hexElements[3].setAttribute('points', fPoints);
+      centerDot.setAttribute('cx', String(CX - 220)); centerDot.setAttribute('opacity', '0.9');
+      ISO_DEFS.forEach((def, idx) => {
+        const [vx, vy] = hexVertex(CX - 220, CY, HEX_RADII[3], def.vertex);
+        isoLines[idx].setAttribute('x1', String(CX - 220)); isoLines[idx].setAttribute('y1', String(CY));
+        isoLines[idx].setAttribute('x2', String(vx)); isoLines[idx].setAttribute('y2', String(vy));
+        isoLines[idx].setAttribute('opacity', '0.4');
+      });
+      brandText.setAttribute('x', String(CX - 220 + 100));
+      brandText.textContent = 'Forge your plan';
+      brandText.setAttribute('opacity', '1');
+      return () => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
+    }
 
-    // --- TICK ---
+    // === ANIMATION LOOP ===
     function tick() {
       if (!animatingRef.current) return;
       const sp = progressRef.current;
       const ease = 1 - sp;
 
-      // Collision
+      // Collision (pre-compute endpoints once per line)
+      const allEp: [number, number, number, number][] = [];
+      for (let i = 0; i < totalLines; i++) allEp.push(endpoints(states[i]));
+
       if (ease > 0.05) {
         for (let a = 0; a < totalLines; a++) {
-          const epA = endpoints(states[a]);
           for (let b = a + 1; b < totalLines; b++) {
-            const epB = endpoints(states[b]);
-            const { dist, cpA, cpB } = segSegDist(epA[0], epA[1], epA[2], epA[3], epB[0], epB[1], epB[2], epB[3]);
-            if (dist < COLLISION_DIST && dist > 0) {
+            const { dist, cpAx, cpAy, cpBx, cpBy } = segSegDist(
+              allEp[a][0], allEp[a][1], allEp[a][2], allEp[a][3],
+              allEp[b][0], allEp[b][1], allEp[b][2], allEp[b][3]
+            );
+            if (dist < COLLISION_DIST && dist > COLLISION_EPSILON) {
               const force = (COLLISION_DIST - dist) / COLLISION_DIST * 0.08;
-              const nx = (cpB[0] - cpA[0]) / dist, ny = (cpB[1] - cpA[1]) / dist;
+              const nx = (cpBx - cpAx) / dist, ny = (cpBy - cpAy) / dist;
               states[a].vx -= nx * force; states[a].vy -= ny * force;
               states[b].vx += nx * force; states[b].vy += ny * force;
-              const relAx = cpA[0] - states[a].cx, relAy = cpA[1] - states[a].cy;
+              const relAx = cpAx - states[a].cx, relAy = cpAy - states[a].cy;
               states[a].va += (relAx * (-ny) + relAy * nx) * force * 0.00005;
-              const relBx = cpB[0] - states[b].cx, relBy = cpB[1] - states[b].cy;
+              const relBx = cpBx - states[b].cx, relBy = cpBy - states[b].cy;
               states[b].va += (relBx * ny + relBy * (-nx)) * force * 0.00005;
             }
           }
@@ -254,9 +286,9 @@ export default function CrystallizationAnimation({ progress }: Props) {
         if (ease > 0.05) {
           st.cx += st.vx * ease; st.cy += st.vy * ease; st.angle += st.va * ease;
           st.vx = clamp(st.vx, MAX_SPEED); st.vy = clamp(st.vy, MAX_SPEED); st.va = clamp(st.va, MAX_ANGULAR);
-          const [ex1, ey1, ex2, ey2] = endpoints(st);
-          const minX = Math.min(ex1, ex2), maxX = Math.max(ex1, ex2);
-          const minY = Math.min(ey1, ey2), maxY = Math.max(ey1, ey2);
+          const ep = allEp[i];
+          const minX = Math.min(ep[0], ep[2]), maxX = Math.max(ep[0], ep[2]);
+          const minY = Math.min(ep[1], ep[3]), maxY = Math.max(ep[1], ep[3]);
           if (minX < WALL_PAD) { st.cx += WALL_PAD - minX; st.vx = Math.abs(st.vx) * 0.7; }
           if (maxX > W - WALL_PAD) { st.cx -= maxX - (W - WALL_PAD); st.vx = -Math.abs(st.vx) * 0.7; }
           if (minY < WALL_PAD) { st.cy += WALL_PAD - minY; st.vy = Math.abs(st.vy) * 0.7; }
@@ -266,7 +298,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
         const [lx1, ly1, lx2, ly2] = endpoints(st);
         let rx1 = lx1, ry1 = ly1, rx2 = lx2, ry2 = ly2;
         if (i < ARTIFACTS.length && sp > 0) {
-          const fp = finalLinePos[i];
+          const fp = FINAL_LINE_POS[i];
           const t = Math.min(sp * 2.5, 1);
           rx1 += (fp.x1 - rx1) * t; ry1 += (fp.y1 - ry1) * t;
           rx2 += (fp.x2 - rx2) * t; ry2 += (fp.y2 - ry2) * t;
@@ -281,13 +313,13 @@ export default function CrystallizationAnimation({ progress }: Props) {
           if (st.dotProgress < 0) { st.dotProgress = 0; st.dotDir = 1; }
           let dx = rx1 + (rx2 - rx1) * st.dotProgress, dy = ry1 + (ry2 - ry1) * st.dotProgress;
           if (sp > 0) {
-            const fp = finalLinePos[i]; const t = Math.min(sp * 2.5, 1);
+            const fp = FINAL_LINE_POS[i]; const t = Math.min(sp * 2.5, 1);
             dx += (fp.dotX - dx) * t; dy += (fp.dotY - dy) * t;
           }
           dots[i].setAttribute('cx', String(dx)); dots[i].setAttribute('cy', String(dy));
           labels[i].setAttribute('transform', `translate(${dx}, ${dy})`);
-          if (sp > 0 && i < finalLinePos.length) {
-            const fp = finalLinePos[i]; const t = Math.min(sp * 2.5, 1);
+          if (sp > 0 && i < FINAL_LINE_POS.length) {
+            const fp = FINAL_LINE_POS[i]; const t = Math.min(sp * 2.5, 1);
             const ox = DEFAULT_OX + (fp.labelOffX - DEFAULT_OX) * t;
             const oy = DEFAULT_OY + (fp.labelOffY - DEFAULT_OY) * t;
             labelPointers[i].setAttribute('x2', String(ox)); labelPointers[i].setAttribute('y2', String(oy));
@@ -305,7 +337,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
         const p = Math.min((sp - hexStart[i]) / 0.15, 1);
         const eased = 1 - Math.pow(1 - p, 3);
         const scale = 4 - 3 * eased;
-        const pts = Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, hexRadii[i] * scale, vi)).map(([x, y]) => `${x},${y}`).join(' ');
+        const pts = Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, HEX_RADII[i] * scale, vi)).map(([x, y]) => `${x},${y}`).join(' ');
         hex.setAttribute('points', pts);
         let op = hexOp[i] * eased;
         if (i < 3 && sp > 0.65) op *= Math.max(0, 1 - (sp - 0.65) / 0.12);
@@ -332,10 +364,10 @@ export default function CrystallizationAnimation({ progress }: Props) {
         const t = Math.min((sp - 0.8) / 0.18, 1);
         const et = 1 - Math.pow(1 - t, 2);
         const sx = -220 * et;
-        hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX + sx, CY, hexRadii[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
+        hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX + sx, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
         centerDot.setAttribute('cx', String(CX + sx)); centerDot.setAttribute('opacity', String(dotOp));
-        isoDefs.forEach((def, idx) => {
-          const [vx, vy] = hexVertex(CX + sx, CY, hexRadii[3], def.vertex);
+        ISO_DEFS.forEach((def, idx) => {
+          const [vx, vy] = hexVertex(CX + sx, CY, HEX_RADII[3], def.vertex);
           isoLines[idx].setAttribute('x1', String(CX + sx)); isoLines[idx].setAttribute('y1', String(CY));
           isoLines[idx].setAttribute('x2', String(vx)); isoLines[idx].setAttribute('y2', String(vy));
           isoLines[idx].setAttribute('opacity', String(isoOp));
@@ -347,20 +379,26 @@ export default function CrystallizationAnimation({ progress }: Props) {
       } else {
         centerDot.setAttribute('cx', String(CX)); centerDot.setAttribute('opacity', String(dotOp));
         brandText.setAttribute('opacity', '0'); brandText.textContent = '';
-        hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, hexRadii[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
-        isoDefs.forEach((def, idx) => {
-          const [vx, vy] = hexVertex(CX, CY, hexRadii[3], def.vertex);
+        hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
+        ISO_DEFS.forEach((def, idx) => {
+          const [vx, vy] = hexVertex(CX, CY, HEX_RADII[3], def.vertex);
           isoLines[idx].setAttribute('x1', String(CX)); isoLines[idx].setAttribute('y1', String(CY));
           isoLines[idx].setAttribute('x2', String(vx)); isoLines[idx].setAttribute('y2', String(vy));
           isoLines[idx].setAttribute('opacity', String(isoOp));
         });
       }
 
-      requestAnimationFrame(tick);
+      rafRef.current = requestAnimationFrame(tick);
     }
 
-    requestAnimationFrame(tick);
-    return () => { animatingRef.current = false; };
+    rafRef.current = requestAnimationFrame(tick);
+
+    // === CLEANUP: cancel rAF + remove SVG children ===
+    return () => {
+      animatingRef.current = false;
+      cancelAnimationFrame(rafRef.current);
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+    };
   }, []);
 
   return (

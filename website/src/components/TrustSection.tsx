@@ -1,35 +1,9 @@
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import StickySection from './StickySection';
+import { COLORS, octPoints } from '../tokens';
 
-const COLORS = {
-  fg: '#E8E8E8',
-  ember: '#FF6B35',
-  line: '#3A3A3A',
-  dim: '#949494',
-  surface: '#161616',
-};
-
-function hexVertex(cx: number, cy: number, r: number, i: number): [number, number] {
-  // Octagon vertex (8 sides)
-  const angle = (Math.PI / 4) * i - Math.PI / 2;
-  return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
-}
-
-function octPoints(cx: number, cy: number, r: number): string {
-  return Array.from({ length: 8 }, (_, i) => hexVertex(cx, cy, r, i))
-    .map(([x, y]) => `${x},${y}`).join(' ');
-}
-
-/**
- * TrustSection — R_eff scoring rings.
- * Rings appear from outside in as user scrolls.
- */
 export default function TrustSection() {
   const [progress, setProgress] = useState(0);
-
-  const handleProgress = useCallback((p: number) => {
-    setProgress(p);
-  }, []);
 
   const CX = 470, CY = 450;
   const rings = [
@@ -45,7 +19,7 @@ export default function TrustSection() {
   const textOpacity = (start: number) => Math.min(Math.max((progress - start) / 0.15, 0), 1);
 
   return (
-    <StickySection id="trust" scrollMultiplier={2} onProgress={handleProgress} className="border-b border-forge-line">
+    <StickySection id="trust" scrollMultiplier={2} onProgress={setProgress} className="border-b border-forge-line">
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_500px] h-screen pt-[36px]">
         {/* Left: Scoring rings SVG */}
         <div className="relative flex items-center justify-center border-r border-forge-line overflow-hidden">
