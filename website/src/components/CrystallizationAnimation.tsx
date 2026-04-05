@@ -279,18 +279,18 @@ export default function CrystallizationAnimation({ progress }: Props) {
 
     // Narrative connectors — dashed lines from edges to artifact dots (4 pairs × 2)
     const CONNECTOR_DEFS = [
-      // Pair 1 (scroll 2-12%)
-      { dotIdx: 0, edgeX: 80,     edgeYPct: 0.22, start: 0.02, end: 0.12 },
-      { dotIdx: 1, edgeX: W - 80, edgeYPct: 0.22, start: 0.02, end: 0.12 },
-      // Pair 2 (scroll 9-19%)
-      { dotIdx: 2, edgeX: 80,     edgeYPct: 0.40, start: 0.09, end: 0.19 },
-      { dotIdx: 6, edgeX: W - 80, edgeYPct: 0.40, start: 0.09, end: 0.19 },
-      // Pair 3 (scroll 16-26%)
-      { dotIdx: 4, edgeX: 80,     edgeYPct: 0.58, start: 0.16, end: 0.26 },
-      { dotIdx: 5, edgeX: W - 80, edgeYPct: 0.58, start: 0.16, end: 0.26 },
-      // Pair 4 (scroll 23-35%)
-      { dotIdx: 3, edgeX: 80,     edgeYPct: 0.76, start: 0.23, end: 0.35 },
-      { dotIdx: 7, edgeX: W - 80, edgeYPct: 0.76, start: 0.23, end: 0.35 },
+      // Pair 1 (scroll 2-14%)
+      { dotIdx: 0, edgeX: 80,     edgeYPct: 0.22, start: 0.02, end: 0.14 },
+      { dotIdx: 1, edgeX: W - 80, edgeYPct: 0.22, start: 0.02, end: 0.14 },
+      // Pair 2 (scroll 10-22%)
+      { dotIdx: 2, edgeX: 80,     edgeYPct: 0.40, start: 0.10, end: 0.22 },
+      { dotIdx: 6, edgeX: W - 80, edgeYPct: 0.40, start: 0.10, end: 0.22 },
+      // Pair 3 (scroll 18-30%)
+      { dotIdx: 4, edgeX: 80,     edgeYPct: 0.58, start: 0.18, end: 0.30 },
+      { dotIdx: 5, edgeX: W - 80, edgeYPct: 0.58, start: 0.18, end: 0.30 },
+      // Pair 4 (scroll 26-40%)
+      { dotIdx: 3, edgeX: 80,     edgeYPct: 0.76, start: 0.26, end: 0.40 },
+      { dotIdx: 7, edgeX: W - 80, edgeYPct: 0.76, start: 0.26, end: 0.40 },
     ];
     const connectors: SVGLineElement[] = [];
     CONNECTOR_DEFS.forEach(() => {
@@ -374,7 +374,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
 
           // Count badge — ticks up/down based on dot direction
           const countEl = labels[i].querySelector('text:last-child') as SVGTextElement;
-          if (countEl && sp < 0.4) {
+          if (countEl && sp < 0.45) {
             // dotProgress 0→1 = count goes up, 1→0 = count goes down
             const base = baseCounts[i];
             const swing = Math.floor(st.dotProgress * 30);
@@ -413,7 +413,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
 
       // Hexagons fly in
       const hexOp = [0.4, 0.3, 0.25, 0.7];
-      const hexStart = [0.3, 0.38, 0.46, 0.54];
+      const hexStart = [0.38, 0.44, 0.50, 0.56];
       hexElements.forEach((hex, i) => {
         if (sp < hexStart[i]) { hex.setAttribute('opacity', '0'); return; }
         const p = Math.min((sp - hexStart[i]) / 0.15, 1);
@@ -422,22 +422,21 @@ export default function CrystallizationAnimation({ progress }: Props) {
         const pts = Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, HEX_RADII[i] * scale, vi)).map(([x, y]) => `${x},${y}`).join(' ');
         hex.setAttribute('points', pts);
         let op = hexOp[i] * eased;
-        if (i < 3 && sp > 0.65) op *= Math.max(0, 1 - (sp - 0.65) / 0.12);
+        if (i < 3 && sp > 0.72) op *= Math.max(0, 1 - (sp - 0.72) / 0.1);
         hex.setAttribute('opacity', String(op));
       });
 
       // DAG edges — appear after hex formation, fade with outer hexes
       dagEdges.forEach((edge) => {
-        const dagAppear = Math.max(0, (sp - 0.55) / 0.1);
+        const dagAppear = Math.max(0, (sp - 0.60) / 0.1);
         let dagOp = 0.3 * Math.min(dagAppear, 1);
-        // Fade with outer hexes
-        if (sp > 0.65) dagOp *= Math.max(0, 1 - (sp - 0.65) / 0.12);
+        if (sp > 0.72) dagOp *= Math.max(0, 1 - (sp - 0.72) / 0.1);
         edge.setAttribute('opacity', String(dagOp));
       });
 
       // Fade lines/dots/labels
-      if (sp > 0.4) {
-        const f = Math.min((sp - 0.4) / 0.2, 1);
+      if (sp > 0.45) {
+        const f = Math.min((sp - 0.45) / 0.2, 1);
         for (let li = 0; li < ARTIFACTS.length; li++) {
           lines[li].setAttribute('opacity', String(0.3 * (1 - f)));
           dots[li].setAttribute('opacity', String(0.7 * (1 - f)));
@@ -446,14 +445,14 @@ export default function CrystallizationAnimation({ progress }: Props) {
       }
 
       // Center dot + iso lines
-      const cdA = Math.max(0, (sp - 0.5) / 0.15);
+      const cdA = Math.max(0, (sp - 0.55) / 0.12);
       const dotOp = 0.9 * Math.min(cdA, 1);
-      const isoA = Math.max(0, (sp - 0.62) / 0.15);
+      const isoA = Math.max(0, (sp - 0.68) / 0.1);
       const isoOp = 0.4 * Math.min(isoA, 1);
 
-      if (sp > 0.8) {
-        // Phase 4a: cube shifts left (80-88%)
-        const cubeT = Math.min((sp - 0.8) / 0.08, 1);
+      if (sp > 0.82) {
+        // Phase 4a: cube shifts left (82-89%)
+        const cubeT = Math.min((sp - 0.82) / 0.07, 1);
         const cubeEased = 1 - Math.pow(1 - cubeT, 2);
         const sx = -220 * cubeEased;
 
@@ -477,11 +476,11 @@ export default function CrystallizationAnimation({ progress }: Props) {
         const textCenterY = baseY - 42 * 0.25;    // vertical center of lowercase (rge)
 
         // Phase 4b: dot flies from cube to "o" position (88-93%)
-        if (sp < 0.88) {
+        if (sp < 0.89) {
           centerDot.setAttribute('cx', String(CX + sx));
           centerDot.setAttribute('cy', String(CY));
         } else {
-          const dt = Math.min((sp - 0.88) / 0.05, 1);
+          const dt = Math.min((sp - 0.89) / 0.04, 1);
           const de = 1 - Math.pow(1 - dt, 3);
           centerDot.setAttribute('cx', String((CX + sx) + (dotTargetX - (CX + sx)) * de));
           centerDot.setAttribute('cy', String(CY + (textCenterY - CY) * de));
@@ -489,8 +488,8 @@ export default function CrystallizationAnimation({ progress }: Props) {
         centerDot.setAttribute('opacity', String(dotOp));
 
         // Phase 4c: "F" + "rge your plan" typewriter (88-100%)
-        if (sp > 0.88) {
-          const tt = Math.min((sp - 0.88) / 0.12, 1);
+        if (sp > 0.89) {
+          const tt = Math.min((sp - 0.89) / 0.11, 1);
           const op = Math.min(tt * 3, 1);
 
           // "F" appears first

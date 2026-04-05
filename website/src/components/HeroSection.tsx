@@ -6,22 +6,22 @@ import CrystallizationAnimation from './CrystallizationAnimation';
 // Each pair highlights a pain point connected to specific artifacts
 const NARRATIVE_PAIRS = [
   {
-    start: 0.02, end: 0.12,
+    start: 0.02, end: 0.14,
     left:  { text: 'Decisions scattered across Slack, Docs, and memory', label: 'LOST CONTEXT', dotIdx: 0 },
     right: { text: 'PRDs that nobody reads after the first week', label: 'DEAD DOCS', dotIdx: 1 },
   },
   {
-    start: 0.09, end: 0.19,
+    start: 0.10, end: 0.22,
     left:  { text: 'Architecture choices made on gut feeling alone', label: 'NO EVIDENCE', dotIdx: 2 },
     right: { text: 'RFCs without follow-up or validation', label: 'NO PROOF', dotIdx: 6 },
   },
   {
-    start: 0.16, end: 0.26,
+    start: 0.18, end: 0.30,
     left:  { text: 'Stale specs that diverged from reality months ago', label: 'DECAY', dotIdx: 4 },
     right: { text: '"Why did we decide this?" — no one remembers', label: 'LOST WHY', dotIdx: 5 },
   },
   {
-    start: 0.23, end: 0.35,
+    start: 0.26, end: 0.40,
     left:  { text: 'What if every decision had structure and a reliability score?', label: 'THE QUESTION', dotIdx: 3 },
     right: { text: 'What if evidence decayed visibly — not silently?', label: 'THE SHIFT', dotIdx: 7 },
   },
@@ -37,7 +37,7 @@ export default function HeroSection() {
   const [progress, setProgress] = useState(0);
 
   return (
-    <StickySection id="hero" scrollMultiplier={3} onProgress={setProgress} className="h-screen flex flex-col border-b border-forge-line">
+    <StickySection id="hero" scrollMultiplier={5} onProgress={setProgress} className="h-screen flex flex-col border-b border-forge-line">
       {/* Canvas */}
       <div className="relative w-full flex-1 overflow-hidden pt-[88px]">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
