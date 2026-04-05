@@ -71,10 +71,10 @@ html {
 .header-full { padding: 16px 16px 0 16px; }
 .header-full .header-inner { height: 72px; grid-template-columns: 1fr auto 56px; }
 .header-full .header-logo { width: 28px; height: 28px; }
-.header-full .header-brand { font-size: 15px; }
-.header-full .header-brand-cell { padding: 0 16px; }
-.header-full .header-nav { grid-template-columns: repeat(4, 110px) 140px 100px; }
-.header-full .nav-cell { font-size: 13px; }
+.header-full .header-brand { font-size: 18px; }
+.header-full .header-brand-cell { padding: 0 20px; }
+.header-full .header-nav { grid-template-columns: repeat(4, 120px) 150px 110px; }
+.header-full .nav-cell { font-size: 15px; }
 
 /* Compact state (scrolled past hero) */
 .header-compact { padding: 0; }
@@ -84,10 +84,10 @@ html {
   border-left: none; border-right: none; border-top: none;
 }
 .header-compact .header-logo { width: 16px; height: 16px; }
-.header-compact .header-brand { font-size: 11px; }
-.header-compact .header-brand-cell { padding: 0 10px; }
-.header-compact .header-nav { grid-template-columns: repeat(4, 70px) 90px 70px; }
-.header-compact .nav-cell { font-size: 11px; }
+.header-compact .header-brand { font-size: 13px; }
+.header-compact .header-brand-cell { padding: 0 12px; }
+.header-compact .header-nav { grid-template-columns: repeat(4, 80px) 100px 80px; }
+.header-compact .nav-cell { font-size: 12px; }
 
 /* Nav cell hover — wipe fill with inverted text */
 .nav-cell {
