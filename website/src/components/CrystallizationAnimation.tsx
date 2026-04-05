@@ -488,8 +488,8 @@ export default function CrystallizationAnimation({ progress }: Props) {
         centerDot.setAttribute('opacity', String(dotOp));
 
         // Phase 4c: "F" + "rge your plan" typewriter (88-100%)
-        if (sp > 0.89) {
-          const tt = Math.min((sp - 0.89) / 0.11, 1);
+        if (sp > 0.85) {
+          const tt = Math.min((sp - 0.85) / 0.07, 1); // text done by ~92%
           const op = Math.min(tt * 3, 1);
 
           // "F" appears first
@@ -508,13 +508,14 @@ export default function CrystallizationAnimation({ progress }: Props) {
           // Subtitle: "Structure. Evidence. Trust." — shuffle/decode effect
           subtitle.setAttribute('x', String(textX));
           subtitle.setAttribute('y', String(baseY + 28));
-          const subT = Math.max(0, (tt - 0.85) / 0.15); // starts only after full text visible
+          // Subtitle starts only when text fully typed (tt=1), gets 8% scroll room
+          const subT = tt >= 1 ? Math.min((sp - 0.92) / 0.08, 1) : 0;
           if (subT > 0) {
             subtitle.setAttribute('opacity', String(Math.min(subT * 2, 1)));
             // Shuffle: each char resolves progressively
             let decoded = '';
             for (let ci = 0; ci < SUBTITLE_TEXT.length; ci++) {
-              const charProgress = subT * SUBTITLE_TEXT.length * 1.5 - ci;
+              const charProgress = subT * SUBTITLE_TEXT.length * 1.2 - ci; // slower decode
               if (charProgress > 1) {
                 decoded += SUBTITLE_TEXT[ci]; // resolved
               } else if (charProgress > 0) {
