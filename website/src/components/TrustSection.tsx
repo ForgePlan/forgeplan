@@ -80,28 +80,28 @@ export default function TrustSection() {
   // SVG dimensions (full width)
   const SVG_W = 1440, SVG_H = 800;
   const CX = SVG_W / 2, CY = SVG_H / 2;
-  const ringRadii = [300, 250, 200, 150, 100, 50];
+  const ringRadii = [300, 250, 200, 150, 100];
   const ringDefs = [
     { r: ringRadii[0], color: COLORS.fg, w: 0.5, dash: '4 6', maxOp: 0.08, start: 0.05 },
     { r: ringRadii[1], color: COLORS.fg, w: 1.2, maxOp: 0.15, start: 0.12 },
     { r: ringRadii[2], color: COLORS.fg, w: 1, maxOp: 0.22, start: 0.19 },
     { r: ringRadii[3], color: COLORS.fg, w: 0.8, maxOp: 0.30, start: 0.26 },
     { r: ringRadii[4], color: COLORS.ember, w: 1, maxOp: 0.5, start: 0.33 },
-    { r: ringRadii[5], color: COLORS.ember, w: 0, maxOp: 0.15, start: 0.40, fill: true },
   ];
 
   // Title lines
   const titleLines = ['Trust Is', 'Measured,', 'Not Assumed'];
   const titleStarts = [0.02, 0.06, 0.10];
 
-  // Card edge positions — line goes from ring vertex to card edge
-  // Left cards: right edge ≈ 310px (card width ~300px, left at 8px+padding)
-  // Right cards: left edge ≈ SVG_W - 310px
+  // Connector line endpoints
+  // Left cards: right border ≈ 22% of viewport (left-8 + 300px max-w ≈ 332px on 1440)
+  // Right cards: left border ≈ 78% of viewport (1440 - 8 - 300 ≈ 1108px on 1440)
+  // Card height ~80px, center = top + 40px
   const cardEdges = STORY_CARDS.map((card, ci) => {
-    const edgeX = card.side === 'left' ? 330 : SVG_W - 330;
-    const topPct = 18 + ci * 14; // matches card CSS positioning
-    const edgeY = (SVG_H * topPct) / 100 + 30; // center of card approx
-    const [ringX, ringY] = octVertex(CX, CY, ringRadii[card.ringIdx], card.vertexIdx);
+    const edgeX = card.side === 'left' ? 340 : SVG_W - 340;
+    const topPct = 18 + ci * 14;
+    const edgeY = (SVG_H * topPct) / 100 + 40; // vertical center of card
+    const [ringX, ringY] = octVertex(CX, CY, ringRadii[Math.min(card.ringIdx, ringRadii.length - 1)], card.vertexIdx);
     return { edgeX, edgeY, ringX, ringY };
   });
 
@@ -136,9 +136,7 @@ export default function TrustSection() {
             const scale = 2.5 - 1.5 * eased;
             const currentR = ring.r * scale;
             const opacity = ring.maxOp * eased;
-            return ring.fill ? (
-              <polygon key={`ring-${i}`} points={octPoints(CX, CY, currentR)} fill={ring.color} opacity={opacity} />
-            ) : (
+            return (
               <polygon key={`ring-${i}`} points={octPoints(CX, CY, currentR)}
                 stroke={ring.color} strokeWidth={ring.w} fill="none"
                 strokeDasharray={ring.dash} opacity={opacity} />
