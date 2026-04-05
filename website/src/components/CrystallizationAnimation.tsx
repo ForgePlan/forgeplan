@@ -216,7 +216,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
 
     const centerDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     centerDot.setAttribute('cx', String(CX)); centerDot.setAttribute('cy', String(CY));
-    centerDot.setAttribute('r', '10'); centerDot.setAttribute('fill', COLORS.ember); centerDot.setAttribute('opacity', '0');
+    centerDot.setAttribute('r', '12'); centerDot.setAttribute('fill', COLORS.ember); centerDot.setAttribute('opacity', '0');
     svg.appendChild(centerDot);
 
     const brandText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -352,10 +352,10 @@ export default function CrystallizationAnimation({ progress }: Props) {
         });
 
         // Phase 4b: dot detaches from cube, flies to "o" position (88-93%)
-        // Text starts at: CX + sx_final + 100 = CX - 220 + 100 = CX - 120
-        // "F" is ~25px wide at font-size 42, so "o" center ≈ textX + 30
+        // Text: "F  rge your plan" (double space for dot)
+        // "F" ≈ 22px wide at font-size 42, dot r=13 needs ~32px gap
         const textX = CX - 120;
-        const dotTargetX = textX + 30; // position of "o" in "Forge"
+        const dotTargetX = textX + 32; // center of "o" gap
 
         if (sp < 0.88) {
           // Dot still in cube
@@ -366,8 +366,9 @@ export default function CrystallizationAnimation({ progress }: Props) {
           const detachT = Math.min((sp - 0.88) / 0.05, 1);
           const detachEased = 1 - Math.pow(1 - detachT, 3);
           const dotX = (CX + sx) + (dotTargetX - (CX + sx)) * detachEased;
-          // Y: from center to text baseline (CY → CY + 8 - 5 adjustment)
-          const dotY = CY + (CY + 3 - CY) * detachEased;
+          // Y: from cube center to vertical center of text line (baseline - 0.35*fontSize)
+          const textCenterY = CY + 8 - 42 * 0.35; // ≈ CY - 6.7
+          const dotY = CY + (textCenterY - CY) * detachEased;
           centerDot.setAttribute('cx', String(dotX));
           centerDot.setAttribute('cy', String(dotY));
         }
@@ -381,8 +382,8 @@ export default function CrystallizationAnimation({ progress }: Props) {
         if (sp > 0.88) {
           const textT = Math.min((sp - 0.88) / 0.12, 1);
           const textEased = 1 - Math.pow(1 - textT, 2);
-          // Text without "o" — dot IS the "o"
-          const full = 'F rge your plan';
+          // Text without "o" — dot IS the "o". Extra space for dot width
+          const full = 'F  rge your plan';
           const chars = Math.floor(textEased * (full.length + 1));
           brandText.textContent = full.substring(0, Math.min(chars, full.length));
           brandText.setAttribute('opacity', String(Math.min(textEased * 3, 1)));
