@@ -283,19 +283,20 @@ export default function CrystallizationAnimation({ progress }: Props) {
     // Right cards: left edge ≈ W - padding(40) - maxWidth(320) = 1080
     const EDGE_LEFT = 360;
     const EDGE_RIGHT = W - 360;
+    // edgeYPct synced with card positions: top = 18 + pi*18 %, center ≈ +5%
     const CONNECTOR_DEFS = [
-      // Pair 1 (scroll 2-14%)
-      { dotIdx: 0, edgeX: EDGE_LEFT,  edgeYPct: 0.22, start: 0.02, end: 0.14 },
-      { dotIdx: 1, edgeX: EDGE_RIGHT, edgeYPct: 0.22, start: 0.02, end: 0.14 },
-      // Pair 2 (scroll 10-22%)
-      { dotIdx: 2, edgeX: EDGE_LEFT,  edgeYPct: 0.40, start: 0.10, end: 0.22 },
-      { dotIdx: 6, edgeX: EDGE_RIGHT, edgeYPct: 0.40, start: 0.10, end: 0.22 },
-      // Pair 3 (scroll 18-30%)
-      { dotIdx: 4, edgeX: EDGE_LEFT,  edgeYPct: 0.58, start: 0.18, end: 0.30 },
-      { dotIdx: 5, edgeX: EDGE_RIGHT, edgeYPct: 0.58, start: 0.18, end: 0.30 },
-      // Pair 4 (scroll 26-40%)
-      { dotIdx: 3, edgeX: EDGE_LEFT,  edgeYPct: 0.76, start: 0.26, end: 0.40 },
-      { dotIdx: 7, edgeX: EDGE_RIGHT, edgeYPct: 0.76, start: 0.26, end: 0.40 },
+      // Pair 1: cards at top=18%, center=23%
+      { dotIdx: 0, edgeX: EDGE_LEFT,  edgeYPct: 0.23, start: 0.02, end: 0.14 },
+      { dotIdx: 1, edgeX: EDGE_RIGHT, edgeYPct: 0.23, start: 0.02, end: 0.14 },
+      // Pair 2: cards at top=36%, center=41%
+      { dotIdx: 2, edgeX: EDGE_LEFT,  edgeYPct: 0.41, start: 0.10, end: 0.22 },
+      { dotIdx: 6, edgeX: EDGE_RIGHT, edgeYPct: 0.41, start: 0.10, end: 0.22 },
+      // Pair 3: cards at top=54%, center=59%
+      { dotIdx: 4, edgeX: EDGE_LEFT,  edgeYPct: 0.59, start: 0.18, end: 0.30 },
+      { dotIdx: 5, edgeX: EDGE_RIGHT, edgeYPct: 0.59, start: 0.18, end: 0.30 },
+      // Pair 4: cards at top=72%, center=77%
+      { dotIdx: 3, edgeX: EDGE_LEFT,  edgeYPct: 0.77, start: 0.26, end: 0.40 },
+      { dotIdx: 7, edgeX: EDGE_RIGHT, edgeYPct: 0.77, start: 0.26, end: 0.40 },
     ];
     const connectors: SVGLineElement[] = [];
     CONNECTOR_DEFS.forEach(() => {
