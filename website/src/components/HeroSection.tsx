@@ -107,7 +107,7 @@ export default function HeroSection() {
           <p className="text-sm font-bold text-forge-ember mt-4">
             Shape. Validate. Reason. Build. Prove.
           </p>
-          <a href="/getting-started/installation" className="text-lg md:text-xl mt-4 text-forge-fg hover:text-forge-ember transition-colors">
+          <a href="/docs/getting-started/installation" className="text-lg md:text-xl mt-4 text-forge-fg hover:text-forge-ember transition-colors">
             Get started <span aria-hidden="true">→</span>
           </a>
         </div>

@@ -20,40 +20,40 @@ export default defineConfig({
       {
         label: 'Getting Started',
         items: [
-          { label: 'Installation', slug: 'getting-started/installation' },
-          { label: 'Quick Start', slug: 'getting-started/quick-start' },
-          { label: 'Configuration', slug: 'getting-started/configuration' },
+          { label: 'Installation', slug: 'docs/getting-started/installation' },
+          { label: 'Quick Start', slug: 'docs/getting-started/quick-start' },
+          { label: 'Configuration', slug: 'docs/getting-started/configuration' },
         ],
       },
       {
         label: 'Methodology',
         items: [
-          { label: 'Overview', slug: 'methodology/overview' },
-          { label: 'Routing & Depth', slug: 'methodology/routing' },
-          { label: 'Artifact Lifecycle', slug: 'methodology/lifecycle' },
-          { label: 'Evidence & Scoring', slug: 'methodology/evidence' },
-          { label: 'ADI Reasoning', slug: 'methodology/adi' },
+          { label: 'Overview', slug: 'docs/methodology/overview' },
+          { label: 'Routing & Depth', slug: 'docs/methodology/routing' },
+          { label: 'Artifact Lifecycle', slug: 'docs/methodology/lifecycle' },
+          { label: 'Evidence & Scoring', slug: 'docs/methodology/evidence' },
+          { label: 'ADI Reasoning', slug: 'docs/methodology/adi' },
         ],
       },
       {
         label: 'CLI Reference',
-        autogenerate: { directory: 'cli' },
+        autogenerate: { directory: 'docs/cli' },
       },
       {
         label: 'MCP Reference',
-        autogenerate: { directory: 'mcp' },
+        autogenerate: { directory: 'docs/mcp' },
       },
       {
         label: 'Marketplace',
-        autogenerate: { directory: 'marketplace' },
+        autogenerate: { directory: 'docs/marketplace' },
       },
       {
         label: 'Guides',
-        autogenerate: { directory: 'guides' },
+        autogenerate: { directory: 'docs/guides' },
       },
       {
         label: 'Reference',
-        autogenerate: { directory: 'reference' },
+        autogenerate: { directory: 'docs/reference' },
       },
     ],
   }), react()],
