@@ -1,0 +1,59 @@
+---
+// Trust section — R_eff scoring rings
+---
+
+<section id="trust" class="relative border-b border-forge-line grid grid-cols-1 lg:grid-cols-[1fr_500px] min-h-screen">
+  <!-- Left: Scoring rings SVG -->
+  <div class="relative flex items-center justify-center border-r border-forge-line overflow-hidden min-h-[500px]">
+    <!-- Dotted grid -->
+    <div class="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true"></div>
+
+    <svg class="w-full max-w-[600px] h-auto" viewBox="0 0 700 700" fill="none" aria-hidden="true">
+      <!-- Octagonal rings — each = one congruence level -->
+      <!-- Dashed outer (decay zone) -->
+      <polygon points="350,15 595,115 685,350 595,585 350,685 105,585 15,350 105,115" stroke="var(--color-forge-fg)" stroke-width="0.5" stroke-dasharray="4 6" opacity="0.08" fill="none"/>
+      <!-- Ring 1 (CL0) -->
+      <polygon points="350,50 565,135 645,350 565,565 350,650 135,565 55,350 135,135" stroke="var(--color-forge-fg)" stroke-width="1.5" opacity="0.15" fill="none"/>
+      <!-- Ring 2 (CL1) -->
+      <polygon points="350,110 520,175 590,350 520,525 350,590 180,525 110,350 180,175" stroke="var(--color-forge-fg)" stroke-width="1.2" opacity="0.25" fill="none"/>
+      <!-- Ring 3 (CL2) -->
+      <polygon points="350,170 480,215 535,350 480,485 350,530 220,485 165,350 220,215" stroke="var(--color-forge-fg)" stroke-width="1" opacity="0.35" fill="none"/>
+      <!-- Ring 4 (CL3 — ember, highest confidence) -->
+      <polygon points="350,230 435,260 475,350 435,440 350,470 265,440 225,350 265,260" stroke="var(--color-forge-ember)" stroke-width="1" opacity="0.5" fill="none"/>
+      <!-- Center fill -->
+      <polygon points="350,280 400,295 420,350 400,405 350,420 300,405 280,350 300,295" fill="var(--color-forge-ember)" opacity="0.15"/>
+      <!-- Center dot -->
+      <circle cx="350" cy="350" r="10" fill="var(--color-forge-ember)" opacity="0.9"/>
+      <!-- R_eff label -->
+      <text x="350" y="385" text-anchor="middle" font-family="Geist Mono, monospace" font-size="12" fill="var(--color-forge-ember)">R_eff = 0.82</text>
+    </svg>
+  </div>
+
+  <!-- Right: Content -->
+  <div class="flex flex-col justify-between p-8 lg:p-12">
+    <h2 class="font-heading text-4xl lg:text-[68px] font-normal leading-[1.05]">
+      Trust Is<br/>Measured<br/>Not<br/>Assumed
+    </h2>
+
+    <hr class="border-forge-line my-8"/>
+
+    <div class="space-y-8">
+      <div>
+        <p class="font-mono text-base font-medium text-forge-ember">R_eff = min(evidence)</p>
+        <p class="text-sm text-forge-dim leading-relaxed mt-1">Weakest-link scoring. Your decision is only as strong as your weakest evidence.</p>
+      </div>
+      <hr class="border-forge-line"/>
+      <div>
+        <p class="text-base font-medium">Evidence Decay</p>
+        <p class="text-sm text-forge-dim leading-relaxed mt-1">Evidence has a TTL. Expired evidence scores 0.1 — stale, not absent. Dashed outer ring = decay zone.</p>
+      </div>
+      <hr class="border-forge-line"/>
+      <div>
+        <p class="text-base font-medium">Congruence Levels</p>
+        <p class="text-sm text-forge-dim leading-relaxed mt-1">Evidence from the same context scores highest. Opposing context gets penalized. Each ring represents a confidence level.</p>
+      </div>
+    </div>
+
+    <p class="font-mono text-[10px] tracking-[3px] text-forge-dim mt-8">EVIDENCE</p>
+  </div>
+</section>

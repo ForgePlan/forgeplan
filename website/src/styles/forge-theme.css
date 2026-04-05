@@ -1,0 +1,39 @@
+/* ========================================
+   Forgeplan — Starlight Theme Override
+   Forge palette on docs pages
+   ======================================== */
+
+:root {
+  --sl-color-accent-low: #1a0f08;
+  --sl-color-accent: #FF6B35;
+  --sl-color-accent-high: #ffb899;
+  --sl-color-white: #E8E8E8;
+  --sl-color-gray-1: #c0c0c0;
+  --sl-color-gray-2: #888888;
+  --sl-color-gray-3: #949494;
+  --sl-color-gray-4: #3A3A3A;
+  --sl-color-gray-5: #2A2A2A;
+  --sl-color-gray-6: #161616;
+  --sl-color-black: #0D0D0D;
+
+  --sl-font: 'Space Grotesk', system-ui, sans-serif;
+  --sl-font-mono: 'Geist Mono', ui-monospace, monospace;
+
+  --sl-text-sm: 0.875rem;
+  --sl-text-base: 1rem;
+  --sl-text-lg: 1.125rem;
+  --sl-text-2xl: 1.5rem;
+  --sl-text-3xl: 2rem;
+  --sl-text-4xl: 2.5rem;
+}
+
+/* Sharp corners — forge aesthetic */
+:root {
+  --sl-border-radius: 0;
+}
+
+/* Code blocks — forge surface */
+.expressive-code pre {
+  border: 1px solid var(--sl-color-gray-4) !important;
+  border-radius: 0 !important;
+}

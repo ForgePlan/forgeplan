@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* ========================================
+   Forgeplan Design System — Forge Palette
+   ======================================== */
+
+@theme {
+  --color-forge-bg: #0D0D0D;
+  --color-forge-fg: #E8E8E8;
+  --color-forge-surface: #161616;
+  --color-forge-line: #3A3A3A;
+  --color-forge-dim: #949494;
+  --color-forge-ember: #FF6B35;
+  --color-forge-green: #28C840;
+  --color-forge-white: #FFFFFF;
+
+  --font-heading: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+}
+
+/* Dot grid background pattern */
+.bg-dot-grid {
+  background-image: radial-gradient(circle, var(--color-forge-dim) 1px, transparent 1px);
+  background-size: 30px 30px;
+}

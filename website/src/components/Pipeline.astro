@@ -1,0 +1,63 @@
+---
+// Pipeline section — Depth routing + ADI reasoning
+---
+
+<section id="pipeline" class="relative border-b border-forge-line grid grid-cols-1 lg:grid-cols-[500px_1fr] min-h-screen">
+  <!-- Left: Big text -->
+  <div class="flex flex-col justify-between p-8 lg:p-12 border-r border-forge-line">
+    <h2 class="font-heading text-5xl lg:text-[72px] font-normal leading-none">
+      SHAPE<br/>VALIDATE<br/>REASON<br/>BUILD<br/>PROVE
+    </h2>
+    <div class="mt-auto space-y-4">
+      <p class="text-sm text-forge-dim leading-relaxed">
+        Every decision has a lifecycle. Forgeplan enforces Shape → Validate → Reason → Code → Evidence → Activate — no shortcuts, no stubs, no blind spots.
+      </p>
+      <p class="font-mono text-sm font-medium text-forge-ember">
+        forgeplan route "your task" →
+      </p>
+    </div>
+  </div>
+
+  <!-- Right: Depth routing + ADI -->
+  <div class="flex flex-col justify-center p-8 lg:p-12 space-y-8">
+    <p class="font-mono text-[11px] tracking-[3px] text-forge-ember">DEPTH ROUTING</p>
+
+    <!-- Depth levels -->
+    <div class="space-y-0">
+      <div class="flex items-center gap-4 border-b border-forge-line py-4">
+        <span class="font-mono text-[10px] tracking-[2px] text-forge-dim border border-forge-line px-2 py-1">TACTICAL</span>
+        <p class="text-sm text-forge-dim">Quick fix, 1 file. No artifact needed — just code and ship.</p>
+      </div>
+      <div class="flex items-center gap-4 border-b border-forge-line py-4">
+        <span class="font-mono text-[10px] tracking-[2px] border border-forge-fg px-2 py-1">STANDARD</span>
+        <p class="text-sm">Feature 1-3 days, has choices. PRD → RFC. ADI recommended.</p>
+      </div>
+      <div class="flex items-center gap-4 border-b border-forge-line py-4">
+        <span class="font-mono text-[10px] tracking-[2px] text-forge-bg bg-forge-ember px-2 py-1">DEEP</span>
+        <p class="text-sm">New module, 1-2 weeks. PRD → Spec → RFC → ADR. ADI mandatory.</p>
+      </div>
+      <div class="flex items-center gap-4 border-b border-forge-line py-4">
+        <span class="font-mono text-[10px] tracking-[2px] text-forge-bg bg-forge-ember px-2 py-1">CRITICAL</span>
+        <p class="text-sm">Cross-team, strategy. Epic → PRD[] → Spec[] → RFC[] → ADR[]. Full review.</p>
+      </div>
+    </div>
+
+    <!-- ADI Reasoning -->
+    <p class="font-mono text-[11px] tracking-[3px] text-forge-ember mt-8">ADI REASONING CYCLE</p>
+
+    <div class="grid grid-cols-3 gap-4">
+      <div class="border border-forge-line p-4 space-y-2">
+        <p class="font-medium">Abduction</p>
+        <p class="text-xs text-forge-dim leading-relaxed">Generate 3+ hypotheses. What could work?</p>
+      </div>
+      <div class="border border-forge-line p-4 space-y-2">
+        <p class="font-medium">Deduction</p>
+        <p class="text-xs text-forge-dim leading-relaxed">Derive testable predictions for each.</p>
+      </div>
+      <div class="border border-forge-ember p-4 space-y-2">
+        <p class="font-medium text-forge-ember">Induction</p>
+        <p class="text-xs text-forge-dim leading-relaxed">Check evidence. Score: supports / weakens / refutes.</p>
+      </div>
+    </div>
+  </div>
+</section>
