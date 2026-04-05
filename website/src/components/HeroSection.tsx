@@ -54,7 +54,7 @@ export default function HeroSection() {
           return (
             <div key={pi} className="absolute inset-x-0 pointer-events-none" style={{ top: `${topPercent}%`, opacity }}>
               <div className="flex justify-between items-start px-6 lg:px-10">
-                {/* Left block */}
+                {/* Left block + dashed line → center */}
                 <div className="flex items-center" style={{ transform: `translateY(${(1 - opacity) * 10}px)` }}>
                   <div
                     className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-4 py-3 max-w-[320px]"
@@ -66,10 +66,15 @@ export default function HeroSection() {
                       <span className="font-mono text-[8px] tracking-[2px] text-forge-dim">{pair.left.label}</span>
                     </div>
                   </div>
+                  {/* Dashed connector line from card → toward center */}
+                  <div className="h-[1px] w-12 lg:w-20 border-t border-dashed border-forge-ember/40 flex-shrink-0" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-forge-ember/40 flex-shrink-0" />
                 </div>
 
-                {/* Right block */}
+                {/* Right block + dashed line ← center */}
                 <div className="flex items-center" style={{ transform: `translateY(${(1 - opacity) * 10}px)` }}>
+                  <div className="w-1.5 h-1.5 rounded-full bg-forge-ember/40 flex-shrink-0" />
+                  <div className="h-[1px] w-12 lg:w-20 border-t border-dashed border-forge-ember/40 flex-shrink-0" />
                   <div
                     className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-4 py-3 max-w-[320px] text-right"
                     style={{ borderRight: '2px solid var(--color-forge-ember)' }}

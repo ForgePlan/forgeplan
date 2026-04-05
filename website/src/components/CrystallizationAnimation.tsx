@@ -277,37 +277,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
     const SUBTITLE_TEXT = 'Structure. Evidence. Trust.';
     const SHUFFLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.!@#$%';
 
-    // Narrative connectors — dashed lines from edges to artifact dots (4 pairs × 2)
-    // Connector lines: from card edge to flying dot
-    // Left cards: right edge ≈ padding(40) + maxWidth(320) = 360
-    // Right cards: left edge ≈ W - padding(40) - maxWidth(320) = 1080
-    const EDGE_LEFT = 360;
-    const EDGE_RIGHT = W - 360;
-    // edgeYPct synced with card positions: top = 18 + pi*18 %, center ≈ +5%
-    const CONNECTOR_DEFS = [
-      // Pair 1: cards at top=18%, center=23%
-      { dotIdx: 0, edgeX: EDGE_LEFT,  edgeYPct: 0.23, start: 0.02, end: 0.14 },
-      { dotIdx: 1, edgeX: EDGE_RIGHT, edgeYPct: 0.23, start: 0.02, end: 0.14 },
-      // Pair 2: cards at top=36%, center=41%
-      { dotIdx: 2, edgeX: EDGE_LEFT,  edgeYPct: 0.41, start: 0.10, end: 0.22 },
-      { dotIdx: 6, edgeX: EDGE_RIGHT, edgeYPct: 0.41, start: 0.10, end: 0.22 },
-      // Pair 3: cards at top=54%, center=59%
-      { dotIdx: 4, edgeX: EDGE_LEFT,  edgeYPct: 0.59, start: 0.18, end: 0.30 },
-      { dotIdx: 5, edgeX: EDGE_RIGHT, edgeYPct: 0.59, start: 0.18, end: 0.30 },
-      // Pair 4: cards at top=72%, center=77%
-      { dotIdx: 3, edgeX: EDGE_LEFT,  edgeYPct: 0.77, start: 0.26, end: 0.40 },
-      { dotIdx: 7, edgeX: EDGE_RIGHT, edgeYPct: 0.77, start: 0.26, end: 0.40 },
-    ];
-    const connectors: SVGLineElement[] = [];
-    CONNECTOR_DEFS.forEach(() => {
-      const cl = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      cl.setAttribute('stroke', COLORS.ember);
-      cl.setAttribute('stroke-width', '0.5');
-      cl.setAttribute('stroke-dasharray', '4 4');
-      cl.setAttribute('opacity', '0');
-      svg.appendChild(cl);
-      connectors.push(cl);
-    });
+    // Connector lines removed from SVG — now rendered as HTML in HeroSection
 
     // === ANIMATION LOOP ===
     function tick() {
@@ -399,40 +369,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
         }
       }
 
-      // Narrative connectors — convert CSS card positions to SVG coordinates
-      // SVG uses xMidYMid meet: need to account for scale + offset
-      const svgEl = svg;
-      const svgRect = svgEl.getBoundingClientRect();
-      const parentRect = svgEl.parentElement?.getBoundingClientRect();
-      if (parentRect && svgRect.width > 0) {
-        // Scale factor: how SVG viewBox maps to screen pixels
-        const scaleX = W / svgRect.width;
-        const scaleY = H / svgRect.height;
-        CONNECTOR_DEFS.forEach((cd, ci) => {
-          const fadeIn = Math.min(Math.max((sp - cd.start) / 0.03, 0), 1);
-          const fadeOut = Math.min(Math.max((cd.end - sp) / 0.03, 0), 1);
-          const connOp = fadeIn * fadeOut * 0.4;
-
-          if (connOp > 0) {
-            const dot = dots[cd.dotIdx];
-            const dx = parseFloat(dot.getAttribute('cx') || '0');
-            const dy = parseFloat(dot.getAttribute('cy') || '0');
-            // Convert CSS % position to SVG viewBox coords
-            const cardY = cd.edgeYPct * parentRect.height;
-            const svgY = (cardY - (svgRect.top - parentRect.top)) * scaleY;
-            const cardX = cd.edgeX === EDGE_LEFT
-              ? (EDGE_LEFT / W) * parentRect.width
-              : parentRect.width - (EDGE_LEFT / W) * parentRect.width;
-            const svgX = (cardX - (svgRect.left - parentRect.left)) * scaleX;
-
-            connectors[ci].setAttribute('x1', String(svgX));
-            connectors[ci].setAttribute('y1', String(svgY));
-            connectors[ci].setAttribute('x2', String(dx));
-            connectors[ci].setAttribute('y2', String(dy));
-          }
-          connectors[ci].setAttribute('opacity', String(connOp));
-        });
-      }
+      // Connector lines removed — handled as CSS borders in HeroSection cards
 
       // Hexagons fly in
       const hexOp = [0.4, 0.3, 0.25, 0.7];
