@@ -1,0 +1,74 @@
+---
+// Grid header with bordered cells — QF-inspired, forge-branded
+---
+
+<header class="fixed top-0 z-50 w-full px-4 pt-4">
+  <div class="border border-forge-line bg-forge-bg grid h-[72px] grid-cols-[72px_1fr_auto_72px]">
+    <!-- Logo -->
+    <a href="/" aria-label="Forgeplan home" class="flex items-center justify-center border-r border-forge-line">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7" stroke="var(--color-forge-ember)" stroke-width="1.5" fill="none"/>
+      </svg>
+    </a>
+
+    <!-- Brand -->
+    <div class="flex items-center px-4 border-r border-forge-line">
+      <span class="font-heading text-[15px] font-semibold tracking-[3px] text-forge-fg">FORGEPLAN</span>
+    </div>
+
+    <!-- Nav grid -->
+    <nav aria-label="Primary navigation" class="hidden lg:grid lg:grid-cols-[repeat(4,110px)_140px_100px] h-full">
+      <a href="/getting-started/installation" class="nav-cell border-r border-forge-line">Docs</a>
+      <a href="https://github.com/ForgePlan/forgeplan" class="nav-cell border-r border-forge-line" rel="noopener noreferrer" target="_blank">GitHub</a>
+      <a href="/methodology/overview" class="nav-cell border-r border-forge-line">Guides</a>
+      <a href="/cli/health" class="nav-cell border-r border-forge-line">CLI Ref</a>
+      <a href="/mcp/artifact_create" class="nav-cell border-r border-forge-line">MCP Tools</a>
+      <a href="#install" class="nav-cell text-forge-ember font-medium">Install</a>
+    </nav>
+
+    <!-- Theme toggle (visual only for now) -->
+    <div class="flex items-center justify-center" aria-hidden="true">
+      <div class="relative w-[56px] h-[56px] rounded-full border-[1.5px] border-forge-fg overflow-hidden">
+        <div class="absolute top-0 right-0 w-1/2 h-full bg-forge-fg"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<style>
+  .nav-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: var(--color-forge-fg);
+    position: relative;
+    overflow: hidden;
+    transition: color 0.3s;
+  }
+
+  .nav-cell::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--color-forge-fg);
+    transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .nav-cell:hover::before,
+  .nav-cell:focus-visible::before {
+    transform: translateX(0);
+  }
+
+  .nav-cell:hover,
+  .nav-cell:focus-visible {
+    color: var(--color-forge-bg);
+  }
+
+  .nav-cell:focus-visible {
+    outline: 2px solid var(--color-forge-ember);
+    outline-offset: -2px;
+  }
+</style>
