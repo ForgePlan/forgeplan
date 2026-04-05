@@ -337,23 +337,64 @@ export default function CrystallizationAnimation({ progress }: Props) {
       const isoOp = 0.4 * Math.min(isoA, 1);
 
       if (sp > 0.8) {
-        const t = Math.min((sp - 0.8) / 0.18, 1);
-        const et = 1 - Math.pow(1 - t, 2);
-        const sx = -220 * et;
+        // Phase 4a: cube shifts left (80-88%)
+        const cubeT = Math.min((sp - 0.8) / 0.08, 1);
+        const cubeEased = 1 - Math.pow(1 - cubeT, 2);
+        const sx = -220 * cubeEased;
+
+        // Move hex + iso lines
         hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX + sx, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
-        centerDot.setAttribute('cx', String(CX + sx)); centerDot.setAttribute('opacity', String(dotOp));
         ISO_DEFS.forEach((def, idx) => {
           const [vx, vy] = hexVertex(CX + sx, CY, HEX_RADII[3], def.vertex);
           isoLines[idx].setAttribute('x1', String(CX + sx)); isoLines[idx].setAttribute('y1', String(CY));
           isoLines[idx].setAttribute('x2', String(vx)); isoLines[idx].setAttribute('y2', String(vy));
           isoLines[idx].setAttribute('opacity', String(isoOp));
         });
-        brandText.setAttribute('x', String(CX + sx + 100));
-        const full = 'Forge your plan';
-        brandText.textContent = full.substring(0, Math.min(Math.floor(et * (full.length + 2)), full.length));
-        brandText.setAttribute('opacity', String(Math.min(et * 2, 1)));
+
+        // Phase 4b: dot detaches from cube, flies to "o" position (88-93%)
+        // Text starts at: CX + sx_final + 100 = CX - 220 + 100 = CX - 120
+        // "F" is ~25px wide at font-size 42, so "o" center ≈ textX + 30
+        const textX = CX - 120;
+        const dotTargetX = textX + 30; // position of "o" in "Forge"
+
+        if (sp < 0.88) {
+          // Dot still in cube
+          centerDot.setAttribute('cx', String(CX + sx));
+          centerDot.setAttribute('cy', String(CY));
+        } else {
+          // Dot detaches and flies to "o" position
+          const detachT = Math.min((sp - 0.88) / 0.05, 1);
+          const detachEased = 1 - Math.pow(1 - detachT, 3);
+          const dotX = (CX + sx) + (dotTargetX - (CX + sx)) * detachEased;
+          // Y: from center to text baseline (CY → CY + 8 - 5 adjustment)
+          const dotY = CY + (CY + 3 - CY) * detachEased;
+          centerDot.setAttribute('cx', String(dotX));
+          centerDot.setAttribute('cy', String(dotY));
+        }
+        centerDot.setAttribute('opacity', String(dotOp));
+
+        // Phase 4c: text "F rge your plan" typewriter (88-100%)
+        // "F" appears first, then "rge your plan" after dot arrives
+        brandText.setAttribute('x', String(textX));
+        brandText.setAttribute('y', String(CY + 8));
+
+        if (sp > 0.88) {
+          const textT = Math.min((sp - 0.88) / 0.12, 1);
+          const textEased = 1 - Math.pow(1 - textT, 2);
+          // Text without "o" — dot IS the "o"
+          const full = 'F rge your plan';
+          const chars = Math.floor(textEased * (full.length + 1));
+          brandText.textContent = full.substring(0, Math.min(chars, full.length));
+          brandText.setAttribute('opacity', String(Math.min(textEased * 3, 1)));
+        } else {
+          brandText.setAttribute('opacity', '0');
+          brandText.textContent = '';
+        }
       } else {
-        centerDot.setAttribute('cx', String(CX)); centerDot.setAttribute('opacity', String(dotOp));
+        // Before phase 4: everything at center
+        centerDot.setAttribute('cx', String(CX));
+        centerDot.setAttribute('cy', String(CY));
+        centerDot.setAttribute('opacity', String(dotOp));
         brandText.setAttribute('opacity', '0'); brandText.textContent = '';
         hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
         ISO_DEFS.forEach((def, idx) => {
