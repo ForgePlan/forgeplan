@@ -48,36 +48,45 @@ export default function PipelineSection() {
 
           {/* Left: Pipeline timeline */}
           <div className="relative flex flex-col justify-center p-8 lg:p-12 border-r border-forge-line">
-            {/* Vertical timeline line — aligned with dots */}
-            <div className="absolute left-[44px] lg:left-[52px] top-[10%] bottom-[10%] w-[1px] bg-forge-line"
-              style={{ opacity: fade(0.02) }} />
+            {/* Timeline: vertical line + dots ON line + dashed horizontal to text */}
+            <div className="relative h-full flex flex-col justify-center">
+              {/* Vertical line */}
+              <div className="absolute left-[32px] lg:left-[40px] top-[8%] bottom-[8%] w-[2px] bg-forge-line"
+                style={{ opacity: fade(0.02) }} />
 
-            <div className="space-y-6 lg:space-y-8 pl-12 lg:pl-16">
-              {STEPS.map((step, i) => {
-                const stepFade = fade(step.start, 0.08);
-                const isLast = i === STEPS.length - 1;
-                return (
-                  <div key={i} className="relative" style={{ opacity: stepFade, transform: `translateY(${(1 - stepFade) * 12}px)` }}>
-                    {/* Timeline dot — centered on the line */}
-                    <div className={`absolute -left-[26px] lg:-left-[34px] top-[6px] w-3 h-3 rounded-full border-2 ${
-                      isLast ? 'border-forge-ember bg-forge-ember' : 'border-forge-line bg-forge-bg'
-                    }`} style={{ opacity: stepFade }} />
+              <div className="space-y-5 lg:space-y-7">
+                {STEPS.map((step, i) => {
+                  const stepFade = fade(step.start, 0.08);
+                  const isLast = i === STEPS.length - 1;
+                  return (
+                    <div key={i} className="flex items-start gap-0" style={{ opacity: stepFade, transform: `translateY(${(1 - stepFade) * 10}px)` }}>
+                      {/* Dot ON the line */}
+                      <div className="flex-shrink-0 flex items-center" style={{ width: '40px', paddingLeft: '25px' }}>
+                        <div className={`w-[14px] h-[14px] rounded-full border-2 ${
+                          isLast ? 'border-forge-ember bg-forge-ember' : 'border-forge-fg bg-forge-bg'
+                        }`} />
+                      </div>
 
-                    {/* Step word */}
-                    <h3 className={`font-heading text-3xl lg:text-[48px] font-normal leading-none ${
-                      isLast ? 'text-forge-ember' : ''
-                    }`}>
-                      {step.word}
-                    </h3>
+                      {/* Dashed horizontal line */}
+                      <div className="flex-shrink-0 border-t border-dashed border-forge-line self-center"
+                        style={{ width: '24px', marginTop: '1px', opacity: 0.5 }} />
 
-                    {/* Step description */}
-                    <p className="text-sm text-forge-dim leading-relaxed mt-1 max-w-[400px]"
-                      style={{ opacity: fade(step.start + 0.04, 0.06) }}>
-                      {step.desc}
-                    </p>
-                  </div>
-                );
-              })}
+                      {/* Text */}
+                      <div className="pl-3">
+                        <h3 className={`font-heading text-2xl lg:text-[42px] font-normal leading-none ${
+                          isLast ? 'text-forge-ember' : ''
+                        }`}>
+                          {step.word}
+                        </h3>
+                        <p className="text-xs lg:text-sm text-forge-dim leading-relaxed mt-1 max-w-[360px]"
+                          style={{ opacity: fade(step.start + 0.04, 0.06) }}>
+                          {step.desc}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Bottom tagline */}
