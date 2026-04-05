@@ -3,18 +3,18 @@ import { COLORS } from '../tokens';
 
 // Real artifact graph from Forgeplan dogfood
 const NODES = [
-  { id: 'EPIC-001', x: 300, y: 40, type: 'epic' },
-  { id: 'PRD-001', x: 120, y: 150, type: 'prd' },
-  { id: 'PRD-018', x: 300, y: 150, type: 'prd' },
-  { id: 'PRD-024', x: 460, y: 150, type: 'prd' },
-  { id: 'RFC-001', x: 60, y: 280, type: 'rfc' },
-  { id: 'RFC-003', x: 200, y: 280, type: 'rfc' },
-  { id: 'RFC-002', x: 360, y: 280, type: 'rfc' },
-  { id: 'ADR-001', x: 60, y: 400, type: 'adr' },
-  { id: 'ADR-003', x: 360, y: 400, type: 'adr' },
-  { id: 'EVID-016', x: 520, y: 280, type: 'evidence' },
-  { id: 'EVID-020', x: 200, y: 430, type: 'evidence' },
-  { id: 'PROB-016', x: 560, y: 150, type: 'problem' },
+  { id: 'EPIC-001', x: 300, y: 30, type: 'epic' },
+  { id: 'PRD-001', x: 100, y: 130, type: 'prd' },
+  { id: 'PRD-018', x: 280, y: 130, type: 'prd' },
+  { id: 'PRD-024', x: 460, y: 130, type: 'prd' },
+  { id: 'RFC-001', x: 60, y: 250, type: 'rfc' },
+  { id: 'RFC-003', x: 200, y: 250, type: 'rfc' },
+  { id: 'RFC-002', x: 360, y: 250, type: 'rfc' },
+  { id: 'ADR-001', x: 60, y: 370, type: 'adr' },
+  { id: 'ADR-003', x: 360, y: 370, type: 'adr' },
+  { id: 'EVID-016', x: 520, y: 250, type: 'evidence' },
+  { id: 'EVID-020', x: 60, y: 450, type: 'evidence' },
+  { id: 'PROB-016', x: 560, y: 130, type: 'problem' },
 ];
 
 const EDGES = [
@@ -119,7 +119,7 @@ export default function GraphSection() {
                 <span className="font-mono text-[9px] text-forge-dim">risk</span>
               </div>
             </div>
-            <svg className="w-full h-full max-w-[650px] max-h-[500px] relative z-10" viewBox="0 0 600 460" fill="none" aria-hidden="true">
+            <svg className="w-full h-full max-w-[700px] max-h-[550px] relative z-10" viewBox="0 0 620 490" fill="none" aria-hidden="true">
 
               {/* Edges */}
               {EDGES.map((edge, ei) => {
