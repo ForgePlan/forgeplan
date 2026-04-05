@@ -74,11 +74,11 @@ export default function PipelineSection() {
                         </h3>
                       </div>
                       {/* Description + vertical line segment to next dot */}
-                      <div className="flex">
-                        {/* Vertical line segment (not on last item) */}
-                        <div className="flex-shrink-0 flex justify-center" style={{ width: '38px' }}>
+                      <div className="flex flex-1">
+                        {/* Vertical line segment — stretches to fill gap between dots */}
+                        <div className="flex-shrink-0 flex justify-center flex-1" style={{ width: '38px' }}>
                           {!isLast && (
-                            <div className="w-[2px] bg-forge-line h-full" style={{ minHeight: '40px', opacity: 0.3 }} />
+                            <div className="w-[2px] bg-forge-line h-full" style={{ opacity: 0.3 }} />
                           )}
                         </div>
                         {/* Spacer matching dashed line */}
