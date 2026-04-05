@@ -399,23 +399,40 @@ export default function CrystallizationAnimation({ progress }: Props) {
         }
       }
 
-      // Narrative connectors — dashed lines from edge to artifact dots
-      CONNECTOR_DEFS.forEach((cd, ci) => {
-        const fadeIn = Math.min(Math.max((sp - cd.start) / 0.03, 0), 1);
-        const fadeOut = Math.min(Math.max((cd.end - sp) / 0.03, 0), 1);
-        const connOp = fadeIn * fadeOut * 0.4;
+      // Narrative connectors — convert CSS card positions to SVG coordinates
+      // SVG uses xMidYMid meet: need to account for scale + offset
+      const svgEl = svg;
+      const svgRect = svgEl.getBoundingClientRect();
+      const parentRect = svgEl.parentElement?.getBoundingClientRect();
+      if (parentRect && svgRect.width > 0) {
+        // Scale factor: how SVG viewBox maps to screen pixels
+        const scaleX = W / svgRect.width;
+        const scaleY = H / svgRect.height;
+        CONNECTOR_DEFS.forEach((cd, ci) => {
+          const fadeIn = Math.min(Math.max((sp - cd.start) / 0.03, 0), 1);
+          const fadeOut = Math.min(Math.max((cd.end - sp) / 0.03, 0), 1);
+          const connOp = fadeIn * fadeOut * 0.4;
 
-        if (connOp > 0) {
-          const dot = dots[cd.dotIdx];
-          const dx = parseFloat(dot.getAttribute('cx') || '0');
-          const dy = parseFloat(dot.getAttribute('cy') || '0');
-          connectors[ci].setAttribute('x1', String(cd.edgeX));
-          connectors[ci].setAttribute('y1', String(H * cd.edgeYPct));
-          connectors[ci].setAttribute('x2', String(dx));
-          connectors[ci].setAttribute('y2', String(dy));
-        }
-        connectors[ci].setAttribute('opacity', String(connOp));
-      });
+          if (connOp > 0) {
+            const dot = dots[cd.dotIdx];
+            const dx = parseFloat(dot.getAttribute('cx') || '0');
+            const dy = parseFloat(dot.getAttribute('cy') || '0');
+            // Convert CSS % position to SVG viewBox coords
+            const cardY = cd.edgeYPct * parentRect.height;
+            const svgY = (cardY - (svgRect.top - parentRect.top)) * scaleY;
+            const cardX = cd.edgeX === EDGE_LEFT
+              ? (EDGE_LEFT / W) * parentRect.width
+              : parentRect.width - (EDGE_LEFT / W) * parentRect.width;
+            const svgX = (cardX - (svgRect.left - parentRect.left)) * scaleX;
+
+            connectors[ci].setAttribute('x1', String(svgX));
+            connectors[ci].setAttribute('y1', String(svgY));
+            connectors[ci].setAttribute('x2', String(dx));
+            connectors[ci].setAttribute('y2', String(dy));
+          }
+          connectors[ci].setAttribute('opacity', String(connOp));
+        });
+      }
 
       // Hexagons fly in
       const hexOp = [0.4, 0.3, 0.25, 0.7];
