@@ -97,68 +97,67 @@ export default function PipelineSection() {
             </p>
 
             {/* Git branching SVG */}
-            <svg className="w-full max-w-[550px] relative z-10" viewBox="0 0 550 420" fill="none" aria-hidden="true">
-              {/* Main trunk line */}
-              <line x1="30" y1="20" x2="30" y2="400" stroke={COLORS.fg} strokeWidth="1.5" opacity={fade(0.14) * 0.4} />
+            <svg className="w-full relative z-10" viewBox="0 0 600 500" fill="none" aria-hidden="true">
+              {/* Main trunk */}
+              <line x1="35" y1="25" x2="35" y2="480" stroke={COLORS.fg} strokeWidth="2" opacity={fade(0.14) * 0.4} />
 
-              {/* Route dot (top) */}
-              <circle cx="30" cy="20" r="5" fill={COLORS.ember} opacity={fade(0.14)} />
-              <text x="45" y="25" fontFamily="Geist Mono, monospace" fontSize="11" fill={COLORS.ember} opacity={fade(0.14)}>
-                route "your task"
+              {/* Route dot */}
+              <circle cx="35" cy="25" r="6" fill={COLORS.ember} opacity={fade(0.14)} />
+              <text x="55" y="30" fontFamily="Geist Mono, monospace" fontSize="14" fill={COLORS.ember} opacity={fade(0.14)}>
+                forgeplan route "your task"
               </text>
 
-              {/* Branch 1: Tactical */}
+              {/* Tactical */}
               <g opacity={fade(0.20)}>
-                <line x1="30" y1="70" x2="80" y2="70" stroke={COLORS.dim} strokeWidth="1" />
-                <circle cx="80" cy="70" r="4" fill={COLORS.dim} />
-                <text x="95" y="74" fontFamily="Geist Mono, monospace" fontSize="10" fill={COLORS.dim}>Tactical</text>
-                <line x1="170" y1="70" x2="420" y2="70" stroke={COLORS.dim} strokeWidth="0.5" strokeDasharray="4 4" />
-                <text x="430" y="74" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>→ Ship</text>
+                <line x1="35" y1="85" x2="90" y2="85" stroke={COLORS.dim} strokeWidth="1.5" />
+                <circle cx="90" cy="85" r="5" fill={COLORS.dim} />
+                <text x="108" y="90" fontFamily="Geist Mono, monospace" fontSize="13" fill={COLORS.dim}>Tactical</text>
+                <line x1="200" y1="85" x2="460" y2="85" stroke={COLORS.dim} strokeWidth="0.5" strokeDasharray="4 4" />
+                <text x="470" y="90" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.dim}>→ Ship</text>
               </g>
 
-              {/* Branch 2: Standard */}
+              {/* Standard */}
               <g opacity={fade(0.28)}>
-                <line x1="30" y1="130" x2="80" y2="130" stroke={COLORS.fg} strokeWidth="1" />
-                <circle cx="80" cy="130" r="4" fill={COLORS.fg} />
-                <text x="95" y="134" fontFamily="Geist Mono, monospace" fontSize="10" fill={COLORS.fg}>Standard</text>
-                {/* Sub-branches */}
-                <line x1="80" y1="130" x2="80" y2="170" stroke={COLORS.fg} strokeWidth="0.8" />
-                <line x1="80" y1="150" x2="130" y2="150" stroke={COLORS.fg} strokeWidth="0.8" />
-                <text x="140" y="154" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>PRD</text>
-                <line x1="175" y1="150" x2="210" y2="150" stroke={COLORS.fg} strokeWidth="0.5" />
-                <text x="220" y="154" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>RFC</text>
-                <line x1="250" y1="150" x2="420" y2="150" stroke={COLORS.fg} strokeWidth="0.5" strokeDasharray="4 4" />
-                <text x="430" y="154" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>→ Evidence</text>
+                <line x1="35" y1="155" x2="90" y2="155" stroke={COLORS.fg} strokeWidth="1.5" />
+                <circle cx="90" cy="155" r="5" fill={COLORS.fg} />
+                <text x="108" y="160" fontFamily="Geist Mono, monospace" fontSize="13" fill={COLORS.fg}>Standard</text>
+                <line x1="90" y1="155" x2="90" y2="195" stroke={COLORS.fg} strokeWidth="1" />
+                <line x1="90" y1="180" x2="145" y2="180" stroke={COLORS.fg} strokeWidth="1" />
+                <text x="155" y="185" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>PRD</text>
+                <line x1="195" y1="180" x2="230" y2="180" stroke={COLORS.fg} strokeWidth="0.8" />
+                <text x="240" y="185" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>RFC</text>
+                <line x1="275" y1="180" x2="460" y2="180" stroke={COLORS.fg} strokeWidth="0.5" strokeDasharray="4 4" />
+                <text x="470" y="185" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>→ Evidence</text>
               </g>
 
-              {/* Branch 3: Deep */}
+              {/* Deep */}
               <g opacity={fade(0.36)}>
-                <line x1="30" y1="210" x2="80" y2="210" stroke={COLORS.ember} strokeWidth="1" />
-                <circle cx="80" cy="210" r="4" fill={COLORS.ember} />
-                <text x="95" y="214" fontFamily="Geist Mono, monospace" fontSize="10" fill={COLORS.ember}>Deep</text>
-                <line x1="80" y1="210" x2="80" y2="280" stroke={COLORS.ember} strokeWidth="0.8" />
-                <line x1="80" y1="230" x2="130" y2="230" stroke={COLORS.ember} strokeWidth="0.8" />
-                <text x="140" y="234" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>PRD → Spec</text>
-                <line x1="80" y1="255" x2="130" y2="255" stroke={COLORS.ember} strokeWidth="0.8" />
-                <text x="140" y="259" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>RFC → ADR</text>
-                <line x1="250" y1="242" x2="420" y2="242" stroke={COLORS.ember} strokeWidth="0.5" strokeDasharray="4 4" />
-                <text x="430" y="246" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.ember}>→ Full Review</text>
+                <line x1="35" y1="245" x2="90" y2="245" stroke={COLORS.ember} strokeWidth="1.5" />
+                <circle cx="90" cy="245" r="5" fill={COLORS.ember} />
+                <text x="108" y="250" fontFamily="Geist Mono, monospace" fontSize="13" fill={COLORS.ember}>Deep</text>
+                <line x1="90" y1="245" x2="90" y2="310" stroke={COLORS.ember} strokeWidth="1" />
+                <line x1="90" y1="270" x2="145" y2="270" stroke={COLORS.ember} strokeWidth="1" />
+                <text x="155" y="275" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>PRD → Spec</text>
+                <line x1="90" y1="295" x2="145" y2="295" stroke={COLORS.ember} strokeWidth="1" />
+                <text x="155" y="300" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>RFC → ADR</text>
+                <line x1="280" y1="282" x2="460" y2="282" stroke={COLORS.ember} strokeWidth="0.5" strokeDasharray="4 4" />
+                <text x="470" y="287" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.ember}>→ Full Review</text>
               </g>
 
-              {/* Branch 4: Critical */}
+              {/* Critical */}
               <g opacity={fade(0.44)}>
-                <line x1="30" y1="320" x2="80" y2="320" stroke={COLORS.ember} strokeWidth="1.5" />
-                <circle cx="80" cy="320" r="5" fill={COLORS.ember} />
-                <text x="95" y="324" fontFamily="Geist Mono, monospace" fontSize="10" fontWeight="bold" fill={COLORS.ember}>Critical</text>
-                <line x1="80" y1="320" x2="80" y2="395" stroke={COLORS.ember} strokeWidth="0.8" />
-                <line x1="80" y1="340" x2="130" y2="340" stroke={COLORS.ember} strokeWidth="0.8" />
-                <text x="140" y="344" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>Epic → PRD[]</text>
-                <line x1="80" y1="360" x2="130" y2="360" stroke={COLORS.ember} strokeWidth="0.8" />
-                <text x="140" y="364" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>Spec[] → RFC[]</text>
-                <line x1="80" y1="380" x2="130" y2="380" stroke={COLORS.ember} strokeWidth="0.8" />
-                <text x="140" y="384" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.fg}>ADR[] → Review</text>
-                <line x1="280" y1="360" x2="420" y2="360" stroke={COLORS.ember} strokeWidth="0.5" strokeDasharray="4 4" />
-                <text x="430" y="364" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.ember}>→ Adversarial</text>
+                <line x1="35" y1="360" x2="90" y2="360" stroke={COLORS.ember} strokeWidth="2" />
+                <circle cx="90" cy="360" r="6" fill={COLORS.ember} />
+                <text x="108" y="365" fontFamily="Geist Mono, monospace" fontSize="13" fontWeight="600" fill={COLORS.ember}>Critical</text>
+                <line x1="90" y1="360" x2="90" y2="470" stroke={COLORS.ember} strokeWidth="1" />
+                <line x1="90" y1="385" x2="145" y2="385" stroke={COLORS.ember} strokeWidth="1" />
+                <text x="155" y="390" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>Epic → PRD[]</text>
+                <line x1="90" y1="410" x2="145" y2="410" stroke={COLORS.ember} strokeWidth="1" />
+                <text x="155" y="415" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>Spec[] → RFC[]</text>
+                <line x1="90" y1="435" x2="145" y2="435" stroke={COLORS.ember} strokeWidth="1" />
+                <text x="155" y="440" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.fg}>ADR[] → Review</text>
+                <line x1="310" y1="410" x2="460" y2="410" stroke={COLORS.ember} strokeWidth="0.5" strokeDasharray="4 4" />
+                <text x="470" y="415" fontFamily="Geist Mono, monospace" fontSize="12" fill={COLORS.ember}>→ Adversarial</text>
               </g>
             </svg>
 
