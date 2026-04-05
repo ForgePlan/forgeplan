@@ -87,8 +87,7 @@ export default function TrustSection() {
 
         {/* Right: Content */}
         <div className="flex flex-col justify-between p-8 lg:p-12">
-          <h2 className="font-heading text-4xl lg:text-[68px] font-normal leading-[1.05]"
-            style={{ opacity: textOpacity(0.1) }}>
+          <h2 className="font-heading text-4xl lg:text-[68px] font-normal leading-[1.05]">
             Trust Is<br />Measured<br />Not<br />Assumed
           </h2>
 

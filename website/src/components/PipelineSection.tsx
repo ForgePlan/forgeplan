@@ -36,8 +36,7 @@ export default function PipelineSection() {
       <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] h-screen pt-[36px]">
         {/* Left: Big text */}
         <div className="flex flex-col justify-between p-8 lg:p-12 border-r border-forge-line">
-          <h2 className="font-heading text-5xl lg:text-[72px] font-normal leading-none"
-            style={{ opacity: fadeIn(0) }}>
+          <h2 className="font-heading text-5xl lg:text-[72px] font-normal leading-none">
             SHAPE<br />VALIDATE<br />REASON<br />BUILD<br />PROVE
           </h2>
           <div className="mt-auto space-y-4" style={{ opacity: fadeIn(0.85) }}>
@@ -52,7 +51,7 @@ export default function PipelineSection() {
 
         {/* Right: Depth routing + ADI */}
         <div className="flex flex-col justify-center p-8 lg:p-12 space-y-8">
-          <p className="font-mono text-[11px] tracking-[3px] text-forge-ember" style={{ opacity: fadeIn(0.02) }}>
+          <p className="font-mono text-[11px] tracking-[3px] text-forge-ember">
             DEPTH ROUTING
           </p>
 
