@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { COLORS } from '../tokens';
 
 // Pipeline steps — vertical timeline stations
 const STEPS = [
@@ -9,12 +10,6 @@ const STEPS = [
   { word: 'PROVE', desc: 'Create evidence. Link it. Score it. R_eff > 0 or the work isn\'t done.', start: 0.44 },
 ];
 
-const DEPTHS = [
-  { tag: 'TACTICAL', desc: 'Quick fix, 1 file — just ship', tagStyle: 'border border-forge-line text-forge-dim', start: 0.20 },
-  { tag: 'STANDARD', desc: 'Feature 1-3 days → PRD → RFC', tagStyle: 'border border-forge-fg', start: 0.28 },
-  { tag: 'DEEP', desc: 'New module → PRD → Spec → RFC → ADR', tagStyle: 'bg-forge-ember text-forge-bg', start: 0.36 },
-  { tag: 'CRITICAL', desc: 'Cross-team → Epic → PRD[] → Spec[] → RFC[] → ADR[]', tagStyle: 'bg-forge-ember text-forge-bg', start: 0.44 },
-];
 
 const ADI = [
   { title: 'Abduction', desc: 'Generate 3+ hypotheses', ember: false, start: 0.58 },
