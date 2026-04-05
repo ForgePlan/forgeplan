@@ -48,8 +48,8 @@ export default function TrustSection() {
   return (
     <section id="trust" ref={sectionRef} className="relative w-full bg-forge-bg border-b border-forge-line" style={{ height: '200vh' }}>
       {/* Sticky content — stays on screen while we scroll through 200vh */}
-      <div className="sticky top-0 h-screen overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_500px] h-full pt-[36px]">
+      <div className="sticky top-[36px] overflow-hidden" style={{ height: 'calc(100vh - 36px)' }}>
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_500px] h-full">
           <div className="relative flex items-center justify-center border-r border-forge-line overflow-hidden">
             <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
             <svg className="w-full max-w-[700px] h-auto" viewBox="0 0 940 900" fill="none" aria-hidden="true">

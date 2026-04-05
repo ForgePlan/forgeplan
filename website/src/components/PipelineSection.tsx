@@ -48,8 +48,8 @@ export default function PipelineSection() {
 
   return (
     <section id="pipeline" ref={sectionRef} className="relative w-full bg-forge-bg border-b border-forge-line" style={{ height: '200vh' }}>
-      <div className="sticky top-0 h-screen overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] h-full pt-[36px]">
+      <div className="sticky top-[36px] overflow-hidden" style={{ height: 'calc(100vh - 36px)' }}>
+        <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] h-full">
           <div className="flex flex-col justify-between p-8 lg:p-12 border-r border-forge-line">
             <h2 className="font-heading text-5xl lg:text-[72px] font-normal leading-none">
               SHAPE<br />VALIDATE<br />REASON<br />BUILD<br />PROVE
