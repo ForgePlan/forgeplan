@@ -2,26 +2,27 @@ import { useState } from 'react';
 import StickySection from './StickySection';
 import CrystallizationAnimation from './CrystallizationAnimation';
 
-// Narrative blocks — problem → insight → hope
-// Appear over chaos animation, fade out before crystallization
 const NARRATIVE = [
   {
     text: 'Your decisions are scattered across Slack threads, Google Docs, and someone\'s memory',
+    label: 'THE PROBLEM',
     start: 0.02,
     end: 0.18,
-    position: 'left' as const,
+    side: 'left' as const,
   },
   {
     text: 'PRDs nobody maintains. RFCs without evidence. Architecture choices made on gut feeling',
+    label: 'THE COST',
     start: 0.10,
     end: 0.26,
-    position: 'right' as const,
+    side: 'right' as const,
   },
   {
     text: 'What if every decision had structure, proof, and a reliability score?',
+    label: 'THE QUESTION',
     start: 0.20,
     end: 0.35,
-    position: 'center' as const,
+    side: 'left' as const,
   },
 ];
 
@@ -36,48 +37,67 @@ export default function HeroSection() {
 
   return (
     <StickySection id="hero" scrollMultiplier={3} onProgress={setProgress} className="h-screen flex flex-col border-b border-forge-line">
-      {/* Canvas area */}
+      {/* Canvas */}
       <div className="relative w-full flex-1 overflow-hidden pt-[88px]">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
         <CrystallizationAnimation progress={progress} />
 
-        {/* Narrative text blocks — appear over chaos, fade before crystallization */}
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center" style={{ paddingTop: '88px' }}>
-          {NARRATIVE.map((block, i) => {
-            const opacity = narrativeOpacity(progress, block.start, block.end);
-            if (opacity <= 0) return null;
+        {/* Narrative blocks — left/right with dashed connector line */}
+        {NARRATIVE.map((block, i) => {
+          const opacity = narrativeOpacity(progress, block.start, block.end);
+          if (opacity <= 0) return null;
 
-            const positionClasses = {
-              left: 'self-center mr-auto ml-[8%]',
-              right: 'self-center ml-auto mr-[8%]',
-              center: 'self-center mx-auto',
-            }[block.position];
+          const isLeft = block.side === 'left';
+          // Vertical position: stagger blocks so they don't overlap
+          const topPercent = 20 + i * 22; // 20%, 42%, 64%
 
-            return (
+          return (
+            <div
+              key={i}
+              className="absolute pointer-events-none"
+              style={{
+                top: `${topPercent}%`,
+                left: isLeft ? '0' : 'auto',
+                right: isLeft ? 'auto' : '0',
+                opacity,
+                transform: `translateY(${(1 - opacity) * 12}px)`,
+                display: 'flex',
+                alignItems: 'center',
+                flexDirection: isLeft ? 'row' : 'row-reverse',
+              }}
+            >
+              {/* Text card */}
               <div
-                key={i}
-                className={`absolute max-w-[420px] ${positionClasses}`}
+                className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-5 py-4 max-w-[360px]"
                 style={{
-                  opacity,
-                  transform: `translateY(${(1 - opacity) * 15}px)`,
-                  transition: 'none',
+                  borderLeft: isLeft ? `2px solid var(--color-forge-ember)` : undefined,
+                  borderRight: !isLeft ? `2px solid var(--color-forge-ember)` : undefined,
                 }}
               >
-                <div className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-6 py-5">
-                  <p className="font-body text-base md:text-lg leading-relaxed text-forge-fg">
-                    {block.text}
-                  </p>
-                  <div className="mt-3 flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-forge-ember" />
-                    <span className="font-mono text-[10px] tracking-[2px] text-forge-dim uppercase">
-                      {i === 0 ? 'the problem' : i === 1 ? 'the cost' : 'the question'}
-                    </span>
-                  </div>
+                <p className="font-body text-sm md:text-base leading-relaxed text-forge-fg">
+                  {block.text}
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-forge-ember" />
+                  <span className="font-mono text-[9px] tracking-[2px] text-forge-dim">
+                    {block.label}
+                  </span>
                 </div>
               </div>
-            );
-          })}
-        </div>
+
+              {/* Dashed connector line → toward center chaos */}
+              <div
+                className="border-t border-dashed border-forge-line"
+                style={{
+                  width: '80px',
+                  opacity: 0.5,
+                }}
+              />
+              {/* Endpoint dot */}
+              <div className="w-1.5 h-1.5 rounded-full bg-forge-dim" style={{ opacity: 0.5, flexShrink: 0 }} />
+            </div>
+          );
+        })}
       </div>
 
       {/* Bottom text block */}
