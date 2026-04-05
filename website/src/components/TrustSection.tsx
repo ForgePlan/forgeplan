@@ -9,7 +9,7 @@ const STORY_CARDS = [
     detail: 'EVIDENCE DECAY',
     ringIdx: 0,
     side: 'left' as const,
-    vertexIdx: 7, // point on octagon where line connects
+    vertexIdx: 7,
     start: 0.10,
   },
   {
@@ -22,12 +22,12 @@ const STORY_CARDS = [
     start: 0.22,
   },
   {
-    title: 'Tested where?',
-    text: 'Colleague\'s PoC in another service ≠ your benchmark in your service. Related helps, but doesn\'t prove.',
-    detail: 'CONGRUENCE',
-    ringIdx: 2,
+    title: 'Weakest link wins',
+    text: '3 strong evidences + 1 weak = weak decision. R_eff = min(), never average. One blind spot drags everything.',
+    detail: 'R_EFF FORMULA',
+    ringIdx: 4,
     side: 'left' as const,
-    vertexIdx: 5,
+    vertexIdx: 6,
     start: 0.34,
   },
   {
@@ -40,12 +40,12 @@ const STORY_CARDS = [
     start: 0.46,
   },
   {
-    title: 'Weakest link wins',
-    text: '3 strong evidences + 1 weak = weak decision. R_eff = min(), never average. One blind spot drags everything.',
-    detail: 'R_EFF FORMULA',
-    ringIdx: 4,
+    title: 'Tested where?',
+    text: 'Colleague\'s PoC in another service ≠ your benchmark in your service. Related helps, but doesn\'t prove.',
+    detail: 'CONGRUENCE',
+    ringIdx: 2,
     side: 'left' as const,
-    vertexIdx: 6,
+    vertexIdx: 5,
     start: 0.58,
   },
 ];
@@ -94,10 +94,13 @@ export default function TrustSection() {
   const titleLines = ['Trust Is', 'Measured,', 'Not Assumed'];
   const titleStarts = [0.02, 0.06, 0.10];
 
-  // Card edge positions (in SVG coords) — left cards at x=40, right at x=SVG_W-40
-  const cardEdges = STORY_CARDS.map(card => {
-    const edgeX = card.side === 'left' ? 320 : SVG_W - 320;
-    const edgeY = 150 + STORY_CARDS.indexOf(card) * 120;
+  // Card edge positions — line goes from ring vertex to card edge
+  // Left cards: right edge ≈ 310px (card width ~300px, left at 8px+padding)
+  // Right cards: left edge ≈ SVG_W - 310px
+  const cardEdges = STORY_CARDS.map((card, ci) => {
+    const edgeX = card.side === 'left' ? 330 : SVG_W - 330;
+    const topPct = 18 + ci * 14; // matches card CSS positioning
+    const edgeY = (SVG_H * topPct) / 100 + 30; // center of card approx
     const [ringX, ringY] = octVertex(CX, CY, ringRadii[card.ringIdx], card.vertexIdx);
     return { edgeX, edgeY, ringX, ringY };
   });
