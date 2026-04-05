@@ -50,43 +50,43 @@ export default function PipelineSection() {
           <div className="relative flex flex-col justify-center p-8 lg:p-12 border-r border-forge-line">
             {/* Timeline: vertical line + dots ON line + dashed horizontal to text */}
             <div className="relative h-full flex flex-col justify-center">
-              {/* Vertical line — starts at first dot, ends at last dot.
-                  5 items with space-y-7 (28px gap). Each item ~80px.
-                  First dot center ≈ 7px from top of items container.
-                  Line should span from first dot to last dot only. */}
-              <div className="absolute w-[2px] bg-forge-line"
-                style={{
-                  left: '37px',
-                  top: 'calc(50% - 210px)', // ~first dot position
-                  bottom: 'calc(50% - 210px)', // ~last dot position
-                  opacity: fade(0.02),
-                }} />
-
-              <div className="space-y-5 lg:space-y-7">
+              {/* Steps — line is built from each item's left border */}
+              <div>
                 {STEPS.map((step, i) => {
                   const stepFade = fade(step.start, 0.08);
                   const isLast = i === STEPS.length - 1;
+                  const isFirst = i === 0;
                   return (
-                    <div key={i} className="flex items-start gap-0" style={{ opacity: stepFade, transform: `translateY(${(1 - stepFade) * 10}px)` }}>
-                      {/* Dot centered on line: paddingLeft=31, dot=14px, center=31+7=38px = line position */}
-                      <div className="flex-shrink-0 flex items-center" style={{ width: '45px', paddingLeft: '31px' }}>
-                        <div className={`w-[14px] h-[14px] rounded-full border-2 ${
-                          isLast ? 'border-forge-ember bg-forge-ember' : 'border-forge-fg bg-forge-bg'
-                        }`} />
-                      </div>
-
-                      {/* Dashed horizontal connector: dot → title */}
-                      <div className="flex-shrink-0 self-center"
-                        style={{ width: '20px', height: '0px', borderTop: '1px dashed var(--forge-line)', opacity: 0.6, marginTop: '6px' }} />
-
-                      {/* Text */}
-                      <div className="pl-3">
-                        <h3 className={`font-heading text-2xl lg:text-[42px] font-normal leading-none ${
+                    <div key={i} style={{ opacity: stepFade, transform: `translateY(${(1 - stepFade) * 10}px)` }}>
+                      {/* Dot row: dot + dashed line + title */}
+                      <div className="flex items-center">
+                        {/* Left gutter with dot */}
+                        <div className="flex-shrink-0 flex justify-center" style={{ width: '38px' }}>
+                          <div className={`w-[12px] h-[12px] rounded-full border-2 ${
+                            isLast ? 'border-forge-ember bg-forge-ember' : 'border-forge-fg bg-forge-bg'
+                          }`} />
+                        </div>
+                        {/* Dashed connector */}
+                        <div className="flex-shrink-0" style={{ width: '20px', borderTop: '1px dashed var(--forge-line)', opacity: 0.6 }} />
+                        {/* Title */}
+                        <h3 className={`pl-3 font-heading text-2xl lg:text-[42px] font-normal leading-none ${
                           isLast ? 'text-forge-ember' : ''
                         }`}>
                           {step.word}
                         </h3>
-                        <p className="text-xs lg:text-sm text-forge-dim leading-relaxed mt-1 max-w-[360px]"
+                      </div>
+                      {/* Description + vertical line segment to next dot */}
+                      <div className="flex">
+                        {/* Vertical line segment (not on last item) */}
+                        <div className="flex-shrink-0 flex justify-center" style={{ width: '38px' }}>
+                          {!isLast && (
+                            <div className="w-[2px] bg-forge-line h-full" style={{ minHeight: '40px', opacity: 0.3 }} />
+                          )}
+                        </div>
+                        {/* Spacer matching dashed line */}
+                        <div className="flex-shrink-0" style={{ width: '20px' }} />
+                        {/* Description text */}
+                        <p className="pl-3 text-xs lg:text-sm text-forge-dim leading-relaxed py-2 max-w-[360px]"
                           style={{ opacity: fade(step.start + 0.04, 0.06) }}>
                           {step.desc}
                         </p>
