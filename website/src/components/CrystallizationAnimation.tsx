@@ -233,6 +233,25 @@ export default function CrystallizationAnimation({ progress }: Props) {
     brandRest.setAttribute('fill', COLORS.fg); brandRest.setAttribute('opacity', '0');
     svg.appendChild(brandRest);
 
+    // Narrative connector lines — dashed SVG from edge to specific artifact dots
+    // Block 0 (left, top 20%) → PRD (dot index 0)
+    // Block 1 (right, top 42%) → RFC (dot index 1)
+    // Block 2 (left, top 64%) → Evidence (dot index 6)
+    const CONNECTOR_DEFS = [
+      { dotIdx: 0, edgeX: 80,     edgeYPct: 0.25, start: 0.02, end: 0.18 },
+      { dotIdx: 1, edgeX: W - 80, edgeYPct: 0.47, start: 0.10, end: 0.26 },
+      { dotIdx: 6, edgeX: 80,     edgeYPct: 0.69, start: 0.20, end: 0.35 },
+    ];
+    const connectors: SVGLineElement[] = [];
+    CONNECTOR_DEFS.forEach(() => {
+      const cl = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      cl.setAttribute('stroke', COLORS.ember);
+      cl.setAttribute('stroke-width', '0.5');
+      cl.setAttribute('stroke-dasharray', '4 4');
+      cl.setAttribute('opacity', '0');
+      svg.appendChild(cl);
+      connectors.push(cl);
+    });
 
     // === ANIMATION LOOP ===
     function tick() {
@@ -312,6 +331,24 @@ export default function CrystallizationAnimation({ progress }: Props) {
           }
         }
       }
+
+      // Narrative connectors — dashed lines from edge to artifact dots
+      CONNECTOR_DEFS.forEach((cd, ci) => {
+        const fadeIn = Math.min(Math.max((sp - cd.start) / 0.03, 0), 1);
+        const fadeOut = Math.min(Math.max((cd.end - sp) / 0.03, 0), 1);
+        const connOp = fadeIn * fadeOut * 0.4;
+
+        if (connOp > 0) {
+          const dot = dots[cd.dotIdx];
+          const dx = parseFloat(dot.getAttribute('cx') || '0');
+          const dy = parseFloat(dot.getAttribute('cy') || '0');
+          connectors[ci].setAttribute('x1', String(cd.edgeX));
+          connectors[ci].setAttribute('y1', String(H * cd.edgeYPct));
+          connectors[ci].setAttribute('x2', String(dx));
+          connectors[ci].setAttribute('y2', String(dy));
+        }
+        connectors[ci].setAttribute('opacity', String(connOp));
+      });
 
       // Hexagons fly in
       const hexOp = [0.4, 0.3, 0.25, 0.7];
