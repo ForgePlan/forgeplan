@@ -1,16 +1,16 @@
 /**
- * Forge Design Tokens — single source of truth for JS contexts.
- * CSS equivalents: global.css @theme { --color-forge-* }
- * SVG attributes can use var(--color-forge-*) directly.
+ * Forge Design Tokens — CSS variable references for theme-aware rendering.
+ * These resolve to actual colors via :root / .dark / .light in global.css.
+ * Use in SVG attributes: stroke={COLORS.fg} → "var(--forge-fg)"
  */
 export const COLORS = {
-  bg: '#0D0D0D',
-  fg: '#E8E8E8',
-  line: '#3A3A3A',
-  dim: '#949494',
-  ember: '#FF6B35',
-  surface: '#161616',
-  green: '#28C840',
+  bg: 'var(--forge-bg)',
+  fg: 'var(--forge-fg)',
+  line: 'var(--forge-line)',
+  dim: 'var(--forge-dim)',
+  surface: 'var(--forge-surface)',
+  ember: '#FF6B35',  // static — doesn't change with theme
+  green: '#28C840',  // static
 } as const;
 
 /**

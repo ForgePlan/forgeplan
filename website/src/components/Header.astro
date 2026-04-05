@@ -1,17 +1,16 @@
 ---
-// Grid header — full size on hero, shrinks to compact bar after scroll
+// Grid header — brand left, nav center, logo+toggle right
+// Shrinks on scroll via IntersectionObserver
 ---
 
 <header id="site-header" class="fixed top-0 z-50 w-full header-full">
-  <div class="header-inner border border-forge-line bg-forge-bg grid grid-cols-[72px_1fr_auto_72px]">
-    <a href="/" aria-label="Forgeplan home" class="flex items-center justify-center border-r border-forge-line">
-      <svg class="header-logo" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-        <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7" stroke="var(--color-forge-ember)" stroke-width="1.5" fill="none"/>
-      </svg>
-    </a>
+  <div class="header-inner border border-forge-line bg-forge-bg grid grid-cols-[1fr_auto_72px]">
+    <!-- Brand name (left) -->
     <div class="flex items-center border-r border-forge-line header-brand-cell">
-      <span class="header-brand font-heading font-semibold tracking-[3px] text-forge-fg">FORGEPLAN</span>
+      <a href="/" class="header-brand font-heading font-semibold tracking-[3px] text-forge-fg no-underline">FORGEPLAN</a>
     </div>
+
+    <!-- Nav grid (center) -->
     <nav aria-label="Primary navigation" class="hidden lg:grid h-full header-nav">
       <a href="/getting-started/installation" class="nav-cell border-r border-forge-line">Docs</a>
       <a href="https://github.com/ForgePlan/forgeplan" class="nav-cell border-r border-forge-line" rel="noopener noreferrer" target="_blank">GitHub</a>
@@ -20,15 +19,63 @@
       <a href="/mcp/artifact_create" class="nav-cell border-r border-forge-line">MCP Tools</a>
       <a href="#install" class="nav-cell text-forge-ember font-medium">Install</a>
     </nav>
-    <div class="flex items-center justify-center" aria-hidden="true">
-      <div class="header-toggle relative rounded-full border-[1.5px] border-forge-fg overflow-hidden">
-        <div class="absolute top-0 right-0 w-1/2 h-full bg-forge-fg"></div>
-      </div>
+
+    <!-- Right: logo hex + theme toggle -->
+    <div class="header-right flex items-center justify-center gap-2 border-l border-forge-line">
+      <!-- Theme toggle -->
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--forge-fg)" stroke-width="1.5">
+          <!-- Sun (visible in dark mode) / Moon (visible in light mode) -->
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+      </button>
+      <!-- Logo hex -->
+      <a href="/" aria-label="Forgeplan home">
+        <svg class="header-logo" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+          <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7" stroke="var(--color-forge-ember)" stroke-width="1.5" fill="none"/>
+        </svg>
+      </a>
     </div>
   </div>
 </header>
 
 <script>
+  // === Theme Toggle ===
+  const toggle = document.getElementById('theme-toggle');
+  const html = document.documentElement;
+
+  // Load saved theme or default to dark
+  const saved = localStorage.getItem('forgeplan-theme');
+  if (saved === 'light') {
+    html.classList.remove('dark');
+    html.classList.add('light');
+  } else {
+    html.classList.remove('light');
+    html.classList.add('dark');
+  }
+
+  toggle?.addEventListener('click', () => {
+    const isLight = html.classList.contains('light');
+    if (isLight) {
+      html.classList.remove('light');
+      html.classList.add('dark');
+      localStorage.setItem('forgeplan-theme', 'dark');
+    } else {
+      html.classList.remove('dark');
+      html.classList.add('light');
+      localStorage.setItem('forgeplan-theme', 'light');
+    }
+  });
+
+  // === Header shrink on scroll ===
   const header = document.getElementById('site-header');
   if (header) {
     let compact = false;
