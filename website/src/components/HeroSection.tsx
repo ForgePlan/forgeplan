@@ -15,15 +15,15 @@ export default function HeroSection() {
   }, []);
 
   return (
-    <StickySection id="hero" scrollLength="200%" onProgress={handleProgress}>
-      {/* Canvas area */}
-      <div className="relative w-full flex-1" style={{ minHeight: 'calc(100vh - 220px)' }}>
+    <StickySection id="hero" scrollLength="200%" onProgress={handleProgress} className="h-screen flex flex-col">
+      {/* Canvas area — fills remaining space above bottom block */}
+      <div className="relative w-full flex-1 overflow-hidden">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
         <CrystallizationAnimation progress={progress} />
       </div>
 
-      {/* Bottom text block */}
-      <div className="border-t border-forge-line grid grid-cols-1 md:grid-cols-[1fr_480px] min-h-[220px] bg-forge-bg relative z-10">
+      {/* Bottom text block — fixed 220px */}
+      <div className="border-t border-forge-line grid grid-cols-1 md:grid-cols-[1fr_480px] h-[220px] bg-forge-bg relative z-10 shrink-0">
         <div className="flex items-end p-6 md:p-8 border-r border-forge-line">
           <h1 className="font-heading text-4xl md:text-[58px] font-normal leading-[1.15]">
             From Raw Idea<br />
