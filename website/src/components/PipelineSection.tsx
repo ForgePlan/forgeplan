@@ -46,11 +46,11 @@ export default function PipelineSection() {
       <div className="sticky top-[36px] overflow-hidden" style={{ height: 'calc(100vh - 36px)' }}>
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] h-full">
 
-          {/* Left: Pipeline timeline — aligned with right side */}
-          <div className="relative flex flex-col p-8 lg:py-10 lg:px-12 border-r border-forge-line">
+          {/* Left: Pipeline timeline — distributed across full height */}
+          <div className="relative flex flex-col p-8 lg:py-10 lg:px-12 border-r border-forge-line h-full">
             <div className="flex flex-col justify-between h-full">
-              {/* Steps — line is built from each item's left border */}
-              <div>
+              {/* Steps — distributed across full height */}
+              <div className="flex flex-col justify-between h-full">
                 {STEPS.map((step, i) => {
                   const stepFade = fade(step.start, 0.08);
                   const isLast = i === STEPS.length - 1;
@@ -103,8 +103,8 @@ export default function PipelineSection() {
             </div>
           </div>
 
-          {/* Right: Git-like branching graph + ADI — aligned with left */}
-          <div className="relative flex flex-col p-6 lg:py-10 lg:px-10">
+          {/* Right: Git-like branching graph + ADI — full height */}
+          <div className="relative flex flex-col justify-between p-6 lg:py-10 lg:px-10 h-full">
             <div className="absolute inset-0 opacity-15 bg-dot-grid" aria-hidden="true" />
 
             <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-4 relative z-10" style={{ opacity: fade(0.12) }}>
