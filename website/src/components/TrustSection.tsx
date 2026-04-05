@@ -190,10 +190,10 @@ export default function TrustSection() {
                   borderRight: !isLeft ? '2px solid var(--color-forge-ember)' : undefined,
                 }}>
                 <p className="font-heading text-base font-medium text-forge-fg">{card.title}</p>
-                <p className="font-body text-xs leading-relaxed text-forge-dim mt-1">{card.text}</p>
+                <p className="font-body text-sm leading-relaxed text-forge-dim mt-1">{card.text}</p>
                 <div className="mt-2 flex items-center gap-1.5">
                   <div className="w-1.5 h-1.5 rounded-full bg-forge-ember" />
-                  <span className="font-mono text-[8px] tracking-[2px] text-forge-dim">{card.detail}</span>
+                  <span className="font-mono text-[10px] tracking-[2px] text-forge-dim">{card.detail}</span>
                 </div>
               </div>
             </div>
@@ -221,7 +221,7 @@ export default function TrustSection() {
                     <span className={`font-mono text-[10px] text-right ${isBlind ? 'text-forge-ember' : 'text-forge-dim'}`}>
                       {(art.score * barFill).toFixed(2)}
                     </span>
-                    <span className="font-mono text-[9px] text-forge-dim">
+                    <span className="font-mono text-[10px] text-forge-dim">
                       {isBlind ? <span className="text-forge-ember">BLIND SPOT</span> : `${art.evidence} evidence`}
                     </span>
                   </div>

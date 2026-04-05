@@ -160,7 +160,7 @@ export default function GraphSection() {
                     <rect x={node.x - w / 2} y={node.y - 12} width={w} height={28} rx="0"
                       fill={COLORS.surface} stroke={color} strokeWidth={isBlind ? 1.5 : 1} />
                     <text x={node.x} y={node.y + 5} textAnchor="middle"
-                      fontFamily="Geist Mono, monospace" fontSize="11" fill={color}>
+                      fontFamily="Geist Mono, monospace" fontSize="13" fill={color}>
                       {node.id}
                     </text>
                     {isBlind && (
