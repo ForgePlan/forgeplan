@@ -7,7 +7,9 @@ gsap.registerPlugin(ScrollTrigger);
 interface StickySectionProps {
   id: string;
   children: ReactNode;
-  scrollLength?: string;
+  /** Scroll distance as multiplier of viewport height. 2.0 = 2x screen of scrolling */
+  scrollMultiplier?: number;
+  /** Called with progress 0..1 */
   onProgress?: (progress: number) => void;
   className?: string;
 }
@@ -15,7 +17,7 @@ interface StickySectionProps {
 export default function StickySection({
   id,
   children,
-  scrollLength = '100%',
+  scrollMultiplier = 1.5,
   onProgress,
   className = '',
 }: StickySectionProps) {
@@ -25,21 +27,25 @@ export default function StickySection({
 
   useEffect(() => {
     if (!containerRef.current) return;
-    if (scrollLength === '0%' || scrollLength === '0') return;
+    if (scrollMultiplier <= 0) return;
+
+    // Explicit pixel distance — no ambiguity
+    const scrollDistance = window.innerHeight * scrollMultiplier;
 
     const trigger = ScrollTrigger.create({
       trigger: containerRef.current,
       start: 'top top',
-      end: `+=${scrollLength}`,
+      end: `+=${scrollDistance}px`,
       pin: true,
-      pinSpacing: true,  // adds spacer so next section doesn't overlap
+      pinSpacing: true,
+      anticipatePin: 1,
       onUpdate: (self) => {
         onProgressRef.current?.(self.progress);
       },
     });
 
     return () => { trigger.kill(); };
-  }, [scrollLength]);
+  }, [scrollMultiplier]);
 
   return (
     <section

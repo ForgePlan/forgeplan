@@ -45,7 +45,7 @@ export default function TrustSection() {
   const textOpacity = (start: number) => Math.min(Math.max((progress - start) / 0.15, 0), 1);
 
   return (
-    <StickySection id="trust" scrollLength="120%" onProgress={handleProgress} className="border-b border-forge-line">
+    <StickySection id="trust" scrollMultiplier={2} onProgress={handleProgress} className="border-b border-forge-line">
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_500px] h-screen pt-[36px]">
         {/* Left: Scoring rings SVG */}
         <div className="relative flex items-center justify-center border-r border-forge-line overflow-hidden">
