@@ -174,7 +174,8 @@ export default function CrystallizationAnimation({ progress }: Props) {
       pointer.setAttribute('x2', String(DEFAULT_OX)); pointer.setAttribute('y2', String(DEFAULT_OY));
       pointer.setAttribute('stroke', art.color); pointer.setAttribute('stroke-width', '0.5'); pointer.setAttribute('opacity', '0.5');
       g.appendChild(pointer); labelPointers.push(pointer);
-      const textLen = art.label.length * 7.5 + 12;
+      const countW = 28; // space for "×XX"
+      const textLen = art.label.length * 7.5 + 12 + countW;
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       rect.setAttribute('x', String(DEFAULT_OX)); rect.setAttribute('y', String(DEFAULT_OY - 10));
       rect.setAttribute('width', String(textLen)); rect.setAttribute('height', '20');
@@ -187,8 +188,21 @@ export default function CrystallizationAnimation({ progress }: Props) {
       text.setAttribute('font-family', 'Geist Mono, monospace'); text.setAttribute('font-size', '10');
       text.setAttribute('fill', art.color); text.textContent = art.label;
       g.appendChild(text); labelTexts.push(text);
+
+      // Count badge "×XX" — grows during chaos
+      const count = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      count.setAttribute('x', String(DEFAULT_OX + art.label.length * 7.5 + 14));
+      count.setAttribute('y', String(DEFAULT_OY + 4));
+      count.setAttribute('font-family', 'Geist Mono, monospace'); count.setAttribute('font-size', '9');
+      count.setAttribute('fill', COLORS.dim);
+      count.textContent = '';
+      g.appendChild(count);
+
       svg.appendChild(g); labels.push(g);
     });
+
+    // Base counts for each artifact (randomized, grow during chaos)
+    const baseCounts = ARTIFACTS.map(() => 8 + Math.floor(Math.random() * 40));
 
     const hexElements: SVGPolygonElement[] = [];
     HEX_RADII.forEach((r, i) => {
@@ -200,6 +214,25 @@ export default function CrystallizationAnimation({ progress }: Props) {
       poly.setAttribute('opacity', '0');
       svg.appendChild(poly); hexElements.push(poly);
     });
+
+    // DAG edges between hex layers (vertex-to-vertex connections)
+    // Connect each vertex of outer hex to same vertex of next inner hex
+    const dagEdges: SVGLineElement[] = [];
+    for (let layer = 0; layer < HEX_RADII.length - 1; layer++) {
+      for (let vi = 0; vi < 6; vi += 2) { // every other vertex = 3 edges per layer gap
+        const [x1, y1] = hexVertex(CX, CY, HEX_RADII[layer], vi);
+        const [x2, y2] = hexVertex(CX, CY, HEX_RADII[layer + 1], vi);
+        const edge = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        edge.setAttribute('x1', String(x1)); edge.setAttribute('y1', String(y1));
+        edge.setAttribute('x2', String(x2)); edge.setAttribute('y2', String(y2));
+        edge.setAttribute('stroke', COLORS.fg);
+        edge.setAttribute('stroke-width', '0.4');
+        edge.setAttribute('stroke-dasharray', '3 3');
+        edge.setAttribute('opacity', '0');
+        svg.appendChild(edge);
+        dagEdges.push(edge);
+      }
+    }
 
     const isoLines: SVGLineElement[] = [];
     ISO_DEFS.forEach((def) => {
@@ -232,6 +265,17 @@ export default function CrystallizationAnimation({ progress }: Props) {
     brandRest.setAttribute('font-size', '42'); brandRest.setAttribute('font-weight', '400');
     brandRest.setAttribute('fill', COLORS.fg); brandRest.setAttribute('opacity', '0');
     svg.appendChild(brandRest);
+
+    // Subtitle with shuffle/decode effect: "Structure. Evidence. Trust."
+    const subtitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    subtitle.setAttribute('font-family', 'Geist Mono, monospace');
+    subtitle.setAttribute('font-size', '14'); subtitle.setAttribute('font-weight', '400');
+    subtitle.setAttribute('fill', COLORS.ember); subtitle.setAttribute('opacity', '0');
+    subtitle.setAttribute('letter-spacing', '2');
+    svg.appendChild(subtitle);
+
+    const SUBTITLE_TEXT = 'Structure. Evidence. Trust.';
+    const SHUFFLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.!@#$%';
 
     // Narrative connectors — dashed lines from edges to artifact dots (4 pairs × 2)
     const CONNECTOR_DEFS = [
@@ -327,6 +371,17 @@ export default function CrystallizationAnimation({ progress }: Props) {
           }
           dots[i].setAttribute('cx', String(dx)); dots[i].setAttribute('cy', String(dy));
           labels[i].setAttribute('transform', `translate(${dx}, ${dy})`);
+
+          // Count badge — ticks up/down based on dot direction
+          const countEl = labels[i].querySelector('text:last-child') as SVGTextElement;
+          if (countEl && sp < 0.4) {
+            // dotProgress 0→1 = count goes up, 1→0 = count goes down
+            const base = baseCounts[i];
+            const swing = Math.floor(st.dotProgress * 30);
+            countEl.textContent = `×${base + swing}`;
+          } else if (countEl) {
+            countEl.textContent = '';
+          }
           if (sp > 0 && i < FINAL_LINE_POS.length) {
             const fp = FINAL_LINE_POS[i]; const t = Math.min(sp * 2.5, 1);
             const ox = DEFAULT_OX + (fp.labelOffX - DEFAULT_OX) * t;
@@ -369,6 +424,15 @@ export default function CrystallizationAnimation({ progress }: Props) {
         let op = hexOp[i] * eased;
         if (i < 3 && sp > 0.65) op *= Math.max(0, 1 - (sp - 0.65) / 0.12);
         hex.setAttribute('opacity', String(op));
+      });
+
+      // DAG edges — appear after hex formation, fade with outer hexes
+      dagEdges.forEach((edge) => {
+        const dagAppear = Math.max(0, (sp - 0.55) / 0.1);
+        let dagOp = 0.3 * Math.min(dagAppear, 1);
+        // Fade with outer hexes
+        if (sp > 0.65) dagOp *= Math.max(0, 1 - (sp - 0.65) / 0.12);
+        edge.setAttribute('opacity', String(dagOp));
       });
 
       // Fade lines/dots/labels
@@ -441,10 +505,35 @@ export default function CrystallizationAnimation({ progress }: Props) {
           brandRest.setAttribute('y', String(baseY));
           brandRest.textContent = rest.substring(0, Math.min(chars, rest.length));
           brandRest.setAttribute('opacity', String(op));
+
+          // Subtitle: "Structure. Evidence. Trust." — shuffle/decode effect
+          subtitle.setAttribute('x', String(textX));
+          subtitle.setAttribute('y', String(baseY + 28));
+          const subT = Math.max(0, (tt - 0.4) / 0.6); // starts at 40% of text phase
+          if (subT > 0) {
+            subtitle.setAttribute('opacity', String(Math.min(subT * 2, 1)));
+            // Shuffle: each char resolves progressively
+            let decoded = '';
+            for (let ci = 0; ci < SUBTITLE_TEXT.length; ci++) {
+              const charProgress = subT * SUBTITLE_TEXT.length * 1.5 - ci;
+              if (charProgress > 1) {
+                decoded += SUBTITLE_TEXT[ci]; // resolved
+              } else if (charProgress > 0) {
+                decoded += SHUFFLE_CHARS[Math.floor(Math.random() * SHUFFLE_CHARS.length)]; // shuffling
+              }
+              // else: not yet started
+            }
+            subtitle.textContent = decoded;
+          } else {
+            subtitle.setAttribute('opacity', '0');
+            subtitle.textContent = '';
+          }
         } else {
           brandF.setAttribute('opacity', '0');
           brandRest.setAttribute('opacity', '0');
           brandRest.textContent = '';
+          subtitle.setAttribute('opacity', '0');
+          subtitle.textContent = '';
         }
       } else {
         // Before phase 4: everything at center
@@ -453,6 +542,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
         centerDot.setAttribute('opacity', String(dotOp));
         brandF.setAttribute('opacity', '0');
         brandRest.setAttribute('opacity', '0'); brandRest.textContent = '';
+        subtitle.setAttribute('opacity', '0'); subtitle.textContent = '';
         hexElements[3].setAttribute('points', Array.from({ length: 6 }, (_, vi) => hexVertex(CX, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' '));
         ISO_DEFS.forEach((def, idx) => {
           const [vx, vy] = hexVertex(CX, CY, HEX_RADII[3], def.vertex);
