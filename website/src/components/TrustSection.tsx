@@ -46,7 +46,7 @@ export default function TrustSection() {
 
   return (
     <StickySection id="trust" scrollLength="120%" onProgress={handleProgress} className="border-b border-forge-line">
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_500px] h-screen">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_500px] h-screen pt-[36px]">
         {/* Left: Scoring rings SVG */}
         <div className="relative flex items-center justify-center border-r border-forge-line overflow-hidden">
           <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />

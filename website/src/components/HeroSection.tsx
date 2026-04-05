@@ -16,8 +16,8 @@ export default function HeroSection() {
 
   return (
     <StickySection id="hero" scrollLength="200%" onProgress={handleProgress} className="h-screen flex flex-col">
-      {/* Canvas area — fills remaining space above bottom block */}
-      <div className="relative w-full flex-1 overflow-hidden">
+      {/* Canvas area — fills space between header and bottom block */}
+      <div className="relative w-full flex-1 overflow-hidden pt-[88px]">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
         <CrystallizationAnimation progress={progress} />
       </div>
