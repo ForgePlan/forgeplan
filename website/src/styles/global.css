@@ -1,15 +1,5 @@
 @import "tailwindcss";
 
-/* Self-hosted fonts */
-@import "@fontsource/space-grotesk/300.css";
-@import "@fontsource/space-grotesk/400.css";
-@import "@fontsource/space-grotesk/500.css";
-@import "@fontsource/space-grotesk/600.css";
-@import "@fontsource/space-grotesk/700.css";
-@import "@fontsource/geist-mono/400.css";
-@import "@fontsource/geist-mono/500.css";
-@import "@fontsource/geist-mono/600.css";
-
 /* ========================================
    Forgeplan Design System — Forge Palette
    Theme-aware via CSS custom properties
