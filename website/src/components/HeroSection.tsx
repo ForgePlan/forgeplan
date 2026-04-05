@@ -53,7 +53,7 @@ export default function HeroSection() {
 
           return (
             <div key={pi} className="absolute inset-x-0 pointer-events-none" style={{ top: `${topPercent}%`, opacity }}>
-              <div className="flex justify-between items-start px-0">
+              <div className="flex justify-between items-start px-6 lg:px-10">
                 {/* Left block */}
                 <div className="flex items-center" style={{ transform: `translateY(${(1 - opacity) * 10}px)` }}>
                   <div
