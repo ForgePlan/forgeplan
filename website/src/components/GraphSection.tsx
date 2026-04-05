@@ -102,6 +102,23 @@ export default function GraphSection() {
           {/* Right: DAG visualization */}
           <div className="relative flex items-center justify-center h-full">
             <div className="absolute inset-0 opacity-15 bg-dot-grid" aria-hidden="true" />
+
+            {/* Legend — top right corner of section */}
+            <div className="absolute top-4 right-4 z-20 border border-forge-line bg-forge-bg/90 px-3 py-2 flex items-center gap-4"
+              style={{ opacity: fade(0.20) }}>
+              <div className="flex items-center gap-2">
+                <div className="w-5 h-0 border-t border-forge-fg" />
+                <span className="font-mono text-[9px] text-forge-dim">parent</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-5 h-0 border-t border-dashed border-forge-fg" />
+                <span className="font-mono text-[9px] text-forge-dim">informs</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-forge-ember" />
+                <span className="font-mono text-[9px] text-forge-dim">risk</span>
+              </div>
+            </div>
             <svg className="w-full h-full max-w-[650px] max-h-[500px] relative z-10" viewBox="0 0 600 460" fill="none" aria-hidden="true">
 
               {/* Edges */}
@@ -141,16 +158,7 @@ export default function GraphSection() {
                 );
               })}
 
-              {/* Legend — top right corner */}
-              <g opacity={fade(0.55)}>
-                <rect x="400" y="10" width="190" height="28" fill={COLORS.surface} stroke={COLORS.line} strokeWidth="0.5" />
-                <line x1="410" y1="24" x2="435" y2="24" stroke={COLORS.fg} strokeWidth="1" />
-                <text x="440" y="28" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>parent</text>
-                <line x1="485" y1="24" x2="510" y2="24" stroke={COLORS.fg} strokeWidth="1" strokeDasharray="3 3" />
-                <text x="515" y="28" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>informs</text>
-                <circle cx="565" cy="24" r="3" fill={COLORS.ember} />
-                <text x="572" y="28" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>risk</text>
-              </g>
+              {/* Legend moved to HTML overlay */}
             </svg>
           </div>
         </div>
