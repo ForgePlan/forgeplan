@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn orphan_detection() {
-        let records = vec![make_record("PRD-001", "prd"), make_record("RFC-001", "rfc")];
+        let records = [make_record("PRD-001", "prd"), make_record("RFC-001", "rfc")];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let mut outgoing: RelationIndex = BTreeMap::new();
         outgoing.insert(
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn orphan_detected_when_no_links() {
-        let records = vec![make_record("PRD-001", "prd")];
+        let records = [make_record("PRD-001", "prd")];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let outgoing: RelationIndex = BTreeMap::new();
         let incoming: RelationIndex = BTreeMap::new();
@@ -423,7 +423,7 @@ mod tests {
     fn blind_spot_detected_for_active_without_evidence() {
         let mut record = make_record("PRD-001", "prd");
         record.status = "active".into(); // only active artifacts are blind spots
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn draft_not_flagged_as_blind_spot() {
-        let records = vec![make_record("PRD-001", "prd")]; // default = draft
+        let records = [make_record("PRD-001", "prd")]; // default = draft
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn no_blind_spot_when_evidence_linked() {
-        let records = vec![make_record("PRD-001", "prd")];
+        let records = [make_record("PRD-001", "prd")];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence = vec![make_record("EVID-001", "evidence")];
         let mut outgoing: RelationIndex = BTreeMap::new();
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn note_not_flagged_as_blind_spot() {
-        let records = vec![make_record("NOTE-001", "note")];
+        let records = [make_record("NOTE-001", "note")];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -474,7 +474,7 @@ mod tests {
     fn active_problem_without_evidence_is_blind_spot() {
         let mut record = make_record("PROB-001", "problem");
         record.status = "active".into();
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -488,7 +488,7 @@ mod tests {
     fn active_solution_without_evidence_is_blind_spot() {
         let mut record = make_record("SOL-001", "solution");
         record.status = "active".into();
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -502,7 +502,7 @@ mod tests {
     fn deprecated_artifact_without_evidence_is_not_blind_spot() {
         let mut record = make_record("PRD-002", "prd");
         record.status = "deprecated".into();
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -515,7 +515,7 @@ mod tests {
     fn superseded_artifact_without_evidence_is_not_blind_spot() {
         let mut record = make_record("PRD-003", "prd");
         record.status = "superseded".into();
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -528,7 +528,7 @@ mod tests {
     fn evidence_artifact_never_flagged_as_blind_spot() {
         let mut record = make_record("EVID-001", "evidence");
         record.status = "active".into();
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
@@ -544,7 +544,7 @@ mod tests {
     fn refresh_artifact_never_flagged_as_blind_spot() {
         let mut record = make_record("REF-001", "refresh");
         record.status = "active".into();
-        let records = vec![record];
+        let records = [record];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence: Vec<ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();

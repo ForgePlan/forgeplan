@@ -100,13 +100,13 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
     let mut warnings = Vec::new();
     let relations = store.get_relations(artifact_id).await.unwrap_or_default();
     for (target_id, _relation) in &relations {
-        if let Ok(Some(target)) = store.get_record(target_id).await {
-            if target.status == "draft" {
-                warnings.push(format!(
-                    "build-on-draft: depends on {} which is still Draft",
-                    target_id
-                ));
-            }
+        if let Ok(Some(target)) = store.get_record(target_id).await
+            && target.status == "draft"
+        {
+            warnings.push(format!(
+                "build-on-draft: depends on {} which is still Draft",
+                target_id
+            ));
         }
     }
 

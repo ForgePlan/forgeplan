@@ -21,8 +21,8 @@ pub async fn run(
 
     // Header
     println!(
-        "{:<18} {:<10} {:<9} {:<8} {:<20} {:<10} {}",
-        "TIMESTAMP", "ARTIFACT", "ACTION", "FIELD", "CHANGE", "SOURCE", "COMMIT"
+        "{:<18} {:<10} {:<9} {:<8} {:<20} {:<10} COMMIT",
+        "TIMESTAMP", "ARTIFACT", "ACTION", "FIELD", "CHANGE", "SOURCE"
     );
     println!("{}", "-".repeat(90));
 

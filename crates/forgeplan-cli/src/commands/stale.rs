@@ -33,10 +33,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         stale_records.len()
     );
 
-    println!(
-        "  {:<12} {:<30} {:<14} {}",
-        "ID", "Title", "Expired", "Days ago"
-    );
+    println!("  {:<12} {:<30} {:<14} Days ago", "ID", "Title", "Expired");
     println!("  {}", "-".repeat(70));
 
     let today = Utc::now().date_naive();

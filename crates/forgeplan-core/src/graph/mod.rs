@@ -27,7 +27,7 @@ pub async fn build_edges(workspace: &Path) -> anyhow::Result<Vec<Edge>> {
         let mut read_dir = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
             let content = tokio::fs::read_to_string(&path).await?;
@@ -46,14 +46,14 @@ pub async fn build_edges(workspace: &Path) -> anyhow::Result<Vec<Edge>> {
                 }
                 // Also check parent_epic / epic / prd fields
                 for field in &["epic", "prd", "parent_epic"] {
-                    if let Some(serde_yml::Value::String(parent)) = fm.get(*field) {
-                        if !parent.is_empty() {
-                            edges.push(Edge {
-                                from: id.clone(),
-                                to: parent.clone(),
-                                relation: "belongs_to".to_string(),
-                            });
-                        }
+                    if let Some(serde_yml::Value::String(parent)) = fm.get(*field)
+                        && !parent.is_empty()
+                    {
+                        edges.push(Edge {
+                            from: id.clone(),
+                            to: parent.clone(),
+                            relation: "belongs_to".to_string(),
+                        });
                     }
                 }
             }

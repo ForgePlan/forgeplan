@@ -41,7 +41,7 @@ pub async fn search(
         let mut read_dir = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
             let content = tokio::fs::read_to_string(&path).await?;
@@ -71,10 +71,10 @@ pub async fn search(
                 .to_string();
 
             // Apply kind filter
-            if let Some(filter) = kind_filter {
-                if !kind.eq_ignore_ascii_case(filter) {
-                    continue;
-                }
+            if let Some(filter) = kind_filter
+                && !kind.eq_ignore_ascii_case(filter)
+            {
+                continue;
             }
 
             // Search in title (from frontmatter)

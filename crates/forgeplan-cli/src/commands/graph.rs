@@ -16,14 +16,14 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     let records = store.list_records(None).await?;
     let mut all_edges = edges;
     for record in &records {
-        if let Some(parent) = &record.parent_epic {
-            if !parent.is_empty() {
-                all_edges.push(graph::Edge {
-                    from: record.id.clone(),
-                    to: parent.clone(),
-                    relation: "belongs_to".to_string(),
-                });
-            }
+        if let Some(parent) = &record.parent_epic
+            && !parent.is_empty()
+        {
+            all_edges.push(graph::Edge {
+                from: record.id.clone(),
+                to: parent.clone(),
+                relation: "belongs_to".to_string(),
+            });
         }
     }
 

@@ -1787,7 +1787,7 @@ fn json_list_is_valid_array() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     assert!(json.is_array());
-    assert!(json.as_array().unwrap().len() >= 1);
+    assert!(!json.as_array().unwrap().is_empty());
     assert!(json[0]["id"].is_string());
 }
 

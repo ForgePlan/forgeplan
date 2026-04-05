@@ -162,6 +162,7 @@ pub fn compute_reliability(r_eff_score: f64, link_count: usize, is_stale: bool) 
 }
 
 /// Compute full F-G-R for an artifact.
+#[allow(clippy::too_many_arguments)]
 pub fn compute(
     artifact_id: &str,
     body: &str,

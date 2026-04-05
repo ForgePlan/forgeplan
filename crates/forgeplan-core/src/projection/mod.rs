@@ -11,6 +11,7 @@ use crate::artifact::types::{ArtifactKind, slugify};
 /// the body (body differs from what LanceDB has), the file body is preserved.
 /// Only frontmatter (status, links, metadata) is updated from LanceDB.
 /// This prevents data loss when a user edits a file then runs forgeplan link/update.
+#[allow(clippy::too_many_arguments)]
 pub async fn render_projection(
     workspace: &Path,
     id: &str,
@@ -44,6 +45,7 @@ pub async fn render_projection(
 /// Like render_projection, but `force_body = true` uses the passed body
 /// instead of reading from file. Used by `update --body` to ensure the
 /// CLI-provided body takes precedence over the file on disk.
+#[allow(clippy::too_many_arguments)]
 pub async fn render_projection_with_body(
     workspace: &Path,
     id: &str,
@@ -74,6 +76,7 @@ pub async fn render_projection_with_body(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_projection_inner(
     workspace: &Path,
     id: &str,
@@ -190,6 +193,7 @@ pub async fn read_file_body_if_newer(
 }
 
 /// Render markdown content with YAML frontmatter + body.
+#[allow(clippy::too_many_arguments)]
 fn render_markdown(
     id: &str,
     kind: &str,

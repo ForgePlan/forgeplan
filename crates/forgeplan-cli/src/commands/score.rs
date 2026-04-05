@@ -186,7 +186,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         let evidence_json: Vec<_> = evidence_items
             .iter()
             .map(|item| {
-                let item_score = reff::r_eff(&[item.clone()]);
+                let item_score = reff::r_eff(std::slice::from_ref(item));
                 serde_json::json!({
                     "id": item.id,
                     "verdict": format!("{:?}", item.verdict),
@@ -236,7 +236,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
                 .unwrap_or(false);
-            let item_score = reff::r_eff(&[item.clone()]);
+            let item_score = reff::r_eff(std::slice::from_ref(item));
             println!(
                 "    {} [{:?}] CL{} = {:.1}{}",
                 item.id,

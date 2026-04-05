@@ -108,15 +108,15 @@ impl ArtifactStorage for InMemoryStore {
         let state = self.state.read().await;
         let iter = state.artifacts.values().filter(|r| {
             if let Some(f) = filter {
-                if let Some(ref k) = f.kind {
-                    if !r.kind.eq_ignore_ascii_case(k) {
-                        return false;
-                    }
+                if let Some(ref k) = f.kind
+                    && !r.kind.eq_ignore_ascii_case(k)
+                {
+                    return false;
                 }
-                if let Some(ref s) = f.status {
-                    if !r.status.eq_ignore_ascii_case(s) {
-                        return false;
-                    }
+                if let Some(ref s) = f.status
+                    && !r.status.eq_ignore_ascii_case(s)
+                {
+                    return false;
                 }
             }
             true
@@ -183,15 +183,15 @@ impl ArtifactStorage for InMemoryStore {
         let state = self.state.read().await;
         let iter = state.artifacts.values().filter(|r| {
             if let Some(f) = filter {
-                if let Some(ref k) = f.kind {
-                    if !r.kind.eq_ignore_ascii_case(k) {
-                        return false;
-                    }
+                if let Some(ref k) = f.kind
+                    && !r.kind.eq_ignore_ascii_case(k)
+                {
+                    return false;
                 }
-                if let Some(ref s) = f.status {
-                    if !r.status.eq_ignore_ascii_case(s) {
-                        return false;
-                    }
+                if let Some(ref s) = f.status
+                    && !r.status.eq_ignore_ascii_case(s)
+                {
+                    return false;
                 }
             }
             true
@@ -302,10 +302,10 @@ impl SearchStorage for InMemoryStore {
             .artifacts
             .values()
             .filter(|r| {
-                if let Some(k) = kind_filter {
-                    if !r.kind.eq_ignore_ascii_case(k) {
-                        return false;
-                    }
+                if let Some(k) = kind_filter
+                    && !r.kind.eq_ignore_ascii_case(k)
+                {
+                    return false;
                 }
                 r.title.to_lowercase().contains(&query_lower)
                     || r.body.to_lowercase().contains(&query_lower)
@@ -323,11 +323,9 @@ impl SearchStorage for InMemoryStore {
             .artifacts
             .values()
             .filter(|r| {
-                if let Some(ref vu) = r.valid_until {
-                    parse_date(vu).map_or(false, |d| d < now)
-                } else {
-                    false
-                }
+                r.valid_until
+                    .as_ref()
+                    .is_some_and(|vu| parse_date(vu).is_some_and(|d| d < now))
             })
             .cloned()
             .collect();
@@ -358,7 +356,7 @@ impl FpfStorage for InMemoryStore {
     fn has_fpf(&self) -> bool {
         self.state
             .try_read()
-            .map_or(false, |s| !s.fpf_chunks.is_empty())
+            .is_ok_and(|s| !s.fpf_chunks.is_empty())
     }
 
     async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {

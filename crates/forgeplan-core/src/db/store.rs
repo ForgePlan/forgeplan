@@ -389,12 +389,12 @@ impl LanceStore {
             .artifacts
             .update()
             .only_if(predicate)
-            .column("updated_at", &format!("'{}'", now));
+            .column("updated_at", format!("'{}'", now));
         if let Some(s) = status {
-            builder = builder.column("status", &format!("'{}'", s.replace('\'', "''")));
+            builder = builder.column("status", format!("'{}'", s.replace('\'', "''")));
         }
         if let Some(t) = title {
-            builder = builder.column("title", &format!("'{}'", t.replace('\'', "''")));
+            builder = builder.column("title", format!("'{}'", t.replace('\'', "''")));
         }
         builder.execute().await?;
         Ok(())
@@ -407,10 +407,10 @@ impl LanceStore {
         self.artifacts
             .update()
             .only_if(predicate)
-            .column("updated_at", &format!("'{}'", now))
+            .column("updated_at", format!("'{}'", now))
             .column(
                 "valid_until",
-                &format!("'{}'", valid_until.replace('\'', "''")),
+                format!("'{}'", valid_until.replace('\'', "''")),
             )
             .execute()
             .await?;
@@ -424,8 +424,8 @@ impl LanceStore {
         self.artifacts
             .update()
             .only_if(predicate)
-            .column("updated_at", &format!("'{}'", now))
-            .column("depth", &format!("'{}'", depth.replace('\'', "''")))
+            .column("updated_at", format!("'{}'", now))
+            .column("depth", format!("'{}'", depth.replace('\'', "''")))
             .execute()
             .await?;
         Ok(())
@@ -447,8 +447,8 @@ impl LanceStore {
         self.artifacts
             .update()
             .only_if(predicate)
-            .column("updated_at", &format!("'{}'", now))
-            .column("r_eff_score", &format!("{score}"))
+            .column("updated_at", format!("'{}'", now))
+            .column("r_eff_score", format!("{score}"))
             .execute()
             .await?;
         Ok(())
@@ -724,7 +724,7 @@ impl LanceStore {
         let mut stale: Vec<ArtifactRecord> = all
             .into_iter()
             .filter(|r| {
-                r.valid_until.as_ref().map_or(false, |vu| {
+                r.valid_until.as_ref().is_some_and(|vu| {
                     chrono::NaiveDate::parse_from_str(vu, "%Y-%m-%d")
                         .or_else(|_| {
                             // Try parsing as full ISO datetime and extract date
@@ -752,12 +752,11 @@ impl LanceStore {
         let search_prefix = format!("{}-", prefix_upper);
         for summary in &all {
             let id_upper = summary.id.to_uppercase();
-            if let Some(rest) = id_upper.strip_prefix(&search_prefix) {
-                if let Some(num_str) = rest.split('-').next() {
-                    if let Ok(num) = num_str.parse::<u32>() {
-                        max_num = max_num.max(num);
-                    }
-                }
+            if let Some(rest) = id_upper.strip_prefix(&search_prefix)
+                && let Some(num_str) = rest.split('-').next()
+                && let Ok(num) = num_str.parse::<u32>()
+            {
+                max_num = max_num.max(num);
             }
         }
 
@@ -774,8 +773,8 @@ impl LanceStore {
         self.artifacts
             .update()
             .only_if(predicate)
-            .column("updated_at", &format!("'{}'", now))
-            .column("body", &format!("'{}'", escaped_body))
+            .column("updated_at", format!("'{}'", now))
+            .column("body", format!("'{}'", escaped_body))
             .execute()
             .await?;
         Ok(())
@@ -1848,7 +1847,7 @@ mod tests {
             &serde_yml::Value::String("2025-06-01".to_string())
         );
         // parent_epic should not be present (None)
-        assert!(map.get("parent_epic").is_none());
+        assert!(!map.contains_key("parent_epic"));
         // Should have all expected keys
         assert!(map.contains_key("r_eff_score"));
         assert!(map.contains_key("created_at"));

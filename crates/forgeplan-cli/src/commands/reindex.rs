@@ -21,7 +21,7 @@ pub async fn run() -> anyhow::Result<()> {
         let mut read_dir = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
 
@@ -105,23 +105,23 @@ pub async fn run() -> anyhow::Result<()> {
             }
 
             // Restore links from frontmatter (F8 fix)
-            if let Some(links_val) = fm.get("links") {
-                if let Some(links_arr) = links_val.as_sequence() {
-                    let existing_relations = store.get_relations(&id).await.unwrap_or_default();
-                    for link in links_arr {
-                        let target = link.get("target").and_then(|v| v.as_str());
-                        let relation = link.get("relation").and_then(|v| v.as_str());
-                        if let (Some(t), Some(r)) = (target, relation) {
-                            // Skip if relation already exists
-                            let already_exists =
-                                existing_relations.iter().any(|(et, er)| et == t && er == r);
-                            if !already_exists {
-                                if let Err(e) = store.add_relation(&id, t, r).await {
-                                    eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
-                                } else {
-                                    println!("  LINK {} --{}--> {}", id, r, t);
-                                    synced += 1;
-                                }
+            if let Some(links_val) = fm.get("links")
+                && let Some(links_arr) = links_val.as_sequence()
+            {
+                let existing_relations = store.get_relations(&id).await.unwrap_or_default();
+                for link in links_arr {
+                    let target = link.get("target").and_then(|v| v.as_str());
+                    let relation = link.get("relation").and_then(|v| v.as_str());
+                    if let (Some(t), Some(r)) = (target, relation) {
+                        // Skip if relation already exists
+                        let already_exists =
+                            existing_relations.iter().any(|(et, er)| et == t && er == r);
+                        if !already_exists {
+                            if let Err(e) = store.add_relation(&id, t, r).await {
+                                eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
+                            } else {
+                                println!("  LINK {} --{}--> {}", id, r, t);
+                                synced += 1;
                             }
                         }
                     }
@@ -146,15 +146,15 @@ pub async fn run() -> anyhow::Result<()> {
         if !filepath.exists() {
             // Double-check: maybe file exists with different slug (title changed)
             let mut found = false;
-            if dir.exists() {
-                if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
-                    while let Ok(Some(entry)) = rd.next_entry().await {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let id_prefix = format!("{}-", record.id.to_uppercase());
-                        if name.to_uppercase().starts_with(&id_prefix) && name.ends_with(".md") {
-                            found = true;
-                            break;
-                        }
+            if dir.exists()
+                && let Ok(mut rd) = tokio::fs::read_dir(&dir).await
+            {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let id_prefix = format!("{}-", record.id.to_uppercase());
+                    if name.to_uppercase().starts_with(&id_prefix) && name.ends_with(".md") {
+                        found = true;
+                        break;
                     }
                 }
             }

@@ -142,10 +142,10 @@ impl LlmConfig {
         if let Ok(v) = std::env::var("FORGEPLAN_LLM_BASE_URL") {
             self.base_url = Some(v);
         }
-        if let Ok(v) = std::env::var("FORGEPLAN_LLM_MAX_TOKENS") {
-            if let Ok(n) = v.parse::<u32>() {
-                self.max_tokens = n;
-            }
+        if let Ok(v) = std::env::var("FORGEPLAN_LLM_MAX_TOKENS")
+            && let Ok(n) = v.parse::<u32>()
+        {
+            self.max_tokens = n;
         }
         if let Ok(v) = std::env::var("FORGEPLAN_LLM_API_KEY_ENV") {
             self.api_key_env = Some(v);
@@ -172,7 +172,7 @@ impl LlmConfig {
         let env_name = self
             .api_key_env
             .as_deref()
-            .or_else(|| match self.provider.as_str() {
+            .or(match self.provider.as_str() {
                 "openai" => Some("OPENAI_API_KEY"),
                 "claude" => Some("ANTHROPIC_API_KEY"),
                 "gemini" => Some("GEMINI_API_KEY"),

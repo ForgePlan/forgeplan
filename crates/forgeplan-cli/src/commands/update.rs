@@ -22,14 +22,14 @@ pub async fn run(
     }
 
     // Block direct status change to "active" — must go through lifecycle gates
-    if let Some(s) = status {
-        if s.eq_ignore_ascii_case("active") {
-            anyhow::bail!(
-                "Direct status change to 'active' is not allowed.\n\
-                 Use `forgeplan activate {}` to activate artifacts (enforces validation gates).",
-                id
-            );
-        }
+    if let Some(s) = status
+        && s.eq_ignore_ascii_case("active")
+    {
+        anyhow::bail!(
+            "Direct status change to 'active' is not allowed.\n\
+             Use `forgeplan activate {}` to activate artifacts (enforces validation gates).",
+            id
+        );
     }
 
     // Depth update
@@ -54,8 +54,7 @@ pub async fn run(
 
     // Update body
     let body_updated = if let Some(b) = body {
-        let body_content = if b.starts_with('@') {
-            let path = &b[1..];
+        let body_content = if let Some(path) = b.strip_prefix('@') {
             tokio::fs::read_to_string(path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path, e))?

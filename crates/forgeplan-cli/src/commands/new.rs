@@ -25,7 +25,7 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
 
     // Build template variables
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let nnn = id.split('-').last().unwrap_or("001").to_string();
+    let nnn = id.split('-').next_back().unwrap_or("001").to_string();
 
     let mut vars = HashMap::new();
     vars.insert("NNN".to_string(), nnn.clone());
