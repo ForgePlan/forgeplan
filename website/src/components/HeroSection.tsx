@@ -2,33 +2,34 @@ import { useState } from 'react';
 import StickySection from './StickySection';
 import CrystallizationAnimation from './CrystallizationAnimation';
 
-const NARRATIVE = [
+// Paired narrative blocks — left + right appear simultaneously
+// Each pair highlights a pain point connected to specific artifacts
+const NARRATIVE_PAIRS = [
   {
-    text: 'Your decisions are scattered across Slack threads, Google Docs, and someone\'s memory',
-    label: 'THE PROBLEM',
-    start: 0.02,
-    end: 0.18,
-    side: 'left' as const,
+    start: 0.02, end: 0.12,
+    left:  { text: 'Decisions scattered across Slack, Docs, and memory', label: 'LOST CONTEXT', dotIdx: 0 },
+    right: { text: 'PRDs that nobody reads after the first week', label: 'DEAD DOCS', dotIdx: 1 },
   },
   {
-    text: 'PRDs nobody maintains. RFCs without evidence. Architecture choices made on gut feeling',
-    label: 'THE COST',
-    start: 0.10,
-    end: 0.26,
-    side: 'right' as const,
+    start: 0.09, end: 0.19,
+    left:  { text: 'Architecture choices made on gut feeling alone', label: 'NO EVIDENCE', dotIdx: 2 },
+    right: { text: 'RFCs without follow-up or validation', label: 'NO PROOF', dotIdx: 6 },
   },
   {
-    text: 'What if every decision had structure, proof, and a reliability score?',
-    label: 'THE QUESTION',
-    start: 0.20,
-    end: 0.35,
-    side: 'left' as const,
+    start: 0.16, end: 0.26,
+    left:  { text: 'Stale specs that diverged from reality months ago', label: 'DECAY', dotIdx: 4 },
+    right: { text: '"Why did we decide this?" — no one remembers', label: 'LOST WHY', dotIdx: 5 },
+  },
+  {
+    start: 0.23, end: 0.35,
+    left:  { text: 'What if every decision had structure and a reliability score?', label: 'THE QUESTION', dotIdx: 3 },
+    right: { text: 'What if evidence decayed visibly — not silently?', label: 'THE SHIFT', dotIdx: 7 },
   },
 ];
 
-function narrativeOpacity(progress: number, start: number, end: number): number {
-  const fadeIn = Math.min(Math.max((progress - start) / 0.04, 0), 1);
-  const fadeOut = Math.min(Math.max((end - progress) / 0.04, 0), 1);
+function pairOpacity(progress: number, start: number, end: number): number {
+  const fadeIn = Math.min(Math.max((progress - start) / 0.03, 0), 1);
+  const fadeOut = Math.min(Math.max((end - progress) / 0.03, 0), 1);
   return fadeIn * fadeOut;
 }
 
@@ -42,59 +43,45 @@ export default function HeroSection() {
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
         <CrystallizationAnimation progress={progress} />
 
-        {/* Narrative blocks — left/right with dashed connector line */}
-        {NARRATIVE.map((block, i) => {
-          const opacity = narrativeOpacity(progress, block.start, block.end);
+        {/* Narrative pairs — left + right simultaneously */}
+        {NARRATIVE_PAIRS.map((pair, pi) => {
+          const opacity = pairOpacity(progress, pair.start, pair.end);
           if (opacity <= 0) return null;
 
-          const isLeft = block.side === 'left';
-          // Vertical position: stagger blocks so they don't overlap
-          const topPercent = 20 + i * 22; // 20%, 42%, 64%
+          // Vertical position: stagger pairs
+          const topPercent = 18 + pi * 18;
 
           return (
-            <div
-              key={i}
-              className="absolute pointer-events-none"
-              style={{
-                top: `${topPercent}%`,
-                left: isLeft ? '0' : 'auto',
-                right: isLeft ? 'auto' : '0',
-                opacity,
-                transform: `translateY(${(1 - opacity) * 12}px)`,
-                display: 'flex',
-                alignItems: 'center',
-                flexDirection: isLeft ? 'row' : 'row-reverse',
-              }}
-            >
-              {/* Text card */}
-              <div
-                className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-5 py-4 max-w-[360px]"
-                style={{
-                  borderLeft: isLeft ? `2px solid var(--color-forge-ember)` : undefined,
-                  borderRight: !isLeft ? `2px solid var(--color-forge-ember)` : undefined,
-                }}
-              >
-                <p className="font-body text-sm md:text-base leading-relaxed text-forge-fg">
-                  {block.text}
-                </p>
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-forge-ember" />
-                  <span className="font-mono text-[9px] tracking-[2px] text-forge-dim">
-                    {block.label}
-                  </span>
+            <div key={pi} className="absolute inset-x-0 pointer-events-none" style={{ top: `${topPercent}%`, opacity }}>
+              <div className="flex justify-between items-start px-0">
+                {/* Left block */}
+                <div className="flex items-center" style={{ transform: `translateY(${(1 - opacity) * 10}px)` }}>
+                  <div
+                    className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-4 py-3 max-w-[320px]"
+                    style={{ borderLeft: '2px solid var(--color-forge-ember)' }}
+                  >
+                    <p className="font-body text-xs md:text-sm leading-relaxed text-forge-fg">{pair.left.text}</p>
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <div className="w-1.5 h-1.5 rounded-full bg-forge-ember" />
+                      <span className="font-mono text-[8px] tracking-[2px] text-forge-dim">{pair.left.label}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right block */}
+                <div className="flex items-center" style={{ transform: `translateY(${(1 - opacity) * 10}px)` }}>
+                  <div
+                    className="border border-forge-line bg-forge-bg/90 backdrop-blur-sm px-4 py-3 max-w-[320px] text-right"
+                    style={{ borderRight: '2px solid var(--color-forge-ember)' }}
+                  >
+                    <p className="font-body text-xs md:text-sm leading-relaxed text-forge-fg">{pair.right.text}</p>
+                    <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                      <span className="font-mono text-[8px] tracking-[2px] text-forge-dim">{pair.right.label}</span>
+                      <div className="w-1.5 h-1.5 rounded-full bg-forge-ember" />
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              {/* Dashed connector line → toward center chaos */}
-              <div
-                className="border-t border-dashed border-forge-line"
-                style={{
-                  width: '80px',
-                  opacity: 0.5,
-                }}
-              />
-              {/* Endpoint dot */}
-              <div className="w-1.5 h-1.5 rounded-full bg-forge-dim" style={{ opacity: 0.5, flexShrink: 0 }} />
             </div>
           );
         })}
