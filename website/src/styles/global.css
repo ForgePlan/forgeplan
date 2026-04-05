@@ -121,3 +121,27 @@ html {
 #theme-toggle:hover polygon { stroke: var(--forge-fg); fill: var(--forge-fg); }
 #theme-toggle polygon { transition: stroke 0.3s, fill 0.3s; }
 #theme-toggle:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
+
+/* Mobile drawer */
+.mobile-drawer {
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#mobile-menu:not(.hidden) .mobile-drawer {
+  transform: translateX(0);
+}
+.mobile-link {
+  display: block;
+  padding: 12px 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  color: var(--forge-fg);
+  border-bottom: 1px solid var(--forge-line);
+  transition: color 0.2s;
+}
+.mobile-link:hover { color: var(--color-forge-ember); }
+.mobile-link:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: 2px; }
+
+/* Burger button */
+#mobile-menu-btn { background: none; border: none; cursor: pointer; }
+.burger-line { transition: all 0.3s; }
