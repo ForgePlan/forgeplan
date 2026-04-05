@@ -37,7 +37,7 @@ export default function HeroSection() {
   const [progress, setProgress] = useState(0);
 
   return (
-    <StickySection id="hero" scrollMultiplier={5} onProgress={setProgress} className="h-screen flex flex-col border-b border-forge-line">
+    <StickySection id="hero" scrollMultiplier={8} onProgress={setProgress} className="h-screen flex flex-col border-b border-forge-line">
       {/* Canvas */}
       <div className="relative w-full flex-1 overflow-hidden pt-[88px]">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
