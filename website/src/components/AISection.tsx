@@ -62,7 +62,7 @@ export default function AISection() {
                 <div className="w-2.5 h-2.5 rounded-full bg-[#28C840]" />
                 <span className="font-mono text-[10px] text-forge-dim ml-2">forgeplan + AI</span>
               </div>
-              <div className="p-4 space-y-4 font-mono text-xs">
+              <div className="p-4 space-y-4 font-mono text-sm">
                 {AI_COMMANDS.map((cmd, ci) => {
                   const cmdOpacity = fade(cmd.start, 0.10);
                   if (cmdOpacity <= 0) return null;
@@ -112,7 +112,7 @@ export default function AISection() {
             {/* Bottom statement */}
             <div className="border border-forge-ember p-4 mt-4" style={{ opacity: fade(0.76) }}>
               <p className="font-heading text-lg text-forge-ember">Structure + AI = Force Multiplier</p>
-              <p className="text-xs text-forge-dim mt-1">
+              <p className="text-sm text-forge-dim mt-1">
                 AI generates hypotheses. Forgeplan validates them. Evidence proves them. You decide.
               </p>
             </div>

@@ -123,7 +123,7 @@ export default function ArtifactsSection() {
                       }`}>
                         {type.name}
                       </p>
-                      <p className="text-[11px] text-forge-dim mt-1 leading-relaxed">{type.desc}</p>
+                      <p className="text-xs text-forge-dim mt-1 leading-relaxed">{type.desc}</p>
                     </div>
                     <div className="mt-2 flex items-center gap-1.5">
                       <div className={`w-1.5 h-1.5 rounded-full ${isEmber ? 'bg-forge-ember' : 'bg-forge-dim'}`} />
