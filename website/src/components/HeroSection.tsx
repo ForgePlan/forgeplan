@@ -6,7 +6,7 @@ export default function HeroSection() {
   const [progress, setProgress] = useState(0);
 
   return (
-    <StickySection id="hero" scrollMultiplier={3} onProgress={setProgress} className="h-screen flex flex-col">
+    <StickySection id="hero" scrollMultiplier={3} onProgress={setProgress} className="h-screen flex flex-col border-b border-forge-line">
       {/* Canvas area — fills space between header and bottom block */}
       <div className="relative w-full flex-1 overflow-hidden pt-[88px]">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
@@ -14,7 +14,7 @@ export default function HeroSection() {
       </div>
 
       {/* Bottom text block — fixed 220px */}
-      <div className="border-t border-forge-line grid grid-cols-1 md:grid-cols-[1fr_480px] h-[220px] bg-forge-bg relative z-10 shrink-0">
+      <div className="border-t border-forge-line grid grid-cols-1 md:grid-cols-[1fr_500px] h-[220px] bg-forge-bg relative z-10 shrink-0">
         <div className="flex items-end p-6 md:p-8 border-r border-forge-line">
           <h1 className="font-heading text-4xl md:text-[58px] font-normal leading-[1.15]">
             From Raw Idea<br />
