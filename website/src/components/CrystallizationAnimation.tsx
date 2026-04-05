@@ -278,19 +278,24 @@ export default function CrystallizationAnimation({ progress }: Props) {
     const SHUFFLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.!@#$%';
 
     // Narrative connectors — dashed lines from edges to artifact dots (4 pairs × 2)
+    // Connector lines: from card edge to flying dot
+    // Left cards: right edge ≈ padding(40) + maxWidth(320) = 360
+    // Right cards: left edge ≈ W - padding(40) - maxWidth(320) = 1080
+    const EDGE_LEFT = 360;
+    const EDGE_RIGHT = W - 360;
     const CONNECTOR_DEFS = [
       // Pair 1 (scroll 2-14%)
-      { dotIdx: 0, edgeX: 80,     edgeYPct: 0.22, start: 0.02, end: 0.14 },
-      { dotIdx: 1, edgeX: W - 80, edgeYPct: 0.22, start: 0.02, end: 0.14 },
+      { dotIdx: 0, edgeX: EDGE_LEFT,  edgeYPct: 0.22, start: 0.02, end: 0.14 },
+      { dotIdx: 1, edgeX: EDGE_RIGHT, edgeYPct: 0.22, start: 0.02, end: 0.14 },
       // Pair 2 (scroll 10-22%)
-      { dotIdx: 2, edgeX: 80,     edgeYPct: 0.40, start: 0.10, end: 0.22 },
-      { dotIdx: 6, edgeX: W - 80, edgeYPct: 0.40, start: 0.10, end: 0.22 },
+      { dotIdx: 2, edgeX: EDGE_LEFT,  edgeYPct: 0.40, start: 0.10, end: 0.22 },
+      { dotIdx: 6, edgeX: EDGE_RIGHT, edgeYPct: 0.40, start: 0.10, end: 0.22 },
       // Pair 3 (scroll 18-30%)
-      { dotIdx: 4, edgeX: 80,     edgeYPct: 0.58, start: 0.18, end: 0.30 },
-      { dotIdx: 5, edgeX: W - 80, edgeYPct: 0.58, start: 0.18, end: 0.30 },
+      { dotIdx: 4, edgeX: EDGE_LEFT,  edgeYPct: 0.58, start: 0.18, end: 0.30 },
+      { dotIdx: 5, edgeX: EDGE_RIGHT, edgeYPct: 0.58, start: 0.18, end: 0.30 },
       // Pair 4 (scroll 26-40%)
-      { dotIdx: 3, edgeX: 80,     edgeYPct: 0.76, start: 0.26, end: 0.40 },
-      { dotIdx: 7, edgeX: W - 80, edgeYPct: 0.76, start: 0.26, end: 0.40 },
+      { dotIdx: 3, edgeX: EDGE_LEFT,  edgeYPct: 0.76, start: 0.26, end: 0.40 },
+      { dotIdx: 7, edgeX: EDGE_RIGHT, edgeYPct: 0.76, start: 0.26, end: 0.40 },
     ];
     const connectors: SVGLineElement[] = [];
     CONNECTOR_DEFS.forEach(() => {
