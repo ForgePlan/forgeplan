@@ -12,6 +12,8 @@
   "dependencies": {
     "@astrojs/react": "^5.0.2",
     "@astrojs/starlight": "^0.38.2",
+    "@fontsource/geist-mono": "^5.2.7",
+    "@fontsource/space-grotesk": "^5.2.10",
     "@tailwindcss/vite": "^4.2.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
