@@ -138,9 +138,6 @@ export default function CrystallizationAnimation({ progress }: Props) {
   useEffect(() => {
     if (!svgRef.current) return;
 
-    // === REDUCED MOTION CHECK ===
-    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
     const svg = svgRef.current;
     animatingRef.current = true;
 
@@ -228,24 +225,6 @@ export default function CrystallizationAnimation({ progress }: Props) {
     brandText.setAttribute('font-size', '42'); brandText.setAttribute('font-weight', '400');
     brandText.setAttribute('fill', COLORS.fg); brandText.setAttribute('opacity', '0');
     svg.appendChild(brandText);
-
-    // === REDUCED MOTION: show final state immediately ===
-    if (prefersReduced) {
-      // Reduced motion: show static chaos (lines in initial positions, no flying)
-      // Scroll still drives phase transitions but without rAF loop
-      states.forEach((st, idx) => {
-        const [lx1, ly1, lx2, ly2] = endpoints(st);
-        lines[idx].setAttribute('x1', String(lx1)); lines[idx].setAttribute('y1', String(ly1));
-        lines[idx].setAttribute('x2', String(lx2)); lines[idx].setAttribute('y2', String(ly2));
-        if (idx < ARTIFACTS.length) {
-          const mx = (lx1 + lx2) / 2, my = (ly1 + ly2) / 2;
-          dots[idx].setAttribute('cx', String(mx)); dots[idx].setAttribute('cy', String(my));
-          labels[idx].setAttribute('transform', `translate(${mx}, ${my})`);
-        }
-      });
-      // No rAF loop — static display
-      return () => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
-    }
 
     // === ANIMATION LOOP ===
     function tick() {
