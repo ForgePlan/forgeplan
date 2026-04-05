@@ -69,26 +69,24 @@ html {
 
 /* Full state (hero visible) */
 .header-full { padding: 16px 16px 0 16px; }
-.header-full .header-inner { height: 72px; grid-template-columns: 1fr auto 72px; }
+.header-full .header-inner { height: 72px; grid-template-columns: 1fr auto 56px; }
 .header-full .header-logo { width: 28px; height: 28px; }
 .header-full .header-brand { font-size: 15px; }
 .header-full .header-brand-cell { padding: 0 16px; }
 .header-full .header-nav { grid-template-columns: repeat(4, 110px) 140px 100px; }
-.header-full .header-right { width: 72px; gap: 0; }
 .header-full .nav-cell { font-size: 13px; }
 
 /* Compact state (scrolled past hero) */
 .header-compact { padding: 0; }
 .header-compact .header-inner {
   height: 36px;
-  grid-template-columns: auto auto 48px;
+  grid-template-columns: auto auto 36px;
   border-left: none; border-right: none; border-top: none;
 }
 .header-compact .header-logo { width: 16px; height: 16px; }
 .header-compact .header-brand { font-size: 11px; }
 .header-compact .header-brand-cell { padding: 0 10px; }
 .header-compact .header-nav { grid-template-columns: repeat(4, 70px) 90px 70px; }
-.header-compact .header-right { width: 48px; }
 .header-compact .nav-cell { font-size: 11px; }
 
 /* Nav cell hover */
@@ -115,17 +113,7 @@ html {
 .nav-cell:focus-visible { color: var(--forge-bg); }
 .nav-cell:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
 
-/* Theme toggle button */
-.theme-toggle {
-  cursor: pointer;
-  background: none;
-  border: none;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.3s;
-}
-.theme-toggle:hover { transform: scale(1.1); }
-.theme-toggle svg { transition: transform 0.3s; }
-.light .theme-toggle svg { transform: rotate(180deg); }
+/* Logo/toggle hover */
+#theme-toggle { transition: transform 0.3s; border: none; }
+#theme-toggle:hover { transform: scale(1.05); }
+#theme-toggle:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
