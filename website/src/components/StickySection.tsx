@@ -59,7 +59,7 @@ export default function StickySection({
     <section
       id={id}
       ref={containerRef}
-      className={`relative min-h-screen w-full overflow-hidden ${className}`}
+      className={`relative w-full overflow-hidden ${className}`}
     >
       {children}
     </section>
