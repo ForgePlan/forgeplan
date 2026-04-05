@@ -3,28 +3,40 @@ import { COLORS } from '../tokens';
 
 // Real artifact graph from Forgeplan dogfood
 const NODES = [
-  { id: 'EPIC-001', x: 300, y: 30, type: 'epic' },
-  { id: 'PRD-001', x: 100, y: 130, type: 'prd' },
-  { id: 'PRD-018', x: 280, y: 130, type: 'prd' },
-  { id: 'PRD-024', x: 460, y: 130, type: 'prd' },
-  { id: 'RFC-001', x: 60, y: 250, type: 'rfc' },
-  { id: 'RFC-003', x: 200, y: 250, type: 'rfc' },
-  { id: 'RFC-002', x: 360, y: 250, type: 'rfc' },
-  { id: 'ADR-001', x: 60, y: 370, type: 'adr' },
-  { id: 'ADR-003', x: 360, y: 370, type: 'adr' },
-  { id: 'EVID-016', x: 520, y: 250, type: 'evidence' },
-  { id: 'EVID-020', x: 60, y: 450, type: 'evidence' },
-  { id: 'PROB-016', x: 560, y: 130, type: 'problem' },
+  // Level 0: root
+  { id: 'EPIC-001', x: 310, y: 30, type: 'epic' },
+  // Level 1: children of EPIC (equal spacing, 120px apart)
+  { id: 'PRD-001', x: 100, y: 140, type: 'prd' },      // idx 1
+  { id: 'PRD-018', x: 240, y: 140, type: 'prd' },      // idx 2
+  { id: 'PRD-024', x: 380, y: 140, type: 'prd' },      // idx 3
+  { id: 'PROB-016', x: 520, y: 140, type: 'problem' },  // idx 4 — moved before its child
+  // Level 2: children of PRDs + PROB
+  { id: 'RFC-001', x: 60, y: 270, type: 'rfc' },       // idx 5 ← under PRD-001
+  { id: 'RFC-003', x: 160, y: 270, type: 'rfc' },      // idx 6 ← under PRD-001
+  { id: 'RFC-002', x: 310, y: 270, type: 'rfc' },      // idx 7 ← under PRD-018
+  { id: 'EVID-016', x: 520, y: 270, type: 'evidence' },// idx 8 ← under PROB-016 (same x!)
+  // Level 3: children of RFCs
+  { id: 'ADR-001', x: 60, y: 390, type: 'adr' },       // idx 9 ← under RFC-001
+  { id: 'ADR-003', x: 310, y: 390, type: 'adr' },      // idx 10 ← under RFC-002
+  // Level 4: evidence (dashed link from ADR-001)
+  { id: 'EVID-020', x: 60, y: 460, type: 'evidence' }, // idx 11 ← under ADR-001
 ];
 
 const EDGES = [
-  { from: 0, to: 1 }, { from: 0, to: 2 }, { from: 0, to: 3 }, { from: 0, to: 11 },
-  { from: 1, to: 4 }, { from: 1, to: 5 },
-  { from: 2, to: 6 },
-  { from: 11, to: 9 },
-  { from: 4, to: 7 },
-  { from: 6, to: 8 },
-  { from: 7, to: 10, dashed: true },
+  // EPIC → PRDs + PROB
+  { from: 0, to: 1 }, { from: 0, to: 2 }, { from: 0, to: 3 }, { from: 0, to: 4 },
+  // PRD-001 → RFC-001, RFC-003
+  { from: 1, to: 5 }, { from: 1, to: 6 },
+  // PRD-018 → RFC-002
+  { from: 2, to: 7 },
+  // PROB-016 → EVID-016
+  { from: 4, to: 8 },
+  // RFC-001 → ADR-001
+  { from: 5, to: 9 },
+  // RFC-002 → ADR-003
+  { from: 7, to: 10 },
+  // ADR-001 → EVID-020 (informs, dashed)
+  { from: 9, to: 11, dashed: true },
 ];
 
 const NODE_COLORS: Record<string, string> = {
