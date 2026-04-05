@@ -66,11 +66,8 @@ Regardless of initial assessment, depth escalates when:
 ## The Route Command
 
 ```bash
-# AI-powered routing with confidence score
+# Smart routing — LLM if configured, keywords otherwise
 forgeplan route "add OAuth2 authentication"
-
-# Override if you disagree
-forgeplan route "simple config change" --depth tactical
 ```
 
-The router analyzes keywords (security, API, migration) and scope indicators to suggest the right depth.
+The router analyzes keywords (security, API, migration) and scope indicators to suggest the right depth. If you disagree with the suggested depth, you make the judgment call — the route is a recommendation, not an enforcement.

@@ -45,7 +45,7 @@ forgeplan renew PRD-001 --reason "Re-validated" --until 2026-12-31
 
 # Reopen (stale → deprecated + NEW draft)
 forgeplan reopen PRD-001 --reason "Needs major revision"
-# → PRD-001 deprecated, PRD-002 created as draft
+# → PRD-001 deprecated, new draft created (e.g., PRD-NNN)
 ```
 
 ## Terminal States

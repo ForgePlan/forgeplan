@@ -74,5 +74,5 @@ The `--fpf` flag enriches the prompt with relevant FPF framework concepts from t
 | Critical | **Mandatory + review** |
 
 :::caution
-Skipping ADI on Deep/Critical depth is a methodology violation. The `forgeplan review` command will flag it.
+Skipping ADI on Deep/Critical depth is a methodology violation. The review process expects evidence of structured reasoning before activation.
 :::

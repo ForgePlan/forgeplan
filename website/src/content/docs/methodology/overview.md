@@ -69,6 +69,7 @@ Trust is the weakest link. Not average — minimum. One blind spot drags everyth
 
 ## Next Steps
 
-- [Quick Start](/getting-started/quick-start) — first artifact in 5 minutes
-- [Routing & Depth](/methodology/routing) — how to choose the right level
-- [Evidence & Scoring](/methodology/evidence) — how trust is measured
+- [Quick Start](/getting-started/quick-start/) — first artifact in 5 minutes
+- [Routing & Depth](/methodology/routing/) — how to choose the right level
+- [Evidence & Scoring](/methodology/evidence/) — how trust is measured
+- [ADI Reasoning](/methodology/adi/) — structured thinking before building

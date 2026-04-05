@@ -46,8 +46,27 @@ After implementing, prove it works:
 
 ```bash
 forgeplan new evidence "Auth system — 12 tests pass, JWT benchmark 2ms"
+```
+
+Then edit the evidence file and add structured fields to the body:
+
+```markdown
+## Structured Fields
+
+verdict: supports
+congruence_level: 3
+evidence_type: test
+```
+
+Link it to the decision:
+
+```bash
 forgeplan link EVID-001 PRD-001 --relation informs
 ```
+
+:::caution
+Without structured fields (verdict, congruence_level, evidence_type), R_eff parser assigns CL0 = 0.9 penalty. Always add them.
+:::
 
 ## 6. Check the score
 

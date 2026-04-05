@@ -43,7 +43,7 @@ Add to your project's `.mcp.json`:
   "mcpServers": {
     "forgeplan": {
       "command": "forgeplan",
-      "args": ["mcp-server"],
+      "args": ["serve"],
       "env": {}
     }
   }
