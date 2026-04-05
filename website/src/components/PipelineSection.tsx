@@ -95,16 +95,16 @@ export default function PipelineSection() {
             </div>
           </div>
 
-          {/* Right: Git-like branching graph + ADI — full height */}
+          {/* Right: Git-like branching graph + ADI — full height, aligned with left */}
           <div className="relative flex flex-col justify-between p-6 lg:py-10 lg:px-10 h-full">
             <div className="absolute inset-0 opacity-15 bg-dot-grid" aria-hidden="true" />
 
-            <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-4 relative z-10" style={{ opacity: fade(0.12) }}>
-              DEPTH ROUTING
-            </p>
-
-            {/* Git branching SVG */}
-            <svg className="w-full relative z-10" viewBox="0 0 600 500" fill="none" aria-hidden="true">
+            {/* Top block: DEPTH ROUTING label + tree */}
+            <div className="relative z-10 flex-1 flex flex-col">
+              <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-2" style={{ opacity: fade(0.12) }}>
+                DEPTH ROUTING
+              </p>
+              <svg className="w-full flex-1" viewBox="0 0 600 500" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMin meet">
               {/* Main trunk */}
               <line x1="35" y1="25" x2="35" y2="480" stroke={COLORS.fg} strokeWidth="2" opacity={fade(0.14) * 0.4} />
 
@@ -168,8 +168,10 @@ export default function PipelineSection() {
               </g>
             </svg>
 
-            {/* ADI below graph */}
-            <div className="relative z-10 mt-6">
+            </div>
+
+            {/* Bottom block: ADI */}
+            <div className="relative z-10 flex-shrink-0 mt-4">
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-3" style={{ opacity: fade(0.53) }}>
                 ADI REASONING CYCLE
               </p>
