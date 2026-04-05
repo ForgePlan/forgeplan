@@ -6,15 +6,15 @@ const NODES = [
   { id: 'EPIC-001', x: 300, y: 40, type: 'epic' },
   { id: 'PRD-001', x: 120, y: 150, type: 'prd' },
   { id: 'PRD-018', x: 300, y: 150, type: 'prd' },
-  { id: 'PRD-024', x: 480, y: 150, type: 'prd' },
+  { id: 'PRD-024', x: 460, y: 150, type: 'prd' },
   { id: 'RFC-001', x: 60, y: 280, type: 'rfc' },
   { id: 'RFC-003', x: 200, y: 280, type: 'rfc' },
   { id: 'RFC-002', x: 360, y: 280, type: 'rfc' },
   { id: 'ADR-001', x: 60, y: 400, type: 'adr' },
   { id: 'ADR-003', x: 360, y: 400, type: 'adr' },
   { id: 'EVID-016', x: 520, y: 280, type: 'evidence' },
-  { id: 'EVID-020', x: 200, y: 400, type: 'evidence' },
-  { id: 'PROB-016', x: 520, y: 150, type: 'problem' },
+  { id: 'EVID-020', x: 200, y: 430, type: 'evidence' },
+  { id: 'PROB-016', x: 560, y: 150, type: 'problem' },
 ];
 
 const EDGES = [
@@ -141,15 +141,15 @@ export default function GraphSection() {
                 );
               })}
 
-              {/* Legend */}
+              {/* Legend — top right corner */}
               <g opacity={fade(0.55)}>
-                <rect x="20" y="430" width="180" height="25" fill={COLORS.surface} stroke={COLORS.line} strokeWidth="0.5" />
-                <line x1="30" y1="442" x2="55" y2="442" stroke={COLORS.fg} strokeWidth="1" />
-                <text x="60" y="446" fontFamily="Geist Mono, monospace" fontSize="8" fill={COLORS.dim}>parent</text>
-                <line x1="100" y1="442" x2="125" y2="442" stroke={COLORS.fg} strokeWidth="1" strokeDasharray="3 3" />
-                <text x="130" y="446" fontFamily="Geist Mono, monospace" fontSize="8" fill={COLORS.dim}>informs</text>
-                <circle cx="175" cy="442" r="3" fill="#FF6B35" />
-                <text x="182" y="446" fontFamily="Geist Mono, monospace" fontSize="8" fill={COLORS.dim}>risk</text>
+                <rect x="400" y="10" width="190" height="28" fill={COLORS.surface} stroke={COLORS.line} strokeWidth="0.5" />
+                <line x1="410" y1="24" x2="435" y2="24" stroke={COLORS.fg} strokeWidth="1" />
+                <text x="440" y="28" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>parent</text>
+                <line x1="485" y1="24" x2="510" y2="24" stroke={COLORS.fg} strokeWidth="1" strokeDasharray="3 3" />
+                <text x="515" y="28" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>informs</text>
+                <circle cx="565" cy="24" r="3" fill={COLORS.ember} />
+                <text x="572" y="28" fontFamily="Geist Mono, monospace" fontSize="9" fill={COLORS.dim}>risk</text>
               </g>
             </svg>
           </div>
