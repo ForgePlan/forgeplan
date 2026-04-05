@@ -231,22 +231,19 @@ export default function CrystallizationAnimation({ progress }: Props) {
 
     // === REDUCED MOTION: show final state immediately ===
     if (prefersReduced) {
-      // Show crystallized state without animation
-      progressRef.current = 1;
-      // Just show the final hex + brand text
-      hexElements[3].setAttribute('opacity', '0.7');
-      const fPoints = Array.from({ length: 6 }, (_, vi) => hexVertex(CX - 220, CY, HEX_RADII[3], vi)).map(([x, y]) => `${x},${y}`).join(' ');
-      hexElements[3].setAttribute('points', fPoints);
-      centerDot.setAttribute('cx', String(CX - 220)); centerDot.setAttribute('opacity', '0.9');
-      ISO_DEFS.forEach((def, idx) => {
-        const [vx, vy] = hexVertex(CX - 220, CY, HEX_RADII[3], def.vertex);
-        isoLines[idx].setAttribute('x1', String(CX - 220)); isoLines[idx].setAttribute('y1', String(CY));
-        isoLines[idx].setAttribute('x2', String(vx)); isoLines[idx].setAttribute('y2', String(vy));
-        isoLines[idx].setAttribute('opacity', '0.4');
+      // Reduced motion: show static chaos (lines in initial positions, no flying)
+      // Scroll still drives phase transitions but without rAF loop
+      states.forEach((st, idx) => {
+        const [lx1, ly1, lx2, ly2] = endpoints(st);
+        lines[idx].setAttribute('x1', String(lx1)); lines[idx].setAttribute('y1', String(ly1));
+        lines[idx].setAttribute('x2', String(lx2)); lines[idx].setAttribute('y2', String(ly2));
+        if (idx < ARTIFACTS.length) {
+          const mx = (lx1 + lx2) / 2, my = (ly1 + ly2) / 2;
+          dots[idx].setAttribute('cx', String(mx)); dots[idx].setAttribute('cy', String(my));
+          labels[idx].setAttribute('transform', `translate(${mx}, ${my})`);
+        }
       });
-      brandText.setAttribute('x', String(CX - 220 + 100));
-      brandText.textContent = 'Forge your plan';
-      brandText.setAttribute('opacity', '1');
+      // No rAF loop — static display
       return () => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
     }
 
