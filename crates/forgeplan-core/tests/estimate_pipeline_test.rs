@@ -5,7 +5,6 @@ use forgeplan_core::estimate::{calculator, confidence, domain, extractor, overri
 ///
 /// Verifies that all components work together correctly end-to-end,
 /// including the DRY-refactored overrides and domain modules.
-use std::collections::HashMap;
 
 /// Realistic PRD body with FR table (like PRD-022).
 const PRD_BODY: &str = r#"---
