@@ -89,7 +89,7 @@ html {
 .header-compact .header-nav { grid-template-columns: repeat(4, 70px) 90px 70px; }
 .header-compact .nav-cell { font-size: 11px; }
 
-/* Nav cell hover */
+/* Nav cell hover — wipe fill with inverted text */
 .nav-cell {
   display: flex;
   align-items: center;
@@ -98,6 +98,7 @@ html {
   color: var(--forge-fg);
   position: relative;
   overflow: hidden;
+  z-index: 1; /* text above ::before */
 }
 .nav-cell::before {
   content: '';
@@ -106,11 +107,12 @@ html {
   background: var(--forge-fg);
   transform: translateX(-100%);
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: -1; /* fill behind text */
 }
 .nav-cell:hover::before,
 .nav-cell:focus-visible::before { transform: translateX(0); }
 .nav-cell:hover,
-.nav-cell:focus-visible { color: var(--forge-bg); }
+.nav-cell:focus-visible { color: var(--forge-bg); } /* inverted: fg text → bg text */
 .nav-cell:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
 
 /* Logo/toggle hover */
