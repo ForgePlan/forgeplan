@@ -233,14 +233,20 @@ export default function CrystallizationAnimation({ progress }: Props) {
     brandRest.setAttribute('fill', COLORS.fg); brandRest.setAttribute('opacity', '0');
     svg.appendChild(brandRest);
 
-    // Narrative connector lines — dashed SVG from edge to specific artifact dots
-    // Block 0 (left, top 20%) → PRD (dot index 0)
-    // Block 1 (right, top 42%) → RFC (dot index 1)
-    // Block 2 (left, top 64%) → Evidence (dot index 6)
+    // Narrative connectors — dashed lines from edges to artifact dots (4 pairs × 2)
     const CONNECTOR_DEFS = [
-      { dotIdx: 0, edgeX: 80,     edgeYPct: 0.25, start: 0.02, end: 0.18 },
-      { dotIdx: 1, edgeX: W - 80, edgeYPct: 0.47, start: 0.10, end: 0.26 },
-      { dotIdx: 6, edgeX: 80,     edgeYPct: 0.69, start: 0.20, end: 0.35 },
+      // Pair 1 (scroll 2-12%)
+      { dotIdx: 0, edgeX: 80,     edgeYPct: 0.22, start: 0.02, end: 0.12 },
+      { dotIdx: 1, edgeX: W - 80, edgeYPct: 0.22, start: 0.02, end: 0.12 },
+      // Pair 2 (scroll 9-19%)
+      { dotIdx: 2, edgeX: 80,     edgeYPct: 0.40, start: 0.09, end: 0.19 },
+      { dotIdx: 6, edgeX: W - 80, edgeYPct: 0.40, start: 0.09, end: 0.19 },
+      // Pair 3 (scroll 16-26%)
+      { dotIdx: 4, edgeX: 80,     edgeYPct: 0.58, start: 0.16, end: 0.26 },
+      { dotIdx: 5, edgeX: W - 80, edgeYPct: 0.58, start: 0.16, end: 0.26 },
+      // Pair 4 (scroll 23-35%)
+      { dotIdx: 3, edgeX: 80,     edgeYPct: 0.76, start: 0.23, end: 0.35 },
+      { dotIdx: 7, edgeX: W - 80, edgeYPct: 0.76, start: 0.23, end: 0.35 },
     ];
     const connectors: SVGLineElement[] = [];
     CONNECTOR_DEFS.forEach(() => {
