@@ -2,7 +2,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
-
 import react from '@astrojs/react';
 
 export default defineConfig({
@@ -43,6 +42,18 @@ export default defineConfig({
       {
         label: 'MCP Reference',
         autogenerate: { directory: 'mcp' },
+      },
+      {
+        label: 'Marketplace',
+        autogenerate: { directory: 'marketplace' },
+      },
+      {
+        label: 'Guides',
+        autogenerate: { directory: 'guides' },
+      },
+      {
+        label: 'Reference',
+        autogenerate: { directory: 'reference' },
       },
     ],
   }), react()],

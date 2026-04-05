@@ -1,25 +1,62 @@
 ---
 title: Installation
-description: Install Forgeplan on your system
+description: Install Forgeplan — CLI, AI Skill, or MCP Server
 ---
 
-## Using Cargo (recommended)
+## AI Skill (recommended for AI agents)
+
+Install the `/forge` skill for Claude Code, Cursor, Codex, Gemini and 40+ AI agents:
+
+```bash
+npx skills add ForgePlan/forgeplan --skill forge
+```
+
+After installation, use in chat:
+```
+/forge "Add OAuth2 authentication"
+```
+
+## CLI Binary
+
+### macOS (Homebrew)
+
+```bash
+brew install forgeplan/tap/forgeplan
+```
+
+### From source (Rust)
 
 ```bash
 cargo install forgeplan
 ```
 
-## Using Homebrew
+### GitHub Releases
 
-```bash
-brew install forgeplan
+Download pre-built binaries from [GitHub Releases](https://github.com/ForgePlan/forgeplan/releases).
+
+## MCP Server (for AI agents)
+
+Add to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "forgeplan": {
+      "command": "forgeplan",
+      "args": ["mcp-server"],
+      "env": {}
+    }
+  }
+}
 ```
 
-## Using Shell Script
+## Initialize Workspace
 
 ```bash
-curl -fsSL https://forgeplan.dev/install.sh | sh
+forgeplan init -y
 ```
+
+This creates `.forgeplan/` directory with config and LanceDB storage.
 
 ## Verify Installation
 
@@ -27,3 +64,7 @@ curl -fsSL https://forgeplan.dev/install.sh | sh
 forgeplan --version
 forgeplan health
 ```
+
+:::note
+AI agents should always use `forgeplan init -y` (non-interactive mode).
+:::
