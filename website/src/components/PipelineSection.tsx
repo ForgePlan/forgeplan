@@ -1,16 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import StickySection from './StickySection';
 
-/**
- * PipelineSection — Depth routing + ADI reasoning.
- * Items reveal progressively as user scrolls.
- */
 export default function PipelineSection() {
   const [progress, setProgress] = useState(0);
-
-  const handleProgress = useCallback((p: number) => {
-    setProgress(p);
-  }, []);
 
   const fadeIn = (start: number) => Math.min(Math.max((progress - start) / 0.12, 0), 1);
   const slideUp = (start: number) => {
@@ -32,7 +24,7 @@ export default function PipelineSection() {
   ];
 
   return (
-    <StickySection id="pipeline" scrollMultiplier={2} onProgress={handleProgress} className="border-b border-forge-line">
+    <StickySection id="pipeline" scrollMultiplier={2} onProgress={setProgress} className="border-b border-forge-line">
       <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] h-screen pt-[36px]">
         {/* Left: Big text */}
         <div className="flex flex-col justify-between p-8 lg:p-12 border-r border-forge-line">

@@ -1,21 +1,12 @@
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import StickySection from './StickySection';
 import CrystallizationAnimation from './CrystallizationAnimation';
 
-/**
- * HeroSection — full first screen.
- * Canvas (crystallization animation) + bottom text block.
- * Pinned until animation completes (200% scroll length).
- */
 export default function HeroSection() {
   const [progress, setProgress] = useState(0);
 
-  const handleProgress = useCallback((p: number) => {
-    setProgress(p);
-  }, []);
-
   return (
-    <StickySection id="hero" scrollMultiplier={3} onProgress={handleProgress} className="h-screen flex flex-col">
+    <StickySection id="hero" scrollMultiplier={3} onProgress={setProgress} className="h-screen flex flex-col">
       {/* Canvas area — fills space between header and bottom block */}
       <div className="relative w-full flex-1 overflow-hidden pt-[88px]">
         <div className="absolute inset-0 opacity-25 bg-dot-grid" aria-hidden="true" />
