@@ -104,7 +104,7 @@ export default function PipelineSection() {
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-2" style={{ opacity: fade(0.12) }}>
                 DEPTH ROUTING
               </p>
-              <svg className="w-full flex-1" viewBox="0 0 600 700" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMin meet">
+              <svg className="w-full flex-1" viewBox="0 0 600 700" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMin meet" style={{ marginLeft: '-30px' }}>
               {/* Main trunk */}
               <line x1="35" y1="25" x2="35" y2="680" stroke={COLORS.fg} strokeWidth="2" opacity={fade(0.14) * 0.4} />
 
