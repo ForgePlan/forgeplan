@@ -3,8 +3,6 @@ import Landing from '../layouts/Landing.astro';
 import Header from '../components/Header.astro';
 import Hero from '../components/Hero.astro';
 import Install from '../components/Install.astro';
-
-// React islands for sticky sections
 import TrustSection from '../components/TrustSection.tsx';
 import PipelineSection from '../components/PipelineSection.tsx';
 ---
@@ -12,16 +10,16 @@ import PipelineSection from '../components/PipelineSection.tsx';
 <Landing>
   <Header />
   <main id="main-content">
-    <!-- Hero: pinned 200% scroll, crystallization animation -->
+    <!-- Hero: ONLY pinned section (ScrollTrigger pin, 3x scroll) -->
     <Hero />
 
-    <!-- Trust: pinned, scoring rings animate -->
+    <!-- Trust: scroll-driven (no pin, IntersectionObserver) -->
     <TrustSection client:visible />
 
-    <!-- Pipeline: pinned, depth routing + ADI reveal -->
+    <!-- Pipeline: scroll-driven (no pin, IntersectionObserver) -->
     <PipelineSection client:visible />
 
-    <!-- Install: no pin, just shows -->
+    <!-- Install: static -->
     <Install />
   </main>
 </Landing>
