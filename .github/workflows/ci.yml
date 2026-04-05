@@ -27,6 +27,11 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
@@ -50,6 +55,11 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
