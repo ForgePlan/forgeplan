@@ -3,23 +3,36 @@ import Landing from '../layouts/Landing.astro';
 import Header from '../components/Header.astro';
 import Hero from '../components/Hero.astro';
 import Install from '../components/Install.astro';
+
 import TrustSection from '../components/TrustSection.tsx';
 import PipelineSection from '../components/PipelineSection.tsx';
+import ArtifactsSection from '../components/ArtifactsSection.tsx';
+import GraphSection from '../components/GraphSection.tsx';
+import AISection from '../components/AISection.tsx';
 ---
 
 <Landing>
   <Header />
   <main id="main-content">
-    <!-- Hero: ONLY pinned section (ScrollTrigger pin, 3x scroll) -->
+    <!-- 1. Hero: chaos → crystallization → "F●rge your plan" -->
     <Hero />
 
-    <!-- Trust: scroll-driven (no pin, IntersectionObserver) -->
+    <!-- 2. Trust: R_eff scoring rings + story cards -->
     <TrustSection client:visible />
 
-    <!-- Pipeline: scroll-driven (no pin, IntersectionObserver) -->
+    <!-- 3. Pipeline: SHAPE→PROVE timeline + git branching tree -->
     <PipelineSection client:visible />
 
-    <!-- Install: static -->
+    <!-- 4. Artifacts: 10 types interactive grid + preview -->
+    <ArtifactsSection client:visible />
+
+    <!-- 5. Graph: dependency DAG + blind spots -->
+    <GraphSection client:visible />
+
+    <!-- 6. AI: 28 MCP tools + terminal demo -->
+    <AISection client:visible />
+
+    <!-- 7. Install: cargo/brew/curl + footer -->
     <Install />
   </main>
 </Landing>
