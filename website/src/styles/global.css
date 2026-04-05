@@ -2,26 +2,54 @@
 
 /* ========================================
    Forgeplan Design System — Forge Palette
+   Theme-aware via CSS custom properties
    ======================================== */
 
 @theme {
-  --color-forge-bg: #0D0D0D;
-  --color-forge-fg: #E8E8E8;
-  --color-forge-surface: #161616;
-  --color-forge-line: #3A3A3A;
-  --color-forge-dim: #949494;
+  /* Static tokens (don't change with theme) */
   --color-forge-ember: #FF6B35;
   --color-forge-green: #28C840;
-  --color-forge-white: #FFFFFF;
+
+  /* Theme-aware tokens (resolved via CSS vars below) */
+  --color-forge-bg: var(--forge-bg);
+  --color-forge-fg: var(--forge-fg);
+  --color-forge-surface: var(--forge-surface);
+  --color-forge-line: var(--forge-line);
+  --color-forge-dim: var(--forge-dim);
 
   --font-heading: 'Space Grotesk', system-ui, sans-serif;
   --font-body: 'Space Grotesk', system-ui, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, monospace;
 }
 
-/* Dot grid background pattern */
+/* === DARK THEME (default) === */
+:root, .dark {
+  --forge-bg: #0D0D0D;
+  --forge-fg: #E8E8E8;
+  --forge-surface: #161616;
+  --forge-line: #3A3A3A;
+  --forge-dim: #949494;
+  color-scheme: dark;
+}
+
+/* === LIGHT THEME === */
+.light {
+  --forge-bg: #F5F5F0;
+  --forge-fg: #1A1A1A;
+  --forge-surface: #FFFFFF;
+  --forge-line: #D4D4D0;
+  --forge-dim: #6B6B6B;
+  color-scheme: light;
+}
+
+/* Smooth theme transition */
+html {
+  transition: background-color 0.3s, color 0.3s;
+}
+
+/* Dot grid background pattern (adapts to theme) */
 .bg-dot-grid {
-  background-image: radial-gradient(circle, var(--color-forge-dim) 1px, transparent 1px);
+  background-image: radial-gradient(circle, var(--forge-dim) 1px, transparent 1px);
   background-size: 30px 30px;
 }
 
@@ -33,34 +61,34 @@
 .header-inner,
 .header-logo,
 .header-brand,
-.header-toggle,
 .header-brand-cell,
-.nav-cell {
+.nav-cell,
+.header-right {
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Full state (hero visible) */
 .header-full { padding: 16px 16px 0 16px; }
-.header-full .header-inner { height: 72px; grid-template-columns: 72px 1fr auto 72px; }
+.header-full .header-inner { height: 72px; grid-template-columns: 1fr auto 72px; }
 .header-full .header-logo { width: 28px; height: 28px; }
 .header-full .header-brand { font-size: 15px; }
 .header-full .header-brand-cell { padding: 0 16px; }
 .header-full .header-nav { grid-template-columns: repeat(4, 110px) 140px 100px; }
-.header-full .header-toggle { width: 56px; height: 56px; }
+.header-full .header-right { width: 72px; gap: 0; }
 .header-full .nav-cell { font-size: 13px; }
 
 /* Compact state (scrolled past hero) */
 .header-compact { padding: 0; }
 .header-compact .header-inner {
   height: 36px;
-  grid-template-columns: 36px auto auto 36px;
+  grid-template-columns: auto auto 48px;
   border-left: none; border-right: none; border-top: none;
 }
 .header-compact .header-logo { width: 16px; height: 16px; }
 .header-compact .header-brand { font-size: 11px; }
 .header-compact .header-brand-cell { padding: 0 10px; }
 .header-compact .header-nav { grid-template-columns: repeat(4, 70px) 90px 70px; }
-.header-compact .header-toggle { width: 24px; height: 24px; }
+.header-compact .header-right { width: 48px; }
 .header-compact .nav-cell { font-size: 11px; }
 
 /* Nav cell hover */
@@ -69,7 +97,7 @@
   align-items: center;
   justify-content: center;
   font-family: var(--font-body);
-  color: var(--color-forge-fg);
+  color: var(--forge-fg);
   position: relative;
   overflow: hidden;
 }
@@ -77,12 +105,27 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: var(--color-forge-fg);
+  background: var(--forge-fg);
   transform: translateX(-100%);
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .nav-cell:hover::before,
 .nav-cell:focus-visible::before { transform: translateX(0); }
 .nav-cell:hover,
-.nav-cell:focus-visible { color: var(--color-forge-bg); }
+.nav-cell:focus-visible { color: var(--forge-bg); }
 .nav-cell:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
+
+/* Theme toggle button */
+.theme-toggle {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.3s;
+}
+.theme-toggle:hover { transform: scale(1.1); }
+.theme-toggle svg { transition: transform 0.3s; }
+.light .theme-toggle svg { transform: rotate(180deg); }
