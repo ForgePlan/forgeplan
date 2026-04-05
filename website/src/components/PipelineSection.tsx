@@ -105,10 +105,11 @@ export default function PipelineSection() {
                 DEPTH ROUTING
               </p>
               <svg className="w-full flex-1" viewBox="0 0 600 700" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMin meet" style={{ marginLeft: '-30px' }}>
-              {/* Main trunk */}
-              <line x1="35" y1="25" x2="35" y2="680" stroke={COLORS.fg} strokeWidth="2" opacity={fade(0.14) * 0.4} />
+              {/* Main trunk — ends with ember dot at bottom */}
+              <line x1="35" y1="25" x2="35" y2="670" stroke={COLORS.fg} strokeWidth="2" opacity={fade(0.14) * 0.4} />
+              <circle cx="35" cy="670" r="7" fill={COLORS.ember} opacity={fade(0.50)} />
 
-              {/* Route dot */}
+              {/* Route dot (top) */}
               <circle cx="35" cy="25" r="6" fill={COLORS.ember} opacity={fade(0.14)} />
               <text x="55" y="30" fontFamily="Geist Mono, monospace" fontSize="17" fill={COLORS.ember} opacity={fade(0.14)}>
                 forgeplan route "your task"
@@ -128,7 +129,7 @@ export default function PipelineSection() {
                 <line x1="35" y1="170" x2="90" y2="170" stroke={COLORS.fg} strokeWidth="1.5" />
                 <circle cx="90" cy="170" r="6" fill={COLORS.fg} />
                 <text x="108" y="175" fontFamily="Geist Mono, monospace" fontSize="16" fill={COLORS.fg}>Standard</text>
-                <line x1="90" y1="170" x2="90" y2="230" stroke={COLORS.fg} strokeWidth="1" />
+                <line x1="90" y1="170" x2="90" y2="225" stroke={COLORS.fg} strokeWidth="1" />
                 <line x1="90" y1="200" x2="145" y2="200" stroke={COLORS.fg} strokeWidth="1" />
                 <text x="155" y="205" fontFamily="Geist Mono, monospace" fontSize="15" fill={COLORS.fg}>PRD</text>
                 <line x1="90" y1="225" x2="145" y2="225" stroke={COLORS.fg} strokeWidth="1" />
@@ -142,7 +143,7 @@ export default function PipelineSection() {
                 <line x1="35" y1="310" x2="90" y2="310" stroke={COLORS.ember} strokeWidth="1.5" />
                 <circle cx="90" cy="310" r="6" fill={COLORS.ember} />
                 <text x="108" y="315" fontFamily="Geist Mono, monospace" fontSize="16" fill={COLORS.ember}>Deep</text>
-                <line x1="90" y1="310" x2="90" y2="420" stroke={COLORS.ember} strokeWidth="1" />
+                <line x1="90" y1="310" x2="90" y2="415" stroke={COLORS.ember} strokeWidth="1" />
                 <line x1="90" y1="340" x2="145" y2="340" stroke={COLORS.ember} strokeWidth="1" />
                 <text x="155" y="345" fontFamily="Geist Mono, monospace" fontSize="15" fill={COLORS.fg}>PRD</text>
                 <line x1="90" y1="365" x2="145" y2="365" stroke={COLORS.ember} strokeWidth="1" />
@@ -160,7 +161,7 @@ export default function PipelineSection() {
                 <line x1="35" y1="500" x2="90" y2="500" stroke={COLORS.ember} strokeWidth="2" />
                 <circle cx="90" cy="500" r="6" fill={COLORS.ember} />
                 <text x="108" y="505" fontFamily="Geist Mono, monospace" fontSize="16" fontWeight="600" fill={COLORS.ember}>Critical</text>
-                <line x1="90" y1="500" x2="90" y2="680" stroke={COLORS.ember} strokeWidth="1" />
+                <line x1="90" y1="500" x2="90" y2="630" stroke={COLORS.ember} strokeWidth="1" />
                 <line x1="90" y1="530" x2="145" y2="530" stroke={COLORS.ember} strokeWidth="1" />
                 <text x="155" y="535" fontFamily="Geist Mono, monospace" fontSize="15" fill={COLORS.fg}>Epic</text>
                 <line x1="90" y1="555" x2="145" y2="555" stroke={COLORS.ember} strokeWidth="1" />
