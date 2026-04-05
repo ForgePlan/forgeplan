@@ -118,6 +118,6 @@ html {
 /* Logo/toggle hover — ember → fg color (white in dark, dark in light) */
 #theme-toggle { transition: transform 0.3s; border: none; }
 #theme-toggle:hover { transform: scale(1.05); }
-#theme-toggle:hover polygon { stroke: var(--forge-fg); }
-#theme-toggle polygon { transition: stroke 0.3s; }
+#theme-toggle:hover polygon { stroke: var(--forge-fg); fill: var(--forge-fg); }
+#theme-toggle polygon { transition: stroke 0.3s, fill 0.3s; }
 #theme-toggle:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
