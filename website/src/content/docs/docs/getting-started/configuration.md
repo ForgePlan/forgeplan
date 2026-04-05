@@ -47,11 +47,11 @@ project:
 
 ## LLM Providers
 
-| Provider | Env Variable | Models |
-|----------|-------------|--------|
-| Gemini | `GEMINI_API_KEY` | gemini-2.0-flash, gemini-1.5-pro |
-| OpenAI | `OPENAI_API_KEY` | gpt-4o, gpt-4o-mini |
-| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-20250514 |
+| Provider | Env Variable | Recommended Models |
+|----------|-------------|-------------------|
+| Gemini | `GEMINI_API_KEY` | `gemini-2.5-flash-preview-04-17`, `gemini-2.5-pro-preview-05-06`, `gemini-2.0-flash` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4.1`, `gpt-4.1-mini`, `o3`, `o4-mini` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514`, `claude-opus-4-20250514`, `claude-haiku-3-5-20241022` |
 
 ## Important Notes
 
