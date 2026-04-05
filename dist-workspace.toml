@@ -13,7 +13,7 @@ installers = ["shell", "homebrew"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
 # Homebrew tap repository
-tap = "AiDogfood/homebrew-tap"
+tap = "ForgePlan/homebrew-tap"
 # Publish jobs
 publish-jobs = ["homebrew"]
 # Binary aliases
