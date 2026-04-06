@@ -27,19 +27,19 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build forgeplan
-        run: cargo build --release -p forgeplan
+        run: cargo build -p forgeplan
 
       - name: Init workspace (if needed)
         run: |
           if [ ! -d ".forgeplan" ]; then
-            ./target/release/forgeplan init -y
+            ./target/debug/forgeplan init -y
           fi
 
       - name: Rebuild index
-        run: ./target/release/forgeplan scan-import || true
+        run: ./target/debug/forgeplan scan-import
 
       - name: Health check
-        run: ./target/release/forgeplan health --ci --fail-on "orphans=10,blind_spots=5"
+        run: ./target/debug/forgeplan health --ci --fail-on "orphans=10,blind_spots=5"
 
       - name: Validate artifacts
-        run: ./target/release/forgeplan validate --ci
+        run: ./target/debug/forgeplan validate --ci

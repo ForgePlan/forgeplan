@@ -21,10 +21,10 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
             .filter(|r| r.id.to_uppercase() == upper)
             .collect()
     } else if ci {
-        // CI mode: only validate active artifacts (drafts/stubs are expected to have errors)
+        // CI mode: validate active + stale (stale = expired but still live decisions)
         all_records
             .into_iter()
-            .filter(|r| r.status == "active")
+            .filter(|r| r.status == "active" || r.status == "stale")
             .collect()
     } else {
         all_records
