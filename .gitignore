@@ -8,8 +8,12 @@ sources/
 # Rust build output
 target/
 
-# Forgeplan workspace (dogfood — this repo IS the tool, not the target project)
-.forgeplan/
+# Forgeplan workspace
+# Markdown artifacts = source of truth (tracked)
+# Derived index, embedding cache, local config = NOT tracked
+.forgeplan/lance/
+.forgeplan/.fastembed_cache/
+.forgeplan/config.yaml
 
 # Node.js
 node_modules/
@@ -42,6 +46,9 @@ plan-dist-manifest.json
 
 # Agent skills (local, not versioned)
 .agents/skills/
+
+# Local notes, research, planning — NOT versioned
+.local/
 
 # Astro build cache
 .astro/
