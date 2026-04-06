@@ -2,6 +2,10 @@
 
 <br>
 
+<img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
+
+<br>
+
 # ForgePlan
 
 ### Forge your plan — от сырой идеи до проверенного решения
@@ -16,6 +20,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
 [![Artifacts](https://img.shields.io/badge/artifacts-138-blue?style=flat-square)](.forgeplan/)
 
+**[Сайт](https://forgeplan.md)** ·
 **[Документация](docs/README.md)** ·
 **[Методология](docs/methodology/FORGEPLAN-GUIDE.md)** ·
 **[Релизы](https://github.com/ForgePlan/forgeplan/releases)** ·
