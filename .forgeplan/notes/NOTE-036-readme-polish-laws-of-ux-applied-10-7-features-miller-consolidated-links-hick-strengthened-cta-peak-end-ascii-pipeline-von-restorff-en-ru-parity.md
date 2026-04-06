@@ -2,6 +2,9 @@
 depth: tactical
 id: NOTE-036
 kind: note
+links:
+- target: PRD-026
+  relation: informs
 status: draft
 title: 'README polish — laws-of-ux applied: 10→7 features (Miller), consolidated links (Hick), strengthened CTA (peak-end), ASCII pipeline (Von Restorff), EN+RU parity'
 ---
@@ -24,4 +27,5 @@ title: 'README polish — laws-of-ux applied: 10→7 features (Miller), consolid
 | Artifact | Relation |
 |----------|----------|
 | | informs |
+
 

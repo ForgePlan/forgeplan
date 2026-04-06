@@ -2,6 +2,9 @@
 depth: tactical
 id: NOTE-035
 kind: note
+links:
+- target: PRD-026
+  relation: informs
 status: draft
 title: 'Release v0.15.1 — patch: docs reorganization and tracked artifacts (covered by PRD-026)'
 ---
@@ -24,4 +27,5 @@ title: 'Release v0.15.1 — patch: docs reorganization and tracked artifacts (co
 | Artifact | Relation |
 |----------|----------|
 | | informs |
+
 
