@@ -1,14 +1,10 @@
 <div align="center">
 
-<br>
+# ForgePlan
 
 <img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
 
-<br>
-
-# ForgePlan
-
-### Forge your plan — from raw idea to proven decision
+### From raw idea to proven decision
 
 An **engineering decision framework** for teams that want their ideas to leave a paper trail.
 Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and native AI-agent integration.
@@ -238,7 +234,7 @@ MIT — see [LICENSE](LICENSE).
 
 <br>
 
-Built on top of [Quint-code](https://github.com/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://openspec.ai/) · [FPF](marketplace/plugins/fpf/) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
+Built on top of [Quint-code](https://quint.codes/) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
 
 <sub>Made with care by <a href="https://github.com/ForgePlan">@ForgePlan</a> · <a href="README.ru.md">Русская версия</a></sub>
 
