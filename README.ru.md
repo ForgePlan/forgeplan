@@ -124,6 +124,10 @@ $ forgeplan activate PRD-001
   ✓ PRD-001 (draft → active)
 ```
 
+<div align="center">
+<img src=".github/assets/pipeline.png" alt="ForgePlan Pipeline — Shape, Validate, Reason, Build, Prove + Depth Routing" width="100%">
+</div>
+
 ## Семь вещей, которые важны
 
 | | |
@@ -177,6 +181,10 @@ $ forgeplan activate PRD-001
 </table>
 
 Полное decision tree: [`docs/methodology/PRD-RFC-ADR-FLOW.md`](docs/methodology/PRD-RFC-ADR-FLOW.md).
+
+<div align="center">
+<img src=".github/assets/graph.png" alt="ForgePlan Dependency Graph — Decisions Are Connected" width="100%">
+</div>
 
 ## Документация
 
