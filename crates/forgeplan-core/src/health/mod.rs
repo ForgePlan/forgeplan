@@ -308,22 +308,25 @@ fn check_validation_passed(record: &ArtifactRecord) -> bool {
 
     // Build a minimal YAML frontmatter from the record fields
     let mut fm = Frontmatter::new();
-    fm.insert("id".into(), serde_yml::Value::String(record.id.clone()));
+    fm.insert("id".into(), serde_yaml::Value::String(record.id.clone()));
     fm.insert(
         "status".into(),
-        serde_yml::Value::String(record.status.clone()),
+        serde_yaml::Value::String(record.status.clone()),
     );
     fm.insert(
         "title".into(),
-        serde_yml::Value::String(record.title.clone()),
+        serde_yaml::Value::String(record.title.clone()),
     );
-    fm.insert("kind".into(), serde_yml::Value::String(record.kind.clone()));
+    fm.insert(
+        "kind".into(),
+        serde_yaml::Value::String(record.kind.clone()),
+    );
     fm.insert(
         "depth".into(),
-        serde_yml::Value::String(record.depth.clone()),
+        serde_yaml::Value::String(record.depth.clone()),
     );
     if let Some(ref author) = record.author {
-        fm.insert("author".into(), serde_yml::Value::String(author.clone()));
+        fm.insert("author".into(), serde_yaml::Value::String(author.clone()));
     }
 
     let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);

@@ -117,8 +117,8 @@ impl ArtifactRecord {
     }
 
     /// Reconstruct YAML frontmatter fields as a BTreeMap for serialization.
-    pub fn frontmatter_map(&self) -> BTreeMap<String, serde_yml::Value> {
-        use serde_yml::Value;
+    pub fn frontmatter_map(&self) -> BTreeMap<String, serde_yaml::Value> {
+        use serde_yaml::Value;
 
         let mut map = BTreeMap::new();
         map.insert("id".to_string(), Value::String(self.id.clone()));
@@ -134,7 +134,7 @@ impl ArtifactRecord {
         }
         map.insert(
             "r_eff_score".to_string(),
-            Value::Number(serde_yml::Number::from(self.r_eff_score)),
+            Value::Number(serde_yaml::Number::from(self.r_eff_score)),
         );
         if let Some(ref vu) = self.valid_until {
             map.insert("valid_until".to_string(), Value::String(vu.clone()));
@@ -1832,19 +1832,19 @@ mod tests {
         let map = record.frontmatter_map();
         assert_eq!(
             map.get("id").unwrap(),
-            &serde_yml::Value::String("PRD-001".to_string())
+            &serde_yaml::Value::String("PRD-001".to_string())
         );
         assert_eq!(
             map.get("kind").unwrap(),
-            &serde_yml::Value::String("prd".to_string())
+            &serde_yaml::Value::String("prd".to_string())
         );
         assert_eq!(
             map.get("author").unwrap(),
-            &serde_yml::Value::String("alice".to_string())
+            &serde_yaml::Value::String("alice".to_string())
         );
         assert_eq!(
             map.get("valid_until").unwrap(),
-            &serde_yml::Value::String("2025-06-01".to_string())
+            &serde_yaml::Value::String("2025-06-01".to_string())
         );
         // parent_epic should not be present (None)
         assert!(!map.contains_key("parent_epic"));

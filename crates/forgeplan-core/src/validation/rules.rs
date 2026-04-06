@@ -569,7 +569,7 @@ fn check_prd_orphan_goals(body: &str, _fm: &Frontmatter) -> Option<String> {
 
 fn check_prd_domain_sections(body: &str, fm: &Frontmatter) -> Option<String> {
     let domain = match fm.get("domain") {
-        Some(serde_yml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+        Some(serde_yaml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
         _ => return None, // No domain set — skip check
     };
 
@@ -599,7 +599,7 @@ fn check_prd_domain_sections(body: &str, fm: &Frontmatter) -> Option<String> {
 
 fn check_prd_project_type_sections(body: &str, fm: &Frontmatter) -> Option<String> {
     let project_type = match fm.get("project_type") {
-        Some(serde_yml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+        Some(serde_yaml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
         _ => return None, // No project_type set — skip check
     };
 
@@ -1019,8 +1019,8 @@ mod tests {
 
     fn make_fm(id: &str, status: &str) -> Frontmatter {
         let mut fm = Frontmatter::new();
-        fm.insert("id".into(), serde_yml::Value::String(id.into()));
-        fm.insert("status".into(), serde_yml::Value::String(status.into()));
+        fm.insert("id".into(), serde_yaml::Value::String(id.into()));
+        fm.insert("status".into(), serde_yaml::Value::String(status.into()));
         fm
     }
 

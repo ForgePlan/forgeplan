@@ -20,7 +20,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow.workspace = true
 chrono.workspace = true
 tokio.workspace = true
-serde_yml.workspace = true
+serde_yaml.workspace = true
 serde_json.workspace = true
 cliclack = "0.5.2"
 console = "0.16.3"
