@@ -14,10 +14,13 @@ use std::collections::BTreeMap;
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::LanceStore;
 use crate::fpf::core::config::FpfConfig;
+use crate::fpf::core::model::ArtifactData;
+use crate::fpf::core::trust::{EvidenceInput, TrustScore, Verdict};
 use crate::scoring::fgr;
 
 use contexts::BoundedContext;
 use explore::Action;
+use ext::rules;
 
 /// Full FPF dashboard data.
 #[derive(Debug)]
@@ -145,8 +148,15 @@ pub async fn dashboard(
         fgr_scores.push(score);
     }
 
-    // Explore-Exploit Actions
-    let actions = explore::suggest(&records, &fgr_scores, &all_relations, None);
+    // Explore-Exploit Actions — use rule engine if rules configured, else legacy
+    let cfg = fpf_config.cloned().unwrap_or_default();
+    let active_rules = if cfg.rules.is_empty() {
+        rules::default_rules()
+    } else {
+        cfg.rules.clone()
+    };
+
+    let actions = build_rule_actions(&records, &fgr_scores, &all_relations, &active_rules, &cfg);
 
     // Pipeline Status — compute aggregate across all PRDs
     let active_count = records.iter().filter(|r| r.status == "active").count();
@@ -165,4 +175,128 @@ pub async fn dashboard(
         pipeline_status,
         artifact_count: records.len(),
     })
+}
+
+/// Build explore-exploit actions using the rule engine.
+///
+/// Converts ArtifactRecords → EnrichedData (batch enrichment) → runs rules.
+/// Returns legacy Action structs for dashboard compatibility.
+fn build_rule_actions(
+    records: &[crate::db::store::ArtifactRecord],
+    fgr_scores: &[fgr::FgrScore],
+    relations: &[(String, String, String)],
+    active_rules: &[rules::Rule],
+    config: &FpfConfig,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+
+    for record in records {
+        // Skip terminal statuses
+        if record.status == "superseded" || record.status == "deprecated" {
+            continue;
+        }
+
+        let link_count = relations
+            .iter()
+            .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
+            .count();
+
+        let is_stale = record
+            .valid_until
+            .as_ref()
+            .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
+            .is_some_and(|dt| chrono::Utc::now().naive_utc() > dt);
+
+        let fgr_score = fgr_scores.iter().find(|s| s.artifact_id == record.id);
+
+        // Parse evidence from body for trust computation
+        let evidence = parse_evidence_from_record(record);
+
+        let trust = TrustScore::compute(
+            &evidence,
+            fgr_score.map(|s| s.formality).unwrap_or(0.0),
+            fgr_score.map(|s| s.granularity).unwrap_or(0.0),
+            link_count,
+            is_stale,
+            config,
+        );
+
+        let data = ArtifactData {
+            id: record.id.clone(),
+            status: record.status.clone(),
+            kind: record.kind.clone(),
+            depth: record.depth.clone(),
+            evidence,
+            formality: fgr_score.map(|s| s.formality).unwrap_or(0.0),
+            granularity: fgr_score.map(|s| s.granularity).unwrap_or(0.0),
+            link_count,
+            is_stale,
+            trust,
+        };
+
+        // Batch enrichment: collect linked kinds for this artifact
+        let linked_kinds: Vec<String> = relations
+            .iter()
+            .filter_map(|(src, tgt, _rel)| {
+                if src == &record.id {
+                    // Find the kind of the target
+                    records
+                        .iter()
+                        .find(|r| r.id == *tgt)
+                        .map(|r| r.kind.clone())
+                } else if tgt == &record.id {
+                    records
+                        .iter()
+                        .find(|r| r.id == *src)
+                        .map(|r| r.kind.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let days_until_expiry = record.valid_until.as_ref().and_then(|v| {
+            chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
+                .ok()
+                .map(|dt| (dt - chrono::Utc::now().naive_utc()).num_days())
+        });
+
+        let enriched = rules::EnrichedData {
+            base: data,
+            linked_kinds,
+            days_until_expiry,
+        };
+
+        if let Some(suggested) = rules::run_rules(active_rules, &enriched) {
+            actions.push(Action {
+                artifact_id: record.id.clone(),
+                action_type: suggested.action_type.to_string(),
+                reason: suggested.reason,
+                priority: suggested.priority,
+            });
+        }
+    }
+
+    actions.sort_by_key(|a| a.priority);
+    actions
+}
+
+/// Parse evidence inputs from a record (simplified: uses r_eff_score).
+fn parse_evidence_from_record(record: &crate::db::store::ArtifactRecord) -> Vec<EvidenceInput> {
+    if record.r_eff_score > 0.0 {
+        // Approximate: if r_eff > 0, there's at least one supporting evidence
+        vec![EvidenceInput {
+            verdict: Verdict::Supports,
+            congruence_level: if record.r_eff_score >= 0.9 {
+                3
+            } else if record.r_eff_score >= 0.5 {
+                2
+            } else {
+                1
+            },
+            is_expired: false,
+        }]
+    } else {
+        vec![]
+    }
 }

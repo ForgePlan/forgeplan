@@ -5,11 +5,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fpf::ext::rules::Rule;
+
 /// Top-level FPF configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FpfConfig {
-    /// Explore-exploit action thresholds.
+    /// Explore-exploit action thresholds (used by hardcoded rules in model.rs).
     pub thresholds: Thresholds,
     /// Reliability component weights for F-G-R.
     pub weights: ReliabilityWeights,
@@ -19,6 +21,10 @@ pub struct FpfConfig {
     pub cl_penalties: ClPenalties,
     /// Evidence decay settings.
     pub decay: DecayConfig,
+    /// Declarative explore-exploit rules (Phase 2).
+    /// If empty, uses default_rules() for backward compatibility.
+    #[serde(default)]
+    pub rules: Vec<Rule>,
 }
 
 /// Explore-exploit decision thresholds.
