@@ -6,7 +6,7 @@ fn parse_valid_frontmatter() {
     let (fm, body) = frontmatter::parse_frontmatter(content).unwrap();
     assert_eq!(
         fm.get("id").unwrap(),
-        &serde_yml::Value::String("PRD-001".into())
+        &serde_yaml::Value::String("PRD-001".into())
     );
     assert!(body.contains("# Body here"));
 }

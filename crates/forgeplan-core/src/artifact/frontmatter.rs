@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 /// Parsed frontmatter as key-value pairs (flexible, not tied to Meta struct).
-pub type Frontmatter = BTreeMap<String, serde_yml::Value>;
+pub type Frontmatter = BTreeMap<String, serde_yaml::Value>;
 
 /// Parse YAML frontmatter from markdown content.
 /// Returns `(frontmatter, body)` where body is everything after the closing `---`.
@@ -19,7 +19,7 @@ pub fn parse_frontmatter(content: &str) -> anyhow::Result<(Frontmatter, String)>
     if yaml_str.len() > 65536 {
         anyhow::bail!("Frontmatter too large ({} bytes, max 64KB)", yaml_str.len());
     }
-    let fm: Frontmatter = serde_yml::from_str(yaml_str)?;
+    let fm: Frontmatter = serde_yaml::from_str(yaml_str)?;
     // Body starts after closing --- and newline
     let body_start = 3 + end + 4; // "---" + yaml + "\n---"
     let body = if body_start < content.len() {
@@ -32,6 +32,6 @@ pub fn parse_frontmatter(content: &str) -> anyhow::Result<(Frontmatter, String)>
 
 /// Render frontmatter + body back to a markdown string.
 pub fn render_frontmatter(fm: &Frontmatter, body: &str) -> anyhow::Result<String> {
-    let yaml = serde_yml::to_string(fm)?;
+    let yaml = serde_yaml::to_string(fm)?;
     Ok(format!("---\n{}---\n\n{}", yaml, body))
 }
