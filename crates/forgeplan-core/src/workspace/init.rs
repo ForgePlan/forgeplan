@@ -80,6 +80,29 @@ const CONFIG_TEMPLATES: &str = r#"
 #     kb_sections_limit: 5     # max FPF KB sections injected into prompt
 #     temperature_cap: 0.3     # max temperature for ADI reasoning
 #     auto_save: true          # auto-save ADI results
+#   # Custom explore-exploit rules (override defaults):
+#   # rules:
+#   #   - name: "blind-spot"
+#   #     when:
+#   #       status: "draft"
+#   #       r_eff: "< 0.01"
+#   #     action: EXPLORE
+#   #     priority: 1
+#   #     message: "Draft with no evidence"
+#   #   - name: "prd-needs-rfc"
+#   #     when:
+#   #       kind: "prd"
+#   #       status: "active"
+#   #       links_missing: ["rfc"]     # graph-aware: checks linked artifact kinds
+#   #     action: EXPLORE
+#   #     priority: 2
+#   #     message: "Active PRD without linked RFC"
+#   #   - name: "expiring-evidence"
+#   #     when:
+#   #       kind: "evidence"
+#   #       days_until_expiry: "< 14"  # time-aware: days until valid_until
+#   #     action: INVESTIGATE
+#   #     priority: 3
 "#;
 
 /// All artifact subdirectories created inside `.forgeplan/`.
@@ -139,5 +162,10 @@ pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
     let config_path = workspace.join("config.yaml");
     let content = fs::read_to_string(&config_path)?;
     let config: Config = serde_yaml::from_str(&content)?;
+    // Validate FPF config if present (catches NaN/Infinity/negative from YAML)
+    if let Some(ref fpf) = config.fpf {
+        fpf.validate()
+            .map_err(|e| anyhow::anyhow!("Invalid fpf config: {e}"))?;
+    }
     Ok(config)
 }

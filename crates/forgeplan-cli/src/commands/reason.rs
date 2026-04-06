@@ -1,4 +1,5 @@
 use forgeplan_core::db::store::NewArtifact;
+use forgeplan_core::fpf::contexts;
 use forgeplan_core::fpf::core::adi::AdiRecord;
 use forgeplan_core::llm::reason;
 use forgeplan_core::llm::reason::ArtifactContext;
@@ -50,12 +51,16 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             .unwrap_or_default();
         relations.push((target_id.clone(), rel_type.clone(), title));
     }
+    // Detect bounded context for this artifact
+    let bounded_context = contexts::detect_for_artifact(&store, &record.id).await;
+
     let artifact_context = ArtifactContext {
         status: record.status.clone(),
         depth: record.depth.clone(),
         r_eff_score: record.r_eff_score,
         relations,
         architecture_hint: Some(load_architecture_hint()),
+        bounded_context,
     };
 
     // Build FPF context if requested
