@@ -33,11 +33,15 @@ dist-manifest.json
 plan-dist-manifest.json
 
 # Forgeplan backups and exports (not workspace data)
+.forgeplan-backup/
 .forgeplan-backup-*/
 .forgeplan-export-*.json
 
 # Playwright MCP cache
 .playwright-mcp/
+
+# Agent skills (local, not versioned)
+.agents/skills/
 
 # Binary office files
 *.xlsx
