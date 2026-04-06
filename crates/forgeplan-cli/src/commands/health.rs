@@ -10,10 +10,10 @@ fn parse_fail_on(fail_on: &str) -> std::collections::HashMap<String, usize> {
     let mut thresholds = std::collections::HashMap::new();
     for part in fail_on.split(',') {
         let part = part.trim();
-        if let Some((key, val)) = part.split_once('=') {
-            if let Ok(n) = val.trim().parse::<usize>() {
-                thresholds.insert(key.trim().to_string(), n);
-            }
+        if let Some((key, val)) = part.split_once('=')
+            && let Ok(n) = val.trim().parse::<usize>()
+        {
+            thresholds.insert(key.trim().to_string(), n);
         }
     }
     thresholds
