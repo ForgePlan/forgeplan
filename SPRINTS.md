@@ -27,12 +27,13 @@
   - Remaining: 1.5 (migrate reason to auto-save AdiRecord) → Sprint 12
   - Branch: `feat/rfc-001-fpf-engine` — PR #131
 
-- [ ] **11.3** Quick win: CI/CD Architecture Linter (NOTE-026)
-  - Превратить NOTE-026 → PRD → implement
-  - `forgeplan health` и `forgeplan validate` как CI pipeline gates
-  - Script: `scripts/ci-forgeplan-check.sh`
+- [x] **11.3** CI/CD Architecture Linter (PRD-034)
+  - PRD-034 shaped + validated + activated (R_eff=0.90)
+  - `forgeplan health --ci --fail-on "orphans=10,blind_spots=5"` — exit 1 on threshold breach
+  - `forgeplan validate --ci` — exit 1 on MUST errors in active+stale artifacts
   - GitHub Actions: `.github/workflows/forgeplan-health.yml`
-  - Branch: `feat/ci-linter`
+  - 2-agent audit: 2 HIGH fixed (stale filter, scan-import)
+  - Branch: `feat/ci-linter` — PR #132
 
 - [x] **11.4** Housekeeping
   - Link 12 orphans → EPIC-002 / PRD-026
@@ -42,7 +43,7 @@
 ### Definition of Done
 - [x] EPIC-002 active, filled, validated
 - [x] RFC-001 active, R_eff=1.00, Phase 1 implemented (6/7)
-- [ ] CI workflow `forgeplan-health.yml` merged
+- [x] CI workflow `forgeplan-health.yml` in PR #132
 - [x] 0 orphans in `forgeplan health`
 
 ---

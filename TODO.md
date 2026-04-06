@@ -23,7 +23,7 @@
 - [x] EVID-055, R_eff=1.00, RFC-001 activated
 - [x] Housekeeping: 12 orphans linked, SPRINTS.md updated
 - [x] 1.5: AdiRecord wiring — reason --save creates structured JSON in Note body
-- [ ] 11.3: CI/CD Linter (forgeplan health as GitHub Actions gate)
+- [x] 11.3: CI/CD Linter — health --ci + validate --ci + GH Actions workflow (PR #132)
 - [ ] PR #131 merge + progress sync
 
 ### P0: Distribution Pipeline — Sprint 10 (PRD-023) ✅
