@@ -174,17 +174,18 @@ fn name_from_members(members: &[String], index: usize) -> String {
 pub async fn detect_for_artifact(
     store: &crate::db::store::LanceStore,
     artifact_id: &str,
-) -> Option<(String, usize, f64)> {
-    let all_records = store.list_records(None).await.unwrap_or_default();
-    let all_relations = store.get_all_relations().await.unwrap_or_default();
+) -> anyhow::Result<Option<(String, usize, f64)>> {
+    let all_records = store.list_records(None).await?;
+    let all_relations = store.get_all_relations().await?;
     let edges: Vec<(String, String)> = all_relations
         .iter()
         .map(|(s, t, _)| (s.clone(), t.clone()))
         .collect();
     let ctxs = detect(&all_records, &edges);
-    ctxs.into_iter()
+    Ok(ctxs
+        .into_iter()
         .find(|c| c.members.iter().any(|m| m == artifact_id))
-        .map(|c| (c.name, c.members.len(), c.cohesion))
+        .map(|c| (c.name, c.members.len(), c.cohesion)))
 }
 
 #[cfg(test)]

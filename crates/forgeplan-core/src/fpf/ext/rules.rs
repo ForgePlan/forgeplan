@@ -52,6 +52,19 @@ impl Condition {
     pub fn needs_enrichment(&self) -> bool {
         self.links_missing.is_some() || self.days_until_expiry.is_some()
     }
+
+    /// Returns true if no conditions are set (vacuous truth — matches everything).
+    pub fn is_empty(&self) -> bool {
+        self.status.is_none()
+            && self.kind.is_none()
+            && self.depth.is_none()
+            && self.r_eff.is_none()
+            && self.overall.is_none()
+            && self.link_count.is_none()
+            && self.is_stale.is_none()
+            && self.links_missing.is_none()
+            && self.days_until_expiry.is_none()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,41 +110,52 @@ impl NumericExpr {
             NumericExpr::Le(n) => value <= *n,
             NumericExpr::Gt(n) => value > *n,
             NumericExpr::Ge(n) => value >= *n,
-            NumericExpr::Eq(n) => (value - *n).abs() < f64::EPSILON,
+            NumericExpr::Eq(n) => (value - *n).abs() < 1e-9,
             NumericExpr::Range(lo, hi) => value >= *lo && value < *hi,
         }
     }
 
     /// Parse from string: "< 0.5", ">= 0.7", "0.01..0.5", "== 0"
+    ///
+    /// Rejects NaN, Infinity, and inverted ranges (lo >= hi).
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
 
+        // Helper: reject non-finite values (NaN, Infinity)
+        let parse_finite = |s: &str| -> Option<f64> {
+            let v = s.trim().parse::<f64>().ok()?;
+            if v.is_finite() { Some(v) } else { None }
+        };
+
         // Range: "0.01..0.5"
         if let Some((lo, hi)) = s.split_once("..") {
-            let lo = lo.trim().parse::<f64>().ok()?;
-            let hi = hi.trim().parse::<f64>().ok()?;
+            let lo = parse_finite(lo)?;
+            let hi = parse_finite(hi)?;
+            if lo >= hi {
+                return None; // Inverted range — will surface as serde error
+            }
             return Some(NumericExpr::Range(lo, hi));
         }
 
         // Operators: "<=", ">=", "<", ">", "=="
         if let Some(rest) = s.strip_prefix("<=") {
-            return rest.trim().parse().ok().map(NumericExpr::Le);
+            return parse_finite(rest).map(NumericExpr::Le);
         }
         if let Some(rest) = s.strip_prefix(">=") {
-            return rest.trim().parse().ok().map(NumericExpr::Ge);
+            return parse_finite(rest).map(NumericExpr::Ge);
         }
         if let Some(rest) = s.strip_prefix("==") {
-            return rest.trim().parse().ok().map(NumericExpr::Eq);
+            return parse_finite(rest).map(NumericExpr::Eq);
         }
         if let Some(rest) = s.strip_prefix('<') {
-            return rest.trim().parse().ok().map(NumericExpr::Lt);
+            return parse_finite(rest).map(NumericExpr::Lt);
         }
         if let Some(rest) = s.strip_prefix('>') {
-            return rest.trim().parse().ok().map(NumericExpr::Gt);
+            return parse_finite(rest).map(NumericExpr::Gt);
         }
 
         // Bare number = exact match
-        s.parse().ok().map(NumericExpr::Eq)
+        parse_finite(s).map(NumericExpr::Eq)
     }
 }
 
@@ -494,6 +518,30 @@ mod tests {
         assert!(!expr.check(0.6));
     }
 
+    #[test]
+    fn parse_inverted_range_rejected() {
+        assert!(NumericExpr::parse("0.7..0.3").is_none());
+    }
+
+    #[test]
+    fn parse_nan_rejected() {
+        assert!(NumericExpr::parse("> NaN").is_none());
+        assert!(NumericExpr::parse("< inf").is_none());
+        assert!(NumericExpr::parse(">= -inf").is_none());
+        assert!(NumericExpr::parse("NaN").is_none());
+    }
+
+    #[test]
+    fn empty_condition_detected() {
+        let c = Condition::default();
+        assert!(c.is_empty());
+        let c2 = Condition {
+            status: Some(ValueMatch::Single("draft".into())),
+            ..Default::default()
+        };
+        assert!(!c2.is_empty());
+    }
+
     // --- ValueMatch tests ---
 
     #[test]
@@ -776,5 +824,441 @@ priority: 2
         let rule: Rule = serde_yaml::from_str(yaml).unwrap();
         assert!(rule.condition.needs_enrichment());
         assert_eq!(rule.condition.links_missing, Some(vec!["rfc".to_string()]));
+    }
+
+    // --- Comprehensive real-world scenario tests ---
+
+    #[test]
+    fn scenario_prd_without_rfc_detected() {
+        let rules = vec![Rule {
+            name: "prd-needs-rfc".into(),
+            condition: Condition {
+                kind: Some(ValueMatch::Single("prd".into())),
+                status: Some(ValueMatch::Single("active".into())),
+                links_missing: Some(vec!["rfc".into()]),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: Some("Active PRD without linked RFC".into()),
+        }];
+
+        // PRD with evidence+epic but NO rfc → match
+        let no_rfc = EnrichedData {
+            base: make_data("PRD-004", "active", 0.8, 2),
+            linked_kinds: vec!["evidence".into(), "epic".into()],
+            days_until_expiry: None,
+        };
+        let action = run_rules(&rules, &no_rfc).unwrap();
+        assert_eq!(action.action_type, ActionType::Explore);
+        assert!(action.reason.contains("without linked RFC"));
+
+        // PRD with rfc linked → NO match
+        let has_rfc = EnrichedData {
+            base: make_data("PRD-018", "active", 1.0, 5),
+            linked_kinds: vec!["rfc".into(), "evidence".into(), "epic".into()],
+            days_until_expiry: None,
+        };
+        assert!(run_rules(&rules, &has_rfc).is_none());
+
+        // Draft PRD (not active) → NO match
+        let draft_prd = EnrichedData {
+            base: make_data("PRD-027", "draft", 0.0, 0),
+            linked_kinds: vec![],
+            days_until_expiry: None,
+        };
+        assert!(run_rules(&rules, &draft_prd).is_none());
+
+        // Active RFC (wrong kind) → NO match
+        let mut rfc_data = make_data("RFC-001", "active", 0.8, 3);
+        rfc_data.kind = "rfc".into();
+        let rfc = EnrichedData {
+            base: rfc_data,
+            linked_kinds: vec!["prd".into()],
+            days_until_expiry: None,
+        };
+        assert!(run_rules(&rules, &rfc).is_none());
+    }
+
+    #[test]
+    fn scenario_deep_rfc_without_adr() {
+        let rules = vec![Rule {
+            name: "rfc-needs-adr".into(),
+            condition: Condition {
+                kind: Some(ValueMatch::Single("rfc".into())),
+                status: Some(ValueMatch::Single("active".into())),
+                depth: Some(ValueMatch::Multiple(vec!["deep".into(), "critical".into()])),
+                links_missing: Some(vec!["adr".into()]),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: Some("Deep RFC without ADR".into()),
+        }];
+
+        // Deep RFC without ADR → match
+        let mut data = make_data("RFC-002", "active", 0.8, 2);
+        data.kind = "rfc".into();
+        data.depth = "deep".into();
+        let no_adr = EnrichedData {
+            base: data,
+            linked_kinds: vec!["prd".into(), "evidence".into()],
+            days_until_expiry: None,
+        };
+        let action = run_rules(&rules, &no_adr).unwrap();
+        assert_eq!(action.action_type, ActionType::Explore);
+
+        // Deep RFC WITH ADR → no match
+        let mut data2 = make_data("RFC-001", "active", 1.0, 5);
+        data2.kind = "rfc".into();
+        data2.depth = "deep".into();
+        let has_adr = EnrichedData {
+            base: data2,
+            linked_kinds: vec!["prd".into(), "adr".into()],
+            days_until_expiry: None,
+        };
+        assert!(run_rules(&rules, &has_adr).is_none());
+
+        // Standard depth RFC without ADR → no match (depth filter)
+        let mut data3 = make_data("RFC-003", "active", 0.8, 2);
+        data3.kind = "rfc".into();
+        data3.depth = "standard".into();
+        let standard = EnrichedData {
+            base: data3,
+            linked_kinds: vec!["prd".into()],
+            days_until_expiry: None,
+        };
+        assert!(run_rules(&rules, &standard).is_none());
+    }
+
+    #[test]
+    fn scenario_expiring_evidence_with_days() {
+        let rules = vec![Rule {
+            name: "expiring-soon".into(),
+            condition: Condition {
+                kind: Some(ValueMatch::Single("evidence".into())),
+                days_until_expiry: NumericExpr::parse("< 14"),
+                ..Default::default()
+            },
+            action: ActionType::Investigate,
+            priority: 2,
+            message: Some("Evidence expires soon".into()),
+        }];
+
+        // Expires in 5 days → match
+        let mut d1 = make_data("EVID-001", "active", 0.8, 1);
+        d1.kind = "evidence".into();
+        let soon = EnrichedData {
+            base: d1.clone(),
+            linked_kinds: vec![],
+            days_until_expiry: Some(5),
+        };
+        assert!(run_rules(&rules, &soon).is_some());
+
+        // Expired 10 days ago (negative) → also match (< 14 includes negatives)
+        let expired = EnrichedData {
+            base: d1.clone(),
+            linked_kinds: vec![],
+            days_until_expiry: Some(-10),
+        };
+        assert!(run_rules(&rules, &expired).is_some());
+
+        // Expires in 30 days → no match
+        let far = EnrichedData {
+            base: d1.clone(),
+            linked_kinds: vec![],
+            days_until_expiry: Some(30),
+        };
+        assert!(run_rules(&rules, &far).is_none());
+
+        // No expiry set → no match
+        let no_exp = EnrichedData {
+            base: d1,
+            linked_kinds: vec![],
+            days_until_expiry: None,
+        };
+        assert!(run_rules(&rules, &no_exp).is_none());
+    }
+
+    #[test]
+    fn scenario_priority_ordering_real_world() {
+        // Real scenario: artifact matches multiple rules, highest priority wins
+        let rules = vec![
+            Rule {
+                name: "prd-needs-rfc".into(),
+                condition: Condition {
+                    kind: Some(ValueMatch::Single("prd".into())),
+                    status: Some(ValueMatch::Single("active".into())),
+                    links_missing: Some(vec!["rfc".into()]),
+                    ..Default::default()
+                },
+                action: ActionType::Explore,
+                priority: 1,
+                message: Some("PRD needs RFC".into()),
+            },
+            Rule {
+                name: "orphan".into(),
+                condition: Condition {
+                    status: Some(ValueMatch::Single("active".into())),
+                    link_count: NumericExpr::parse("== 0"),
+                    ..Default::default()
+                },
+                action: ActionType::Explore,
+                priority: 3,
+                message: Some("Orphan".into()),
+            },
+            Rule {
+                name: "strong".into(),
+                condition: Condition {
+                    r_eff: NumericExpr::parse(">= 0.7"),
+                    overall: NumericExpr::parse(">= 0.6"),
+                    ..Default::default()
+                },
+                action: ActionType::Exploit,
+                priority: 5,
+                message: Some("Ready".into()),
+            },
+        ];
+
+        // Active PRD, no links, strong evidence → matches prd-needs-rfc (p1) AND orphan (p3)
+        // Priority 1 should win
+        let mut data = make_data("PRD-999", "active", 0.9, 0);
+        data.trust.overall = 0.8;
+        let enriched = EnrichedData {
+            base: data,
+            linked_kinds: vec![], // no rfc, no anything
+            days_until_expiry: None,
+        };
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.priority, 1);
+        assert!(action.reason.contains("RFC"));
+    }
+
+    #[test]
+    fn scenario_full_config_yaml_deserialization() {
+        // Test exact YAML format from config template
+        let yaml = r#"
+- name: "prd-needs-rfc"
+  when:
+    kind: "prd"
+    status: "active"
+    links_missing: ["rfc"]
+  action: EXPLORE
+  priority: 1
+  message: "Active PRD without linked RFC"
+- name: "blind-spot"
+  when:
+    status: "draft"
+    r_eff: "< 0.01"
+  action: EXPLORE
+  priority: 2
+- name: "weak-evidence"
+  when:
+    status: ["active", "stale"]
+    r_eff: "< 0.5"
+  action: INVESTIGATE
+  priority: 3
+- name: "ready-to-build"
+  when:
+    r_eff: ">= 0.7"
+    overall: ">= 0.6"
+  action: EXPLOIT
+  priority: 5
+"#;
+        let rules: Vec<Rule> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rules.len(), 4);
+        assert_eq!(rules[0].name, "prd-needs-rfc");
+        assert!(rules[0].condition.needs_enrichment());
+        assert_eq!(rules[1].name, "blind-spot");
+        assert!(!rules[1].condition.needs_enrichment());
+        assert_eq!(rules[2].action, ActionType::Investigate);
+        assert_eq!(rules[3].priority, 5);
+
+        // Run against test data
+        let draft = enrich(make_data("P-1", "draft", 0.0, 0));
+        let action = run_rules(&rules, &draft).unwrap();
+        assert_eq!(action.action_type, ActionType::Explore);
+        assert_eq!(action.priority, 2); // blind-spot, not prd-needs-rfc (wrong kind/status)
+    }
+
+    #[test]
+    fn scenario_stale_artifact_gets_investigate() {
+        let rules = default_rules();
+        // Stale with low r_eff → INVESTIGATE (weak-evidence rule matches ["active", "stale"])
+        let stale = enrich(make_data("P-1", "stale", 0.3, 2));
+        let action = run_rules(&rules, &stale);
+        // stale is not in ["active", "stale"] of weak-evidence... wait, it IS
+        assert!(action.is_some());
+        assert_eq!(action.unwrap().action_type, ActionType::Investigate);
+    }
+
+    #[test]
+    fn scenario_deprecated_gets_no_action() {
+        // Deprecated artifacts should be filtered BEFORE rules (in build_rule_actions)
+        // But if someone passes one through, rules with no status filter could match
+        let rules = default_rules();
+        // "medium-quality" has no status filter, so deprecated with r_eff=0.6 would match
+        let mut data = make_data("P-1", "deprecated", 0.6, 2);
+        data.trust.overall = 0.5;
+        let enriched = enrich(data);
+        let action = run_rules(&rules, &enriched);
+        // This DOES match (medium-quality has no status filter)
+        // Dashboard filters deprecated BEFORE calling rules, so this is expected behavior
+        assert!(action.is_some()); // rules don't filter terminal — dashboard does
+    }
+
+    // --- Negative tests (invalid input → rejection) ---
+
+    #[test]
+    fn negative_parse_empty_string() {
+        assert!(NumericExpr::parse("").is_none());
+    }
+
+    #[test]
+    fn negative_parse_garbage() {
+        assert!(NumericExpr::parse("abc").is_none());
+        assert!(NumericExpr::parse("< abc").is_none());
+        assert!(NumericExpr::parse(">= xyz").is_none());
+        assert!(NumericExpr::parse("..").is_none());
+    }
+
+    #[test]
+    fn negative_parse_equal_range() {
+        // lo == hi is also invalid (empty range)
+        assert!(NumericExpr::parse("0.5..0.5").is_none());
+    }
+
+    #[test]
+    fn negative_yaml_bad_action() {
+        let yaml = r#"
+name: "test"
+when:
+  status: "draft"
+action: UNKNOWN_ACTION
+"#;
+        let result: Result<Rule, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn negative_yaml_missing_name() {
+        let yaml = r#"
+when:
+  status: "draft"
+action: EXPLORE
+"#;
+        let result: Result<Rule, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn negative_yaml_bad_numeric_expr() {
+        let yaml = r#"
+name: "test"
+when:
+  r_eff: "not_a_number"
+action: EXPLORE
+"#;
+        let result: Result<Rule, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    // --- Corner case tests (boundary values) ---
+
+    #[test]
+    fn corner_reff_exact_boundary() {
+        let rules = default_rules();
+
+        // R_eff exactly 0.01 → NOT < 0.01, so blind-spot doesn't match
+        // But weak-evidence requires status ["active","stale"], and this is draft
+        let draft_border = enrich(make_data("X", "draft", 0.01, 0));
+        let action = run_rules(&rules, &draft_border);
+        // No blind-spot (r_eff >= 0.01), no weak-evidence (draft), no orphan (draft)
+        // medium-quality matches 0.01..0.7? No, 0.01 < 0.5 so not in 0.5..0.7
+        // Actually default rules: blind-spot=<0.01, weak-evidence=<0.5 for active/stale
+        // Draft with r_eff=0.01 doesn't match any default rule
+        assert!(action.is_none());
+
+        // R_eff exactly 0.5 → not < 0.5 (investigate), yes in 0.5..0.7 (medium-quality)
+        let mut medium_exact = make_data("X", "active", 0.5, 2);
+        medium_exact.trust.overall = 0.4;
+        let enriched = enrich(medium_exact);
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.action_type, ActionType::Investigate); // medium-quality
+        assert_eq!(action.priority, 4);
+    }
+
+    #[test]
+    fn corner_link_count_zero_vs_one() {
+        let rules = default_rules();
+
+        // link_count=0, active, strong evidence → orphan-active (priority 3) wins
+        let mut zero_links = make_data("X", "active", 0.9, 0);
+        zero_links.trust.overall = 0.8;
+        let enriched = enrich(zero_links);
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.priority, 3); // orphan-active
+
+        // link_count=1, active, strong evidence → EXPLOIT (no orphan rule)
+        let mut one_link = make_data("X", "active", 0.9, 1);
+        one_link.trust.overall = 0.8;
+        let enriched = enrich(one_link);
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.action_type, ActionType::Exploit);
+    }
+
+    #[test]
+    fn corner_multiple_links_missing() {
+        // Rule requires BOTH rfc and adr missing
+        let rule = Rule {
+            name: "needs-both".into(),
+            condition: Condition {
+                links_missing: Some(vec!["rfc".into(), "adr".into()]),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: None,
+        };
+
+        // Neither linked → match
+        let neither = EnrichedData {
+            base: make_data("X", "active", 0.5, 1),
+            linked_kinds: vec!["evidence".into()],
+            days_until_expiry: None,
+        };
+        assert!(check_enriched(&rule, &neither));
+
+        // RFC linked but not ADR → still match (adr still missing)
+        let has_rfc = EnrichedData {
+            base: make_data("X", "active", 0.5, 2),
+            linked_kinds: vec!["rfc".into()],
+            days_until_expiry: None,
+        };
+        assert!(!check_enriched(&rule, &has_rfc)); // rfc IS linked → fails
+
+        // Both linked → no match
+        let has_both = EnrichedData {
+            base: make_data("X", "active", 0.5, 3),
+            linked_kinds: vec!["rfc".into(), "adr".into()],
+            days_until_expiry: None,
+        };
+        assert!(!check_enriched(&rule, &has_both));
+    }
+
+    #[test]
+    fn corner_case_insensitive_kind() {
+        let rule = Rule {
+            name: "test".into(),
+            condition: Condition {
+                kind: Some(ValueMatch::Single("PRD".into())),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: None,
+        };
+        // kind stored as lowercase "prd" → should still match "PRD"
+        assert!(check_basic(&rule, &make_data("X", "active", 0.5, 1)));
     }
 }

@@ -46,7 +46,7 @@ pub struct SuggestedAction {
 }
 
 /// Explore-exploit action types.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActionType {
     Explore,
     Investigate,

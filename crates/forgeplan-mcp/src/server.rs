@@ -1771,7 +1771,8 @@ impl ForgeplanServer {
             relations,
             architecture_hint: None, // MCP callers are AI agents — they already know the architecture
             bounded_context: forgeplan_core::fpf::contexts::detect_for_artifact(&store, &record.id)
-                .await,
+                .await
+                .unwrap_or(None),
         };
 
         let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
