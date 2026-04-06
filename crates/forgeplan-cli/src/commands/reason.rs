@@ -52,18 +52,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         relations.push((target_id.clone(), rel_type.clone(), title));
     }
     // Detect bounded context for this artifact
-    let bounded_context = {
-        let all_records = store.list_records(None).await.unwrap_or_default();
-        let all_relations = store.get_all_relations().await.unwrap_or_default();
-        let edges: Vec<(String, String)> = all_relations
-            .iter()
-            .map(|(s, t, _)| (s.clone(), t.clone()))
-            .collect();
-        let ctxs = contexts::detect(&all_records, &edges);
-        ctxs.into_iter()
-            .find(|c| c.members.contains(&record.id))
-            .map(|c| (c.name.clone(), c.members.len(), c.cohesion))
-    };
+    let bounded_context = contexts::detect_for_artifact(&store, &record.id).await;
 
     let artifact_context = ArtifactContext {
         status: record.status.clone(),

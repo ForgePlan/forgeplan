@@ -363,6 +363,23 @@ mod tests {
     }
 
     #[test]
+    fn build_metadata_section_with_bounded_context() {
+        let ctx = ArtifactContext {
+            status: "active".to_string(),
+            depth: "standard".to_string(),
+            r_eff_score: 0.5,
+            relations: vec![],
+            architecture_hint: None,
+            bounded_context: Some(("Context-1 (PRD)".to_string(), 5, 0.8)),
+        };
+        let section = build_metadata_section(&ctx);
+        assert!(section.contains("### Bounded Context"));
+        assert!(section.contains("**Cluster**: Context-1 (PRD)"));
+        assert!(section.contains("**Members**: 5 artifacts"));
+        assert!(section.contains("**Cohesion**: 80%"));
+    }
+
+    #[test]
     fn parse_adi_output_valid_json() {
         let json = r#"{"hypotheses":[{"id":"H1","description":"test","assumptions":[],"confidence":"High — good reason"}],"deductions":[],"evidence_needed":[],"recommendation":"do H1","confidence":"High — justified"}"#;
         let output = parse_adi_output(json);
