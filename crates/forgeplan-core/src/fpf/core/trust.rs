@@ -125,18 +125,8 @@ impl TrustScore {
                 .iter()
                 .enumerate()
                 .min_by(|(_, a), (_, b)| {
-                    let sa = if a.is_expired {
-                        config.decay.expired_score
-                    } else {
-                        (a.verdict.base_score() - config.cl_penalties.penalty(a.congruence_level))
-                            .max(0.0)
-                    };
-                    let sb = if b.is_expired {
-                        config.decay.expired_score
-                    } else {
-                        (b.verdict.base_score() - config.cl_penalties.penalty(b.congruence_level))
-                            .max(0.0)
-                    };
+                    let sa = score_single(a, config);
+                    let sb = score_single(b, config);
                     sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(i, _)| format!("evidence-{i}"))
@@ -269,5 +259,51 @@ mod tests {
         let r = TrustScore::compute_reff(&evidence, &cfg);
         // 1.0 - 0.5 = 0.5
         assert!((r - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reff_all_expired_returns_decay_score() {
+        let evidence = vec![
+            EvidenceInput {
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                is_expired: true,
+            },
+            EvidenceInput {
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                is_expired: true,
+            },
+        ];
+        let r = TrustScore::compute_reff(&evidence, &default_config());
+        assert!((r - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reff_mixed_expired_picks_weakest() {
+        let evidence = vec![
+            EvidenceInput {
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                is_expired: false, // score = 1.0
+            },
+            EvidenceInput {
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                is_expired: true, // score = 0.1 (expired)
+            },
+        ];
+        let r = TrustScore::compute_reff(&evidence, &default_config());
+        assert!((r - 0.1).abs() < f64::EPSILON); // expired wins as weakest
+    }
+
+    #[test]
+    fn reliability_stale_excludes_freshness_bonus() {
+        let cfg = default_config();
+        let fresh = TrustScore::compute_reliability(0.5, 2, false, &cfg);
+        let stale = TrustScore::compute_reliability(0.5, 2, true, &cfg);
+        assert!(fresh > stale);
+        // Difference should be exactly the freshness weight (0.2)
+        assert!((fresh - stale - cfg.weights.freshness).abs() < f64::EPSILON);
     }
 }

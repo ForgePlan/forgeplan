@@ -275,4 +275,73 @@ mod tests {
         assert!(ctx.action.is_some());
         assert_eq!(ctx.action.unwrap().action_type, ActionType::Exploit);
     }
+
+    // H3 fix: well-formatted draft with no evidence still gets EXPLORE
+    #[test]
+    fn well_formatted_draft_no_evidence_gets_explore() {
+        let data = ArtifactData {
+            id: "PRD-001".into(),
+            status: "draft".into(),
+            evidence: vec![],
+            formality: 0.9,
+            granularity: 0.9,
+            link_count: 3,
+            is_stale: false,
+        };
+        let ctx = build_context(
+            &data,
+            ContextMembership::default(),
+            vec![],
+            &default_config(),
+        );
+        assert!(ctx.action.is_some());
+        assert_eq!(ctx.action.unwrap().action_type, ActionType::Explore);
+    }
+
+    // H2 fix: medium quality artifact (R_eff 0.5-0.7) gets INVESTIGATE
+    #[test]
+    fn medium_quality_gets_investigate() {
+        let data = ArtifactData {
+            id: "PRD-001".into(),
+            status: "active".into(),
+            evidence: vec![EvidenceInput {
+                verdict: Verdict::Supports,
+                congruence_level: 1, // CL1: penalty 0.4 → score 0.6
+                is_expired: false,
+            }],
+            formality: 0.6,
+            granularity: 0.6,
+            link_count: 2,
+            is_stale: false,
+        };
+        let ctx = build_context(
+            &data,
+            ContextMembership::default(),
+            vec![],
+            &default_config(),
+        );
+        let action = ctx.action.unwrap();
+        assert_eq!(action.action_type, ActionType::Investigate);
+        assert_eq!(action.priority, 4);
+    }
+
+    #[test]
+    fn superseded_gets_no_action() {
+        let data = ArtifactData {
+            id: "PRD-001".into(),
+            status: "superseded".into(),
+            evidence: vec![],
+            formality: 0.0,
+            granularity: 0.0,
+            link_count: 0,
+            is_stale: false,
+        };
+        let ctx = build_context(
+            &data,
+            ContextMembership::default(),
+            vec![],
+            &default_config(),
+        );
+        assert!(ctx.action.is_none());
+    }
 }
