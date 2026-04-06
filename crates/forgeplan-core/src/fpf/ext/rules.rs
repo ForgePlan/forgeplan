@@ -52,6 +52,19 @@ impl Condition {
     pub fn needs_enrichment(&self) -> bool {
         self.links_missing.is_some() || self.days_until_expiry.is_some()
     }
+
+    /// Returns true if no conditions are set (vacuous truth — matches everything).
+    pub fn is_empty(&self) -> bool {
+        self.status.is_none()
+            && self.kind.is_none()
+            && self.depth.is_none()
+            && self.r_eff.is_none()
+            && self.overall.is_none()
+            && self.link_count.is_none()
+            && self.is_stale.is_none()
+            && self.links_missing.is_none()
+            && self.days_until_expiry.is_none()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,41 +110,52 @@ impl NumericExpr {
             NumericExpr::Le(n) => value <= *n,
             NumericExpr::Gt(n) => value > *n,
             NumericExpr::Ge(n) => value >= *n,
-            NumericExpr::Eq(n) => (value - *n).abs() < f64::EPSILON,
+            NumericExpr::Eq(n) => (value - *n).abs() < 1e-9,
             NumericExpr::Range(lo, hi) => value >= *lo && value < *hi,
         }
     }
 
     /// Parse from string: "< 0.5", ">= 0.7", "0.01..0.5", "== 0"
+    ///
+    /// Rejects NaN, Infinity, and inverted ranges (lo >= hi).
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
 
+        // Helper: reject non-finite values (NaN, Infinity)
+        let parse_finite = |s: &str| -> Option<f64> {
+            let v = s.trim().parse::<f64>().ok()?;
+            if v.is_finite() { Some(v) } else { None }
+        };
+
         // Range: "0.01..0.5"
         if let Some((lo, hi)) = s.split_once("..") {
-            let lo = lo.trim().parse::<f64>().ok()?;
-            let hi = hi.trim().parse::<f64>().ok()?;
+            let lo = parse_finite(lo)?;
+            let hi = parse_finite(hi)?;
+            if lo >= hi {
+                return None; // Inverted range — will surface as serde error
+            }
             return Some(NumericExpr::Range(lo, hi));
         }
 
         // Operators: "<=", ">=", "<", ">", "=="
         if let Some(rest) = s.strip_prefix("<=") {
-            return rest.trim().parse().ok().map(NumericExpr::Le);
+            return parse_finite(rest).map(NumericExpr::Le);
         }
         if let Some(rest) = s.strip_prefix(">=") {
-            return rest.trim().parse().ok().map(NumericExpr::Ge);
+            return parse_finite(rest).map(NumericExpr::Ge);
         }
         if let Some(rest) = s.strip_prefix("==") {
-            return rest.trim().parse().ok().map(NumericExpr::Eq);
+            return parse_finite(rest).map(NumericExpr::Eq);
         }
         if let Some(rest) = s.strip_prefix('<') {
-            return rest.trim().parse().ok().map(NumericExpr::Lt);
+            return parse_finite(rest).map(NumericExpr::Lt);
         }
         if let Some(rest) = s.strip_prefix('>') {
-            return rest.trim().parse().ok().map(NumericExpr::Gt);
+            return parse_finite(rest).map(NumericExpr::Gt);
         }
 
         // Bare number = exact match
-        s.parse().ok().map(NumericExpr::Eq)
+        parse_finite(s).map(NumericExpr::Eq)
     }
 }
 
@@ -492,6 +516,30 @@ mod tests {
         let expr = NumericExpr::parse("0.5").unwrap();
         assert!(expr.check(0.5));
         assert!(!expr.check(0.6));
+    }
+
+    #[test]
+    fn parse_inverted_range_rejected() {
+        assert!(NumericExpr::parse("0.7..0.3").is_none());
+    }
+
+    #[test]
+    fn parse_nan_rejected() {
+        assert!(NumericExpr::parse("> NaN").is_none());
+        assert!(NumericExpr::parse("< inf").is_none());
+        assert!(NumericExpr::parse(">= -inf").is_none());
+        assert!(NumericExpr::parse("NaN").is_none());
+    }
+
+    #[test]
+    fn empty_condition_detected() {
+        let c = Condition::default();
+        assert!(c.is_empty());
+        let c2 = Condition {
+            status: Some(ValueMatch::Single("draft".into())),
+            ..Default::default()
+        };
+        assert!(!c2.is_empty());
     }
 
     // --- ValueMatch tests ---

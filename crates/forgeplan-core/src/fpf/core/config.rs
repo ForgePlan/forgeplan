@@ -184,6 +184,22 @@ impl FpfConfig {
                 return Err(format!("fpf.{name} must be non-negative, got {val}"));
             }
         }
+        // Validate rules (empty conditions, duplicate names)
+        let mut names = std::collections::HashSet::new();
+        for (i, rule) in self.rules.iter().enumerate() {
+            if rule.condition.is_empty() {
+                return Err(format!(
+                    "fpf.rules[{i}] '{}': condition must have at least one field (empty = matches everything)",
+                    rule.name
+                ));
+            }
+            if !names.insert(&rule.name) {
+                return Err(format!(
+                    "fpf.rules[{i}]: duplicate rule name '{}'",
+                    rule.name
+                ));
+            }
+        }
         Ok(())
     }
 }

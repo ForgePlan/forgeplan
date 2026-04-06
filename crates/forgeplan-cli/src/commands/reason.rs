@@ -52,7 +52,9 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         relations.push((target_id.clone(), rel_type.clone(), title));
     }
     // Detect bounded context for this artifact
-    let bounded_context = contexts::detect_for_artifact(&store, &record.id).await;
+    let bounded_context = contexts::detect_for_artifact(&store, &record.id)
+        .await
+        .unwrap_or(None);
 
     let artifact_context = ArtifactContext {
         status: record.status.clone(),

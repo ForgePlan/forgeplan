@@ -107,7 +107,7 @@ pub async fn dashboard(
     fpf_config: Option<&FpfConfig>,
 ) -> anyhow::Result<FpfDashboard> {
     let records = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await.unwrap_or_default();
+    let all_relations = store.get_all_relations().await?;
 
     // Build edges for context detection
     let edges: Vec<(String, String)> = all_relations
@@ -226,6 +226,8 @@ fn build_rule_actions(
     let mut sorted_rules: Vec<&rules::Rule> = active_rules.iter().collect();
     sorted_rules.sort_by_key(|r| r.priority);
 
+    // Capture now once for consistent time comparisons (audit fix: TOCTOU)
+    let now = chrono::Utc::now().naive_utc();
     let mut actions = Vec::new();
 
     for record in records {
@@ -240,7 +242,7 @@ fn build_rule_actions(
             .valid_until
             .as_ref()
             .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
-            .is_some_and(|dt| chrono::Utc::now().naive_utc() > dt);
+            .is_some_and(|dt| now > dt);
 
         let fgr_score = fgr_map.get(record.id.as_str()).copied();
         let evidence = parse_evidence_from_record(record);
@@ -276,7 +278,7 @@ fn build_rule_actions(
         let days_until_expiry = record.valid_until.as_ref().and_then(|v| {
             chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
                 .ok()
-                .map(|dt| (dt - chrono::Utc::now().naive_utc()).num_days())
+                .map(|dt| (dt - now).num_days())
         });
 
         let enriched = rules::EnrichedData {
