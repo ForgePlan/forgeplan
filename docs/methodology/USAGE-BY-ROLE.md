@@ -1,61 +1,63 @@
+[English](USAGE-BY-ROLE.md) · [Русский](USAGE-BY-ROLE.ru.md)
+
 # ForgePlan — Usage Guide by Role
 
-## Quick Start по ролям
+## Quick Start by Role
 
-### Человек: Product Manager / Product Owner
+### Human: Product Manager / Product Owner
 
 ```
-Твой flow:
-  1. forgeplan new prd "User Authentication"    ← Описываешь ЧТО и ЗАЧЕМ
-  2. forgeplan new epic "Auth System" --prd 1   ← Группируешь в инициативу
-  3. Заполняешь: Problem, Users, Goals, Metrics
-  4. forgeplan validate --type prd              ← Проверка полноты
+Your flow:
+  1. forgeplan new prd "User Authentication"    ← Describe WHAT and WHY
+  2. forgeplan new epic "Auth System" --prd 1   ← Group into an initiative
+  3. Fill in: Problem, Users, Goals, Metrics
+  4. forgeplan validate --type prd              ← Completeness check
   5. forgeplan status                           ← Dashboard
 
-Артефакты: PRD, Epic
-Не трогаешь: RFC, ADR, Spec (это инженеры)
+Artifacts: PRD, Epic
+Don't touch: RFC, ADR, Spec (that's for engineers)
 ```
 
-### Человек: Tech Lead / Architect
+### Human: Tech Lead / Architect
 
 ```
-Твой flow:
-  1. Читаешь PRD → понимаешь ЧТО нужно
-  2. forgeplan new spec "OAuth2 API" --prd 1    ← Формальные контракты
-  3. forgeplan new rfc "Auth Architecture" --prd 1  ← Архитектура
-  4. forgeplan new adr "Choose Passport.js" --rfc 1 ← Решение + rationale
-  5. forgeplan score                            ← R_eff по всем артефактам
+Your flow:
+  1. Read PRD → understand WHAT is needed
+  2. forgeplan new spec "OAuth2 API" --prd 1    ← Formal contracts
+  3. forgeplan new rfc "Auth Architecture" --prd 1  ← Architecture
+  4. forgeplan new adr "Choose Passport.js" --rfc 1 ← Decision + rationale
+  5. forgeplan score                            ← R_eff across all artifacts
   6. forgeplan coverage                         ← Blind modules
 
-Артефакты: Spec, RFC, ADR
-Читаешь: PRD (от PM)
-Не трогаешь: PRD (только комментируешь)
+Artifacts: Spec, RFC, ADR
+Read: PRD (from PM)
+Don't touch: PRD (only comment)
 ```
 
-### Человек: Developer
+### Human: Developer
 
 ```
-Твой flow:
-  1. forgeplan status                           ← Что в работе?
-  2. forgeplan context src/auth/                ← Какие решения покрывают?
-  3. Кодишь по ADR
-  4. forgeplan drift                            ← Мои изменения нарушили решение?
-  5. forgeplan new note "Edge case found"       ← Заметка для будущего
+Your flow:
+  1. forgeplan status                           ← What's in progress?
+  2. forgeplan context src/auth/                ← Which decisions cover this?
+  3. Code according to ADR
+  4. forgeplan drift                            ← Did my changes violate a decision?
+  5. forgeplan new note "Edge case found"       ← Note for the future
 
-Артефакты: Notes (заметки)
-Читаешь: ADR (что решено), Spec (контракты), RFC (почему так)
+Artifacts: Notes
+Read: ADR (what was decided), Spec (contracts), RFC (why it's done this way)
 ```
 
-### Человек: QA / Reviewer
+### Human: QA / Reviewer
 
 ```
-Твой flow:
-  1. forgeplan context {changed_files}          ← Какие решения затронуты?
-  2. forgeplan drift                            ← Есть ли нарушения?
-  3. forgeplan score                            ← R_eff < 0.5 = стоит проверить
-  4. forgeplan validate                         ← Все артефакты полны?
+Your flow:
+  1. forgeplan context {changed_files}          ← Which decisions are affected?
+  2. forgeplan drift                            ← Any violations?
+  3. forgeplan score                            ← R_eff < 0.5 = worth checking
+  4. forgeplan validate                         ← Are all artifacts complete?
 
-Проверяешь: drift, coverage, R_eff scores
+Check: drift, coverage, R_eff scores
 ```
 
 ---
@@ -65,88 +67,94 @@
 ### Agent: Research / Discovery
 
 ```
-Триггер: пользователь говорит "изучи", "разберись", "что у нас есть"
+Trigger: user says "research", "investigate", "what do we have"
 
 Flow:
-  1. forgeplan status → проверить текущие артефакты
-  2. forgeplan context {topic} → что уже решено по теме
-  3. /research или /deep-research → изучить
-  4. Результат → memory_retain() + forgeplan new note
+  1. forgeplan status → check current artifacts
+  2. forgeplan context {topic} → what's already decided on the topic
+  3. /research or /deep-research → investigate
+  4. Result → memory_retain() + forgeplan new note
 
-Правило: НИКОГДА не создавать PRD/RFC/ADR без запроса пользователя.
-Только Notes и Research reports.
+Rule: NEVER create PRD/RFC/ADR without user request.
+Only Notes and Research reports.
 ```
 
 ### Agent: Architecture / Design
 
 ```
-Триггер: пользователь говорит "спроектируй", "архитектура", "как сделать"
+Trigger: user says "design", "architecture", "how to build"
 
 Flow:
-  1. forgeplan status → есть ли PRD?
-     - Нет PRD → предложить: "Сначала нужен PRD. Создать?"
-     - Есть PRD → читать requirements
+  1. forgeplan status → is there a PRD?
+     - No PRD → suggest: "A PRD is needed first. Create one?"
+     - PRD exists → read requirements
   2. ADI cycle:
-     a. Abduction: 3+ гипотезы (ОБЯЗАТЕЛЬНО)
-     b. Deduction: логическая проверка каждой
-     c. Induction: практическая проверка (тесты, прототипы)
-  3. Представить варианты пользователю
-  4. Пользователь выбирает → forgeplan new adr
+     a. Abduction: 3+ hypotheses (MANDATORY)
+     b. Deduction: logical verification of each
+     c. Induction: practical verification (tests, prototypes)
+  3. Present options to user
+  4. User chooses → forgeplan new adr
 
-Правило: TRANSFORMER MANDATE — агент предлагает, человек решает.
-Агент НИКОГДА не записывает ADR без approve от человека.
+Rule: TRANSFORMER MANDATE — agent proposes, human decides.
+Agent NEVER records an ADR without human approval.
 ```
 
 ### Agent: Implementation / Sprint
 
 ```
-Триггер: пользователь говорит "реализуй", "сделай", /sprint
+Trigger: user says "implement", "build", /sprint
 
 Flow:
-  1. forgeplan context {scope} → какие ADR покрывают область работы
-  2. Читать ADR → соблюдать решения
-  3. Кодить по Spec (контрактам)
-  4. После кода: forgeplan drift → проверить не нарушил ли решения
-  5. Если drift → уведомить пользователя
+  1. forgeplan context {scope} → which ADRs cover the work area
+  2. Read ADR → follow decisions
+  3. Code according to Spec (contracts)
+  4. After coding: forgeplan drift → check for decision violations
+  5. If drift → notify user
 
-Правило: код ДОЛЖЕН соответствовать ADR. Если нужно отклониться →
-новый RFC → новый ADR → только потом менять код.
+Rule: code MUST conform to ADR. If deviation is needed →
+new RFC → new ADR → only then change code.
 ```
 
 ### Agent: Review / Audit
 
 ```
-Триггер: /audit, code review, PR
+Trigger: /audit, code review, PR
 
 Flow:
   1. forgeplan context {changed_files}
-  2. Для каждого файла: есть ли покрывающий ADR?
-     - Нет → пометить как "blind module"
-     - Есть → проверить соответствие
-  3. forgeplan score → R_eff по затронутым артефактам
-  4. forgeplan drift → есть ли нарушения?
-  5. Отчёт: compliance + gaps + drift
+  2. For each file: is there a covering ADR?
+     - No → mark as "blind module"
+     - Yes → verify conformance
+  3. forgeplan score → R_eff for affected artifacts
+  4. forgeplan drift → any violations?
+  5. Report: compliance + gaps + drift
 
-Правило: Adversarial Review — ОБЯЗАН найти хотя бы 1 проблему.
-Zero findings = неполный review.
+Rule: Adversarial Review — MUST find at least 1 problem.
+Zero findings = incomplete review.
 ```
 
 ---
 
-## Depth Calibration — когда что использовать
+## Depth Calibration — When to Use What
 
-| Сложность | Depth | Артефакты | Пример |
-|-----------|-------|-----------|--------|
-| **Tactical** | 1 вызов | Note | Быстрый fix, typo, config change |
-| **Standard** | Frame → Explore → Decide | ADR | Выбор библиотеки, API design |
-| **Deep** | Full ADI + Evidence | PRD → RFC → ADR | Новая фича, архитектурное решение |
-| **Critical** | Formal verification | Epic → PRD → Spec → RFC → ADR | Миграция, security, compliance |
+| Complexity | Depth | Artifacts | Example |
+|------------|-------|-----------|---------|
+| **Tactical** | 1 call | Note | Quick fix, typo, config change |
+| **Standard** | Frame → Explore → Decide | ADR | Library choice, API design |
+| **Deep** | Full ADI + Evidence | PRD → RFC → ADR | New feature, architectural decision |
+| **Critical** | Formal verification | Epic → PRD → Spec → RFC → ADR | Migration, security, compliance |
 
-### Routing Rules (для агента)
+### Routing Rules (for the agent)
 
 ```
-IF задача < 1 файл AND reversible в 1 час → Tactical (Note)
-IF задача < 5 файлов AND reversible в 1 день → Standard (ADR)
-IF задача > 5 файлов OR новый модуль → Deep (PRD → RFC → ADR)
-IF задача затрагивает security OR data OR infrastructure → Critical (полный цикл)
+IF task < 1 file AND reversible in 1 hour → Tactical (Note)
+IF task < 5 files AND reversible in 1 day → Standard (ADR)
+IF task > 5 files OR new module → Deep (PRD → RFC → ADR)
+IF task involves security OR data OR infrastructure → Critical (full cycle)
 ```
+
+## Related Documents
+
+- [FORGEPLAN-GUIDE.md](FORGEPLAN-GUIDE.md) — Complete practical guide
+- [DEPTH-CALIBRATION.md](DEPTH-CALIBRATION.md) — Depth levels in detail
+- [HOW-TO-USE.md](HOW-TO-USE.md) — 10 rules of the methodology

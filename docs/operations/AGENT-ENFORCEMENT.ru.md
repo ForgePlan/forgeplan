@@ -2,56 +2,56 @@
 
 # ForgePlan — Agent Enforcement Guide
 
-How to make an AI agent MANDATORY follow the ForgePlan methodology.
+Как заставить AI-агента ОБЯЗАТЕЛЬНО следовать методологии ForgePlan.
 
-**5 enforcement levels** (from soft to hard):
+**5 уровней enforcement** (от мягкого к жёсткому):
 
 ```
-L1: CLAUDE.md instructions     ← "please do it this way"
-L2: Skills (slash commands)     ← "/forge" activates workflow
-L3: Hooks (pre/post)           ← blocks violations automatically
-L4: MCP Server                 ← agent MUST call a tool
-L5: Validation in CI           ← merge blocked without compliance
+L1: CLAUDE.md instructions     ← "пожалуйста, делай так"
+L2: Skills (slash commands)     ← "/forge" активирует workflow
+L3: Hooks (pre/post)           ← блокирует нарушения автоматически
+L4: MCP Server                 ← agent ДОЛЖЕН вызвать tool
+L5: Validation in CI           ← merge заблокирован без compliance
 ```
 
 ---
 
 ## L1: CLAUDE.md / AGENTS.md Instructions
 
-The simplest level — instructions in project configuration.
+Самый простой уровень — инструкции в конфигурации проекта.
 
-### What to add to CLAUDE.md
+### Что добавить в CLAUDE.md
 
 ```markdown
-## ForgePlan Methodology (MANDATORY)
+## ForgePlan Methodology (ОБЯЗАТЕЛЬНО)
 
-This project uses ForgePlan for engineering decision management.
+Этот проект использует ForgePlan для управления инженерными решениями.
 
 ### Hard Rules
 
-1. **Transformer Mandate** — the agent proposes 3+ options, the HUMAN decides.
-   The agent NEVER records an ADR/RFC without explicit approval from the user.
+1. **Transformer Mandate** — агент предлагает 3+ варианта, ЧЕЛОВЕК решает.
+   Агент НИКОГДА не записывает ADR/RFC без explicit approve от пользователя.
 
-2. **ADI Cycle** — for any decision > Tactical:
-   - Abduction: at least 3 different hypotheses
-   - Deduction: logical verification of each
-   - Induction: practical verification
+2. **ADI Cycle** — для любого решения > Tactical:
+   - Abduction: минимум 3 разных гипотезы
+   - Deduction: логическая проверка каждой
+   - Induction: практическая проверка
 
-3. **Depth Routing** — determine the depth BEFORE starting work:
-   - Tactical (< 1 file): Note
-   - Standard (< 5 files): ADR
-   - Deep (> 5 files): PRD → RFC → ADR
-   - Critical (security/data/infra): full cycle
+3. **Depth Routing** — определи глубину ПЕРЕД работой:
+   - Tactical (< 1 файл): Note
+   - Standard (< 5 файлов): ADR
+   - Deep (> 5 файлов): PRD → RFC → ADR
+   - Critical (security/data/infra): полный цикл
 
-4. **Context Check** — BEFORE modifying code:
-   - Check `.forgeplan/` — which decisions cover the files
-   - If an ADR exists — follow it
-   - If drift is detected — notify the user
+4. **Context Check** — ПЕРЕД изменением кода:
+   - Проверь `.forgeplan/` — какие решения покрывают файлы
+   - Если ADR существует — соблюдай его
+   - Если drift обнаружен — сообщи пользователю
 
-5. **Evidence Required** — every decision must have:
-   - At least 1 evidence item
+5. **Evidence Required** — каждое решение должно иметь:
+   - Минимум 1 evidence item
    - valid_until (expiry date)
-   - Rationale (why this specific approach)
+   - Rationale (почему именно так)
 
 ### Artifact Lifecycle
 
@@ -61,16 +61,16 @@ IDEA → [forgeplan new prd] → [forgeplan new rfc] → [forgeplan new adr] →
                                                  [forgeplan drift] → review if needed
 ```
 
-### Prohibited
+### Запрещено
 
-- Making architectural decisions without an ADR
-- Ignoring existing ADRs
-- Creating PRD/RFC/ADR without user request
-- Skipping the ADI cycle for Standard+ tasks
-- Coding in blind modules without warning
+- Принимать архитектурные решения без ADR
+- Игнорировать существующие ADR
+- Создавать PRD/RFC/ADR без запроса пользователя
+- Пропускать ADI cycle для Standard+ задач
+- Кодить в blind modules без предупреждения
 ```
 
-### What to add to AGENTS.md
+### Что добавить в AGENTS.md
 
 ```markdown
 ## ForgePlan Integration
@@ -92,7 +92,7 @@ Agent generates options. Human decides. No exceptions.
 
 ## L2: Skills & Slash Commands
 
-Create a skill that ACTIVATES the ForgePlan workflow.
+Создать skill который АКТИВИРУЕТ ForgePlan workflow.
 
 ### Skill: `/forge`
 
@@ -101,10 +101,10 @@ Create a skill that ACTIVATES the ForgePlan workflow.
 name: forge
 description: ForgePlan workflow — structured engineering decisions
 trigger:
-  - "architecture"
-  - "decision"
-  - "design"
-  - "how to implement"
+  - "архитектур"
+  - "решение"
+  - "спроектируй"
+  - "как сделать"
   - "design"
   - "PRD"
   - "RFC"
@@ -155,24 +155,24 @@ Create artifact in `.forgeplan/` with:
 
 ### Proactive Trigger
 
-Add to CLAUDE.md:
+В CLAUDE.md добавить:
 
 ```markdown
 ### ForgePlan Auto-Activation
 
-When the user describes a task, ASSESS the depth:
-- If Standard+ → suggest: "This is a Standard-level task. I recommend /forge for a structured decision."
-- If Critical → MANDATORY: "This is a Critical task. Launching ForgePlan workflow."
-- If Tactical → just do it, write a Note if non-trivial.
+Когда пользователь описывает задачу, ОЦЕНИ depth:
+- Если Standard+ → предложи: "Это Standard-level задача. Рекомендую /forge для структурированного решения."
+- Если Critical → ОБЯЗАТЕЛЬНО: "Это Critical задача. Запускаю ForgePlan workflow."
+- Если Tactical → просто делай, запиши Note если нетривиально.
 ```
 
 ---
 
 ## L3: Hooks (Pre/Post Automation)
 
-Hooks are shell commands that execute automatically on certain events.
+Hooks — это shell-команды которые выполняются автоматически при определённых событиях.
 
-### Hook: PreToolUse (before editing)
+### Hook: PreToolUse (перед редактированием)
 
 ```json
 // .claude/settings.json
@@ -189,9 +189,9 @@ Hooks are shell commands that execute automatically on certain events.
 }
 ```
 
-**What this does**: before each Edit/Write, it checks whether an ADR covering the file exists. If `NO_COVERAGE` → the agent sees a warning.
+**Что это делает**: перед каждым Edit/Write проверяет — есть ли ADR покрывающий файл. Если `NO_COVERAGE` → агент видит предупреждение.
 
-### Hook: PostToolUse (after code)
+### Hook: PostToolUse (после кода)
 
 ```json
 {
@@ -207,7 +207,7 @@ Hooks are shell commands that execute automatically on certain events.
 }
 ```
 
-### Hook: UserPromptSubmit (routing)
+### Hook: UserPromptSubmit (маршрутизация)
 
 ```json
 {
@@ -241,7 +241,7 @@ Hooks are shell commands that execute automatically on certain events.
 
 ## L4: MCP Server
 
-ForgePlan as an MCP server — the agent CALLS tools, not just reads files.
+ForgePlan как MCP server — агент ВЫЗЫВАЕТ tools, не просто читает файлы.
 
 ### MCP Tools Design
 
@@ -331,25 +331,25 @@ jobs:
 
 ---
 
-## Combined Approach (recommended)
+## Комбинированный подход (рекомендуемый)
 
 ```
-L1 (CLAUDE.md)    → Agent KNOWS about ForgePlan
-L2 (Skill /forge) → Agent USES the ForgePlan workflow
-L3 (Hooks)        → Agent is WARNED on violations
-L4 (MCP)          → Agent CALLS ForgePlan tools
-L5 (CI)           → Merge is BLOCKED without compliance
+L1 (CLAUDE.md)    → Агент ЗНАЕТ про ForgePlan
+L2 (Skill /forge) → Агент ИСПОЛЬЗУЕТ ForgePlan workflow
+L3 (Hooks)        → Агент ПРЕДУПРЕЖДЁН при нарушениях
+L4 (MCP)          → Агент ВЫЗЫВАЕТ ForgePlan tools
+L5 (CI)           → Merge ЗАБЛОКИРОВАН без compliance
 ```
 
-### Adoption Order
+### Порядок внедрения
 
 ```
-Phase 1: L1 (CLAUDE.md) + L2 (Skill)     ← 0 code, markdown only
+Phase 1: L1 (CLAUDE.md) + L2 (Skill)     ← 0 кода, только markdown
 Phase 2: L3 (Hooks)                       ← shell scripts
-Phase 3: L4 (MCP) + L5 (CI)              ← after Rust CLI is ready
+Phase 3: L4 (MCP) + L5 (CI)              ← после Rust CLI готов
 ```
 
-### Example Full CLAUDE.md Section
+### Пример полного CLAUDE.md section
 
 ```markdown
 ## ForgePlan (MANDATORY)

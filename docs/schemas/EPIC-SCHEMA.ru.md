@@ -2,32 +2,32 @@
 
 # EPIC Schema — Strategic Initiative
 
-## When to Create an Epic
+## Когда создавать Epic
 
-- Initiative spanning > 2 RFCs
-- Cross-team work
-- Quarterly roadmap item
-- Monolith decomposition (multiple services)
-- Migration (framework, DB, cloud)
+- Инициатива > 2 RFC
+- Кросс-командная работа
+- Roadmap item на квартал
+- Decompose monolith (несколько сервисов)
+- Миграция (framework, DB, cloud)
 
-**Rule**: Epic = container. If you have 1 PRD and 1 RFC — an Epic is not needed.
+**Правило**: Epic = контейнер. Если у тебя 1 PRD и 1 RFC — Epic не нужен.
 
-## Required Sections
+## Обязательные секции
 
-| # | Section | Required? | Validation |
-|---|---------|-----------|------------|
+| # | Секция | Обязательно? | Валидация |
+|---|--------|-------------|-----------|
 | 1 | **Meta Header** | ✅ MUST | Status, Owner, Created, Target (quarter) |
-| 2 | **Vision** | ✅ MUST | 1 sentence — what we want to achieve |
-| 3 | **Outcomes** | ✅ MUST | >= 2 measurable outcomes |
+| 2 | **Vision** | ✅ MUST | 1 предложение — что хотим достичь |
+| 3 | **Outcomes** | ✅ MUST | ≥ 2 measurable outcomes |
 | 4 | **Children Table** | ✅ MUST | PRD/RFC/ADR list with status |
-| 5 | **Phases** | ✅ MUST | >= 1 phase with artifacts |
+| 5 | **Phases** | ✅ MUST | ≥ 1 фаза с артефактами |
 | 6 | **Progress** | ✅ MUST | Aggregated progress bars |
 | 7 | **Dependency Graph** | SHOULD | Mermaid diagram |
-| 8 | **Risks** | SHOULD | >= 1 risk |
+| 8 | **Risks** | SHOULD | ≥ 1 risk |
 
 ## Aggregated Progress
 
-Epic progress = sum of progress from children (PRD, RFC):
+Epic progress = сумма progress из children (PRD, RFC):
 
 ```
 PRD-001  ████████████████████████  8/8   (100%) DONE

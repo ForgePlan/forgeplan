@@ -1,6 +1,8 @@
+[English](SPEC-SCHEMA.md) · [Русский](SPEC-SCHEMA.ru.md)
+
 # SPEC Schema — Formal Specification
 
-## Когда создавать Spec
+## When to Create a Spec
 
 - API design (REST, GraphQL, gRPC)
 - Data model changes
@@ -8,15 +10,15 @@
 - UI component specification
 - Integration contract
 
-**Правило**: Spec нужен когда есть **контракт** между двумя системами или командами.
+**Rule**: A Spec is needed when there is a **contract** between two systems or teams.
 
-## Обязательные секции
+## Required Sections
 
-| # | Секция | Обязательно? | Валидация |
-|---|--------|-------------|-----------|
+| # | Section | Required? | Validation |
+|---|---------|-----------|------------|
 | 1 | **Meta Header** | ✅ MUST | Status, Author, PRD link, Type |
-| 2 | **Summary** | ✅ MUST | Что специфицируется |
-| 3 | **API Contracts** или **Data Models** | ✅ MUST (≥1) | Endpoints/schemas с examples |
+| 2 | **Summary** | ✅ MUST | What is being specified |
+| 3 | **API Contracts** or **Data Models** | ✅ MUST (>= 1) | Endpoints/schemas with examples |
 | 4 | **Validation Rules** | SHOULD | Field constraints |
 | 5 | **Events / Side Effects** | SHOULD | What happens on create/update/delete |
 | 6 | **Versioning** | SHOULD | Version history |
@@ -24,9 +26,9 @@
 
 ## Spec Types
 
-| Type | Содержит | Example |
+| Type | Contains | Example |
 |------|----------|---------|
-| API | Endpoints, request/response, errors | REST API для user management |
+| API | Endpoints, request/response, errors | REST API for user management |
 | Data Model | Entities, relationships, constraints | Prisma schema changes |
 | Protocol | Message format, sequence | WebSocket protocol |
 | UI Spec | Components, states, interactions | Design system component |
@@ -38,3 +40,9 @@
 | ID | `SPEC-NNN` |
 | File | `SPEC-{NNN}-{kebab-case}.md` |
 | Path | `docs/specs/SPEC-015-oauth2-api.md` |
+
+## Related Documents
+
+- [PRD-SCHEMA.md](../schemas/PRD-SCHEMA.md) — PRD structure and validation rules
+- [EPIC-SCHEMA.md](../schemas/EPIC-SCHEMA.md) — Epic structure and aggregation
+- [ARTIFACT-MODEL.md](../methodology/ARTIFACT-MODEL.md) — Full artifact hierarchy

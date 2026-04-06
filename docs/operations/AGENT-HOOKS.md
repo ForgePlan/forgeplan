@@ -1,3 +1,5 @@
+[English](AGENT-HOOKS.md) · [Русский](AGENT-HOOKS.ru.md)
+
 # Agent Hooks — Auto-integrate Forgeplan with AI Agents
 
 Forgeplan can automatically provide project context to AI agents through hooks.
@@ -116,7 +118,7 @@ Add to `.claude/settings.json`:
 
 ## Safety Hook (Forge Mode)
 
-Блокирует опасные команды даже в yolo/acceptEdits режиме:
+Blocks dangerous commands even in yolo/acceptEdits mode:
 
 ```json
 {
@@ -137,26 +139,26 @@ Add to `.claude/settings.json`:
 }
 ```
 
-`forge-safety-hook.sh` проверяет blacklist:
+`forge-safety-hook.sh` checks the blacklist:
 - `git push --force` / `git push -f`
 - `git reset --hard`
 - `rm -rf /` / `rm -rf ~`
 - `cargo publish`
 - `DROP TABLE`
 
-При обнаружении — exit 2, команда блокируется. Агент получает сообщение: "BLOCKED by forge-safety-hook".
+On detection — exit 2, command is blocked. The agent receives the message: "BLOCKED by forge-safety-hook".
 
-### Три зоны доверия (FPF B.3)
+### Three trust zones (FPF B.3)
 
-| Зона | Управляется | Механизм |
-|------|-------------|----------|
-| **Green** (безопасно) | `settings.local.json` allow | Wildcard whitelist: `Bash(cargo:*)` |
-| **Yellow** (обратимо) | Claude Code acceptEdits | Файловые операции авто-разрешены |
-| **Red** (необратимо) | `forge-safety-hook.sh` | PreToolUse blacklist блокирует |
+| Zone | Controlled by | Mechanism |
+|------|---------------|-----------|
+| **Green** (safe) | `settings.local.json` allow | Wildcard whitelist: `Bash(cargo:*)` |
+| **Yellow** (reversible) | Claude Code acceptEdits | File operations auto-approved |
+| **Red** (irreversible) | `forge-safety-hook.sh` | PreToolUse blacklist blocks |
 
 ## Methodology Hook (Skill Activation)
 
-Напоминает о доступных методологических командах:
+Reminds about available methodology commands:
 
 ```json
 {
@@ -175,7 +177,7 @@ Add to `.claude/settings.json`:
 }
 ```
 
-Выводит: доступные skills (/forge, /fpf-simple), правила методологии (Shape → Validate → Code → Evidence → Activate), напоминание про Rust skills.
+Outputs: available skills (/forge, /fpf-simple), methodology rules (Shape -> Validate -> Code -> Evidence -> Activate), Rust skills reminder.
 
 ## Best Practices
 
