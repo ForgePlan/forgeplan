@@ -13,10 +13,10 @@
 
 ### Tasks
 
-- [ ] **11.1** Shape EPIC-002 "ForgePlan v2.0 — Knowledge OS for AI Agent Teams"
+- [x] **11.1** Shape EPIC-002 "ForgePlan v2.0 — Knowledge OS for AI Agent Teams"
   - Заполнить Vision, Goals, Children (PRD list), Success Criteria
   - `forgeplan get EPIC-002` → fill MUST sections → `forgeplan validate EPIC-002`
-  - Branch: `docs/epic-002-shape`
+  - Branch: `docs/epic-002-shape` — PR #128 merged
 
 - [ ] **11.2** Shape + implement RFC-001 "FPF Engine core module architecture"
   - Определить: bounded contexts FPF модулей, interfaces, data flow
@@ -32,16 +32,16 @@
   - GitHub Actions: `.github/workflows/forgeplan-health.yml`
   - Branch: `feat/ci-linter`
 
-- [ ] **11.4** Housekeeping
-  - Link orphans: NOTE-035, NOTE-036 → PRD-026
-  - Обновить TODO.md с результатами сессии
-  - `forgeplan health` → 0 orphans
+- [x] **11.4** Housekeeping
+  - Link 12 orphans → EPIC-002 / PRD-026
+  - Удалены 3 untracked PNG из корня
+  - `forgeplan health` → 0 orphans ✓
 
 ### Definition of Done
-- [ ] EPIC-002 active, filled, validated
+- [x] EPIC-002 active, filled, validated
 - [ ] RFC-001 active, R_eff > 0, code implemented
 - [ ] CI workflow `forgeplan-health.yml` merged
-- [ ] 0 orphans in `forgeplan health`
+- [x] 0 orphans in `forgeplan health`
 
 ---
 
