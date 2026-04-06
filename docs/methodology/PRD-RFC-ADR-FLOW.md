@@ -1,19 +1,21 @@
+[English](PRD-RFC-ADR-FLOW.md) · [Русский](PRD-RFC-ADR-FLOW.ru.md)
+
 # PRD → RFC → ADR Flow — Decision Tree
 
-## Quick Decision: Какой документ создать?
+## Quick Decision: Which Document to Create?
 
 ```
-У тебя есть задача. Начни здесь:
+You have a task. Start here:
                     │
         ┌───────────┴───────────┐
-        │ Есть ПОЛЬЗОВАТЕЛЬ     │
-        │ с ПРОБЛЕМОЙ?          │
+        │ Is there a USER       │
+        │ with a PROBLEM?       │
         └───────┬───────┬───────┘
                YES     NO
                 │       │
                 ▼       ▼
             ┌──────┐ ┌──────────────────────┐
-            │ PRD  │ │ Техническое решение? │
+            │ PRD  │ │ Technical decision?   │
             └──┬───┘ └────┬────────┬────────┘
                │         YES      NO
                │          │        │
@@ -23,8 +25,8 @@
                │      └──────┘  └──────┘
                │
         ┌──────┴──────┐
-        │ Нужны API   │
-        │ контракты?  │
+        │ Need API    │
+        │ contracts?  │
         └───┬────┬────┘
            YES  NO
             │    │
@@ -36,12 +38,12 @@
            ▼     ▼
         ┌──────────┐
         │   RFC    │
-        │(архитект)│
+        │ (archit) │
         └────┬─────┘
              │
       ┌──────┴──────┐
-      │ Принимаешь  │
-      │ решение?    │
+      │ Making a    │
+      │ decision?   │
       └───┬────┬────┘
          YES  NO
           │    │
@@ -51,61 +53,61 @@
       └──────┘
 ```
 
-## Полный Flow (по шагам)
+## Full Flow (Step by Step)
 
-### Path 1: Новая фича (Full Path)
-
-```
-1. /research [тема]          ← изучить проблему
-2. /write-doc prd [тема]     ← описать ЧТО и ЗАЧЕМ
-3. Review PRD                ← adversarial review
-4. /write-doc spec [тема]    ← описать API/data model (если нужно)
-5. /write-doc rfc [тема]     ← описать КАК строить
-6. /write-doc adr [решение]  ← зафиксировать ПОЧЕМУ так
-7. /sprint RFC-NNN Phase X   ← реализовать
-8. /audit                    ← проверить
-9. memory_retain()           ← сохранить в память
-```
-
-### Path 2: Рефакторинг / Tech Debt (Quick Path)
+### Path 1: New Feature (Full Path)
 
 ```
-1. /research [тема]          ← изучить текущее состояние
-2. /write-doc adr [решение]  ← зафиксировать решение + план
-3. /sprint ADR-NNN Phase X   ← реализовать
+1. /research [topic]          ← study the problem
+2. /write-doc prd [topic]     ← describe WHAT and WHY
+3. Review PRD                 ← adversarial review
+4. /write-doc spec [topic]    ← describe API/data model (if needed)
+5. /write-doc rfc [topic]     ← describe HOW to build
+6. /write-doc adr [decision]  ← document WHY this way
+7. /sprint RFC-NNN Phase X    ← implement
+8. /audit                     ← verify
+9. memory_retain()            ← save to memory
 ```
 
-### Path 3: Баг / Incident
+### Path 2: Refactoring / Tech Debt (Quick Path)
 
 ```
-1. Investigate               ← найти root cause
-2. /write-doc adr [fix]      ← зафиксировать решение
-3. Fix + PR                  ← реализовать
+1. /research [topic]          ← study current state
+2. /write-doc adr [decision]  ← document decision + plan
+3. /sprint ADR-NNN Phase X    ← implement
 ```
 
-### Path 4: Roadmap / Большая инициатива
+### Path 3: Bug / Incident
 
 ```
-1. /deep-research [тема]     ← глубокое исследование
-2. Create Epic               ← стратегическая инициатива
-3. N × /write-doc prd        ← PRD для каждой части
-4. N × /write-doc rfc        ← RFC для каждого PRD
-5. N × /sprint               ← реализация по фазам
+1. Investigate               ← find root cause
+2. /write-doc adr [fix]      ← document the decision
+3. Fix + PR                  ← implement
 ```
 
-## Когда что
+### Path 4: Roadmap / Large Initiative
 
-| Я хочу... | Создать | Команда |
-|-----------|---------|---------|
-| Описать новую фичу для пользователей | PRD | `/write-doc prd` |
-| Описать API контракты | SPEC | `/write-doc spec` |
-| Предложить архитектурное решение | RFC | `/write-doc rfc` |
-| Зафиксировать принятое решение | ADR | `/write-doc adr` |
-| Объединить несколько PRD/RFC в инициативу | Epic | `/write-doc epic` |
-| Быстро изучить тему | — | `/research` |
-| Глубоко изучить перед большой работой | — | `/deep-research` |
-| Реализовать по фазам | — | `/sprint` |
-| Проверить качество | — | `/audit` |
+```
+1. /deep-research [topic]     ← deep research
+2. Create Epic                ← strategic initiative
+3. N × /write-doc prd         ← PRD for each part
+4. N × /write-doc rfc         ← RFC for each PRD
+5. N × /sprint                ← implementation in phases
+```
+
+## When to Use What
+
+| I want to... | Create | Command |
+|--------------|--------|---------|
+| Describe a new feature for users | PRD | `/write-doc prd` |
+| Describe API contracts | SPEC | `/write-doc spec` |
+| Propose an architectural solution | RFC | `/write-doc rfc` |
+| Document an accepted decision | ADR | `/write-doc adr` |
+| Combine multiple PRDs/RFCs into an initiative | Epic | `/write-doc epic` |
+| Quickly study a topic | — | `/research` |
+| Deep study before major work | — | `/deep-research` |
+| Implement in phases | — | `/sprint` |
+| Verify quality | — | `/audit` |
 
 ## Artifact Lifecycle
 
@@ -126,33 +128,33 @@
    Implemented ─→ verify ─→ Closed
 ```
 
-## Правила связывания
+## Linking Rules
 
-| Связь | Описание | Пример |
-|-------|----------|--------|
-| PRD → SPEC | PRD порождает спецификацию | PRD-001 → SPEC-001 |
-| PRD → RFC | PRD порождает архитектуру | PRD-001 → RFC-042 |
-| RFC → ADR | RFC порождает решения | RFC-042 → ADR-007 |
-| PRD → Epic | PRD принадлежит эпику | PRD-001 → EPIC-003 |
-| ADR supersedes ADR | Решение заменяет другое | ADR-012 supersedes ADR-007 |
+| Link | Description | Example |
+|------|-------------|---------|
+| PRD → SPEC | PRD produces a specification | PRD-001 → SPEC-001 |
+| PRD → RFC | PRD produces architecture | PRD-001 → RFC-042 |
+| RFC → ADR | RFC produces decisions | RFC-042 → ADR-007 |
+| PRD → Epic | PRD belongs to an epic | PRD-001 → EPIC-003 |
+| ADR supersedes ADR | Decision replaces another | ADR-012 supersedes ADR-007 |
 
-## Depth Calibration (из Quint-code)
+## Depth Calibration (from Quint-code)
 
-| Сигнал | Depth | Что создаём |
-|--------|-------|-------------|
-| Быстрый fix, 1 файл | **Tactical** | Ничего или Note |
-| Фича на 1-3 дня | **Standard** | PRD (tactical) → RFC |
-| Новый модуль, 1-2 недели | **Deep** | PRD → SPEC → RFC → ADR |
-| Новая подсистема, кросс-команда | **Critical** | Epic → PRD[] → SPEC[] → RFC[] → ADR[] |
+| Signal | Depth | What to Create |
+|--------|-------|----------------|
+| Quick fix, 1 file | **Tactical** | Nothing or Note |
+| Feature for 1-3 days | **Standard** | PRD (tactical) → RFC |
+| New module, 1-2 weeks | **Deep** | PRD → SPEC → RFC → ADR |
+| New subsystem, cross-team | **Critical** | Epic → PRD[] → SPEC[] → RFC[] → ADR[] |
 
-**Правило**: если сомневаешься — выбери на один уровень выше. Лучше лишний PRD чем потом переделывать.
+**Rule**: when in doubt, choose one level higher. An extra PRD is better than having to redo things later.
 
-## Checklist перед началом реализации
+## Checklist Before Starting Implementation
 
-- [ ] Problem Statement ясен?
-- [ ] Goals измеримы?
-- [ ] Non-Goals определены (scope)?
-- [ ] Архитектура описана (RFC)?
-- [ ] Ключевые решения зафиксированы (ADR)?
-- [ ] Acceptance Criteria есть?
-- [ ] Risks оценены?
+- [ ] Problem Statement is clear?
+- [ ] Goals are measurable?
+- [ ] Non-Goals are defined (scope)?
+- [ ] Architecture is described (RFC)?
+- [ ] Key decisions are documented (ADR)?
+- [ ] Acceptance Criteria exist?
+- [ ] Risks are assessed?

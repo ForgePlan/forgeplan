@@ -1,179 +1,188 @@
+[English](UNIFIED-WORKFLOW.md) · [Русский](UNIFIED-WORKFLOW.ru.md)
+
 # Unified Workflow: Forgeplan × Orchestra × Claude Code
 
-> Три системы как единый организм. Каждая делает то, что умеет лучше всех.
-> Данные живут в одном месте, ссылки — везде.
+> Three systems as a single organism. Each does what it does best.
+> Data lives in one place, references — everywhere.
 
 ---
 
-## Оглавление
+## Table of Contents
 
-1. [Тезис и обоснование](#1-тезис-и-обоснование)
-2. [Три bounded contexts](#2-три-bounded-contexts)
-3. [Custom Fields (единые для всех конфигураций)](#3-custom-fields)
-4. [Status ↔ Phase маппинг](#4-status--phase-маппинг)
-5. [Конфигурации](#5-конфигурации)
+### Concepts
+1. [Thesis and Rationale](#1-thesis-and-rationale)
+2. [Three Bounded Contexts](#2-three-bounded-contexts)
+3. [Custom Fields (unified across all configurations)](#3-custom-fields)
+4. [Status ↔ Phase Mapping](#4-status--phase-mapping)
+
+### Configurations
+5. [Configurations](#5-configurations)
    - [Config A: Solo Dev + AI](#config-a-solo-dev--ai-agents)
    - [Config B: Small Team (2-5)](#config-b-small-team-2-5)
    - [Config C: Medium Team (5-15)](#config-c-medium-team-5-15)
 6. [Greenfield Setup](#6-greenfield-setup)
 7. [Brownfield Migration](#7-brownfield-migration)
-8. [Migration между конфигурациями](#8-migration-между-конфигурациями)
+8. [Migration Between Configurations](#8-migration-between-configurations)
+
+### Operations
 9. [Session Start Protocol](#9-session-start-protocol)
-10. [Lifecycle задачи](#10-lifecycle-задачи)
-11. [Инструкции по ролям](#11-инструкции-по-ролям)
-12. [Риски и митигации](#12-риски-и-митигации)
-13. [Узкие места (bottlenecks)](#13-узкие-места)
+10. [Task Lifecycle](#10-task-lifecycle)
+11. [Instructions by Role](#11-instructions-by-role)
+16. [Playbook: Daily Work Scenarios](#16-playbook-daily-work-scenarios)
+18. [Inbox Pattern: Signal Collection and Triage](#18-inbox-pattern-signal-collection-and-triage)
+
+### Risks & Reference
+12. [Risks and Mitigations](#12-risks-and-mitigations)
+13. [Bottlenecks](#13-bottlenecks)
 14. [Anti-patterns](#14-anti-patterns)
 15. [Quick Reference](#15-quick-reference)
-16. [Playbook: сценарии ежедневной работы](#16-playbook-сценарии-ежедневной-работы)
-17. [Чего НЕЛЬЗЯ делать (запреты)](#17-чего-нельзя-делать-запреты)
-18. [Inbox Pattern: сбор и triage сигналов](#18-inbox-pattern-сбор-и-triage-сигналов)
+17. [Prohibited Actions](#17-prohibited-actions)
 
 ---
 
-## 1. Тезис и обоснование
+## 1. Thesis and Rationale
 
-### Проблема
+### Problem
 
-Три инструмента работают изолированно:
-- **Forgeplan** знает про артефакты и качество, но не трекает кто и когда делает
-- **Orchestra** знает про задачи и людей, но не знает про методологию
-- **Claude Code** исполняет код, но каждый чат начинает с нуля
+Three tools work in isolation:
+- **Forgeplan** knows about artifacts and quality, but doesn't track who does what and when
+- **Orchestra** knows about tasks and people, but doesn't know about methodology
+- **Claude Code** executes code, but each chat starts from scratch
 
-Результат: двойная работа, потеря контекста, рассинхронизация.
+Result: duplicate work, lost context, desynchronization.
 
-### Решение
+### Solution
 
-Три **bounded context** (FPF A.1.1) с чётким разделением ответственности и минимальным набором hand-off точек. Каждая система делает то, что умеет лучше всех, и не лезет на чужую территорию.
+Three **bounded contexts** (FPF A.1.1) with clear separation of responsibilities and a minimal set of hand-off points. Each system does what it does best and doesn't encroach on another's territory.
 
-### Почему именно так (research)
+### Why This Way (research)
 
-**FPF A.1.1 U.BoundedContext**: "Make meaning local; make translation explicit." Каждая система — это semantic locale с собственным словарём. "Status" в Orchestra и "lifecycle" в Forgeplan — это РАЗНЫЕ понятия, даже если маппятся друг на друга. Нельзя смешивать.
+**FPF A.1.1 U.BoundedContext**: "Make meaning local; make translation explicit." Each system is a semantic locale with its own vocabulary. "Status" in Orchestra and "lifecycle" in Forgeplan are DIFFERENT concepts, even if they map to each other. They must not be mixed.
 
-**FPF A.7 Strict Distinction**: method ≠ work ≠ role. Forgeplan = method (КАК думать о работе). Orchestra = work (ЧТО делается КЕМ). Claude Code = role (КТО исполняет). Смешивание этих категорий — главный источник хаоса.
+**FPF A.7 Strict Distinction**: method ≠ work ≠ role. Forgeplan = method (HOW to think about work). Orchestra = work (WHAT is done by WHOM). Claude Code = role (WHO executes). Mixing these categories is the main source of chaos.
 
-**FPF B.3 Trust Calculus**: Custom fields в Orchestra = low-trust proxy. Они показывают *ссылку* на артефакт, но за quality scoring отвечает Forgeplan. Не дублируем данные — доверяем каждой системе своё.
+**FPF B.3 Trust Calculus**: Custom fields in Orchestra = low-trust proxy. They show a *reference* to an artifact, but quality scoring is Forgeplan's responsibility. We don't duplicate data — we trust each system with its own domain.
 
-**FPF A.14 Mereology**: У Forge есть ДВЕ ортогональные оси — artifact hierarchy (Epic→PRD→RFC) и execution flow (Sprint→Wave→Task). Orchestra отражает *execution*, не дублирует artifact hierarchy.
+**FPF A.14 Mereology**: Forge has TWO orthogonal axes — artifact hierarchy (Epic→PRD→RFC) and execution flow (Sprint→Wave→Task). Orchestra reflects *execution*, it does not duplicate the artifact hierarchy.
 
-### Ключевые принципы
+### Key Principles
 
-1. **Single source of truth** — данные живут в одном месте, ссылки везде
-2. **Fields на workspace-level** — переживут любой рефакторинг проектов
-3. **Минимум дублирования** — не копируем то, что можно запросить
-4. **Graceful degradation** — если Orchestra недоступна, Forgeplan работает автономно
-5. **Progressive enhancement** — начинаем с Config A, растём по мере надобности
+1. **Single source of truth** — data lives in one place, references everywhere
+2. **Fields at workspace-level** — survive any project restructuring
+3. **Minimal duplication** — don't copy what can be queried
+4. **Graceful degradation** — if Orchestra is unavailable, Forgeplan works autonomously
+5. **Progressive enhancement** — start with Config A, grow as needed
 
 ---
 
-## 2. Три bounded contexts
+## 2. Three Bounded Contexts
 
-| Система | Владеет | НЕ лезет в | Source of Truth для |
-|---------|---------|------------|---------------------|
-| **Forgeplan** | Артефакты, валидация, R_eff, evidence, lifecycle, depth, quality gates | Task tracking, assignees, due dates, коммуникация | Что делать, зачем, какого качества |
-| **Orchestra** | Задачи, статусы, assignees, due dates, чек-листы, сообщения, проекты | Валидация артефактов, R_eff scoring, evidence chain | Кто делает, когда, в каком статусе |
-| **Claude Code** | Skills, hooks, plugins, memory, agents, git workflow | Хранение данных (делегирует BC1 и BC2) | Как делать, контекст между сессиями |
+| System | Owns | Does NOT touch | Source of Truth for |
+|--------|------|----------------|---------------------|
+| **Forgeplan** | Artifacts, validation, R_eff, evidence, lifecycle, depth, quality gates | Task tracking, assignees, due dates, communication | What to do, why, at what quality |
+| **Orchestra** | Tasks, statuses, assignees, due dates, checklists, messages, projects | Artifact validation, R_eff scoring, evidence chain | Who does it, when, at what status |
+| **Claude Code** | Skills, hooks, plugins, memory, agents, git workflow | Data storage (delegates to BC1 and BC2) | How to do it, context between sessions |
 
-### Что НЕ дублируем в Orchestra
+### What We Do NOT Duplicate in Orchestra
 
-| Данные | Живёт в | Почему не дублируем |
-|--------|---------|---------------------|
-| Содержимое артефакта | Forgeplan (LanceDB + .md) | Orchestra ≠ документооборот |
-| R_eff score | Forgeplan | Вычисляемое, устаревает мгновенно |
-| Validation results | Forgeplan | Динамическое |
-| Evidence chain | Forgeplan (links) | Граф зависимостей в Forgeplan |
-| Artifact body/sections | Forgeplan markdown | Структурированный контент |
-| Git history | Git | `git log` / `git blame` авторитетны |
+| Data | Lives in | Why we don't duplicate |
+|------|----------|------------------------|
+| Artifact content | Forgeplan (LanceDB + .md) | Orchestra ≠ document management |
+| R_eff score | Forgeplan | Computed, goes stale instantly |
+| Validation results | Forgeplan | Dynamic |
+| Evidence chain | Forgeplan (links) | Dependency graph in Forgeplan |
+| Artifact body/sections | Forgeplan markdown | Structured content |
+| Git history | Git | `git log` / `git blame` are authoritative |
 
-### Что ЖИВЁТ в Orchestra
+### What LIVES in Orchestra
 
-| Данные | Зачем |
-|--------|-------|
-| Task name + Artifact ID field | Маппинг и быстрый поиск |
-| Status (Backlog→Done) | Кто и когда |
-| Phase (Shape→Done) | Где в pipeline |
-| Sprint | Группировка по спринтам |
-| Branch | Связка с git |
-| Assignee | Кто ответственный |
-| Due date | Дедлайны |
-| Checklists | FR items для трекинга progress |
-| Messages | Коммуникация в контексте задачи |
+| Data | Purpose |
+|------|---------|
+| Task name + Artifact ID field | Mapping and quick lookup |
+| Status (Backlog→Done) | Who and when |
+| Phase (Shape→Done) | Where in pipeline |
+| Sprint | Grouping by sprints |
+| Branch | Link to git |
+| Assignee | Who is responsible |
+| Due date | Deadlines |
+| Checklists | FR items for progress tracking |
+| Messages | Communication in task context |
 
 ---
 
 ## 3. Custom Fields
 
-**КРИТИЧНО**: Custom fields создаются на **workspace-level**. Это означает что они доступны в ЛЮБОМ проекте внутри workspace и переживут любой рефакторинг структуры проектов (migration A→B→C).
+**CRITICAL**: Custom fields are created at **workspace-level**. This means they are available in ANY project within the workspace and will survive any project structure refactoring (migration A→B→C).
 
-| Field | Тип | Значения | Описание | Обязательность |
-|-------|-----|----------|----------|----------------|
-| **Artifact** | `text` | `PRD-021`, `RFC-003`, `PROB-021` | ID артефакта в Forgeplan | Обязательно для artifact-linked tasks |
-| **Type** | `option` | PRD / RFC / ADR / Epic / Spec / Problem / Evidence / Note | Тип артефакта | Обязательно если есть Artifact |
-| **Depth** | `option` | Tactical / Standard / Deep / Critical | Глубина проработки из `forgeplan route` | Опционально |
-| **Phase** | `option` | Shape / Validate / Code / Evidence / Done | Текущая фаза Forge pipeline | Рекомендуется |
-| **Sprint** | `text` | `Sprint 9`, `Sprint 10` | Привязка к спринту | Рекомендуется |
-| **Branch** | `text` | `fix/adi-quality-prob021` | Git branch | Опционально |
+| Field | Type | Values | Description | Required |
+|-------|------|--------|-------------|----------|
+| **Artifact** | `text` | `PRD-021`, `RFC-003`, `PROB-021` | Artifact ID in Forgeplan | Required for artifact-linked tasks |
+| **Type** | `option` | PRD / RFC / ADR / Epic / Spec / Problem / Evidence / Note | Artifact type | Required if Artifact is set |
+| **Depth** | `option` | Tactical / Standard / Deep / Critical | Depth level from `forgeplan route` | Optional |
+| **Phase** | `option` | Shape / Validate / Code / Evidence / Done | Current Forge pipeline phase | Recommended |
+| **Sprint** | `text` | `Sprint 9`, `Sprint 10` | Sprint assignment | Recommended |
+| **Branch** | `text` | `fix/adi-quality-prob021` | Git branch | Optional |
 
-### Почему эти 6 и не больше
+### Why These 6 and No More
 
-- **Artifact** — ключевая связка, без него нет маппинга
-- **Type** — фильтрация "покажи все PRD" без чтения Forgeplan
-- **Depth** — PM видит сложность без вникания в артефакт
-- **Phase** — AI agent понимает где в pipeline без лишних запросов
-- **Sprint** — группировка по времени, работает в любой конфигурации
-- **Branch** — связка с git, AI может найти код по задаче
+- **Artifact** — the key link, without it there's no mapping
+- **Type** — filtering "show all PRDs" without reading Forgeplan
+- **Depth** — PM sees complexity without diving into the artifact
+- **Phase** — AI agent understands pipeline position without extra queries
+- **Sprint** — time-based grouping, works in any configuration
+- **Branch** — link to git, AI can find code by task
 
-**НЕ добавляем**: R_eff (вычисляемое, мгновенно устаревает), Priority (уже есть стандартное поле), Tags (уже есть стандартное поле), Description/Body (это содержимое артефакта, живёт в Forgeplan).
-
----
-
-## 4. Status ↔ Phase маппинг
-
-Два поля отражают разные аспекты одной работы:
-- **Status** — Orchestra native, видимый всем, про "состояние задачи"
-- **Phase** — Forge pipeline, про "где в методологическом цикле"
-
-| Orchestra Status | Forge Phase | Что происходит | Кто обновляет |
-|-----------------|-------------|----------------|---------------|
-| **Backlog** | Shape | Артефакт создан, секции заполняются | Создатель задачи |
-| **To Do** | Validate | Артефакт validated (PASS), готов к работе | AI после `forgeplan validate` |
-| **Doing** | Code | Код пишется, спринт в процессе | Разработчик или AI |
-| **Review** | Evidence | Audit завершён, evidence создаётся | AI после `/audit` |
-| **Done** | Done | Артефакт activated в Forgeplan | AI после `forgeplan activate` |
-
-### Правило синхронизации
-
-Если один обновлён — второй должен быть обновлён тоже. AI agent при обновлении Status автоматически обновляет Phase, и наоборот. При конфликте — Status побеждает (Orchestra = source of truth для execution state).
+**NOT added**: R_eff (computed, goes stale instantly), Priority (standard field already exists), Tags (standard field already exists), Description/Body (artifact content, lives in Forgeplan).
 
 ---
 
-## 5. Конфигурации
+## 4. Status ↔ Phase Mapping
 
-### Как выбрать конфигурацию
+Two fields reflect different aspects of the same work:
+- **Status** — Orchestra native, visible to everyone, about "task state"
+- **Phase** — Forge pipeline, about "where in the methodological cycle"
+
+| Orchestra Status | Forge Phase | What's Happening | Who Updates |
+|-----------------|-------------|------------------|-------------|
+| **Backlog** | Shape | Artifact created, sections being filled | Task creator |
+| **To Do** | Validate | Artifact validated (PASS), ready for work | AI after `forgeplan validate` |
+| **Doing** | Code | Code being written, sprint in progress | Developer or AI |
+| **Review** | Evidence | Audit complete, evidence being created | AI after `/audit` |
+| **Done** | Done | Artifact activated in Forgeplan | AI after `forgeplan activate` |
+
+### Synchronization Rule
+
+If one is updated — the other must be updated too. The AI agent automatically updates Phase when updating Status, and vice versa. On conflict — Status wins (Orchestra = source of truth for execution state).
+
+---
+
+## 5. Configurations
+
+### How to Choose a Configuration
 
 ```
-Сколько людей работают над проектом?
+How many people work on the project?
 │
-├── 1 человек (+ AI agents) ──────────→ CONFIG A: Solo Dev
+├── 1 person (+ AI agents) ──────────→ CONFIG A: Solo Dev
 │
-├── 2-5 человек ──────────────────────→ CONFIG B: Small Team
-│   └── Есть ли чёткие области?
-│       ├── Да (backend/frontend/...) → Config B с area projects
-│       └── Нет (все fullstack) ──────→ Config B с одним project
+├── 2-5 people ──────────────────────→ CONFIG B: Small Team
+│   └── Are there distinct areas?
+│       ├── Yes (backend/frontend/...) → Config B with area projects
+│       └── No (everyone fullstack) ──→ Config B with one project
 │
-└── 5-15 человек ─────────────────────→ CONFIG C: Medium Team
-    └── Есть ли параллельные спринты?
-        ├── Да (разные области/команды) → Config C полный
-        └── Нет (один sprint для всех) → Config B достаточно
+└── 5-15 people ─────────────────────→ CONFIG C: Medium Team
+    └── Are there parallel sprints?
+        ├── Yes (different areas/teams) → Config C full
+        └── No (one sprint for all) ──→ Config B is sufficient
 ```
 
 ---
 
 ### Config A: Solo Dev + AI Agents
 
-**Для кого**: один разработчик с AI агентами. Самый частый случай для Forgeplan.
+**For whom**: a single developer with AI agents. The most common case for Forgeplan.
 
-#### Структура
+#### Structure
 
 ```
 Workspace: ForgePlan
@@ -185,50 +194,50 @@ Workspace: ForgePlan
     └── ...
 ```
 
-#### Характеристики
+#### Characteristics
 
-| Параметр | Значение |
-|----------|----------|
-| Проектов | 1 ("Development") |
-| Max задач | ~50 комфортно, ~100 с Views |
-| Assignee | Не нужен (всё = я) |
-| Sprint tracking | Field "Sprint" на задаче |
+| Parameter | Value |
+|-----------|-------|
+| Projects | 1 ("Development") |
+| Max tasks | ~50 comfortably, ~100 with Views |
+| Assignee | Not needed (everything = me) |
+| Sprint tracking | "Sprint" field on task |
 | Views | Current Sprint, In Progress, By Type |
-| Daily overhead | ~0 минут (AI делает Session Start) |
-| Setup time | 15 минут |
+| Daily overhead | ~0 minutes (AI does Session Start) |
+| Setup time | 15 minutes |
 
-#### Когда использовать
+#### When to Use
 
-- Личный проект или pet project
-- Solo разработка с AI-assisted workflow
-- Начало нового проекта (greenfield) до привлечения команды
-- Прототипирование и MVP фаза
+- Personal project or pet project
+- Solo development with AI-assisted workflow
+- Starting a new project (greenfield) before bringing in a team
+- Prototyping and MVP phase
 
 #### Workflow
 
 ```
-Утро:
-  /briefing → что в работе, unread
+Morning:
+  /briefing → what's in progress, unread
   forgeplan health → blind spots
 
-Работа:
-  forgeplan route "задача" → depth
-  forgeplan new prd "Title" → артефакт
-  → Orch: создать задачу с fields
-  /sprint или /wave → реализация
+Work:
+  forgeplan route "task" → depth
+  forgeplan new prd "Title" → artifact
+  → Orch: create task with fields
+  /sprint or /wave → implementation
   → Orch: Status=Doing
   /audit → review
   → Orch: Status=Review
   forgeplan activate → done
   → Orch: Status=Done
 
-Конец дня:
-  Проверить /orch status
+End of day:
+  Check /orch status
 ```
 
 #### Saved Views
 
-| View | Фильтр |
+| View | Filter |
 |------|--------|
 | Current Sprint | Sprint = "Sprint N" AND Status ≠ Done |
 | In Progress | Status = Doing OR Review |
@@ -239,9 +248,9 @@ Workspace: ForgePlan
 
 ### Config B: Small Team (2-5)
 
-**Для кого**: небольшая команда разработчиков, возможно с PM. Каждый может работать над своей областью.
+**For whom**: a small development team, possibly with a PM. Each person can work on their own area.
 
-#### Структура
+#### Structure
 
 ```
 Workspace: ForgePlan
@@ -254,7 +263,7 @@ Workspace: ForgePlan
 │   ├── [PRD-025] Desktop MVP         @carol  Doing    Sprint 9
 │   └── [SPEC-001] UI Components      @carol  Backlog  Sprint 10
 │
-├── Project: "Backlog"                ← неразобранное, triage
+├── Project: "Backlog"                ← unsorted, triage
 │   ├── [PROB-023] Search ranking     —       Backlog  —
 │   └── New feature idea              —       Backlog  —
 │
@@ -263,50 +272,50 @@ Workspace: ForgePlan
     └── CI pipeline optimization      —       Backlog  —
 ```
 
-#### Характеристики
+#### Characteristics
 
-| Параметр | Значение |
-|----------|----------|
-| Проектов | 3-5 (по areas + Backlog + Operations) |
-| Max задач | ~100 total, ~30 per project |
-| Assignee | Обязателен — кто ответственный |
-| Sprint tracking | Field "Sprint" (единый спринт для всех) |
+| Parameter | Value |
+|-----------|-------|
+| Projects | 3-5 (by areas + Backlog + Operations) |
+| Max tasks | ~100 total, ~30 per project |
+| Assignee | Required — who is responsible |
+| Sprint tracking | "Sprint" field (single sprint for all) |
 | Views | Per-project defaults + workspace views |
-| Daily overhead | ~5 минут (briefing + status check) |
-| Setup time | 30 минут |
+| Daily overhead | ~5 minutes (briefing + status check) |
+| Setup time | 30 minutes |
 
-#### Когда использовать
+#### When to Use
 
-- Команда 2-5 человек
-- Есть чёткое разделение по областям (backend/frontend/infra)
-- Один sprint cycle для всей команды
-- PM нужна видимость по областям
+- Team of 2-5 people
+- Clear separation by areas (backend/frontend/infra)
+- One sprint cycle for the whole team
+- PM needs visibility across areas
 
-#### Что меняется vs Config A
+#### What Changes vs Config A
 
-| Аспект | Config A | Config B |
+| Aspect | Config A | Config B |
 |--------|----------|----------|
-| Проекты | 1 | 3-5 по areas |
-| Assignee | Не нужен | Обязателен |
-| Backlog | В том же проекте | Отдельный проект |
-| Operations | Нет | Отдельный проект |
-| Task creation | Всё в "Development" | Нужно выбрать project |
+| Projects | 1 | 3-5 by areas |
+| Assignee | Not needed | Required |
+| Backlog | In the same project | Separate project |
+| Operations | None | Separate project |
+| Task creation | Everything in "Development" | Need to choose project |
 | Cross-area work | N/A | Parent task + subtasks |
 
-#### Правила работы с areas
+#### Rules for Working with Areas
 
-1. **Задача принадлежит area** где основная работа. Если PRD требует и backend и frontend — основная task в "Core Platform", subtask в "Desktop App"
-2. **Backlog** — задачи без sprint и без assignee. Triage = переместить в нужный project + назначить sprint
-3. **Operations** — всё что не связано с артефактами: CI, releases, infra, docs
-4. **Cross-area dependencies** — использовать Orchestra Relations (related entities) + `forgeplan blocked`
+1. **A task belongs to the area** where the main work happens. If a PRD requires both backend and frontend — main task in "Core Platform", subtask in "Desktop App"
+2. **Backlog** — tasks without sprint and without assignee. Triage = move to the right project + assign sprint
+3. **Operations** — everything not related to artifacts: CI, releases, infra, docs
+4. **Cross-area dependencies** — use Orchestra Relations (related entities) + `forgeplan blocked`
 
-#### Routing правило для AI агента
+#### Routing Rule for AI Agent
 
 ```
-При создании задачи:
-  IF Type = PRD|RFC|ADR|Problem AND scope содержит "cli"|"core"|"backend"
+When creating a task:
+  IF Type = PRD|RFC|ADR|Problem AND scope contains "cli"|"core"|"backend"
     → Project: "Core Platform"
-  ELIF Type = PRD|Spec AND scope содержит "ui"|"desktop"|"react"|"tauri"
+  ELIF Type = PRD|Spec AND scope contains "ui"|"desktop"|"react"|"tauri"
     → Project: "Desktop App"
   ELIF Type = None (operational task)
     → Project: "Operations"
@@ -316,7 +325,7 @@ Workspace: ForgePlan
 
 #### Saved Views
 
-| View | Scope | Фильтр |
+| View | Scope | Filter |
 |------|-------|--------|
 | My Tasks | Workspace | Assignee = me AND Status ≠ Done |
 | Current Sprint | Workspace | Sprint = "Sprint N" AND Status ≠ Done |
@@ -328,9 +337,9 @@ Workspace: ForgePlan
 
 ### Config C: Medium Team (5-15)
 
-**Для кого**: команда с ролями (PM, Dev, QA, Designer). Параллельные sprint scopes по областям.
+**For whom**: a team with roles (PM, Dev, QA, Designer). Parallel sprint scopes by area.
 
-#### Структура
+#### Structure
 
 ```
 Workspace: ForgePlan
@@ -358,29 +367,29 @@ Workspace: ForgePlan
 └── Document: "Sprint 10 Goals"                 ← shared context
 ```
 
-#### Характеристики
+#### Characteristics
 
-| Параметр | Значение |
-|----------|----------|
-| Проектов | 3-5 areas × sub-projects |
-| Max задач | ~300 total |
-| Assignee | Обязателен |
-| Sprint tracking | **Sub-project** per sprint per area (не field!) |
+| Parameter | Value |
+|-----------|-------|
+| Projects | 3-5 areas × sub-projects |
+| Max tasks | ~300 total |
+| Assignee | Required |
+| Sprint tracking | **Sub-project** per sprint per area (not a field!) |
 | Views | Per-role views |
-| Daily overhead | ~15 минут (standup + status + triage) |
-| Setup time | 1-2 часа |
-| Max nesting | 3 уровня (workspace → project → sub-project) — это ЛИМИТ Orchestra |
+| Daily overhead | ~15 minutes (standup + status + triage) |
+| Setup time | 1-2 hours |
+| Max nesting | 3 levels (workspace → project → sub-project) — this is Orchestra's LIMIT |
 
-#### Когда использовать
+#### When to Use
 
-- Команда 5-15 человек с разными ролями
-- Параллельные sprint scopes (Core и Desktop работают независимо)
-- PM нужна видимость cross-area
+- Team of 5-15 people with different roles
+- Parallel sprint scopes (Core and Desktop work independently)
+- PM needs cross-area visibility
 - QA involvement (Review status = QA queue)
 
-#### Что меняется vs Config B
+#### What Changes vs Config B
 
-| Аспект | Config B | Config C |
+| Aspect | Config B | Config C |
 |--------|----------|----------|
 | Sprint tracking | Field | Sub-project |
 | Sprint transition | Change field value | Create new sub-project |
@@ -390,59 +399,59 @@ Workspace: ForgePlan
 | QA workflow | Review status | Review = QA queue |
 | Nesting | Workspace → Project | Workspace → Project → Sub-project (MAX!) |
 
-#### Роли и Views
+#### Roles and Views
 
-| Роль | Что видит | Primary View |
-|------|-----------|-------------|
-| **Developer** | Свои задачи в текущем sprint | My Tasks + Current Sprint |
-| **PM** | Все задачи по всем areas | Cross-area Sprint Overview |
-| **QA** | Задачи в Review | Review Queue |
-| **Designer** | Spec/PRD задачи | Type = Spec OR PRD |
+| Role | What They See | Primary View |
+|------|---------------|-------------|
+| **Developer** | Their tasks in current sprint | My Tasks + Current Sprint |
+| **PM** | All tasks across all areas | Cross-area Sprint Overview |
+| **QA** | Tasks in Review | Review Queue |
+| **Designer** | Spec/PRD tasks | Type = Spec OR PRD |
 | **Tech Lead** | Architecture tasks | Type = RFC OR ADR |
 
-#### Sprint transition
+#### Sprint Transition
 
 ```
-Конец Sprint 10:
-1. Создать "Core Sprint 11" sub-project
-2. Незавершённые задачи → move_entity в "Core Sprint 11"
-3. Новые задачи из "Core Backlog" → move в "Core Sprint 11"
-4. "Core Sprint 10" sub-project → archive (не удалять!)
+End of Sprint 10:
+1. Create "Core Sprint 11" sub-project
+2. Unfinished tasks → move_entity to "Core Sprint 11"
+3. New tasks from "Core Backlog" → move to "Core Sprint 11"
+4. "Core Sprint 10" sub-project → archive (don't delete!)
 
-ВАЖНО: В Config C sprint = sub-project, НЕ field.
-Не использовать Sprint field и sub-project одновременно (§14 Anti-patterns).
+IMPORTANT: In Config C sprint = sub-project, NOT field.
+Do not use Sprint field and sub-project simultaneously (see Anti-patterns, section 14).
 ```
 
-#### Ограничения
+#### Limitations
 
-- **3 уровня nesting — МАКСИМУМ Orchestra**. Нельзя добавить ещё один уровень. Если нужно больше — использовать parent-child tasks внутри sub-project
-- **Sprint sub-projects множатся** — за год 24+ sub-projects на area. Митигация: архивировать завершённые (showArchived=false по умолчанию)
-- **Cross-area task** — живёт в одном sub-project, subtask-ссылка в другом. Relations для видимости
+- **3 nesting levels — Orchestra's MAXIMUM**. You cannot add another level. If you need more — use parent-child tasks within a sub-project
+- **Sprint sub-projects multiply** — over a year, 24+ sub-projects per area. Mitigation: archive completed ones (showArchived=false by default)
+- **Cross-area task** — lives in one sub-project, subtask reference in another. Relations for visibility
 
 ---
 
 ## 6. Greenfield Setup
 
-Начинаешь проект с нуля. Нет артефактов, нет задач, чистый workspace.
+Starting a project from scratch. No artifacts, no tasks, clean workspace.
 
-### Шаг 1: Определи конфигурацию
+### Step 1: Determine Configuration
 
 ```
-Вопрос: сколько людей будут работать?
+Question: how many people will be working?
 ├── 1 → Config A
 ├── 2-5 → Config B
 └── 5+ → Config C
 ```
 
-### Шаг 2: Setup workspace
+### Step 2: Set Up Workspace
 
 #### Config A: Greenfield
 
 ```bash
-# 1. Workspace уже есть (или создать в Orchestra UI)
+# 1. Workspace already exists (or create in Orchestra UI)
 
-# 2. Создать custom fields (workspace-level)
-# AI выполняет через MCP:
+# 2. Create custom fields (workspace-level)
+# AI executes via MCP:
 manage_field: create Artifact (text)
 manage_field: create Type (option) → PRD, RFC, ADR, Epic, Spec, Problem, Evidence, Note
 manage_field: create Depth (option) → Tactical, Standard, Deep, Critical
@@ -450,15 +459,15 @@ manage_field: create Phase (option) → Shape, Validate, Code, Evidence, Done
 manage_field: create Sprint (text)
 manage_field: create Branch (text)
 
-# 3. Создать проект
+# 3. Create project
 create_entity: Project "Development"
 
-# 4. Инициализировать Forgeplan
+# 4. Initialize Forgeplan
 forgeplan init -y
 forgeplan health
 
-# 5. Создать первый артефакт + задачу
-forgeplan route "описание проекта"
+# 5. Create first artifact + task
+forgeplan route "project description"
 forgeplan new epic "Project Name"
 → Orch: create task "[EPIC-001] Project Name"
   Fields: Artifact=EPIC-001, Type=Epic, Phase=Shape
@@ -467,9 +476,9 @@ forgeplan new epic "Project Name"
 #### Config B: Greenfield
 
 ```bash
-# 1-2. Те же custom fields (workspace-level)
+# 1-2. Same custom fields (workspace-level)
 
-# 3. Создать проекты по areas
+# 3. Create projects by areas
 create_entity: Project "Backend"
 create_entity: Project "Frontend"
 create_entity: Project "Backlog"
@@ -477,11 +486,11 @@ create_entity: Project "Operations"
 
 # 4. Forgeplan init + health
 
-# 5. Создать Epic + PRDs по areas
+# 5. Create Epic + PRDs by areas
 forgeplan new epic "Project Name"
 forgeplan new prd "Backend API"
 forgeplan new prd "Frontend UI"
-→ Orch: tasks в соответствующих projects
+→ Orch: tasks in corresponding projects
 ```
 
 #### Config C: Greenfield
@@ -489,7 +498,7 @@ forgeplan new prd "Frontend UI"
 ```bash
 # 1-2. Custom fields
 
-# 3. Проекты + sub-projects
+# 3. Projects + sub-projects
 create_entity: Project "Backend"
   create_entity: Sub-project "Backend Sprint 1" (contextUid=Backend)
   create_entity: Sub-project "Backend Backlog" (contextUid=Backend)
@@ -504,197 +513,197 @@ create_entity: Channel "Standup"
 # 5. Epic + area PRDs + tasks
 ```
 
-### Шаг 3: Первый sprint
+### Step 3: First Sprint
 
 ```
-1. forgeplan route каждой задачи → определить depth
-2. Создать артефакты (PRD, RFC по depth)
-3. Создать задачи в Orchestra с fields
-4. Назначить Sprint = "Sprint 1"
-5. /sprint для начала работы
+1. forgeplan route each task → determine depth
+2. Create artifacts (PRD, RFC by depth)
+3. Create tasks in Orchestra with fields
+4. Assign Sprint = "Sprint 1"
+5. /sprint to start work
 ```
 
-### Шаг 4: Настроить AI окружение
+### Step 4: Configure AI Environment
 
 ```
-1. Проверить CLAUDE.md содержит Session Start Protocol
-2. Проверить memory содержит unified workflow architecture
-3. Проверить /sync-tasks работает с новым workspace
-4. Первый /briefing → убедиться что видит задачи
+1. Verify CLAUDE.md contains Session Start Protocol
+2. Verify memory contains unified workflow architecture
+3. Verify /sync-tasks works with the new workspace
+4. First /briefing → ensure it sees tasks
 ```
 
 ---
 
 ## 7. Brownfield Migration
 
-У тебя уже есть проект с артефактами в Forgeplan, но Orchestra пустая или используется по-другому.
+You already have a project with artifacts in Forgeplan, but Orchestra is empty or used differently.
 
-### Сценарий 1: Forgeplan есть, Orchestra пустая
+### Scenario 1: Forgeplan Exists, Orchestra Empty
 
 ```bash
-# 1. Setup custom fields (как в Greenfield)
+# 1. Set up custom fields (same as Greenfield)
 
-# 2. Создать проект(ы) по конфигурации
+# 2. Create project(s) by configuration
 
-# 3. Backfill: создать задачи для существующих артефактов
-forgeplan list --status active    # → список active артефактов
-forgeplan list --status draft     # → список draft артефактов
+# 3. Backfill: create tasks for existing artifacts
+forgeplan list --status active    # → list of active artifacts
+forgeplan list --status draft     # → list of draft artifacts
 
-# Для каждого active артефакта:
+# For each active artifact:
 → Orch: create task "[ID] Title"
   Fields: Artifact=ID, Type=kind, Phase=Done, Status=Done
 
-# Для каждого draft артефакта:
+# For each draft artifact:
 → Orch: create task "[ID] Title"
-  Fields: Artifact=ID, Type=kind, Phase=текущая, Status=текущий
+  Fields: Artifact=ID, Type=kind, Phase=current, Status=current
 
 # 4. Verify
-/orch status → должен показать все артефакты
-forgeplan health → сравнить с Orchestra
+/orch status → should show all artifacts
+forgeplan health → compare with Orchestra
 ```
 
-### Сценарий 2: Orchestra есть с задачами, Forgeplan есть с артефактами
+### Scenario 2: Orchestra Has Tasks, Forgeplan Has Artifacts
 
 ```bash
-# 1. Добавить custom fields к workspace
+# 1. Add custom fields to workspace
 
-# 2. Для существующих задач — добавить Artifact field если есть маппинг
-# Ручной процесс: найти соответствия task ↔ artifact
+# 2. For existing tasks — add Artifact field if mapping exists
+# Manual process: find task ↔ artifact correspondences
 
-# 3. Для артефактов без задач — создать задачи
+# 3. For artifacts without tasks — create tasks
 
-# 4. Для задач без артефактов — оценить нужен ли артефакт
-#    forgeplan route "описание задачи"
-#    Если Tactical → не нужен, оставить как есть
-#    Если Standard+ → создать артефакт, привязать
+# 4. For tasks without artifacts — assess if an artifact is needed
+#    forgeplan route "task description"
+#    If Tactical → not needed, leave as is
+#    If Standard+ → create artifact, link
 ```
 
-### Сценарий 3: Переход с другого task tracker
+### Scenario 3: Migrating from Another Task Tracker
 
 ```bash
-# 1. Export задач из старого tracker (CSV/JSON)
-# 2. Setup Orchestra (fields + projects)
-# 3. Import через create_entity batch
-# 4. Map artifact IDs где есть
-# 5. Forgeplan остаётся как есть (source of truth для артефактов)
+# 1. Export tasks from old tracker (CSV/JSON)
+# 2. Set up Orchestra (fields + projects)
+# 3. Import via create_entity batch
+# 4. Map artifact IDs where applicable
+# 5. Forgeplan remains as is (source of truth for artifacts)
 ```
 
 ---
 
-## 8. Migration между конфигурациями
+## 8. Migration Between Configurations
 
 ### A → B: Solo → Small Team
 
-**Когда**: к проекту присоединяется 2-й человек.
+**When**: a 2nd person joins the project.
 
-**Что делать**:
+**What to do**:
 ```
-1. Custom fields уже на workspace-level → ничего не меняем
-2. Переименовать "Development" → "Core" (или другое area name)
-3. Создать дополнительные проекты по areas
-4. Создать "Backlog" и "Operations"
-5. Распределить задачи по проектам (move_entity)
-6. Начать использовать Assignee field
-7. Обновить /sync-tasks routing rules
+1. Custom fields already at workspace-level → nothing to change
+2. Rename "Development" → "Core" (or another area name)
+3. Create additional projects by areas
+4. Create "Backlog" and "Operations"
+5. Distribute tasks across projects (move_entity)
+6. Start using Assignee field
+7. Update /sync-tasks routing rules
 ```
 
-**Effort**: 30 минут. **Risk**: Low — fields сохраняются, задачи перемещаются.
+**Effort**: 30 minutes. **Risk**: Low — fields are preserved, tasks are moved.
 
 ### B → C: Small Team → Medium Team
 
-**Когда**: команда растёт до 5+, нужны параллельные sprint scopes.
+**When**: team grows to 5+, parallel sprint scopes are needed.
 
-**Что делать**:
+**What to do**:
 ```
-1. Custom fields — без изменений
-2. В каждом area-project создать sub-projects для спринтов:
+1. Custom fields — no changes
+2. In each area project, create sub-projects for sprints:
    "Backend" → "Backend Sprint N", "Backend Backlog"
-3. Переместить задачи из project root в sub-projects
-4. Создать Channels для коммуникации
-5. Настроить Views per role
-6. Sprint field → опционально (sub-project = sprint)
+3. Move tasks from project root to sub-projects
+4. Create Channels for communication
+5. Set up Views per role
+6. Sprint field → optional (sub-project = sprint)
 ```
 
-**Effort**: 1-2 часа. **Risk**: Medium — нужно перемещать задачи, может потеряться history.
+**Effort**: 1-2 hours. **Risk**: Medium — tasks need to be moved, history may be lost.
 
-### C → B: Downsize (команда уменьшилась)
+### C → B: Downsize (team shrunk)
 
-**Когда**: команда уменьшилась, overhead Config C не оправдан.
+**When**: team shrunk, Config C overhead is not justified.
 
-**Что делать**:
+**What to do**:
 ```
-1. Объединить sub-projects в project root
-2. Удалить пустые sub-projects
-3. Вернуться к Sprint field вместо sub-projects
-4. Channels можно оставить или архивировать
+1. Merge sub-projects into project root
+2. Delete empty sub-projects
+3. Return to Sprint field instead of sub-projects
+4. Channels can be kept or archived
 ```
 
-**Effort**: 30 минут. **Risk**: Low.
+**Effort**: 30 minutes. **Risk**: Low.
 
-### B → A: Обратно в Solo
+### B → A: Back to Solo
 
 ```
-1. Объединить все area projects в один "Development"
-2. Удалить пустые projects
-3. Убрать Assignee (всё = я)
+1. Merge all area projects into one "Development"
+2. Delete empty projects
+3. Remove Assignee (everything = me)
 ```
 
 ---
 
 ## 9. Session Start Protocol
 
-**ОБЯЗАТЕЛЬНО при каждом новом чате Claude Code.**
+**MANDATORY on every new Claude Code chat.**
 
 ```
 STEP 1: CONTEXT RESTORE
-├── CLAUDE.md загружается автоматически
+├── CLAUDE.md loads automatically
 ├── memory_recall("Forgeplan") — Hindsight
-└── Auto-memory (MEMORY.md) — загружается автоматически
+└── Auto-memory (MEMORY.md) — loads automatically
 
-STEP 2: PROJECT HEALTH (параллельно)
+STEP 2: PROJECT HEALTH (in parallel)
 ├── forgeplan health
-│   → blind spots (active без evidence)
-│   → orphans (без связей)
+│   → blind spots (active without evidence)
+│   → orphans (without links)
 │   → stale artifacts
 │
 └── Orchestra query (active tasks)
-    → что в Doing / Review
+    → what's in Doing / Review
     → overdue tasks
     → unread messages
 
 STEP 3: SYNTHESIS
-"Сейчас в работе:
+"Currently in progress:
   • [PRD-021] ADI Quality — Doing, Phase: Code, Sprint 9
   • [PROB-021] prompt bugs — Review, Phase: Evidence
-Health: 2 blind spots (RFC-003, ADR-005 без evidence)
-Overdue: нет
-Следующее: завершить PRD-021 → evidence → activate"
+Health: 2 blind spots (RFC-003, ADR-005 without evidence)
+Overdue: none
+Next: complete PRD-021 → evidence → activate"
 
 STEP 4: RECOMMEND
-Конкретный next action по методологии:
-  → Если есть blind spots: "Fix blind spots first"
-  → Если есть Doing tasks: "Continue [task]"
-  → Если всё Done: "Start next sprint task"
+Specific next action per methodology:
+  → If blind spots exist: "Fix blind spots first"
+  → If Doing tasks exist: "Continue [task]"
+  → If everything Done: "Start next sprint task"
 ```
 
-### Когда НЕ выполнять полный протокол
+### When NOT to Execute the Full Protocol
 
-- Короткий вопрос ("как работает X?") → достаточно CLAUDE.md
-- Continuation явного чата ("продолжи где остановился") → context уже есть
-- Отладка бага → сразу в код, протокол после
+- Short question ("how does X work?") → CLAUDE.md is sufficient
+- Continuation of an explicit chat ("continue where you left off") → context already exists
+- Debugging a bug → straight to code, protocol after
 
 ---
 
-## 10. Lifecycle задачи
+## 10. Task Lifecycle
 
-### От идеи до Done
+### From Idea to Done
 
 ```
 ┌─────────┐     ┌──────────┐     ┌────────┐     ┌──────────┐     ┌──────┐
 │ ROUTE   │────▶│  SHAPE   │────▶│  CODE  │────▶│ EVIDENCE │────▶│ DONE │
 │         │     │          │     │        │     │          │     │      │
 │route    │     │new + fill│     │sprint/ │     │audit +   │     │activ-│
-│"задача" │     │validate  │     │wave    │     │evidence  │     │ate   │
+│"task"   │     │validate  │     │wave    │     │evidence  │     │ate   │
 │         │     │          │     │        │     │          │     │      │
 │Orch:    │     │Orch:     │     │Orch:   │     │Orch:     │     │Orch: │
 │—        │     │Backlog→  │     │Doing   │     │Review    │     │Done  │
@@ -702,30 +711,30 @@ STEP 4: RECOMMEND
 └─────────┘     └──────────┘     └────────┘     └──────────┘     └──────┘
 ```
 
-### Детальные шаги
+### Detailed Steps
 
 ```
 1. ROUTE
-   forgeplan route "описание задачи"
+   forgeplan route "task description"
    → Depth: Standard, Pipeline: PRD → RFC
-   → Orchestra: ничего пока
+   → Orchestra: nothing yet
 
 2. CREATE (Forgeplan + Orchestra)
-   forgeplan new prd "Title"           → PRD-XXX создан
+   forgeplan new prd "Title"           → PRD-XXX created
    Orch: create task "[PRD-XXX] Title"
    Orch: set fields: Artifact=PRD-XXX, Type=PRD, Depth=Standard
    Orch: set Phase=Shape, Status=Backlog
 
 3. SHAPE
-   Заполнить MUST секции (Problem, Goals, FR, Non-Goals, Related)
+   Fill MUST sections (Problem, Goals, FR, Non-Goals, Related)
    forgeplan validate PRD-XXX          → PASS
    Orch: Phase=Validate, Status=To Do
 
 4. CODE
-   /sprint или /wave для реализации
+   /sprint or /wave for implementation
    Orch: Phase=Code, Status=Doing
    Orch: Branch=feat/xxx
-   Orch: добавить Checklist с FR items из PRD
+   Orch: add Checklist with FR items from PRD
 
 5. AUDIT + EVIDENCE
    /audit → 5-agent review
@@ -738,342 +747,342 @@ STEP 4: RECOMMEND
    forgeplan activate PRD-XXX          → draft → active
    Orch: Phase=Done, Status=Done
 
-7. COMMIT + PR (если ещё не сделано)
+7. COMMIT + PR (if not done yet)
    git commit + git push + gh pr create
-   Orch: Branch field обновлён
+   Orch: Branch field updated
 ```
 
-### Tactical tasks (без артефакта)
+### Tactical Tasks (without artifact)
 
 ```
 forgeplan route "fix typo" → Tactical
-→ Просто создать задачу в Orchestra БЕЗ Artifact field
+→ Simply create a task in Orchestra WITHOUT Artifact field
 → Status: To Do → Doing → Done
 → No validate, no evidence, no activate
 ```
 
 ---
 
-## 11. Инструкции по ролям
+## 11. Instructions by Role
 
-### Для разработчика (Human)
+### For the Developer (Human)
 
-| Когда | Что делать |
-|-------|-----------|
-| Утро | `/briefing` → что в работе, overdue, unread |
-| Перед задачей | `forgeplan route "описание"` → depth |
-| Создание | `forgeplan new ...` + задача в Orch с fields |
-| Работа | Двигай Status в Orchestra по мере прогресса |
-| Код | `/sprint` или `/wave` для AI-assisted dev |
-| Финиш | `forgeplan activate` + Orch: Status=Done |
-| Конец дня | `/orch status` → всё ли актуально |
+| When | What to Do |
+|------|------------|
+| Morning | `/briefing` → what's in progress, overdue, unread |
+| Before a task | `forgeplan route "description"` → depth |
+| Creation | `forgeplan new ...` + task in Orch with fields |
+| Work | Move Status in Orchestra as you progress |
+| Code | `/sprint` or `/wave` for AI-assisted dev |
+| Finish | `forgeplan activate` + Orch: Status=Done |
+| End of day | `/orch status` → is everything up to date |
 
-### Для PM / Tech Lead
+### For PM / Tech Lead
 
-| Когда | Что делать |
-|-------|-----------|
-| Обзор | `/orch projects` + `forgeplan health` — полная картина |
-| Планирование | Создавай задачи с Artifact, Sprint, Priority fields |
-| Приоритеты | Priority + Sprint fields в Orchestra |
-| Качество | `forgeplan validate` + `forgeplan score` для R_eff |
-| Коммуникация | `/orch msg` для обсуждений в контексте задачи |
-| Sprint planning | Создать задачи для next sprint, назначить Assignee |
-| Retro | `forgeplan health` → что сделано, что blind spot |
+| When | What to Do |
+|------|------------|
+| Overview | `/orch projects` + `forgeplan health` — full picture |
+| Planning | Create tasks with Artifact, Sprint, Priority fields |
+| Priorities | Priority + Sprint fields in Orchestra |
+| Quality | `forgeplan validate` + `forgeplan score` for R_eff |
+| Communication | `/orch msg` for discussions in task context |
+| Sprint planning | Create tasks for next sprint, assign Assignee |
+| Retro | `forgeplan health` → what's done, what's a blind spot |
 
-### Для QA
+### For QA
 
-| Когда | Что делать |
-|-------|-----------|
-| Queue | View "Status = Review" — задачи для проверки |
-| Тестирование | Проверить checklist (FR items), `cargo test` |
-| Баги | `forgeplan new problem "Bug"` + задача в Orch |
-| Approve | Orch: Status → Done, подтвердить evidence |
+| When | What to Do |
+|------|------------|
+| Queue | View "Status = Review" — tasks to check |
+| Testing | Check checklist (FR items), `cargo test` |
+| Bugs | `forgeplan new problem "Bug"` + task in Orch |
+| Approve | Orch: Status → Done, confirm evidence |
 
-### Для AI агента (Claude Code main agent)
+### For AI Agent (Claude Code main agent)
 
-| Правило | Описание |
-|---------|----------|
-| **Session start** | ОБЯЗАТЕЛЬНО: Session Start Protocol |
-| **Перед работой** | Проверить active tasks в Orchestra |
-| **При создании артефакта** | Создать задачу в Orchestra с fields |
-| **При смене Phase** | Обновить Phase + Status в Orchestra |
-| **При activate** | Пометить задачу Done |
-| **При commit** | Обновить Branch field |
-| **Перед create** | `search_entities` по Artifact ID — не создавать дубли |
-| **НИКОГДА** | Не `send_message` без явного запроса (safety rule) |
-| **НИКОГДА** | Не `delete_entity` без подтверждения (destructive) |
+| Rule | Description |
+|------|-------------|
+| **Session start** | MANDATORY: Session Start Protocol |
+| **Before work** | Check active tasks in Orchestra |
+| **When creating artifact** | Create task in Orchestra with fields |
+| **When changing Phase** | Update Phase + Status in Orchestra |
+| **When activating** | Mark task Done |
+| **When committing** | Update Branch field |
+| **Before create** | `search_entities` by Artifact ID — don't create duplicates |
+| **NEVER** | Don't `send_message` without explicit request (safety rule) |
+| **NEVER** | Don't `delete_entity` without confirmation (destructive) |
 
-### Для Sub-агентов (TeamCreate teammates)
+### For Sub-agents (TeamCreate teammates)
 
-| Правило | Описание |
-|---------|----------|
-| **Чтение** | Могут читать задачи из Orchestra для контекста |
-| **Запись** | НЕ обновляют Orchestra (только main agent / team-lead) |
-| **Scope** | Работают только с файлами в своём ownership |
-| **Коммуникация** | Через team-lead, не напрямую в Orchestra |
+| Rule | Description |
+|------|-------------|
+| **Reading** | Can read tasks from Orchestra for context |
+| **Writing** | Do NOT update Orchestra (only main agent / team-lead) |
+| **Scope** | Work only with files in their ownership |
+| **Communication** | Through team-lead, not directly in Orchestra |
 
 ---
 
-## 12. Риски и митигации
+## 12. Risks and Mitigations
 
-### R1: Sync Drift (ВЫСОКИЙ)
-**Описание**: Orchestra и Forgeplan рассинхронизируются — задача Done в Orch, но артефакт не activated.
-**Вероятность**: Высокая (ручной sync = человеческий фактор)
-**Импакт**: Средний (два источника правды → confusion)
-**Митигации**:
-- Session Start Protocol проверяет оба → детектит drift
-- `/sync-tasks` enhanced — показывает diff
-- Будущее: Hook на `forgeplan activate` → auto-mark Done в Orch
+### R1: Sync Drift (HIGH)
+**Description**: Orchestra and Forgeplan desynchronize — task Done in Orch, but artifact not activated.
+**Probability**: High (manual sync = human factor)
+**Impact**: Medium (two sources of truth → confusion)
+**Mitigations**:
+- Session Start Protocol checks both → detects drift
+- `/sync-tasks` enhanced — shows diff
+- Future: Hook on `forgeplan activate` → auto-mark Done in Orch
 
-### R2: Field Bloat (СРЕДНИЙ)
-**Описание**: Команда добавляет custom fields для каждого нового need.
-**Вероятность**: Средняя (natural tendency)
-**Импакт**: Низкий (noise, но не ломает)
-**Митигация**: Строго 6 полей. Новое поле = обоснование + обновление этого гайда. R_eff НЕ дублируем.
+### R2: Field Bloat (MEDIUM)
+**Description**: Team adds custom fields for every new need.
+**Probability**: Medium (natural tendency)
+**Impact**: Low (noise, but doesn't break things)
+**Mitigation**: Strictly 6 fields. New field = justification + update this guide. R_eff is NOT duplicated.
 
-### R3: Phase vs Status Confusion (ВЫСОКИЙ)
-**Описание**: Два параллельных трекинга стадии, один обновлён а другой нет.
-**Вероятность**: Высокая
-**Импакт**: Средний (AI принимает решения на stale data)
-**Митигация**: Чёткий маппинг (§4). AI обновляет оба при любом изменении. При конфликте Status побеждает.
+### R3: Phase vs Status Confusion (HIGH)
+**Description**: Two parallel stage trackers, one updated but not the other.
+**Probability**: High
+**Impact**: Medium (AI makes decisions on stale data)
+**Mitigation**: Clear mapping (section 4). AI updates both on any change. On conflict, Status wins.
 
-### R4: AI создаёт дубли (СРЕДНИЙ)
-**Описание**: AI agent создаёт задачу для артефакта который уже трекается.
-**Вероятность**: Средняя (особенно в Config C)
-**Импакт**: Низкий (шум, легко удалить)
-**Митигация**: Перед `create_entity` ВСЕГДА `search_entities` по Artifact ID.
+### R4: AI Creates Duplicates (MEDIUM)
+**Description**: AI agent creates a task for an artifact that is already tracked.
+**Probability**: Medium (especially in Config C)
+**Impact**: Low (noise, easy to delete)
+**Mitigation**: Before `create_entity` ALWAYS `search_entities` by Artifact ID.
 
-### R5: Onboarding Friction (ВЫСОКИЙ для Config C)
-**Описание**: Новый человек не понимает разделение Forgeplan/Orchestra/Claude Code.
-**Вероятность**: Высокая
-**Импакт**: Высокий (ломает conventions, создаёт шум)
-**Митигация**: Этот гайд + onboarding checklist + AI помогает через Session Start. Первая неделя = buddy system.
+### R5: Onboarding Friction (HIGH for Config C)
+**Description**: New person doesn't understand the Forgeplan/Orchestra/Claude Code separation.
+**Probability**: High
+**Impact**: High (breaks conventions, creates noise)
+**Mitigation**: This guide + onboarding checklist + AI helps via Session Start. First week = buddy system.
 
-### R6: Orchestra Downtime (НИЗКИЙ)
-**Описание**: Orchestra API недоступен.
-**Вероятность**: Низкая
-**Импакт**: Средний (теряем task tracking)
-**Митигация**: Forgeplan работает автономно. Claude Code tasks как fallback. Sync после восстановления.
+### R6: Orchestra Downtime (LOW)
+**Description**: Orchestra API unavailable.
+**Probability**: Low
+**Impact**: Medium (lose task tracking)
+**Mitigation**: Forgeplan works autonomously. Claude Code tasks as fallback. Sync after recovery.
 
-### R7: Sprint Scope Creep (СРЕДНИЙ)
-**Описание**: Задачи добавляются в sprint без route/shape.
-**Вероятность**: Средняя (давление дедлайнов)
-**Импакт**: Средний (нарушение методологии, tech debt)
-**Митигация**: AI agent проверяет "есть ли Artifact?" при Status → Doing. Tactical tasks допустимы без артефакта.
+### R7: Sprint Scope Creep (MEDIUM)
+**Description**: Tasks added to sprint without route/shape.
+**Probability**: Medium (deadline pressure)
+**Impact**: Medium (methodology violation, tech debt)
+**Mitigation**: AI agent checks "does Artifact exist?" when Status → Doing. Tactical tasks are allowed without an artifact.
 
 ### R8: Nesting Limit (Config C only)
-**Описание**: Orchestra поддерживает max 3 уровня. Нельзя добавить ещё один.
-**Вероятность**: Низкая (нужно только при Config C)
-**Импакт**: Высокий (структурное ограничение)
-**Митигация**: Использовать parent-child tasks внутри sub-project. Не пытаться добавить 4-й уровень проектов.
+**Description**: Orchestra supports max 3 levels. Cannot add another.
+**Probability**: Low (only needed for Config C)
+**Impact**: High (structural limitation)
+**Mitigation**: Use parent-child tasks within a sub-project. Do not attempt to add a 4th project level.
 
 ---
 
-## 13. Узкие места
+## 13. Bottlenecks
 
-| Bottleneck | Описание | Влияние | Решение |
-|-----------|----------|---------|---------|
-| **Manual dual-create** | Создать артефакт + задачу = 2 действия | Friction на каждую задачу | Auto-sync в `/forge-cycle`. AI создаёт оба |
-| **Phase update** | Забыть обновить Phase field | Stale data для AI | AI обновляет при смене Status |
-| **Sprint transition** | Перенос незакрытых задач | Overhead каждые 1-2 недели | A/B: change Sprint field. C: move to new sub-project |
-| **Cross-area deps** | Задача блокирует другую area | Visibility gap | Orchestra Relations + `forgeplan blocked` |
-| **Context window** | AI тратит tokens на Orch queries | Slower responses | Cache workspace overview в session start |
-| **Backfill existing** | 20+ артефактов без задач в Orch | Migration effort | Batch script или AI agent один раз |
+| Bottleneck | Description | Impact | Solution |
+|------------|-------------|--------|----------|
+| **Manual dual-create** | Creating artifact + task = 2 actions | Friction on every task | Auto-sync in `/forge-cycle`. AI creates both |
+| **Phase update** | Forgetting to update Phase field | Stale data for AI | AI updates when Status changes |
+| **Sprint transition** | Moving unclosed tasks | Overhead every 1-2 weeks | A/B: change Sprint field. C: move to new sub-project |
+| **Cross-area deps** | Task blocks another area | Visibility gap | Orchestra Relations + `forgeplan blocked` |
+| **Context window** | AI spends tokens on Orch queries | Slower responses | Cache workspace overview at session start |
+| **Backfill existing** | 20+ artifacts without tasks in Orch | Migration effort | Batch script or AI agent one-time |
 
 ---
 
 ## 14. Anti-patterns
 
-| Anti-pattern | Почему плохо | Правильно |
-|-------------|-------------|-----------|
-| Дублировать PRD content в Orchestra description | Два источника правды, drift | Только Artifact ID в field |
-| Трекать R_eff в Orchestra field | Устаревает мгновенно | `forgeplan score` по запросу |
-| Создавать Standard+ задачу без артефакта | Работа без обоснования | Route → Shape → Task |
-| `send_message` без запроса пользователя | Safety violation, spam | Только по явной просьбе |
-| Sub-agents обновляют Orchestra | Race conditions, конфликты | Только main agent |
-| Игнорировать Session Start Protocol | Потеря контекста, дубли | ВСЕГДА выполнять |
-| Проект на каждую задачу | Overhead, потеря обзора | Проект = area, не задача |
-| Sprint field + Sprint sub-project одновременно | Confusion: где правда? | Выбрать одно по конфигурации |
-| Перемещать задачи между projects без причины | Теряется history | Move только при migration |
-| Архивировать вместо Done | Задача исчезает из views | Done = видна, Archived = скрыта |
+| Anti-pattern | Why It's Bad | Correct Approach |
+|-------------|-------------|------------------|
+| Duplicate PRD content in Orchestra description | Two sources of truth, drift | Only Artifact ID in field |
+| Track R_eff in Orchestra field | Goes stale instantly | `forgeplan score` on demand |
+| Create Standard+ task without artifact | Work without justification | Route → Shape → Task |
+| `send_message` without user request | Safety violation, spam | Only on explicit request |
+| Sub-agents update Orchestra | Race conditions, conflicts | Only main agent |
+| Ignore Session Start Protocol | Lost context, duplicates | ALWAYS execute |
+| Project per task | Overhead, lost overview | Project = area, not task |
+| Sprint field + Sprint sub-project simultaneously | Confusion: where's the truth? | Choose one per configuration |
+| Move tasks between projects without reason | History is lost | Move only during migration |
+| Archive instead of Done | Task disappears from views | Done = visible, Archived = hidden |
 
 ---
 
 ## 15. Quick Reference
 
-### Forgeplan (методология)
+### Forgeplan (methodology)
 ```bash
-forgeplan health              # состояние проекта
-forgeplan route "..."         # определить depth
-forgeplan new prd "Title"     # создать артефакт
-forgeplan validate PRD-XXX    # проверить качество
+forgeplan health              # project state
+forgeplan route "..."         # determine depth
+forgeplan new prd "Title"     # create artifact
+forgeplan validate PRD-XXX    # check quality
 forgeplan score PRD-XXX       # R_eff scoring
 forgeplan activate PRD-XXX    # draft → active
-forgeplan list                # список артефактов
-forgeplan blocked             # граф зависимостей
+forgeplan list                # list artifacts
+forgeplan blocked             # dependency graph
 ```
 
-### Orchestra (задачи)
+### Orchestra (tasks)
 ```bash
-/orch status                  # обзор workspace
-/orch create "Task name"      # новая задача (interactive)
-/orch task <uid>              # детали задачи
-/orch msg <uid> "message"     # сообщение в чат задачи
-/orch today                   # задачи на сегодня
-/orch overdue                 # просроченные задачи
-/briefing                     # утренний брифинг
-/sync-tasks                   # синхронизация
+/orch status                  # workspace overview
+/orch create "Task name"      # new task (interactive)
+/orch task <uid>              # task details
+/orch msg <uid> "message"     # message in task chat
+/orch today                   # tasks for today
+/orch overdue                 # overdue tasks
+/briefing                     # morning briefing
+/sync-tasks                   # synchronization
 ```
 
 ### Claude Code (execution)
 ```bash
-/forge-cycle                  # полный цикл (route → PR)
-/sprint                       # wave-based sprint с research
-/wave                         # быстрые waves из контекста
-/build path/to/reports/       # реализация из research
+/forge-cycle                  # full cycle (route → PR)
+/sprint                       # wave-based sprint with research
+/wave                         # quick waves from context
+/build path/to/reports/       # implementation from research
 /audit                        # 5-agent code review
-/commands                     # список всех команд
-/research "вопрос"            # быстрый поиск (5 агентов)
-/deep-research "тема"         # глубокое исследование
+/commands                     # list all commands
+/research "question"          # quick search (5 agents)
+/deep-research "topic"        # deep research
 ```
 
-### MCP tools (для AI agents)
+### MCP tools (for AI agents)
 
 ```
 # Orchestra
-mcp__orch__get_workspace_overview()     — обзор workspace
-mcp__orch__query_entities()             — поиск с фильтрами
-mcp__orch__create_entity()              — создать задачу/проект
-mcp__orch__set_fields()                 — обновить fields
-mcp__orch__manage_field()               — создать/изменить field definition
-mcp__orch__search_entities()            — поиск по имени
-mcp__orch__get_entity()                 — детали entity
-mcp__orch__read_messages()              — прочитать сообщения
-mcp__orch__get_checklists()             — чек-листы задачи
+mcp__orch__get_workspace_overview()     — workspace overview
+mcp__orch__query_entities()             — search with filters
+mcp__orch__create_entity()              — create task/project
+mcp__orch__set_fields()                 — update fields
+mcp__orch__manage_field()               — create/modify field definition
+mcp__orch__search_entities()            — search by name
+mcp__orch__get_entity()                 — entity details
+mcp__orch__read_messages()              — read messages
+mcp__orch__get_checklists()             — task checklists
 
 # Forgeplan
-forgeplan_health()                      — состояние проекта
-forgeplan_route()                       — определить depth
-forgeplan_new()                         — создать артефакт
-forgeplan_validate()                    — проверить качество
+forgeplan_health()                      — project state
+forgeplan_route()                       — determine depth
+forgeplan_new()                         — create artifact
+forgeplan_validate()                    — check quality
 forgeplan_score()                       — R_eff scoring
 forgeplan_activate()                    — draft → active
-forgeplan_list()                        — список артефактов
-forgeplan_search()                      — поиск артефактов
-forgeplan_link()                        — связать артефакты
+forgeplan_list()                        — list artifacts
+forgeplan_search()                      — search artifacts
+forgeplan_link()                        — link artifacts
 ```
 
 ---
 
-## 16. Playbook: сценарии ежедневной работы
+## 16. Playbook: Daily Work Scenarios
 
-### Начало дня
+### Start of Day
 
 ```
-Ты: открываешь Claude Code
-AI: выполняет Session Start Protocol
-AI: "Доброе утро. В работе:
+You: open Claude Code
+AI: executes Session Start Protocol
+AI: "Good morning. In progress:
      • [PROB-021] ADI Quality — Doing, Phase: Code, Sprint 9
-     Health: 1 blind spot (RFC-003 без evidence)
-     Рекомендация: завершить PROB-021, затем fix blind spot"
-Ты: "Ок, продолжаю PROB-021"
-→ AI подхватывает контекст и работает
+     Health: 1 blind spot (RFC-003 without evidence)
+     Recommendation: finish PROB-021, then fix blind spot"
+You: "OK, continuing PROB-021"
+→ AI picks up context and works
 ```
 
-### Нашёл баг
+### Found a Bug
 
 ```
-Ты: "Нашёл баг — search не находит артефакты с кириллицей"
+You: "Found a bug — search doesn't find artifacts with Cyrillic"
 
 AI: forgeplan route "search bug with cyrillic"
-    → Tactical (quick fix, обратимо)
+    → Tactical (quick fix, reversible)
 
-AI: создаёт задачу в Orchestra:
+AI: creates task in Orchestra:
     "[BUG] Search cyrillic" — Status: To Do, Tags: Bug
-    НЕТ Artifact (Tactical = без артефакта)
+    NO Artifact (Tactical = without artifact)
 
-Ты: фиксишь баг
+You: fix the bug
 AI: cargo test → pass
     Orch: Status → Done
     git commit
 ```
 
-### Нашёл серьёзный баг (нужно расследование)
+### Found a Serious Bug (investigation needed)
 
 ```
-Ты: "R_eff scoring даёт неправильные результаты при CL0"
+You: "R_eff scoring gives incorrect results with CL0"
 
 AI: forgeplan route "R_eff scoring incorrect for CL0 evidence"
-    → Standard (нужно понять причину, может затронуть другие scoring)
+    → Standard (need to understand the cause, may affect other scoring)
 
 AI: forgeplan new problem "R_eff incorrect at CL0"  → PROB-XXX
-    Заполняет: Problem, Impact, Reproduction Steps
+    Fills in: Problem, Impact, Reproduction Steps
     forgeplan validate PROB-XXX → PASS
 
-AI: создаёт задачу в Orchestra:
+AI: creates task in Orchestra:
     "[PROB-XXX] R_eff incorrect at CL0"
     Fields: Artifact=PROB-XXX, Type=Problem, Depth=Standard, Phase=Shape
     Status: Backlog, Sprint: Sprint 9, Priority: High
 
-AI: расследует, фиксит, создаёт evidence
+AI: investigates, fixes, creates evidence
     → Orch: Phase: Code → Evidence → Done
 ```
 
-### Новая идея / фича
+### New Idea / Feature
 
 ```
-Ты: "Хочу добавить экспорт артефактов в PDF"
+You: "I want to add PDF export for artifacts"
 
 AI: forgeplan route "PDF export for artifacts"
-    → Standard (новая фича, 1-3 дня)
+    → Standard (new feature, 1-3 days)
     → Pipeline: PRD → RFC
 
 AI: forgeplan new prd "PDF Export"  → PRD-XXX
-    Заполняет MUST секции
+    Fills MUST sections
     forgeplan validate PRD-XXX → PASS
 
-AI: создаёт задачу:
+AI: creates task:
     "[PRD-XXX] PDF Export"
     Fields: Type=PRD, Depth=Standard, Phase=Validate
-    Status: To Do, Sprint: Sprint 10 (не текущий — backlog)
+    Status: To Do, Sprint: Sprint 10 (not current — backlog)
 
-Ты: "Давай в следующем спринте"
+You: "Let's do it next sprint"
 AI: Sprint=Sprint 10, Status=Backlog
 ```
 
-### Начинаю следующий спринт
+### Starting Next Sprint
 
 ```
-Ты: "Начинаем Sprint 10"
+You: "Starting Sprint 10"
 
-AI: 1. Проверяет незакрытые задачи Sprint 9:
+AI: 1. Checks unclosed Sprint 9 tasks:
        /orch query → Sprint=Sprint 9, Status≠Done
-       "2 задачи не закрыты: [RFC-003] и [PROB-023]"
+       "2 tasks not closed: [RFC-003] and [PROB-023]"
 
-    2. Спрашивает: "Переносим в Sprint 10 или закрываем?"
-       Ты: "RFC-003 переноси, PROB-023 закрывай — не актуально"
+    2. Asks: "Carry over to Sprint 10 or close?"
+       You: "Carry over RFC-003, close PROB-023 — no longer relevant"
 
-    3. AI обновляет:
+    3. AI updates:
        RFC-003: Sprint → Sprint 10
-       PROB-023: Status → Done (или forgeplan deprecate)
+       PROB-023: Status → Done (or forgeplan deprecate)
 
-    4. forgeplan health → что ready для Sprint 10?
-       "4 задачи в Backlog с Sprint 10:
+    4. forgeplan health → what's ready for Sprint 10?
+       "4 tasks in Backlog with Sprint 10:
         [PRD-XXX] PDF Export — To Do
-        [RFC-003] Layered arch — переносим из Sprint 9
+        [RFC-003] Layered arch — carried over from Sprint 9
         ..."
 
-    5. Предлагает приоритизацию по Priority field
+    5. Suggests prioritization by Priority field
 ```
 
-### Закончил задачу (полный цикл)
+### Finished a Task (full cycle)
 
 ```
-AI: код написан, тесты проходят
+AI: code written, tests passing
 
 AI: /audit → 5-agent review
     Findings: 2 LOW, 0 HIGH
-    Фиксит LOW findings
+    Fixes LOW findings
 
 AI: forgeplan new evidence "Tests pass, 15 new tests, audit clean"
     forgeplan link EVID-XXX PRD-XXX --relation informs
@@ -1082,328 +1091,318 @@ AI: forgeplan new evidence "Tests pass, 15 new tests, audit clean"
 AI: forgeplan review PRD-XXX → PASSED
     forgeplan activate PRD-XXX → active
 
-AI: Orch: Phase=Done, Status=Done ✓
+AI: Orch: Phase=Done, Status=Done
 
 AI: git commit + git push + gh pr create
     Orch: Branch=feat/xxx
 
-AI: "PRD-XXX завершён. R_eff=1.00, activated, PR создан."
+AI: "PRD-XXX completed. R_eff=1.00, activated, PR created."
 ```
 
-### Конфликт: задача блокирует другую
+### Conflict: Task Blocks Another
 
 ```
-Ты: "Не могу делать PRD-025 пока RFC-005 не готов"
+You: "Can't work on PRD-025 until RFC-005 is ready"
 
 AI: forgeplan link PRD-025 RFC-005 --relation blocked-by
-    Orch: добавляет relation между задачами
+    Orch: adds relation between tasks
     PRD-025 Status → Backlog (blocked)
 
-    forgeplan blocked → показывает граф зависимостей
+    forgeplan blocked → shows dependency graph
 
-Ты: "Тогда делаю RFC-005 первой"
+You: "Then I'll do RFC-005 first"
 AI: RFC-005 Status → Doing, Phase → Code
 ```
 
-### Конфликт: что-то сломалось после merge
+### Conflict: Something Broke After Merge
 
 ```
-Ты: "cargo test падает после merge в dev"
+You: "cargo test fails after merge into dev"
 
-AI: НЕ создаёт артефакт (это hotfix)
-    → Исследует, находит причину
+AI: does NOT create an artifact (this is a hotfix)
+    → Investigates, finds the cause
     → git checkout -b fix/broken-tests
-    → Фиксит
+    → Fixes
 
-AI: создаёт задачу:
+AI: creates task:
     "[BUG] Tests broken after merge" — Tags: Bug, Priority: High
     Status: Doing → Review → Done
 
     git commit + git push + gh pr create --base dev
 ```
 
-### Хочу обсудить задачу с командой
+### Want to Discuss a Task with the Team
 
 ```
-Ты: "Напиши в чат задачи PRD-021 что я начал работу"
+You: "Write in the PRD-021 task chat that I started working on it"
 
-AI: mcp__orch__send_message(chatUid=задача, message="Начата работа...")
-    ← ТОЛЬКО по явному запросу!
+AI: mcp__orch__send_message(chatUid=task, message="Started working...")
+    ← ONLY on explicit request!
 
-Ты: "Что писали в чате PROB-021?"
-AI: mcp__orch__read_messages(entityUid=задача)
-    → Показывает историю
+You: "What was written in the PROB-021 chat?"
+AI: mcp__orch__read_messages(entityUid=task)
+    → Shows history
 ```
 
-### Конец дня
+### End of Day
 
 ```
-Ты: "Что сегодня сделано?"
+You: "What was done today?"
 
 AI: Orch: query tasks updated today
-    "Сегодня:
-     ✅ [PROB-021] ADI Quality → Done
-     🔄 [PRD-XXX] PDF Export → Shape (PRD заполнен)
-     🔵 [RFC-003] Layered arch → без изменений"
+    "Today:
+     [PROB-021] ADI Quality → Done
+     [PRD-XXX] PDF Export → Shape (PRD filled)
+     [RFC-003] Layered arch → no changes"
 
     forgeplan health:
     "Active: 5, Draft: 15, Blind spots: 1"
 
-Ты: "Ок, на завтра?"
-AI: "Рекомендация: RFC-003 blind spot (нужен evidence),
-     затем [PRD-XXX] PDF Export в Sprint 10"
+You: "OK, what about tomorrow?"
+AI: "Recommendation: RFC-003 blind spot (needs evidence),
+     then [PRD-XXX] PDF Export in Sprint 10"
 ```
 
-### Ретроспектива / обзор спринта
+### Retrospective / Sprint Review
 
 ```
-Ты: "Подведи итоги Sprint 9"
+You: "Summarize Sprint 9"
 
 AI: Orch: query Sprint=Sprint 9
     "Sprint 9:
-     Done: 5 задач (3 PRD, 1 PROB, 1 RFC)
-     Не завершены: 1 (перенесена в Sprint 10)
-     Время: 2 недели"
+     Done: 5 tasks (3 PRD, 1 PROB, 1 RFC)
+     Not completed: 1 (carried over to Sprint 10)
+     Duration: 2 weeks"
 
     forgeplan health:
-    "Activated: 3 новых (PRD-021, PROB-021, RFC-004)
+    "Activated: 3 new (PRD-021, PROB-021, RFC-004)
      R_eff avg: 0.85
      Blind spots: 1 (RFC-003)"
 
-    "Рекомендация для Sprint 10: закрыть blind spot RFC-003,
-     начать PRD-XXX PDF Export"
+    "Recommendation for Sprint 10: close blind spot RFC-003,
+     start PRD-XXX PDF Export"
 ```
 
-## 17. Чего НЕЛЬЗЯ делать (запреты)
+## 17. Prohibited Actions
 
-| Ситуация | Запрет | Почему | Правильно |
-|----------|--------|--------|-----------|
-| Баг найден | Начинать код без route | Может быть не Tactical | `forgeplan route` сначала |
-| Standard+ задача | Писать код без PRD | Нет обоснования | Shape → Validate → Code |
-| Задача готова | `forgeplan activate` без evidence | R_eff = 0, blind spot | Создать evidence первым |
-| Нужно обсудить | `send_message` самовольно | Safety rule Orchestra | Только по запросу юзера |
-| Задача не нужна | `delete_entity` | Destructive | Status=Done или deprecate |
-| Спринт закончился | Удалять старые задачи | Теряется history | Done или Archive |
-| Merge конфликт | `git push --force` | Blocked hook | Resolve конфликт |
-| Тесты падают | Коммитить | `commit-test-check` hook | Починить тесты |
-| Active артефакт устарел | Удалять | Теряется lineage | `forgeplan supersede` или `deprecate` |
-| AI создаёт задачу | Не проверять дубли | Шум в трекере | `search_entities` сначала |
+| Situation | Prohibition | Why | Correct Approach |
+|-----------|-------------|-----|------------------|
+| Bug found | Starting code without route | Might not be Tactical | `forgeplan route` first |
+| Standard+ task | Writing code without PRD | No justification | Shape → Validate → Code |
+| Task ready | `forgeplan activate` without evidence | R_eff = 0, blind spot | Create evidence first |
+| Need to discuss | `send_message` on your own | Orchestra safety rule | Only on user request |
+| Task not needed | `delete_entity` | Destructive | Status=Done or deprecate |
+| Sprint ended | Delete old tasks | History is lost | Done or Archive |
+| Merge conflict | `git push --force` | Blocked hook | Resolve the conflict |
+| Tests fail | Commit | `commit-test-check` hook | Fix the tests |
+| Active artifact outdated | Delete it | Lineage is lost | `forgeplan supersede` or `deprecate` |
+| AI creates task | Not checking for duplicates | Noise in tracker | `search_entities` first |
 
 ---
 
-## 18. Inbox Pattern: сбор и triage сигналов
+## 18. Inbox Pattern: Signal Collection and Triage
 
-### Проблема
+### Problem
 
-Сигналы (идеи, решения, наблюдения) возникают в разных местах:
-- Переписка в чате Orchestra
-- Звонки и встречи
-- Git history (коммиты без артефактов)
-- AI наблюдения (дубли в коде, flaky tests)
+Signals (ideas, decisions, observations) arise in different places:
+- Chat conversations in Orchestra
+- Calls and meetings
+- Git history (commits without artifacts)
+- AI observations (code duplicates, flaky tests)
 - Forgeplan health (stale artifacts, blind spots)
 
-Если их не собирать — решения теряются, идеи забываются, tech debt копится.
+If they are not collected — decisions are lost, ideas are forgotten, tech debt accumulates.
 
-### Решение: Inbox при Session Start
+### Solution: Inbox at Session Start
 
 ```
-Сигналы из разных источников
+Signals from different sources
 │         │          │          │
-Chat Orch │   Git    │  Звонки  │  AI фоновый
+Chat Orch │   Git    │  Calls   │  AI background
     │     │    │     │    │     │      │
     ▼     ▼    ▼     ▼    ▼     ▼      ▼
     └──────────────────────────────────┘
                      │
                      ▼
           ┌──────────────────┐
-          │     INBOX        │ ← AI собирает (read-only)
+          │     INBOX        │ ← AI collects (read-only)
           │  (session start) │
           └────────┬─────────┘
                    │
                    ▼
           ┌──────────────────┐
-          │   TRIAGE         │ ← Человек решает
-          │   (с AI помощью) │
+          │   TRIAGE         │ ← Human decides
+          │   (with AI help) │
           └────────┬─────────┘
                    │
       ┌────────────┼────────────┐
       ▼            ▼            ▼
- Отбросить    Note/Memory    Артефакт
- (шум)        (контекст)     + Задача
+  Discard     Note/Memory    Artifact
+  (noise)     (context)      + Task
 ```
 
-### Как AI собирает Inbox (автоматически при session start)
+### How AI Collects the Inbox (automatically at session start)
 
 ```
-STEP 1: СБОР (read-only, безопасно)
-├── mcp__orch__get_unread_chats()     → новые сообщения
-├── mcp__orch__get_mentions()         → @упоминания
-├── git log --since="last session"    → новые коммиты
+STEP 1: COLLECTION (read-only, safe)
+├── mcp__orch__get_unread_chats()     → new messages
+├── mcp__orch__get_mentions()         → @mentions
+├── git log --since="last session"    → new commits
 ├── forgeplan health                  → stale, blind spots
-└── memory_recall                     → контекст прошлой сессии
+└── memory_recall                     → previous session context
 
-STEP 2: КЛАССИФИКАЦИЯ (AI предлагает, человек валидирует)
-"📬 Inbox (5 сигналов):
+STEP 2: CLASSIFICATION (AI proposes, human validates)
+"Inbox (5 signals):
 
- 1. 💬 @alice в чате PROB-021: 'Может добавить кэш?'
-    → Предложение: новая фича (PRD?) или tactical fix
+ 1. @alice in PROB-021 chat: 'Maybe add caching?'
+    → Suggestion: new feature (PRD?) or tactical fix
 
- 2. 🔀 3 коммита на dev без артефакта (от @bob)
-    → Предложение: нужен route, или это Tactical
+ 2. 3 commits on dev without artifact (from @bob)
+    → Suggestion: needs route, or this is Tactical
 
- 3. ⚠️ forgeplan health: RFC-003 stale (60 дней)
-    → Предложение: renew или deprecate
+ 3. forgeplan health: RFC-003 stale (60 days)
+    → Suggestion: renew or deprecate
 
- 4. 🤖 AI наблюдение: дублирование в scoring (90 LOC)
-    → Предложение: рефакторинг задача
+ 4. AI observation: duplication in scoring (90 LOC)
+    → Suggestion: refactoring task
 
- 5. 📞 (ручной ввод) 'На звонке решили: PostgreSQL'
-    → Предложение: ADR
+ 5. (manual input) 'On call we decided: PostgreSQL'
+    → Suggestion: ADR
 
- Что делаем с каждым?"
+ What do we do with each?"
 
-STEP 3: ЧЕЛОВЕК РЕШАЕТ
-"1 → PRD, 2 → игнор, 3 → deprecate, 4 → Note, 5 → ADR"
+STEP 3: HUMAN DECIDES
+"1 → PRD, 2 → ignore, 3 → deprecate, 4 → Note, 5 → ADR"
 
-STEP 4: AI ВЫПОЛНЯЕТ решения
+STEP 4: AI EXECUTES the decisions
 ```
 
-### Типы сигналов и что с ними делать
+### Signal Types and What to Do With Them
 
-| Источник | Тип сигнала | Возможное действие | Кто решает |
-|----------|------------|-------------------|-----------|
-| **Чат Orchestra** | Идея, предложение | Note → PRD (если Standard+) | Человек |
-| **Чат Orchestra** | Решение ("давай так") | ADR или Note | Человек |
-| **Чат Orchestra** | Баг-репорт | Problem → задача | Человек |
-| **Звонок/встреча** | Архитектурное решение | ADR | Человек (ввод после звонка) |
-| **Звонок/встреча** | Новая фича | PRD | Человек (ввод после звонка) |
-| **Звонок/встреча** | Изменение приоритетов | Sprint update | Человек |
-| **Git** | Коммиты без артефакта | Route → может нужен PRD | AI предлагает, человек решает |
-| **Git** | Flaky tests | Problem | AI предлагает, человек решает |
-| **forgeplan health** | Stale artifact | Renew или deprecate | AI предлагает, человек решает |
-| **forgeplan health** | Blind spot | Создать evidence | AI предлагает, человек решает |
-| **AI наблюдение** | Дубли в коде | Note или рефакторинг задача | AI предлагает, человек решает |
-| **AI наблюдение** | Security issue | Problem (High priority) | AI предлагает, человек решает |
+| Source | Signal Type | Possible Action | Who Decides |
+|--------|------------|-----------------|-------------|
+| **Orchestra chat** | Idea, suggestion | Note → PRD (if Standard+) | Human |
+| **Orchestra chat** | Decision ("let's do this") | ADR or Note | Human |
+| **Orchestra chat** | Bug report | Problem → task | Human |
+| **Call/meeting** | Architectural decision | ADR | Human (input after call) |
+| **Call/meeting** | New feature | PRD | Human (input after call) |
+| **Call/meeting** | Priority change | Sprint update | Human |
+| **Git** | Commits without artifact | Route → may need PRD | AI proposes, human decides |
+| **Git** | Flaky tests | Problem | AI proposes, human decides |
+| **forgeplan health** | Stale artifact | Renew or deprecate | AI proposes, human decides |
+| **forgeplan health** | Blind spot | Create evidence | AI proposes, human decides |
+| **AI observation** | Code duplicates | Note or refactoring task | AI proposes, human decides |
+| **AI observation** | Security issue | Problem (High priority) | AI proposes, human decides |
 
-### Как фиксировать решения со звонков
+### How to Capture Decisions from Calls
 
-| Подход | Усилие | Как |
-|--------|--------|-----|
-| **Сказать AI** | Низкое | "На звонке решили: [1] PostgreSQL [2] дедлайн 15/04 [3] Alice migration" → AI создаёт артефакты |
-| **Написать в чат задачи** | Низкое | Написать резюме в Orchestra → AI прочитает при session start |
-| **Meeting notes документ** | Среднее | Document в Orchestra "Meeting 2026-04-03" → AI парсит |
-| **Транскрипция** | Высокое | Otter.ai / Fireflies → скормить AI для экстракции решений |
+| Approach | Effort | How |
+|----------|--------|-----|
+| **Tell AI** | Low | "On the call we decided: [1] PostgreSQL [2] deadline 04/15 [3] Alice does migration" → AI creates artifacts |
+| **Write in task chat** | Low | Write summary in Orchestra → AI reads it at session start |
+| **Meeting notes document** | Medium | Document in Orchestra "Meeting 2026-04-03" → AI parses |
+| **Transcription** | High | Otter.ai / Fireflies → feed AI to extract decisions |
 
-**Рекомендация**: "Сказать AI" — самый быстрый и надёжный. AI знает контекст, создаёт правильные артефакты.
+**Recommendation**: "Tell AI" is the fastest and most reliable. AI knows the context and creates the right artifacts.
 
-### Что может работать в фоне (safety matrix)
+### What Can Run in Background (safety matrix)
 
-| Действие | В фоне? | Причина |
-|----------|---------|---------|
-| Читать чаты Orchestra | ✅ Да | Read-only |
-| Читать git log | ✅ Да | Read-only |
-| forgeplan health | ✅ Да | Read-only |
-| Классифицировать сигналы | ✅ Да | Подготовка для triage |
-| Сохранить в Memory/Hindsight | ✅ Да | Non-destructive |
-| **Создать артефакт** | ❌ Нет | Нужно подтверждение |
-| **Создать задачу** | ❌ Нет | Нужно подтверждение |
-| **Отправить сообщение** | ❌ Нет | Safety rule |
-| **Удалить/архивировать** | ❌ Нет | Destructive |
-| **Изменить Status/Phase** | ❌ Нет | Нужно подтверждение |
+| Action | In Background? | Reason |
+|--------|----------------|--------|
+| Read Orchestra chats | Yes | Read-only |
+| Read git log | Yes | Read-only |
+| forgeplan health | Yes | Read-only |
+| Classify signals | Yes | Preparation for triage |
+| Save to Memory/Hindsight | Yes | Non-destructive |
+| **Create artifact** | No | Requires confirmation |
+| **Create task** | No | Requires confirmation |
+| **Send message** | No | Safety rule |
+| **Delete/archive** | No | Destructive |
+| **Change Status/Phase** | No | Requires confirmation |
 
-**Принцип**: AI СОБИРАЕТ и ПРЕДЛАГАЕТ. Человек РЕШАЕТ и ПОДТВЕРЖДАЕТ. AI ВЫПОЛНЯЕТ.
+**Principle**: AI COLLECTS and PROPOSES. Human DECIDES and CONFIRMS. AI EXECUTES.
 
-### Проблемы и решения
+### Problems and Solutions
 
-#### P1: Слишком много сигналов (inbox overflow)
+#### P1: Too many signals (inbox overflow)
 
-**Проблема**: После выходных 30+ сообщений, 20 коммитов, 5 stale artifacts. Inbox огромный.
+**Problem**: After a weekend, 30+ messages, 20 commits, 5 stale artifacts. Inbox is huge.
 
-**Решение**: AI приоритизирует:
-1. 🔴 **Требуют действия**: mentions, overdue tasks, stale artifacts
-2. 🟡 **Полезно знать**: решения в чатах, новые коммиты
-3. ⚪ **Фон**: AI наблюдения, minor issues
+**Solution**: AI prioritizes:
+1. **Requires action**: mentions, overdue tasks, stale artifacts
+2. **Good to know**: decisions in chats, new commits
+3. **Background**: AI observations, minor issues
 
-Показывает 🔴 сразу, 🟡 по запросу, ⚪ только если спросят.
+Shows priority items immediately, secondary on request, background only if asked.
 
-#### P2: Дублирование — то же самое в чате и в git
+#### P2: Duplication — same thing in chat and in git
 
-**Проблема**: Alice написала в чат "сделала кэширование" И закоммитила. AI видит два сигнала.
+**Problem**: Alice wrote in chat "added caching" AND committed. AI sees two signals.
 
-**Решение**: AI дедуплицирует при классификации:
-- Проверяет совпадение по времени + автору + теме
-- Показывает как один сигнал с двумя источниками
+**Solution**: AI deduplicates during classification:
+- Checks for matching time + author + topic
+- Shows as one signal with two sources
 
-#### P3: Контекст звонка теряется
+#### P3: Call context is lost
 
-**Проблема**: На звонке обсудили 5 вещей, после звонка помнят 2.
+**Problem**: 5 things discussed on a call, only 2 remembered afterward.
 
-**Решение**: Привычка "5 минут после звонка":
+**Solution**: "5 minutes after the call" habit:
 ```
-Сразу после звонка:
-  Ты: "Зафиксируй с звонка:
-    1. Решили: PostgreSQL вместо SQLite (причина: concurrent writes)
-    2. Решили: дедлайн Phase 5 — конец апреля
-    3. Задача: Alice делает migration план
-    4. Идея: добавить real-time sync (обсудить позже)
-    5. Отменили: не делаем GraphQL API"
+Right after the call:
+  You: "Capture from the call:
+    1. Decided: PostgreSQL instead of SQLite (reason: concurrent writes)
+    2. Decided: Phase 5 deadline — end of April
+    3. Task: Alice does migration plan
+    4. Idea: add real-time sync (discuss later)
+    5. Cancelled: not doing GraphQL API"
 
-  AI: создаёт ADR для п.1, обновляет Sprint/due dates для п.2,
-      создаёт задачу для п.3, Note для п.4, deprecate для п.5
+  AI: creates ADR for item 1, updates Sprint/due dates for item 2,
+      creates task for item 3, Note for item 4, deprecate for item 5
 ```
 
-#### P4: AI наблюдения не точны
+#### P4: AI observations are inaccurate
 
-**Проблема**: AI говорит "дубли в коде" но это не дубли, а намеренный паттерн.
+**Problem**: AI says "code duplicates" but it's not duplication, it's an intentional pattern.
 
-**Решение**: AI наблюдения = самый низкий приоритет (⚪). Человек решает, AI не настаивает. False positive → AI запоминает (Memory) что это не дубли.
+**Solution**: AI observations = lowest priority. Human decides, AI doesn't insist. False positive → AI remembers (Memory) that it's not duplication.
 
-#### P5: Несколько людей — кто делает triage?
+#### P5: Multiple people — who does triage?
 
-**Проблема**: В Config B/C — кто обрабатывает inbox? Каждый своё или один PM?
+**Problem**: In Config B/C — who handles the inbox? Everyone their own or one PM?
 
-**Решение по конфигурациям**:
-- **Config A** (Solo): ты = triage owner
-- **Config B** (Small Team): каждый делает свой inbox (своё mentions, свои задачи). PM делает cross-area triage
-- **Config C** (Medium Team): PM/Tech Lead делает общий triage на standup. Devs делают свой personal inbox
+**Solution by configuration**:
+- **Config A** (Solo): you = triage owner
+- **Config B** (Small Team): everyone does their own inbox (their mentions, their tasks). PM does cross-area triage
+- **Config C** (Medium Team): PM/Tech Lead does general triage at standup. Devs do their personal inbox
 
-#### P6: Сигнал пришёл ночью, утром уже неактуален
+#### P6: Signal came overnight, no longer relevant in the morning
 
-**Проблема**: В чате вчера обсуждали подход, утром уже решили по-другому.
+**Problem**: Chat discussion about an approach yesterday, already decided differently this morning.
 
-**Решение**: AI при сборе inbox смотрит на весь тред, не на отдельные сообщения. Показывает последнее состояние обсуждения, не каждое промежуточное сообщение.
+**Solution**: AI looks at the entire thread when collecting the inbox, not individual messages. Shows the latest state of the discussion, not every intermediate message.
 
-### Inbox в Session Start Protocol (обновлённый)
+### Inbox in Session Start Protocol (updated)
 
 ```
 STEP 1: CONTEXT RESTORE
 ├── CLAUDE.md + memory_recall
 
-STEP 2: INBOX COLLECTION (NEW — read-only, фоновый)
+STEP 2: INBOX COLLECTION (NEW — read-only, background)
 ├── Orch: unread chats, mentions
 ├── Git: commits since last session
 ├── Forgeplan: health changes
-└── AI: наблюдения из кода (если были)
+└── AI: observations from code (if any)
 
 STEP 3: PROJECT HEALTH
 ├── forgeplan health
 └── Orch: active tasks, overdue
 
-STEP 4: INBOX TRIAGE (если есть сигналы)
-"📬 Inbox (N сигналов): [приоритизированный список]
- Что делаем?"
-→ Человек решает
+STEP 4: INBOX TRIAGE (if there are signals)
+"Inbox (N signals): [prioritized list]
+ What do we do?"
+→ Human decides
 
 STEP 5: SYNTHESIS + RECOMMEND
-"Сейчас в работе: ... Следующее: ..."
+"Currently in progress: ... Next: ..."
 ```
-
----
-
-## Changelog
-
-| Дата | Версия | Изменения |
-|------|--------|-----------|
-| 2026-04-03 | v1.0 | Initial: architecture, 3 configs, greenfield/brownfield, migration, roles, risks |
-| 2026-04-03 | v1.1 | Added: Playbook (10 scenarios), Prohibitions table, CLAUDE.md integration |
-| 2026-04-03 | v1.2 | Added: Inbox Pattern (signal collection, triage, safety matrix, 6 problems+solutions) |

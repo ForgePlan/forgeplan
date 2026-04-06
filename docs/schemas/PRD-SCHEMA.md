@@ -1,83 +1,85 @@
+[English](PRD-SCHEMA.md) · [Русский](PRD-SCHEMA.ru.md)
+
 # PRD Schema — Product Requirements Document
 
-## Когда создавать PRD
+## When to Create a PRD
 
-| Ситуация | Нужен PRD? | Альтернатива |
-|----------|-----------|--------------|
-| Новая user-facing фича | ✅ Да | — |
-| Значительное изменение продукта | ✅ Да | — |
-| Мелкий баг-фикс | ❌ Нет | Сразу RFC или PR |
-| Рефакторинг (без UI changes) | ❌ Нет | ADR → RFC |
-| Инфраструктура | ❌ Нет | RFC |
-| API для внешних клиентов | ✅ Да | + SPEC |
-| Внутренний API | ❌ Нет | SPEC → RFC |
+| Situation | PRD needed? | Alternative |
+|-----------|-------------|-------------|
+| New user-facing feature | ✅ Yes | — |
+| Significant product change | ✅ Yes | — |
+| Minor bug fix | ❌ No | Go straight to RFC or PR |
+| Refactoring (no UI changes) | ❌ No | ADR → RFC |
+| Infrastructure | ❌ No | RFC |
+| API for external clients | ✅ Yes | + SPEC |
+| Internal API | ❌ No | SPEC → RFC |
 
-**Правило**: PRD нужен когда есть **пользователь** с **проблемой** и нужно определить **что** строить.
+**Rule**: A PRD is needed when there is a **user** with a **problem** and you need to define **what** to build.
 
 ## Depth Calibration
 
-| Complexity | Depth | Обязательные секции | Пример |
-|-----------|-------|---------------------|--------|
-| **Tactical** | 1-2 часа | Problem + Goals + Requirements (3-5) | Добавить фильтр в таблицу |
-| **Standard** | 1-2 дня | Все секции | Новый модуль настроек |
-| **Deep** | 3-5 дней | Все секции + User Research + Metrics Plan | Новая подсистема |
-| **Critical** | 1-2 недели | Всё + Stakeholder Sign-offs + Risk Analysis | Платёжная система |
+| Complexity | Depth | Required Sections | Example |
+|-----------|-------|-------------------|---------|
+| **Tactical** | 1-2 hours | Problem + Goals + Requirements (3-5) | Add a filter to a table |
+| **Standard** | 1-2 days | All sections | New settings module |
+| **Deep** | 3-5 days | All sections + User Research + Metrics Plan | New subsystem |
+| **Critical** | 1-2 weeks | Everything + Stakeholder Sign-offs + Risk Analysis | Payment system |
 
-## Обязательные секции
+## Required Sections
 
-### Для всех depth levels:
+### For all depth levels:
 
-| # | Секция | Обязательно? | Валидация |
-|---|--------|-------------|-----------|
+| # | Section | Required? | Validation |
+|---|---------|-----------|------------|
 | 1 | **Meta Header** | ✅ MUST | Status, Author, Created, Updated, Priority |
-| 2 | **Problem Statement** | ✅ MUST | ≥ 2 предложения, содержит "потому что" / "impact" |
-| 3 | **Goals** | ✅ MUST | ≥ 1 цель, каждая measurable |
-| 4 | **Non-Goals** | ✅ MUST | ≥ 1 пункт (scope boundary) |
-| 5 | **Functional Requirements** | ✅ MUST | ≥ 1 REQ с Priority (Must/Should/Could) |
-| 6 | **Success Metrics** | ✅ MUST | ≥ 1 KPI с Current + Target |
+| 2 | **Problem Statement** | ✅ MUST | >= 2 sentences, contains "because" / "impact" |
+| 3 | **Goals** | ✅ MUST | >= 1 goal, each measurable |
+| 4 | **Non-Goals** | ✅ MUST | >= 1 item (scope boundary) |
+| 5 | **Functional Requirements** | ✅ MUST | >= 1 REQ with Priority (Must/Should/Could) |
+| 6 | **Success Metrics** | ✅ MUST | >= 1 KPI with Current + Target |
 | 7 | **Related Artifacts** | ✅ MUST | Links to SPEC/RFC/ADR if exist |
 
-### Для Standard+:
+### For Standard+:
 
-| # | Секция | Обязательно? | Валидация |
-|---|--------|-------------|-----------|
-| 8 | **Target Audience** | ✅ MUST | ≥ 1 persona с описанием |
+| # | Section | Required? | Validation |
+|---|---------|-----------|------------|
+| 8 | **Target Audience** | ✅ MUST | >= 1 persona with description |
 | 9 | **User Stories** | SHOULD | "As a [role], I want [X], so that [Y]" |
 | 10 | **Non-Functional Requirements** | SHOULD | Performance, Security, Scalability |
 | 11 | **Dependencies** | SHOULD | External/internal deps |
-| 12 | **Risks** | SHOULD | ≥ 1 risk с mitigation |
+| 12 | **Risks** | SHOULD | >= 1 risk with mitigation |
 
-### Для Deep/Critical:
+### For Deep/Critical:
 
-| # | Секция | Обязательно? | Валидация |
-|---|--------|-------------|-----------|
-| 13 | **Timeline** | ✅ MUST | Milestones с датами |
+| # | Section | Required? | Validation |
+|---|---------|-----------|------------|
+| 13 | **Timeline** | ✅ MUST | Milestones with dates |
 | 14 | **Stakeholders** | ✅ MUST | Sign-off checkboxes |
 | 15 | **Acceptance Criteria** | ✅ MUST | Given/When/Then format |
 | 16 | **Competitive Analysis** | COULD | If applicable |
 
-## Validation Rules (из BMAD)
+## Validation Rules (from BMAD)
 
 ### Quality Gates
 
-1. **Completeness** — все MUST секции заполнены (не placeholder)
-2. **Measurability** — каждый Goal имеет числовой target
-3. **Traceability** — каждый REQ имеет уникальный ID (REQ-N)
-4. **Density** — Problem Statement ≥ 50 слов
-5. **Scope Clarity** — Non-Goals ≥ 1 пункт
-6. **No Implementation Leakage** — PRD описывает ЧТО, не КАК
-7. **Consistency** — Goals и Requirements не противоречат друг другу
+1. **Completeness** — all MUST sections are filled (not placeholders)
+2. **Measurability** — each Goal has a numerical target
+3. **Traceability** — each REQ has a unique ID (REQ-N)
+4. **Density** — Problem Statement >= 50 words
+5. **Scope Clarity** — Non-Goals >= 1 item
+6. **No Implementation Leakage** — PRD describes WHAT, not HOW
+7. **Consistency** — Goals and Requirements do not contradict each other
 
-### Adversarial Review (из BMAD)
+### Adversarial Review (from BMAD)
 
-При review PRD, reviewer **ОБЯЗАН** найти хотя бы 1 проблему:
-- Неизмеримый Goal?
+When reviewing a PRD, the reviewer **MUST** find at least 1 issue:
+- Unmeasurable Goal?
 - Missing edge case?
 - Unrealistic timeline?
-- Забытый stakeholder?
+- Forgotten stakeholder?
 - Security/privacy concern?
 
-Если ревьюер не нашёл ни одной проблемы — **пересмотреть более внимательно**.
+If the reviewer found zero issues — **review more carefully**.
 
 ## Numbering
 

@@ -1,135 +1,137 @@
-# Depth Calibration — когда какой уровень глубины
+[English](DEPTH-CALIBRATION.md) · [Русский](DEPTH-CALIBRATION.ru.md)
 
-Руководство по выбору уровня глубины проработки решения. Основано на Quint-code depth calibration и адаптировано для Forgeplan.
+# Depth Calibration — When to Use Each Depth Level
 
-## Обзор уровней
+A guide for choosing the appropriate level of decision rigor. Based on Quint-code depth calibration and adapted for Forgeplan.
 
-| Уровень | Когда | Что создаём | Время | Характеристики |
-|---------|-------|-------------|-------|----------------|
-| **Tactical** | Quick fix, 1 файл, легко откатить, <2 нед влияния | Note или ничего | Минуты | Очевидное решение, <=3 файлов, легко отменить |
-| **Standard** | Фича 1-3 дня, несколько подходов, moderate impact | PRD (tactical) -> RFC | Часы | Несколько вариантов, умеренное влияние, возможно несколько команд |
-| **Deep** | Новый модуль, 1-2 недели, необратимо, security, cross-team | PRD -> Spec -> RFC -> ADR | Дни | Высокие ставки, долгосрочные последствия, обширный evidence trail |
-| **Critical** | Подсистема, кросс-команда, стратегическая инициатива | Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[] | Недели | Множество PRD, множество команд, roadmap-level |
+## Level Overview
 
-## Дерево решений
+| Level | When | What to Create | Time | Characteristics |
+|-------|------|----------------|------|-----------------|
+| **Tactical** | Quick fix, 1 file, easy to revert, <2 weeks impact | Note or nothing | Minutes | Obvious solution, <=3 files, easy to undo |
+| **Standard** | Feature 1-3 days, multiple approaches, moderate impact | PRD (tactical) -> RFC | Hours | Multiple options, moderate impact, possibly multiple teams |
+| **Deep** | New module, 1-2 weeks, irreversible, security, cross-team | PRD -> Spec -> RFC -> ADR | Days | High stakes, long-term consequences, extensive evidence trail |
+| **Critical** | Subsystem, cross-team, strategic initiative | Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[] | Weeks | Multiple PRDs, multiple teams, roadmap-level |
+
+## Decision Tree
 
 ```
-Задача поступила
+Task received
   |
   v
-Тривиально и очевидно?
-  |-- Да --> TACTICAL
-  |          Note (опционально), сразу к реализации
+Trivial and obvious?
+  |-- Yes --> TACTICAL
+  |          Note (optional), proceed to implementation
   |
-  v (Нет)
-Есть несколько подходов?
-  |-- Да, но последствия умеренные --> STANDARD
-  |          PRD (tactical) -> RFC, зафиксировать выбор
+  v (No)
+Multiple approaches exist?
+  |-- Yes, but consequences are moderate --> STANDARD
+  |          PRD (tactical) -> RFC, document the choice
   |
-  v (Последствия серьёзные)
-Необратимо или cross-team?
-  |-- Да, но в рамках одного направления --> DEEP
-  |          PRD -> Spec -> RFC -> ADR, полный evidence trail
+  v (Consequences are serious)
+Irreversible or cross-team?
+  |-- Yes, but within a single domain --> DEEP
+  |          PRD -> Spec -> RFC -> ADR, full evidence trail
   |
-  v (Стратегическое)
-Стратегическая инициатива с множеством PRD?
-  |-- Да --> CRITICAL
+  v (Strategic)
+Strategic initiative with multiple PRDs?
+  |-- Yes --> CRITICAL
               Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[]
-              Verification gates на каждом этапе
+              Verification gates at every stage
 ```
 
-## Триггеры автоматической эскалации
+## Automatic Escalation Triggers
 
-Независимо от первоначальной оценки, уровень повышается при наличии следующих факторов:
+Regardless of the initial assessment, the level escalates when the following factors are present:
 
-| Триггер | Минимальный уровень |
-|---------|---------------------|
-| Трудно откатить (последствия >2 недель) | Standard+ |
-| Затрагивает несколько команд | Standard+ |
-| Проблема не ясна, нужно исследование | Standard+ |
-| Security или compliance требования | Deep+ |
-| Влияет на публичный API | Deep+ |
-| Затрагивает данные пользователей | Deep+ |
-| Roadmap-level решение | Critical |
+| Trigger | Minimum Level |
+|---------|---------------|
+| Hard to revert (consequences >2 weeks) | Standard+ |
+| Affects multiple teams | Standard+ |
+| Problem is unclear, research needed | Standard+ |
+| Security or compliance requirements | Deep+ |
+| Affects a public API | Deep+ |
+| Impacts user data | Deep+ |
+| Roadmap-level decision | Critical |
 
-Правило: **эскалация — безопасна, деэскалация — рискованна.** Если есть сомнения, выбирай уровень выше.
+Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the higher level.
 
-## Требования к артефактам по уровням
+## Artifact Requirements by Level
 
 ### Tactical
 
-- **Артефакты**: Note (опционально)
-- **Rationale**: Не требуется
-- **Evidence**: Не требуется
-- **valid_until**: Автоматически 90 дней
-- **Rollback plan**: Не требуется (по определению легко откатить)
-- **Ревью**: Не требуется
+- **Artifacts**: Note (optional)
+- **Rationale**: Not required
+- **Evidence**: Not required
+- **valid_until**: Automatically 90 days
+- **Rollback plan**: Not required (easy to revert by definition)
+- **Review**: Not required
 
-> Для тактического PRD используйте шаблон Product Brief (`templates/brief/_TEMPLATE.md`) — это облегчённая версия PRD с минимальными обязательными секциями.
+> For a tactical PRD, use the Product Brief template (`templates/brief/_TEMPLATE.md`) — a lightweight version of the PRD with minimal required sections.
 
 ### Standard
 
-- **Артефакты**: PRD + RFC (обязательно)
-- **Rationale**: Требуется — зафиксировать почему этот вариант, а не другие
-- **Evidence**: Хотя бы 1 evidence (бенчмарк, PoC, ссылка на документацию)
-- **valid_until**: Рекомендуется (обычно 3-6 месяцев)
-- **Rollback plan**: Рекомендуется
-- **Ревью**: Verification Gate (минимум 3 из 5 пунктов)
+- **Artifacts**: PRD + RFC (required)
+- **Rationale**: Required — document why this option and not the others
+- **Evidence**: At least 1 evidence item (benchmark, PoC, documentation reference)
+- **valid_until**: Recommended (typically 3-6 months)
+- **Rollback plan**: Recommended
+- **Review**: Verification Gate (minimum 3 of 5 points)
 
 ### Deep
 
-- **Артефакты**: PRD + Spec + RFC + ADR (все обязательны)
-- **Rationale**: Полный, с рассмотрением альтернатив (SolutionPortfolio)
-- **Evidence**: Полный evidence trail (тесты, бенчмарки, PoC)
-- **valid_until**: Обязательно (с обоснованием TTL)
-- **Rollback plan**: Обязательно, с конкретными шагами
-- **Ревью**: Verification Gate (все 5 пунктов) + Adversarial Review
+- **Artifacts**: PRD + Spec + RFC + ADR (all required)
+- **Rationale**: Full, with alternatives considered (SolutionPortfolio)
+- **Evidence**: Full evidence trail (tests, benchmarks, PoC)
+- **valid_until**: Required (with TTL justification)
+- **Rollback plan**: Required, with specific steps
+- **Review**: Verification Gate (all 5 points) + Adversarial Review
 
 ### Critical
 
-- **Артефакты**: Epic + PRD[] + Spec[] + RFC[] + ADR[] (полная иерархия)
-- **Rationale**: Исчерпывающий, включая стратегическое обоснование
-- **Evidence**: Множественные evidence packs, перекрёстная валидация
-- **valid_until**: Обязательно для каждого артефакта
-- **Rollback plan**: Обязательно, поэтапный rollback
-- **Ревью**: Verification Gate + несколько раундов Adversarial Review + 13-Step Validation
+- **Artifacts**: Epic + PRD[] + Spec[] + RFC[] + ADR[] (full hierarchy)
+- **Rationale**: Exhaustive, including strategic justification
+- **Evidence**: Multiple evidence packs, cross-validation
+- **valid_until**: Required for each artifact
+- **Rollback plan**: Required, phased rollback
+- **Review**: Verification Gate + multiple rounds of Adversarial Review + 13-Step Validation
 
-## Примеры
+## Examples
 
-### Пример 1: Исправление опечатки в шаблоне — Tactical
+### Example 1: Fixing a Typo in a Template — Tactical
 
-**Ситуация**: В `templates/prd/PRD_TEMPLATE.md` найдена опечатка в заголовке секции.
+**Situation**: A typo was found in a section heading of `templates/prd/PRD_TEMPLATE.md`.
 
-**Почему Tactical**: Очевидно что исправить, 1 файл, легко откатить, нулевой risk.
+**Why Tactical**: Obviously what to fix, 1 file, easy to revert, zero risk.
 
-**Действие**: Исправить и закоммитить. Note не нужен.
+**Action**: Fix and commit. No Note needed.
 
-### Пример 2: Добавить новый формат экспорта (JSON) — Standard
+### Example 2: Adding a New Export Format (JSON) — Standard
 
-**Ситуация**: Пользователи просят экспорт артефактов в JSON помимо Markdown.
+**Situation**: Users are requesting artifact export to JSON in addition to Markdown.
 
-**Почему Standard**: Есть несколько подходов (serde_json vs. tera шаблоны, формат вложенности), фича на 2-3 дня, затрагивает модуль `artifact/writer`.
+**Why Standard**: Multiple approaches exist (serde_json vs. tera templates, nesting format), feature takes 2-3 days, affects the `artifact/writer` module.
 
-**Действие**: Создать PRD (tactical, 1 страница) с обоснованием формата -> RFC с описанием реализации.
+**Action**: Create a PRD (tactical, 1 page) with format justification -> RFC describing the implementation.
 
-### Пример 3: Переход с SQLite на LanceDB — Deep
+### Example 3: Migrating from SQLite to LanceDB — Deep
 
-**Ситуация**: Решение о замене storage engine для поддержки vector search.
+**Situation**: Decision to replace the storage engine to support vector search.
 
-**Почему Deep**: Необратимо (миграция данных), затрагивает всю подсистему хранения, security implications (данные пользователей), срок реализации 1-2 недели.
+**Why Deep**: Irreversible (data migration), affects the entire storage subsystem, security implications (user data), implementation timeline 1-2 weeks.
 
-**Действие**: PRD (зачем LanceDB) -> Spec (схема таблиц, API контракты) -> RFC (план миграции, этапы) -> ADR (почему LanceDB, а не Qdrant/Milvus/SQLite+расширения).
+**Action**: PRD (why LanceDB) -> Spec (table schema, API contracts) -> RFC (migration plan, phases) -> ADR (why LanceDB and not Qdrant/Milvus/SQLite+extensions).
 
-### Пример 4: Запуск Desktop App (Tauri) — Critical
+### Example 4: Launching Desktop App (Tauri) — Critical
 
-**Ситуация**: Стратегическое решение о создании десктопного приложения параллельно с CLI.
+**Situation**: Strategic decision to build a desktop application alongside the CLI.
 
-**Почему Critical**: Стратегическая инициатива, множество подсистем (UI, IPC, state management), несколько "команд" (frontend/backend), roadmap-level решение на месяцы.
+**Why Critical**: Strategic initiative, multiple subsystems (UI, IPC, state management), multiple "teams" (frontend/backend), roadmap-level decision spanning months.
 
-**Действие**: Epic (Desktop App v1.0) -> PRD[] (UI/UX, Data Sync, Settings) -> Spec[] (Tauri Commands API, React Components) -> RFC[] (архитектура IPC, state management) -> ADR[] (Tauri vs Electron, React vs Svelte, bundling strategy).
+**Action**: Epic (Desktop App v1.0) -> PRD[] (UI/UX, Data Sync, Settings) -> Spec[] (Tauri Commands API, React Components) -> RFC[] (IPC architecture, state management) -> ADR[] (Tauri vs Electron, React vs Svelte, bundling strategy).
 
-## Связанные документы
+## Related Documents
 
-- [QUALITY-GATES.md](QUALITY-GATES.md) — какие проверки применять на каждом уровне
-- [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: какой документ создать
-- [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — иерархия артефактов и lifecycle
+- [QUALITY-GATES.md](QUALITY-GATES.md) — which checks to apply at each level
+- [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: which document to create
+- [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — artifact hierarchy and lifecycle

@@ -1,210 +1,212 @@
+[English](QUALITY-GATES.md) · [Русский](QUALITY-GATES.ru.md)
+
 # Quality Gates — Verification Gate + Adversarial Review
 
-Руководство по проверкам качества решений в Forgeplan. Объединяет Verification Gate (Quint-code), Adversarial Review (BMAD), 13-Step PRD Validation (BMAD) и R_eff Quality Scoring (Quint-code/FPF).
+A guide to decision quality checks in Forgeplan. Combines the Verification Gate (Quint-code), Adversarial Review (BMAD), 13-Step PRD Validation (BMAD), and R_eff Quality Scoring (Quint-code/FPF).
 
-## 1. Verification Gate (5 пунктов)
+## 1. Verification Gate (5 Points)
 
-Перед закрытием любого решения (DecisionRecord, ADR, RFC) проверь все 5 пунктов. Это защита от самообмана и confirmation bias.
+Before closing any decision (DecisionRecord, ADR, RFC), check all 5 points. This is a safeguard against self-deception and confirmation bias.
 
-### 1.1. Deductive consequences — Дедуктивные следствия
+### 1.1. Deductive Consequences
 
-> Что должно быть истинным, если решение верно?
+> What must be true if the decision is correct?
 
-Если решение X правильное, то обязательно должны выполняться условия Y, Z, W. Проверь каждое. Если хотя бы одно не выполняется — решение под вопросом.
+If decision X is correct, then conditions Y, Z, W must necessarily hold. Verify each one. If even one does not hold, the decision is in question.
 
-**Пример**: Если мы решили использовать LanceDB, то должно быть верно:
-- LanceDB поддерживает наши типы данных (structured + vectors)
-- Производительность на 10K артефактов приемлема (<100ms запрос)
-- Есть стабильный Rust SDK
+**Example**: If we decided to use LanceDB, then the following must be true:
+- LanceDB supports our data types (structured + vectors)
+- Performance on 10K artifacts is acceptable (<100ms per query)
+- A stable Rust SDK exists
 
-### 1.2. Strongest counter-argument — Сильнейший контраргумент
+### 1.2. Strongest Counter-Argument
 
-> Настоящий (не strawman) контраргумент против решения.
+> A genuine (not strawman) counter-argument against the decision.
 
-Сформулируй самый сильный аргумент ПРОТИВ выбранного варианта. Strawman (заведомо слабый аргумент) не считается — нужен реальный risk.
+Formulate the strongest argument AGAINST the chosen option. A strawman (deliberately weak argument) does not count — a real risk is needed.
 
-**Пример**: "LanceDB — молодой проект, API может сломаться между версиями. SQLite стабилен 20+ лет."
+**Example**: "LanceDB is a young project; its API may break between versions. SQLite has been stable for 20+ years."
 
-### 1.3. Self-evidence check — Проверка самодостаточности evidence
+### 1.3. Self-Evidence Check
 
-> Доказательства только из этой сессии? -> CL1 penalty.
+> Is all evidence from this session only? -> CL1 penalty.
 
-Если все evidence получены в рамках одной сессии (один разговор, один PoC), это CL1 — ограниченная конгруэнтность. Нужны внешние подтверждения: документация, бенчмарки других проектов, production опыт.
+If all evidence was obtained within a single session (one conversation, one PoC), this is CL1 — limited congruence. External confirmations are needed: documentation, benchmarks from other projects, production experience.
 
-**Штраф**: CL1 = 0.4 penalty к R_eff score.
+**Penalty**: CL1 = 0.4 penalty to R_eff score.
 
-### 1.4. Tail failure scenarios — Маловероятные катастрофические сценарии
+### 1.4. Tail Failure Scenarios
 
-> Сценарии с вероятностью <10% каждый, но катастрофическими последствиями.
+> Scenarios with <10% probability each, but catastrophic consequences.
 
-Перечисли 2-3 сценария "что если всё пойдёт не так". Оцени: можем ли мы их пережить? Есть ли rollback plan?
+List 2-3 "what if everything goes wrong" scenarios. Assess: can we survive them? Is there a rollback plan?
 
-**Пример**:
-- LanceDB прекращает разработку (вероятность ~5%) -> данные в открытом формате Lance, можно мигрировать
-- Embedding модель BGE-M3 удалена из HuggingFace (~2%) -> модель встроена в бинарник, работает оффлайн
+**Example**:
+- LanceDB development is abandoned (probability ~5%) -> data is in the open Lance format, migration is possible
+- Embedding model BGE-M3 is removed from HuggingFace (~2%) -> model is embedded in the binary, works offline
 
-### 1.5. WLNK challenge — Проверка слабого звена
+### 1.5. WLNK Challenge — Weakest Link Verification
 
-> Действительно ли это самое слабое звено, или есть скрытое?
+> Is this really the weakest link, or is there a hidden one?
 
-R_eff = min(evidence_scores). Убедись, что ты определил НАСТОЯЩЕЕ слабое звено. Часто реальный risk скрыт за тем, что кажется очевидным.
+R_eff = min(evidence_scores). Make sure you have identified the REAL weakest link. Often the actual risk is hidden behind what seems obvious.
 
-**Вопрос**: "Я считаю, что слабое звено — производительность. Но может быть, реальная проблема — developer experience или миграция существующих данных?"
+**Question**: "I believe the weakest link is performance. But could the real problem be developer experience or migration of existing data?"
 
 ## 2. Adversarial Review Protocol
 
-Протокол ревью из BMAD-METHOD. Применяется на уровнях Deep и Critical.
+A review protocol from BMAD-METHOD. Applied at Deep and Critical levels.
 
-### Основные правила
+### Core Rules
 
-1. **Ревьюер ОБЯЗАН найти проблемы.** Это не опционально — если ревьюер не нашёл ни одной проблемы, значит ревью проведено поверхностно.
+1. **The reviewer MUST find problems.** This is not optional — if the reviewer found zero problems, the review was superficial.
 
-2. **0 найденных проблем = повторить ревью.** Ноль проблем указывает на approval bias. Ревьюер должен провести ревью заново с повышенным вниманием.
+2. **0 problems found = repeat the review.** Zero issues indicates approval bias. The reviewer must re-conduct the review with heightened attention.
 
-3. **Классификация серьёзности:**
+3. **Severity classification:**
 
-| Severity | Описание | Действие |
-|----------|----------|----------|
-| **Critical** | Блокирует реализацию, фундаментальный дефект | Обязательно исправить до продолжения |
-| **Warning** | Потенциальная проблема, неполнота, неясность | Исправить или обосновать почему оставляем |
-| **Pass** | Замечание, улучшение, стилистика | На усмотрение автора |
+| Severity | Description | Action |
+|----------|-------------|--------|
+| **Critical** | Blocks implementation, fundamental defect | Must fix before proceeding |
+| **Warning** | Potential issue, incompleteness, ambiguity | Fix or justify why it stays |
+| **Pass** | Observation, improvement, stylistic | At the author's discretion |
 
-4. **Каждый finding должен ссылаться на конкретную секцию или строку.** Абстрактные замечания ("надо бы улучшить") не принимаются.
+4. **Each finding must reference a specific section or line.** Abstract remarks ("should improve") are not accepted.
 
-### Процесс Adversarial Review
+### Adversarial Review Process
 
 ```
-1. Автор готовит артефакт (PRD, RFC, ADR, Spec)
-2. Ревьюер получает артефакт
-3. Ревьюер ИЩЕТ проблемы (не подтверждения)
-4. Ревьюер составляет список findings с severity
-5. Если findings = 0 -> повторное ревью
-6. Автор обрабатывает каждый finding:
-   - Critical -> исправляет
-   - Warning -> исправляет или документирует обоснование
-   - Pass -> на своё усмотрение
-7. Повторное ревью исправлений (для Critical)
+1. Author prepares the artifact (PRD, RFC, ADR, Spec)
+2. Reviewer receives the artifact
+3. Reviewer SEARCHES for problems (not confirmations)
+4. Reviewer compiles a list of findings with severity
+5. If findings = 0 -> repeat review
+6. Author addresses each finding:
+   - Critical -> fixes it
+   - Warning -> fixes or documents justification
+   - Pass -> at their discretion
+7. Re-review of fixes (for Critical items)
 ```
 
-### Для уровня Critical — несколько раундов
+### For Critical Level — Multiple Rounds
 
-На уровне Critical проводится минимум 2 раунда Adversarial Review. Второй раунд фокусируется на:
-- Проверке исправлений из первого раунда
-- Поиске проблем, возникших из-за исправлений
-- Межсекционной согласованности
+At the Critical level, a minimum of 2 rounds of Adversarial Review are conducted. The second round focuses on:
+- Verifying fixes from the first round
+- Finding problems introduced by the fixes
+- Cross-section consistency
 
 ## 3. BMAD 13-Step PRD Validation
 
-Полная валидация PRD по 13 шагам из BMAD-METHOD. Применяется на уровнях Deep и Critical.
+Full PRD validation across 13 steps from BMAD-METHOD. Applied at Deep and Critical levels.
 
-| Шаг | Название | Что проверяет |
-|-----|----------|---------------|
-| 1 | **Discovery & Confirmation** | Тип документа определён корректно, задача ясна |
-| 2 | **Format Detection & Structure** | Структура соответствует шаблону, все секции на месте |
-| 3 | **Information Density** | Нет filler/fluff, каждое предложение несёт смысл |
-| 4 | **Product Brief Coverage** | Product brief полностью покрыт: проблема, аудитория, цели |
-| 5 | **Measurability** | FR и NFR тестируемы и измеримы (числа, метрики) |
-| 6 | **Traceability** | Цепочка: Summary -> Criteria -> User Journeys -> FRs прослеживается |
-| 7 | **Implementation Leakage** | Нет имён фреймворков, библиотек, технологий в требованиях |
-| 8 | **Domain Compliance** | Учтены доменные требования (healthcare, fintech, и т.д.) |
-| 9 | **Project-Type Compliance** | Учтена специфика типа проекта (API, mobile, web, CLI) |
+| Step | Name | What It Checks |
+|------|------|----------------|
+| 1 | **Discovery & Confirmation** | Document type is correctly identified, task is clear |
+| 2 | **Format Detection & Structure** | Structure matches the template, all sections are present |
+| 3 | **Information Density** | No filler/fluff, every sentence carries meaning |
+| 4 | **Product Brief Coverage** | Product brief is fully covered: problem, audience, goals |
+| 5 | **Measurability** | FR and NFR are testable and measurable (numbers, metrics) |
+| 6 | **Traceability** | Chain: Summary -> Criteria -> User Journeys -> FRs is traceable |
+| 7 | **Implementation Leakage** | No framework names, libraries, or technologies in requirements |
+| 8 | **Domain Compliance** | Domain requirements are considered (healthcare, fintech, etc.) |
+| 9 | **Project-Type Compliance** | Project type specifics are considered (API, mobile, web, CLI) |
 | 10 | **SMART Requirements** | Specific, Measurable, Attainable, Relevant, Traceable |
-| 11 | **Holistic Quality Assessment** | Общая оценка 1-5 по качеству документа |
-| 12 | **Completeness** | Нет template variables (`{{placeholder}}`), все секции заполнены |
-| 13 | **Report Finalization** | Итоговый отчёт с рекомендациями и action items |
+| 11 | **Holistic Quality Assessment** | Overall 1-5 rating on document quality |
+| 12 | **Completeness** | No template variables (`{{placeholder}}`), all sections filled |
+| 13 | **Report Finalization** | Final report with recommendations and action items |
 
-### Частичное применение (для уровня Standard)
+### Partial Application (for Standard Level)
 
-На уровне Standard обязательны только 3 шага:
-- **Шаг 3** (Information Density) — убрать воду
-- **Шаг 5** (Measurability) — FR/NFR должны быть тестируемы
-- **Шаг 7** (Implementation Leakage) — требования без привязки к реализации
+At the Standard level, only 3 steps are required:
+- **Step 3** (Information Density) — remove filler
+- **Step 5** (Measurability) — FR/NFR must be testable
+- **Step 7** (Implementation Leakage) — requirements without implementation ties
 
 ## 4. R_eff Quality Scoring
 
-Система оценки качества решений из Quint-code. Основной принцип: **доверие к решению = его слабейшее звено**.
+A decision quality scoring system from Quint-code. Core principle: **trust in a decision = its weakest link**.
 
-### Формула
+### Formula
 
 ```
 R_eff = min(evidence_scores)
 ```
 
-**НИКОГДА среднее (average).** Одно слабое доказательство обрушивает весь score.
+**NEVER the average.** A single weak piece of evidence brings down the entire score.
 
-### Расчёт evidence score
+### Evidence Score Calculation
 
 ```
 evidence_score = max(0, verdict_score - CL_penalty)
 ```
 
-### Verdict scores (оценка вердикта)
+### Verdict Scores
 
-| Verdict | Score | Описание |
-|---------|-------|----------|
-| `supports` | 1.0 | Evidence подтверждает решение |
-| `weakens` | 0.5 | Evidence ослабляет уверенность |
-| `refutes` | 0.0 | Evidence опровергает решение |
+| Verdict | Score | Description |
+|---------|-------|-------------|
+| `supports` | 1.0 | Evidence confirms the decision |
+| `weakens` | 0.5 | Evidence weakens confidence |
+| `refutes` | 0.0 | Evidence refutes the decision |
 
-### CL penalties (штрафы за уровень конгруэнтности)
+### CL Penalties (Congruence Level)
 
-| Congruence Level | Penalty | Описание |
-|------------------|---------|----------|
-| CL3 | 0.0 | Тот же контекст, внутренний тест |
-| CL2 | 0.1 | Похожий контекст, related project |
-| CL1 | 0.4 | Другой контекст, внешняя документация |
-| CL0 | 0.9 | Противоположный контекст |
+| Congruence Level | Penalty | Description |
+|------------------|---------|-------------|
+| CL3 | 0.0 | Same context, internal test |
+| CL2 | 0.1 | Similar context, related project |
+| CL1 | 0.4 | Different context, external documentation |
+| CL0 | 0.9 | Opposite context |
 
-### Evidence Decay (устаревание)
+### Evidence Decay
 
-Каждый evidence имеет поле `valid_until` (TTL). После истечения:
-- Evidence НЕ удаляется
-- Score становится **0.1** (stale, not absent)
-- Это отличие от 0.0 — stale evidence лучше, чем полное отсутствие
+Each evidence item has a `valid_until` field (TTL). After expiration:
+- Evidence is NOT deleted
+- Score becomes **0.1** (stale, not absent)
+- This differs from 0.0 — stale evidence is better than no evidence at all
 
-### Пороги доверия
+### Trust Thresholds
 
-| R_eff | Статус | Действие |
-|-------|--------|----------|
-| >= 0.5 | Adequate | Решение можно принять |
-| < 0.5 | Needs Review | Требуется дополнительный evidence или пересмотр |
-| < 0.3 | AT RISK | Решение ненадёжно, необходима переоценка |
+| R_eff | Status | Action |
+|-------|--------|--------|
+| >= 0.5 | Adequate | Decision can be accepted |
+| < 0.5 | Needs Review | Additional evidence or reconsideration required |
+| < 0.3 | AT RISK | Decision is unreliable, reassessment needed |
 
-### Пример расчёта
+### Calculation Example
 
-Решение: "Использовать LanceDB для хранения артефактов"
+Decision: "Use LanceDB for artifact storage"
 
 Evidence pack:
-1. Бенчмарк на 10K записей: supports (1.0), CL2 -> score = 1.0 - 0.1 = **0.9**
-2. Документация LanceDB по Rust SDK: supports (1.0), CL1 -> score = 1.0 - 0.4 = **0.6**
-3. Отзывы в production: weakens (0.5), CL1 -> score = 0.5 - 0.4 = **0.1**
+1. Benchmark on 10K records: supports (1.0), CL2 -> score = 1.0 - 0.1 = **0.9**
+2. LanceDB Rust SDK documentation: supports (1.0), CL1 -> score = 1.0 - 0.4 = **0.6**
+3. Production usage reviews: weakens (0.5), CL1 -> score = 0.5 - 0.4 = **0.1**
 
 ```
 R_eff = min(0.9, 0.6, 0.1) = 0.1 — AT RISK
 ```
 
-Слабое звено — отзывы о production использовании. Нужен дополнительный evidence (CL2+) или пересмотр.
+The weakest link is production usage reviews. Additional evidence (CL2+) or reconsideration is needed.
 
-## 5. Когда применять каждую проверку
+## 5. When to Apply Each Check
 
-| Уровень глубины | Verification Gate | Adversarial Review | 13-Step Validation | R_eff Scoring |
-|-----------------|-------------------|--------------------|--------------------|---------------|
-| **Tactical** | Нет | Нет | Нет | Нет |
-| **Standard** | Да (3 из 5 пунктов) | Нет | Частично (шаги 3, 5, 7) | Опционально |
-| **Deep** | Да (все 5 пунктов) | Да | Полные 13 шагов | Да |
-| **Critical** | Да (все 5 пунктов) | Да, несколько раундов | Полные 13 шагов + domain | Да, обязательно |
+| Depth Level | Verification Gate | Adversarial Review | 13-Step Validation | R_eff Scoring |
+|-------------|-------------------|--------------------|--------------------|---------------|
+| **Tactical** | No | No | No | No |
+| **Standard** | Yes (3 of 5 points) | No | Partial (steps 3, 5, 7) | Optional |
+| **Deep** | Yes (all 5 points) | Yes | Full 13 steps | Yes |
+| **Critical** | Yes (all 5 points) | Yes, multiple rounds | Full 13 steps + domain | Yes, mandatory |
 
-### Какие пункты Verification Gate на уровне Standard
+### Which Verification Gate Points at Standard Level
 
-На уровне Standard обязательны минимум 3 из 5 пунктов. Рекомендуемые:
-1. **Deductive consequences** — всегда полезно
-2. **Strongest counter-argument** — защита от confirmation bias
-3. **WLNK challenge** — определить реальное слабое звено
+At the Standard level, a minimum of 3 of 5 points are required. Recommended:
+1. **Deductive consequences** — always useful
+2. **Strongest counter-argument** — protection against confirmation bias
+3. **WLNK challenge** — identify the real weakest link
 
-Пункты 3 (Self-evidence check) и 4 (Tail failure scenarios) опциональны на Standard, но рекомендуются при любых сомнениях.
+Points 3 (Self-evidence check) and 4 (Tail failure scenarios) are optional at Standard but recommended whenever there is any doubt.
 
-## Связанные документы
+## Related Documents
 
-- [DEPTH-CALIBRATION.md](DEPTH-CALIBRATION.md) — когда какой уровень глубины
-- [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: какой документ создать
-- [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — иерархия артефактов и lifecycle
+- [DEPTH-CALIBRATION.md](DEPTH-CALIBRATION.md) — when to use each depth level
+- [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: which document to create
+- [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — artifact hierarchy and lifecycle

@@ -1,5 +1,7 @@
 # Documentation Index
 
+[English](README.md) · [Русский](README.ru.md)
+
 Production documentation for the Forgeplan project.
 
 > **Local notes** (research, planning, sessions, raw source materials) live in `.local/` (gitignored) — not part of this tree.
