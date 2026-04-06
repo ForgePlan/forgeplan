@@ -220,40 +220,40 @@ pub struct EnrichedData {
 pub fn check_basic(rule: &Rule, data: &ArtifactData) -> bool {
     let c = &rule.condition;
 
-    if let Some(ref v) = c.status {
-        if !v.matches(&data.status) {
-            return false;
-        }
+    if let Some(ref v) = c.status
+        && !v.matches(&data.status)
+    {
+        return false;
     }
-    if let Some(ref v) = c.kind {
-        if !v.matches(&data.kind) {
-            return false;
-        }
+    if let Some(ref v) = c.kind
+        && !v.matches(&data.kind)
+    {
+        return false;
     }
-    if let Some(ref v) = c.depth {
-        if !v.matches(&data.depth) {
-            return false;
-        }
+    if let Some(ref v) = c.depth
+        && !v.matches(&data.depth)
+    {
+        return false;
     }
-    if let Some(ref expr) = c.r_eff {
-        if !expr.check(data.trust.r_eff) {
-            return false;
-        }
+    if let Some(ref expr) = c.r_eff
+        && !expr.check(data.trust.r_eff)
+    {
+        return false;
     }
-    if let Some(ref expr) = c.overall {
-        if !expr.check(data.trust.overall) {
-            return false;
-        }
+    if let Some(ref expr) = c.overall
+        && !expr.check(data.trust.overall)
+    {
+        return false;
     }
-    if let Some(ref expr) = c.link_count {
-        if !expr.check(data.link_count as f64) {
-            return false;
-        }
+    if let Some(ref expr) = c.link_count
+        && !expr.check(data.link_count as f64)
+    {
+        return false;
     }
-    if let Some(stale) = c.is_stale {
-        if data.is_stale != stale {
-            return false;
-        }
+    if let Some(stale) = c.is_stale
+        && data.is_stale != stale
+    {
+        return false;
     }
 
     true
