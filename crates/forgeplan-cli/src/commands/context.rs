@@ -115,6 +115,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .filter(|(src, tgt, _)| src.eq_ignore_ascii_case(id) || tgt.eq_ignore_ascii_case(id))
         .count();
 
+    let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
     let fgr_score = fgr::compute(
         id,
         &record.body,
@@ -124,7 +125,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         report.r_eff,
         link_count,
         is_stale,
-        None,
+        fpf_weights.as_ref(),
     );
 
     // 7. Derived status

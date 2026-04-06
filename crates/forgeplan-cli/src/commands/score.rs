@@ -170,6 +170,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         .filter(|(src, tgt, _)| src == target_id || tgt == target_id)
         .count();
 
+    let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
     let fgr_score = fgr::compute(
         target_id,
         &target.body,
@@ -179,7 +180,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         report.r_eff,
         link_count,
         is_stale,
-        None,
+        fpf_weights.as_ref(),
     );
 
     // --- JSON output ---
