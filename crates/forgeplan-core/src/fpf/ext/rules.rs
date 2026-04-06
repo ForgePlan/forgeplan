@@ -1106,4 +1106,159 @@ priority: 2
         // Dashboard filters deprecated BEFORE calling rules, so this is expected behavior
         assert!(action.is_some()); // rules don't filter terminal — dashboard does
     }
+
+    // --- Negative tests (invalid input → rejection) ---
+
+    #[test]
+    fn negative_parse_empty_string() {
+        assert!(NumericExpr::parse("").is_none());
+    }
+
+    #[test]
+    fn negative_parse_garbage() {
+        assert!(NumericExpr::parse("abc").is_none());
+        assert!(NumericExpr::parse("< abc").is_none());
+        assert!(NumericExpr::parse(">= xyz").is_none());
+        assert!(NumericExpr::parse("..").is_none());
+    }
+
+    #[test]
+    fn negative_parse_equal_range() {
+        // lo == hi is also invalid (empty range)
+        assert!(NumericExpr::parse("0.5..0.5").is_none());
+    }
+
+    #[test]
+    fn negative_yaml_bad_action() {
+        let yaml = r#"
+name: "test"
+when:
+  status: "draft"
+action: UNKNOWN_ACTION
+"#;
+        let result: Result<Rule, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn negative_yaml_missing_name() {
+        let yaml = r#"
+when:
+  status: "draft"
+action: EXPLORE
+"#;
+        let result: Result<Rule, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn negative_yaml_bad_numeric_expr() {
+        let yaml = r#"
+name: "test"
+when:
+  r_eff: "not_a_number"
+action: EXPLORE
+"#;
+        let result: Result<Rule, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    // --- Corner case tests (boundary values) ---
+
+    #[test]
+    fn corner_reff_exact_boundary() {
+        let rules = default_rules();
+
+        // R_eff exactly 0.01 → NOT < 0.01, so blind-spot doesn't match
+        // But weak-evidence requires status ["active","stale"], and this is draft
+        let draft_border = enrich(make_data("X", "draft", 0.01, 0));
+        let action = run_rules(&rules, &draft_border);
+        // No blind-spot (r_eff >= 0.01), no weak-evidence (draft), no orphan (draft)
+        // medium-quality matches 0.01..0.7? No, 0.01 < 0.5 so not in 0.5..0.7
+        // Actually default rules: blind-spot=<0.01, weak-evidence=<0.5 for active/stale
+        // Draft with r_eff=0.01 doesn't match any default rule
+        assert!(action.is_none());
+
+        // R_eff exactly 0.5 → not < 0.5 (investigate), yes in 0.5..0.7 (medium-quality)
+        let mut medium_exact = make_data("X", "active", 0.5, 2);
+        medium_exact.trust.overall = 0.4;
+        let enriched = enrich(medium_exact);
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.action_type, ActionType::Investigate); // medium-quality
+        assert_eq!(action.priority, 4);
+    }
+
+    #[test]
+    fn corner_link_count_zero_vs_one() {
+        let rules = default_rules();
+
+        // link_count=0, active, strong evidence → orphan-active (priority 3) wins
+        let mut zero_links = make_data("X", "active", 0.9, 0);
+        zero_links.trust.overall = 0.8;
+        let enriched = enrich(zero_links);
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.priority, 3); // orphan-active
+
+        // link_count=1, active, strong evidence → EXPLOIT (no orphan rule)
+        let mut one_link = make_data("X", "active", 0.9, 1);
+        one_link.trust.overall = 0.8;
+        let enriched = enrich(one_link);
+        let action = run_rules(&rules, &enriched).unwrap();
+        assert_eq!(action.action_type, ActionType::Exploit);
+    }
+
+    #[test]
+    fn corner_multiple_links_missing() {
+        // Rule requires BOTH rfc and adr missing
+        let rule = Rule {
+            name: "needs-both".into(),
+            condition: Condition {
+                links_missing: Some(vec!["rfc".into(), "adr".into()]),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: None,
+        };
+
+        // Neither linked → match
+        let neither = EnrichedData {
+            base: make_data("X", "active", 0.5, 1),
+            linked_kinds: vec!["evidence".into()],
+            days_until_expiry: None,
+        };
+        assert!(check_enriched(&rule, &neither));
+
+        // RFC linked but not ADR → still match (adr still missing)
+        let has_rfc = EnrichedData {
+            base: make_data("X", "active", 0.5, 2),
+            linked_kinds: vec!["rfc".into()],
+            days_until_expiry: None,
+        };
+        assert!(!check_enriched(&rule, &has_rfc)); // rfc IS linked → fails
+
+        // Both linked → no match
+        let has_both = EnrichedData {
+            base: make_data("X", "active", 0.5, 3),
+            linked_kinds: vec!["rfc".into(), "adr".into()],
+            days_until_expiry: None,
+        };
+        assert!(!check_enriched(&rule, &has_both));
+    }
+
+    #[test]
+    fn corner_case_insensitive_kind() {
+        let rule = Rule {
+            name: "test".into(),
+            condition: Condition {
+                kind: Some(ValueMatch::Single("PRD".into())),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: None,
+        };
+        // kind stored as lowercase "prd" → should still match "PRD"
+        assert!(check_basic(&rule, &make_data("X", "active", 0.5, 1)));
+    }
 }
