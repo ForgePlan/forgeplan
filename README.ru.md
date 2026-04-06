@@ -1,14 +1,12 @@
 <div align="center">
 
-<br>
+# ForgePlan
+
+---
 
 <img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
 
-<br>
-
-# ForgePlan
-
-### Forge your plan — от сырой идеи до проверенного решения
+### От сырой идеи до проверенного решения
 
 **Engineering decision framework** для команд, которые хотят, чтобы их идеи оставляли след.
 Структурированные артефакты (PRD, RFC, ADR, Epic, Spec), автоматический scoring качества, evidence и нативная интеграция с AI-агентами.
