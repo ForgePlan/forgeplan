@@ -63,7 +63,7 @@ pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf
         project_name: project_name.into(),
         ..Config::default()
     };
-    let mut yaml = serde_yml::to_string(&config)?;
+    let mut yaml = serde_yaml::to_string(&config)?;
     // Append commented estimate config template
     yaml.push_str(ESTIMATE_CONFIG_TEMPLATE);
     fs::write(fp_dir.join("config.yaml"), yaml)?;
@@ -88,6 +88,6 @@ pub fn find_workspace(start: &Path) -> Option<PathBuf> {
 pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
     let config_path = workspace.join("config.yaml");
     let content = fs::read_to_string(&config_path)?;
-    let config: Config = serde_yml::from_str(&content)?;
+    let config: Config = serde_yaml::from_str(&content)?;
     Ok(config)
 }

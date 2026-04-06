@@ -43,7 +43,7 @@ pub enum ForgeplanError {
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
-    Yaml(#[from] serde_yml::Error),
+    Yaml(#[from] serde_yaml::Error),
 }
 
 pub type Result<T> = std::result::Result<T, ForgeplanError>;

@@ -92,9 +92,9 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
 
 fn fm_string(fm: &Frontmatter, key: &str) -> Option<String> {
     fm.get(key).map(|v| match v {
-        serde_yml::Value::String(s) => s.clone(),
-        serde_yml::Value::Number(n) => format!("{:?}", n),
-        serde_yml::Value::Bool(b) => format!("{}", b),
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Number(n) => format!("{:?}", n),
+        serde_yaml::Value::Bool(b) => format!("{}", b),
         _ => format!("{:?}", v),
     })
 }

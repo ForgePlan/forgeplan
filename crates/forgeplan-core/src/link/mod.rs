@@ -14,15 +14,15 @@ pub async fn add_link(artifact_path: &Path, target_id: &str, relation: &str) -> 
     // Get or create links array
     let links = fm
         .entry("links".to_string())
-        .or_insert_with(|| serde_yml::Value::Sequence(Vec::new()));
+        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
 
-    if let serde_yml::Value::Sequence(seq) = links {
+    if let serde_yaml::Value::Sequence(seq) = links {
         // Check for duplicates
         let already_exists = seq.iter().any(|entry| {
-            if let serde_yml::Value::Mapping(map) = entry {
-                let t = map.get(serde_yml::Value::String("target".into()));
-                let r = map.get(serde_yml::Value::String("relation".into()));
-                matches!((t, r), (Some(serde_yml::Value::String(t)), Some(serde_yml::Value::String(r)))
+            if let serde_yaml::Value::Mapping(map) = entry {
+                let t = map.get(serde_yaml::Value::String("target".into()));
+                let r = map.get(serde_yaml::Value::String("relation".into()));
+                matches!((t, r), (Some(serde_yaml::Value::String(t)), Some(serde_yaml::Value::String(r)))
                     if t.eq_ignore_ascii_case(&target_id) && r == relation)
             } else {
                 false
@@ -42,16 +42,16 @@ pub async fn add_link(artifact_path: &Path, target_id: &str, relation: &str) -> 
             .into());
         }
 
-        let mut entry = serde_yml::Mapping::new();
+        let mut entry = serde_yaml::Mapping::new();
         entry.insert(
-            serde_yml::Value::String("target".into()),
-            serde_yml::Value::String(target_id),
+            serde_yaml::Value::String("target".into()),
+            serde_yaml::Value::String(target_id),
         );
         entry.insert(
-            serde_yml::Value::String("relation".into()),
-            serde_yml::Value::String(relation.into()),
+            serde_yaml::Value::String("relation".into()),
+            serde_yaml::Value::String(relation.into()),
         );
-        seq.push(serde_yml::Value::Mapping(entry));
+        seq.push(serde_yaml::Value::Mapping(entry));
     } else {
         return Err(ForgeplanError::Frontmatter("'links' field is not a sequence".into()).into());
     }
@@ -65,15 +65,15 @@ pub async fn add_link(artifact_path: &Path, target_id: &str, relation: &str) -> 
 /// Returns Vec<(target_id, relation)>.
 pub fn list_links(fm: &Frontmatter) -> Vec<(String, String)> {
     let mut results = Vec::new();
-    if let Some(serde_yml::Value::Sequence(seq)) = fm.get("links") {
+    if let Some(serde_yaml::Value::Sequence(seq)) = fm.get("links") {
         for entry in seq {
-            if let serde_yml::Value::Mapping(map) = entry {
+            if let serde_yaml::Value::Mapping(map) = entry {
                 let target = map
-                    .get(serde_yml::Value::String("target".into()))
+                    .get(serde_yaml::Value::String("target".into()))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let relation = map
-                    .get(serde_yml::Value::String("relation".into()))
+                    .get(serde_yaml::Value::String("relation".into()))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !target.is_empty() {
@@ -150,7 +150,7 @@ links:
   - target: RFC-002
     relation: based_on
 "#;
-        let fm: crate::artifact::frontmatter::Frontmatter = serde_yml::from_str(yaml).unwrap();
+        let fm: crate::artifact::frontmatter::Frontmatter = serde_yaml::from_str(yaml).unwrap();
         let links = list_links(&fm);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0], ("PRD-001".to_string(), "informs".to_string()));
@@ -160,7 +160,7 @@ links:
     #[test]
     fn list_links_non_sequence_links_field() {
         let yaml = r#"links: "not-a-sequence""#;
-        let fm: crate::artifact::frontmatter::Frontmatter = serde_yml::from_str(yaml).unwrap();
+        let fm: crate::artifact::frontmatter::Frontmatter = serde_yaml::from_str(yaml).unwrap();
         // Non-sequence links field should return empty vec
         assert!(list_links(&fm).is_empty());
     }
