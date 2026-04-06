@@ -162,5 +162,10 @@ pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
     let config_path = workspace.join("config.yaml");
     let content = fs::read_to_string(&config_path)?;
     let config: Config = serde_yaml::from_str(&content)?;
+    // Validate FPF config if present (catches NaN/Infinity/negative from YAML)
+    if let Some(ref fpf) = config.fpf {
+        fpf.validate()
+            .map_err(|e| anyhow::anyhow!("Invalid fpf config: {e}"))?;
+    }
     Ok(config)
 }

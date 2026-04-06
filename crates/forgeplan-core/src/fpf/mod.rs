@@ -188,6 +188,44 @@ fn build_rule_actions(
     active_rules: &[rules::Rule],
     config: &FpfConfig,
 ) -> Vec<Action> {
+    // Pre-build lookup maps for O(1) access (audit fix: O(N²) → O(N+R))
+    let kind_map: std::collections::HashMap<&str, &str> = records
+        .iter()
+        .map(|r| (r.id.as_str(), r.kind.as_str()))
+        .collect();
+
+    let fgr_map: std::collections::HashMap<&str, &fgr::FgrScore> = fgr_scores
+        .iter()
+        .map(|s| (s.artifact_id.as_str(), s))
+        .collect();
+
+    // Build linked_kinds and link_count per artifact from relations
+    let mut linked_kinds_map: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut link_count_map: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+
+    for (src, tgt, _) in relations {
+        *link_count_map.entry(src.as_str()).or_default() += 1;
+        *link_count_map.entry(tgt.as_str()).or_default() += 1;
+        if let Some(&kind) = kind_map.get(tgt.as_str()) {
+            linked_kinds_map
+                .entry(src.as_str())
+                .or_default()
+                .push(kind.to_string());
+        }
+        if let Some(&kind) = kind_map.get(src.as_str()) {
+            linked_kinds_map
+                .entry(tgt.as_str())
+                .or_default()
+                .push(kind.to_string());
+        }
+    }
+
+    // Pre-sort rules by priority (audit fix: sort once, not per-artifact)
+    let mut sorted_rules: Vec<&rules::Rule> = active_rules.iter().collect();
+    sorted_rules.sort_by_key(|r| r.priority);
+
     let mut actions = Vec::new();
 
     for record in records {
@@ -196,10 +234,7 @@ fn build_rule_actions(
             continue;
         }
 
-        let link_count = relations
-            .iter()
-            .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
-            .count();
+        let link_count = link_count_map.get(record.id.as_str()).copied().unwrap_or(0);
 
         let is_stale = record
             .valid_until
@@ -207,9 +242,7 @@ fn build_rule_actions(
             .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
             .is_some_and(|dt| chrono::Utc::now().naive_utc() > dt);
 
-        let fgr_score = fgr_scores.iter().find(|s| s.artifact_id == record.id);
-
-        // Parse evidence from body for trust computation
+        let fgr_score = fgr_map.get(record.id.as_str()).copied();
         let evidence = parse_evidence_from_record(record);
 
         let trust = TrustScore::compute(
@@ -234,27 +267,12 @@ fn build_rule_actions(
             trust,
         };
 
-        // Batch enrichment: collect linked kinds for this artifact
-        let linked_kinds: Vec<String> = relations
-            .iter()
-            .filter_map(|(src, tgt, _rel)| {
-                if src == &record.id {
-                    // Find the kind of the target
-                    records
-                        .iter()
-                        .find(|r| r.id == *tgt)
-                        .map(|r| r.kind.clone())
-                } else if tgt == &record.id {
-                    records
-                        .iter()
-                        .find(|r| r.id == *src)
-                        .map(|r| r.kind.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let linked_kinds = linked_kinds_map
+            .get(record.id.as_str())
+            .cloned()
+            .unwrap_or_default();
 
+        // days_until_expiry: negative = already expired (documented behavior)
         let days_until_expiry = record.valid_until.as_ref().and_then(|v| {
             chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
                 .ok()
@@ -267,13 +285,26 @@ fn build_rule_actions(
             days_until_expiry,
         };
 
-        if let Some(suggested) = rules::run_rules(active_rules, &enriched) {
-            actions.push(Action {
-                artifact_id: record.id.clone(),
-                action_type: suggested.action_type.to_string(),
-                reason: suggested.reason,
-                priority: suggested.priority,
-            });
+        // Use pre-sorted rules directly (no sort inside run_rules needed)
+        for rule in &sorted_rules {
+            let matched = if rule.condition.needs_enrichment() {
+                rules::check_enriched(rule, &enriched)
+            } else {
+                rules::check_basic(rule, &enriched.base)
+            };
+            if matched {
+                let reason = rule
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| format!("Matched rule '{}'", rule.name));
+                actions.push(Action {
+                    artifact_id: record.id.clone(),
+                    action_type: rule.action.to_string(),
+                    reason,
+                    priority: rule.priority,
+                });
+                break;
+            }
         }
     }
 

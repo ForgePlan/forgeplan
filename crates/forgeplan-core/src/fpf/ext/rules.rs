@@ -206,6 +206,8 @@ pub struct EnrichedData {
     /// Kinds of artifacts linked to this one (lowercase): ["rfc", "evidence", "adr"]
     pub linked_kinds: Vec<String>,
     /// Days until valid_until expiry. None = no expiry set.
+    /// Negative values mean the artifact has already expired (e.g., -30 = expired 30 days ago).
+    /// Rules with `days_until_expiry: "< 14"` will match both soon-to-expire AND already-expired.
     pub days_until_expiry: Option<i64>,
 }
 
@@ -336,6 +338,12 @@ pub fn run_rules(rules: &[Rule], data: &EnrichedData) -> Option<SuggestedAction>
 /// Returns the 5 default rules that match current hardcoded behavior.
 ///
 /// Used when config.yaml has no `fpf.rules` section.
+///
+/// Note: "weak-evidence" uses `["active", "stale"]` explicitly instead of
+/// the hardcoded `!= "draft"` logic. Terminal statuses (superseded, deprecated)
+/// are already filtered out in `build_rule_actions()` before rules are evaluated.
+/// Current lifecycle: draft → active → stale → superseded/deprecated.
+/// If new intermediate statuses are added, update this list.
 pub fn default_rules() -> Vec<Rule> {
     vec![
         Rule {
