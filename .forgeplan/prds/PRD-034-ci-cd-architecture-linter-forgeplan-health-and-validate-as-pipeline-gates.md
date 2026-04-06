@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: NOTE-026
   relation: refines
-status: draft
+status: active
 title: CI/CD Architecture Linter — forgeplan health and validate as pipeline gates
 ---
 
@@ -63,5 +63,6 @@ TOTAL                               0/5  (  0%)
 |----------|----------|--------|
 | EPIC-002 | Parent epic | active |
 | NOTE-026 | Original idea | draft |
+
 
 
