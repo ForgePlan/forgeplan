@@ -1,3 +1,5 @@
+[English](PRD-RFC-ADR-FLOW.md) · [Русский](PRD-RFC-ADR-FLOW.ru.md)
+
 # PRD → RFC → ADR Flow — Decision Tree
 
 ## Quick Decision: Какой документ создать?

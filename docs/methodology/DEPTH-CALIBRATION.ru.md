@@ -1,3 +1,5 @@
+[English](DEPTH-CALIBRATION.md) · [Русский](DEPTH-CALIBRATION.ru.md)
+
 # Depth Calibration — когда какой уровень глубины
 
 Руководство по выбору уровня глубины проработки решения. Основано на Quint-code depth calibration и адаптировано для Forgeplan.

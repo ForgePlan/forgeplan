@@ -1,3 +1,5 @@
+[English](SPEC-SCHEMA.md) · [Русский](SPEC-SCHEMA.ru.md)
+
 # SPEC Schema — Formal Specification
 
 ## Когда создавать Spec
@@ -38,3 +40,9 @@
 | ID | `SPEC-NNN` |
 | File | `SPEC-{NNN}-{kebab-case}.md` |
 | Path | `docs/specs/SPEC-015-oauth2-api.md` |
+
+## Связанные документы
+
+- [PRD-SCHEMA.ru.md](../schemas/PRD-SCHEMA.ru.md) — Структура и правила валидации PRD
+- [EPIC-SCHEMA.ru.md](../schemas/EPIC-SCHEMA.ru.md) — Структура и агрегация Epic
+- [ARTIFACT-MODEL.ru.md](../methodology/ARTIFACT-MODEL.ru.md) — Полная иерархия артефактов

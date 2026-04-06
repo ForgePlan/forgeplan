@@ -1,3 +1,5 @@
+[English](USAGE-BY-ROLE.md) · [Русский](USAGE-BY-ROLE.ru.md)
+
 # ForgePlan — Usage Guide by Role
 
 ## Quick Start по ролям
@@ -150,3 +152,9 @@ IF задача < 5 файлов AND reversible в 1 день → Standard (ADR)
 IF задача > 5 файлов OR новый модуль → Deep (PRD → RFC → ADR)
 IF задача затрагивает security OR data OR infrastructure → Critical (полный цикл)
 ```
+
+## Связанные документы
+
+- [FORGEPLAN-GUIDE.ru.md](FORGEPLAN-GUIDE.ru.md) — Полный практический гайд
+- [DEPTH-CALIBRATION.ru.md](DEPTH-CALIBRATION.ru.md) — Уровни глубины в деталях
+- [HOW-TO-USE.ru.md](HOW-TO-USE.ru.md) — 10 правил методологии

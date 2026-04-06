@@ -1,3 +1,5 @@
+[English](PRD-SCHEMA.md) · [Русский](PRD-SCHEMA.ru.md)
+
 # PRD Schema — Product Requirements Document
 
 ## Когда создавать PRD
