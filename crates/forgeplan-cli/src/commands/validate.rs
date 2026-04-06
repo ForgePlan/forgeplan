@@ -5,7 +5,7 @@ use forgeplan_core::validation::{self, Severity, ValidationResult, adversarial};
 use crate::commands::common;
 use crate::ui;
 
-pub async fn run(id: Option<&str>, json: bool, adversarial: bool) -> anyhow::Result<()> {
+pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> anyhow::Result<()> {
     let store = common::store().await?;
     let all_records = store.list_records(None).await?;
 
@@ -19,6 +19,12 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool) -> anyhow::Res
         all_records
             .into_iter()
             .filter(|r| r.id.to_uppercase() == upper)
+            .collect()
+    } else if ci {
+        // CI mode: validate active + stale (stale = expired but still live decisions)
+        all_records
+            .into_iter()
+            .filter(|r| r.status == "active" || r.status == "stale")
             .collect()
     } else {
         all_records
@@ -97,7 +103,19 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool) -> anyhow::Res
         );
     }
 
-    if total_errors > 0 {
+    if ci && total_errors > 0 {
+        eprintln!(
+            "CI FAILED — {} MUST error(s) in {} artifact(s)",
+            total_errors,
+            to_validate.len()
+        );
+        std::process::exit(1);
+    } else if ci {
+        println!(
+            "CI PASSED — {} artifact(s) validated, 0 MUST errors",
+            to_validate.len()
+        );
+    } else if total_errors > 0 {
         std::process::exit(1);
     }
     Ok(())

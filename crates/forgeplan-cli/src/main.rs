@@ -59,6 +59,9 @@ enum Commands {
         /// Run adversarial (devil's advocate) review
         #[arg(long)]
         adversarial: bool,
+        /// CI mode: exit code 1 if any MUST rules fail
+        #[arg(long)]
+        ci: bool,
     },
     /// Compute R_eff quality score for decisions with evidence
     Score {
@@ -363,6 +366,12 @@ enum Commands {
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
+        /// CI mode: exit code 1 if issues found (for pipeline gates)
+        #[arg(long)]
+        ci: bool,
+        /// Fail thresholds for --ci (e.g., "orphans=5,blind_spots=3,stale=2")
+        #[arg(long)]
+        fail_on: Option<String>,
     },
     /// Capture a decision from conversation into a Note or ADR artifact
     Capture {
@@ -525,7 +534,8 @@ async fn main() -> anyhow::Result<()> {
             id,
             json,
             adversarial,
-        } => commands::validate::run(id.as_deref(), json, adversarial).await,
+            ci,
+        } => commands::validate::run(id.as_deref(), json, adversarial, ci).await,
         Commands::Score { id, all, json } => {
             if all {
                 commands::score::run_all(json).await
@@ -630,7 +640,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
         Commands::Journal { r#type, risk } => commands::journal::run(r#type.as_deref(), risk).await,
-        Commands::Health { compact, json } => commands::health::run(compact, json).await,
+        Commands::Health {
+            compact,
+            json,
+            ci,
+            fail_on,
+        } => commands::health::run(compact, json, ci, fail_on).await,
         Commands::Route {
             description,
             explain,

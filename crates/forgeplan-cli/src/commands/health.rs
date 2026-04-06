@@ -5,7 +5,26 @@ use forgeplan_core::workspace;
 use crate::commands::common;
 use crate::ui;
 
-pub async fn run(compact: bool, json: bool) -> anyhow::Result<()> {
+/// Parse `--fail-on` thresholds like "orphans=5,blind_spots=3,stale=2"
+fn parse_fail_on(fail_on: &str) -> std::collections::HashMap<String, usize> {
+    let mut thresholds = std::collections::HashMap::new();
+    for part in fail_on.split(',') {
+        let part = part.trim();
+        if let Some((key, val)) = part.split_once('=')
+            && let Ok(n) = val.trim().parse::<usize>()
+        {
+            thresholds.insert(key.trim().to_string(), n);
+        }
+    }
+    thresholds
+}
+
+pub async fn run(
+    compact: bool,
+    json: bool,
+    ci: bool,
+    fail_on: Option<String>,
+) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
     let config = workspace::load_config(&ws)?;
@@ -180,5 +199,57 @@ pub async fn run(compact: bool, json: bool) -> anyhow::Result<()> {
     }
 
     println!();
+
+    // CI mode: check thresholds and exit with code 1 if exceeded
+    if ci {
+        let thresholds = fail_on.as_deref().map(parse_fail_on).unwrap_or_default();
+
+        let mut failures = Vec::new();
+
+        // Default thresholds: any blind spots or MUST orphans fail
+        let max_orphans = thresholds.get("orphans").copied().unwrap_or(0);
+        let max_blind_spots = thresholds.get("blind_spots").copied().unwrap_or(0);
+        let max_stale = thresholds.get("stale").copied().unwrap_or(usize::MAX);
+        let max_at_risk = thresholds.get("at_risk").copied().unwrap_or(usize::MAX);
+
+        if report.orphans.len() > max_orphans {
+            failures.push(format!(
+                "orphans: {} (threshold: {})",
+                report.orphans.len(),
+                max_orphans
+            ));
+        }
+        if report.blind_spots.len() > max_blind_spots {
+            failures.push(format!(
+                "blind_spots: {} (threshold: {})",
+                report.blind_spots.len(),
+                max_blind_spots
+            ));
+        }
+        if report.stale_count > max_stale {
+            failures.push(format!(
+                "stale: {} (threshold: {})",
+                report.stale_count, max_stale
+            ));
+        }
+        if report.at_risk.len() > max_at_risk {
+            failures.push(format!(
+                "at_risk: {} (threshold: {})",
+                report.at_risk.len(),
+                max_at_risk
+            ));
+        }
+
+        if !failures.is_empty() {
+            eprintln!("CI FAILED — health thresholds exceeded:");
+            for f in &failures {
+                eprintln!("  - {f}");
+            }
+            std::process::exit(1);
+        } else {
+            println!("CI PASSED — health within thresholds");
+        }
+    }
+
     Ok(())
 }
