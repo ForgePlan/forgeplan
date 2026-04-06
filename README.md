@@ -2,6 +2,10 @@
 
 <br>
 
+<img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
+
+<br>
+
 # ForgePlan
 
 ### Forge your plan — from raw idea to proven decision
@@ -16,6 +20,7 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
 [![Artifacts](https://img.shields.io/badge/artifacts-138-blue?style=flat-square)](.forgeplan/)
 
+**[Website](https://forgeplan.md)** ·
 **[Documentation](docs/README.md)** ·
 **[Methodology](docs/methodology/FORGEPLAN-GUIDE.md)** ·
 **[Releases](https://github.com/ForgePlan/forgeplan/releases)** ·
