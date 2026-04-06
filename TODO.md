@@ -22,7 +22,7 @@
 - [x] Audit: 3 agents, 3H + 1M fixed, NaN validation, reliability clamp
 - [x] EVID-055, R_eff=1.00, RFC-001 activated
 - [x] Housekeeping: 12 orphans linked, SPRINTS.md updated
-- [ ] 1.5: Migrate `forgeplan reason` to auto-save AdiRecord → Sprint 12
+- [x] 1.5: AdiRecord wiring — reason --save creates structured JSON in Note body
 - [ ] 11.3: CI/CD Linter (forgeplan health as GitHub Actions gate)
 - [ ] PR #131 merge + progress sync
 

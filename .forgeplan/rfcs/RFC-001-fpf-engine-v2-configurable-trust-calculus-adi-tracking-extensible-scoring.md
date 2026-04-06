@@ -12,11 +12,11 @@ title: FPF Engine v2 — configurable trust calculus, ADI tracking, extensible s
 ## Progress
 
 ```
-Phase 1  ████████████████████░░░░  6/7  ( 86%)
+Phase 1  ████████████████████████  7/7  (100%)
 Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4  (  0%)
 ─────────────────────────────────────────────────
-TOTAL                               6/16 ( 38%)
+TOTAL                               7/16 ( 44%)
 ```
 
 ## Summary
@@ -268,7 +268,7 @@ Extensions:
 - [x] **1.2** `core/trust.rs` — TrustScore computation (extract from fgr.rs + reff.rs, parameterize)
 - [x] **1.3** `core/adi.rs` — AdiRecord/AdiSnapshot structs, serialize/deserialize, link to artifacts
 - [x] **1.4** `core/model.rs` — FpfContext unified model (computed, not stored)
-- [ ] **1.5** Migrate `forgeplan reason` to auto-save AdiRecord + show bounded context
+- [x] **1.5** Migrate `forgeplan reason --save` to create AdiRecord (structured JSON in Note body)
 - [x] **1.6** Tests: 34 unit tests for core (target was ≥10)
 - [x] **1.7** Wire FpfConfig into CLI (score, fgr, context, dashboard) + config templates in init
 
