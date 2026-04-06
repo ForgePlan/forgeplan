@@ -101,7 +101,7 @@ impl TrustScore {
             score += config.weights.freshness;
         }
 
-        score.min(1.0)
+        score.clamp(0.0, 1.0)
     }
 
     /// Compute full TrustScore from components.
@@ -305,5 +305,40 @@ mod tests {
         assert!(fresh > stale);
         // Difference should be exactly the freshness weight (0.2)
         assert!((fresh - stale - cfg.weights.freshness).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reliability_zero_links() {
+        let cfg = default_config();
+        let r = TrustScore::compute_reliability(0.5, 0, false, &cfg);
+        // 0.5 * 0.5 + 0.0 (no links) + 0.2 (fresh) = 0.45
+        assert!((r - 0.45).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reliability_one_link() {
+        let cfg = default_config();
+        let r = TrustScore::compute_reliability(0.5, 1, false, &cfg);
+        // 0.5 * 0.5 + 0.3 * 0.33 + 0.2 = 0.549
+        assert!((r - (0.25 + 0.3 * 0.33 + 0.2)).abs() < 0.01);
+    }
+
+    #[test]
+    fn reliability_clamped_to_zero() {
+        // Even with extreme negative-ish scenarios, reliability >= 0
+        let r = TrustScore::compute_reliability(0.0, 0, true, &default_config());
+        assert!(r >= 0.0);
+    }
+
+    #[test]
+    fn score_single_clamps_negative_to_zero() {
+        // Weakens (0.5) - CL0 penalty (0.9) = -0.4 → clamped to 0.0
+        let e = EvidenceInput {
+            verdict: Verdict::Weakens,
+            congruence_level: 0,
+            is_expired: false,
+        };
+        let s = score_single(&e, &default_config());
+        assert!((s - 0.0).abs() < f64::EPSILON);
     }
 }

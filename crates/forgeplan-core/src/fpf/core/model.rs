@@ -326,6 +326,32 @@ mod tests {
     }
 
     #[test]
+    fn orphan_active_gets_explore() {
+        let data = ArtifactData {
+            id: "PRD-001".into(),
+            status: "active".into(),
+            evidence: vec![EvidenceInput {
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                is_expired: false,
+            }],
+            formality: 0.7,
+            granularity: 0.7,
+            link_count: 0, // orphan
+            is_stale: false,
+        };
+        let ctx = build_context(
+            &data,
+            ContextMembership::default(),
+            vec![],
+            &default_config(),
+        );
+        let action = ctx.action.unwrap();
+        assert_eq!(action.action_type, ActionType::Explore);
+        assert_eq!(action.priority, 3);
+    }
+
+    #[test]
     fn superseded_gets_no_action() {
         let data = ArtifactData {
             id: "PRD-001".into(),

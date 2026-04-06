@@ -160,6 +160,40 @@ impl Default for DecayConfig {
     }
 }
 
+impl FpfConfig {
+    /// Validate that all f64 fields are finite (not NaN or Infinity).
+    /// Call after deserialization to catch malformed config.yaml.
+    pub fn validate(&self) -> Result<(), String> {
+        let checks: &[(&str, f64)] = &[
+            ("thresholds.explore_reff", self.thresholds.explore_reff),
+            (
+                "thresholds.investigate_reff",
+                self.thresholds.investigate_reff,
+            ),
+            ("thresholds.exploit_reff", self.thresholds.exploit_reff),
+            ("thresholds.exploit_fgr", self.thresholds.exploit_fgr),
+            ("thresholds.explore_fgr", self.thresholds.explore_fgr),
+            ("weights.reff", self.weights.reff),
+            ("weights.links", self.weights.links),
+            ("weights.freshness", self.weights.freshness),
+            ("cl_penalties.cl0", self.cl_penalties.cl0),
+            ("cl_penalties.cl1", self.cl_penalties.cl1),
+            ("cl_penalties.cl2", self.cl_penalties.cl2),
+            ("cl_penalties.cl3", self.cl_penalties.cl3),
+            ("decay.expired_score", self.decay.expired_score),
+        ];
+        for (name, val) in checks {
+            if !val.is_finite() {
+                return Err(format!("fpf.{name} must be finite, got {val}"));
+            }
+            if *val < 0.0 {
+                return Err(format!("fpf.{name} must be non-negative, got {val}"));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +249,31 @@ adi:
         let cfg2: FpfConfig = serde_yaml::from_str(&yaml).unwrap();
         assert!((cfg.thresholds.exploit_reff - cfg2.thresholds.exploit_reff).abs() < f64::EPSILON);
         assert!((cfg.cl_penalties.cl1 - cfg2.cl_penalties.cl1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn default_config_validates() {
+        assert!(FpfConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn nan_config_rejected() {
+        let mut cfg = FpfConfig::default();
+        cfg.thresholds.explore_reff = f64::NAN;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn infinity_config_rejected() {
+        let mut cfg = FpfConfig::default();
+        cfg.weights.reff = f64::INFINITY;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn negative_config_rejected() {
+        let mut cfg = FpfConfig::default();
+        cfg.cl_penalties.cl1 = -0.5;
+        assert!(cfg.validate().is_err());
     }
 }
