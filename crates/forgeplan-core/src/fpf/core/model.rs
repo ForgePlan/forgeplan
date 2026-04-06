@@ -130,8 +130,9 @@ fn suggest_action(
         });
     }
 
-    // Rule 2: Has evidence but weak → INVESTIGATE
-    if trust.r_eff > 0.0 && trust.r_eff < t.investigate_reff {
+    // Rule 2: No/weak evidence on non-draft → INVESTIGATE
+    // Covers: active with r_eff=0 and links (M1 audit fix), or weak evidence 0<r_eff<0.5
+    if data.status != "draft" && trust.r_eff < t.investigate_reff {
         return Some(SuggestedAction {
             action_type: ActionType::Investigate,
             reason: format!(
@@ -251,6 +252,28 @@ mod tests {
             &default_config(),
         );
         assert!(ctx.action.is_none());
+    }
+
+    // M1 audit fix: active artifact with r_eff=0 and links should get INVESTIGATE
+    #[test]
+    fn active_zero_reff_with_links_gets_investigate() {
+        let data = ArtifactData {
+            id: "PRD-001".into(),
+            status: "active".into(),
+            evidence: vec![],
+            formality: 0.7,
+            granularity: 0.7,
+            link_count: 3,
+            is_stale: false,
+        };
+        let ctx = build_context(
+            &data,
+            ContextMembership::default(),
+            vec![],
+            &default_config(),
+        );
+        let action = ctx.action.unwrap();
+        assert_eq!(action.action_type, ActionType::Investigate);
     }
 
     #[test]
