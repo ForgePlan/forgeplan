@@ -10,18 +10,18 @@ pub struct Config {
     pub default_depth: String,
     pub id_digits: u32,
     pub created_at: NaiveDate,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<StorageConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate: Option<EstimateConfigYaml>,
     /// FPF Engine configuration (trust calculus thresholds, weights, ADI settings).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fpf: Option<FpfConfig>,
 }
 
