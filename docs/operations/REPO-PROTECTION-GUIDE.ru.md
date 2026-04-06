@@ -1,3 +1,5 @@
+[English](REPO-PROTECTION-GUIDE.md) · [Русский](REPO-PROTECTION-GUIDE.ru.md)
+
 # Repo Protection Guide — GitHub + CI + Agentic Development
 
 Практический гайд по настройке защиты GitHub репозитория для проектов с dev-based workflow и AI-агентами (Claude Code, Cursor, etc).

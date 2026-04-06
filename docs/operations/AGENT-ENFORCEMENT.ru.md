@@ -1,3 +1,5 @@
+[English](AGENT-ENFORCEMENT.md) · [Русский](AGENT-ENFORCEMENT.ru.md)
+
 # ForgePlan — Agent Enforcement Guide
 
 Как заставить AI-агента ОБЯЗАТЕЛЬНО следовать методологии ForgePlan.

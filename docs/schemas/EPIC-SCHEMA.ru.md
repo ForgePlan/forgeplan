@@ -1,3 +1,5 @@
+[English](EPIC-SCHEMA.md) · [Русский](EPIC-SCHEMA.ru.md)
+
 # EPIC Schema — Strategic Initiative
 
 ## Когда создавать Epic

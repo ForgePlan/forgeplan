@@ -1,3 +1,5 @@
+[English](QUALITY-GATES.md) · [Русский](QUALITY-GATES.ru.md)
+
 # Quality Gates — Verification Gate + Adversarial Review
 
 Руководство по проверкам качества решений в Forgeplan. Объединяет Verification Gate (Quint-code), Adversarial Review (BMAD), 13-Step PRD Validation (BMAD) и R_eff Quality Scoring (Quint-code/FPF).

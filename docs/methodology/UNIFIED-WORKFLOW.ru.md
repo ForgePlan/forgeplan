@@ -1,3 +1,5 @@
+[English](UNIFIED-WORKFLOW.md) · [Русский](UNIFIED-WORKFLOW.ru.md)
+
 # Unified Workflow: Forgeplan × Orchestra × Claude Code
 
 > Три системы как единый организм. Каждая делает то, что умеет лучше всех.
@@ -7,10 +9,13 @@
 
 ## Оглавление
 
+### Концепции
 1. [Тезис и обоснование](#1-тезис-и-обоснование)
 2. [Три bounded contexts](#2-три-bounded-contexts)
 3. [Custom Fields (единые для всех конфигураций)](#3-custom-fields)
 4. [Status ↔ Phase маппинг](#4-status--phase-маппинг)
+
+### Конфигурации
 5. [Конфигурации](#5-конфигурации)
    - [Config A: Solo Dev + AI](#config-a-solo-dev--ai-agents)
    - [Config B: Small Team (2-5)](#config-b-small-team-2-5)
@@ -18,16 +23,20 @@
 6. [Greenfield Setup](#6-greenfield-setup)
 7. [Brownfield Migration](#7-brownfield-migration)
 8. [Migration между конфигурациями](#8-migration-между-конфигурациями)
+
+### Операции
 9. [Session Start Protocol](#9-session-start-protocol)
 10. [Lifecycle задачи](#10-lifecycle-задачи)
 11. [Инструкции по ролям](#11-инструкции-по-ролям)
+16. [Playbook: сценарии ежедневной работы](#16-playbook-сценарии-ежедневной-работы)
+18. [Inbox Pattern: сбор и triage сигналов](#18-inbox-pattern-сбор-и-triage-сигналов)
+
+### Риски и справочники
 12. [Риски и митигации](#12-риски-и-митигации)
 13. [Узкие места (bottlenecks)](#13-узкие-места)
 14. [Anti-patterns](#14-anti-patterns)
 15. [Quick Reference](#15-quick-reference)
-16. [Playbook: сценарии ежедневной работы](#16-playbook-сценарии-ежедневной-работы)
 17. [Чего НЕЛЬЗЯ делать (запреты)](#17-чего-нельзя-делать-запреты)
-18. [Inbox Pattern: сбор и triage сигналов](#18-inbox-pattern-сбор-и-triage-сигналов)
 
 ---
 

@@ -1,3 +1,5 @@
+[English](ARTIFACT-MODEL.md) · [Русский](ARTIFACT-MODEL.ru.md)
+
 # Artifact Model — PRD Process Engine
 
 ## Иерархия артефактов
@@ -161,3 +163,9 @@ Decision needed at any point?
 | ADR | `ADR-NNN` | ADR-007 |
 
 Numbers are sequential per artifact type, project-scoped, never reused.
+
+## Связанные документы
+
+- [PRD-RFC-ADR-FLOW.ru.md](PRD-RFC-ADR-FLOW.ru.md) — Дерево решений: какой артефакт создавать
+- [DEPTH-CALIBRATION.ru.md](DEPTH-CALIBRATION.ru.md) — Как depth определяет требования к артефактам
+- [FORGEPLAN-GUIDE.ru.md](FORGEPLAN-GUIDE.ru.md) — Полный практический гайд
