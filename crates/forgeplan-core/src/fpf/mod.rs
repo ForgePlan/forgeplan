@@ -15,7 +15,7 @@ use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::LanceStore;
 use crate::fpf::core::config::FpfConfig;
 use crate::fpf::core::model::ArtifactData;
-use crate::fpf::core::trust::{EvidenceInput, TrustScore, Verdict};
+use crate::fpf::core::trust::TrustScore;
 use crate::scoring::fgr;
 
 use contexts::BoundedContext;
@@ -74,11 +74,33 @@ impl std::fmt::Display for FpfDashboard {
         writeln!(f)?;
 
         // Explore-Exploit Actions
-        writeln!(f, "## Next Actions (Explore-Exploit)")?;
+        let explore_n = self
+            .actions
+            .iter()
+            .filter(|a| a.action_type == "EXPLORE")
+            .count();
+        let invest_n = self
+            .actions
+            .iter()
+            .filter(|a| a.action_type == "INVESTIGATE")
+            .count();
+        let exploit_n = self
+            .actions
+            .iter()
+            .filter(|a| a.action_type == "EXPLOIT")
+            .count();
+        writeln!(
+            f,
+            "## Next Actions ({} total: {} EXPLORE, {} INVESTIGATE, {} EXPLOIT)",
+            self.actions.len(),
+            explore_n,
+            invest_n,
+            exploit_n
+        )?;
         if self.actions.is_empty() {
             writeln!(f, "  No actions — all artifacts in good shape")?;
         } else {
-            for (i, action) in self.actions.iter().take(5).enumerate() {
+            for (i, action) in self.actions.iter().take(10).enumerate() {
                 writeln!(
                     f,
                     "  {}. [{}] {} — {}",
@@ -245,25 +267,31 @@ fn build_rule_actions(
             .is_some_and(|dt| now > dt);
 
         let fgr_score = fgr_map.get(record.id.as_str()).copied();
-        let evidence = parse_evidence_from_record(record);
+        let formality = fgr_score.map(|s| s.formality).unwrap_or(0.0);
+        let granularity = fgr_score.map(|s| s.granularity).unwrap_or(0.0);
 
-        let trust = TrustScore::compute(
-            &evidence,
-            fgr_score.map(|s| s.formality).unwrap_or(0.0),
-            fgr_score.map(|s| s.granularity).unwrap_or(0.0),
-            link_count,
-            is_stale,
-            config,
-        );
+        // Use stored r_eff directly — don't recompute from fake evidence (avoids circular scoring)
+        let reliability =
+            TrustScore::compute_reliability(record.r_eff_score, link_count, is_stale, config);
+        let overall = (formality * granularity * reliability).cbrt();
+
+        let trust = TrustScore {
+            r_eff: record.r_eff_score,
+            formality,
+            granularity,
+            reliability,
+            overall,
+            weakest_link: None,
+        };
 
         let data = ArtifactData {
             id: record.id.clone(),
             status: record.status.clone(),
             kind: record.kind.clone(),
             depth: record.depth.clone(),
-            evidence,
-            formality: fgr_score.map(|s| s.formality).unwrap_or(0.0),
-            granularity: fgr_score.map(|s| s.granularity).unwrap_or(0.0),
+            evidence: vec![], // not needed — r_eff used directly from store
+            formality,
+            granularity,
             link_count,
             is_stale,
             trust,
@@ -312,24 +340,4 @@ fn build_rule_actions(
 
     actions.sort_by_key(|a| a.priority);
     actions
-}
-
-/// Parse evidence inputs from a record (simplified: uses r_eff_score).
-fn parse_evidence_from_record(record: &crate::db::store::ArtifactRecord) -> Vec<EvidenceInput> {
-    if record.r_eff_score > 0.0 {
-        // Approximate: if r_eff > 0, there's at least one supporting evidence
-        vec![EvidenceInput {
-            verdict: Verdict::Supports,
-            congruence_level: if record.r_eff_score >= 0.9 {
-                3
-            } else if record.r_eff_score >= 0.5 {
-                2
-            } else {
-                1
-            },
-            is_expired: false,
-        }]
-    } else {
-        vec![]
-    }
 }
