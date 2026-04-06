@@ -43,5 +43,14 @@ plan-dist-manifest.json
 # Agent skills (local, not versioned)
 .agents/skills/
 
+# Astro build cache
+.astro/
+
+# Working screenshots in root (website mockups, not part of repo)
+/forge-anim-*.png
+/forge-flying-*.png
+/forgeplan-*.png
+/qf-*.png
+
 # Binary office files
 *.xlsx
