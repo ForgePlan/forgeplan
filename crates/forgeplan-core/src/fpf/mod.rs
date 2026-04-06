@@ -4,6 +4,7 @@
 //! FPF dashboard (FR-006), structured ADI (FR-004).
 
 pub mod contexts;
+pub mod core;
 pub mod explore;
 pub mod knowledge;
 
