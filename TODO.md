@@ -24,7 +24,7 @@
 - [x] Housekeeping: 12 orphans linked, SPRINTS.md updated
 - [x] 1.5: AdiRecord wiring — reason --save creates structured JSON in Note body
 - [x] 11.3: CI/CD Linter — health --ci + validate --ci + GH Actions workflow (PR #132)
-- [ ] PR #131 merge + progress sync
+- [x] PR #131 merged + progress synced
 
 ### P0: Distribution Pipeline — Sprint 10 (PRD-023) ✅
 - [x] PRD-023 shaped + validated (8 FR, 4 journeys, 4 AC, Deep depth)
