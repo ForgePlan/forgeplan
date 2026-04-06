@@ -18,12 +18,14 @@
   - `forgeplan get EPIC-002` → fill MUST sections → `forgeplan validate EPIC-002`
   - Branch: `docs/epic-002-shape` — PR #128 merged
 
-- [ ] **11.2** Shape + implement RFC-001 "FPF Engine core module architecture"
-  - Определить: bounded contexts FPF модулей, interfaces, data flow
-  - ADI reasoning обязателен (Deep depth)
-  - `forgeplan get RFC-001` → fill → `forgeplan validate` → `forgeplan reason`
-  - Код: `crates/forgeplan-core/src/fpf/` — refactor по RFC
-  - Branch: `feat/rfc-001-fpf-engine`
+- [x] **11.2** Shape + implement RFC-001 "FPF Engine core module architecture"
+  - RFC-001 shaped: 3 options, ADI confirmed Option C (Layered Core+Ext)
+  - fpf/core/ module: config.rs, trust.rs, adi.rs, model.rs (34 tests)
+  - FpfConfig wired into CLI: score, fgr, context, dashboard read from config.yaml
+  - Audit: 3 agents, 3 HIGH + 1 MEDIUM fixed, NaN validation added
+  - R_eff=1.00, F-G-R=0.94 (A), EVID-055 linked
+  - Remaining: 1.5 (migrate reason to auto-save AdiRecord) → Sprint 12
+  - Branch: `feat/rfc-001-fpf-engine` — PR #131
 
 - [ ] **11.3** Quick win: CI/CD Architecture Linter (NOTE-026)
   - Превратить NOTE-026 → PRD → implement
@@ -39,7 +41,7 @@
 
 ### Definition of Done
 - [x] EPIC-002 active, filled, validated
-- [ ] RFC-001 active, R_eff > 0, code implemented
+- [x] RFC-001 active, R_eff=1.00, Phase 1 implemented (6/7)
 - [ ] CI workflow `forgeplan-health.yml` merged
 - [x] 0 orphans in `forgeplan health`
 

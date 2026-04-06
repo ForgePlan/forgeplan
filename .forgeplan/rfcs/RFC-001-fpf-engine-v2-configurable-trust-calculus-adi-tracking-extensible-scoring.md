@@ -9,6 +9,16 @@ status: active
 title: FPF Engine v2 — configurable trust calculus, ADI tracking, extensible scoring
 ---
 
+## Progress
+
+```
+Phase 1  ████████████████████░░░░  6/7  ( 86%)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)
+Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4  (  0%)
+─────────────────────────────────────────────────
+TOTAL                               6/16 ( 38%)
+```
+
 ## Summary
 
 Рефактор FPF Engine из набора захардкоженных модулей (contexts.rs, explore.rs, knowledge.rs) в configurable, extensible engine с единой моделью данных, trackable ADI reasoning и trust calculus доступным через config — чтобы ForgePlan работал не только у автора, а у любого пользователя.
@@ -254,12 +264,13 @@ Extensions:
 ## Implementation Phases
 
 ### Phase 1: Core — Trust + ADI + Config (Sprint 11)
-- [ ] **1.1** `FpfConfig` struct + loading from config.yaml with defaults
-- [ ] **1.2** `core/trust.rs` — TrustScore computation (extract from fgr.rs + reff.rs, parameterize)
-- [ ] **1.3** `core/adi.rs` — AdiRecord/AdiSnapshot structs, serialize/deserialize, link to artifacts
-- [ ] **1.4** `core/model.rs` — FpfContext unified model (computed, not stored)
+- [x] **1.1** `FpfConfig` struct + loading from config.yaml with defaults
+- [x] **1.2** `core/trust.rs` — TrustScore computation (extract from fgr.rs + reff.rs, parameterize)
+- [x] **1.3** `core/adi.rs` — AdiRecord/AdiSnapshot structs, serialize/deserialize, link to artifacts
+- [x] **1.4** `core/model.rs` — FpfContext unified model (computed, not stored)
 - [ ] **1.5** Migrate `forgeplan reason` to auto-save AdiRecord + show bounded context
-- [ ] **1.6** Tests: ≥10 unit tests for core (trust computation, ADI serialization, config loading)
+- [x] **1.6** Tests: 34 unit tests for core (target was ≥10)
+- [x] **1.7** Wire FpfConfig into CLI (score, fgr, context, dashboard) + config templates in init
 
 ### Phase 2: Extensions — Rules + KB (Sprint 12)
 - [ ] **2.1** `ext/rules.rs` — Declarative rule engine (YAML conditions → actions)
