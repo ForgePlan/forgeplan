@@ -1,14 +1,12 @@
 <div align="center">
 
-<br>
+# ForgePlan
+
+---
 
 <img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
 
-<br>
-
-# ForgePlan
-
-### Forge your plan — from raw idea to proven decision
+### From raw idea to proven decision
 
 An **engineering decision framework** for teams that want their ideas to leave a paper trail.
 Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and native AI-agent integration.
