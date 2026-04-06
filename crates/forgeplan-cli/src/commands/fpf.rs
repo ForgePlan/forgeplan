@@ -13,8 +13,8 @@ pub async fn run_dashboard() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
     let store = LanceStore::open(&ws).await?;
-    let config = workspace::load_config(&ws).ok();
-    let fpf_config = config.as_ref().and_then(|c| c.fpf.as_ref());
+    let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
+    let fpf_config = config.fpf.as_ref();
     let dashboard = fpf::dashboard(&store, fpf_config).await?;
     print!("{dashboard}");
 
