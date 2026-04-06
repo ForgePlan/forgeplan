@@ -36,7 +36,7 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 1. **Прочитай этот файл** — CLAUDE.md содержит CLI workflow, методологию, git-конвенции
 2. **`forgeplan health`** — понять текущее состояние проекта (artifacts, blind spots, next actions)
 3. **Для текущих задач** — `TODO.md`
-4. **Полный гайд по CLI и методологии** — `docs/guides/FORGEPLAN-GUIDE.md`
+4. **Полный гайд по CLI и методологии** — `docs/methodology/FORGEPLAN-GUIDE.md`
 5. **Для reference code** — `sources/` (read-only repos, см. таблицу ниже)
 6. **Используй Hindsight** — `memory_recall("Forgeplan")` для быстрого восстановления контекста
 
@@ -204,7 +204,7 @@ Fields (обязательные):
 - **Branch** — git branch (проставлять при создании ветки)
 - **Tags** — Bug / Feature / Docs / Update (для задач без артефакта)
 
-**Полный гайд**: `docs/guides/UNIFIED-WORKFLOW.md`
+**Полный гайд**: `docs/methodology/UNIFIED-WORKFLOW.md`
 
 ## Как пользоваться Forgeplan CLI (MCP-first)
 
@@ -309,7 +309,7 @@ Validator принимает синонимы для секций:
 
 ## Как пользоваться методологией (quick reference)
 
-> Полный гайд: `docs/guides/HOW-TO-USE.md`
+> Полный гайд: `docs/methodology/HOW-TO-USE.md`
 
 ### Routing — один вопрос определяет depth:
 ```
@@ -558,26 +558,45 @@ ForgePlan/
 ├── COMPLETENESS-CHECK.md   ← Gap analysis: 52 компонента, 10 слоёв
 ├── SOURCES.md              ← Карта всех источников
 │
-├── docs/
-│   ├── schemas/            ← Формальные правила артефактов
-│   │   ├── PRD-SCHEMA.md   ← Обязательные секции PRD, depth calibration, validation
-│   │   ├── EPIC-SCHEMA.md  ← Aggregated progress, children rules
-│   │   └── SPEC-SCHEMA.md  ← API contracts, data models, versioning
-│   ├── guides/
+├── docs/                   ← Production documentation (см. docs/README.md — индекс)
+│   ├── README.md           ← **ИНДЕКС** — карта всей документации
+│   ├── methodology/        ← Методология (10 файлов)
 │   │   ├── FORGEPLAN-GUIDE.md   ← **ПОЛНЫЙ ГАЙД** — методология + CLI + evidence + lifecycle
 │   │   ├── HOW-TO-USE.md        ← 10 правил методологии с примерами
 │   │   ├── ARTIFACT-MODEL.md    ← Иерархия: Epic→PRD→Spec→RFC→ADR + lifecycle
 │   │   ├── PRD-RFC-ADR-FLOW.md  ← Decision tree: какой документ создать
 │   │   ├── DEPTH-CALIBRATION.md ← Tactical→Standard→Deep→Critical + auto-escalation
 │   │   ├── QUALITY-GATES.md     ← Verification Gate + Adversarial Review + R_eff
+│   │   ├── UNIFIED-WORKFLOW.md  ← Forgeplan × Orchestra × Hindsight
+│   │   ├── USAGE-BY-ROLE.md     ← Как использовать по ролям
+│   │   ├── METHODOLOGY-COURSE.md ← Полный курс
 │   │   └── GLOSSARY.md          ← 31 термин + lifecycle таблица
-│   ├── epics/              ← Dogfood: EPIC-001-build-forgeplan.md
-│   ├── prds/               ← Dogfood: PRD-001-forgeplan-cli.md
-│   ├── adrs/               ← Dogfood: ADR-001..003 (Rust, LanceDB, DEC→ADR merge)
-│   ├── references/
-│   │   ├── REF-DOCS-ANALYSIS.md ← Анализ 10 методологий
-│   │   └── SKILLS-AUDIT.md      ← 52 skills по 10 слоям + gaps
-│   └── ref/                ← Raw reference docs (Word, Markdown) на русском
+│   ├── operations/         ← Setup + hooks + devops
+│   │   ├── AGENT-ENFORCEMENT.md ← Правила для AI агентов
+│   │   ├── AGENT-HOOKS.md       ← PreToolUse/PostToolUse hooks
+│   │   └── REPO-PROTECTION-GUIDE.md ← Branch protection, safety
+│   └── schemas/            ← Формальные правила артефактов (PRD, EPIC, SPEC)
+│
+├── .forgeplan/             ← **Forgeplan workspace** (markdown tracked, lance/cache/config — local)
+│   ├── adrs/               ← ADR-001..005 (source of truth, ADR-003)
+│   ├── rfcs/               ← RFC-001..006
+│   ├── prds/               ← PRD-002..025 (и новые — только через `forgeplan new prd`)
+│   ├── epics/              ← EPIC-001, EPIC-002
+│   ├── specs/              ← SPEC-*
+│   ├── evidence/           ← EvidencePacks (138+ файлов)
+│   ├── problems/           ← ProblemCards
+│   ├── solutions/          ← SolutionPortfolios
+│   ├── notes/              ← Notes
+│   ├── refresh/            ← RefreshReports
+│   ├── memory/             ← Decision memory
+│   ├── lance/              ← ⚠️ gitignored — derived LanceDB index (пересобирается: forgeplan scan-import)
+│   ├── .fastembed_cache/   ← ⚠️ gitignored — embedding cache
+│   └── config.yaml         ← ⚠️ gitignored — local LLM API keys
+│
+├── .local/                 ← **gitignored** — локальные заметки
+│   ├── research/           ← Raw source materials (BMAD, FPF, Quint-code .docx)
+│   ├── planning/           ← Website v1 концепты, sprint plans, аналитика
+│   └── sessions/           ← Session briefings, E2E test plans
 │
 ├── templates/              ← Markdown шаблоны (_TEMPLATE.md) — все с YAML frontmatter
 │   ├── prd/                ← PRD (обогащён BMAD 13-step validation)
@@ -673,21 +692,37 @@ R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
 - **Pipeline = guideline**, NOT rigid sequence (подтверждено FPF автором)
 - **Contextual chain** — output каждой фазы = input следующей
 
-## Storage: LanceDB primary
+## Storage: Markdown primary, LanceDB derived (ADR-003)
 
-- **LanceDB** = sole source of truth (structured tables + vector embeddings)
-- **Markdown** = projections generated at `forgeplan new` (git-tracked, read-only after creation)
-- Mutations через `forgeplan update` обновляют только LanceDB, не markdown
+- **Markdown files** в `.forgeplan/{adrs,rfcs,prds,epics,specs,evidence,problems,solutions,notes,refresh,memory}/` = **source of truth** (git-tracked)
+- **LanceDB** в `.forgeplan/lance/` = derived index layer — rebuildable через `forgeplan scan-import`, **gitignored**
+- **Config** `.forgeplan/config.yaml` = local LLM keys, **gitignored**
+- **Cache** `.forgeplan/.fastembed_cache/` = embedding cache, **gitignored**
 
 ```
-.forgeplan/          ← создаётся forgeplan init в целевом проекте
-├── config.yaml
-├── lance/           ← LanceDB (gitignore)
-├── prds/            ← markdown (git-tracked)
-├── epics/, specs/, rfcs/, adrs/
-├── problems/, solutions/
-├── evidence/, notes/, refresh/
+.forgeplan/
+├── adrs/               ← tracked (source of truth)
+├── rfcs/, prds/, epics/, specs/
+├── evidence/, problems/, solutions/
+├── notes/, refresh/, memory/
+│
+├── lance/              ← ⚠️ gitignored (derived index)
+├── .fastembed_cache/   ← ⚠️ gitignored (cache)
+└── config.yaml         ← ⚠️ gitignored (local)
 ```
+
+**Fresh clone workflow:**
+```bash
+git clone <repo> && cd forgeplan
+forgeplan init -y                # creates empty .forgeplan/lance/ locally
+forgeplan scan-import            # rebuilds index from tracked markdown
+forgeplan list                   # verify
+```
+
+**Rules:**
+- **Always edit via `forgeplan` CLI** — `forgeplan new`, `forgeplan update`, etc. Direct markdown edits work but require `forgeplan scan-import` to rebuild LanceDB.
+- **Never commit `.forgeplan/lance/`** — it's derived, rebuildable, and can drift between devs.
+- **Never commit `.forgeplan/config.yaml`** — contains LLM API key env refs.
 
 ## Rust Architecture (реализовано)
 

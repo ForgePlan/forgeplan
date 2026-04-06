@@ -69,8 +69,8 @@ frameworks/
 | **SPARC** | `.claude/commands/sparc/` | Specification → Pseudocode → Architecture → Refinement → Completion |
 | **C4 Model** | `.claude/agents/c4-architecture/` | Context → Container → Component → Code diagrams |
 | **DDD** | `.claude/agents/v3/ddd-domain-expert.md` | Bounded contexts, aggregates, domain events |
-| **RFC Process** | `docs/guides/RFC-SCHEMA.md` | Architectural proposals with phases |
-| **ADR Process** | `docs/guides/project-template/docs/adrs/` | Decision records with rationale |
+| **RFC Process** | `docs/methodology/PRD-RFC-ADR-FLOW.md` | When to use RFC / ADR / PRD |
+| **ADR Process** | `.forgeplan/adrs/` | Project ADRs (managed by `forgeplan` CLI) |
 | **Wave/Sprint** | `.claude/commands/sprint.md` | Agent Teams parallel execution |
 
 ## Quick Start
