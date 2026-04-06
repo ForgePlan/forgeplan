@@ -25,3 +25,4 @@ title: 'Idea: Ruflo/Gastown Integration — MCP server + custom agents + hooks'
 ### Вердикт
 Ruflo: 30 минут на интеграцию (MCP + hooks). Gastown: 2-3 часа, хрупко.
 
+
