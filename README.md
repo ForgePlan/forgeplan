@@ -1,16 +1,16 @@
 <div align="center">
 
-# Forgeplan
+# ForgePlan
 
 **Forge your plan — from raw idea to proven decision.**
 
-A Rust-native methodology engine for managing engineering artifacts (PRD, RFC, ADR, Epic, Spec)
-with quality scoring, evidence tracking, semantic search, and AI-agent integration.
+ForgePlan is an **engineering decision framework** — a methodology plus CLI for managing structured
+artifacts (PRD, RFC, ADR, Epic, Spec) with quality scoring, evidence tracking, semantic search,
+and native AI-agent integration.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ForgePlan/forgeplan?include_prereleases)](https://github.com/ForgePlan/forgeplan/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main)](https://github.com/ForgePlan/forgeplan/actions)
-[![Made with Rust](https://img.shields.io/badge/made%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 
 [English](README.md) · [Русский](README.ru.md) · [Documentation](docs/README.md) · [Methodology](docs/methodology/FORGEPLAN-GUIDE.md) · [Releases](https://github.com/ForgePlan/forgeplan/releases)
 
@@ -18,9 +18,9 @@ with quality scoring, evidence tracking, semantic search, and AI-agent integrati
 
 ---
 
-## What is Forgeplan?
+## What is ForgePlan?
 
-Forgeplan turns ad-hoc engineering work into a **disciplined decision pipeline**:
+ForgePlan turns ad-hoc engineering work into a **disciplined decision pipeline**:
 
 ```
 Observe → Route → Shape → Build → Prove → Ship
@@ -32,7 +32,7 @@ It's built for **teams working with AI agents** — Claude Code, Cursor, Aider �
 
 ## Why?
 
-| Problem | How Forgeplan solves it |
+| Problem | How ForgePlan solves it |
 |---|---|
 | Decisions get lost in Slack/Linear/email | Every decision is a git-tracked markdown artifact with structured fields |
 | No way to tell if a decision is still valid | Evidence packs with expiration + `R_eff` scoring flag stale artifacts |
@@ -68,7 +68,7 @@ brew install ForgePlan/tap/forgeplan
 curl -fsSL https://raw.githubusercontent.com/ForgePlan/forgeplan/main/install.sh | sh
 ```
 
-### From source (requires Rust 1.75+)
+### From source
 
 ```bash
 git clone https://github.com/ForgePlan/forgeplan.git
@@ -120,20 +120,18 @@ Full tutorial: **[docs/methodology/FORGEPLAN-GUIDE.md](docs/methodology/FORGEPLA
 
 ## Architecture
 
-Forgeplan is a Rust workspace with three crates:
+ForgePlan ships as three components:
 
-| Crate | Role |
+| Component | Role |
 |---|---|
 | `forgeplan-core` | Storage, validation, scoring, routing, search, graph, FPF reasoning engine |
-| `forgeplan-cli` | The `forgeplan` binary — 33 commands, clap derive |
+| `forgeplan-cli` | The `forgeplan` binary — 33 commands |
 | `forgeplan-mcp` | MCP server for AI agents — 37 tools over stdio transport |
 
 **Storage model ([ADR-003](.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)):**
 
 - Markdown files in `.forgeplan/` = **source of truth** (git-tracked)
 - LanceDB in `.forgeplan/lance/` = derived index (gitignored, rebuildable via `forgeplan scan-import`)
-
-**Tech stack:** Rust · LanceDB · fastembed (BGE-M3) · clap · rmcp · tera · petgraph · tokio.
 
 ## Documentation
 
@@ -144,7 +142,7 @@ Forgeplan is a Rust workspace with three crates:
   - [DEPTH-CALIBRATION.md](docs/methodology/DEPTH-CALIBRATION.md) — Tactical → Critical
   - [QUALITY-GATES.md](docs/methodology/QUALITY-GATES.md) — R_eff, adversarial review
   - [PRD-RFC-ADR-FLOW.md](docs/methodology/PRD-RFC-ADR-FLOW.md) — Which artifact for which task
-  - [UNIFIED-WORKFLOW.md](docs/methodology/UNIFIED-WORKFLOW.md) — Forgeplan × Orchestra × Hindsight
+  - [UNIFIED-WORKFLOW.md](docs/methodology/UNIFIED-WORKFLOW.md) — ForgePlan × Orchestra × Hindsight
 - **[docs/operations/](docs/operations/)** — Agent hooks, enforcement, repo protection
 - **[docs/schemas/](docs/schemas/)** — Formal artifact schemas (PRD, EPIC, SPEC)
 - **[CLAUDE.md](CLAUDE.md)** — Project instructions for Claude Code
@@ -152,7 +150,7 @@ Forgeplan is a Rust workspace with three crates:
 
 ## Project artifacts
 
-This repository dogfoods Forgeplan — the project is managed with itself.
+This repository dogfoods ForgePlan — the project is managed with itself.
 
 - **[.forgeplan/adrs/](.forgeplan/adrs/)** — Architecture Decision Records (5)
 - **[.forgeplan/rfcs/](.forgeplan/rfcs/)** — Architectural proposals (6)
@@ -185,7 +183,7 @@ Short version:
 ## Related
 
 - [`website/`](website/) — Official website (Astro + Starlight + React + GSAP)
-- [`marketplace/`](marketplace/) — Plugin marketplace (Forgeplan methodology + FPF + dev toolkit)
+- [`marketplace/`](marketplace/) — Plugin marketplace (ForgePlan methodology + FPF + dev toolkit)
 - [`templates/`](templates/) — Markdown templates for each artifact kind
 
 ## License
@@ -194,7 +192,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgements
 
-Forgeplan stands on the shoulders of:
+ForgePlan stands on the shoulders of:
 
 - **[Quint-code](https://github.com/quint-code)** — R_eff scoring, data model inspiration
 - **[BMAD Method](https://github.com/bmadcode/BMAD-METHOD)** — PRD workflow, 13-step validation

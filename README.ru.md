@@ -1,16 +1,16 @@
 <div align="center">
 
-# Forgeplan
+# ForgePlan
 
 **Forge your plan — от сырой идеи до проверенного решения.**
 
-Методологический движок на Rust для управления инженерными артефактами (PRD, RFC, ADR, Epic, Spec)
-с автоматической оценкой качества, трекингом доказательств, семантическим поиском и интеграцией с AI-агентами.
+ForgePlan — это **engineering decision framework**: методология плюс CLI для управления
+структурированными артефактами (PRD, RFC, ADR, Epic, Spec) с автоматической оценкой качества,
+трекингом доказательств, семантическим поиском и нативной интеграцией с AI-агентами.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ForgePlan/forgeplan?include_prereleases)](https://github.com/ForgePlan/forgeplan/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main)](https://github.com/ForgePlan/forgeplan/actions)
-[![Made with Rust](https://img.shields.io/badge/made%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 
 [English](README.md) · [Русский](README.ru.md) · [Документация](docs/README.md) · [Методология](docs/methodology/FORGEPLAN-GUIDE.md) · [Релизы](https://github.com/ForgePlan/forgeplan/releases)
 
@@ -18,9 +18,9 @@
 
 ---
 
-## Что такое Forgeplan?
+## Что такое ForgePlan?
 
-Forgeplan превращает хаотичную инженерную работу в **дисциплинированный конвейер решений**:
+ForgePlan превращает хаотичную инженерную работу в **дисциплинированный конвейер решений**:
 
 ```
 Observe → Route → Shape → Build → Prove → Ship
@@ -32,7 +32,7 @@ Observe → Route → Shape → Build → Prove → Ship
 
 ## Зачем?
 
-| Проблема | Как решает Forgeplan |
+| Проблема | Как решает ForgePlan |
 |---|---|
 | Решения теряются в Slack/Linear/почте | Каждое решение — git-трекаемый markdown артефакт со структурными полями |
 | Непонятно, актуально ли решение | Evidence packs с `valid_until` + `R_eff` автоматически помечают устаревшие артефакты |
@@ -68,7 +68,7 @@ brew install ForgePlan/tap/forgeplan
 curl -fsSL https://raw.githubusercontent.com/ForgePlan/forgeplan/main/install.sh | sh
 ```
 
-### Из исходников (нужен Rust 1.75+)
+### Из исходников
 
 ```bash
 git clone https://github.com/ForgePlan/forgeplan.git
@@ -120,20 +120,18 @@ forgeplan activate PRD-001
 
 ## Архитектура
 
-Forgeplan — это Rust workspace из трёх крейтов:
+ForgePlan состоит из трёх компонентов:
 
-| Крейт | Роль |
+| Компонент | Роль |
 |---|---|
 | `forgeplan-core` | Storage, валидация, scoring, routing, поиск, граф, FPF reasoning engine |
-| `forgeplan-cli` | Бинарь `forgeplan` — 33 команды, clap derive |
+| `forgeplan-cli` | Бинарь `forgeplan` — 33 команды |
 | `forgeplan-mcp` | MCP server для AI-агентов — 37 tools через stdio transport |
 
 **Модель хранения ([ADR-003](.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)):**
 
 - Markdown файлы в `.forgeplan/` = **source of truth** (трекаются git'ом)
 - LanceDB в `.forgeplan/lance/` = производный индекс (gitignored, пересобирается через `forgeplan scan-import`)
-
-**Tech stack:** Rust · LanceDB · fastembed (BGE-M3) · clap · rmcp · tera · petgraph · tokio.
 
 ## Документация
 
@@ -144,7 +142,7 @@ Forgeplan — это Rust workspace из трёх крейтов:
   - [DEPTH-CALIBRATION.md](docs/methodology/DEPTH-CALIBRATION.md) — Tactical → Critical
   - [QUALITY-GATES.md](docs/methodology/QUALITY-GATES.md) — R_eff, adversarial review
   - [PRD-RFC-ADR-FLOW.md](docs/methodology/PRD-RFC-ADR-FLOW.md) — Какой артефакт для какой задачи
-  - [UNIFIED-WORKFLOW.md](docs/methodology/UNIFIED-WORKFLOW.md) — Forgeplan × Orchestra × Hindsight
+  - [UNIFIED-WORKFLOW.md](docs/methodology/UNIFIED-WORKFLOW.md) — ForgePlan × Orchestra × Hindsight
 - **[docs/operations/](docs/operations/)** — Agent hooks, enforcement, protection репозитория
 - **[docs/schemas/](docs/schemas/)** — Формальные схемы артефактов (PRD, EPIC, SPEC)
 - **[CLAUDE.md](CLAUDE.md)** — Инструкции для Claude Code
@@ -185,7 +183,7 @@ Roadmap — в [.forgeplan/prds/](.forgeplan/prds/) и в [CHANGELOG](https://gi
 ## Связанное
 
 - [`website/`](website/) — Официальный сайт (Astro + Starlight + React + GSAP)
-- [`marketplace/`](marketplace/) — Plugin marketplace (Forgeplan методология + FPF + dev toolkit)
+- [`marketplace/`](marketplace/) — Plugin marketplace (ForgePlan методология + FPF + dev toolkit)
 - [`templates/`](templates/) — Markdown шаблоны для каждого типа артефакта
 
 ## Лицензия
@@ -194,7 +192,7 @@ MIT License — подробнее в [LICENSE](LICENSE).
 
 ## Благодарности
 
-Forgeplan стоит на плечах:
+ForgePlan стоит на плечах:
 
 - **[Quint-code](https://github.com/quint-code)** — R_eff scoring, data model
 - **[BMAD Method](https://github.com/bmadcode/BMAD-METHOD)** — PRD workflow, 13-step validation
