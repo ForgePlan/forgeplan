@@ -2,8 +2,6 @@
 
 # ForgePlan
 
----
-
 <img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
 
 ### From raw idea to proven decision
@@ -18,7 +16,7 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
 [![Artifacts](https://img.shields.io/badge/artifacts-138-blue?style=flat-square)](.forgeplan/)
 
-**[Website](https://forgeplan.md)** ·
+**[Website](https://forgeplan.dev)** ·
 **[Documentation](docs/README.md)** ·
 **[Methodology](docs/methodology/FORGEPLAN-GUIDE.md)** ·
 **[Releases](https://github.com/ForgePlan/forgeplan/releases)** ·
@@ -236,7 +234,7 @@ MIT — see [LICENSE](LICENSE).
 
 <br>
 
-Built on top of [Quint-code](https://github.com/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://openspec.ai/) · [FPF](marketplace/plugins/fpf/) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
+Built on top of [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
 
 <sub>Made with care by <a href="https://github.com/ForgePlan">@ForgePlan</a> · <a href="README.ru.md">Русская версия</a></sub>
 

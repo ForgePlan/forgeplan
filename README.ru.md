@@ -2,8 +2,6 @@
 
 # ForgePlan
 
----
-
 <img src=".github/assets/hero.png" alt="ForgePlan — Forge your plan" width="100%">
 
 ### От сырой идеи до проверенного решения
@@ -18,7 +16,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
 [![Artifacts](https://img.shields.io/badge/artifacts-138-blue?style=flat-square)](.forgeplan/)
 
-**[Сайт](https://forgeplan.md)** ·
+**[Сайт](https://forgeplan.dev)** ·
 **[Документация](docs/README.md)** ·
 **[Методология](docs/methodology/FORGEPLAN-GUIDE.md)** ·
 **[Релизы](https://github.com/ForgePlan/forgeplan/releases)** ·
@@ -236,7 +234,7 @@ MIT — см. [LICENSE](LICENSE).
 
 <br>
 
-Построен на [Quint-code](https://github.com/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://openspec.ai/) · [FPF](marketplace/plugins/fpf/) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
+Построен на [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
 
 <sub>С заботой от <a href="https://github.com/ForgePlan">@ForgePlan</a> · <a href="README.md">English version</a></sub>
 
