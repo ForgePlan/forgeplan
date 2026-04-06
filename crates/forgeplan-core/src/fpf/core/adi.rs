@@ -78,7 +78,10 @@ impl std::fmt::Display for Confidence {
 impl std::str::FromStr for Confidence {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+        // LLM often returns "High — justification here", so parse only first word
+        let first_word = s.split_whitespace().next().unwrap_or(s);
+        let cleaned = first_word.trim_end_matches(|c: char| !c.is_alphabetic());
+        match cleaned.to_lowercase().as_str() {
             "high" => Ok(Confidence::High),
             "medium" => Ok(Confidence::Medium),
             "low" => Ok(Confidence::Low),
@@ -112,6 +115,66 @@ pub struct AdiSnapshot {
 }
 
 impl AdiRecord {
+    /// Convert from LLM AdiOutput to structured AdiRecord.
+    pub fn from_adi_output(
+        id: String,
+        artifact_id: String,
+        model: String,
+        output: &crate::llm::reason::AdiOutput,
+    ) -> Self {
+        let hypotheses = output
+            .hypotheses
+            .iter()
+            .map(|h| Hypothesis {
+                id: h.id.clone(),
+                description: h.description.clone(),
+                assumptions: h.assumptions.clone(),
+                confidence: h.confidence.parse().unwrap_or(Confidence::Medium),
+                verdict: None, // ADI doesn't produce verdicts inline
+            })
+            .collect();
+
+        let deductions = output
+            .deductions
+            .iter()
+            .map(|d| Deduction {
+                hypothesis_id: d.hypothesis_id.clone(),
+                consequence: d.consequence.clone(),
+                risks: d.risks.clone(),
+                feasibility: d.feasibility.parse().unwrap_or(Confidence::Medium),
+            })
+            .collect();
+
+        let evidence_needed = output
+            .evidence_needed
+            .iter()
+            .map(|e| EvidenceGap {
+                for_hypothesis: e.for_hypothesis.clone(),
+                test: e.test.clone(),
+                effort: e.effort.clone(),
+            })
+            .collect();
+
+        let confidence = output.confidence.parse().unwrap_or(Confidence::Medium);
+
+        Self {
+            id,
+            artifact_id,
+            created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+            model,
+            hypotheses,
+            deductions,
+            evidence_needed,
+            recommendation: output.recommendation.clone(),
+            confidence,
+        }
+    }
+
+    /// Serialize to pretty JSON for embedding in note body.
+    pub fn to_json_body(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+
     /// Create a snapshot of current state.
     pub fn snapshot(&self) -> AdiSnapshot {
         let (mut supported, mut weakened, mut refuted) = (0, 0, 0);
@@ -205,5 +268,62 @@ mod tests {
         let back: AdiRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, "ADI-001");
         assert_eq!(back.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn from_adi_output_converts_correctly() {
+        use crate::llm::reason::{AdiHypothesis, AdiOutput};
+
+        let output = AdiOutput {
+            hypotheses: vec![AdiHypothesis {
+                id: "H1".into(),
+                description: "Use Option C".into(),
+                assumptions: vec!["testable".into()],
+                confidence: "High — good fit".into(),
+            }],
+            deductions: vec![],
+            evidence_needed: vec![],
+            recommendation: "Go with C".into(),
+            confidence: "High — validated".into(),
+            raw_markdown: None,
+        };
+
+        let record = AdiRecord::from_adi_output(
+            "NOTE-042".into(),
+            "RFC-001".into(),
+            "gemini/flash".into(),
+            &output,
+        );
+
+        assert_eq!(record.id, "NOTE-042");
+        assert_eq!(record.artifact_id, "RFC-001");
+        assert_eq!(record.model, "gemini/flash");
+        assert_eq!(record.hypotheses.len(), 1);
+        assert_eq!(record.hypotheses[0].id, "H1");
+        assert_eq!(record.hypotheses[0].confidence, Confidence::High);
+        assert!(record.hypotheses[0].verdict.is_none());
+        assert_eq!(record.confidence, Confidence::High);
+        assert_eq!(record.recommendation, "Go with C");
+        assert!(!record.created_at.is_empty());
+    }
+
+    #[test]
+    fn to_json_body_roundtrip() {
+        use crate::llm::reason::AdiOutput;
+
+        let output = AdiOutput {
+            hypotheses: vec![],
+            deductions: vec![],
+            evidence_needed: vec![],
+            recommendation: "test".into(),
+            confidence: "Medium".into(),
+            raw_markdown: None,
+        };
+
+        let record =
+            AdiRecord::from_adi_output("NOTE-001".into(), "PRD-001".into(), "test".into(), &output);
+        let json = record.to_json_body();
+        let back: AdiRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.recommendation, "test");
     }
 }

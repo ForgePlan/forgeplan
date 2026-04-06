@@ -1,4 +1,5 @@
 use forgeplan_core::db::store::NewArtifact;
+use forgeplan_core::fpf::core::adi::AdiRecord;
 use forgeplan_core::llm::reason;
 use forgeplan_core::llm::reason::ArtifactContext;
 
@@ -133,11 +134,45 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
 
     if save {
         let note_id = store.next_id("NOTE").await?;
-        let note_title = format!("ADI analysis of {}", record.id);
-        let note_body = if adi_output.raw_markdown.is_some() {
-            analysis.clone()
+
+        // Convert LLM output to structured AdiRecord
+        let adi_record = if adi_output.raw_markdown.is_none() {
+            let model_name = format!("{}/{}", llm_config.provider, llm_config.model);
+            Some(AdiRecord::from_adi_output(
+                note_id.clone(),
+                record.id.clone(),
+                model_name,
+                &adi_output,
+            ))
         } else {
-            serde_json::to_string_pretty(&adi_output)?
+            None
+        };
+
+        let note_title = format!("ADI analysis of {}", record.id);
+        let note_body = if let Some(ref adi_rec) = adi_record {
+            // Structured: AdiRecord JSON + readable summary
+            let summary = format!(
+                "# ADI Record: {}\n\n\
+                 **Artifact**: {} ({})\n\
+                 **Model**: {}\n\
+                 **Hypotheses**: {}\n\
+                 **Confidence**: {}\n\
+                 **Recommendation**: {}\n\n\
+                 ## Structured Data\n\n\
+                 ```json\n{}\n```",
+                adi_rec.id,
+                adi_rec.artifact_id,
+                record.kind,
+                adi_rec.model,
+                adi_rec.hypotheses.len(),
+                adi_rec.confidence,
+                adi_rec.recommendation,
+                adi_rec.to_json_body(),
+            );
+            summary
+        } else {
+            // Fallback: raw markdown
+            analysis.clone()
         };
 
         let new_artifact = NewArtifact {
