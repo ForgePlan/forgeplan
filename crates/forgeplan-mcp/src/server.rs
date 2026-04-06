@@ -1770,6 +1770,7 @@ impl ForgeplanServer {
             r_eff_score: record.r_eff_score,
             relations,
             architecture_hint: None, // MCP callers are AI agents — they already know the architecture
+            bounded_context: None,   // MCP: skip bounded context detection for speed
         };
 
         let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(

@@ -206,6 +206,8 @@ pub struct ArtifactContext {
     pub relations: Vec<(String, String, String)>,
     /// Brief project architecture summary
     pub architecture_hint: Option<String>,
+    /// Bounded context info: (cluster_name, member_count, cohesion)
+    pub bounded_context: Option<(String, usize, f64)>,
 }
 
 /// Build the metadata section for the ADI user prompt.
@@ -224,6 +226,13 @@ pub fn build_metadata_section(ctx: &ArtifactContext) -> String {
                 section.push_str(&format!("- {} — \"{}\" ({})\n", target, title, rel_type));
             }
         }
+    }
+
+    if let Some((name, members, cohesion)) = &ctx.bounded_context {
+        section.push_str(&format!(
+            "\n### Bounded Context\n\n- **Cluster**: {}\n- **Members**: {} artifacts\n- **Cohesion**: {:.0}%\n",
+            name, members, cohesion * 100.0
+        ));
     }
 
     if let Some(hint) = &ctx.architecture_hint {
@@ -301,6 +310,7 @@ mod tests {
                 ),
             ],
             architecture_hint: Some("Rust CLI with LanceDB".to_string()),
+            bounded_context: None,
         };
         let section = build_metadata_section(&ctx);
         assert!(section.contains("**Status**: active"));
@@ -322,6 +332,7 @@ mod tests {
             r_eff_score: 0.0,
             relations: vec![("PRD-001".to_string(), "informs".to_string(), String::new())],
             architecture_hint: None,
+            bounded_context: None,
         };
         let section = build_metadata_section(&ctx);
         assert!(section.contains("PRD-001 (informs)"));
@@ -336,6 +347,7 @@ mod tests {
             r_eff_score: 0.0,
             relations: vec![],
             architecture_hint: None,
+            bounded_context: None,
         };
         let section = build_metadata_section(&ctx);
         assert!(section.contains("**Status**: draft"));
