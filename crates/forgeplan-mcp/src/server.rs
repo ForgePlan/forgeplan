@@ -742,6 +742,10 @@ impl ForgeplanServer {
             .filter(|(src, tgt, _)| src == &target.id || tgt == &target.id)
             .count();
 
+        let fpf_weights = self
+            .load_workspace_config()
+            .await
+            .and_then(|c| c.fpf.map(|f| f.weights));
         let fgr_score = fgr::compute(
             &target.id,
             &target.body,
@@ -751,6 +755,7 @@ impl ForgeplanServer {
             report.r_eff,
             link_count,
             false,
+            fpf_weights.as_ref(),
         );
 
         Ok(json_result(&ScoreResponse {

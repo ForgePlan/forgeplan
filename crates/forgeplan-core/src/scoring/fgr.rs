@@ -5,6 +5,7 @@
 
 use crate::artifact::frontmatter::Frontmatter;
 use crate::artifact::types::{ArtifactKind, Mode};
+use crate::fpf::core::config::ReliabilityWeights;
 use crate::validation;
 
 /// Computed F-G-R quality triplet for an artifact.
@@ -137,31 +138,35 @@ fn section_has_content(body: &str, headings: &[&str], min_words: usize) -> bool 
 }
 
 /// Compute Reliability: trust score based on R_eff + metadata.
-pub fn compute_reliability(r_eff_score: f64, link_count: usize, is_stale: bool) -> f64 {
-    let mut score = 0.0;
+///
+/// Uses configurable weights from `ReliabilityWeights`. Pass `None` for defaults.
+pub fn compute_reliability(
+    r_eff_score: f64,
+    link_count: usize,
+    is_stale: bool,
+    weights: Option<&ReliabilityWeights>,
+) -> f64 {
+    let w = weights.cloned().unwrap_or_default();
+    let mut score = r_eff_score * w.reff;
 
-    // R_eff component (0-0.5)
-    score += r_eff_score * 0.5;
-
-    // Link count component (0-0.3) — connected artifacts are more reliable
+    // Link count bonus (scaled to max weight)
     score += match link_count {
         0 => 0.0,
-        1 => 0.1,
-        2..=3 => 0.2,
-        _ => 0.3,
+        1 => w.links * 0.33,
+        2..=3 => w.links * 0.67,
+        _ => w.links,
     };
 
-    // Freshness penalty (0-0.2)
-    if is_stale {
-        // Stale = no freshness bonus
-    } else {
-        score += 0.2;
+    if !is_stale {
+        score += w.freshness;
     }
 
-    score.min(1.0)
+    score.clamp(0.0, 1.0)
 }
 
 /// Compute full F-G-R for an artifact.
+///
+/// Pass `weights` from `FpfConfig` for configurable reliability scoring, or `None` for defaults.
 #[allow(clippy::too_many_arguments)]
 pub fn compute(
     artifact_id: &str,
@@ -172,12 +177,13 @@ pub fn compute(
     r_eff_score: f64,
     link_count: usize,
     is_stale: bool,
+    weights: Option<&ReliabilityWeights>,
 ) -> FgrScore {
     FgrScore {
         artifact_id: artifact_id.to_string(),
         formality: compute_formality(body, frontmatter, kind, depth),
         granularity: compute_granularity(body),
-        reliability: compute_reliability(r_eff_score, link_count, is_stale),
+        reliability: compute_reliability(r_eff_score, link_count, is_stale, weights),
     }
 }
 
@@ -241,20 +247,20 @@ in the body so that check five passes as well with enough content.";
 
     #[test]
     fn reliability_no_evidence_low() {
-        let r = compute_reliability(0.0, 0, false);
+        let r = compute_reliability(0.0, 0, false, None);
         assert!(r < 0.3, "No evidence should be low reliability: {r}");
     }
 
     #[test]
     fn reliability_full_evidence_high() {
-        let r = compute_reliability(1.0, 4, false);
+        let r = compute_reliability(1.0, 4, false, None);
         assert!(r > 0.8, "Full evidence should be high reliability: {r}");
     }
 
     #[test]
     fn reliability_stale_penalty() {
-        let fresh = compute_reliability(0.5, 2, false);
-        let stale = compute_reliability(0.5, 2, true);
+        let fresh = compute_reliability(0.5, 2, false, None);
+        let stale = compute_reliability(0.5, 2, true, None);
         assert!(fresh > stale, "Stale should have lower reliability");
     }
 

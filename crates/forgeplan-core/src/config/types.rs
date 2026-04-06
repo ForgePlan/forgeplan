@@ -1,6 +1,8 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use crate::fpf::core::config::FpfConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
@@ -8,16 +10,19 @@ pub struct Config {
     pub default_depth: String,
     pub id_digits: u32,
     pub created_at: NaiveDate,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<StorageConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate: Option<EstimateConfigYaml>,
+    /// FPF Engine configuration (trust calculus thresholds, weights, ADI settings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fpf: Option<FpfConfig>,
 }
 
 impl Default for Config {
@@ -33,6 +38,7 @@ impl Default for Config {
             storage: None,
             memory: None,
             estimate: None,
+            fpf: None,
         }
     }
 }

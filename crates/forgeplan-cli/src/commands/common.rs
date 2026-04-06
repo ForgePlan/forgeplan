@@ -15,12 +15,17 @@ pub async fn open_store() -> anyhow::Result<(PathBuf, LanceStore)> {
     Ok((ws, store))
 }
 
-/// Load workspace config.
+/// Load workspace config. Validates FpfConfig if present.
 pub fn config() -> anyhow::Result<Config> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    workspace::load_config(&ws)
+    let config = workspace::load_config(&ws)?;
+    if let Some(ref fpf) = config.fpf {
+        fpf.validate()
+            .map_err(|e| anyhow::anyhow!("Invalid fpf config: {e}"))?;
+    }
+    Ok(config)
 }
 
 /// Open workspace store, returning only the store (most common case).
