@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Top-level FPF configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FpfConfig {
     /// Explore-exploit action thresholds.
@@ -19,18 +19,6 @@ pub struct FpfConfig {
     pub cl_penalties: ClPenalties,
     /// Evidence decay settings.
     pub decay: DecayConfig,
-}
-
-impl Default for FpfConfig {
-    fn default() -> Self {
-        Self {
-            thresholds: Thresholds::default(),
-            weights: ReliabilityWeights::default(),
-            adi: AdiConfig::default(),
-            cl_penalties: ClPenalties::default(),
-            decay: DecayConfig::default(),
-        }
-    }
 }
 
 /// Explore-exploit decision thresholds.
