@@ -111,6 +111,14 @@
   - Markdown report: all artifacts, their status, R_eff, links
   - Branch: `feat/generate-docs`
 
+- [ ] **13.4** Brownfield Discovery — `forgeplan discover` (PROB-022)
+  - Deep depth: PRD → Spec → RFC → ADR
+  - MCP tools: discover_start, discover_finding, discover_complete
+  - Agent-driven: ForgePlan = protocol + storage, Agent = code analysis
+  - Tiered sources: code (T1) > git (T1) > tests (T2) > docs (T3, legacy-doc)
+  - Marketplace: `.claude/agents/discover.md` agent config
+  - Branch: `feat/discover`
+
 ### Definition of Done
 - [ ] `forgeplan links`, `forgeplan doctor` working
 - [ ] Agent Memory Phase 1: store + recall via MCP
@@ -164,17 +172,19 @@
 
 | # | Что | Когда | Статус |
 |---|---|---|---|
-| 1 | EPIC-002 заполнить + активировать | Sprint 11 | [ ] |
-| 2 | RFC-001 реализовать | Sprint 11 | [ ] |
+| 1 | EPIC-002 заполнить + активировать | Sprint 11 | [x] PR #128 |
+| 2 | RFC-001 Phase 1 реализовать | Sprint 11 | [x] PR #131 |
+| 2b | RFC-001 Phase 2 (rule engine, KB search, contexts) | Sprint 12 | [ ] |
 | 3 | RFC-002 реализовать | Sprint 12 | [ ] |
 | 4 | NOTE-025 → PRD (Agent Memory) | Sprint 12 | [ ] |
-| 5 | NOTE-026 → PRD + implement (CI Linter) | Sprint 11 | [ ] |
+| 5 | NOTE-026 → PRD + implement (CI Linter) | Sprint 11 | [x] PR #132 |
+| 5b | PROB-022 → PRD (Brownfield Discover) | Sprint 13 | [ ] |
 | 6 | NOTE-029 → implement (CLI UX) | Sprint 13 | [ ] |
 | 7 | NOTE-030 → partial implement (generate-docs, watch, diff, dashboard) | Sprint 13-14 | [ ] |
 | 8 | PRD-025 (Nx) → evaluate or deprecate | Sprint 14 | [ ] |
 | 9 | Version sync (Cargo.toml vs tags) | Sprint 12 | [ ] |
 | 10 | Website deploy | Sprint 12 | [ ] |
-| 11 | 0 orphans в health | Sprint 11 | [ ] |
+| 11 | 0 orphans в health | Sprint 11 | [x] PR #129-130 |
 | 12 | Dependabot #3 (lru) — monitor for upstream fix | Ongoing | [ ] |
 
 ---
