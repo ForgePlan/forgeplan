@@ -5,10 +5,9 @@ kind: rfc
 links:
 - target: PRD-002
   relation: based_on
-status: draft
+status: active
 title: FPF Engine v2 — configurable trust calculus, ADI tracking, extensible scoring
 ---
-
 
 ## Summary
 
@@ -288,3 +287,4 @@ Extensions:
 ---
 
 > **Next step**: ADI reasoning (`forgeplan reason RFC-001 --fpf`) → validate → discuss Options → ADR → implement Phase 1.
+
