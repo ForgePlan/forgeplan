@@ -1,208 +1,210 @@
-# Forgeplan: Методология от А до Я
+[English](METHODOLOGY-COURSE.md) · [Русский](METHODOLOGY-COURSE.ru.md)
 
-> Курс для разработчиков. Простым языком. От "что это" до "как пользоваться каждый день".
+# Forgeplan: Methodology from A to Z
+
+> A course for developers. In plain language. From "what is it" to "how to use it every day".
 
 ---
 
-## Глава 1: Зачем Forgeplan
+## Chapter 1: Why Forgeplan
 
-### Проблема
+### The Problem
 
-Ты принимаешь решения каждый день: какую архитектуру выбрать, как реализовать фичу, почему отказался от варианта Б. Через месяц ты забудешь почему. Через полгода новый разработчик спросит "почему так?" — и никто не ответит.
+You make decisions every day: which architecture to choose, how to implement a feature, why you rejected option B. In a month you'll forget why. In six months a new developer will ask "why is it like this?" -- and no one will have an answer.
 
-**Три боли:**
-- **Решения теряются** — обсудили в чате, забыли, повторили те же ошибки
-- **Нет доказательств** — "мы это тестировали" → а где результаты?
-- **Нет картины целиком** — 50 тикетов в Jira, но непонятно что с чем связано
+**Three pain points:**
+- **Decisions get lost** -- discussed in chat, forgotten, same mistakes repeated
+- **No evidence** -- "we tested this" -> but where are the results?
+- **No big picture** -- 50 tickets in Jira, but unclear how things relate
 
-### Решение
+### The Solution
 
-Forgeplan — это **база знаний проекта**, не таск-трекер. Он отвечает на вопросы:
+Forgeplan is a **project knowledge base**, not a task tracker. It answers questions:
 
-| Вопрос | Инструмент | Forgeplan |
-|--------|-----------|-----------|
-| Что делать? | Jira/Linear | **PRD** — что и зачем |
-| Как строить? | Confluence | **RFC** — архитектура |
-| Почему именно так? | Slack (потеряно) | **ADR** — решение + обоснование |
-| Откуда уверенность? | "Доверься мне" | **Evidence** — тесты, бенчмарки |
-| Что с проектом? | Standup | **Health** — dashboard в одну команду |
+| Question | Typical Tool | Forgeplan |
+|----------|-------------|-----------|
+| What to do? | Jira/Linear | **PRD** -- what and why |
+| How to build? | Confluence | **RFC** -- architecture |
+| Why this way? | Slack (lost) | **ADR** -- decision + rationale |
+| Where's the confidence from? | "Trust me" | **Evidence** -- tests, benchmarks |
+| How's the project doing? | Standup | **Health** -- dashboard in one command |
 
-**Forgeplan = ЧТО решили + ПОЧЕМУ + ДОКАЗАТЕЛЬСТВА.**
+**Forgeplan = WHAT was decided + WHY + EVIDENCE.**
 
 ### Anti-pattern
-Не превращай Forgeplan в Jira. Forgeplan — про знания и решения, не про задачи и дедлайны.
+Don't turn Forgeplan into Jira. Forgeplan is about knowledge and decisions, not tasks and deadlines.
 
 ---
 
-## Глава 2: 10 артефактов — что есть что
+## Chapter 2: 10 Artifacts -- What Is What
 
-Артефакт = структурированный документ в базе. У каждого свой тип и назначение.
+An artifact is a structured document in the database. Each has its own type and purpose.
 
-### Основные 5 (используешь постоянно)
+### Core 5 (used constantly)
 
-#### PRD — Product Requirements Document
-**Что**: описание фичи — проблема, цели, требования.
-**Когда создавать**: перед реализацией фичи на 1-3 дня.
-**Аналогия**: ТЗ, но с обязательными секциями (Problem, Goals, Non-Goals, FR).
-
-```bash
-forgeplan new prd "Система авторизации"
-```
-
-#### RFC — Request for Comments
-**Что**: как именно будем строить — архитектура, фазы, риски.
-**Когда**: когда архитектура неочевидна, есть выбор из нескольких подходов.
-**Аналогия**: техническое предложение на review.
+#### PRD -- Product Requirements Document
+**What**: feature description -- problem, goals, requirements.
+**When to create**: before implementing a feature that takes 1-3 days.
+**Analogy**: a requirements spec, but with mandatory sections (Problem, Goals, Non-Goals, FR).
 
 ```bash
-forgeplan new rfc "Auth — JWT vs Session approach"
+forgeplan new prd "Authorization System"
 ```
 
-#### ADR — Architecture Decision Record
-**Что**: фиксация принятого решения — что выбрали, что отвергли, почему.
-**Когда**: после обсуждения, когда выбор сделан.
-**Аналогия**: протокол заседания — "решили X потому что Y, отвергли Z".
+#### RFC -- Request for Comments
+**What**: how exactly we'll build it -- architecture, phases, risks.
+**When**: when architecture is non-obvious, there are multiple approaches to choose from.
+**Analogy**: a technical proposal for review.
+
+```bash
+forgeplan new rfc "Auth -- JWT vs Session approach"
+```
+
+#### ADR -- Architecture Decision Record
+**What**: recording a decision made -- what was chosen, what was rejected, why.
+**When**: after discussion, when the choice is made.
+**Analogy**: meeting minutes -- "decided X because Y, rejected Z".
 
 ```bash
 forgeplan new adr "JWT chosen over sessions"
 ```
 
-#### Evidence — EvidencePack
-**Что**: доказательство что решение работает — тесты, бенчмарки, результаты.
-**Когда**: после реализации, чтобы подтвердить решение фактами.
-**Аналогия**: протокол испытаний — "тестировали X, результат Y".
+#### Evidence -- EvidencePack
+**What**: proof that the decision works -- tests, benchmarks, results.
+**When**: after implementation, to confirm the decision with facts.
+**Analogy**: test protocol -- "tested X, result Y".
 
 ```bash
-forgeplan new evidence "Auth load test — 10K concurrent users"
+forgeplan new evidence "Auth load test -- 10K concurrent users"
 ```
 
-#### Epic — группировка
-**Что**: объединяет несколько PRD/RFC/ADR в одну инициативу.
-**Когда**: большая задача (2+ недели), много артефактов.
-**Аналогия**: папка проекта.
+#### Epic -- Grouping
+**What**: combines multiple PRDs/RFCs/ADRs into one initiative.
+**When**: large task (2+ weeks), many artifacts.
+**Analogy**: project folder.
 
 ```bash
-forgeplan new epic "Система авторизации v2"
+forgeplan new epic "Authorization System v2"
 ```
 
-### Вспомогательные 5 (по необходимости)
+### Auxiliary 5 (as needed)
 
-| Артефакт | Что | Когда | Пример |
-|----------|-----|-------|--------|
-| **Note** | Быстрая заметка | Мысль, которую нужно зафиксировать | "Рассмотреть OAuth2 для мобильных" |
-| **Problem** | Описание проблемы | Обнаружен баг или архитектурная проблема | "Rate limiter не работает при >1000 RPS" |
-| **Solution** | Варианты решения | Есть 2-3 подхода, нужно сравнить | "Token bucket vs Leaky bucket vs Fixed window" |
-| **Spec** | Контракт API/данных | Есть API или data model changes | "POST /auth/login — request/response schema" |
-| **Refresh** | Переоценка решения | Прошло время, нужно проверить актуальность | "JWT всё ещё лучший выбор через 6 месяцев?" |
+| Artifact | What | When | Example |
+|----------|------|------|---------|
+| **Note** | Quick note | A thought that needs capturing | "Consider OAuth2 for mobile" |
+| **Problem** | Problem description | A bug or architectural issue discovered | "Rate limiter doesn't work above 1000 RPS" |
+| **Solution** | Solution options | 2-3 approaches exist, need comparison | "Token bucket vs Leaky bucket vs Fixed window" |
+| **Spec** | API/data contract | API or data model changes exist | "POST /auth/login -- request/response schema" |
+| **Refresh** | Decision reassessment | Time has passed, need to check relevance | "Is JWT still the best choice after 6 months?" |
 
-### Иерархия
+### Hierarchy
 
 ```
-Epic (стратегия)
- └── PRD (что и зачем)
-      ├── Spec (контракты)
-      ├── RFC (как строим)
-      └── ADR (почему так)
-           └── Evidence (доказательства)
+Epic (strategy)
+ └── PRD (what and why)
+      ├── Spec (contracts)
+      ├── RFC (how to build)
+      └── ADR (why this way)
+           └── Evidence (proof)
 ```
 
 ### Anti-pattern
-Не создавай все 10 типов на каждую задачу. Для быстрого фикса достаточно Note. Для фичи — PRD + RFC. Всё остальное — по необходимости.
+Don't create all 10 types for every task. For a quick fix, a Note is enough. For a feature -- PRD + RFC. Everything else -- as needed.
 
 ---
 
-## Глава 3: Lifecycle — жизнь артефакта
+## Chapter 3: Lifecycle -- The Life of an Artifact
 
-Каждый артефакт проходит через состояния:
+Every artifact passes through states:
 
 ```
-Draft → Active → Superseded или Deprecated
+Draft -> Active -> Superseded or Deprecated
 ```
 
-### Состояния
+### States
 
-| Состояние | Значение | Когда переходит |
-|-----------|----------|-----------------|
-| **Draft** | Черновик, работаем | Создан через `forgeplan new` |
-| **Active** | Принято и действует | После `forgeplan activate` (проходит validation gate) |
-| **Superseded** | Заменён новым | `forgeplan supersede PRD-001 --by PRD-002` |
-| **Deprecated** | Устарел | `forgeplan deprecate PRD-001 --reason "..."` |
+| State | Meaning | When it transitions |
+|-------|---------|-------------------|
+| **Draft** | Work in progress | Created via `forgeplan new` |
+| **Active** | Accepted and in effect | After `forgeplan activate` (passes validation gate) |
+| **Superseded** | Replaced by a new one | `forgeplan supersede PRD-001 --by PRD-002` |
+| **Deprecated** | Outdated | `forgeplan deprecate PRD-001 --reason "..."` |
 
-### DerivedStatus (вычисляемый)
+### DerivedStatus (computed)
 
-Forgeplan автоматически определяет "насколько проработан" артефакт:
+Forgeplan automatically determines "how well-developed" an artifact is:
 
-| DerivedStatus | Что значит |
-|--------------|------------|
-| **STUB** | Создан, но пустой — ничего не заполнено |
-| **FRAMED** | Заполнены основные секции (Problem, Goals) |
-| **VALIDATED** | Прошёл `forgeplan validate` без ошибок |
-| **EVIDENCED** | Привязаны доказательства (Evidence) |
-| **ACTIVATED** | Полный цикл: заполнен + валидирован + подтверждён + активирован |
+| DerivedStatus | What it means |
+|--------------|---------------|
+| **STUB** | Created but empty -- nothing filled in |
+| **FRAMED** | Core sections filled (Problem, Goals) |
+| **VALIDATED** | Passed `forgeplan validate` with no errors |
+| **EVIDENCED** | Has linked evidence (Evidence) |
+| **ACTIVATED** | Full cycle: filled + validated + confirmed + activated |
 
-### Правило: Supersede, не удаляй
+### Rule: Supersede, Don't Delete
 
-Старое решение заменяется новым — но **история сохраняется**. Через полгода можно посмотреть: "а что было до этого и почему поменяли".
+An old decision is replaced by a new one -- but **history is preserved**. Six months later you can look back: "what was there before and why did we change it".
 
 ```bash
 forgeplan supersede ADR-001 --by ADR-002
-# ADR-001 → superseded, автоматически связан с ADR-002
+# ADR-001 -> superseded, automatically linked to ADR-002
 ```
 
 ### Anti-pattern
-Не активируй артефакт без кода и evidence. Active PRD без реализации = ложное обещание.
+Don't activate an artifact without code and evidence. An Active PRD without implementation = a false promise.
 
 ---
 
-## Глава 4: Workflow — конвейер от идеи до кода
+## Chapter 4: Workflow -- Pipeline from Idea to Code
 
-### 5 шагов
+### 5 Steps
 
 ```
-1. Shape    → Создай артефакт, заполни MUST секции
-2. Validate → Проверь качество: forgeplan validate
-3. Code     → Реализуй
-4. Evidence → Подтверди фактами: тесты, бенчмарки
-5. Activate → Зафиксируй как принятое решение
+1. Shape    -> Create artifact, fill MUST sections
+2. Validate -> Check quality: forgeplan validate
+3. Code     -> Implement
+4. Evidence -> Confirm with facts: tests, benchmarks
+5. Activate -> Lock in as an accepted decision
 ```
 
-### Но сначала — Route
+### But First -- Route
 
-Перед любой задачей определи **глубину**:
+Before any task, determine the **depth**:
 
 ```bash
-forgeplan route "описание задачи"
+forgeplan route "task description"
 ```
 
-Роутер ответит:
+The router responds:
 
-| Depth | Что создавать | Пример |
-|-------|--------------|--------|
-| **Tactical** | Ничего или Note | Фикс опечатки |
-| **Standard** | PRD → RFC | Фича на 1-3 дня |
-| **Deep** | PRD → Spec → RFC → ADR | Новый модуль, 1-2 недели |
-| **Critical** | Epic → PRD[] → RFC[] → ADR[] | Кросс-команда, стратегия |
+| Depth | What to create | Example |
+|-------|---------------|---------|
+| **Tactical** | Nothing or Note | Typo fix |
+| **Standard** | PRD -> RFC | Feature, 1-3 days |
+| **Deep** | PRD -> Spec -> RFC -> ADR | New module, 1-2 weeks |
+| **Critical** | Epic -> PRD[] -> RFC[] -> ADR[] | Cross-team, strategy |
 
-### Пример полного цикла
+### Full Cycle Example
 
 ```bash
 # 1. Route
-forgeplan route "Добавить кеширование в API"
-# → Depth: Standard, Pipeline: PRD → RFC
+forgeplan route "Add caching to API"
+# -> Depth: Standard, Pipeline: PRD -> RFC
 
 # 2. Shape
 forgeplan new prd "API Caching Layer"
-# Заполнить: Problem, Goals, Non-Goals, Target Users, FR
+# Fill in: Problem, Goals, Non-Goals, Target Users, FR
 
 # 3. Validate
 forgeplan validate PRD-001
-# → PASS (0 errors)
+# -> PASS (0 errors)
 
 # 4. Code
-# ... пишем код ...
+# ... write code ...
 
 # 5. Evidence
-forgeplan new evidence "Cache hit rate benchmark — 95% on production data"
+forgeplan new evidence "Cache hit rate benchmark -- 95% on production data"
 forgeplan link EVID-001 PRD-001 --relation informs
 
 # 6. Activate
@@ -210,27 +212,27 @@ forgeplan activate PRD-001
 ```
 
 ### Anti-pattern
-- Tactical задачу не оборачивай в PRD — overhead не окупится
-- Не пропускай Evidence — без него R_eff = 0, health будет показывать "blind spot"
+- Don't wrap a Tactical task in a PRD -- the overhead won't pay off
+- Don't skip Evidence -- without it R_eff = 0, health will show "blind spot"
 
 ---
 
-## Глава 5: Evidence и R_eff — доказательства и доверие
+## Chapter 5: Evidence and R_eff -- Proof and Trust
 
-### Evidence = факт, не мнение
+### Evidence = Fact, Not Opinion
 
-Evidence — это **измеримое подтверждение** что решение работает:
+Evidence is a **measurable confirmation** that a decision works:
 
-| Тип | Пример | Что доказывает |
-|-----|--------|---------------|
-| **test** | "427 тестов pass" | Код работает |
-| **benchmark** | "P99 latency < 50ms" | Производительность ОК |
-| **measurement** | "Coverage 85%" | Покрытие достаточное |
-| **audit** | "4 агента: 0 critical issues" | Код качественный |
+| Type | Example | What it proves |
+|------|---------|---------------|
+| **test** | "427 tests pass" | Code works |
+| **benchmark** | "P99 latency < 50ms" | Performance is OK |
+| **measurement** | "Coverage 85%" | Coverage is sufficient |
+| **audit** | "4 agents: 0 critical issues" | Code quality is good |
 
-### Structured Fields (обязательные)
+### Structured Fields (required)
 
-Каждый Evidence содержит 3 поля в body:
+Every Evidence contains 3 fields in the body:
 
 ```markdown
 ## Structured Fields
@@ -240,213 +242,213 @@ congruence_level: 3        # 0-3 (3=best)
 evidence_type: test        # test / benchmark / measurement / audit
 ```
 
-| Поле | Что значит | Значения |
-|------|-----------|----------|
-| **verdict** | Подтверждает решение или опровергает? | `supports` = да, `weakens` = частично, `refutes` = нет |
-| **congruence_level** | Насколько контекст evidence совпадает с контекстом решения | `3` = тот же проект, `2` = похожий, `1` = далёкий, `0` = противоположный |
-| **evidence_type** | Тип доказательства | `test`, `benchmark`, `measurement`, `audit` |
+| Field | What it means | Values |
+|-------|--------------|--------|
+| **verdict** | Does it confirm or disprove the decision? | `supports` = yes, `weakens` = partially, `refutes` = no |
+| **congruence_level** | How closely the evidence context matches the decision context | `3` = same project, `2` = similar, `1` = distant, `0` = opposed |
+| **evidence_type** | Type of proof | `test`, `benchmark`, `measurement`, `audit` |
 
-### R_eff — формула доверия
+### R_eff -- The Trust Formula
 
-**R_eff = min(evidence_scores)** — доверие к решению = его самое слабое доказательство.
+**R_eff = min(evidence_scores)** -- trust in a decision = its weakest proof.
 
-Не среднее, а **минимум**. Как цепь — прочность определяется слабым звеном.
+Not the average, but the **minimum**. Like a chain -- strength is determined by the weakest link.
 
 ```
-Evidence 1: supports, CL3 → score = 1.0
-Evidence 2: supports, CL2 → score = 0.9
-Evidence 3: weakens, CL1  → score = 0.2
+Evidence 1: supports, CL3 -> score = 1.0
+Evidence 2: supports, CL2 -> score = 0.9
+Evidence 3: weakens, CL1  -> score = 0.2
 
 R_eff = min(1.0, 0.9, 0.2) = 0.2 (AT RISK!)
 ```
 
-Одно слабое доказательство портит весь score.
+One weak piece of evidence ruins the entire score.
 
-### Проверка R_eff
+### Checking R_eff
 
 ```bash
 forgeplan score PRD-001
-# → R_eff: 0.85 — Adequate
-# → Weakest link: EVID-003 (CL1 penalty)
+# -> R_eff: 0.85 -- Adequate
+# -> Weakest link: EVID-003 (CL1 penalty)
 ```
 
-### Что влияет на R_eff
+### What Affects R_eff
 
-| Фактор | Эффект | Пример |
-|--------|--------|--------|
-| **CL penalty** | CL3=0, CL2=0.1, CL1=0.4, CL0=0.9 | CL0 отнимает 0.9 от score |
-| **verdict: weakens** | Снижает score | "Тесты частично проходят" |
-| **verdict: refutes** | Score → ~0 | "Бенчмарк показал деградацию" |
-| **expired valid_until** | Score → 0.1 (stale) | Evidence устарело |
-| **Нет evidence** | R_eff = 0.0 | Решение без доказательств |
+| Factor | Effect | Example |
+|--------|--------|---------|
+| **CL penalty** | CL3=0, CL2=0.1, CL1=0.4, CL0=0.9 | CL0 subtracts 0.9 from score |
+| **verdict: weakens** | Lowers score | "Tests partially pass" |
+| **verdict: refutes** | Score -> ~0 | "Benchmark showed degradation" |
+| **expired valid_until** | Score -> 0.1 (stale) | Evidence is outdated |
+| **No evidence** | R_eff = 0.0 | Decision without proof |
 
 ### Anti-pattern
-- Evidence без structured fields → R_eff parser не найдёт данные → CL0 penalty
-- "Всё работает" без тестов → R_eff = 0, health кричит "blind spot"
+- Evidence without structured fields -> R_eff parser can't find data -> CL0 penalty
+- "Everything works" without tests -> R_eff = 0, health screams "blind spot"
 
 ---
 
-## Глава 6: F-G-R — оценка качества артефакта
+## Chapter 6: F-G-R -- Artifact Quality Assessment
 
-### Три измерения
+### Three Dimensions
 
-F-G-R — это **3D оценка** качества артефакта (не кода, а самого документа):
+F-G-R is a **3D assessment** of artifact quality (not the code, but the document itself):
 
-| Буква | Полное имя | Простым языком | Шкала |
-|-------|-----------|----------------|-------|
-| **F** | Formality | Насколько полно заполнен | 0.0 — 1.0 |
-| **G** | Granularity | Насколько детально | 0.0 — 1.0 |
-| **R** | Reliability | Насколько подтверждён фактами | 0.0 — 1.0 |
+| Letter | Full Name | Plain Language | Scale |
+|--------|-----------|---------------|-------|
+| **F** | Formality | How completely filled | 0.0 -- 1.0 |
+| **G** | Granularity | How detailed | 0.0 -- 1.0 |
+| **R** | Reliability | How well confirmed with facts | 0.0 -- 1.0 |
 
-### Formality — "Всё ли заполнено?"
+### Formality -- "Is everything filled in?"
 
-Проверяет: есть ли обязательные секции (Problem, Goals, Non-Goals, FR).
-
-```
-PRD без Problem секции → F = 0.2 (плохо)
-PRD со всеми секциями → F = 0.8 (хорошо)
-```
-
-**Как поднять F**: заполни все MUST секции.
-
-### Granularity — "Достаточно ли деталей?"
-
-Считает: сколько FR (functional requirements), сколько чекбоксов, плотность текста.
+Checks: are the required sections present (Problem, Goals, Non-Goals, FR)?
 
 ```
-PRD с 2 FR → G = 0.3 (мало деталей)
-PRD с 10 FR и чекбоксами → G = 0.8 (детально)
+PRD without Problem section -> F = 0.2 (poor)
+PRD with all sections       -> F = 0.8 (good)
 ```
 
-**Как поднять G**: добавь конкретные FR в формате `[Actor] can [capability]`.
+**How to raise F**: fill all MUST sections.
 
-### Reliability — "Есть ли доказательства?"
+### Granularity -- "Is there enough detail?"
 
-Зависит от R_eff (evidence scores) + количества связей + наличия review.
+Counts: how many FR (functional requirements), how many checkboxes, text density.
 
 ```
-PRD без evidence → R = 0.0 (ненадёжно)
-PRD с 3 evidence, R_eff=0.85 → R = 0.8 (надёжно)
+PRD with 2 FR             -> G = 0.3 (low detail)
+PRD with 10 FR and checkboxes -> G = 0.8 (detailed)
 ```
 
-**Как поднять R**: создай Evidence, привяжи, получи R_eff > 0.
+**How to raise G**: add specific FR in the format `[Actor] can [capability]`.
 
-### Проверка F-G-R
+### Reliability -- "Is there evidence?"
+
+Depends on R_eff (evidence scores) + number of links + presence of review.
+
+```
+PRD without evidence         -> R = 0.0 (unreliable)
+PRD with 3 evidence, R_eff=0.85 -> R = 0.8 (reliable)
+```
+
+**How to raise R**: create Evidence, link it, get R_eff > 0.
+
+### Checking F-G-R
 
 ```bash
 forgeplan score PRD-001
-# → Quality (F-G-R):
+# -> Quality (F-G-R):
 #     Formality:    0.80 (B)
 #     Granularity:  0.60 (C)
 #     Reliability:  0.85 (B)
 #     Overall:      0.75 (B)
 ```
 
-### Грейды
+### Grades
 
-| Score | Грейд | Значение |
-|-------|-------|----------|
-| 0.9+ | A | Отличное качество |
-| 0.7-0.89 | B | Хорошее |
-| 0.5-0.69 | C | Среднее — нужна доработка |
-| 0.3-0.49 | D | Слабое — серьёзные пробелы |
-| <0.3 | F | Плохое — артефакт = заглушка |
+| Score | Grade | Meaning |
+|-------|-------|---------|
+| 0.9+ | A | Excellent quality |
+| 0.7-0.89 | B | Good |
+| 0.5-0.69 | C | Average -- needs work |
+| 0.3-0.49 | D | Weak -- serious gaps |
+| <0.3 | F | Poor -- artifact is a stub |
 
 ### Anti-pattern
-Не гонись за A по всем трём. Для тактической задачи D по Granularity — нормально. F-G-R показывает картину, а не ставит оценку.
+Don't chase an A on all three. For a tactical task, a D on Granularity is fine. F-G-R shows the picture, it doesn't give a grade.
 
 ---
 
-## Глава 7: CLI Quick Start — 10 команд на каждый день
+## Chapter 7: CLI Quick Start -- 10 Commands for Every Day
 
-### Старт сессии
+### Session Start
 
 ```bash
-forgeplan health              # Что с проектом? Blind spots? Stale?
-forgeplan route "моя задача"  # Какой depth? Что создавать?
+forgeplan health              # How's the project? Blind spots? Stale?
+forgeplan route "my task"     # What depth? What to create?
 ```
 
-### Создание и работа
+### Creation and Work
 
 ```bash
-forgeplan new prd "Title"     # Создать артефакт
-forgeplan validate PRD-001    # Проверить качество (MUST/SHOULD)
+forgeplan new prd "Title"     # Create artifact
+forgeplan validate PRD-001    # Check quality (MUST/SHOULD)
 forgeplan score PRD-001       # R_eff + F-G-R scoring
 ```
 
-### Evidence и lifecycle
+### Evidence and Lifecycle
 
 ```bash
-forgeplan new evidence "Описание"                       # Создать доказательство
-forgeplan link EVID-001 PRD-001 --relation informs      # Привязать
-forgeplan activate PRD-001                               # draft → active
+forgeplan new evidence "Description"                       # Create evidence
+forgeplan link EVID-001 PRD-001 --relation informs         # Link it
+forgeplan activate PRD-001                                  # draft -> active
 ```
 
-### Навигация
+### Navigation
 
 ```bash
-forgeplan list                # Все артефакты
-forgeplan tree                # Дерево зависимостей (ASCII)
-forgeplan journal             # Timeline решений с R_eff
-forgeplan search "keyword"    # Поиск по тексту
+forgeplan list                # All artifacts
+forgeplan tree                # Dependency tree (ASCII)
+forgeplan journal             # Decision timeline with R_eff
+forgeplan search "keyword"    # Text search
 ```
 
-### Обзор
+### Overview
 
 ```bash
-forgeplan context PRD-001     # Полный контекст: связи, evidence, validation
-forgeplan blocked PRD-001     # Что блокирует этот артефакт?
-forgeplan coverage            # Какой код покрыт решениями?
+forgeplan context PRD-001     # Full context: links, evidence, validation
+forgeplan blocked PRD-001     # What blocks this artifact?
+forgeplan coverage            # Which code is covered by decisions?
 ```
 
 ---
 
-## Шпаргалка: полный цикл за 5 минут
+## Cheat Sheet: Full Cycle in 5 Minutes
 
 ```
-1. forgeplan health                          ← Где я?
-2. forgeplan route "что делаю"               ← Какой depth?
-3. forgeplan new prd "Title"                 ← Shape
-4. (заполнить Problem, Goals, FR)
-5. forgeplan validate PRD-001                ← Validate
-6. (писать код)                              ← Code
-7. forgeplan new evidence "Proof"            ← Evidence
+1. forgeplan health                          <- Where am I?
+2. forgeplan route "what I'm doing"          <- What depth?
+3. forgeplan new prd "Title"                 <- Shape
+4. (fill in Problem, Goals, FR)
+5. forgeplan validate PRD-001                <- Validate
+6. (write code)                              <- Code
+7. forgeplan new evidence "Proof"            <- Evidence
 8. forgeplan link EVID-001 PRD-001 --relation informs
-9. forgeplan score PRD-001                   ← Check R_eff
-10. forgeplan activate PRD-001               ← Activate
+9. forgeplan score PRD-001                   <- Check R_eff
+10. forgeplan activate PRD-001               <- Activate
 ```
 
-**Работа не закончена, пока**: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.
+**Work is not done until**: PRD is filled + validate PASS + evidence created + R_eff > 0 + activated.
 
 ---
 
-## Глава 8: Новые инструменты (v0.11+)
+## Chapter 8: New Tools (v0.11+)
 
-### forgeplan tree — Дерево проекта
+### forgeplan tree -- Project Tree
 
-Показывает все артефакты как дерево с прогресс-барами:
-
-```bash
-forgeplan tree              # Полное дерево
-forgeplan tree EPIC-001     # Поддерево от конкретного артефакта
-forgeplan tree --depth 2    # Ограничить глубину
-forgeplan tree --json       # JSON для обработки
-```
-
-Что означают колонки:
-- `██████████ 1.00` — решение подтверждено evidence (зелёный = хорошо)
-- `██████░░░░ 0.60` — частично подтверждено (жёлтый)
-- `░░░░░░░░░░ 0.00` — нет подтверждения (красный)
-- `·········· ··` — evidence/note — не оцениваются, это приложения
-
-### forgeplan coverage — Покрытие кода решениями
+Shows all artifacts as a tree with progress bars:
 
 ```bash
-forgeplan coverage              # Какие модули покрыты решениями
-forgeplan coverage --backfill   # Добавить секцию "Affected Files" в артефакты
+forgeplan tree              # Full tree
+forgeplan tree EPIC-001     # Subtree from a specific artifact
+forgeplan tree --depth 2    # Limit depth
+forgeplan tree --json       # JSON for processing
 ```
 
-**Affected Files** — секция в PRD/RFC/ADR, указывающая какие файлы затрагивает решение:
+What the columns mean:
+- `██████████ 1.00` -- decision confirmed by evidence (green = good)
+- `██████░░░░ 0.60` -- partially confirmed (yellow)
+- `░░░░░░░░░░ 0.00` -- no confirmation (red)
+- `·········· ··` -- evidence/note -- not scored, these are attachments
+
+### forgeplan coverage -- Decision Coverage of Code
+
+```bash
+forgeplan coverage              # Which modules are covered by decisions
+forgeplan coverage --backfill   # Add "Affected Files" section to artifacts
+```
+
+**Affected Files** -- a section in PRD/RFC/ADR indicating which files the decision affects:
 ```markdown
 ## Affected Files
 
@@ -454,332 +456,317 @@ forgeplan coverage --backfill   # Добавить секцию "Affected Files"
 - crates/forgeplan-cli/src/commands/score.rs
 ```
 
-Без этой секции `coverage` не знает какие модули покрыты решениями.
+Without this section, `coverage` doesn't know which modules are covered by decisions.
 
-### Batch score — Обновление cached R_eff
+### Batch Score -- Updating Cached R_eff
 
-`forgeplan tree` показывает **сохранённый** R_eff, не вычисленный на лету. Чтобы обновить:
+`forgeplan tree` shows **saved** R_eff, not computed on the fly. To update:
 
 ```bash
-forgeplan score PRD-001     # Пересчитать и сохранить R_eff для одного
+forgeplan score PRD-001     # Recalculate and save R_eff for one
 ```
 
-После массовых изменений (новые evidence, новые links) — прогоните score для всех:
+After bulk changes (new evidence, new links) -- run score for all:
 ```bash
 for id in $(forgeplan list --json | jq -r '.[].id'); do forgeplan score "$id" > /dev/null; done
 ```
 
-### R_eff и зависимости
+### R_eff and Dependencies
 
-R_eff считает **weakest link** по всему дереву зависимостей. Правила:
-- **Active** зависимости — считаются (тянут R_eff вниз если нет evidence)
-- **Draft** — пропускаются (ещё не начаты, нечего считать)
-- **Deprecated/Superseded** — пропускаются (закрыты)
+R_eff calculates the **weakest link** across the entire dependency tree. Rules:
+- **Active** dependencies -- counted (pull R_eff down if no evidence)
+- **Draft** -- skipped (not started yet, nothing to calculate)
+- **Deprecated/Superseded** -- skipped (closed)
 
-Пропущенные зависимости видны в `forgeplan score`: `"Skipped EPIC-002 (status: draft)"`.
+Skipped dependencies are visible in `forgeplan score`: `"Skipped EPIC-002 (status: draft)"`.
 
-### Enforcement Hooks (для AI-агентов)
+### Enforcement Hooks (for AI agents)
 
-5 hooks в `.claude/hooks/` автоматически проверяют правила:
+5 hooks in `.claude/hooks/` automatically enforce rules:
 
-| Hook | Когда | Что проверяет |
-|------|-------|---------------|
-| `forge-safety-hook.sh` | Любая bash команда | Блокирует `git push --force`, `rm -rf` |
-| `pr-todo-check.sh` | `gh pr create` | Все P0 в TODO.md должны быть `[x]` |
-| `commit-test-check.sh` | `git commit` | Новые `pub fn` должны иметь тесты |
-| `pre-code-check.sh` | Edit/Write в `crates/` | Должен существовать active PRD |
-| `pre-commit-health.sh` | `git commit` | Предупреждает о blind spots |
+| Hook | When | What it checks |
+|------|------|---------------|
+| `forge-safety-hook.sh` | Any bash command | Blocks `git push --force`, `rm -rf` |
+| `pr-todo-check.sh` | `gh pr create` | All P0 in TODO.md must be `[x]` |
+| `commit-test-check.sh` | `git commit` | New `pub fn` must have tests |
+| `pre-code-check.sh` | Edit/Write in `crates/` | An active PRD must exist |
+| `pre-commit-health.sh` | `git commit` | Warns about blind spots |
 
-При блокировке hook объясняет что сделать чтобы продолжить.
-
----
-
-## Глоссарий (полный, с переводами и пояснениями)
-
-| Термин | Перевод | Что значит простыми словами |
-|--------|---------|---------------------------|
-| **Artifact** (артефакт) | Артефакт | Структурированный документ в базе. Как файл в Git, но с метаданными и связями. Типы: PRD, RFC, ADR, Epic, Note и др. |
-| **PRD** | Product Requirements Document | "Что и зачем делаем". Описывает проблему, цели, требования. Аналог ТЗ, но структурированный. |
-| **RFC** | Request for Comments | "Как строим". Архитектурное предложение с фазами реализации. Аналог дизайн-документа. |
-| **ADR** | Architecture Decision Record | "Почему именно так". Запись решения с альтернативами и обоснованием. |
-| **Epic** | Эпик | Группа связанных PRD/RFC/ADR. Как папка для большого проекта. |
-| **Evidence** (эвиденс) | Доказательство | Подтверждение что решение работает: тесты, бенчмарки, аудит. Без evidence R_eff=0. |
-| **R_eff** | Effective Reliability | "Насколько мы доверяем решению". Число 0-1. Считается как **min** (не average!) всех evidence scores. Слабое звено определяет всё. |
-| **F-G-R** | Formality-Granularity-Reliability | 3 оси качества артефакта: **F** = насколько формально (шаблон соблюдён?), **G** = насколько подробно (есть FR? Goal? Problem?), **R** = насколько доказано (R_eff + ссылки + свежесть) |
-| **CL** | Congruence Level (уровень совпадения) | Насколько контекст evidence совпадает с контекстом решения. CL3="тот же проект" (penalty 0), CL0="другой контекст" (penalty 0.9). Как цитировать исследование: из твоей области vs из другой. |
-| **WLNK** | Weakest Link (слабое звено) | Принцип: надёжность системы = надёжность самого слабого компонента. R_eff = min, не average. |
-| **Depth** (глубина) | Глубина проработки | Сколько документации создавать: **Tactical** (ничего, просто делай) → **Standard** (PRD+RFC) → **Deep** (PRD+Spec+RFC+ADR) → **Critical** (Epic+всё) |
-| **Route** (маршрут) | Маршрутизация | Команда `forgeplan route` определяет depth по описанию задачи. Как навигатор: "куда едешь?" → "вот маршрут". |
-| **Blind spot** (слепое пятно) | Слепая зона | Активный артефакт без evidence. Решение которому "доверяем" без доказательств. `forgeplan health` показывает их. |
-| **Stale** (протухший) | Устаревший | Evidence с истёкшим `valid_until`. Было актуально, теперь нет. Как просроченный сертификат. |
-| **Lifecycle** (жизненный цикл) | Жизненный цикл | Путь артефакта: Draft → Active → Superseded/Deprecated. Как статус задачи в Jira. |
-| **Validate** (валидация) | Проверка | `forgeplan validate` проверяет что артефакт заполнен правильно. Как lint для документов. |
-| **Activate** (активация) | Активация | `forgeplan activate` переводит Draft → Active. Означает: "мы доверяем этому решению и работаем по нему". |
-| **Supersede** (замена) | Заменить | Старый артефакт заменяется новым. Старый получает status=Superseded. Никогда не удаляй — заменяй. |
-| **Forge Cycle** | Цикл ковки | Полный цикл разработки: Observe→Route→Shape→Sprint→Build→Audit→Fix→Evidence→Commit→Next. Одна команда `/forge-cycle`. |
-| **Scope Lock** | Блокировка scope | В начале сессии фиксируешь: "я делаю тактику" или "я делаю стратегию". Если пытаешься переключиться — предупреждение. |
-| **Scope Drift** | Уход от scope | Anti-pattern: начал тактику → ушёл в стратегию незаметно. Ни одна задача не закончена. |
-| **Forge Mode** | Режим ковки | Настройки разрешений для AI: Green (безопасное — авто), Yellow (файлы — авто), Red (опасное — блокировать). |
-| **ADI cycle** | Цикл рассуждения | Abduction (придумай 3 варианта) → Deduction (продумай последствия) → Induction (проверь на фактах). Как научный метод. |
-| **Adversarial review** | Состязательная проверка | Reviewer **обязан** найти проблемы. 0 findings = review не сделан. Как devil's advocate (адвокат дьявола). |
-| **FPF** | First Principles Framework | "Операционная система мышления". Академическая база методологии Forgeplan. Источник ADI, F-G-R, WLNK. |
+When blocked, the hook explains what to do to proceed.
 
 ---
 
-## Глава 9: /forge-cycle — полный цикл разработки
+## Glossary
 
-### Зачем
+For the complete glossary of all terms, see [GLOSSARY.md](GLOSSARY.md).
 
-Вместо 8 ручных шагов — одна команда. Агент автоматически проходит весь путь от наблюдения до PR.
+Key terms to remember:
 
-### Запуск
+| Term | Full Form | Plain Language Explanation |
+|------|-----------|--------------------------|
+| **Artifact** | Artifact | A structured document in the database. Like a file in Git, but with metadata and links. Types: PRD, RFC, ADR, Epic, Note, etc. |
+| **R_eff** | Effective Reliability | "How much do we trust the decision". A number 0-1. Calculated as **min** (not average!) of all evidence scores. The weakest link determines everything. |
+| **Depth** | Depth of elaboration | How much documentation to create: **Tactical** (nothing, just do it) -> **Standard** (PRD+RFC) -> **Deep** (PRD+Spec+RFC+ADR) -> **Critical** (Epic+everything) |
+| **Blind spot** | Blind spot | An active artifact without evidence. A decision we "trust" without proof. `forgeplan health` shows them. |
+| **ADI cycle** | ADI cycle | Abduction (come up with 3 options) -> Deduction (think through consequences) -> Induction (verify with facts). Like the scientific method. |
+| **Forge Cycle** | Forge Cycle | The full development cycle: Observe->Route->Shape->Sprint->Build->Audit->Fix->Evidence->Commit->Next. One command: `/forge-cycle`. |
+
+---
+
+## Chapter 9: /forge-cycle -- Full Development Cycle
+
+### Why
+
+Instead of 8 manual steps -- one command. The agent automatically goes through the entire path from observation to PR.
+
+### Launching
 
 ```bash
-/forge-cycle PRD-016                     # конкретный PRD
-/forge-cycle "добавить OAuth2 auth"      # новая задача (создаст PRD)
-/forge-cycle                             # возьмёт P0 из TODO.md
+/forge-cycle PRD-016                     # specific PRD
+/forge-cycle "add OAuth2 auth"           # new task (will create PRD)
+/forge-cycle                             # picks up P0 from TODO.md
 ```
 
-### 8 фаз
+### 8 Phases
 
 ```
-Phase 0: OBSERVE    ← forgeplan health + stale + fpf
-Phase 1: ROUTE      ← forgeplan route → depth + pipeline
-Phase 2: SPRINT     ← /sprint → wave-based plan
-Phase 3: BUILD      ← /team-up → код с Rust skills
-Phase 4: AUDIT      ← /audit → adversarial review (MUST find issues)
-Phase 5: FIXES      ← /team-up → починка findings
-Phase 6: EVIDENCE   ← forgeplan new evidence + score + activate
-Phase 7: COMMIT     ← git commit + PR + hindsight
-Phase 8: NEXT       ← forgeplan health → следующая задача
+Phase 0: OBSERVE    <- forgeplan health + stale + fpf
+Phase 1: ROUTE      <- forgeplan route -> depth + pipeline
+Phase 2: SPRINT     <- /sprint -> wave-based plan
+Phase 3: BUILD      <- /team-up -> code with Rust skills
+Phase 4: AUDIT      <- /audit -> adversarial review (MUST find issues)
+Phase 5: FIXES      <- /team-up -> fix findings
+Phase 6: EVIDENCE   <- forgeplan new evidence + score + activate
+Phase 7: COMMIT     <- git commit + PR + hindsight
+Phase 8: NEXT       <- forgeplan health -> next task
 ```
 
-### FPF auto-resolve — как агент принимает решения
+### FPF auto-resolve -- How the Agent Makes Decisions
 
-Когда в Phase 3 (Build) возникает выбор (какой API? какой паттерн?):
+When a choice arises in Phase 3 (Build) (which API? which pattern?):
 
 ```
-1. ABDUCTION  — 3 гипотезы: Option A, B, C
-2. DEDUCTION  — последствия каждой: что сломается? что улучшится?
-3. INDUCTION  — оценка: WLNK (weakest failure) + Reversibility (проще откатить)
-4. ВЫБОР      — max(reversibility) + max(WLNK strength)
-5. ДОКУМЕНТ   — // FPF: chose X over Y because [причина]
+1. ABDUCTION  -- 3 hypotheses: Option A, B, C
+2. DEDUCTION  -- consequences of each: what breaks? what improves?
+3. INDUCTION  -- evaluation: WLNK (weakest failure) + Reversibility (easier to revert)
+4. CHOICE     -- max(reversibility) + max(WLNK strength)
+5. DOCUMENT   -- // FPF: chose X over Y because [reason]
 ```
 
-**Агент спрашивает юзера ТОЛЬКО если** решение необратимо (DB schema, public API, cross-PRD impact).
+**The agent asks the user ONLY if** the decision is irreversible (DB schema, public API, cross-PRD impact).
 
 ---
 
-## Глава 10: Scope Discipline — стратегия vs тактика
+## Chapter 10: Scope Discipline -- Strategy vs Tactics
 
-### Проблема: scope drift
+### The Problem: Scope Drift
 
-Начинаешь тактическую задачу ("починить баг в scoring"), по дороге обнаруживаешь проблему побольше ("а давай пере-спроектируем весь scoring module"), и уходишь в стратегию. Тактика не закончена, стратегия не доначата.
+You start a tactical task ("fix bug in scoring"), along the way discover a bigger problem ("let's redesign the entire scoring module"), and drift into strategy. Tactics unfinished, strategy half-started.
 
-**По FPF** это anti-pattern "Chaotic Change" (B.4) — изменения без явного перехода между фазами.
+**Per FPF** this is the anti-pattern "Chaotic Change" (B.4) -- changes without an explicit transition between phases.
 
-### Решение: Scope Lock
+### The Solution: Scope Lock
 
-Phase 0 `/forge-cycle` фиксирует тип сессии:
+Phase 0 of `/forge-cycle` locks the session type:
 
-| Тип | Когда | Что делаем | Чего НЕ делаем |
-|-----|-------|-----------|---------------|
-| **Tactical** | 1-3 конкретных задач из TODO | Код, тесты, fix, PR | Исследования, roadmap, новые PRD |
-| **Strategic** | Audit, research, planning | Анализ, PRD, roadmap | Кодить, запускать sprints |
+| Type | When | What we do | What we DON'T do |
+|------|------|-----------|-----------------|
+| **Tactical** | 1-3 specific tasks from TODO | Code, tests, fix, PR | Research, roadmap, new PRDs |
+| **Strategic** | Audit, research, planning | Analysis, PRDs, roadmap | Code, launch sprints |
 
-### Что происходит при drift
+### What Happens on Drift
 
 ```
-⚠️ SCOPE DRIFT DETECTED
+WARNING: SCOPE DRIFT DETECTED
 
-Сессия начата как: tactical (PRD-016 implementation)
-Текущее действие:  deep-scan 3 source repos + создание 6 PRD (это strategic!)
+Session started as: tactical (PRD-016 implementation)
+Current action:     deep-scan 3 source repos + creating 6 PRDs (this is strategic!)
 
-Варианты:
-1. 🔒 Вернуться к PRD-016
-2. 🔄 Bookmark PRD-016, переключиться на strategic
-3. 📋 Закрыть сессию, начать новую
-4. ✅ Переключиться осознанно
+Options:
+1. Lock -- return to PRD-016
+2. Bookmark PRD-016, switch to strategic
+3. Close session, start a new one
+4. Switch deliberately
 ```
 
-### Bookmark при переключении
+### Bookmark on Switch
 
-Если выбрал "переключиться" — агент сохраняет точку возврата:
+If you chose "switch" -- the agent saves a return point:
 
 ```bash
 forgeplan new note "Session bookmark: PRD-016"
 # Body:
 # Progress: Phase 2 done (sprint plan ready)
 # Remaining: Phase 3-7 (build, audit, fix, evidence, commit)
-# Next step: /forge-cycle PRD-016 (продолжить с Phase 3)
+# Next step: /forge-cycle PRD-016 (continue from Phase 3)
 ```
 
-### Правила
+### Rules
 
-1. **Одна сессия = один тип** (tactical ИЛИ strategic)
-2. **Переключение = осознанное решение** (не "так получилось")
-3. **Bookmark обязателен** при переключении (чтобы не потерять прогресс)
-4. **Tactical задача, вскрывшая проблему** → создай PROB/Note → bookmark → strategic сессия потом
-5. **Стратегическое решение готово** → bookmark → tactical сессия для реализации
+1. **One session = one type** (tactical OR strategic)
+2. **Switching = a deliberate decision** (not "it just happened")
+3. **Bookmark is required** when switching (to not lose progress)
+4. **Tactical task that uncovered a problem** -> create PROB/Note -> bookmark -> strategic session later
+5. **Strategic decision is ready** -> bookmark -> tactical session for implementation
 
-### Пример: правильное поведение
+### Example: Correct Behavior
 
 ```
-Сессия 1 (tactical): /forge-cycle PRD-016
-  → Phase 3: Build
-  → Замечаю: "R_eff не рекурсивный, это проблема"
-  → Создаю: forgeplan new note "Observation: R_eff not recursive"
-  → Продолжаю Phase 3 (не ухожу в исследование!)
-  → Phase 7: Commit + PR
-  → Done ✅
+Session 1 (tactical): /forge-cycle PRD-016
+  -> Phase 3: Build
+  -> Notice: "R_eff is not recursive, this is a problem"
+  -> Create: forgeplan new note "Observation: R_eff not recursive"
+  -> Continue Phase 3 (don't drift into research!)
+  -> Phase 7: Commit + PR
+  -> Done
 
-Сессия 2 (strategic): /forge-cycle "meta-audit R_eff vs quint-code"
-  → Phase 0: Observe → читаю note из сессии 1
-  → Deep research, создаю PRD-016..021
-  → Done ✅
+Session 2 (strategic): /forge-cycle "meta-audit R_eff vs quint-code"
+  -> Phase 0: Observe -> read note from session 1
+  -> Deep research, create PRD-016..021
+  -> Done
 
-Сессия 3 (tactical): /forge-cycle PRD-016
-  → Sprint plan → Build → Audit → Fix → Evidence → PR
-  → Done ✅
+Session 3 (tactical): /forge-cycle PRD-016
+  -> Sprint plan -> Build -> Audit -> Fix -> Evidence -> PR
+  -> Done
 ```
 
-Три сессии, каждая с чётким scope. Ничего не потеряно.
+Three sessions, each with clear scope. Nothing lost.
 
 ---
 
-## Глава 11: Anti-patterns — чего НЕ делать (с объяснениями)
+## Chapter 11: Anti-patterns -- What NOT to Do (with explanations)
 
-> **Anti-pattern** (анти-паттерн) = повторяющаяся ошибка, которая выглядит как правильное решение, но ведёт к проблемам.
+> **Anti-pattern** = a recurring mistake that looks like the right approach but leads to problems.
 
-### 11.1. Stub PRD (заглушка)
+### 11.1. Stub PRD
 
-**Что это**: Создал PRD через `forgeplan new prd`, но не заполнил Problem, Goals, FR. Оставил шаблон.
+**What it is**: Created a PRD via `forgeplan new prd`, but didn't fill in Problem, Goals, FR. Left the template as-is.
 
-**Почему плохо**: PRD-заглушка = "решение без обоснования". Validation не пройдёт, но ты начнёшь кодить без validate — и получишь код, который непонятно что решает.
+**Why it's bad**: A stub PRD = "decision without justification". Validation won't pass, but you'll start coding without validate -- and end up with code that solves an unclear problem.
 
-**Как правильно**:
+**How to do it right**:
 ```
-forgeplan new prd "Auth System"     ← создал
-# СРАЗУ заполни Problem, Goals, Non-Goals, Target Users, FR
-forgeplan validate PRD-001          ← проверь PASS
-# ТОЛЬКО ПОТОМ кодь
+forgeplan new prd "Auth System"     <- created
+# IMMEDIATELY fill in Problem, Goals, Non-Goals, Target Users, FR
+forgeplan validate PRD-001          <- verify PASS
+# ONLY THEN code
 ```
 
-**Простыми словами**: не оставляй пустые документы. Создал — заполни. Сразу.
+**In plain terms**: don't leave empty documents. Created it -- fill it in. Right away.
 
 ---
 
-### 11.2. Active без evidence (слепое пятно / blind spot)
+### 11.2. Active Without Evidence (blind spot)
 
-**Что это**: Артефакт в статусе Active, но нет ни одного EvidencePack. R_eff = 0.
+**What it is**: An artifact with Active status but no EvidencePack. R_eff = 0.
 
-**Почему плохо**: Active = "мы доверяем этому решению". Но R_eff=0 значит "доверие = ноль". Это как подписать контракт не читая.
+**Why it's bad**: Active = "we trust this decision". But R_eff=0 means "trust = zero". It's like signing a contract without reading it.
 
-**Как правильно**:
+**How to do it right**:
 ```
 forgeplan new evidence "Tests pass for PRD-001"
-# В body: verdict: supports, congruence_level: 3, evidence_type: test
+# In body: verdict: supports, congruence_level: 3, evidence_type: test
 forgeplan link EVID-001 PRD-001 --relation informs
-forgeplan score PRD-001    ← теперь R_eff > 0
+forgeplan score PRD-001    <- now R_eff > 0
 ```
 
-**Простыми словами**: решение без доказательств = мнение. Добавь тесты, бенчмарки, аудит.
+**In plain terms**: a decision without proof = an opinion. Add tests, benchmarks, audit.
 
 ---
 
-### 11.3. Scope drift (уход от плана)
+### 11.3. Scope Drift
 
-**Что это**: Начал задачу A, по дороге переключился на задачу B, потом на C. Ни одна не закончена.
+**What it is**: Started task A, along the way switched to task B, then to C. None are finished.
 
-**Почему плохо**: Три начатых дела = ноль законченных. Каждое переключение теряет контекст.
+**Why it's bad**: Three started tasks = zero finished. Each switch loses context.
 
-**Как правильно**:
+**How to do it right**:
 ```
-Сессия: tactical, цель = PRD-016
-→ Заметил проблему → создай Note/PROB → продолжи PRD-016
-→ Закончи → потом strategic сессия для новой проблемы
+Session: tactical, goal = PRD-016
+-> Noticed a problem -> create Note/PROB -> continue PRD-016
+-> Finish -> then a strategic session for the new problem
 ```
 
-**Простыми словами**: доделай то что начал. Заметил что-то — запиши и вернись потом.
+**In plain terms**: finish what you started. Noticed something -- write it down and come back later.
 
 ---
 
-### 11.4. Skip evidence (пропуск доказательств)
+### 11.4. Skip Evidence
 
-**Что это**: Code → Commit → PR. Без `forgeplan new evidence` и `forgeplan activate`.
+**What it is**: Code -> Commit -> PR. Without `forgeplan new evidence` and `forgeplan activate`.
 
-**Почему плохо**: Код есть, но методология не знает об этом. `forgeplan health` показывает blind spot. R_eff=0. В следующей сессии агент не видит что задача закрыта.
+**Why it's bad**: Code exists, but the methodology doesn't know about it. `forgeplan health` shows a blind spot. R_eff=0. In the next session, the agent doesn't see that the task is closed.
 
-**Как правильно**: Phase 6 в `/forge-cycle` обязателен. Даже если "очевидно что работает" — создай evidence.
+**How to do it right**: Phase 6 in `/forge-cycle` is mandatory. Even if "it obviously works" -- create evidence.
 
-**Простыми словами**: без evidence работа не засчитана. Это как сдать экзамен без ведомости.
+**In plain terms**: without evidence, work doesn't count. It's like passing an exam without a transcript.
 
 ---
 
-### 11.5. Кодить без route (прыжок в реализацию)
+### 11.5. Coding Without Route (jumping to implementation)
 
-**Что это**: Получил задачу → сразу открыл редактор → начал писать код.
+**What it is**: Got a task -> immediately opened editor -> started writing code.
 
-**Почему плохо**: Не знаешь depth. Может задача Tactical (просто сделай), а может Deep (нужен PRD+RFC+ADR). Без route делаешь либо слишком много бюрократии, либо слишком мало.
+**Why it's bad**: You don't know the depth. Maybe the task is Tactical (just do it), or maybe Deep (needs PRD+RFC+ADR). Without route, you either create too much bureaucracy or too little.
 
-**Как правильно**:
+**How to do it right**:
 ```bash
-forgeplan route "описание задачи"
-# → Tactical? Просто делай.
-# → Standard? Создай PRD первым.
-# → Deep? PRD + RFC + ADR.
+forgeplan route "task description"
+# -> Tactical? Just do it.
+# -> Standard? Create PRD first.
+# -> Deep? PRD + RFC + ADR.
 ```
 
-**Простыми словами**: 5 секунд на route экономят часы неправильной работы.
+**In plain terms**: 5 seconds on route saves hours of wrong work.
 
 ---
 
-### 11.6. Average вместо min (завышение доверия)
+### 11.6. Average Instead of Min (inflated trust)
 
-**Что это**: Думать "у меня 3 evidence, 2 сильных и 1 слабый — в среднем нормально".
+**What it is**: Thinking "I have 3 evidence items, 2 strong and 1 weak -- on average it's fine".
 
-**Почему плохо**: FPF говорит: **R_eff = min(scores)**, не average. Цепь надёжна как самое слабое звено. Если одно evidence говорит "refutes" — всё решение под вопросом.
+**Why it's bad**: FPF says: **R_eff = min(scores)**, not average. A chain is as reliable as its weakest link. If one evidence says "refutes" -- the entire decision is in question.
 
-**Как правильно**: Починить слабое evidence. Или удалить его и получить R_eff по оставшимся.
+**How to do it right**: Fix the weak evidence. Or remove it and get R_eff from the remaining ones.
 
-**Простыми словами**: одна дырка в лодке топит всю лодку. Не усредняй — чини слабое место.
-
----
-
-### 11.7. Все 10 типов на каждую задачу (бюрократия)
-
-**Что это**: На каждую фичу создавать Epic + PRD + Spec + RFC + ADR + Evidence + Note + Problem + Solution + Refresh.
-
-**Почему плохо**: 10 документов на задачу в 1 день = бюрократия. Методология **не требует** все 10 типов.
-
-**Как правильно**: Route определяет что создавать:
-- **Tactical** → ничего или Note
-- **Standard** → PRD + RFC
-- **Deep** → PRD + Spec + RFC + ADR
-
-**Простыми словами**: route — это фильтр. Создавай только то что нужно.
+**In plain terms**: one hole in the boat sinks the whole boat. Don't average -- fix the weak spot.
 
 ---
 
-### 11.8. Adversarial review без findings (формальная проверка)
+### 11.7. All 10 Types for Every Task (bureaucracy)
 
-**Что это**: `/audit` → "всё отлично, 0 проблем найдено".
+**What it is**: Creating Epic + PRD + Spec + RFC + ADR + Evidence + Note + Problem + Solution + Refresh for every feature.
 
-**Почему плохо**: 0 findings = review не сделан. В любом коде > 100 LOC **есть** что улучшить. Формальный review создаёт ложное чувство безопасности.
+**Why it's bad**: 10 documents for a 1-day task = bureaucracy. The methodology **does not require** all 10 types.
 
-**Как правильно**: Reviewer **обязан** найти хотя бы 1 проблему. Если не нашёл — пере-review с другим фокусом (security? performance? error handling?).
+**How to do it right**: Route determines what to create:
+- **Tactical** -> nothing or Note
+- **Standard** -> PRD + RFC
+- **Deep** -> PRD + Spec + RFC + ADR
 
-**Простыми словами**: "всё идеально" = "я не проверял". Хороший review всегда находит что-то.
+**In plain terms**: route is a filter. Create only what's needed.
 
 ---
 
-### 11.9. Evidence без structured fields
+### 11.8. Adversarial Review Without Findings (rubber stamp)
 
-**Что это**: Создал evidence, написал в body "тесты прошли, всё работает".
+**What it is**: `/audit` -> "everything is great, 0 problems found".
 
-**Почему плохо**: Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` как plain text. Без них — **CL0 по умолчанию**, penalty 0.9. R_eff будет 0.1 вместо 1.0.
+**Why it's bad**: 0 findings = review wasn't done. In any code with more than 100 LOC **there is** something to improve. A rubber-stamp review creates a false sense of security.
 
-**Как правильно**:
+**How to do it right**: The reviewer **must** find at least 1 problem. If none found -- re-review with a different focus (security? performance? error handling?).
+
+**In plain terms**: "everything is perfect" = "I didn't check". A good review always finds something.
+
+---
+
+### 11.9. Evidence Without Structured Fields
+
+**What it is**: Created evidence, wrote in the body "tests passed, everything works".
+
+**Why it's bad**: The parser looks for `verdict:`, `congruence_level:`, `evidence_type:` as plain text. Without them -- **CL0 by default**, penalty 0.9. R_eff will be 0.1 instead of 1.0.
+
+**How to do it right**:
 ```markdown
 ## Structured Fields
 
@@ -788,41 +775,41 @@ congruence_level: 3
 evidence_type: test
 ```
 
-**Простыми словами**: без magic-слов система не видит твоё evidence. Три строчки — и R_eff взлетает.
+**In plain terms**: without the magic words, the system can't see your evidence. Three lines -- and R_eff skyrockets.
 
 ---
 
-### 11.10. Commit в main/dev напрямую
+### 11.10. Committing Directly to main/dev
 
-**Что это**: `git commit` на main без PR и review.
+**What it is**: `git commit` on main without PR and review.
 
-**Почему плохо**: Нет review, нет audit trail, нельзя откатить без force push.
+**Why it's bad**: No review, no audit trail, can't revert without force push.
 
-**Как правильно**: Feature branch → PR → squash merge.
+**How to do it right**: Feature branch -> PR -> squash merge.
 
 ```bash
 git checkout dev && git pull
 git checkout -b feat/my-feature
-# ... работа ...
+# ... work ...
 git push origin feat/my-feature
 gh pr create --base dev
 ```
 
-**Простыми словами**: PR = страховка. Прямой коммит = прыжок без парашюта.
+**In plain terms**: PR = safety net. Direct commit = jumping without a parachute.
 
 ---
 
-### Таблица-шпаргалка: все anti-patterns
+### Cheat Sheet Table: All Anti-patterns
 
-| # | Anti-pattern | Перевод | Как заметить | Как исправить |
+| # | Anti-pattern | Description | How to detect | How to fix |
 |---|---|---|---|---|
-| 1 | Stub PRD | Заглушка | `forgeplan validate` → FAIL | Заполнить Problem+Goals+FR |
-| 2 | Blind spot | Слепое пятно | `forgeplan health` → blind spots | Добавить evidence |
-| 3 | Scope drift | Уход от плана | Начал A, делаешь B | Bookmark + вернуться |
-| 4 | Skip evidence | Пропуск proof | R_eff=0 после кода | `forgeplan new evidence` |
-| 5 | No route | Без маршрута | Код без depth | `forgeplan route` первым |
-| 6 | Average trust | Завышение | R_eff кажется OK | Починить min (weakest link) |
-| 7 | Over-document | Бюрократия | 10 docs на fix | Route → создавай по depth |
-| 8 | Rubber stamp | Формальный review | 0 audit findings | Re-review с фокусом |
-| 9 | No structured fields | Нет magic-слов | R_eff=0.1 при evidence | Добавить verdict+CL+type |
-| 10 | Direct commit | Прямой коммит | Нет PR | Feature branch + PR |
+| 1 | Stub PRD | Empty template | `forgeplan validate` -> FAIL | Fill in Problem+Goals+FR |
+| 2 | Blind spot | No evidence | `forgeplan health` -> blind spots | Add evidence |
+| 3 | Scope drift | Wandered off plan | Started A, doing B | Bookmark + return |
+| 4 | Skip evidence | Missing proof | R_eff=0 after coding | `forgeplan new evidence` |
+| 5 | No route | No routing | Code without depth | `forgeplan route` first |
+| 6 | Average trust | Inflated score | R_eff seems OK | Fix min (weakest link) |
+| 7 | Over-document | Bureaucracy | 10 docs for a fix | Route -> create by depth |
+| 8 | Rubber stamp | Formal review | 0 audit findings | Re-review with focus |
+| 9 | No structured fields | Missing magic words | R_eff=0.1 with evidence | Add verdict+CL+type |
+| 10 | Direct commit | No PR | No PR | Feature branch + PR |

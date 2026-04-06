@@ -1,37 +1,35 @@
-[English](REPO-PROTECTION-GUIDE.md) · [Русский](REPO-PROTECTION-GUIDE.ru.md)
-
 # Repo Protection Guide — GitHub + CI + Agentic Development
 
-A practical guide for setting up GitHub repository protection for projects with a dev-based workflow and AI agents (Claude Code, Cursor, etc).
+Практический гайд по настройке защиты GitHub репозитория для проектов с dev-based workflow и AI-агентами (Claude Code, Cursor, etc).
 
-## Requirements
+## Требования
 
-- GitHub Free (public repo) or GitHub Team (private repo)
-- `gh` CLI installed and authenticated
+- GitHub Free (public repo) или GitHub Team (private repo)
+- `gh` CLI установлен и авторизован
 - CI workflow (GitHub Actions)
 
-## Protection Architecture
+## Архитектура защиты
 
 ```
-┌─ 3 layers of protection ─────────────────────────────┐
-│                                                        │
-│  Layer 1: Local (agent)                                │
-│    hooks → block dangerous commands BEFORE push        │
-│                                                        │
-│  Layer 2: CI (GitHub Actions)                          │
-│    workflows → verify code AFTER push                  │
-│                                                        │
-│  Layer 3: Remote (GitHub Rulesets)                      │
-│    rulesets → block merge WITHOUT passing CI            │
-│                                                        │
-└────────────────────────────────────────────────────────┘
+┌─ 3 уровня защиты ──────────────────────────────────┐
+│                                                      │
+│  Layer 1: Local (агент)                              │
+│    hooks → блокируют опасные команды ДО push         │
+│                                                      │
+│  Layer 2: CI (GitHub Actions)                        │
+│    workflows → проверяют код ПОСЛЕ push              │
+│                                                      │
+│  Layer 3: Remote (GitHub Rulesets)                    │
+│    rulesets → блокируют merge БЕЗ прохождения CI     │
+│                                                      │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Step 1: CI Workflow
+## Шаг 1: CI Workflow
 
-Create `.github/workflows/ci.yml` — a minimal CI for a Rust project:
+Создай `.github/workflows/ci.yml` — минимальный CI для Rust проекта:
 
 ```yaml
 name: CI
@@ -76,9 +74,9 @@ jobs:
       - run: cargo test --workspace
 ```
 
-For Node.js/Python/Go — replace the steps with your own, but **keep the job names** (`Check, Lint & Format` and `Tests`) — they are used in rulesets.
+Для Node.js/Python/Go — замени шаги на свои, но **сохрани имена jobs** (`Check, Lint & Format` и `Tests`) — они используются в rulesets.
 
-### Adapting for Other Stacks
+### Адаптация для других стеков
 
 **Node.js:**
 ```yaml
@@ -112,12 +110,12 @@ For Node.js/Python/Go — replace the steps with your own, but **keep the job na
 
 ---
 
-## Step 2: GitHub Rulesets (via API)
+## Шаг 2: GitHub Rulesets (через API)
 
-### Variables
+### Переменные
 
 ```bash
-OWNER="MyOrg"          # or username
+OWNER="MyOrg"          # или username
 REPO="my-project"
 FULL="${OWNER}/${REPO}"
 ```
@@ -169,15 +167,15 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-**Parameters:**
+**Параметры:**
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `required_approving_review_count` | `0` for solo, `1` for teams | How many approvals required |
-| `strict_required_status_checks_policy` | `true` | PR must be up-to-date with main |
-| `do_not_enforce_on_create` | `true` | Don't block branch creation |
-| `bypass_actors.actor_id: 5` | Repository Admin | Emergency bypass |
-| `allowed_merge_methods` | `["merge", "squash"]` | Merge commit for releases, squash for features |
+| Параметр | Значение | Пояснение |
+|----------|----------|-----------|
+| `required_approving_review_count` | `0` для solo, `1` для команды | Сколько approve нужно |
+| `strict_required_status_checks_policy` | `true` | PR должен быть up-to-date с main |
+| `do_not_enforce_on_create` | `true` | Не блокировать создание веток |
+| `bypass_actors.actor_id: 5` | Repository Admin | Экстренный bypass |
+| `allowed_merge_methods` | `["merge", "squash"]` | Merge commit для releases, squash для features |
 
 ### 2.2 Dev branch protection
 
@@ -226,7 +224,7 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-**Difference from Main:** `strict = false` (does not require rebase before merge), `rebase` in allowed merge methods.
+**Отличие от Main:** `strict = false` (не требует rebase перед merge), `rebase` в allowed merge methods.
 
 ### 2.3 Tag protection
 
@@ -258,14 +256,14 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-Only admins can create/delete tags. Agents cannot accidentally tag.
+Только admin может создавать/удалять tags. Агенты не смогут случайно тегировать.
 
 ---
 
-## Step 3: Security Features
+## Шаг 3: Security Features
 
 ```bash
-# Secret scanning — blocks push with tokens/keys
+# Secret scanning — блокирует push с токенами/ключами
 gh api repos/${FULL} --method PATCH --input - <<'EOF'
 {
   "security_and_analysis": {
@@ -275,21 +273,21 @@ gh api repos/${FULL} --method PATCH --input - <<'EOF'
 }
 EOF
 
-# Dependabot alerts — CVEs in dependencies
+# Dependabot alerts — CVE в зависимостях
 gh api repos/${FULL}/vulnerability-alerts --method PUT
 ```
 
 ---
 
-## Step 4: Local Hooks (for AI agents)
+## Шаг 4: Local Hooks (для AI-агентов)
 
-### 4.1 Safety hook — blocks dangerous commands
+### 4.1 Safety hook — блокирует опасные команды
 
-Create `.claude/hooks/safety-hook.sh`:
+Создай `.claude/hooks/safety-hook.sh`:
 
 ```bash
 #!/bin/bash
-# PreToolUse hook — blocks dangerous bash commands
+# PreToolUse hook — блокирует опасные bash команды
 # Trigger: Bash tool calls
 
 INPUT=$(cat)
@@ -317,13 +315,13 @@ done
 exit 0
 ```
 
-### 4.2 Format hook — cargo fmt before commit
+### 4.2 Format hook — cargo fmt перед коммитом
 
-Create `.claude/hooks/pre-commit-fmt.sh`:
+Создай `.claude/hooks/pre-commit-fmt.sh`:
 
 ```bash
 #!/bin/bash
-# PreToolUse hook — checks formatting before git commit
+# PreToolUse hook — проверяет форматирование перед git commit
 # Trigger: Bash tool calls containing "git commit"
 
 INPUT=$(cat)
@@ -341,7 +339,7 @@ fi
 exit 0
 ```
 
-### 4.3 Configuration in settings.json
+### 4.3 Настройка в settings.json
 
 ```json
 {
@@ -361,28 +359,28 @@ exit 0
 
 ---
 
-## Step 5: Verification
+## Шаг 5: Верификация
 
-### Check rulesets:
+### Проверить rulesets:
 
 ```bash
-# List all rulesets
+# Список всех rulesets
 gh api repos/${FULL}/rulesets --jq '.[] | {name: .name, enforcement: .enforcement}'
 
-# Details for a specific ruleset (substitute ID)
+# Детали конкретного ruleset (подставь ID)
 gh api repos/${FULL}/rulesets/RULESET_ID
 ```
 
-### Check security:
+### Проверить security:
 
 ```bash
 gh api repos/${FULL} --jq '.security_and_analysis'
 ```
 
-### Test protection (should fail):
+### Тест защиты (должен fail):
 
 ```bash
-# Try pushing directly to main — should be rejected
+# Попробуй push напрямую в main — должно быть rejected
 git checkout main
 echo "test" >> README.md
 git add README.md && git commit -m "test direct push"
@@ -392,15 +390,15 @@ git push origin main
 
 ---
 
-## Step 6: Updating Rulesets
+## Шаг 6: Обновление rulesets
 
 ```bash
-# Get the ruleset ID
+# Получить ID рулесета
 RULESET_ID=$(gh api repos/${FULL}/rulesets --jq '.[] | select(.name == "Main") | .id')
 
-# Update (PUT completely overwrites)
+# Обновить (PUT полностью перезаписывает)
 gh api repos/${FULL}/rulesets/${RULESET_ID} --method PUT --input - <<'EOF'
-{ ... updated configuration ... }
+{ ... обновлённая конфигурация ... }
 EOF
 ```
 
@@ -408,11 +406,11 @@ EOF
 
 ## Quick Setup Script
 
-One command for a new project:
+Одна команда для нового проекта:
 
 ```bash
 #!/bin/bash
-# setup-protection.sh — sets up GitHub repo protection
+# setup-protection.sh — настраивает защиту GitHub repo
 # Usage: ./setup-protection.sh MyOrg/my-project
 
 FULL="${1:?Usage: $0 OWNER/REPO}"
@@ -449,30 +447,30 @@ echo "Done! Verify: gh api repos/${FULL}/rulesets"
 
 ---
 
-## Matrix: What Protects Against What
+## Матрица: что защищает от чего
 
-| Threat | Local Hook | CI | Ruleset | Security |
+| Угроза | Local Hook | CI | Ruleset | Security |
 |--------|:----------:|:--:|:-------:|:--------:|
-| Direct push to main/dev | | | ✅ | |
+| Push в main/dev напрямую | | | ✅ | |
 | Force push | ✅ | | ✅ | |
-| Merge without tests | | ✅ | ✅ | |
-| Incorrect formatting | ✅ | ✅ | | |
-| Secrets in code | | | | ✅ |
-| CVEs in dependencies | | | | ✅ |
-| Accidental release tag | | | ✅ | |
+| Merge без тестов | | ✅ | ✅ | |
+| Некорректное форматирование | ✅ | ✅ | | |
+| Secrets в коде | | | | ✅ |
+| CVE в зависимостях | | | | ✅ |
+| Случайный release tag | | | ✅ | |
 | `rm -rf /` | ✅ | | | |
 | `cargo publish` | ✅ | | | |
 
 ## FAQ
 
-**Q: Do I need GitHub Team/Pro?**
-A: For public repos — no, GitHub Free is sufficient. For private repos — you need Team (org) or Pro (personal).
+**Q: Нужен ли мне GitHub Team/Pro?**
+A: Для public repos — нет, GitHub Free достаточно. Для private repos — нужен Team (org) или Pro (personal).
 
-**Q: The agent cannot merge a PR — what should I do?**
-A: Check that CI checks passed (job names must exactly match `required_status_checks.context`).
+**Q: Агент не может merge PR — что делать?**
+A: Проверь что CI checks прошли (имена jobs должны точно совпадать с `required_status_checks.context`).
 
-**Q: How do I temporarily disable protection?**
-A: Use bypass (you are admin) or change `enforcement` to `"evaluate"` (will warn but not block).
+**Q: Как временно отключить protection?**
+A: Используй bypass (ты admin) или измени `enforcement` на `"evaluate"` (будет предупреждать, но не блокировать).
 
-**Q: How do I add a review requirement for a team?**
-A: Change `required_approving_review_count` to `1` (or more) in the PR rule.
+**Q: Как добавить review requirement для команды?**
+A: Измени `required_approving_review_count` на `1` (или больше) в PR rule.

@@ -1,17 +1,15 @@
-[English](ARTIFACT-MODEL.md) · [Русский](ARTIFACT-MODEL.ru.md)
-
 # Artifact Model — PRD Process Engine
 
-## Artifact Hierarchy
+## Иерархия артефактов
 
 ```
                     ┌─────────────┐
-                    │    EPIC     │  Strategic initiative
-                    │ (groups)    │  "User Auth System"
+                    │    EPIC     │  Стратегическая инициатива
+                    │ (группирует)│  "User Auth System"
                     └──────┬──────┘
                            │ 1:N
                     ┌──────┴──────┐
-                    │     PRD     │  What and why
+                    │     PRD     │  Что и зачем
                     │(requirements)│  "Social Login Feature"
                     └──────┬──────┘
                            │ 1:N
@@ -19,59 +17,59 @@
               │            │            │
        ┌──────┴──────┐ ┌──┴───┐ ┌──────┴──────┐
        │    SPEC     │ │ RFC  │ │    ADR      │
-       │ (contracts) │ │(arch)│ │ (decisions) │
+       │ (контракты) │ │(архит)│ │  (решения)  │
        │"OAuth2 API" │ │"Impl"│ │"Why Auth0?" │
        └──────┬──────┘ └──┬───┘ └─────────────┘
               │            │
               └──────┬─────┘
                      │
               ┌──────┴──────┐
-              │   SPRINT    │  Implementation (waves)
+              │   SPRINT    │  Реализация (waves)
               │  (execution)│
               └─────────────┘
 ```
 
-## Artifact Types
+## Типы артефактов
 
 ### 1. EPIC (Epic-NNN)
-**Purpose**: Group related PRDs/RFCs/ADRs into a single strategic initiative.
+**Цель**: Группировка связанных PRD/RFC/ADR в одну стратегическую инициативу.
 
-| Field | Description |
-|-------|-------------|
+| Поле | Описание |
+|------|----------|
 | ID | Epic-NNN (sequential) |
-| Name | Short initiative name |
+| Name | Краткое название инициативы |
 | Status | Draft → Active → Done → Archived |
-| Outcomes | Measurable results |
+| Outcomes | Измеримые результаты |
 | Children | PRD[], RFC[], ADR[] |
-| Progress | Aggregated from children |
+| Progress | Агрегированный из children |
 | Owner | Product/Engineering lead |
 | Timeline | Start → Target completion |
 
-**When to create**: Initiative with > 2 RFCs, cross-team work, roadmap item.
+**Когда создавать**: Инициатива > 2 RFC, кросс-командная работа, roadmap item.
 
 ### 2. PRD (PRD-NNN)
-**Purpose**: Describe WHAT the user needs and WHY (product perspective).
+**Цель**: Описать ЧТО нужно пользователю и ЗАЧЕМ (product perspective).
 
-| Field | Description |
-|-------|-------------|
+| Поле | Описание |
+|------|----------|
 | ID | PRD-NNN |
 | Epic | Parent Epic (optional) |
 | Status | Draft → Review → Approved → Implemented → Closed |
-| Problem | What problem we are solving |
-| Goals | What we want to achieve (measurable) |
-| Non-Goals | What we are NOT doing (scope) |
+| Problem | Какую проблему решаем |
+| Goals | Что хотим достичь (measurable) |
+| Non-Goals | Что НЕ делаем (scope) |
 | Requirements | Functional (REQ-N) + Non-Functional (NFR-N) |
 | Success Metrics | KPIs, OKRs |
 | Acceptance Criteria | Definition of Done |
 | Stakeholders | Sign-offs |
 
-**When to create**: New feature, significant product change, user-facing change.
+**Когда создавать**: Новая фича, значительное изменение продукта, user-facing change.
 
 ### 3. SPEC (SPEC-NNN)
-**Purpose**: Formal specification of HOW EXACTLY it works (contracts, data models).
+**Цель**: Формальная спецификация КАК ИМЕННО работает (contracts, data models).
 
-| Field | Description |
-|-------|-------------|
+| Поле | Описание |
+|------|----------|
 | ID | SPEC-NNN |
 | PRD | Parent PRD |
 | Type | API | Data Model | Protocol | UI Spec |
@@ -81,41 +79,41 @@
 | Constraints | Validation rules, limits |
 | Examples | Request/response examples |
 
-**When to create**: API design, data model changes, protocol definition.
+**Когда создавать**: API design, data model changes, protocol definition.
 
 ### 4. RFC (RFC-NNN)
-**Purpose**: Architectural proposal for HOW WE BUILD (design, implementation plan).
+**Цель**: Архитектурное предложение КАК СТРОИМ (design, implementation plan).
 
-| Field | Description |
-|-------|-------------|
+| Поле | Описание |
+|------|----------|
 | ID | RFC-NNN |
 | PRD/SPEC | Parent (optional) |
 | Status | Draft → Discussion → Accepted → Implemented → Superseded |
-| Summary | What is proposed |
-| Motivation | Why the change is needed |
-| Design | Architecture, components |
-| Alternatives | Considered alternatives |
-| Phases | Implementation phases with checkboxes |
+| Summary | Что предлагается |
+| Motivation | Зачем нужно изменение |
+| Design | Архитектура, компоненты |
+| Alternatives | Рассмотренные варианты |
+| Phases | Implementation phases с checkboxes |
 | Progress Bars | ASCII progress visualization |
 
-**When to create**: Architectural decision, new component, migration.
+**Когда создавать**: Архитектурное решение, новый компонент, migration.
 
 ### 5. ADR (ADR-NNN)
-**Purpose**: Record WHY a specific decision was made (audit trail).
+**Цель**: Зафиксировать ПОЧЕМУ выбрали конкретное решение (audit trail).
 
-| Field | Description |
-|-------|-------------|
+| Поле | Описание |
+|------|----------|
 | ID | ADR-NNN |
-| Context | Situation in which the decision was made |
-| Decision | What was decided |
-| Rationale | Why this particular choice |
-| Alternatives | What else was considered |
-| Consequences | Pros and cons of the decision |
+| Context | Ситуация, в которой принято решение |
+| Decision | Что решили |
+| Rationale | Почему именно так |
+| Alternatives | Что ещё рассматривали |
+| Consequences | Плюсы и минусы решения |
 | Status | Proposed → Accepted → Deprecated → Superseded |
 
-**When to create**: Technology choice, architectural trade-off, significant decision.
+**Когда создавать**: При выборе технологии, архитектурном trade-off, значимом решении.
 
-## Relationships Between Artifacts
+## Связи между артефактами
 
 ```
 Epic ──1:N──→ PRD      "Epic contains PRDs"
@@ -163,9 +161,3 @@ Decision needed at any point?
 | ADR | `ADR-NNN` | ADR-007 |
 
 Numbers are sequential per artifact type, project-scoped, never reused.
-
-## Related Documents
-
-- [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — Decision tree: which artifact to create
-- [DEPTH-CALIBRATION.md](DEPTH-CALIBRATION.md) — How depth determines artifact requirements
-- [FORGEPLAN-GUIDE.md](FORGEPLAN-GUIDE.md) — Complete practical guide
