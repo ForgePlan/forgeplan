@@ -1,0 +1,86 @@
+---
+// Install + Footer section
+---
+
+<section id="install" class="relative border-b border-forge-line grid grid-cols-1 lg:grid-cols-[1fr_520px] h-screen bg-forge-bg">
+  <!-- Left: Tagline -->
+  <div class="flex flex-col justify-between p-8 lg:p-12 border-r border-forge-line">
+    <h2 class="font-heading text-5xl lg:text-[68px] font-normal leading-[1.05]">
+      Start<br/>Where Ideas<br/>Are Forged
+    </h2>
+    <div class="mt-auto space-y-4">
+      <div class="flex items-center gap-3">
+        <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+          <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7" stroke="#FF6B35" stroke-width="1.5" fill="none"/>
+        </svg>
+        <span class="font-heading text-sm font-semibold tracking-[3px]">FORGEPLAN</span>
+      </div>
+      <p class="text-sm text-forge-dim leading-relaxed max-w-[380px]">
+        Universal Rust platform for structured project artifacts. Shape decisions before you build. Prove them after.
+      </p>
+    </div>
+  </div>
+
+  <!-- Right: Install + Footer grid -->
+  <div class="flex flex-col">
+    <!-- Install cards -->
+    <div class="flex flex-col justify-center p-8 gap-4 border-b border-forge-line flex-1">
+      <p class="font-mono text-[11px] tracking-[3px] text-forge-ember">INSTALL</p>
+
+      <div class="space-y-3">
+        <div>
+          <p class="text-xs text-forge-dim mb-1">Cargo</p>
+          <div class="flex items-center justify-between bg-forge-surface px-4 py-3">
+            <code class="font-mono text-xs">cargo install forgeplan</code>
+            <button class="text-forge-dim hover:text-forge-fg transition-colors" aria-label="Copy command">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+          </div>
+        </div>
+        <div>
+          <p class="text-xs text-forge-dim mb-1">Homebrew</p>
+          <div class="flex items-center justify-between bg-forge-surface px-4 py-3">
+            <code class="font-mono text-xs">brew install forgeplan</code>
+            <button class="text-forge-dim hover:text-forge-fg transition-colors" aria-label="Copy command">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+          </div>
+        </div>
+        <div>
+          <p class="text-xs text-forge-dim mb-1">Shell</p>
+          <div class="flex items-center justify-between bg-forge-surface px-4 py-3">
+            <code class="font-mono text-xs">curl -fsSL install.sh | sh</code>
+            <button class="text-forge-dim hover:text-forge-fg transition-colors" aria-label="Copy command">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012-2v1"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer nav grid -->
+    <div class="grid grid-cols-2">
+      <a href="/docs/getting-started/installation" class="footer-cell border-b border-r border-forge-line">Documentation <span class="text-forge-dim">↗</span></a>
+      <a href="https://github.com/ForgePlan/forgeplan" class="footer-cell border-b border-forge-line" rel="noopener noreferrer" target="_blank">GitHub <span class="text-forge-dim" aria-hidden="true">↗</span></a>
+      <a href="/docs/cli/health" class="footer-cell border-b border-r border-forge-line">CLI Reference</a>
+      <a href="/docs/mcp/artifact_create" class="footer-cell border-b border-forge-line">MCP Reference</a>
+      <a href="/docs/methodology/overview" class="footer-cell border-r border-forge-line">Methodology Guide</a>
+      <a href="#" class="footer-cell">Changelog</a>
+    </div>
+  </div>
+</section>
+
+<style>
+  .footer-cell {
+    display: flex;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    font-size: 13px;
+    color: var(--color-forge-fg);
+    min-height: 60px;
+    transition: background-color 0.2s;
+  }
+  .footer-cell:hover {
+    background-color: var(--color-forge-surface);
+  }
+</style>

@@ -1,0 +1,142 @@
+---
+// Grid header — brand left, nav/burger center, logo/toggle right
+---
+
+<header id="site-header" class="fixed top-0 z-50 w-full header-full">
+  <div class="header-inner border border-forge-line bg-forge-bg grid grid-cols-[1fr_auto_56px]">
+    <!-- Brand (left) -->
+    <div class="flex items-center border-r border-forge-line header-brand-cell">
+      <a href="/" class="header-brand font-heading font-semibold tracking-[3px] text-forge-fg no-underline">F<span class="text-forge-ember">●</span>RGEPLAN</a>
+
+      <!-- Burger button (mobile only) -->
+      <button id="mobile-menu-btn" class="lg:hidden ml-auto mr-3 p-1" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forge-fg)" stroke-width="1.5" aria-hidden="true">
+          <line x1="3" y1="6" x2="21" y2="6" class="burger-line"/>
+          <line x1="3" y1="12" x2="21" y2="12" class="burger-line"/>
+          <line x1="3" y1="18" x2="21" y2="18" class="burger-line"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Desktop nav (hidden on mobile) -->
+    <nav aria-label="Primary navigation" class="hidden lg:grid h-full header-nav">
+      <a href="/docs/getting-started/installation" class="nav-cell border-r border-forge-line">Docs</a>
+      <a href="https://github.com/ForgePlan/forgeplan" class="nav-cell border-r border-forge-line" rel="noopener noreferrer" target="_blank">GitHub</a>
+      <a href="/docs/methodology/overview" class="nav-cell border-r border-forge-line">Guides</a>
+      <a href="/docs/cli/health" class="nav-cell border-r border-forge-line">CLI Ref</a>
+      <a href="/docs/mcp/artifact_create" class="nav-cell border-r border-forge-line">MCP Tools</a>
+      <a href="#install" class="nav-cell text-forge-ember font-medium">Install</a>
+    </nav>
+
+    <!-- Logo hex = theme toggle (right) -->
+    <button id="theme-toggle" class="flex items-center justify-center border-l border-forge-line cursor-pointer bg-transparent"
+            aria-label="Toggle dark/light theme">
+      <svg class="header-logo" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7"
+                 stroke="#FF6B35" stroke-width="1.5" fill="var(--forge-fg)"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Mobile drawer -->
+  <div id="mobile-menu" class="lg:hidden fixed inset-0 top-0 z-40 hidden" aria-hidden="true">
+    <!-- Backdrop -->
+    <div class="absolute inset-0 bg-forge-bg/80 backdrop-blur-sm" id="mobile-backdrop"></div>
+
+    <!-- Drawer panel -->
+    <div class="absolute top-0 right-0 w-[280px] h-full bg-forge-bg border-l border-forge-line flex flex-col mobile-drawer">
+      <!-- Close button -->
+      <div class="flex items-center justify-between p-4 border-b border-forge-line">
+        <span class="font-mono text-[10px] tracking-[3px] text-forge-dim">MENU</span>
+        <button id="mobile-close-btn" class="p-1" aria-label="Close menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--forge-fg)" stroke-width="1.5" aria-hidden="true">
+            <line x1="6" y1="6" x2="18" y2="18"/>
+            <line x1="18" y1="6" x2="6" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Nav links -->
+      <nav class="flex flex-col flex-1 p-4" aria-label="Mobile navigation">
+        <a href="/docs/getting-started/installation" class="mobile-link">Docs</a>
+        <a href="https://github.com/ForgePlan/forgeplan" class="mobile-link" rel="noopener noreferrer" target="_blank">GitHub</a>
+        <a href="/docs/methodology/overview" class="mobile-link">Guides</a>
+        <a href="/docs/cli/health" class="mobile-link">CLI Reference</a>
+        <a href="/docs/mcp/artifact_create" class="mobile-link">MCP Tools</a>
+        <a href="#install" class="mobile-link text-forge-ember">Install</a>
+      </nav>
+
+      <!-- Bottom -->
+      <div class="p-4 border-t border-forge-line">
+        <p class="font-mono text-[9px] tracking-[2px] text-forge-dim">F●RGEPLAN</p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<script>
+  // === Mobile menu ===
+  const menuBtn = document.getElementById('mobile-menu-btn');
+  const closeBtn = document.getElementById('mobile-close-btn');
+  const backdrop = document.getElementById('mobile-backdrop');
+  const menu = document.getElementById('mobile-menu');
+
+  function openMenu() {
+    menu?.classList.remove('hidden');
+    menu?.setAttribute('aria-hidden', 'false');
+    menuBtn?.setAttribute('aria-expanded', 'true');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeMenu() {
+    menu?.classList.add('hidden');
+    menu?.setAttribute('aria-hidden', 'true');
+    menuBtn?.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
+
+  menuBtn?.addEventListener('click', openMenu);
+  closeBtn?.addEventListener('click', closeMenu);
+  backdrop?.addEventListener('click', closeMenu);
+
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu?.classList.contains('hidden')) closeMenu();
+  });
+
+  // Close on nav link click
+  menu?.querySelectorAll('a').forEach(a => a.addEventListener('click', closeMenu));
+
+  // === Theme Toggle ===
+  const toggle = document.getElementById('theme-toggle');
+  const html = document.documentElement;
+  const saved = localStorage.getItem('forgeplan-theme');
+  if (saved === 'light') { html.classList.remove('dark'); html.classList.add('light'); }
+  else { html.classList.remove('light'); html.classList.add('dark'); }
+
+  toggle?.addEventListener('click', () => {
+    const isLight = html.classList.contains('light');
+    html.classList.toggle('light', !isLight);
+    html.classList.toggle('dark', isLight);
+    localStorage.setItem('forgeplan-theme', isLight ? 'dark' : 'light');
+  });
+
+  // === Header shrink ===
+  const header = document.getElementById('site-header');
+  if (header) {
+    let compact = false;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const shouldBeCompact = !entry.isIntersecting;
+        if (shouldBeCompact !== compact) {
+          compact = shouldBeCompact;
+          header.classList.toggle('header-full', !compact);
+          header.classList.toggle('header-compact', compact);
+        }
+      },
+      { threshold: 0, rootMargin: '-88px 0px 0px 0px' }
+    );
+    const hero = document.getElementById('hero');
+    if (hero) observer.observe(hero);
+  }
+</script>
