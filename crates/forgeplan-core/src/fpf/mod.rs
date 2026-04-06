@@ -6,6 +6,7 @@
 pub mod contexts;
 pub mod core;
 pub mod explore;
+pub mod ext;
 pub mod knowledge;
 
 use std::collections::BTreeMap;

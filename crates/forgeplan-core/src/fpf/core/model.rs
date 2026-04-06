@@ -68,18 +68,22 @@ impl std::fmt::Display for ActionType {
 pub struct ArtifactData {
     pub id: String,
     pub status: String,
+    pub kind: String,
+    pub depth: String,
     pub evidence: Vec<EvidenceInput>,
     pub formality: f64,
     pub granularity: f64,
     pub link_count: usize,
     pub is_stale: bool,
+    /// Pre-computed trust score (available after build_context or set externally).
+    pub trust: TrustScore,
 }
 
 /// Build an FpfContext from artifact data + config.
 ///
 /// Pure function — no I/O, fully testable.
 pub fn build_context(
-    data: &ArtifactData,
+    data: &mut ArtifactData,
     context: ContextMembership,
     adi_history: Vec<AdiSnapshot>,
     config: &FpfConfig,
@@ -92,6 +96,9 @@ pub fn build_context(
         data.is_stale,
         config,
     );
+
+    // Update ArtifactData with computed trust for downstream use (rule engine)
+    data.trust = trust.clone();
 
     let action = suggest_action(data, &trust, config);
 
@@ -188,19 +195,40 @@ mod tests {
         FpfConfig::default()
     }
 
+    fn make_data(
+        status: &str,
+        evidence: Vec<EvidenceInput>,
+        f: f64,
+        g: f64,
+        links: usize,
+        stale: bool,
+    ) -> ArtifactData {
+        ArtifactData {
+            id: "PRD-001".into(),
+            status: status.into(),
+            kind: "prd".into(),
+            depth: "standard".into(),
+            evidence,
+            formality: f,
+            granularity: g,
+            link_count: links,
+            is_stale: stale,
+            trust: TrustScore {
+                r_eff: 0.0,
+                formality: f,
+                granularity: g,
+                reliability: 0.0,
+                overall: 0.0,
+                weakest_link: None,
+            },
+        }
+    }
+
     #[test]
     fn draft_no_evidence_gets_explore() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "draft".into(),
-            evidence: vec![],
-            formality: 0.2,
-            granularity: 0.2,
-            link_count: 0,
-            is_stale: false,
-        };
+        let mut data = make_data("draft", vec![], 0.2, 0.2, 0, false);
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -211,21 +239,20 @@ mod tests {
 
     #[test]
     fn strong_evidence_gets_exploit() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "active".into(),
-            evidence: vec![EvidenceInput {
+        let mut data = make_data(
+            "active",
+            vec![EvidenceInput {
                 verdict: Verdict::Supports,
                 congruence_level: 3,
                 is_expired: false,
             }],
-            formality: 0.8,
-            granularity: 0.8,
-            link_count: 3,
-            is_stale: false,
-        };
+            0.8,
+            0.8,
+            3,
+            false,
+        );
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -236,17 +263,9 @@ mod tests {
 
     #[test]
     fn deprecated_gets_no_action() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "deprecated".into(),
-            evidence: vec![],
-            formality: 0.0,
-            granularity: 0.0,
-            link_count: 0,
-            is_stale: false,
-        };
+        let mut data = make_data("deprecated", vec![], 0.0, 0.0, 0, false);
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -254,20 +273,11 @@ mod tests {
         assert!(ctx.action.is_none());
     }
 
-    // M1 audit fix: active artifact with r_eff=0 and links should get INVESTIGATE
     #[test]
     fn active_zero_reff_with_links_gets_investigate() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "active".into(),
-            evidence: vec![],
-            formality: 0.7,
-            granularity: 0.7,
-            link_count: 3,
-            is_stale: false,
-        };
+        let mut data = make_data("active", vec![], 0.7, 0.7, 3, false);
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -279,40 +289,29 @@ mod tests {
     #[test]
     fn custom_thresholds_change_action() {
         let mut cfg = default_config();
-        cfg.thresholds.exploit_reff = 0.5; // lower bar for exploit
-
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "active".into(),
-            evidence: vec![EvidenceInput {
+        cfg.thresholds.exploit_reff = 0.5;
+        let mut data = make_data(
+            "active",
+            vec![EvidenceInput {
                 verdict: Verdict::Supports,
-                congruence_level: 2, // CL2: penalty 0.1 → score 0.9
+                congruence_level: 2,
                 is_expired: false,
             }],
-            formality: 0.7,
-            granularity: 0.7,
-            link_count: 2,
-            is_stale: false,
-        };
-        let ctx = build_context(&data, ContextMembership::default(), vec![], &cfg);
+            0.7,
+            0.7,
+            2,
+            false,
+        );
+        let ctx = build_context(&mut data, ContextMembership::default(), vec![], &cfg);
         assert!(ctx.action.is_some());
         assert_eq!(ctx.action.unwrap().action_type, ActionType::Exploit);
     }
 
-    // H3 fix: well-formatted draft with no evidence still gets EXPLORE
     #[test]
     fn well_formatted_draft_no_evidence_gets_explore() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "draft".into(),
-            evidence: vec![],
-            formality: 0.9,
-            granularity: 0.9,
-            link_count: 3,
-            is_stale: false,
-        };
+        let mut data = make_data("draft", vec![], 0.9, 0.9, 3, false);
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -321,24 +320,22 @@ mod tests {
         assert_eq!(ctx.action.unwrap().action_type, ActionType::Explore);
     }
 
-    // H2 fix: medium quality artifact (R_eff 0.5-0.7) gets INVESTIGATE
     #[test]
     fn medium_quality_gets_investigate() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "active".into(),
-            evidence: vec![EvidenceInput {
+        let mut data = make_data(
+            "active",
+            vec![EvidenceInput {
                 verdict: Verdict::Supports,
-                congruence_level: 1, // CL1: penalty 0.4 → score 0.6
+                congruence_level: 1,
                 is_expired: false,
             }],
-            formality: 0.6,
-            granularity: 0.6,
-            link_count: 2,
-            is_stale: false,
-        };
+            0.6,
+            0.6,
+            2,
+            false,
+        );
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -350,21 +347,20 @@ mod tests {
 
     #[test]
     fn orphan_active_gets_explore() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "active".into(),
-            evidence: vec![EvidenceInput {
+        let mut data = make_data(
+            "active",
+            vec![EvidenceInput {
                 verdict: Verdict::Supports,
                 congruence_level: 3,
                 is_expired: false,
             }],
-            formality: 0.7,
-            granularity: 0.7,
-            link_count: 0, // orphan
-            is_stale: false,
-        };
+            0.7,
+            0.7,
+            0,
+            false,
+        );
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
@@ -376,17 +372,9 @@ mod tests {
 
     #[test]
     fn superseded_gets_no_action() {
-        let data = ArtifactData {
-            id: "PRD-001".into(),
-            status: "superseded".into(),
-            evidence: vec![],
-            formality: 0.0,
-            granularity: 0.0,
-            link_count: 0,
-            is_stale: false,
-        };
+        let mut data = make_data("superseded", vec![], 0.0, 0.0, 0, false);
         let ctx = build_context(
-            &data,
+            &mut data,
             ContextMembership::default(),
             vec![],
             &default_config(),
