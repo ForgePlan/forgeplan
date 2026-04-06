@@ -124,6 +124,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         report.r_eff,
         link_count,
         is_stale,
+        None,
     );
 
     // 7. Derived status

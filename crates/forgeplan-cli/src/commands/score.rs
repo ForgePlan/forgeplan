@@ -179,6 +179,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         report.r_eff,
         link_count,
         is_stale,
+        None,
     );
 
     // --- JSON output ---

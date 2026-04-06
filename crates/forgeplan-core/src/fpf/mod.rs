@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::LanceStore;
+use crate::fpf::core::config::FpfConfig;
 use crate::scoring::fgr;
 
 use contexts::BoundedContext;
@@ -95,7 +96,12 @@ impl std::fmt::Display for FpfDashboard {
 }
 
 /// Build the full FPF dashboard from store data.
-pub async fn dashboard(store: &LanceStore) -> anyhow::Result<FpfDashboard> {
+///
+/// Pass `fpf_config` to use custom weights/thresholds, or `None` for defaults.
+pub async fn dashboard(
+    store: &LanceStore,
+    fpf_config: Option<&FpfConfig>,
+) -> anyhow::Result<FpfDashboard> {
     let records = store.list_records(None).await?;
     let all_relations = store.get_all_relations().await.unwrap_or_default();
 
@@ -133,6 +139,7 @@ pub async fn dashboard(store: &LanceStore) -> anyhow::Result<FpfDashboard> {
             record.r_eff_score,
             link_count,
             is_stale,
+            fpf_config.map(|c| &c.weights),
         );
         fgr_scores.push(score);
     }

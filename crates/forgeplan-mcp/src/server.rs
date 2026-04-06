@@ -751,6 +751,7 @@ impl ForgeplanServer {
             report.r_eff,
             link_count,
             false,
+            None,
         );
 
         Ok(json_result(&ScoreResponse {

@@ -58,6 +58,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 record.r_eff_score,
                 relations.len(),
                 is_stale,
+                None,
             );
             results.push(serde_json::json!({
                 "id": record.id, "title": record.title,
@@ -104,6 +105,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             record.r_eff_score,
             relations.len(),
             is_stale,
+            None,
         );
 
         let title: String = record.title.chars().take(28).collect();
