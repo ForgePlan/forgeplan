@@ -18,12 +18,11 @@ pub fn load_prompt(name: &str, default: &str) -> String {
         return default.to_string();
     }
     let custom_path = std::path::Path::new(".forgeplan/prompts").join(format!("{name}.md"));
-    if custom_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&custom_path) {
-            if !content.trim().is_empty() {
-                return content;
-            }
-        }
+    if custom_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&custom_path)
+        && !content.trim().is_empty()
+    {
+        return content;
     }
     default.to_string()
 }
@@ -242,9 +241,10 @@ mod tests {
 
     #[test]
     fn llm_config_resolve_base_url_presets() {
-        let mut cfg = LlmConfig::default();
-
-        cfg.provider = "openai".into();
+        let mut cfg = LlmConfig {
+            provider: "openai".into(),
+            ..Default::default()
+        };
         assert!(cfg.resolve_base_url().contains("openai.com"));
 
         cfg.provider = "claude".into();

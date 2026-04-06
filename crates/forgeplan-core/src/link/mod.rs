@@ -45,7 +45,7 @@ pub async fn add_link(artifact_path: &Path, target_id: &str, relation: &str) -> 
         let mut entry = serde_yml::Mapping::new();
         entry.insert(
             serde_yml::Value::String("target".into()),
-            serde_yml::Value::String(target_id.into()),
+            serde_yml::Value::String(target_id),
         );
         entry.insert(
             serde_yml::Value::String("relation".into()),

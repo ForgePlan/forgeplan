@@ -95,28 +95,26 @@ pub fn suggest(
         }
 
         // Rule 4: Good R_eff + good F-G-R → EXPLOIT
-        if record.r_eff_score >= 0.7 {
-            if let Some(fgr) = fgr {
-                if fgr.overall() >= 0.6 {
-                    let mut reason = format!(
-                        "R_eff={:.2}, quality={:.2}. Ready to build on.",
-                        record.r_eff_score,
-                        fgr.overall()
-                    );
-                    if let Some(report) = find_report(&record.id) {
-                        if !report.factors.is_empty() {
-                            reason
-                                .push_str(&format!(" ({} factors analyzed)", report.factors.len()));
-                        }
-                    }
-                    actions.push(Action {
-                        artifact_id: record.id.clone(),
-                        action_type: "EXPLOIT".into(),
-                        reason,
-                        priority: 5,
-                    });
-                }
+        if record.r_eff_score >= 0.7
+            && let Some(fgr) = fgr
+            && fgr.overall() >= 0.6
+        {
+            let mut reason = format!(
+                "R_eff={:.2}, quality={:.2}. Ready to build on.",
+                record.r_eff_score,
+                fgr.overall()
+            );
+            if let Some(report) = find_report(&record.id)
+                && !report.factors.is_empty()
+            {
+                reason.push_str(&format!(" ({} factors analyzed)", report.factors.len()));
             }
+            actions.push(Action {
+                artifact_id: record.id.clone(),
+                action_type: "EXPLOIT".into(),
+                reason,
+                priority: 5,
+            });
         }
     }
 

@@ -84,7 +84,7 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
                     id: ev.id.clone(),
                     valid_until: valid_until_str.to_string(),
                     days_expired: days,
-                    individual_score: reff::r_eff(&[item.clone()]),
+                    individual_score: reff::r_eff(std::slice::from_ref(&item)),
                 });
             }
 

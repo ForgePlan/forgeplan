@@ -16,12 +16,12 @@ Files in .forgeplan/ are authoritative, LanceDB syncs from them.";
 /// Load architecture hint: .forgeplan/prompts/architecture.md if exists, else default.
 fn load_architecture_hint() -> String {
     let custom_path = std::path::Path::new(".forgeplan/prompts/architecture.md");
-    if custom_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(custom_path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
+    if custom_path.exists()
+        && let Ok(content) = std::fs::read_to_string(custom_path)
+    {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
     }
     DEFAULT_ARCHITECTURE_HINT.to_string()

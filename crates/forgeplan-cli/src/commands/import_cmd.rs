@@ -99,10 +99,11 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             let source = rel["source"].as_str().unwrap_or_default();
             let target = rel["target"].as_str().unwrap_or_default();
             let relation = rel["relation"].as_str().unwrap_or("informs");
-            if !source.is_empty() && !target.is_empty() {
-                if store.add_relation(source, target, relation).await.is_ok() {
-                    relations_imported += 1;
-                }
+            if !source.is_empty()
+                && !target.is_empty()
+                && store.add_relation(source, target, relation).await.is_ok()
+            {
+                relations_imported += 1;
             }
         }
     }

@@ -24,10 +24,10 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool) -> anyhow::Res
         all_records
     };
 
-    if to_validate.is_empty() {
-        if let Some(target_id) = id {
-            anyhow::bail!("Artifact '{}' not found", target_id);
-        }
+    if to_validate.is_empty()
+        && let Some(target_id) = id
+    {
+        anyhow::bail!("Artifact '{}' not found", target_id);
     }
 
     let mut total_errors = 0;

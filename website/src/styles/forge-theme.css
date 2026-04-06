@@ -1,0 +1,122 @@
+/* ========================================
+   Forgeplan — Starlight Theme Override
+   Forge palette for docs pages
+   ======================================== */
+
+/* === DARK MODE (Starlight default) === */
+:root {
+  --sl-color-accent-low: #1a0f08;
+  --sl-color-accent: #FF6B35;
+  --sl-color-accent-high: #ffb899;
+  --sl-color-white: #E8E8E8;
+  --sl-color-gray-1: #c0c0c0;
+  --sl-color-gray-2: #888888;
+  --sl-color-gray-3: #949494;
+  --sl-color-gray-4: #3A3A3A;
+  --sl-color-gray-5: #2A2A2A;
+  --sl-color-gray-6: #161616;
+  --sl-color-black: #0D0D0D;
+
+  --sl-font: 'Space Grotesk', system-ui, sans-serif;
+  --sl-font-mono: 'Geist Mono', ui-monospace, monospace;
+
+  --sl-text-sm: 0.875rem;
+  --sl-text-base: 1rem;
+  --sl-text-lg: 1.125rem;
+  --sl-text-2xl: 1.5rem;
+  --sl-text-3xl: 2rem;
+  --sl-text-4xl: 2.5rem;
+
+  --sl-border-radius: 0;
+}
+
+/* === LIGHT MODE === */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #fff0e8;
+  --sl-color-accent: #FF6B35;
+  --sl-color-accent-high: #992e00;
+  --sl-color-white: #1A1A1A;
+  --sl-color-gray-1: #3A3A3A;
+  --sl-color-gray-2: #6B6B6B;
+  --sl-color-gray-3: #949494;
+  --sl-color-gray-4: #D4D4D0;
+  --sl-color-gray-5: #E8E8E4;
+  --sl-color-gray-6: #F0F0EC;
+  --sl-color-black: #F5F5F0;
+}
+
+/* === Sharp corners — forge aesthetic === */
+.expressive-code pre {
+  border: 1px solid var(--sl-color-gray-4) !important;
+  border-radius: 0 !important;
+}
+
+/* Code block headers */
+.expressive-code .frame {
+  border-radius: 0 !important;
+}
+
+/* Sidebar — forge style */
+nav.sidebar {
+  border-right: 1px solid var(--sl-color-gray-4);
+}
+
+/* Sidebar links — hover with ember */
+nav.sidebar a:hover {
+  color: var(--sl-color-accent) !important;
+}
+
+/* Header — ember border bottom */
+header.header {
+  border-bottom: 1px solid var(--sl-color-gray-4);
+}
+
+/* Tables — sharp, bordered */
+table {
+  border-collapse: collapse;
+}
+
+th, td {
+  border: 1px solid var(--sl-color-gray-4);
+  padding: 0.5rem 0.75rem;
+}
+
+th {
+  background: var(--sl-color-gray-6);
+  font-weight: 600;
+}
+
+/* Callout boxes (note, tip, caution) — sharp */
+.starlight-aside {
+  border-radius: 0 !important;
+  border-left-width: 3px;
+}
+
+/* Search dialog — sharp */
+dialog {
+  border-radius: 0 !important;
+}
+
+/* Breadcrumbs — mono font */
+.breadcrumbs {
+  font-family: var(--sl-font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+/* Hero heading on docs index — if used */
+.hero h1 {
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+/* Links — ember on hover */
+.content-panel a:hover {
+  color: var(--sl-color-accent);
+}
+
+/* Right sidebar (table of contents) — ember active */
+.right-sidebar a[aria-current="true"] {
+  color: var(--sl-color-accent);
+  border-left-color: var(--sl-color-accent);
+}

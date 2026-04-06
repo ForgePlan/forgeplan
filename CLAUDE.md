@@ -601,8 +601,20 @@ ForgePlan/
 │   └── ccpm/               ← Markdown — Claude Code project management
 │
 ├── crates/                 ← Rust workspace (core + cli + mcp)
+├── website/                ← **Official website** (Astro + Starlight + React + GSAP)
+│   └── README.md           ← Архитектура, pin strategy, gotchas, design system
 └── research/               ← Исследования методологий
 ```
+
+### Website (PRD-024)
+
+Официальный лендинг + docs portal. **Подробности**: `website/README.md`
+
+Критическое знание:
+- **ОДИН GSAP ScrollTrigger pin** на страницу. Для остальных — CSS `position: sticky`
+- **Astro scoped CSS** ломает parent→child селекторы — выносить в `global.css`
+- **prefers-reduced-motion**: если добавлять — показывать начальное состояние, не финальное
+- **Tokens**: цвета в `website/src/tokens.ts` (единый источник для JS), CSS vars в `global.css`
 
 ## Артефакты (10 типов)
 

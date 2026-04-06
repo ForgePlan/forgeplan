@@ -32,9 +32,9 @@ pub fn collect_hints(body: &str, extracted_count: usize, kind: &str) -> Vec<Esti
                 "{} FR row(s) contain template placeholders (\"[Actor] can [capability]\") and were skipped",
                 template_count
             ),
-            action: Some(format!(
-                "Fill in FR descriptions in the PRD with real requirements"
-            )),
+            action: Some(
+                "Fill in FR descriptions in the PRD with real requirements".to_string(),
+            ),
         });
     }
 
@@ -137,7 +137,7 @@ fn extract_phase_items(body: &str) -> Vec<WorkItem> {
     let mut items: Vec<WorkItem> = re_standard
         .captures_iter(body)
         .map(|cap| WorkItem {
-            id: format!("P{}", cap[1].to_string()),
+            id: format!("P{}", &cap[1]),
             description: cap[2].trim().to_string(),
             category: "Implementation".to_string(),
             priority: "Must".to_string(),

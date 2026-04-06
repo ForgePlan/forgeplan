@@ -79,7 +79,7 @@ pub fn r_eff(evidence: &[EvidenceItem]) -> f64 {
     }
     evidence
         .iter()
-        .map(|e| score_evidence(e))
+        .map(score_evidence)
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0)
 }
@@ -178,7 +178,7 @@ pub async fn r_eff_recursive(
     let evidence_items: Vec<EvidenceItem> = all_evidence
         .iter()
         .filter(|rec| linked_evidence_ids.contains(&rec.id))
-        .map(|rec| parse_evidence_from_record(rec))
+        .map(parse_evidence_from_record)
         .collect();
 
     let self_score = if evidence_items.is_empty() {
@@ -195,7 +195,7 @@ pub async fn r_eff_recursive(
 
         evidence_items
             .iter()
-            .map(|e| score_evidence_full(e))
+            .map(score_evidence_full)
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or(0.0)
     };
@@ -219,14 +219,14 @@ pub async fn r_eff_recursive(
 
     for (dep_id, rel_type) in &deps {
         // Skip non-active dependencies — draft/deprecated/superseded should not drag down R_eff
-        if let Ok(Some(dep_record)) = store.get_record(dep_id).await {
-            if matches!(
+        if let Ok(Some(dep_record)) = store.get_record(dep_id).await
+            && matches!(
                 dep_record.status.as_str(),
                 "draft" | "deprecated" | "superseded"
-            ) {
-                factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
-                continue;
-            }
+            )
+        {
+            factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
+            continue;
         }
 
         let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {

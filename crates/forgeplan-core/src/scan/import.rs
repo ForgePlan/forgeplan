@@ -6,21 +6,12 @@ use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind};
 use crate::scan::discovery::{DiscoveredFile, discover_markdown_files};
 
 /// Options for scan-import operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScanImportOptions {
     /// If true, only show what would be imported without making changes.
     pub dry_run: bool,
     /// Custom path to scan (overrides default doc directories).
     pub custom_path: Option<String>,
-}
-
-impl Default for ScanImportOptions {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            custom_path: None,
-        }
-    }
 }
 
 /// Status of a single file during import.
@@ -187,7 +178,7 @@ async fn process_detected_file(
             file.path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .map(|s| s.replace('-', " ").replace('_', " "))
+                .map(|s| s.replace(['-', '_'], " "))
         })
         .unwrap_or_else(|| "Untitled".to_string());
 

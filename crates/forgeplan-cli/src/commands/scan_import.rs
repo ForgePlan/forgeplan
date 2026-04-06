@@ -49,7 +49,7 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
         let kind_str = entry
             .detected_kind
             .as_ref()
-            .map(|k| format!("{}", k.template_key().to_uppercase()))
+            .map(|k| k.template_key().to_uppercase().to_string())
             .unwrap_or_else(|| "???".to_string());
 
         let tier_str = entry

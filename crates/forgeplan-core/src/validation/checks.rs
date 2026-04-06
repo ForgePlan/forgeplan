@@ -418,8 +418,8 @@ pub fn extract_section(body: &str, heading: &str) -> Option<String> {
 
     // Find next heading of SAME or HIGHER level (lower number = higher level)
     let mut end_line = lines.len();
-    for i in start_line..lines.len() {
-        let trimmed = lines[i].trim();
+    for (i, line) in lines.iter().enumerate().skip(start_line) {
+        let trimmed = line.trim();
         if trimmed.starts_with('#') {
             let level = trimmed.chars().take_while(|c| *c == '#').count();
             if level <= found_level {

@@ -90,14 +90,13 @@ fn detect_from_filename(filename: &str) -> Option<DetectionResult> {
     ];
 
     for (prefix, kind) in patterns {
-        if upper.starts_with(prefix) {
+        if let Some(after) = upper.strip_prefix(prefix) {
             // For REF- prefix, require digits after prefix to avoid false positives
             // (e.g., REF-DOCS-ANALYSIS.md is NOT a RefreshReport)
-            if *prefix == "REF-" {
-                let after = &upper[prefix.len()..];
-                if after.is_empty() || !after.starts_with(|c: char| c.is_ascii_digit()) {
-                    continue;
-                }
+            if *prefix == "REF-"
+                && (after.is_empty() || !after.starts_with(|c: char| c.is_ascii_digit()))
+            {
+                continue;
             }
             // Extract ID: everything before first non-ID character
             let id = extract_id_from_name(&upper, prefix);
@@ -139,7 +138,7 @@ fn extract_title_from_name(name: &str, prefix: &str) -> Option<String> {
     if title_part.is_empty() {
         None
     } else {
-        Some(title_part.replace('-', " ").replace('_', " "))
+        Some(title_part.replace(['-', '_'], " "))
     }
 }
 
