@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, Float64Array, Int32Array, ListArray, RecordBatch, StringArray,
+    builder::{ListBuilder, StringBuilder},
+};
 use arrow_schema::Schema;
 
 use crate::artifact::store::ArtifactSummary;
@@ -21,6 +24,7 @@ pub(crate) fn artifact_to_batch_with_schema(
     schema: &Arc<Schema>,
 ) -> anyhow::Result<RecordBatch> {
     let embedding_col = make_null_embedding_col(1);
+    let tags_col = build_tags_list_array(std::iter::once(artifact.tags.as_slice()));
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -41,9 +45,54 @@ pub(crate) fn artifact_to_batch_with_schema(
             Arc::new(StringArray::from(vec![now])),
             Arc::new(StringArray::from(vec![Option::<&str>::None])),
             embedding_col,
+            Arc::new(tags_col),
         ],
     )?;
     Ok(batch)
+}
+
+/// Build a `ListArray` of `Utf8` tag rows from a sequence of tag slices.
+///
+/// One row per slice. Empty slices are written as empty (non-null) lists so
+/// the column is always materialized with the declared inner nullability.
+pub(crate) fn build_tags_list_array<'a, I>(rows: I) -> ListArray
+where
+    I: IntoIterator<Item = &'a [String]>,
+{
+    let mut builder = ListBuilder::new(StringBuilder::new());
+    for row in rows {
+        for tag in row {
+            builder.values().append_value(tag);
+        }
+        builder.append(true);
+    }
+    builder.finish()
+}
+
+/// Extract tags as `Vec<String>` for a single row from a `ListArray` column.
+pub(crate) fn extract_tags(batch: &RecordBatch, row: usize) -> Vec<String> {
+    let Some(col) = batch.column_by_name("tags") else {
+        return Vec::new();
+    };
+    let Some(list) = col.as_any().downcast_ref::<ListArray>() else {
+        return Vec::new();
+    };
+    if list.is_null(row) {
+        return Vec::new();
+    }
+    let values = list.value(row);
+    let Some(strs) = values.as_any().downcast_ref::<StringArray>() else {
+        return Vec::new();
+    };
+    (0..strs.len())
+        .filter_map(|i| {
+            if strs.is_null(i) {
+                None
+            } else {
+                Some(strs.value(i).to_string())
+            }
+        })
+        .collect()
 }
 
 /// Extract ArtifactSummary values from all rows in a RecordBatch.
@@ -128,6 +177,51 @@ pub(crate) fn make_null_embedding_col(len: usize) -> Arc<dyn Array> {
     ))
 }
 
+/// Build a one-row embedding column from an optional vector.
+///
+/// If `embedding` is `Some`, builds a `FixedSizeListArray` with one non-null
+/// row containing the values. If `None`, returns a one-row null embedding
+/// column. Used by `replace_record` to preserve pre-computed embeddings
+/// across full-row rewrites (PRD-035 / Sprint 13.3 C2 fix).
+pub(crate) fn make_embedding_col_from_option(embedding: Option<&[f32]>) -> Arc<dyn Array> {
+    use arrow_array::{FixedSizeListArray, Float32Array};
+    use arrow_schema::Field;
+
+    let dim = schema::EMBEDDING_DIM as usize;
+    let item_field = Arc::new(Field::new("item", arrow_schema::DataType::Float32, true));
+
+    match embedding {
+        Some(vec) if vec.len() == dim => {
+            let values = Arc::new(Float32Array::from(vec.to_vec()));
+            Arc::new(FixedSizeListArray::new(
+                item_field,
+                schema::EMBEDDING_DIM,
+                values,
+                None,
+            ))
+        }
+        // Wrong-length vectors fall back to a null row to avoid corrupting
+        // the schema. Callers that care should re-embed.
+        _ => make_null_embedding_col(1),
+    }
+}
+
+/// Extract a single row's embedding vector from a `FixedSizeListArray` column.
+///
+/// Returns `None` when the column is missing, the row is null, or the inner
+/// values cannot be downcast to `Float32Array`.
+pub(crate) fn extract_embedding(batch: &RecordBatch, row: usize) -> Option<Vec<f32>> {
+    use arrow_array::{FixedSizeListArray, Float32Array};
+    let col = batch.column_by_name("embedding")?;
+    let list = col.as_any().downcast_ref::<FixedSizeListArray>()?;
+    if list.is_null(row) {
+        return None;
+    }
+    let values = list.value(row);
+    let arr = values.as_any().downcast_ref::<Float32Array>()?;
+    Some((0..arr.len()).map(|i| arr.value(i)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,7 +238,24 @@ mod tests {
             author: Some("alice".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
+    }
+
+    #[test]
+    fn artifact_to_batch_persists_tags_list() {
+        let mut artifact = sample_artifact();
+        artifact.tags = vec!["source=code".to_string(), "layer=domain".to_string()];
+        let batch = artifact_to_batch(&artifact, "2026-01-01T00:00:00Z").unwrap();
+        let tags = extract_tags(&batch, 0);
+        assert_eq!(tags, vec!["source=code", "layer=domain"]);
+    }
+
+    #[test]
+    fn artifact_to_batch_empty_tags_extracts_empty() {
+        let artifact = sample_artifact();
+        let batch = artifact_to_batch(&artifact, "2026-01-01T00:00:00Z").unwrap();
+        assert!(extract_tags(&batch, 0).is_empty());
     }
 
     #[test]

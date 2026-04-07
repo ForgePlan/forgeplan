@@ -69,6 +69,8 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         author: record.author.clone(),
         parent_epic: None,
         valid_until: None,
+        // C1: propagate tags from source memory artifact, if any.
+        tags: record.tags.clone(),
     };
     store.create_artifact(&artifact).await?;
 

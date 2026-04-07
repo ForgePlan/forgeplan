@@ -560,6 +560,7 @@ pub async fn reopen(
         author: record.author.clone(),
         parent_epic: record.parent_epic.clone(),
         valid_until: None,
+        tags: record.tags.clone(),
     };
     store.create_artifact(&new_artifact).await?;
 
@@ -604,6 +605,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -623,6 +625,7 @@ mod tests {
             author: Some("test".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&art).await.unwrap();
 
@@ -686,6 +689,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: Some("2026-01-01".to_string()),
+            tags: Vec::new(),
         }
     }
 
@@ -868,6 +872,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -882,6 +887,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -922,6 +928,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&stub).await.unwrap();
 
@@ -971,6 +978,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&stub).await.unwrap();
 
@@ -1035,6 +1043,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&prd).await.unwrap();
 
@@ -1049,6 +1058,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&evid).await.unwrap();
         store
@@ -1090,6 +1100,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&prd).await.unwrap();
 
@@ -1103,6 +1114,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&evid).await.unwrap();
         store

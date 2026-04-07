@@ -206,6 +206,9 @@ mod tests {
             valid_until: None,
             created_at: "2026-01-01T00:00:00".into(),
             updated_at: "2026-01-01T00:00:00".into(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 

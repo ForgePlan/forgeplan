@@ -51,6 +51,7 @@ pub mod setup_skill;
 pub mod stale;
 pub mod status;
 pub mod supersede;
+pub mod tag;
 pub mod tree;
 pub mod update;
 pub mod validate;
