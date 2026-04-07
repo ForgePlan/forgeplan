@@ -97,9 +97,7 @@ impl SessionState {
     /// Transition to a new phase. Records history.
     /// Returns error if transition is not allowed.
     pub fn transition(&mut self, to: Phase) -> Result<(), String> {
-        if let Err(e) = validate_transition(self.phase, to, self.route_depth.as_deref()) {
-            return Err(e);
-        }
+        validate_transition(self.phase, to, self.route_depth.as_deref())?;
 
         let transition = PhaseTransition {
             from: self.phase,
