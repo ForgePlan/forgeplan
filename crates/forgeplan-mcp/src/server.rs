@@ -411,6 +411,21 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // DoS protection: enforce configurable input limits.
+        let integrity_config = workspace::load_config(&ws)
+            .map(|c| c.integrity)
+            .unwrap_or_default();
+        if p.title.len() > integrity_config.mcp_max_title_len {
+            return Err(McpError::invalid_params(
+                format!(
+                    "title too long: {} bytes (max: {})",
+                    p.title.len(),
+                    integrity_config.mcp_max_title_len
+                ),
+                None,
+            ));
+        }
+
         let artifact_kind: ArtifactKind = match p.kind.parse() {
             Ok(k) => k,
             Err(e) => return Ok(err_result(&format!("{e}"))),
@@ -907,6 +922,35 @@ impl ForgeplanServer {
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
             return Ok(err_result(
                 "Nothing to update. Provide status, title, or body.",
+            ));
+        }
+
+        // DoS protection: enforce configurable input limits.
+        let integrity_config = workspace::load_config(&ws)
+            .map(|c| c.integrity)
+            .unwrap_or_default();
+        if let Some(ref t) = p.title
+            && t.len() > integrity_config.mcp_max_title_len
+        {
+            return Err(McpError::invalid_params(
+                format!(
+                    "title too long: {} bytes (max: {})",
+                    t.len(),
+                    integrity_config.mcp_max_title_len
+                ),
+                None,
+            ));
+        }
+        if let Some(ref b) = p.body
+            && b.len() > integrity_config.mcp_max_body_len
+        {
+            return Err(McpError::invalid_params(
+                format!(
+                    "body too long: {} bytes (max: {})",
+                    b.len(),
+                    integrity_config.mcp_max_body_len
+                ),
+                None,
             ));
         }
 

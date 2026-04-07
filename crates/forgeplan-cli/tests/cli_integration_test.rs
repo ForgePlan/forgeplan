@@ -1290,6 +1290,111 @@ fn e2e_export_import_preserves_data() {
         .stdout(predicate::str::contains("Feature A"));
 }
 
+// ── F3: Import stub gate (PRD-043) ─────────────────────────
+
+/// A body that clearly triggers `check_stub_detailed` — contains multiple
+/// known template markers ("Что мы строим", "[Actor] can [capability]", etc.).
+const STUB_BODY: &str = "# PRD\n\n## Problem\n\nЧто мы строим и почему это важно\n\n## Goals\n\n[Actor] can [capability]\n\n## Non-Goals\n\n...\n\n## Target Users\n\n...\n\n## Related\n\n...\n";
+
+/// A filled body with enough real content to pass stub detection.
+const FILLED_BODY: &str = "# PRD\n\n## Problem\n\nUsers cannot reset their password without contacting support, causing a 4 hour average delay and measurable churn during onboarding. Support tickets mentioning password reset account for 22% of all tickets this quarter.\n\n## Goals\n\nSelf-service password reset via email link. Reduce support ticket volume by at least 15% within two months of rollout.\n\n## Non-Goals\n\nMulti-factor reset flows. Admin-initiated resets. SMS-based recovery is explicitly deferred until the SMS gateway vendor is selected.\n\n## Target Users\n\nEnd users of the web application who forgot their password. Support engineers handling escalations.\n\n## Related\n\nRFC-004 Auth architecture. ADR-007 Email provider choice.\n\n## Functional Requirements\n\nFR-001: User can request a password reset email from the login screen.\nFR-002: Reset links expire after 30 minutes.\nFR-003: Successful reset invalidates all existing sessions for that user.\n";
+
+fn write_backup(path: &std::path::Path, id: &str, status: &str, body: &str) {
+    let backup = serde_json::json!({
+        "artifacts": [{
+            "id": id,
+            "kind": "prd",
+            "status": status,
+            "title": "Test PRD",
+            "body": body,
+            "depth": "standard",
+        }],
+        "relations": []
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&backup).unwrap()).unwrap();
+}
+
+#[test]
+fn test_import_downgrades_active_stub_to_draft() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let backup_path = tmp.path().join("stub-backup.json");
+    write_backup(&backup_path, "PRD-100", "active", STUB_BODY);
+
+    forgeplan()
+        .args(["import", backup_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("stub detected").and(predicate::str::contains("PRD-100")));
+
+    // Verify the imported record is draft, not active
+    forgeplan()
+        .args(["get", "PRD-100"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft"));
+}
+
+#[test]
+fn test_import_preserves_active_for_filled_artifact() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let backup_path = tmp.path().join("filled-backup.json");
+    write_backup(&backup_path, "PRD-200", "active", FILLED_BODY);
+
+    forgeplan()
+        .args(["import", backup_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["get", "PRD-200"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+}
+
+#[test]
+fn test_import_force_keeps_active_stub() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let backup_path = tmp.path().join("forced-backup.json");
+    write_backup(&backup_path, "PRD-300", "active", STUB_BODY);
+
+    forgeplan()
+        .args(["import", backup_path.to_str().unwrap(), "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--force bypasses gate"));
+
+    forgeplan()
+        .args(["get", "PRD-300"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+}
+
 #[test]
 fn e2e_health_comprehensive() {
     let tmp = TempDir::new().unwrap();
