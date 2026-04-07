@@ -64,6 +64,7 @@ pub async fn import_all(
             author: record.author.clone(),
             parent_epic: record.parent_epic.clone(),
             valid_until: record.valid_until.clone(),
+            tags: record.tags.clone(),
         };
         store.create_artifact(&new).await?;
         created += 1;
@@ -118,6 +119,7 @@ mod tests {
             author: Some("test".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&artifact).await.unwrap();
 
@@ -141,6 +143,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&artifact).await.unwrap();
 
@@ -160,6 +163,7 @@ mod tests {
                 valid_until: None,
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 updated_at: "2026-01-01T00:00:00Z".to_string(),
+                tags: Vec::new(),
             }],
             relations: vec![],
         };
@@ -187,6 +191,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&artifact).await.unwrap();
 
@@ -206,6 +211,7 @@ mod tests {
                 valid_until: None,
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 updated_at: "2026-01-01T00:00:00Z".to_string(),
+                tags: Vec::new(),
             }],
             relations: vec![],
         };

@@ -3185,3 +3185,229 @@ fn search_since_date_filter() {
         .failure()
         .stderr(predicate::str::contains("Invalid --since date"));
 }
+
+// ============================================================================
+// Tag / Untag commands (PRD-035 FR-002)
+// ============================================================================
+
+fn init_with_prd(tmp: &TempDir) {
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Tag Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_tag_adds_tags_to_artifact() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "source=code", "legacy"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added 2 tag(s) to PRD-001"))
+        .stdout(predicate::str::contains("source=code"))
+        .stdout(predicate::str::contains("legacy"));
+}
+
+#[test]
+fn test_untag_removes_tags_from_artifact() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "alpha", "beta", "gamma"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["untag", "PRD-001", "beta"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed 1 tag(s) from PRD-001"))
+        .stdout(predicate::str::contains("alpha"))
+        .stdout(predicate::str::contains("gamma"));
+}
+
+#[test]
+fn test_tag_requires_at_least_one_tag() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_tag_fails_on_missing_artifact() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-999", "foo"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("not found")
+                .or(predicate::str::contains("Artifact not found")),
+        );
+}
+
+#[test]
+fn test_tag_dedupe_same_tag_twice() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "dup"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["tag", "PRD-001", "dup", "dup"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify only one "dup" tag remains via list output
+    let output = forgeplan()
+        .args(["tag", "PRD-001", "other"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Count occurrences of "dup" in current tags line — should appear once
+    let tags_line = stdout
+        .lines()
+        .find(|l| l.contains("Current tags"))
+        .unwrap_or("");
+    let dup_count = tags_line.matches("dup").count();
+    assert_eq!(
+        dup_count, 1,
+        "expected dedupe, got tags line: {}",
+        tags_line
+    );
+}
+
+// ============================================================================
+// FR-003: `forgeplan list --tag <filter>` (Sprint 13.3 / PRD-035)
+// ============================================================================
+
+fn init_workspace(tmp: &TempDir) {
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+fn new_prd_with_tags(tmp: &TempDir, title: &str, id: &str, tags: &[&str]) {
+    forgeplan()
+        .args(["new", "prd", title])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    if !tags.is_empty() {
+        let mut args = vec!["tag", id];
+        args.extend(tags);
+        forgeplan()
+            .args(&args)
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_list_tag_filter_exact_match() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "Alpha Feature", "PRD-001", &["source=code"]);
+    new_prd_with_tags(&tmp, "Beta Feature", "PRD-002", &[]);
+
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-002").not());
+}
+
+#[test]
+fn test_list_tag_filter_key_only() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "One", "PRD-001", &["source=code"]);
+    new_prd_with_tags(&tmp, "Two", "PRD-002", &["legacy"]);
+    new_prd_with_tags(&tmp, "Three", "PRD-003", &["layer=domain"]);
+
+    forgeplan()
+        .args(["list", "--tag", "source", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-003").not());
+
+    forgeplan()
+        .args(["list", "--tag", "legacy", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-002"));
+}
+
+#[test]
+fn test_list_tag_filter_combined_with_kind() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "Tagged PRD", "PRD-001", &["source=code"]);
+
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--type", "prd", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--type", "rfc", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}
+
+#[test]
+fn test_list_tag_filter_empty_when_no_match() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "Only", "PRD-001", &["source=code"]);
+
+    forgeplan()
+        .args(["list", "--tag", "nothing=here", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+}

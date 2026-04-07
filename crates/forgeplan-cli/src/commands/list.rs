@@ -6,19 +6,36 @@ use forgeplan_core::db::store::ArtifactFilter;
 use crate::commands::common;
 use crate::ui;
 
-pub async fn run(kind_filter: Option<&str>, status_filter: Option<&str>, json: bool) -> Result<()> {
+pub async fn run(
+    kind_filter: Option<&str>,
+    status_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let store = common::store().await?;
 
-    let filter = if kind_filter.is_some() || status_filter.is_some() {
-        Some(ArtifactFilter {
-            kind: kind_filter.map(|s| s.to_lowercase()),
-            status: status_filter.map(|s| s.to_lowercase()),
-        })
+    let artifacts = if let Some(tag) = tag_filter {
+        let mut records = store.list_by_tag(tag).await?;
+        if let Some(k) = kind_filter {
+            let kl = k.to_lowercase();
+            records.retain(|r| r.kind.eq_ignore_ascii_case(&kl));
+        }
+        if let Some(s) = status_filter {
+            let sl = s.to_lowercase();
+            records.retain(|r| r.status.eq_ignore_ascii_case(&sl));
+        }
+        records.iter().map(|r| r.to_summary()).collect()
     } else {
-        None
+        let filter = if kind_filter.is_some() || status_filter.is_some() {
+            Some(ArtifactFilter {
+                kind: kind_filter.map(|s| s.to_lowercase()),
+                status: status_filter.map(|s| s.to_lowercase()),
+            })
+        } else {
+            None
+        };
+        store.list_artifacts(filter.as_ref()).await?
     };
-
-    let artifacts = store.list_artifacts(filter.as_ref()).await?;
 
     if artifacts.is_empty() {
         if json {

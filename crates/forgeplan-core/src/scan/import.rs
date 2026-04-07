@@ -192,6 +192,7 @@ async fn process_detected_file(
         author: Some("scan-import".to_string()),
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
 
     match store.create_artifact(&new_artifact).await {
@@ -300,6 +301,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&existing).await.unwrap();
 

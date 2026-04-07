@@ -7,7 +7,9 @@ use lancedb::Table;
 use lancedb::table::NewColumnTransform;
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+///
+/// v4: add `tags` List(Utf8) column to artifacts (PRD-035 FR-001).
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Run all pending migrations on the artifacts table.
 /// Idempotent — safe to run multiple times.
@@ -23,6 +25,24 @@ pub async fn migrate_artifacts(table: &Table) -> anyhow::Result<()> {
                 NewColumnTransform::SqlExpressions(vec![(
                     "body_hash".to_string(),
                     "CAST(NULL AS STRING)".to_string(),
+                )]),
+                None,
+            )
+            .await?;
+    }
+
+    // Migration 3→4: add tags List(Utf8) column (PRD-035 FR-001).
+    // Existing rows get NULL (interpreted as empty tag list on read).
+    if !field_names.contains(&"tags".to_string()) {
+        eprintln!("[migrate] Adding tags column to artifacts");
+        // LanceDB SqlExpressions route cannot easily express an empty list
+        // literal across backends, so use a full merge via add_columns with
+        // a null cast to the target list type.
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![(
+                    "tags".to_string(),
+                    "CAST(NULL AS LIST<STRING>)".to_string(),
                 )]),
                 None,
             )

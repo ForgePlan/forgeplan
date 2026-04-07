@@ -143,6 +143,7 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             author: art["author"].as_str().map(String::from),
             parent_epic: art["parent_epic"].as_str().map(String::from),
             valid_until: art["valid_until"].as_str().map(String::from),
+            tags: Vec::new(),
         };
 
         store.create_artifact(&new_artifact).await?;

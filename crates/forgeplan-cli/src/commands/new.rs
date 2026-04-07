@@ -108,6 +108,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         author: None,
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
     store
         .create_artifact(&artifact)

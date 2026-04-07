@@ -150,6 +150,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                 .get("valid_until")
                                 .and_then(|v| v.as_str())
                                 .map(String::from),
+                            tags: Vec::new(),
                         };
 
                         store.create_artifact(&artifact).await?;

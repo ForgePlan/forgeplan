@@ -46,12 +46,32 @@ enum Commands {
         /// Filter by status (draft, active, etc.)
         #[arg(long, short)]
         status: Option<String>,
+        /// Filter by tag. Supports "key=value" or bare "key" (matches any value).
+        /// Examples: --tag source=code, --tag legacy
+        #[arg(long)]
+        tag: Option<String>,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
     },
     /// Show project status dashboard
     Status,
+    /// Add tags to an artifact
+    Tag {
+        /// Artifact ID (e.g. PRD-001)
+        id: String,
+        /// Tags to add (e.g. source=code layer=auth legacy)
+        #[arg(required = true)]
+        tags: Vec<String>,
+    },
+    /// Remove tags from an artifact
+    Untag {
+        /// Artifact ID
+        id: String,
+        /// Tags to remove
+        #[arg(required = true)]
+        tags: Vec<String>,
+    },
     /// Validate artifact completeness against schema rules
     Validate {
         /// Artifact ID (validates all if omitted)
@@ -558,9 +578,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::List {
             r#type,
             status,
+            tag,
             json,
-        } => commands::list::run(r#type.as_deref(), status.as_deref(), json).await,
+        } => commands::list::run(r#type.as_deref(), status.as_deref(), tag.as_deref(), json).await,
         Commands::Status => commands::status::run().await,
+        Commands::Tag { id, tags } => commands::tag::run_add(&id, &tags).await,
+        Commands::Untag { id, tags } => commands::tag::run_remove(&id, &tags).await,
         Commands::Validate {
             id,
             json,

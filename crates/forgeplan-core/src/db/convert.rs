@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, Float64Array, Int32Array, ListArray, RecordBatch, StringArray,
+    builder::{ListBuilder, StringBuilder},
+};
 use arrow_schema::Schema;
 
 use crate::artifact::store::ArtifactSummary;
@@ -21,6 +24,7 @@ pub(crate) fn artifact_to_batch_with_schema(
     schema: &Arc<Schema>,
 ) -> anyhow::Result<RecordBatch> {
     let embedding_col = make_null_embedding_col(1);
+    let tags_col = build_tags_list_array(std::iter::once(artifact.tags.as_slice()));
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -41,9 +45,54 @@ pub(crate) fn artifact_to_batch_with_schema(
             Arc::new(StringArray::from(vec![now])),
             Arc::new(StringArray::from(vec![Option::<&str>::None])),
             embedding_col,
+            Arc::new(tags_col),
         ],
     )?;
     Ok(batch)
+}
+
+/// Build a `ListArray` of `Utf8` tag rows from a sequence of tag slices.
+///
+/// One row per slice. Empty slices are written as empty (non-null) lists so
+/// the column is always materialized with the declared inner nullability.
+pub(crate) fn build_tags_list_array<'a, I>(rows: I) -> ListArray
+where
+    I: IntoIterator<Item = &'a [String]>,
+{
+    let mut builder = ListBuilder::new(StringBuilder::new());
+    for row in rows {
+        for tag in row {
+            builder.values().append_value(tag);
+        }
+        builder.append(true);
+    }
+    builder.finish()
+}
+
+/// Extract tags as `Vec<String>` for a single row from a `ListArray` column.
+pub(crate) fn extract_tags(batch: &RecordBatch, row: usize) -> Vec<String> {
+    let Some(col) = batch.column_by_name("tags") else {
+        return Vec::new();
+    };
+    let Some(list) = col.as_any().downcast_ref::<ListArray>() else {
+        return Vec::new();
+    };
+    if list.is_null(row) {
+        return Vec::new();
+    }
+    let values = list.value(row);
+    let Some(strs) = values.as_any().downcast_ref::<StringArray>() else {
+        return Vec::new();
+    };
+    (0..strs.len())
+        .filter_map(|i| {
+            if strs.is_null(i) {
+                None
+            } else {
+                Some(strs.value(i).to_string())
+            }
+        })
+        .collect()
 }
 
 /// Extract ArtifactSummary values from all rows in a RecordBatch.
@@ -144,7 +193,24 @@ mod tests {
             author: Some("alice".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
+    }
+
+    #[test]
+    fn artifact_to_batch_persists_tags_list() {
+        let mut artifact = sample_artifact();
+        artifact.tags = vec!["source=code".to_string(), "layer=domain".to_string()];
+        let batch = artifact_to_batch(&artifact, "2026-01-01T00:00:00Z").unwrap();
+        let tags = extract_tags(&batch, 0);
+        assert_eq!(tags, vec!["source=code", "layer=domain"]);
+    }
+
+    #[test]
+    fn artifact_to_batch_empty_tags_extracts_empty() {
+        let artifact = sample_artifact();
+        let batch = artifact_to_batch(&artifact, "2026-01-01T00:00:00Z").unwrap();
+        assert!(extract_tags(&batch, 0).is_empty());
     }
 
     #[test]

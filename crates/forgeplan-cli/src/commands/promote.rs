@@ -69,6 +69,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         author: record.author.clone(),
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
     store.create_artifact(&artifact).await?;
 

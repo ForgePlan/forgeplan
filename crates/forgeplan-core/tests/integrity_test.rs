@@ -31,6 +31,7 @@ fn make_record(id: &str, kind: &str, title: &str, status: &str) -> ArtifactRecor
         valid_until: None,
         created_at: "2026-01-01T00:00:00Z".into(),
         updated_at: "2026-01-01T00:00:00Z".into(),
+        tags: Vec::new(),
     }
 }
 
@@ -50,6 +51,7 @@ fn new_prd(id: &str, body: &str) -> NewArtifact {
         author: Some("tester".into()),
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     }
 }
 
@@ -64,6 +66,7 @@ fn new_evidence(id: &str) -> NewArtifact {
         author: None,
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     }
 }
 
@@ -277,6 +280,7 @@ async fn test_integration_activate_already_active_no_recheck() {
         author: Some("tester".into()),
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
     store.create_artifact(&note).await.unwrap();
 

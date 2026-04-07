@@ -45,6 +45,7 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         author: None,
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
 
     store.create_artifact(&artifact).await?;

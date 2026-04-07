@@ -23,6 +23,7 @@ pub const EMBEDDING_DIM: i32 = 1024;
 /// - updated_at  Utf8 (not null) — ISO datetime
 /// - body_hash   Utf8 (nullable) — hash of body for change detection
 /// - embedding   FixedSizeList(1024, Float32) (nullable) — vector for semantic search
+/// - tags        List(Utf8) (nullable) — string tags like "source=code", "layer=domain"
 pub fn artifacts_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -44,6 +45,11 @@ pub fn artifacts_schema() -> Arc<Schema> {
                 Arc::new(Field::new("item", DataType::Float32, true)),
                 EMBEDDING_DIM,
             ),
+            true,
+        ),
+        Field::new(
+            "tags",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             true,
         ),
     ]))
@@ -184,6 +190,17 @@ mod tests {
                 assert_eq!(*inner.data_type(), DataType::Float32);
             }
             _ => panic!("embedding should be FixedSizeList"),
+        }
+    }
+
+    #[test]
+    fn artifacts_schema_tags_is_nullable_list_of_utf8() {
+        let schema = artifacts_schema();
+        let tags = schema.field_with_name("tags").unwrap();
+        assert!(tags.is_nullable());
+        match tags.data_type() {
+            DataType::List(inner) => assert_eq!(*inner.data_type(), DataType::Utf8),
+            _ => panic!("tags should be List(Utf8)"),
         }
     }
 

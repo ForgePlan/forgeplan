@@ -49,6 +49,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         author: None,
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
 
     store

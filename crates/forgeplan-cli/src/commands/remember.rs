@@ -61,6 +61,7 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         author: Some("cli".to_string()),
         parent_epic: None,
         valid_until: None,
+        tags: Vec::new(),
     };
     store.create_artifact(&artifact).await?;
 

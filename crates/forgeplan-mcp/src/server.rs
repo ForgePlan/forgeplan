@@ -522,6 +522,7 @@ impl ForgeplanServer {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
 
         store
@@ -1382,6 +1383,7 @@ impl ForgeplanServer {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
 
         store
@@ -2115,6 +2117,7 @@ impl ForgeplanServer {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
 
         store
@@ -2276,6 +2279,7 @@ impl ForgeplanServer {
                 author: art["author"].as_str().map(String::from),
                 parent_epic: art["parent_epic"].as_str().map(String::from),
                 valid_until: art["valid_until"].as_str().map(String::from),
+                tags: Vec::new(),
             };
 
             if let Err(e) = store.create_artifact(&new_art).await {

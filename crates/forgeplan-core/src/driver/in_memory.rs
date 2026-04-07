@@ -86,6 +86,7 @@ impl ArtifactStorage for InMemoryStore {
             valid_until: artifact.valid_until.clone(),
             created_at: now.clone(),
             updated_at: now,
+            tags: artifact.tags.clone(),
         };
         let id = record.id.clone();
         self.state
@@ -427,6 +428,7 @@ mod tests {
             author: Some("test".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -650,6 +652,7 @@ mod tests {
                     author: None,
                     parent_epic: None,
                     valid_until: None,
+                    tags: Vec::new(),
                 };
                 store1.create_artifact(&art).await.unwrap();
             }
@@ -669,6 +672,7 @@ mod tests {
                     author: None,
                     parent_epic: None,
                     valid_until: None,
+                    tags: Vec::new(),
                 };
                 store2.create_artifact(&art).await.unwrap();
             }
@@ -704,6 +708,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: Some("2020-01-01T00:00:00Z".to_string()),
+            tags: Vec::new(),
         };
         store.create_artifact(&art).await.unwrap();
 
@@ -719,6 +724,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: Some("2020-06-15".to_string()),
+            tags: Vec::new(),
         };
         store.create_artifact(&art_naive).await.unwrap();
 
@@ -734,6 +740,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&art3).await.unwrap();
 
@@ -749,6 +756,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: Some("2099-12-31T23:59:59Z".to_string()),
+            tags: Vec::new(),
         };
         store.create_artifact(&art4).await.unwrap();
 
