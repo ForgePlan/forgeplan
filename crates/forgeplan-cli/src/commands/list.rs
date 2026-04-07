@@ -1,7 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::search::filter::ArtifactFilter as QueryFilter;
 
 use crate::commands::common;
 use crate::ui;
@@ -14,28 +14,34 @@ pub async fn run(
 ) -> Result<()> {
     let store = common::store().await?;
 
-    let artifacts = if let Some(tag) = tag_filter {
-        let mut records = store.list_by_tag(tag).await?;
-        if let Some(k) = kind_filter {
-            let kl = k.to_lowercase();
-            records.retain(|r| r.kind.eq_ignore_ascii_case(&kl));
-        }
-        if let Some(s) = status_filter {
-            let sl = s.to_lowercase();
-            records.retain(|r| r.status.eq_ignore_ascii_case(&sl));
-        }
-        records.iter().map(|r| r.to_summary()).collect()
+    // Sprint 13.3 H1: compose all predicates through the search filter DSL
+    // so kind+status+tag work together (previously tag forced bespoke
+    // list_by_tag + retain() workaround that duplicated DSL logic).
+    let mut clauses: Vec<QueryFilter> = Vec::new();
+    if let Some(k) = kind_filter {
+        clauses.push(QueryFilter::Kind(k.to_string()));
+    }
+    if let Some(s) = status_filter {
+        clauses.push(QueryFilter::Status(s.to_string()));
+    }
+    if let Some(t) = tag_filter {
+        clauses.push(QueryFilter::HasTag(t.to_string()));
+    }
+
+    let composed = if clauses.is_empty() {
+        None
+    } else if clauses.len() == 1 {
+        Some(clauses.into_iter().next().unwrap())
     } else {
-        let filter = if kind_filter.is_some() || status_filter.is_some() {
-            Some(ArtifactFilter {
-                kind: kind_filter.map(|s| s.to_lowercase()),
-                status: status_filter.map(|s| s.to_lowercase()),
-            })
-        } else {
-            None
-        };
-        store.list_artifacts(filter.as_ref()).await?
+        Some(QueryFilter::And(clauses))
     };
+
+    let all = store.list_records(None).await?;
+    let artifacts: Vec<_> = all
+        .into_iter()
+        .filter(|r| composed.as_ref().map(|f| f.matches(r)).unwrap_or(true))
+        .map(|r| r.to_summary())
+        .collect();
 
     if artifacts.is_empty() {
         if json {

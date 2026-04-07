@@ -157,6 +157,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 

@@ -9,6 +9,44 @@
 use crate::db::store::ArtifactRecord;
 use chrono::NaiveDateTime;
 
+/// Predicate: does `tags` contain a tag matching `filter`?
+///
+/// Filter syntax:
+/// - `"key=value"` → exact match against `"key=value"` entries.
+/// - `"key"` (no `=`) → matches a bare `"key"` tag OR any `"key=..."` tag.
+///
+/// This is the canonical home for tag matching (Sprint 13.3 H1/H3 fix);
+/// `artifact::frontmatter::has_tag_in` is a thin re-export.
+pub fn has_tag_predicate(tags: &[String], filter: &str) -> bool {
+    let (key, value) = match filter.split_once('=') {
+        Some((k, v)) => (k.trim(), Some(v.trim())),
+        None => (filter.trim(), None),
+    };
+    for t in tags {
+        match value {
+            Some(v) => {
+                if let Some((k, val)) = t.split_once('=')
+                    && k.trim() == key
+                    && val.trim() == v
+                {
+                    return true;
+                }
+            }
+            None => {
+                if t == key {
+                    return true;
+                }
+                if let Some((k, _)) = t.split_once('=')
+                    && k.trim() == key
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Composable filter expression for artifact queries.
 ///
 /// Typed to avoid generic-Value complexity. Each variant is a
@@ -31,6 +69,9 @@ pub enum ArtifactFilter {
     CreatedBefore(NaiveDateTime),
     /// Title contains substring (case-insensitive)
     TitleContains(String),
+    /// Match artifacts that have a specific tag.
+    /// Filter is `"key=value"` for exact match or `"key"` for bare/prefix match.
+    HasTag(String),
     /// All sub-filters must match
     And(Vec<ArtifactFilter>),
     /// Any sub-filter must match
@@ -57,6 +98,7 @@ impl ArtifactFilter {
                 .map(|parsed| parsed.naive_utc() < *dt)
                 .unwrap_or(false),
             Self::TitleContains(s) => record.title.to_lowercase().contains(&s.to_lowercase()),
+            Self::HasTag(t) => has_tag_predicate(&record.tags, t),
             Self::And(filters) => filters.iter().all(|f| f.matches(record)),
             Self::Or(filters) => filters.iter().any(|f| f.matches(record)),
             Self::Not(filter) => !filter.matches(record),
@@ -101,6 +143,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 
@@ -197,6 +241,40 @@ mod tests {
         let r = mk("PRD-1", "prd", "draft", "X");
         assert!(ArtifactFilter::Any.matches(&r));
         assert!(ArtifactFilter::default().matches(&r));
+    }
+
+    #[test]
+    fn has_tag_filter_exact_and_bare() {
+        let mut r = mk("PRD-1", "prd", "active", "X");
+        r.tags = vec!["source=code".to_string(), "reviewed".to_string()];
+        assert!(ArtifactFilter::HasTag("source=code".to_string()).matches(&r));
+        assert!(ArtifactFilter::HasTag("source".to_string()).matches(&r));
+        assert!(ArtifactFilter::HasTag("reviewed".to_string()).matches(&r));
+        assert!(!ArtifactFilter::HasTag("source=docs".to_string()).matches(&r));
+        assert!(!ArtifactFilter::HasTag("missing".to_string()).matches(&r));
+    }
+
+    #[test]
+    fn test_has_tag_filter_composes_with_status_and_kind() {
+        // H1 regression: tag must compose with kind+status via the DSL.
+        let mut r = mk("PRD-1", "prd", "active", "Auth");
+        r.tags = vec!["source=code".to_string()];
+        let f = ArtifactFilter::and(vec![
+            ArtifactFilter::HasTag("source=code".to_string()),
+            ArtifactFilter::Status("active".to_string()),
+            ArtifactFilter::Kind("prd".to_string()),
+        ]);
+        assert!(f.matches(&r));
+
+        // Wrong kind → no match.
+        let mut r2 = r.clone();
+        r2.kind = "rfc".to_string();
+        assert!(!f.matches(&r2));
+
+        // Wrong tag → no match.
+        let mut r3 = r.clone();
+        r3.tags = vec!["source=docs".to_string()];
+        assert!(!f.matches(&r3));
     }
 
     #[test]

@@ -32,6 +32,8 @@ fn make_record(id: &str, kind: &str, title: &str, status: &str) -> ArtifactRecor
         created_at: "2026-01-01T00:00:00Z".into(),
         updated_at: "2026-01-01T00:00:00Z".into(),
         tags: Vec::new(),
+        body_hash: None,
+        embedding: None,
     }
 }
 

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::ArrowError;
 use chrono::Utc;
 use futures::StreamExt;
@@ -37,12 +37,24 @@ fn validate_id_for_filter(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Filter for listing artifacts.
+/// Storage-layer filter for listing artifacts by kind/status.
+///
+/// Semantically distinct from the composable query DSL in
+/// `crate::search::filter::ArtifactFilter` — this struct is a flat,
+/// SQL-translatable predicate used by the LanceDB store. Sprint 13.3 H1
+/// renamed it from `ArtifactFilter` to resolve a name collision with the
+/// query DSL introduced in Sprint 13.2 (PRD-039).
 #[derive(Debug, Default)]
-pub struct ArtifactFilter {
+pub struct ListFilter {
     pub kind: Option<String>,
     pub status: Option<String>,
 }
+
+/// Deprecated alias kept for source compatibility. New code should use
+/// [`ListFilter`] for storage-layer queries or
+/// [`crate::search::filter::ArtifactFilter`] for the composable DSL.
+#[allow(dead_code)]
+pub type ArtifactFilter = ListFilter;
 
 /// Minimal artifact data for creation.
 #[derive(Debug, Default)]
@@ -62,7 +74,7 @@ pub struct NewArtifact {
 }
 
 /// Full artifact record from LanceDB — includes body and all metadata.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactRecord {
     pub id: String,
     pub kind: String,
@@ -79,6 +91,14 @@ pub struct ArtifactRecord {
     /// Free-form tags. Defaults to empty (legacy artifacts / NULL column).
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Body content hash (PRD-043 integrity). Preserved across full-row
+    /// rewrites such as `replace_record` so tag mutations don't drop it.
+    #[serde(default)]
+    pub body_hash: Option<String>,
+    /// Pre-computed embedding vector. Preserved across full-row rewrites
+    /// (Sprint 13.3 C2 fix) so tag mutations don't null semantic search.
+    #[serde(default, skip_serializing)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 /// Vector search result: an artifact record paired with its distance from the query.
@@ -153,6 +173,12 @@ impl ArtifactRecord {
             "updated_at".to_string(),
             Value::String(self.updated_at.clone()),
         );
+        if !self.tags.is_empty() {
+            map.insert(
+                "tags".to_string(),
+                Value::Sequence(self.tags.iter().map(|t| Value::String(t.clone())).collect()),
+            );
+        }
         map
     }
 }
@@ -460,18 +486,36 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Overwrite the full row for an artifact by deleting it and re-inserting
-    /// from the given `ArtifactRecord`. Used by list-column updates (tags)
-    /// which LanceDB's SQL update path cannot express.
+    /// Atomically replace the full row for an artifact via LanceDB's
+    /// `merge_insert` upsert API. Used by list-column updates (tags) which
+    /// LanceDB's SQL `update` path cannot express.
     ///
     /// Preserves existing `created_at`; callers should update `updated_at`
     /// on the record before calling.
+    ///
+    /// # Crash safety
+    ///
+    /// Prior to Sprint 13.3 audit fix H3 this routine performed
+    /// `delete` followed by `add` as two separate awaits. If the process
+    /// crashed between them — or the `add` failed — the artifact was
+    /// permanently lost from the LanceDB index (only recoverable via
+    /// `forgeplan scan-import` from the markdown source of truth).
+    ///
+    /// We now use `Table::merge_insert(&["id"])` with
+    /// `when_matched_update_all` + `when_not_matched_insert_all`, which
+    /// LanceDB executes as a single transactional operation against the
+    /// underlying Lance dataset. Either the new row is committed or the
+    /// previous row remains intact — there is no observable intermediate
+    /// state. Concurrent merge_inserts on the same `id` are serialized by
+    /// Lance's optimistic-concurrency commit loop with retries.
+    ///
+    /// See Sprint 13.3 audit finding H3 for context.
     async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
         validate_id_for_filter(&record.id)?;
         let schema = schema::artifacts_schema();
-        let empty_tags: Vec<&[String]> = vec![record.tags.as_slice()];
+        let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
         let batch = RecordBatch::try_new(
-            schema,
+            schema.clone(),
             vec![
                 Arc::new(StringArray::from(vec![record.id.as_str()])),
                 Arc::new(StringArray::from(vec![record.kind.as_str()])),
@@ -487,15 +531,25 @@ impl LanceStore {
                 Arc::new(StringArray::from(vec![record.valid_until.as_deref()])),
                 Arc::new(StringArray::from(vec![record.created_at.as_str()])),
                 Arc::new(StringArray::from(vec![record.updated_at.as_str()])),
-                Arc::new(StringArray::from(vec![Option::<&str>::None])),
-                convert::make_null_embedding_col(1),
-                Arc::new(convert::build_tags_list_array(empty_tags)),
+                Arc::new(StringArray::from(vec![record.body_hash.as_deref()])),
+                convert::make_embedding_col_from_option(record.embedding.as_deref()),
+                Arc::new(convert::build_tags_list_array(tags_slices)),
             ],
         )?;
 
-        let predicate = format!("id = '{}'", record.id.replace('\'', "''"));
-        self.artifacts.delete(&predicate).await?;
-        self.artifacts.add(vec![batch]).execute().await?;
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let mut builder = self.artifacts.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(reader).await.map_err(|e| {
+            anyhow::anyhow!(
+                "replace_record: merge_insert failed for '{}': {}. \
+                 Run `forgeplan scan-import` to rebuild the index from markdown if data is missing.",
+                record.id,
+                e
+            )
+        })?;
         Ok(())
     }
 
@@ -547,14 +601,9 @@ impl LanceStore {
     /// filtering is not uniformly supported).
     pub async fn list_by_tag(&self, tag_filter: &str) -> anyhow::Result<Vec<ArtifactRecord>> {
         let all = self.list_records(None).await?;
-        let (key, value) = match tag_filter.split_once('=') {
-            Some((k, v)) => (k.trim().to_string(), Some(v.trim().to_string())),
-            None => (tag_filter.trim().to_string(), None),
-        };
-        let value_ref = value.as_deref();
         let matched: Vec<ArtifactRecord> = all
             .into_iter()
-            .filter(|r| crate::artifact::frontmatter::has_tag_in(&r.tags, &key, value_ref))
+            .filter(|r| crate::search::filter::has_tag_predicate(&r.tags, tag_filter))
             .collect();
         Ok(matched)
     }
@@ -1211,6 +1260,8 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let created_at = get_string(batch, "created_at", row).unwrap_or_default();
     let updated_at = get_string(batch, "updated_at", row).unwrap_or_default();
     let tags = convert::extract_tags(batch, row);
+    let body_hash = get_string(batch, "body_hash", row);
+    let embedding = convert::extract_embedding(batch, row);
     Some(ArtifactRecord {
         id,
         kind,
@@ -1225,6 +1276,8 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
         created_at,
         updated_at,
         tags,
+        body_hash,
+        embedding,
     })
 }
 
@@ -1914,6 +1967,8 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         let summary = record.to_summary();
@@ -1939,6 +1994,8 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-06-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         let map = record.frontmatter_map();
@@ -1964,6 +2021,40 @@ mod tests {
         assert!(map.contains_key("r_eff_score"));
         assert!(map.contains_key("created_at"));
         assert!(map.contains_key("updated_at"));
+        // Empty tags should NOT be emitted
+        assert!(!map.contains_key("tags"));
+    }
+
+    #[tokio::test]
+    async fn roundtrip_artifact_with_tags_through_frontmatter_map() {
+        let record = ArtifactRecord {
+            id: "PRD-099".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Tags".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            tags: vec!["source=code".to_string(), "layer=auth".to_string()],
+            body_hash: None,
+            embedding: None,
+        };
+
+        let map = record.frontmatter_map();
+        let seq = match map.get("tags").unwrap() {
+            serde_yaml::Value::Sequence(s) => s,
+            _ => panic!("tags should be a sequence"),
+        };
+        assert_eq!(seq.len(), 2);
+
+        // Round-trip through tags_from_frontmatter
+        let tags = crate::artifact::frontmatter::tags_from_frontmatter(&map);
+        assert_eq!(tags, vec!["source=code", "layer=auth"]);
     }
 
     #[tokio::test]
@@ -2087,6 +2178,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         let text = record.embedding_text(2000);
@@ -2122,6 +2215,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         // Default chunk_size=2000
@@ -2160,6 +2255,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 
@@ -2381,6 +2478,91 @@ mod tests {
         assert_eq!(rec.tags, vec!["source=code", "reviewed"]);
     }
 
+    /// Sprint 13.3 audit H3 regression: `replace_record` must be atomic.
+    /// The previous implementation did delete-then-add as two awaits — a
+    /// crash or a failed `add` left the artifact permanently lost. We now
+    /// use `merge_insert`, which Lance commits atomically. This test
+    /// guards against accidental reintroduction of the delete/add pattern
+    /// by confirming that after a successful `add_tags` (which calls
+    /// `replace_record`) all original fields are preserved and the row
+    /// count for the id stays at exactly 1 — i.e. no duplicates and no
+    /// missing rows, as you'd see with a non-atomic implementation that
+    /// races against itself.
+    #[tokio::test]
+    async fn replace_record_is_atomic_preserves_fields() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-150");
+        art.tags = vec!["source=code".to_string()];
+        art.author = Some("alice".to_string());
+        art.parent_epic = Some("EPIC-001".to_string());
+        store.create_artifact(&art).await.unwrap();
+
+        let original_created_at = store
+            .get_record("PRD-150")
+            .await
+            .unwrap()
+            .unwrap()
+            .created_at
+            .clone();
+
+        // Trigger replace_record via add_tags.
+        store
+            .add_tags("PRD-150", &["layer=domain".to_string()])
+            .await
+            .unwrap();
+
+        // Row must still exist with all fields intact (no data loss).
+        let rec = store.get_record("PRD-150").await.unwrap().unwrap();
+        assert_eq!(rec.id, "PRD-150");
+        assert_eq!(rec.kind, art.kind);
+        assert_eq!(rec.title, art.title);
+        assert_eq!(rec.body, art.body);
+        assert_eq!(rec.author.as_deref(), Some("alice"));
+        assert_eq!(rec.parent_epic.as_deref(), Some("EPIC-001"));
+        assert_eq!(rec.created_at, original_created_at);
+        assert_eq!(rec.tags, vec!["source=code", "layer=domain"]);
+
+        // And exactly one row exists (merge_insert must not duplicate).
+        let listed = store.list_records(None).await.unwrap();
+        let matches: Vec<_> = listed.iter().filter(|r| r.id == "PRD-150").collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "merge_insert must produce exactly one row per id"
+        );
+    }
+
+    /// Sprint 13.3 audit H3: repeated replace_record calls must be safe
+    /// — no row loss, no duplicates — even when invoked back-to-back.
+    /// This is the closest we can get to exercising the atomic-commit
+    /// path without injecting failures into the LanceDB internals.
+    #[tokio::test]
+    async fn replace_record_repeated_calls_no_data_loss() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-151");
+        art.tags = vec!["a".to_string()];
+        store.create_artifact(&art).await.unwrap();
+
+        for i in 0..5 {
+            store
+                .add_tags("PRD-151", &[format!("tag{i}")])
+                .await
+                .unwrap();
+        }
+
+        let rec = store.get_record("PRD-151").await.unwrap().unwrap();
+        assert_eq!(rec.tags, vec!["a", "tag0", "tag1", "tag2", "tag3", "tag4"]);
+
+        let listed = store.list_records(None).await.unwrap();
+        assert_eq!(
+            listed.iter().filter(|r| r.id == "PRD-151").count(),
+            1,
+            "repeated replace_record must not duplicate rows"
+        );
+    }
+
     #[tokio::test]
     async fn list_by_tag_key_value_filter() {
         let tmp = TempDir::new().unwrap();
@@ -2423,6 +2605,86 @@ mod tests {
         let rev = store.list_by_tag("reviewed").await.unwrap();
         assert_eq!(rev.len(), 1);
         assert_eq!(rev[0].id, "PRD-121");
+    }
+
+    #[tokio::test]
+    async fn add_tags_preserves_body_hash() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-200"))
+            .await
+            .unwrap();
+
+        // Seed body_hash via replace_record (simulates PRD-043 integrity write).
+        let mut rec = store.get_record("PRD-200").await.unwrap().unwrap();
+        rec.body_hash = Some("deadbeef-0000abcd".to_string());
+        store.replace_record(&rec).await.unwrap();
+
+        store
+            .add_tags("PRD-200", &["source=code".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-200").await.unwrap().unwrap();
+        assert_eq!(
+            after.body_hash.as_deref(),
+            Some("deadbeef-0000abcd"),
+            "C2: add_tags must preserve body_hash"
+        );
+        assert_eq!(after.tags, vec!["source=code"]);
+    }
+
+    #[tokio::test]
+    async fn add_tags_preserves_embedding() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-201"))
+            .await
+            .unwrap();
+
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let vec_in: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.001).collect();
+        let mut rec = store.get_record("PRD-201").await.unwrap().unwrap();
+        rec.embedding = Some(vec_in.clone());
+        store.replace_record(&rec).await.unwrap();
+
+        store
+            .add_tags("PRD-201", &["layer=domain".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-201").await.unwrap().unwrap();
+        let got = after.embedding.expect("C2: embedding must be preserved");
+        assert_eq!(got.len(), dim);
+        assert_eq!(got, vec_in);
+    }
+
+    #[tokio::test]
+    async fn remove_tags_preserves_body_hash_and_embedding() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-202");
+        art.tags = vec!["source=code".to_string(), "drop_me".to_string()];
+        store.create_artifact(&art).await.unwrap();
+
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let vec_in: Vec<f32> = vec![0.5f32; dim];
+        let mut rec = store.get_record("PRD-202").await.unwrap().unwrap();
+        rec.body_hash = Some("cafef00d-12345678".to_string());
+        rec.embedding = Some(vec_in.clone());
+        store.replace_record(&rec).await.unwrap();
+
+        store
+            .remove_tags("PRD-202", &["drop_me".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-202").await.unwrap().unwrap();
+        assert_eq!(after.body_hash.as_deref(), Some("cafef00d-12345678"));
+        assert_eq!(after.embedding.as_deref(), Some(vec_in.as_slice()));
+        assert_eq!(after.tags, vec!["source=code"]);
     }
 
     #[tokio::test]

@@ -108,6 +108,8 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         author: None,
         parent_epic: None,
         valid_until: None,
+        // C1: new artifacts start untagged; users add tags later via `forgeplan tag`.
+        // TODO: add `--tag key=value` flag in future sprint.
         tags: Vec::new(),
     };
     store

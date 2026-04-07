@@ -182,6 +182,12 @@ async fn process_detected_file(
         })
         .unwrap_or_else(|| "Untitled".to_string());
 
+    // Parse frontmatter to extract tags (ADR-003: files = source of truth)
+    let tags = match crate::artifact::frontmatter::parse_frontmatter(&file.content) {
+        Ok((fm, _body)) => crate::artifact::frontmatter::tags_from_frontmatter(&fm),
+        Err(_) => Vec::new(),
+    };
+
     let new_artifact = NewArtifact {
         id: artifact_id.clone(),
         kind: detection.kind.template_key().to_string(),
@@ -192,7 +198,7 @@ async fn process_detected_file(
         author: Some("scan-import".to_string()),
         parent_epic: None,
         valid_until: None,
-        tags: Vec::new(),
+        tags,
     };
 
     match store.create_artifact(&new_artifact).await {
@@ -284,6 +290,26 @@ mod tests {
 
         assert_eq!(result.imported, 1);
         assert!(store.get_artifact("RFC-001").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn import_preserves_frontmatter_tags() {
+        // C1 fix: scan-import must parse tags from frontmatter (ADR-003: files=truth).
+        let (tmp, _ws, store) = setup_store().await;
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("PRD-007-tagged.md"),
+            "---\nkind: prd\nid: PRD-007\ntitle: Tagged\ntags:\n  - source=code\n  - layer=auth\n---\n# Tagged",
+        )
+        .unwrap();
+
+        let opts = ScanImportOptions::default();
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(result.imported, 1);
+        let rec = store.get_record("PRD-007").await.unwrap().unwrap();
+        assert_eq!(rec.tags, vec!["source=code", "layer=auth"]);
     }
 
     #[tokio::test]

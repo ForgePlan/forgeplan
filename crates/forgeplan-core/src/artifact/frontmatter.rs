@@ -66,33 +66,15 @@ pub fn tags_from_frontmatter(fm: &Frontmatter) -> Vec<String> {
 
 /// Check whether a tag list contains a given key/value match.
 ///
-/// - `has_tag_in(&tags, "source", Some("code"))` → matches `"source=code"`.
-/// - `has_tag_in(&tags, "legacy", None)` → matches any tag equal to `"legacy"`
-///   OR any tag starting with `"legacy="`.
+/// Thin wrapper around [`crate::search::filter::has_tag_predicate`] — the
+/// canonical implementation lives in the search module (Sprint 13.3 H1/H3
+/// fix to remove the leaky abstraction). Kept here for source compatibility.
 pub fn has_tag_in(tags: &[String], key: &str, value: Option<&str>) -> bool {
-    for t in tags {
-        match value {
-            Some(v) => {
-                if let Some((k, val)) = t.split_once('=')
-                    && k.trim() == key
-                    && val.trim() == v
-                {
-                    return true;
-                }
-            }
-            None => {
-                if t == key {
-                    return true;
-                }
-                if let Some((k, _)) = t.split_once('=')
-                    && k.trim() == key
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    let filter = match value {
+        Some(v) => format!("{}={}", key, v),
+        None => key.to_string(),
+    };
+    crate::search::filter::has_tag_predicate(tags, &filter)
 }
 
 #[cfg(test)]

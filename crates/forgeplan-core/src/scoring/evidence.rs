@@ -42,6 +42,18 @@ impl SourceTier {
 }
 
 /// Parse evidence metadata from an ArtifactRecord's body fields.
+///
+/// Evidence CL precedence rules:
+/// - If only `source_tier`: use tier_cl (T1→CL3, T2→CL2, T3→CL1)
+/// - If only explicit `congruence_level`: use it directly
+/// - If BOTH present: take the MINIMUM (more conservative) — explicit user
+///   downgrade always wins over automatic tier upgrade
+/// - If neither: default to CL3
+///
+/// This prevents self-signed T1 evidence from overriding an operator's explicit
+/// downgrade, closing the trust-amplification attack surface identified in
+/// PRD-035 Sprint 13.3 security audit H2 (a malicious contributor cannot
+/// inflate `R_eff` by tagging weak evidence as `source_tier: t1`).
 pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
     let verdict = extract_field(&record.body, "verdict")
         .map(|s| match s.to_lowercase().as_str() {
@@ -52,8 +64,6 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         })
         .unwrap_or(Verdict::Supports);
 
-    // source_tier (if present) takes precedence over congruence_level.
-    // This enables discovery findings to auto-map tier → CL for R_eff.
     let tier_cl = extract_field(&record.body, "source_tier")
         .and_then(|s| SourceTier::parse(&s))
         .map(|t| t.to_congruence_level());
@@ -62,15 +72,24 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         .and_then(|s| s.parse::<u8>().ok())
         .map(|v| v.min(3));
 
-    if tier_cl.is_some() && explicit_cl.is_some() {
+    if tier_cl.is_some() && explicit_cl.is_some() && tier_cl != explicit_cl {
         eprintln!(
-            "warn: evidence {} has both source_tier and congruence_level; source_tier takes precedence",
-            record.id
+            "warn: evidence {} has divergent source_tier (CL{}) and congruence_level (CL{}); using MIN (more conservative) to prevent trust inflation",
+            record.id,
+            tier_cl.unwrap(),
+            explicit_cl.unwrap(),
         );
     }
 
+    // Precedence: take MIN of (tier_cl, explicit_cl). Explicit operator
+    // downgrade can never be silently overridden by an automatic tier mapping.
     // Default CL=3 (same context) — evidence created locally is same-context by default.
-    let cl = tier_cl.or(explicit_cl).unwrap_or(3);
+    let cl = match (tier_cl, explicit_cl) {
+        (Some(t), Some(e)) => t.min(e),
+        (Some(t), None) => t,
+        (None, Some(e)) => e,
+        (None, None) => 3,
+    };
 
     let valid_until = record.valid_until.as_deref().and_then(|s| {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
@@ -194,6 +213,8 @@ congruence_level: 3
             created_at: String::new(),
             updated_at: String::new(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 
@@ -238,13 +259,43 @@ congruence_level: 3
     }
 
     #[test]
-    fn evidence_body_source_tier_takes_precedence_over_cl() {
+    fn source_tier_does_not_override_explicit_downgrade() {
+        // H2 fix: explicit operator downgrade must win over automatic tier upgrade.
         let body = "source_tier: t1\ncongruence_level: 0\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(
-            item.congruence_level, 3,
-            "source_tier must win over explicit congruence_level"
+            item.congruence_level, 0,
+            "explicit CL=0 must win over source_tier=t1 (min wins, prevents trust inflation)"
         );
+    }
+
+    #[test]
+    fn explicit_cl_does_not_inflate_above_source_tier() {
+        // source_tier=t3 (CL1) + congruence_level=3 → min = 1
+        let body = "source_tier: t3\ncongruence_level: 3\n";
+        let item = parse_evidence_from_record(&mk_record(body));
+        assert_eq!(item.congruence_level, 1);
+    }
+
+    #[test]
+    fn source_tier_used_when_no_explicit_cl() {
+        let body = "source_tier: t2\n";
+        let item = parse_evidence_from_record(&mk_record(body));
+        assert_eq!(item.congruence_level, 2);
+    }
+
+    #[test]
+    fn explicit_cl_used_when_no_source_tier() {
+        let body = "congruence_level: 2\n";
+        let item = parse_evidence_from_record(&mk_record(body));
+        assert_eq!(item.congruence_level, 2);
+    }
+
+    #[test]
+    fn neither_field_defaults_to_cl3() {
+        let body = "verdict: supports\n";
+        let item = parse_evidence_from_record(&mk_record(body));
+        assert_eq!(item.congruence_level, 3);
     }
 
     #[test]
@@ -281,6 +332,8 @@ congruence_level: 3
             created_at: String::new(),
             updated_at: String::new(),
             tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
         let item = parse_evidence_from_record(&record);
         assert_eq!(item.congruence_level, 3, "Should be CL3, not CL0");

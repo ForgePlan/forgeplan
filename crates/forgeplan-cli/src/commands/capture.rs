@@ -45,6 +45,7 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         author: None,
         parent_epic: None,
         valid_until: None,
+        // C1: fresh capture has no tags yet — user adds via `forgeplan tag` later.
         tags: Vec::new(),
     };
 

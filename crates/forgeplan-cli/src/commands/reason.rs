@@ -192,6 +192,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             author: None,
             parent_epic: None,
             valid_until: None,
+            // C1: ADI reasoning notes are untagged; the `informs` link carries provenance.
             tags: Vec::new(),
         };
 

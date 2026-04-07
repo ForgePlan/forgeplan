@@ -87,6 +87,8 @@ impl ArtifactStorage for InMemoryStore {
             created_at: now.clone(),
             updated_at: now,
             tags: artifact.tags.clone(),
+            body_hash: None,
+            embedding: None,
         };
         let id = record.id.clone();
         self.state

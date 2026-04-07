@@ -3411,3 +3411,135 @@ fn test_list_tag_filter_empty_when_no_match() {
         .success()
         .stdout(predicate::str::contains("[]"));
 }
+
+/// Regression: `forgeplan tag` must write tags to the markdown frontmatter,
+/// not only to LanceDB. ADR-003 files-first — files are source of truth.
+#[test]
+fn tag_writes_to_markdown_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "source=code", "layer=domain"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Find the PRD-001 markdown file
+    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    let mut found = None;
+    for entry in std::fs::read_dir(&prds_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("PRD-001") && name.ends_with(".md") {
+            found = Some(entry.path());
+            break;
+        }
+    }
+    let path = found.expect("PRD-001 markdown file should exist");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        content.contains("tags:"),
+        "frontmatter must contain `tags:` field, got:\n{}",
+        content
+    );
+    assert!(
+        content.contains("source=code"),
+        "frontmatter must contain `source=code` tag, got:\n{}",
+        content
+    );
+    assert!(
+        content.contains("layer=domain"),
+        "frontmatter must contain `layer=domain` tag, got:\n{}",
+        content
+    );
+}
+
+/// Regression: tags written to markdown must survive a full reindex
+/// (delete LanceDB, rebuild from files).
+#[test]
+fn tag_survives_reindex_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "source=code"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Simulate fresh-clone reindex: back up the markdown files, wipe the
+    // workspace (which deletes the LanceDB index AND the prds dir), recreate
+    // an empty workspace, restore the markdown, then scan-import.
+    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    let backup_dir = tmp.path().join("prds_backup");
+    std::fs::create_dir_all(&backup_dir).unwrap();
+    for entry in std::fs::read_dir(&prds_dir).unwrap() {
+        let entry = entry.unwrap();
+        let dest = backup_dir.join(entry.file_name());
+        std::fs::copy(entry.path(), &dest).unwrap();
+    }
+
+    forgeplan()
+        .args(["init", "-y", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Restore markdown files into the freshly initialised workspace.
+    for entry in std::fs::read_dir(&backup_dir).unwrap() {
+        let entry = entry.unwrap();
+        let dest = prds_dir.join(entry.file_name());
+        std::fs::copy(entry.path(), &dest).unwrap();
+    }
+
+    forgeplan()
+        .args(["reindex"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // The tag must still be queryable after reindex.
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+}
+
+/// Regression: `forgeplan untag` must also propagate to markdown frontmatter.
+#[test]
+fn untag_writes_to_markdown_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "alpha", "beta"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["untag", "PRD-001", "beta"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    let path = std::fs::read_dir(&prds_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("PRD-001") && n.ends_with(".md")
+        })
+        .map(|e| e.path())
+        .expect("PRD-001 markdown file");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("alpha"), "alpha must remain: {}", content);
+    assert!(
+        !content.contains("beta"),
+        "beta must be removed: {}",
+        content
+    );
+}

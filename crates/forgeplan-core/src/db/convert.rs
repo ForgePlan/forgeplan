@@ -177,6 +177,51 @@ pub(crate) fn make_null_embedding_col(len: usize) -> Arc<dyn Array> {
     ))
 }
 
+/// Build a one-row embedding column from an optional vector.
+///
+/// If `embedding` is `Some`, builds a `FixedSizeListArray` with one non-null
+/// row containing the values. If `None`, returns a one-row null embedding
+/// column. Used by `replace_record` to preserve pre-computed embeddings
+/// across full-row rewrites (PRD-035 / Sprint 13.3 C2 fix).
+pub(crate) fn make_embedding_col_from_option(embedding: Option<&[f32]>) -> Arc<dyn Array> {
+    use arrow_array::{FixedSizeListArray, Float32Array};
+    use arrow_schema::Field;
+
+    let dim = schema::EMBEDDING_DIM as usize;
+    let item_field = Arc::new(Field::new("item", arrow_schema::DataType::Float32, true));
+
+    match embedding {
+        Some(vec) if vec.len() == dim => {
+            let values = Arc::new(Float32Array::from(vec.to_vec()));
+            Arc::new(FixedSizeListArray::new(
+                item_field,
+                schema::EMBEDDING_DIM,
+                values,
+                None,
+            ))
+        }
+        // Wrong-length vectors fall back to a null row to avoid corrupting
+        // the schema. Callers that care should re-embed.
+        _ => make_null_embedding_col(1),
+    }
+}
+
+/// Extract a single row's embedding vector from a `FixedSizeListArray` column.
+///
+/// Returns `None` when the column is missing, the row is null, or the inner
+/// values cannot be downcast to `Float32Array`.
+pub(crate) fn extract_embedding(batch: &RecordBatch, row: usize) -> Option<Vec<f32>> {
+    use arrow_array::{FixedSizeListArray, Float32Array};
+    let col = batch.column_by_name("embedding")?;
+    let list = col.as_any().downcast_ref::<FixedSizeListArray>()?;
+    if list.is_null(row) {
+        return None;
+    }
+    let values = list.value(row);
+    let arr = values.as_any().downcast_ref::<Float32Array>()?;
+    Some((0..arr.len()).map(|i| arr.value(i)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
