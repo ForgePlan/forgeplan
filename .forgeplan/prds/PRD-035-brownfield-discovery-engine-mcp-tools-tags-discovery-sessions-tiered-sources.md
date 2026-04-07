@@ -71,10 +71,10 @@ Impact: ForgePlan бесполезен на brownfield проектах без �
 - [x] FR-001: [System] can store tags on artifacts (frontmatter field tags: []) — Sprint 13.3, PR #150
 - [x] FR-002: [Developer] can add/remove tags: forgeplan tag/untag id key=value — Sprint 13.3, PR #150
 - [x] FR-003: [Developer] can filter by tags: forgeplan list --tag source=legacy-doc — Sprint 13.3, PR #150
-- [ ] FR-004: [MCP] forgeplan_discover_start(project_name) creates session, returns protocol — Sprint 13.4
-- [ ] FR-005: [MCP] forgeplan_discover_finding(session, phase, tier, kind, title, body) creates artifact + links + tags — Sprint 13.4
-- [ ] FR-006: [MCP] forgeplan_discover_complete(session) generates summary + health check — Sprint 13.4
-- [ ] FR-007: [CLI] forgeplan discover creates session, outputs protocol, tracks progress — Sprint 13.4
+- [x] FR-004: [MCP] forgeplan_discover_start(project_name) creates session, returns protocol — Sprint 13.4
+- [x] FR-005: [MCP] forgeplan_discover_finding(session, phase, tier, kind, title, body) creates artifact + links + tags — Sprint 13.4
+- [x] FR-006: [MCP] forgeplan_discover_complete(session) generates summary + health check — Sprint 13.4
+- [x] FR-007: [CLI] forgeplan discover creates session, outputs protocol, tracks progress — Sprint 13.4
 - [x] FR-008: [System] map source tier to CL for R_eff: tier 1=CL3, tier 2=CL2, tier 3=CL1 — Sprint 13.3, PR #150
 
 ### Phase 2: Deepening and Multi-Pass (Sprint 14+)

@@ -126,6 +126,7 @@ pub const ARTIFACT_DIRS: &[&str] = &[
     "notes",
     "refresh",
     "memory",
+    "discovery",
 ];
 
 /// Initialize a `.forgeplan/` workspace in the given directory.

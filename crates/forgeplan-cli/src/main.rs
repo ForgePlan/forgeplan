@@ -72,6 +72,11 @@ enum Commands {
         #[arg(required = true)]
         tags: Vec<String>,
     },
+    /// Start brownfield discovery — creates session, prints protocol for agent
+    Discover {
+        #[command(subcommand)]
+        action: DiscoverAction,
+    },
     /// Validate artifact completeness against schema rules
     Validate {
         /// Artifact ID (validates all if omitted)
@@ -530,6 +535,27 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum DiscoverAction {
+    /// Start a new discovery session — prints protocol for AI agent
+    Start {
+        /// Project name for the discovery session
+        name: String,
+    },
+    /// List all discovery sessions in the workspace
+    List,
+    /// Show status of a discovery session
+    Show {
+        /// Session ID (e.g. disc-20260407-abc)
+        session_id: String,
+    },
+    /// Mark a discovery session as completed
+    Complete {
+        /// Session ID to complete
+        session_id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum FpfCommands {
     /// Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
     Dashboard,
@@ -584,6 +610,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Status => commands::status::run().await,
         Commands::Tag { id, tags } => commands::tag::run_add(&id, &tags).await,
         Commands::Untag { id, tags } => commands::tag::run_remove(&id, &tags).await,
+        Commands::Discover { action } => match action {
+            DiscoverAction::Start { name } => commands::discover::run_start(&name).await,
+            DiscoverAction::List => commands::discover::run_list().await,
+            DiscoverAction::Show { session_id } => commands::discover::run_show(&session_id).await,
+            DiscoverAction::Complete { session_id } => {
+                commands::discover::run_complete(&session_id).await
+            }
+        },
         Commands::Validate {
             id,
             json,

@@ -4,6 +4,7 @@ pub mod config;
 pub mod coverage;
 pub mod db;
 pub mod depth;
+pub mod discover;
 pub mod drift;
 pub mod driver;
 pub mod duplicate;

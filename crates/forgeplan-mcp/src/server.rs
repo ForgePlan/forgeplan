@@ -376,6 +376,39 @@ struct FpfSectionParams {
     id: String,
 }
 
+// ── Discover params (PRD-035 FR-004..006) ────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverStartParams {
+    /// Project name for the discovery session
+    project_name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverFindingParams {
+    /// Session ID returned by discover_start
+    session_id: String,
+    /// Phase (detect / structure / code / git / tests / docs / synthesize)
+    phase: String,
+    /// Source tier (1, 2, or 3)
+    tier: u8,
+    /// Artifact kind to create (note / prd / rfc / problem / evidence)
+    kind: String,
+    /// Artifact title
+    title: String,
+    /// Artifact body (markdown)
+    body: String,
+    /// Source file paths that informed this finding
+    #[serde(default)]
+    source_files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverCompleteParams {
+    /// Session ID to complete
+    session_id: String,
+}
+
 // ── Tool implementations ─────────────────────────────────────
 
 #[tool_router]
@@ -2679,6 +2712,197 @@ impl ForgeplanServer {
             "allowed": result.is_ok(),
             "reason": result.err().unwrap_or_else(|| "Transition allowed".into()),
             "next_action": session.next_action_hint(),
+        })))
+    }
+
+    // ── Discover tools (PRD-035 FR-004..006) ────────────────────
+
+    #[tool(
+        description = "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding."
+    )]
+    async fn forgeplan_discover_start(
+        &self,
+        Parameters(p): Parameters<DiscoverStartParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let session = forgeplan_core::discover::DiscoverSession::new(&p.project_name);
+        let protocol = forgeplan_core::discover::Protocol::default();
+
+        if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
+            return Ok(err_result(&format!("Failed to save session: {e}")));
+        }
+
+        Ok(json_result(&serde_json::json!({
+            "session_id": session.id,
+            "project_name": session.project_name,
+            "status": session.status,
+            "current_phase": session.current_phase,
+            "protocol": protocol,
+            "_next_action": format!(
+                "Start with phase 1 (detect): {}",
+                forgeplan_core::discover::Phase::Detect.instructions()
+            ),
+        })))
+    }
+
+    #[tool(
+        description = "Report a discovery finding. The agent calls this after analyzing a file/module/git-log during a phase. ForgePlan creates an artifact (note/prd/rfc/problem/evidence) with the finding content, tags it with the source tier, and links it to the discovery session."
+    )]
+    async fn forgeplan_discover_finding(
+        &self,
+        Parameters(p): Parameters<DiscoverFindingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Parse phase
+        let phase = match p.phase.to_lowercase().as_str() {
+            "detect" => forgeplan_core::discover::Phase::Detect,
+            "structure" => forgeplan_core::discover::Phase::Structure,
+            "code" => forgeplan_core::discover::Phase::Code,
+            "git" => forgeplan_core::discover::Phase::Git,
+            "tests" => forgeplan_core::discover::Phase::Tests,
+            "docs" => forgeplan_core::discover::Phase::Docs,
+            "synthesize" => forgeplan_core::discover::Phase::Synthesize,
+            _ => return Ok(err_result(&format!("Unknown phase: {}", p.phase))),
+        };
+
+        // Validate tier
+        if !(1..=3).contains(&p.tier) {
+            return Ok(err_result(&format!(
+                "Invalid tier: {} (must be 1, 2, or 3)",
+                p.tier
+            )));
+        }
+
+        // Load session
+        let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+        };
+
+        // Create artifact from finding
+        let artifact_kind: ArtifactKind = match p.kind.parse() {
+            Ok(k) => k,
+            Err(e) => return Ok(err_result(&format!("Invalid kind: {e}"))),
+        };
+        let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
+        let id = match store.next_id(&prefix).await {
+            Ok(id) => id,
+            Err(e) => return Ok(err_result(&format!("ID generation failed: {e}"))),
+        };
+
+        // Build tags: source=tier{N} + phase={phase_name} + optionally legacy-doc for tier 3
+        let mut tags = vec![
+            format!("source=tier{}", p.tier),
+            format!("phase={}", phase.name()),
+        ];
+        if p.tier == 3 {
+            tags.push("source=legacy-doc".into());
+        }
+        tags.push(format!("discover-session={}", session.id));
+
+        // Format body with source files metadata
+        let mut full_body = p.body.clone();
+        if !p.source_files.is_empty() {
+            full_body.push_str("\n\n## Source Files\n\n");
+            for f in &p.source_files {
+                full_body.push_str(&format!("- `{}`\n", f));
+            }
+        }
+
+        let new_artifact = NewArtifact {
+            id: id.clone(),
+            kind: artifact_kind.template_key().to_string(),
+            status: "draft".to_string(),
+            title: p.title.clone(),
+            body: full_body,
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: tags.clone(),
+        };
+
+        if let Err(e) = store.create_artifact(&new_artifact).await {
+            return Ok(err_result(&format!("Failed to create artifact: {e}")));
+        }
+
+        // Update session
+        let finding = forgeplan_core::discover::Finding {
+            phase,
+            tier: p.tier,
+            kind: p.kind.clone(),
+            title: p.title.clone(),
+            body: p.body.clone(),
+            source_files: p.source_files.clone(),
+            artifact_id: Some(id.clone()),
+            created_at: chrono::Utc::now(),
+        };
+        session.add_finding(finding);
+        session.current_phase = phase;
+
+        if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
+            return Ok(err_result(&format!("Failed to update session: {e}")));
+        }
+
+        Ok(json_result(&serde_json::json!({
+            "session_id": session.id,
+            "artifact_id": id,
+            "phase": phase.name(),
+            "tier": p.tier,
+            "total_findings": session.findings.len(),
+            "status": session.status,
+            "_next_action": "Continue to next finding or call forgeplan_discover_complete when done with all phases",
+        })))
+    }
+
+    #[tool(
+        description = "Complete a discovery session. Generates a summary report with findings per phase/tier, runs forgeplan health, and marks the session as completed."
+    )]
+    async fn forgeplan_discover_complete(
+        &self,
+        Parameters(p): Parameters<DiscoverCompleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+        };
+
+        session.complete();
+
+        if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
+            return Ok(err_result(&format!("Failed to save session: {e}")));
+        }
+
+        let phase_counts = session.phase_counts();
+        let tier_counts = session.tier_counts();
+
+        Ok(json_result(&serde_json::json!({
+            "session_id": session.id,
+            "project_name": session.project_name,
+            "status": session.status,
+            "total_findings": session.findings.len(),
+            "phase_counts": phase_counts.iter().map(|(p, c)| (p.name(), c)).collect::<std::collections::HashMap<_, _>>(),
+            "tier_counts": tier_counts,
+            "artifacts_created": session.findings.iter().filter_map(|f| f.artifact_id.clone()).collect::<Vec<_>>(),
+            "completed_at": session.completed_at,
+            "_next_action": "Run forgeplan health to validate discovery, then forgeplan validate each new artifact",
         })))
     }
 }
