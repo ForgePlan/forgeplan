@@ -160,9 +160,17 @@ FPF Rule Engine (реализован в Sprint 12, PR #133+#135) станови
 
 - `crates/forgeplan-cli/src/commands/fpf.rs` — extend с rules + check subcommands
 - `crates/forgeplan-cli/src/main.rs` — register subcommands
-- `crates/forgeplan-mcp/src/server.rs` — add 2 MCP tools
+- `crates/forgeplan-mcp/src/server.rs` — add 2 MCP tools (`forgeplan_fpf_rules`, `forgeplan_fpf_check`)
 - `crates/forgeplan-mcp/src/types.rs` — request/response types
-- `crates/forgeplan-core/src/fpf/ext/rules.rs` — possibly expose `evaluate_artifact()` as pub
+
+**Note on rules.rs:** API уже public — все необходимые функции доступны:
+- `pub fn run_rules(rules, data) -> Option<SuggestedAction>` (rules.rs:330)
+- `pub fn check_basic(rule, data) -> bool` (rules.rs:246)
+- `pub fn check_enriched(rule, data) -> bool` (rules.rs:291)
+- `pub fn default_rules() -> Vec<Rule>` (rules.rs:371)
+- `pub struct Rule, EnrichedData, ArtifactData` (rules.rs:20, 228)
+
+CLI/MCP просто читают `FpfConfig.rules` и вызывают `run_rules()`. **0 LOC в core**.
 
 ## Related Artifacts
 

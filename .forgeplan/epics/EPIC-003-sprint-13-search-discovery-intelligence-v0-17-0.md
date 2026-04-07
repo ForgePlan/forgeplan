@@ -22,13 +22,14 @@ depth: deep
 ## Progress
 
 ```
+PRD-043  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   Methodology Integrity (FOUNDATION)
 PRD-039  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   Smart Search v2
 PRD-035  ░░░░░░░░░░░░░░░░░░░░░░░░  0/13  Brownfield Discovery
 PRD-040  ░░░░░░░░░░░░░░░░░░░░░░░░  0/2   Scoring Intelligence
 PRD-041  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   FPF Rules CLI/MCP
-PRD-042  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   KB Vector Search
+PRD-042  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   KB Vector Search (supersedes PRD-018)
 ─────────────────────────────────────────────────
-TOTAL                              0/25  ( 0%)
+TOTAL                              0/29  ( 0%)
 ```
 
 ---
@@ -78,15 +79,18 @@ Sprint 13 — единый release v0.17.0 объединяющий **5 неза
 
 ## Children PRDs
 
-| PRD | Title | Sprint | LOC |
-|-----|-------|--------|-----|
-| PRD-039 | Smart Search v2 | 13.1 | ~430 |
-| PRD-035 | Brownfield Discovery | 13.4a + 13.4b | ~750 |
-| PRD-040 | Scoring & Routing Intelligence | 13.5 | ~130 |
-| PRD-041 | FPF Rules CLI/MCP | 13.2 | ~150 |
-| PRD-042 | FPF KB Vector Search | 13.3 | ~150 |
+| Sprint | PRD | Title | LOC | Note |
+|--------|-----|-------|-----|------|
+| 13.0 | — | Security Hotfix | ~10 | No artifact |
+| 13.1 | PRD-043 | Methodology Integrity (FOUNDATION) | ~160 | NEW — fixes PROB-024 |
+| 13.2 | PRD-039 | Smart Search v2 | ~430 | |
+| 13.3 | PRD-035 (p1) | Brownfield Discovery — Tags + Tier | ~250 | FR-001..003 + FR-008 |
+| 13.4 | PRD-035 (p2) | Brownfield Discovery — MCP + CLI | ~500 | FR-004..007 |
+| 13.5 | PRD-040 | Scoring & Routing Intelligence | ~130 | |
+| 13.6 | PRD-041 | FPF Rules CLI/MCP | ~150 | |
+| 13.7 | PRD-042 | FPF KB Vector Search (supersedes PRD-018) | ~200 | Schema migration |
 
-## Phases
+## Phases (linear, methodology-correct order)
 
 ### Phase 0: Security Hotfix (Sprint 13.0)
 - Vite + lru dependency bumps (4 CVE fixes)
@@ -94,44 +98,54 @@ Sprint 13 — единый release v0.17.0 объединяющий **5 неза
 - No artifact (Tactical hotfix)
 - Time: 1-2h
 
-### Phase 1: Smart Search v2 (Sprint 13.1)
-- PRD-039: BM25 + Composable Filters + Graph Expansion
-- Branch: `feat/sprint-13.1-prd-039-search`
+### Phase 1: Methodology Integrity FOUNDATION (Sprint 13.1)
+- **PRD-043**: Duplicate guard + stub detection + health check
+- **Why first:** prevents future stubs/duplicates in remaining sprints
+- Also: cleanup PRD-018 (existing stub) via supersede by PRD-042 in Sprint 13.7
+- Branch: `feat/sprint-13.1-prd-043-integrity`
+- TeamCreate: 3 waves, ~160 LOC
+- Time: 1d
+
+### Phase 2: Smart Search v2 (Sprint 13.2)
+- **PRD-039**: BM25 + Composable Filters + Graph Expansion
+- Branch: `feat/sprint-13.2-prd-039-search`
 - TeamCreate: 4 waves, ~430 LOC
 - Time: 1-1.5d
 
-### Phase 2: Brownfield Discovery Phase 1 (Sprint 13.4a)
-- PRD-035 part 1: Tags system + Source tier mapping (FR-001..003 + FR-008)
-- Branch: `feat/sprint-13.4a-prd-035-tags`
+### Phase 3: Brownfield Discovery Tags (Sprint 13.3)
+- **PRD-035 part 1**: Tags system + Source tier mapping (FR-001..003 + FR-008)
+- Branch: `feat/sprint-13.3-prd-035-tags`
 - TeamCreate: 4 waves, ~250 LOC
 - Time: 1.5d
 
-### Phase 3: Brownfield Discovery Phase 2 (Sprint 13.4b)
-- PRD-035 part 2: MCP discover tools + CLI command (FR-004..007)
-- Branch: `feat/sprint-13.4b-prd-035-discover`
-- Depends on Phase 2 merged
+### Phase 4: Brownfield Discovery MCP (Sprint 13.4)
+- **PRD-035 part 2**: MCP discover tools + CLI command (FR-004..007)
+- Branch: `feat/sprint-13.4-prd-035-discover`
+- Depends on Sprint 13.3 merged
 - TeamCreate: 4 waves, ~500 LOC
 - Time: 2d
 
-### Phase 4: Scoring & Routing Intelligence (Sprint 13.5)
-- PRD-040: Skills Memory + R_eff Confidence Intervals
+### Phase 5: Scoring & Routing Intelligence (Sprint 13.5)
+- **PRD-040**: Skills Memory + R_eff Confidence Intervals
 - Branch: `feat/sprint-13.5-prd-040-scoring`
 - TeamCreate: 3 waves, ~130 LOC
 - Time: 0.5-1d
 
-### Phase 5: FPF Rules CLI/MCP (Sprint 13.2)
-- PRD-041: forgeplan fpf rules + check + MCP tools
-- Branch: `feat/sprint-13.2-prd-041-fpf-rules`
-- TeamCreate: 3 waves, ~150 LOC
+### Phase 6: FPF Rules CLI/MCP (Sprint 13.6)
+- **PRD-041**: forgeplan fpf rules + check + MCP tools
+- Branch: `feat/sprint-13.6-prd-041-fpf-rules`
+- TeamCreate: 3 waves, ~150 LOC (note: rule engine API уже pub, только wiring)
 - Time: 1d
 
-### Phase 6: FPF KB Vector Search (Sprint 13.3)
-- PRD-042: knowledge.rs vector search via EmbedDriver
-- Branch: `feat/sprint-13.3-prd-042-kb-search`
-- TeamCreate: 2 waves, ~150 LOC
-- Time: 0.5-1d
+### Phase 7: FPF KB Vector Search + PRD-018 Cleanup (Sprint 13.7)
+- **PRD-042**: knowledge.rs + db/store::search_fpf hybrid (keyword + vector)
+- Schema migration: add embedding column to fpf_spec
+- **Cleanup:** `forgeplan supersede PRD-018 --by PRD-042` (false-active stub → proper lineage)
+- Branch: `feat/sprint-13.7-prd-042-kb-search`
+- TeamCreate: 3 waves, ~200 LOC
+- Time: 1d
 
-### Phase 7: Final Release Audit (release/v0.17.0)
+### Phase 8: Final Release Audit (release/v0.17.0)
 - Full /forge-cycle audit on release branch
 - 4-agent /audit (code, Rust, architect, test coverage)
 - Fix all HIGH/CRITICAL findings
@@ -153,13 +167,14 @@ Sprint 13 — единый release v0.17.0 объединяющий **5 неза
 
 ```
 release/v0.17.0 (integration branch from dev)
-├── feat/sprint-13.0-security
-├── feat/sprint-13.1-prd-039-search
-├── feat/sprint-13.4a-prd-035-tags
-├── feat/sprint-13.4b-prd-035-discover
+├── feat/sprint-13.0-security              ← 1-2h, no artifact
+├── feat/sprint-13.1-prd-043-integrity     ← FOUNDATION first (prevents future stubs)
+├── feat/sprint-13.2-prd-039-search
+├── feat/sprint-13.3-prd-035-tags
+├── feat/sprint-13.4-prd-035-discover      ← depends on 13.3 merged
 ├── feat/sprint-13.5-prd-040-scoring
-├── feat/sprint-13.2-prd-041-fpf-rules
-└── feat/sprint-13.3-prd-042-kb-search
+├── feat/sprint-13.6-prd-041-fpf-rules
+└── feat/sprint-13.7-prd-042-kb-search     ← also supersedes PRD-018
        │
        ▼
 release/v0.17.0 → main (after final /forge-cycle audit)
@@ -167,6 +182,8 @@ main → dev (sync back) + tag v0.17.0
 ```
 
 Каждый sprint = отдельная feature branch ИЗ release/v0.17.0. После всех — финальный audit на release branch (независимо от per-sprint проверок), потом merge в main.
+
+**Сначала Foundation (Sprint 13.1 = PRD-043):** методологическая защита (duplicate guard + stub detection) реализуется первой, до всех остальных feature sprints. Это предотвращает создание новых stubs/duplicates в Sprint 13.2-13.7.
 
 ## Risks & Mitigations
 
@@ -190,12 +207,15 @@ main → dev (sync back) + tag v0.17.0
 
 | Artifact | Relation | Status |
 |----------|----------|--------|
-| PRD-039 | child (Sprint 13.1) | draft |
-| PRD-035 | child (Sprint 13.4a/b) | draft |
+| PRD-043 | child (Sprint 13.1 — FOUNDATION) | draft |
+| PRD-039 | child (Sprint 13.2) | draft |
+| PRD-035 | child (Sprint 13.3 + 13.4) | draft |
 | PRD-040 | child (Sprint 13.5) | draft |
-| PRD-041 | child (Sprint 13.2) | draft |
-| PRD-042 | child (Sprint 13.3) | draft |
+| PRD-041 | child (Sprint 13.6) | draft |
+| PRD-042 | child (Sprint 13.7) — supersedes PRD-018 | draft |
+| PRD-018 | will be superseded by PRD-042 in Sprint 13.7 | active (false-active stub) |
 | RFC-001 | parent context (FPF Engine) | active |
 | PROB-022 | source problem (brownfield) | draft |
+| PROB-024 | source problem (duplicate/stub guard) | draft |
 | EPIC-002 | parent epic (v2.0 vision) | active |
 | sources/RuVector | pattern source | external |
