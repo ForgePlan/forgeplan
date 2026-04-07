@@ -123,5 +123,16 @@ pub async fn run(kind_str: &str, title: &str) -> Result<()> {
         println!("\n  * {}", h);
     }
 
+    // Session: advance to Shaping (for decision artifacts) or Evidence (for evidence kind)
+    let phase = if template_key == "evidence" {
+        forgeplan_core::session::Phase::Evidence
+    } else if matches!(template_key, "prd" | "rfc" | "adr" | "epic" | "spec") {
+        forgeplan_core::session::Phase::Shaping
+    } else {
+        // Notes, problems, etc. — don't change phase
+        return Ok(());
+    };
+    common::advance_session(phase, Some(&id));
+
     Ok(())
 }

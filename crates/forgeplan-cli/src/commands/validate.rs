@@ -103,6 +103,11 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
         );
     }
 
+    // Session: advance to Coding when single artifact validates PASS
+    if id.is_some() && total_errors == 0 && total_passed > 0 {
+        common::advance_session(forgeplan_core::session::Phase::Coding, None);
+    }
+
     if ci && total_errors > 0 {
         eprintln!(
             "CI FAILED — {} MUST error(s) in {} artifact(s)",
