@@ -423,6 +423,33 @@ git checkout -b feat/my-feature
 ```
 **НЕ создавать ветки из stale dev.** Всегда `git pull` первым.
 
+#### КРИТИЧНО: Dependent sprint branch base verification
+
+**Урок из Sprint 13.1.5 (2026-04-07):** если новый sprint зависит от кода другого sprint'а (ещё не merged), ОБЯЗАТЕЛЬНО проверить что base branch содержит нужные коммиты ПЕРЕД стартом. Иначе teammates упрутся в "код не существует" и придётся rebase + re-spawn.
+
+**Проверка перед стартом dependent sprint'а:**
+```bash
+# Убедиться что нужный PR/commit уже в base branch
+git log release/v0.17.0 --oneline | grep "PRD-043\|feat(integrity)"
+# Если нет — либо ждать merge, либо branched FROM dependent feature branch, либо rebase после merge
+```
+
+**Правильная цепочка:**
+```
+PR-A (foundation) → merge → release/v0.17.0 ← base для dependent PR-B
+```
+
+**Неправильная цепочка (то что было в Sprint 13.1.5):**
+```
+release/v0.17.0 (без PRD-043) ← base для hardening sprint, который фиксит PRD-043 код
+   ↓
+   hardening branch не содержит check_stub — fixers корректно отказались работать
+```
+
+**Починка:** `git rebase release/v0.17.0` ПОСЛЕ merge зависимости, resolve конфликтов, re-spawn заблокированных fixers.
+
+**Positive observation:** teammates правильно сообщили "BLOCKER — target code не существует" вместо false-green отчётов. Это показывает что strict file ownership + "run cargo test before reporting done" работают — teammates не делают фейковую работу.
+
 #### Lifecycle ветки:
 ```
 1. git checkout dev && git pull origin dev        # обязательно pull!

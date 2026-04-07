@@ -70,6 +70,45 @@ fn default_mcp_max_body_len() -> usize {
     1_048_576
 }
 
+impl IntegrityConfig {
+    /// Validate field ranges. Called from `workspace::load_config` after YAML parse.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(0.0..=1.0).contains(&self.duplicate_threshold) || self.duplicate_threshold.is_nan() {
+            anyhow::bail!(
+                "integrity.duplicate_threshold must be in [0.0, 1.0], got {}",
+                self.duplicate_threshold
+            );
+        }
+        if self.stub_marker_threshold < 1 {
+            anyhow::bail!(
+                "integrity.stub_marker_threshold must be >= 1, got {}",
+                self.stub_marker_threshold
+            );
+        }
+        if !(16..=4096).contains(&self.mcp_max_title_len) {
+            anyhow::bail!(
+                "integrity.mcp_max_title_len must be in [16, 4096], got {}",
+                self.mcp_max_title_len
+            );
+        }
+        const MAX_BODY: usize = 100 * 1024 * 1024;
+        if !(1024..=MAX_BODY).contains(&self.mcp_max_body_len) {
+            anyhow::bail!(
+                "integrity.mcp_max_body_len must be in [1024, {}], got {}",
+                MAX_BODY,
+                self.mcp_max_body_len
+            );
+        }
+        if !(1..=10_000).contains(&self.duplicate_pairs_limit) {
+            anyhow::bail!(
+                "integrity.duplicate_pairs_limit must be in [1, 10000], got {}",
+                self.duplicate_pairs_limit
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Default for IntegrityConfig {
     fn default() -> Self {
         Self {
@@ -418,6 +457,47 @@ mod integrity_tests {
         let bad_title = "x".repeat(cfg.mcp_max_title_len + 1);
         assert!(ok_title.len() <= cfg.mcp_max_title_len);
         assert!(bad_title.len() > cfg.mcp_max_title_len);
+    }
+
+    #[test]
+    fn test_integrity_config_validate_accepts_defaults() {
+        let cfg = IntegrityConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_integrity_config_validate_rejects_out_of_range_threshold() {
+        let mut cfg = IntegrityConfig::default();
+        cfg.duplicate_threshold = 1.5;
+        assert!(cfg.validate().is_err());
+        cfg.duplicate_threshold = -0.5;
+        assert!(cfg.validate().is_err());
+        cfg.duplicate_threshold = f64::NAN;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_integrity_config_validate_rejects_zero_body_limit() {
+        let mut cfg = IntegrityConfig::default();
+        cfg.mcp_max_body_len = 0;
+        assert!(cfg.validate().is_err());
+        cfg.mcp_max_body_len = 1023;
+        assert!(cfg.validate().is_err());
+        cfg.mcp_max_body_len = 200 * 1024 * 1024;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_integrity_config_validate_rejects_bad_title_and_pairs() {
+        let mut cfg = IntegrityConfig::default();
+        cfg.mcp_max_title_len = 8;
+        assert!(cfg.validate().is_err());
+        let mut cfg = IntegrityConfig::default();
+        cfg.duplicate_pairs_limit = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = IntegrityConfig::default();
+        cfg.stub_marker_threshold = 0;
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

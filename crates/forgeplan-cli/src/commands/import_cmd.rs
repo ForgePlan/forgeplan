@@ -5,6 +5,10 @@ use forgeplan_core::validation::rules::check_stub_detailed;
 use crate::commands::common;
 
 /// Build a minimal Frontmatter BTreeMap from record fields for stub checking.
+///
+/// Note: import_cmd reads raw JSON (not `ArtifactRecord`), so we cannot reuse
+/// `ArtifactRecord::frontmatter_map()` here. For the canonical builder, see
+/// `forgeplan_core::db::store::ArtifactRecord::frontmatter_map`.
 fn build_frontmatter(id: &str, kind: &str, status: &str, title: &str) -> Frontmatter {
     let mut fm = Frontmatter::new();
     fm.insert("id".to_string(), serde_yaml::Value::String(id.to_string()));

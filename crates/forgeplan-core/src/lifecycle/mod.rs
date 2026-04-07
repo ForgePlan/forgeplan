@@ -78,10 +78,8 @@ pub struct GatesReport {
     pub length_msg: Option<String>,
     pub evidence_ok: bool,
     pub evidence_msg: Option<String>,
-    /// Stub gate — reserved for `validation::rules::check_stub` (added by
-    /// rust-fixer in a sibling change). Currently mirrors `length_ok` as a
-    /// conservative proxy; refactoring review/activate to a single helper
-    /// means the stub gate only needs to be wired in one place.
+    /// True when stub-content check passes. Calls `validation::rules::check_stub`
+    /// which detects unfilled template bodies via marker counting.
     pub stub_ok: bool,
     pub stub_msg: Option<String>,
 }
@@ -288,19 +286,30 @@ pub async fn activate(
         anyhow::bail!("{msg}");
     }
 
-    // Must pass validation before activation (unless --force)
-    let review_result = review(store, artifact_id).await?;
-    if !review_result.can_activate && !force {
+    // Must pass validation before activation (unless --force).
+    // Call the validator directly instead of going through review() —
+    // review() would re-run collect_activation_gates, duplicating work (M-5 fix).
+    let kind = record.kind.parse()?;
+    let depth = record
+        .depth
+        .parse()
+        .unwrap_or(crate::artifact::types::Mode::Standard);
+    let fm = record.frontmatter_map();
+    let validation_result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
+    let must_findings: Vec<String> = validation_result
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Must)
+        .map(|f| format!("{}: {}", f.rule_id, f.message))
+        .collect();
+
+    if !must_findings.is_empty() && !force {
         let mut msg = format!(
             "Validation failed ({} MUST error{}):",
-            review_result.must_findings.len(),
-            if review_result.must_findings.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
+            must_findings.len(),
+            if must_findings.len() == 1 { "" } else { "s" }
         );
-        for finding in &review_result.must_findings {
+        for finding in &must_findings {
             msg.push_str(&format!("\n  - {finding}"));
         }
         msg.push_str("\n\nUse --force to override.");
@@ -313,8 +322,8 @@ pub async fn activate(
 
     Ok(ActivateResult {
         artifact_id: artifact_id.to_string(),
-        forced: force && !review_result.must_findings.is_empty(),
-        must_errors: review_result.must_findings,
+        forced: force && !must_findings.is_empty(),
+        must_errors: must_findings,
     })
 }
 
