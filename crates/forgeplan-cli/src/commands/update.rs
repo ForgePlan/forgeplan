@@ -61,6 +61,21 @@ pub async fn run(
         } else {
             b.to_string()
         };
+
+        // Safety check: warn if new body is significantly shorter than existing
+        // (likely shell escaping corruption — use --body @file for safe updates)
+        let old_len = original.body.len();
+        let new_len = body_content.len();
+        if old_len > 100 && new_len < old_len / 3 {
+            eprintln!(
+                "  ⚠ Warning: new body ({} chars) is much shorter than existing ({} chars).",
+                new_len, old_len
+            );
+            eprintln!(
+                "  Tip: use --body @file.md for safe multi-line updates (avoids shell escaping issues)."
+            );
+        }
+
         store.update_body(id, &body_content).await?;
         true
     } else {

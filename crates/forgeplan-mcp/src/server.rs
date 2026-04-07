@@ -900,12 +900,15 @@ impl ForgeplanServer {
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
 
-        if let Some(ref body) = p.body {
+        let body_updated = if let Some(ref body) = p.body {
             store
                 .update_body(&p.id, body)
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-        }
+            true
+        } else {
+            false
+        };
 
         // Re-render projection
         let updated = store
@@ -914,20 +917,39 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
         let links = store.get_relations(&p.id).await.unwrap_or_default();
-        let _ = projection::render_projection(
-            &ws,
-            &updated.id,
-            &updated.kind,
-            &updated.title,
-            &updated.status,
-            &updated.depth,
-            updated.author.as_deref(),
-            updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(),
-            &updated.body,
-            &links,
-        )
-        .await;
+
+        if body_updated {
+            // Body was explicitly set — use force_body to write to file (files = truth)
+            let _ = projection::render_projection_with_body(
+                &ws,
+                &updated.id,
+                &updated.kind,
+                &updated.title,
+                &updated.status,
+                &updated.depth,
+                updated.author.as_deref(),
+                updated.parent_epic.as_deref(),
+                updated.valid_until.as_deref(),
+                &updated.body,
+                &links,
+            )
+            .await;
+        } else {
+            let _ = projection::render_projection(
+                &ws,
+                &updated.id,
+                &updated.kind,
+                &updated.title,
+                &updated.status,
+                &updated.depth,
+                updated.author.as_deref(),
+                updated.parent_epic.as_deref(),
+                updated.valid_until.as_deref(),
+                &updated.body,
+                &links,
+            )
+            .await;
+        }
 
         Ok(json_result(&serde_json::json!({
             "id": p.id,
