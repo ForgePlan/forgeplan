@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -29,14 +32,18 @@ jobs:
       - name: Build forgeplan
         run: cargo build -p forgeplan
 
-      - name: Init workspace (if needed)
+      - name: Rebuild index from tracked markdown
         run: |
-          if [ ! -d ".forgeplan" ]; then
-            ./target/debug/forgeplan init -y
-          fi
-
-      - name: Rebuild index
-        run: ./target/debug/forgeplan scan-import
+          # Temporarily rename .forgeplan so init can create fresh workspace with LanceDB
+          mv .forgeplan .forgeplan-src
+          ./target/debug/forgeplan init -y
+          # Restore tracked markdown artifacts over the fresh workspace
+          cp -r .forgeplan-src/prds/ .forgeplan-src/rfcs/ .forgeplan-src/adrs/ \
+                .forgeplan-src/epics/ .forgeplan-src/specs/ .forgeplan-src/evidence/ \
+                .forgeplan-src/problems/ .forgeplan-src/solutions/ .forgeplan-src/notes/ \
+                .forgeplan-src/refresh/ .forgeplan-src/memory/ .forgeplan/ 2>/dev/null || true
+          rm -rf .forgeplan-src
+          ./target/debug/forgeplan scan-import
 
       - name: Health check
         run: ./target/debug/forgeplan health --ci --fail-on "orphans=10,blind_spots=5"

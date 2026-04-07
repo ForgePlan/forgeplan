@@ -54,7 +54,7 @@ pub async fn run(
 
     // Update body
     let body_updated = if let Some(b) = body {
-        let body_content = if let Some(path) = b.strip_prefix('@') {
+        let raw_content = if let Some(path) = b.strip_prefix('@') {
             tokio::fs::read_to_string(path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path, e))?
@@ -62,9 +62,22 @@ pub async fn run(
             b.to_string()
         };
 
+        // Strip YAML frontmatter if present (when reading from @file.md)
+        let body_content = if raw_content.starts_with("---") {
+            use forgeplan_core::artifact::frontmatter;
+            match frontmatter::parse_frontmatter(&raw_content) {
+                Ok((_fm, body)) => body.to_string(),
+                Err(_) => raw_content,
+            }
+        } else {
+            raw_content
+        };
+
         // Safety check: warn if new body is significantly shorter than existing
         // (likely shell escaping corruption — use --body @file for safe updates)
-        let old_len = original.body.len();
+        // Re-read from store AFTER sync to get the latest body (sync may have updated it from file)
+        let current = store.get_record(id).await?.unwrap_or(original.clone());
+        let old_len = current.body.len();
         let new_len = body_content.len();
         if old_len > 100 && new_len < old_len / 3 {
             eprintln!(
