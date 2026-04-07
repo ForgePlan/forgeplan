@@ -149,12 +149,7 @@ pub fn find_active_stubs(records: &[ArtifactRecord]) -> Vec<ActiveStub> {
         if matches!(r.kind.as_str(), "evidence" | "memory" | "note") {
             continue;
         }
-        let mut fm = Frontmatter::new();
-        fm.insert("id".into(), serde_yaml::Value::String(r.id.clone()));
-        fm.insert("status".into(), serde_yaml::Value::String(r.status.clone()));
-        fm.insert("title".into(), serde_yaml::Value::String(r.title.clone()));
-        fm.insert("kind".into(), serde_yaml::Value::String(r.kind.clone()));
-        fm.insert("depth".into(), serde_yaml::Value::String(r.depth.clone()));
+        let fm = r.frontmatter_map();
 
         if let Some(report) = validation::rules::check_stub_detailed(&r.body, &fm) {
             stubs.push(ActiveStub {

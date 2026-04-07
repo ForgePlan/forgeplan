@@ -77,6 +77,34 @@ mod tests {
     }
 
     #[test]
+    fn test_jaccard_boundary_at_threshold_70_percent() {
+        // Construct two titles whose Jaccard similarity equals exactly 0.7.
+        // A tokens: {alpha, beta, gamma, delta, epsilon, zeta, eta}  (7 tokens, all len >= 3)
+        // B tokens: A ∪ {theta, iota, kappa}  (10 tokens)
+        // Intersection = 7, union = 10, Jaccard = 7/10 = 0.7
+        let a = "alpha beta gamma delta epsilon zeta eta";
+        let b = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let s = title_similarity(a, b);
+        assert!(
+            (s - 0.7).abs() < 1e-9,
+            "expected exact 0.7 boundary, got {s}"
+        );
+
+        // At threshold (0.7) — `>=` comparison MUST flag as duplicate.
+        assert!(s >= DUPLICATE_SIMILARITY_THRESHOLD);
+
+        // Just-below boundary (0.69) MUST NOT clear the threshold.
+        let below: f64 = 0.69;
+        assert!(below < DUPLICATE_SIMILARITY_THRESHOLD);
+        assert!(!(below >= DUPLICATE_SIMILARITY_THRESHOLD));
+
+        // Just-above boundary (0.71) MUST clear the threshold.
+        let above: f64 = 0.71;
+        assert!(above > DUPLICATE_SIMILARITY_THRESHOLD);
+        assert!(above >= DUPLICATE_SIMILARITY_THRESHOLD);
+    }
+
+    #[test]
     fn threshold_constant_is_reasonable() {
         // Sanity: two-of-three tokens overlap should clear threshold
         let s = title_similarity("FPF Knowledge Base", "FPF Knowledge System");

@@ -3001,3 +3001,38 @@ fn e2e_empty_route_rejected() {
         .failure()
         .stderr(predicate::str::contains("empty"));
 }
+
+// -----------------------------------------------------------------------
+// Sprint 13.1.6: --force is a visible alias for --allow-duplicate
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_new_accepts_force_alias() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Test Title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Test Title", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["list", "--type", "prd"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-002"));
+}

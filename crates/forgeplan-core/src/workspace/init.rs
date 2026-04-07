@@ -175,5 +175,9 @@ pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
         fpf.validate()
             .map_err(|e| anyhow::anyhow!("Invalid fpf config: {e}"))?;
     }
+    config
+        .integrity
+        .validate()
+        .map_err(|e| anyhow::anyhow!("Invalid integrity config: {e}"))?;
     Ok(config)
 }
