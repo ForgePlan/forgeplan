@@ -32,13 +32,10 @@ jobs:
       - name: Build forgeplan
         run: cargo build -p forgeplan
 
-      - name: Init workspace (if needed)
-        run: |
-          if [ ! -d ".forgeplan" ]; then
-            ./target/debug/forgeplan init -y
-          fi
+      - name: Init LanceDB index
+        run: ./target/debug/forgeplan init -y
 
-      - name: Rebuild index
+      - name: Rebuild index from tracked markdown
         run: ./target/debug/forgeplan scan-import
 
       - name: Health check
