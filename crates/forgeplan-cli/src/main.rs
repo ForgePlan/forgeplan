@@ -35,7 +35,7 @@ enum Commands {
         /// Artifact title
         title: String,
         /// Skip duplicate-detection prompt and create anyway
-        #[arg(long)]
+        #[arg(long, visible_alias = "force")]
         allow_duplicate: bool,
     },
     /// List artifacts

@@ -2,6 +2,20 @@ use crate::artifact::frontmatter::Frontmatter;
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::validation::Severity;
 use crate::validation::checks;
+use std::sync::LazyLock;
+
+/// Module-level compiled regex for `{placeholder}` detection in [`check_stub`].
+static PLACEHOLDER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?:^|[^{])\{([a-zA-Z_][a-zA-Z0-9_ \-]*)\}(?:[^}]|$)")
+        .expect("valid placeholder regex")
+});
+
+/// Typed result of a stub detection check.
+#[derive(Debug, Clone)]
+pub struct StubReport {
+    pub count: usize,
+    pub message: String,
+}
 
 /// A rule entry: (rule_id, severity, description, check_fn).
 /// check_fn returns Some(error_message) if the rule fails, None if it passes.
@@ -65,7 +79,12 @@ fn base_rules() -> Vec<RuleEntry> {
 /// Markers include known Russian template phrases, generic placeholder syntax,
 /// `[Actor] can [capability]` form, and 3+ consecutive section bodies that are
 /// just `...`.
-pub fn check_stub(body: &str, _fm: &Frontmatter) -> Option<String> {
+pub fn check_stub(body: &str, fm: &Frontmatter) -> Option<String> {
+    check_stub_detailed(body, fm).map(|r| r.message)
+}
+
+/// Same as [`check_stub`] but returns a typed [`StubReport`] with marker count.
+pub fn check_stub_detailed(body: &str, _fm: &Frontmatter) -> Option<StubReport> {
     const PHRASE_MARKERS: &[&str] = &[
         // Russian
         "Что мы строим и почему это важно",
@@ -95,9 +114,7 @@ pub fn check_stub(body: &str, _fm: &Frontmatter) -> Option<String> {
     // {placeholder} markers — single-brace curly placeholders like {name}.
     // Avoid false-positives on `{{var}}` (already covered by no-placeholders)
     // and on JSON/code by requiring word characters only inside the braces.
-    let placeholder_re = regex::Regex::new(r"(?:^|[^{])\{([a-zA-Z_][a-zA-Z0-9_ \-]*)\}(?:[^}]|$)")
-        .expect("valid regex");
-    if placeholder_re.is_match(body) {
+    if PLACEHOLDER_RE.is_match(body) {
         count += 1;
     }
 
@@ -147,10 +164,10 @@ pub fn check_stub(body: &str, _fm: &Frontmatter) -> Option<String> {
     }
 
     if count >= 3 {
-        Some(format!(
-            "Body appears to be unfilled template ({} markers found)",
-            count
-        ))
+        Some(StubReport {
+            count,
+            message: format!("Body appears to be unfilled template ({count} markers found)"),
+        })
     } else {
         None
     }
@@ -1547,6 +1564,26 @@ mod tests {
     }
 
     // ─── no-stub-content (PRD-043 FR-003) ──────────────────────────────────
+
+    #[test]
+    fn test_check_stub_detailed_returns_count() {
+        let body = r#"## Problem
+Что мы строим и почему это важно
+Как проблема влияет на пользователей
+
+## Goals
+Что входит в минимально жизнеспособный продукт
+"#;
+        let fm = make_fm("PRD-001", "draft");
+        let report = check_stub_detailed(body, &fm).expect("should be flagged as stub");
+        assert!(
+            report.count >= 3,
+            "count should be >= 3, got {}",
+            report.count
+        );
+        assert!(report.message.contains("unfilled template"));
+        assert!(report.message.contains(&report.count.to_string()));
+    }
 
     #[test]
     fn test_check_stub_detects_template() {

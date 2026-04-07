@@ -156,20 +156,13 @@ pub fn find_active_stubs(records: &[ArtifactRecord]) -> Vec<ActiveStub> {
         fm.insert("kind".into(), serde_yaml::Value::String(r.kind.clone()));
         fm.insert("depth".into(), serde_yaml::Value::String(r.depth.clone()));
 
-        if let Some(msg) = validation::rules::check_stub(&r.body, &fm) {
-            // Parse marker count from message: "... ({n} markers found)"
-            let markers_found = msg
-                .split('(')
-                .nth(1)
-                .and_then(|s| s.split(' ').next())
-                .and_then(|n| n.parse::<usize>().ok())
-                .unwrap_or(0);
+        if let Some(report) = validation::rules::check_stub_detailed(&r.body, &fm) {
             stubs.push(ActiveStub {
                 id: r.id.clone(),
                 kind: r.kind.clone(),
                 title: r.title.clone(),
-                markers_found,
-                message: msg,
+                markers_found: report.count,
+                message: report.message,
             });
         }
     }

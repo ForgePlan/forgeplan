@@ -23,6 +23,63 @@ pub struct Config {
     /// FPF Engine configuration (trust calculus thresholds, weights, ADI settings).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fpf: Option<FpfConfig>,
+    /// Integrity/health thresholds and MCP DoS protection limits.
+    #[serde(default)]
+    pub integrity: IntegrityConfig,
+}
+
+/// Integrity/health thresholds and MCP input limits (DoS protection).
+///
+/// All fields have safe defaults and can be overridden via `.forgeplan/config.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrityConfig {
+    /// Similarity threshold (Jaccard) for duplicate detection (0.0..1.0)
+    #[serde(default = "default_duplicate_threshold")]
+    pub duplicate_threshold: f64,
+
+    /// Max duplicate pairs to display in health output
+    #[serde(default = "default_duplicate_pairs_limit")]
+    pub duplicate_pairs_limit: usize,
+
+    /// Min markers to flag artifact body as stub
+    #[serde(default = "default_stub_marker_threshold")]
+    pub stub_marker_threshold: usize,
+
+    /// Max title length accepted via MCP forgeplan_new (DoS protection)
+    #[serde(default = "default_mcp_max_title_len")]
+    pub mcp_max_title_len: usize,
+
+    /// Max body length accepted via MCP forgeplan_new / forgeplan_update (DoS protection)
+    #[serde(default = "default_mcp_max_body_len")]
+    pub mcp_max_body_len: usize,
+}
+
+fn default_duplicate_threshold() -> f64 {
+    0.7
+}
+fn default_duplicate_pairs_limit() -> usize {
+    10
+}
+fn default_stub_marker_threshold() -> usize {
+    3
+}
+fn default_mcp_max_title_len() -> usize {
+    256
+}
+fn default_mcp_max_body_len() -> usize {
+    1_048_576
+}
+
+impl Default for IntegrityConfig {
+    fn default() -> Self {
+        Self {
+            duplicate_threshold: default_duplicate_threshold(),
+            duplicate_pairs_limit: default_duplicate_pairs_limit(),
+            stub_marker_threshold: default_stub_marker_threshold(),
+            mcp_max_title_len: default_mcp_max_title_len(),
+            mcp_max_body_len: default_mcp_max_body_len(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -39,6 +96,7 @@ impl Default for Config {
             memory: None,
             estimate: None,
             fpf: None,
+            integrity: IntegrityConfig::default(),
         }
     }
 }
@@ -306,5 +364,66 @@ impl MemoryConfig {
             self.driver = v;
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+
+    #[test]
+    fn test_integrity_config_default() {
+        let cfg = IntegrityConfig::default();
+        assert!((cfg.duplicate_threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(cfg.duplicate_pairs_limit, 10);
+        assert_eq!(cfg.stub_marker_threshold, 3);
+        assert_eq!(cfg.mcp_max_title_len, 256);
+        assert_eq!(cfg.mcp_max_body_len, 1_048_576);
+    }
+
+    #[test]
+    fn test_config_default_contains_integrity_defaults() {
+        let c = Config::default();
+        assert_eq!(c.integrity.mcp_max_title_len, 256);
+        assert_eq!(c.integrity.mcp_max_body_len, 1_048_576);
+    }
+
+    #[test]
+    fn test_integrity_config_yaml_partial_override_uses_defaults() {
+        // Missing fields must fall back to per-field defaults.
+        let yaml = "duplicate_threshold: 0.9\nmcp_max_title_len: 128\n";
+        let cfg: IntegrityConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!((cfg.duplicate_threshold - 0.9).abs() < f64::EPSILON);
+        assert_eq!(cfg.mcp_max_title_len, 128);
+        // Defaults for the rest:
+        assert_eq!(cfg.mcp_max_body_len, 1_048_576);
+        assert_eq!(cfg.duplicate_pairs_limit, 10);
+        assert_eq!(cfg.stub_marker_threshold, 3);
+    }
+
+    #[test]
+    fn test_config_yaml_omitted_integrity_uses_default() {
+        // Legacy config without integrity section must still parse.
+        let yaml = "version: 1\nproject_name: test\ndefault_depth: standard\nid_digits: 3\ncreated_at: 2026-01-01\n";
+        let c: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(c.integrity.mcp_max_title_len, 256);
+        assert_eq!(c.integrity.mcp_max_body_len, 1_048_576);
+    }
+
+    #[test]
+    fn test_mcp_title_length_check_boundary() {
+        // Simulate the MCP server's length guard logic.
+        let cfg = IntegrityConfig::default();
+        let ok_title = "x".repeat(cfg.mcp_max_title_len);
+        let bad_title = "x".repeat(cfg.mcp_max_title_len + 1);
+        assert!(ok_title.len() <= cfg.mcp_max_title_len);
+        assert!(bad_title.len() > cfg.mcp_max_title_len);
+    }
+
+    #[test]
+    fn test_mcp_body_length_check_boundary() {
+        let cfg = IntegrityConfig::default();
+        let bad_body_len = cfg.mcp_max_body_len + 1;
+        assert!(bad_body_len > cfg.mcp_max_body_len);
     }
 }
