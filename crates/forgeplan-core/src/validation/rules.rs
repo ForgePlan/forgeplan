@@ -50,7 +50,110 @@ fn base_rules() -> Vec<RuleEntry> {
             "No {{placeholder}} or TODO",
             check_no_placeholders,
         ),
+        rule(
+            "no-stub-content",
+            Severity::Should,
+            "Body must not be unfilled template",
+            check_stub,
+        ),
     ]
+}
+
+/// Detect template-only artifact bodies (PRD-043 FR-003).
+///
+/// Returns `Some(message)` when 3 or more template markers are found in `body`.
+/// Markers include known Russian template phrases, generic placeholder syntax,
+/// `[Actor] can [capability]` form, and 3+ consecutive section bodies that are
+/// just `...`.
+pub fn check_stub(body: &str, _fm: &Frontmatter) -> Option<String> {
+    const PHRASE_MARKERS: &[&str] = &[
+        // Russian
+        "Что мы строим и почему это важно",
+        "Как проблема влияет на пользователей",
+        "Что входит в минимально жизнеспособный продукт",
+        "Чем наше решение отличается",
+        // English
+        "What we are building and why",
+        "How the problem affects users",
+        "What's in the MVP",
+        "How our solution is different",
+        "What we're building",
+        "Vision: What we're building",
+        // Universal
+        "[Actor] can [capability]",
+        "<Actor> can <capability>",
+    ];
+
+    let mut count = 0usize;
+
+    for marker in PHRASE_MARKERS {
+        if body.contains(marker) {
+            count += 1;
+        }
+    }
+
+    // {placeholder} markers — single-brace curly placeholders like {name}.
+    // Avoid false-positives on `{{var}}` (already covered by no-placeholders)
+    // and on JSON/code by requiring word characters only inside the braces.
+    let placeholder_re = regex::Regex::new(r"(?:^|[^{])\{([a-zA-Z_][a-zA-Z0-9_ \-]*)\}(?:[^}]|$)")
+        .expect("valid regex");
+    if placeholder_re.is_match(body) {
+        count += 1;
+    }
+
+    // 3+ consecutive section bodies that are just "..."
+    // A section body is the content between two `## ` headings (or end of file).
+    let mut consecutive_dots = 0usize;
+    let mut max_consecutive_dots = 0usize;
+    let mut current_section: Vec<&str> = Vec::new();
+
+    let flush = |section: &[&str], consecutive: &mut usize, max: &mut usize| {
+        let content: String = section
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if content == "..." {
+            *consecutive += 1;
+            if *consecutive > *max {
+                *max = *consecutive;
+            }
+        } else if !content.is_empty() {
+            *consecutive = 0;
+        }
+    };
+
+    for line in body.lines() {
+        if line.starts_with("## ") {
+            flush(
+                &current_section,
+                &mut consecutive_dots,
+                &mut max_consecutive_dots,
+            );
+            current_section.clear();
+        } else {
+            current_section.push(line);
+        }
+    }
+    flush(
+        &current_section,
+        &mut consecutive_dots,
+        &mut max_consecutive_dots,
+    );
+
+    if max_consecutive_dots >= 3 {
+        count += 1;
+    }
+
+    if count >= 3 {
+        Some(format!(
+            "Body appears to be unfilled template ({} markers found)",
+            count
+        ))
+    } else {
+        None
+    }
 }
 
 fn check_meta_id(_body: &str, fm: &Frontmatter) -> Option<String> {
@@ -1440,6 +1543,127 @@ mod tests {
         assert!(
             result.is_none(),
             "Clean body should pass no-placeholders check"
+        );
+    }
+
+    // ─── no-stub-content (PRD-043 FR-003) ──────────────────────────────────
+
+    #[test]
+    fn test_check_stub_detects_template() {
+        let body = r#"## Problem
+Что мы строим и почему это важно
+Как проблема влияет на пользователей
+
+## Goals
+Что входит в минимально жизнеспособный продукт
+Чем наше решение отличается
+
+## FR
+- FR-001: [Actor] can [capability]
+- FR-002: {placeholder}
+"#;
+        let fm = make_fm("PRD-001", "draft");
+        let result = check_stub(body, &fm);
+        assert!(
+            result.is_some(),
+            "Template-only body must be flagged as stub"
+        );
+        let msg = result.unwrap();
+        assert!(msg.contains("unfilled template"), "msg: {}", msg);
+    }
+
+    #[test]
+    fn test_check_stub_passes_filled_artifact() {
+        let body = r#"## Problem
+Users cannot validate artifact bodies for stub content. This causes
+methodology drift: empty PRDs leak into the active set without resistance.
+
+## Goals
+Detect template-only bodies in the validation pipeline so reviewers see a
+SHOULD finding before activation.
+
+## FR
+- FR-001: Validator emits a warning when 3+ template markers present.
+- FR-002: Threshold is configurable per project.
+"#;
+        let fm = make_fm("PRD-001", "draft");
+        let result = check_stub(body, &fm);
+        assert!(
+            result.is_none(),
+            "Filled artifact body must not be flagged: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_check_stub_at_threshold() {
+        let three = r#"## A
+Что мы строим и почему это важно
+Как проблема влияет на пользователей
+Чем наше решение отличается
+"#;
+        let fm = make_fm("PRD-001", "draft");
+        assert!(
+            check_stub(three, &fm).is_some(),
+            "3 markers must trigger stub detection"
+        );
+
+        let two = r#"## A
+Что мы строим и почему это важно
+Как проблема влияет на пользователей
+
+Real content describing the rest of the story in detail.
+"#;
+        assert!(
+            check_stub(two, &fm).is_none(),
+            "2 markers must not trigger stub detection"
+        );
+    }
+
+    #[test]
+    fn test_check_stub_detects_english_template() {
+        let body = r#"## Problem
+What we are building and why
+How the problem affects users
+
+## Goals
+What's in the MVP
+How our solution is different
+
+## FR
+- FR-001: [Actor] can [capability]
+"#;
+        let fm = make_fm("PRD-001", "draft");
+        let result = check_stub(body, &fm);
+        assert!(
+            result.is_some(),
+            "English template body must be flagged as stub"
+        );
+        let msg = result.unwrap();
+        assert!(msg.contains("unfilled template"), "msg: {}", msg);
+    }
+
+    #[test]
+    fn test_check_stub_consecutive_dots_count_as_marker() {
+        let body = r#"## A
+Что мы строим и почему это важно
+
+## B
+...
+
+## C
+...
+
+## D
+...
+
+## E
+Чем наше решение отличается
+"#;
+        let fm = make_fm("PRD-001", "draft");
+        assert!(
+            check_stub(body, &fm).is_some(),
+            "3 consecutive '...' sections + 2 phrases must trigger"
         );
     }
 }

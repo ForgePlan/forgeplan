@@ -200,6 +200,19 @@ pub async fn activate(
         );
     }
 
+    // Methodology enforcement: stub-content check (PRD-043 FR-003).
+    // Detects unfilled template bodies (template markers, placeholders, "..." sections).
+    if !force
+        && let Some(msg) =
+            crate::validation::rules::check_stub(&record.body, &record.frontmatter_map())
+    {
+        anyhow::bail!(
+            "Cannot activate stub artifact: {msg}\n\
+             → Fill MUST sections (Problem, Goals, FR) before activating.\n\
+             → See PRD-043 FR-003 for stub detection rules."
+        );
+    }
+
     // Methodology enforcement: evidence check (no evidence = blind spot)
     if !force {
         let relations = store.get_relations(artifact_id).await.unwrap_or_default();
@@ -798,5 +811,119 @@ mod tests {
 
         let new = store.get_record("NOTE-301").await.unwrap().unwrap();
         assert_eq!(new.status, "draft");
+    }
+
+    // ── Stub-content gate (PRD-043 FR-003) ─────────────────────
+
+    #[tokio::test]
+    async fn test_activate_blocks_stub_body() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Body has 4+ template markers — should be detected as stub
+        let stub_body = "## Problem\n\nЧто мы строим и почему это важно\n\n\
+            ## Goals\n\n[Actor] can [capability]\n\n\
+            ## Users\n\nКак проблема влияет на пользователей\n\n\
+            ## Scope\n\nЧто входит в минимально жизнеспособный продукт\n\n\
+            ## Differentiation\n\nЧем наше решение отличается\n";
+        // Pad to >100 chars to bypass the length gate and reach the stub-content gate
+        let padded_body = format!(
+            "{stub_body}\n\nExtra padding text to exceed the minimum length threshold for activation gates."
+        );
+
+        let prd = NewArtifact {
+            id: "PRD-900".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Stub PRD".to_string(),
+            body: padded_body,
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&prd).await.unwrap();
+
+        // Add evidence so we pass the evidence gate and reach the stub-content gate
+        let evid = NewArtifact {
+            id: "EVID-900".to_string(),
+            kind: "evidence".to_string(),
+            status: "active".to_string(),
+            title: "Evidence".to_string(),
+            body: "verdict: supports".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&evid).await.unwrap();
+        store
+            .add_relation("EVID-900", "PRD-900", "informs")
+            .await
+            .unwrap();
+
+        let result = activate(&store, "PRD-900", false).await;
+        assert!(result.is_err(), "activate should reject stub body");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("stub artifact") || msg.contains("PRD-043"),
+            "error should mention stub gate, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_activate_allows_filled_body() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Real-looking PRD body without template markers
+        let body = "## Problem\n\n\
+            Users cannot reliably promote artifacts to active state because the gate \
+            does not detect template-only stubs. This leads to false-active artifacts \
+            that pollute health reports and erode trust in the methodology.\n\n\
+            ## Goals\n\n\
+            Block activation when the body is still an unfilled template, while \
+            preserving the existing length and evidence checks.\n\n\
+            ## Functional Requirements\n\n\
+            FR-1: activate must call check_stub before promoting.\n";
+        let prd = NewArtifact {
+            id: "PRD-901".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Filled PRD".to_string(),
+            body: body.to_string(),
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&prd).await.unwrap();
+
+        let evid = NewArtifact {
+            id: "EVID-901".to_string(),
+            kind: "evidence".to_string(),
+            status: "active".to_string(),
+            title: "Evidence".to_string(),
+            body: "verdict: supports".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+        };
+        store.create_artifact(&evid).await.unwrap();
+        store
+            .add_relation("EVID-901", "PRD-901", "informs")
+            .await
+            .unwrap();
+
+        // May still fail validation MUST rules, but must NOT fail with stub error
+        let result = activate(&store, "PRD-901", false).await;
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("stub artifact"),
+                "filled body should not trigger stub gate, got: {msg}"
+            );
+        }
     }
 }

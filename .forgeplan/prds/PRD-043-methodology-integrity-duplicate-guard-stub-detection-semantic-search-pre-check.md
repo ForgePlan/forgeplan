@@ -7,7 +7,7 @@ links:
   relation: refines
 - target: PROB-024
   relation: based_on
-status: draft
+status: active
 title: Methodology Integrity — Duplicate Guard, Stub Detection, Semantic Search Pre-check
 ---
 
@@ -208,5 +208,6 @@ Methodology Integrity layer — три механизма защиты от кл
 | PRD-018 | based_on (real case stub) | active (false-active) |
 | PRD-042 | based_on (real case duplicate) | draft |
 | PRD-039 | informs (BM25 search will improve guard accuracy) | draft |
+
 
 

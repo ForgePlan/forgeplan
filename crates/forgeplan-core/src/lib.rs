@@ -6,6 +6,7 @@ pub mod db;
 pub mod depth;
 pub mod drift;
 pub mod driver;
+pub mod duplicate;
 pub mod embed;
 pub mod error;
 pub mod estimate;
