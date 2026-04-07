@@ -164,6 +164,16 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
         }
     }
 
+    // Session: set depth and advance to Routing phase
+    {
+        let mut session = crate::commands::common::load_session();
+        let depth_str = format!("{:?}", result.depth).to_lowercase();
+        session.route_depth = Some(depth_str);
+        session.phase = forgeplan_core::session::Phase::Routing;
+        session.phase_started_at = Some(chrono::Utc::now().to_rfc3339());
+        crate::commands::common::save_session(&session);
+    }
+
     Ok(())
 }
 

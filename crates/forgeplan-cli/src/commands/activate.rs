@@ -83,5 +83,8 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         }
     }
 
+    // Session: reset to Idle after successful activation
+    common::advance_session(forgeplan_core::session::Phase::Idle, None);
+
     Ok(())
 }
