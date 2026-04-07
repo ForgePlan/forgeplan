@@ -64,7 +64,9 @@ pub async fn run(
 
         // Safety check: warn if new body is significantly shorter than existing
         // (likely shell escaping corruption — use --body @file for safe updates)
-        let old_len = original.body.len();
+        // Re-read from store AFTER sync to get the latest body (sync may have updated it from file)
+        let current = store.get_record(id).await?.unwrap_or(original.clone());
+        let old_len = current.body.len();
         let new_len = body_content.len();
         if old_len > 100 && new_len < old_len / 3 {
             eprintln!(
