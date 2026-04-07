@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use forgeplan_core::config::types::Config;
 use forgeplan_core::db::store::{ArtifactRecord, LanceStore};
+use forgeplan_core::session::{Phase, SessionState};
 use forgeplan_core::workspace;
 
 /// Open workspace store — shared boilerplate for all commands.
@@ -32,6 +33,48 @@ pub fn config() -> anyhow::Result<Config> {
 pub async fn store() -> anyhow::Result<LanceStore> {
     let (_, store) = open_store().await?;
     Ok(store)
+}
+
+/// Load session state from workspace.
+pub fn load_session() -> SessionState {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let ws = workspace::find_workspace(&cwd).unwrap_or_default();
+    SessionState::load(&ws)
+}
+
+/// Save session state to workspace.
+pub fn save_session(session: &SessionState) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if let Some(ws) = workspace::find_workspace(&cwd) {
+        let _ = session.save(&ws);
+    }
+}
+
+/// Advance session phase. Prints transition info. Silently skips if not enforced.
+pub fn advance_session(to: Phase, artifact: Option<&str>) {
+    let mut session = load_session();
+    if !session.is_enforced() && session.route_depth.is_none() {
+        // No enforcement — still track for visibility but don't block
+        session.phase = to;
+        if let Some(id) = artifact {
+            session.active_artifact = Some(id.to_string());
+        }
+        save_session(&session);
+        return;
+    }
+
+    match session.transition(to) {
+        Ok(()) => {
+            if let Some(id) = artifact {
+                session.active_artifact = Some(id.to_string());
+            }
+            save_session(&session);
+        }
+        Err(e) => {
+            eprintln!("  Session: {e}");
+            eprintln!("  Hint: {}", session.next_action_hint());
+        }
+    }
 }
 
 /// Build set of "resolved" artifact IDs: active + deprecated + superseded.

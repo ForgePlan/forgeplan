@@ -146,6 +146,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show methodology session state (current phase, active artifact)
+    Session {
+        /// Reset session to Idle
+        #[arg(long)]
+        reset: bool,
+    },
     /// Show checkbox progress for artifacts
     Progress {
         /// Artifact ID (shows all if omitted)
@@ -590,6 +596,14 @@ async fn main() -> anyhow::Result<()> {
             commands::search::run(&query, r#type.as_deref(), mode, limit, json).await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
+        Commands::Session { reset } => {
+            if reset {
+                commands::session::run_reset();
+            } else {
+                commands::session::run_status();
+            }
+            Ok(())
+        }
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,

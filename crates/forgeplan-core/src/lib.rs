@@ -26,6 +26,7 @@ pub mod routing;
 pub mod scan;
 pub mod scoring;
 pub mod search;
+pub mod session;
 pub mod stale;
 pub mod status;
 pub mod template;
