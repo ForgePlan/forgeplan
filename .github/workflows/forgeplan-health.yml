@@ -1,0 +1,52 @@
+name: Architecture Health
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - '.forgeplan/**'
+      - 'crates/**'
+
+jobs:
+  health:
+    name: Forgeplan Health Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build forgeplan
+        run: cargo build -p forgeplan
+
+      - name: Rebuild index from tracked markdown
+        run: |
+          # Temporarily rename .forgeplan so init can create fresh workspace with LanceDB
+          mv .forgeplan .forgeplan-src
+          ./target/debug/forgeplan init -y
+          # Restore tracked markdown artifacts over the fresh workspace
+          cp -r .forgeplan-src/prds/ .forgeplan-src/rfcs/ .forgeplan-src/adrs/ \
+                .forgeplan-src/epics/ .forgeplan-src/specs/ .forgeplan-src/evidence/ \
+                .forgeplan-src/problems/ .forgeplan-src/solutions/ .forgeplan-src/notes/ \
+                .forgeplan-src/refresh/ .forgeplan-src/memory/ .forgeplan/ 2>/dev/null || true
+          rm -rf .forgeplan-src
+          ./target/debug/forgeplan scan-import
+
+      - name: Health check
+        run: ./target/debug/forgeplan health --ci --fail-on "orphans=10,blind_spots=5"
+
+      - name: Validate artifacts
+        run: ./target/debug/forgeplan validate --ci

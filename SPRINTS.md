@@ -13,35 +13,38 @@
 
 ### Tasks
 
-- [ ] **11.1** Shape EPIC-002 "ForgePlan v2.0 — Knowledge OS for AI Agent Teams"
+- [x] **11.1** Shape EPIC-002 "ForgePlan v2.0 — Knowledge OS for AI Agent Teams"
   - Заполнить Vision, Goals, Children (PRD list), Success Criteria
   - `forgeplan get EPIC-002` → fill MUST sections → `forgeplan validate EPIC-002`
-  - Branch: `docs/epic-002-shape`
+  - Branch: `docs/epic-002-shape` — PR #128 merged
 
-- [ ] **11.2** Shape + implement RFC-001 "FPF Engine core module architecture"
-  - Определить: bounded contexts FPF модулей, interfaces, data flow
-  - ADI reasoning обязателен (Deep depth)
-  - `forgeplan get RFC-001` → fill → `forgeplan validate` → `forgeplan reason`
-  - Код: `crates/forgeplan-core/src/fpf/` — refactor по RFC
-  - Branch: `feat/rfc-001-fpf-engine`
+- [x] **11.2** Shape + implement RFC-001 "FPF Engine core module architecture"
+  - RFC-001 shaped: 3 options, ADI confirmed Option C (Layered Core+Ext)
+  - fpf/core/ module: config.rs, trust.rs, adi.rs, model.rs (34 tests)
+  - FpfConfig wired into CLI: score, fgr, context, dashboard read from config.yaml
+  - Audit: 3 agents, 3 HIGH + 1 MEDIUM fixed, NaN validation added
+  - R_eff=1.00, F-G-R=0.94 (A), EVID-055 linked
+  - Remaining: 1.5 (migrate reason to auto-save AdiRecord) → Sprint 12
+  - Branch: `feat/rfc-001-fpf-engine` — PR #131
 
-- [ ] **11.3** Quick win: CI/CD Architecture Linter (NOTE-026)
-  - Превратить NOTE-026 → PRD → implement
-  - `forgeplan health` и `forgeplan validate` как CI pipeline gates
-  - Script: `scripts/ci-forgeplan-check.sh`
+- [x] **11.3** CI/CD Architecture Linter (PRD-034)
+  - PRD-034 shaped + validated + activated (R_eff=0.90)
+  - `forgeplan health --ci --fail-on "orphans=10,blind_spots=5"` — exit 1 on threshold breach
+  - `forgeplan validate --ci` — exit 1 on MUST errors in active+stale artifacts
   - GitHub Actions: `.github/workflows/forgeplan-health.yml`
-  - Branch: `feat/ci-linter`
+  - 2-agent audit: 2 HIGH fixed (stale filter, scan-import)
+  - Branch: `feat/ci-linter` — PR #132
 
-- [ ] **11.4** Housekeeping
-  - Link orphans: NOTE-035, NOTE-036 → PRD-026
-  - Обновить TODO.md с результатами сессии
-  - `forgeplan health` → 0 orphans
+- [x] **11.4** Housekeeping
+  - Link 12 orphans → EPIC-002 / PRD-026
+  - Удалены 3 untracked PNG из корня
+  - `forgeplan health` → 0 orphans ✓
 
 ### Definition of Done
-- [ ] EPIC-002 active, filled, validated
-- [ ] RFC-001 active, R_eff > 0, code implemented
-- [ ] CI workflow `forgeplan-health.yml` merged
-- [ ] 0 orphans in `forgeplan health`
+- [x] EPIC-002 active, filled, validated
+- [x] RFC-001 active, R_eff=1.00, Phase 1 implemented (6/7)
+- [x] CI workflow `forgeplan-health.yml` in PR #132
+- [x] 0 orphans in `forgeplan health`
 
 ---
 
@@ -108,6 +111,14 @@
   - Markdown report: all artifacts, their status, R_eff, links
   - Branch: `feat/generate-docs`
 
+- [ ] **13.4** Brownfield Discovery — `forgeplan discover` (PROB-022)
+  - Deep depth: PRD → Spec → RFC → ADR
+  - MCP tools: discover_start, discover_finding, discover_complete
+  - Agent-driven: ForgePlan = protocol + storage, Agent = code analysis
+  - Tiered sources: code (T1) > git (T1) > tests (T2) > docs (T3, legacy-doc)
+  - Marketplace: `.claude/agents/discover.md` agent config
+  - Branch: `feat/discover`
+
 ### Definition of Done
 - [ ] `forgeplan links`, `forgeplan doctor` working
 - [ ] Agent Memory Phase 1: store + recall via MCP
@@ -161,17 +172,19 @@
 
 | # | Что | Когда | Статус |
 |---|---|---|---|
-| 1 | EPIC-002 заполнить + активировать | Sprint 11 | [ ] |
-| 2 | RFC-001 реализовать | Sprint 11 | [ ] |
+| 1 | EPIC-002 заполнить + активировать | Sprint 11 | [x] PR #128 |
+| 2 | RFC-001 Phase 1 реализовать | Sprint 11 | [x] PR #131 |
+| 2b | RFC-001 Phase 2 (rule engine, KB search, contexts) | Sprint 12 | [ ] |
 | 3 | RFC-002 реализовать | Sprint 12 | [ ] |
 | 4 | NOTE-025 → PRD (Agent Memory) | Sprint 12 | [ ] |
-| 5 | NOTE-026 → PRD + implement (CI Linter) | Sprint 11 | [ ] |
+| 5 | NOTE-026 → PRD + implement (CI Linter) | Sprint 11 | [x] PR #132 |
+| 5b | PROB-022 → PRD (Brownfield Discover) | Sprint 13 | [ ] |
 | 6 | NOTE-029 → implement (CLI UX) | Sprint 13 | [ ] |
 | 7 | NOTE-030 → partial implement (generate-docs, watch, diff, dashboard) | Sprint 13-14 | [ ] |
 | 8 | PRD-025 (Nx) → evaluate or deprecate | Sprint 14 | [ ] |
 | 9 | Version sync (Cargo.toml vs tags) | Sprint 12 | [ ] |
 | 10 | Website deploy | Sprint 12 | [ ] |
-| 11 | 0 orphans в health | Sprint 11 | [ ] |
+| 11 | 0 orphans в health | Sprint 11 | [x] PR #129-130 |
 | 12 | Dependabot #3 (lru) — monitor for upstream fix | Ongoing | [ ] |
 
 ---

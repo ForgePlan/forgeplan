@@ -1,17 +1,43 @@
 # TODO — Forgeplan
 
-## Current: v0.13-dev (post-v0.12.0)
+## Current: v0.16-dev (post-v0.15.5)
 
 ### Stats
-- 56 CLI commands, 37 MCP tools, 753 tests (79 CLI integration, 612 core, 25 MCP)
-- 132 dogfood artifacts (85 active, 12 draft, 33 deprecated, 2 superseded)
-- ~26K LOC Rust, 43MB release binary
-- PRs #60-#97 merged
+- 56 CLI commands, 37 MCP tools, 829 tests
+- 163 dogfood artifacts (93 active, 35 draft, 33 deprecated, 2 superseded)
+- ~28K LOC Rust
+- PRs #60-#135
 - E2E: 139 commands tested (Waves 1-11 complete), 0 failures
 - LLM: gemini-3-flash-preview (benchmarked 4 models, 7 artifacts)
 - Distribution: cargo-dist v0.31.0, 5 targets, brew + install.sh + checksums
 - Pipeline: Code→Audit→Fix→Test→Fmt→Lint→Verify→PR
 - ADI mandatory for Standard+ depth (CLAUDE.md methodology update)
+
+### P0: FPF Engine v2 Phase 2 — Sprint 12 (RFC-001) ✅
+- [x] ADI reasoning: H2 Two-tier Rules selected (FPF B.5.2 Abductive Loop)
+- [x] ext/rules.rs: Rule engine with expressions, graph-aware, time-aware (~600 LOC)
+- [x] Dashboard integration: rule engine replaces explore::suggest, HashMap O(N+R)
+- [x] Bounded context in reason output (CLI + MCP)
+- [x] Config template with rule examples in forgeplan init
+- [x] FpfConfig.rules field (empty = default 5 rules)
+- [x] 4 audit agents: code review, bounded context, Rust expert, security
+- [x] Audit fixes: NaN rejection, empty condition guard, circular scoring, TOCTOU, O(N+R)
+- [x] 38 rule engine tests (unit + scenario + negative + corner), 829 total
+- [x] EVID-057 linked, R_eff=1.00, PRs #133 + #135 merged
+- [x] KB vector search — deferred to Phase 3+ (keyword works, NOTE-039 DSL idea)
+
+### P0: FPF Engine v2 Phase 1 — Sprint 11 (RFC-001) ✅
+- [x] EPIC-002 shaped + activated (PR #128)
+- [x] RFC-001 shaped: 3 options, ADI confirmed Option C (Layered Core+Ext)
+- [x] fpf/core/ module: config.rs, trust.rs, adi.rs, model.rs (34 tests)
+- [x] FpfConfig wired into CLI scoring (score, fgr, context, dashboard)
+- [x] Config templates in init + current config.yaml (all 6 sections)
+- [x] Audit: 3 agents, 3H + 1M fixed, NaN validation, reliability clamp
+- [x] EVID-055, R_eff=1.00, RFC-001 activated
+- [x] Housekeeping: 12 orphans linked, SPRINTS.md updated
+- [x] 1.5: AdiRecord wiring — reason --save creates structured JSON in Note body
+- [x] 11.3: CI/CD Linter — health --ci + validate --ci + GH Actions workflow (PR #132)
+- [x] PR #131 merged + progress synced
 
 ### P0: Distribution Pipeline — Sprint 10 (PRD-023) ✅
 - [x] PRD-023 shaped + validated (8 FR, 4 journeys, 4 AC, Deep depth)

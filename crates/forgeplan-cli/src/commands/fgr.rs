@@ -5,6 +5,7 @@ use crate::commands::common;
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let store = common::store().await?;
+    let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
 
     let records = if let Some(id) = id {
         let record = store
@@ -58,6 +59,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 record.r_eff_score,
                 relations.len(),
                 is_stale,
+                fpf_weights.as_ref(),
             );
             results.push(serde_json::json!({
                 "id": record.id, "title": record.title,
@@ -104,6 +106,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             record.r_eff_score,
             relations.len(),
             is_stale,
+            fpf_weights.as_ref(),
         );
 
         let title: String = record.title.chars().take(28).collect();

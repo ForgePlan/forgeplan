@@ -73,10 +73,10 @@ pub fn detect(records: &[ArtifactRecord], edges: &[(String, String)]) -> Vec<Bou
         components.push(component);
     }
 
-    // Collect singletons
+    // Collect singletons (no adjacency = no links to other artifacts)
     let singletons: Vec<String> = all_ids
         .iter()
-        .filter(|id| !visited.contains(*id) || !adj.contains_key(*id))
+        .filter(|id| !adj.contains_key(*id))
         .cloned()
         .collect();
 
@@ -165,6 +165,27 @@ fn name_from_members(members: &[String], index: usize) -> String {
         .unwrap_or("Mixed");
 
     format!("Context-{} ({})", index + 1, dominant)
+}
+
+/// Detect which bounded context a specific artifact belongs to.
+///
+/// Returns (cluster_name, member_count, cohesion) or None if the artifact
+/// is a singleton (no links). Runs full graph detection internally.
+pub async fn detect_for_artifact(
+    store: &crate::db::store::LanceStore,
+    artifact_id: &str,
+) -> anyhow::Result<Option<(String, usize, f64)>> {
+    let all_records = store.list_records(None).await?;
+    let all_relations = store.get_all_relations().await?;
+    let edges: Vec<(String, String)> = all_relations
+        .iter()
+        .map(|(s, t, _)| (s.clone(), t.clone()))
+        .collect();
+    let ctxs = detect(&all_records, &edges);
+    Ok(ctxs
+        .into_iter()
+        .find(|c| c.members.iter().any(|m| m == artifact_id))
+        .map(|c| (c.name, c.members.len(), c.cohesion)))
 }
 
 #[cfg(test)]

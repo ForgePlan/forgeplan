@@ -42,3 +42,4 @@ Inline validate, score в редакторе при изменении .md. Gutt
 ### Desktop app — Tauri (1-2 месяца)
 Визуальный граф (drag-n-drop связи), real-time scoring, interactive validate. Shared Rust core (forgeplan-core). Уже в Phase 5 backlog.
 
+

@@ -46,3 +46,4 @@ title: 'Idea: Task Tracker Bridges — Linear/Jira sync via forgeplan export + w
 - MVP sync скрипт: 1-2 дня
 - Webhook integration: 1 неделя
 - Bidirectional real-time: 2-3 недели
+

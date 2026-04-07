@@ -201,6 +201,12 @@ struct RouteParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct GuardParams {
+    /// Target phase to check: idle, routing, shaping, coding, evidence, pr
+    target_phase: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ReviewParams {
     /// Artifact ID to review
     id: String,
@@ -742,6 +748,10 @@ impl ForgeplanServer {
             .filter(|(src, tgt, _)| src == &target.id || tgt == &target.id)
             .count();
 
+        let fpf_weights = self
+            .load_workspace_config()
+            .await
+            .and_then(|c| c.fpf.map(|f| f.weights));
         let fgr_score = fgr::compute(
             &target.id,
             &target.body,
@@ -751,6 +761,7 @@ impl ForgeplanServer {
             report.r_eff,
             link_count,
             false,
+            fpf_weights.as_ref(),
         );
 
         Ok(json_result(&ScoreResponse {
@@ -895,12 +906,15 @@ impl ForgeplanServer {
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
 
-        if let Some(ref body) = p.body {
+        let body_updated = if let Some(ref body) = p.body {
             store
                 .update_body(&p.id, body)
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-        }
+            true
+        } else {
+            false
+        };
 
         // Re-render projection
         let updated = store
@@ -909,20 +923,39 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
         let links = store.get_relations(&p.id).await.unwrap_or_default();
-        let _ = projection::render_projection(
-            &ws,
-            &updated.id,
-            &updated.kind,
-            &updated.title,
-            &updated.status,
-            &updated.depth,
-            updated.author.as_deref(),
-            updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(),
-            &updated.body,
-            &links,
-        )
-        .await;
+
+        if body_updated {
+            // Body was explicitly set — use force_body to write to file (files = truth)
+            let _ = projection::render_projection_with_body(
+                &ws,
+                &updated.id,
+                &updated.kind,
+                &updated.title,
+                &updated.status,
+                &updated.depth,
+                updated.author.as_deref(),
+                updated.parent_epic.as_deref(),
+                updated.valid_until.as_deref(),
+                &updated.body,
+                &links,
+            )
+            .await;
+        } else {
+            let _ = projection::render_projection(
+                &ws,
+                &updated.id,
+                &updated.kind,
+                &updated.title,
+                &updated.status,
+                &updated.depth,
+                updated.author.as_deref(),
+                updated.parent_epic.as_deref(),
+                updated.valid_until.as_deref(),
+                &updated.body,
+                &links,
+            )
+            .await;
+        }
 
         Ok(json_result(&serde_json::json!({
             "id": p.id,
@@ -1765,6 +1798,9 @@ impl ForgeplanServer {
             r_eff_score: record.r_eff_score,
             relations,
             architecture_hint: None, // MCP callers are AI agents — they already know the architecture
+            bounded_context: forgeplan_core::fpf::contexts::detect_for_artifact(&store, &record.id)
+                .await
+                .unwrap_or(None),
         };
 
         let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
@@ -2392,6 +2428,68 @@ impl ForgeplanServer {
                 "Serialization error: {e}"
             ))])),
         }
+    }
+
+    #[tool(
+        description = "Show current methodology session state — phase (idle/routing/shaping/coding/evidence/pr), active artifact, depth, enforcement status. Use this to know where in the workflow you are."
+    )]
+    async fn forgeplan_session(&self) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(p) => p,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let session = forgeplan_core::session::SessionState::load(&ws);
+
+        Ok(json_result(&serde_json::json!({
+            "phase": session.phase.to_string(),
+            "active_artifact": session.active_artifact,
+            "route_depth": session.route_depth,
+            "enforced": session.is_enforced(),
+            "next_action": session.next_action_hint(),
+            "phase_started_at": session.phase_started_at,
+            "history_count": session.history.len(),
+        })))
+    }
+
+    #[tool(
+        description = "Check if a methodology phase transition is allowed. Use before performing actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason."
+    )]
+    async fn forgeplan_guard(
+        &self,
+        Parameters(p): Parameters<GuardParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(p) => p,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let session = forgeplan_core::session::SessionState::load(&ws);
+
+        let target_phase = match p.target_phase.to_lowercase().as_str() {
+            "idle" => forgeplan_core::session::Phase::Idle,
+            "routing" => forgeplan_core::session::Phase::Routing,
+            "shaping" => forgeplan_core::session::Phase::Shaping,
+            "coding" => forgeplan_core::session::Phase::Coding,
+            "evidence" => forgeplan_core::session::Phase::Evidence,
+            "pr" => forgeplan_core::session::Phase::Pr,
+            other => {
+                return Ok(err_result(&format!(
+                    "Unknown phase '{}'. Valid: idle, routing, shaping, coding, evidence, pr",
+                    other
+                )));
+            }
+        };
+
+        let result = session.can_transition(target_phase);
+
+        Ok(json_result(&serde_json::json!({
+            "current_phase": session.phase.to_string(),
+            "target_phase": target_phase.to_string(),
+            "allowed": result.is_ok(),
+            "reason": result.err().unwrap_or_else(|| "Transition allowed".into()),
+            "next_action": session.next_action_hint(),
+        })))
     }
 }
 
