@@ -7,6 +7,7 @@
 pub mod pipeline;
 pub mod rules;
 pub mod signals;
+pub mod skills;
 
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::config::LlmConfig;
@@ -138,6 +139,17 @@ impl std::fmt::Display for RoutingResult {
 
 /// Route a task description to depth + pipeline using rule engine.
 pub fn route(description: &str) -> RoutingResult {
+    route_with_skills(description, &[])
+}
+
+/// Route with Skills Memory (PRD-040 FR-001).
+///
+/// If a high-confidence skill matches the task description, it overrides
+/// the keyword-based depth decision. Otherwise falls back to rule engine.
+///
+/// Skills only override when `skill.should_override()` is true
+/// (confidence ≥ 0.6, see `skills::RoutingSkill`).
+pub fn route_with_skills(description: &str, skills: &[skills::RoutingSkill]) -> RoutingResult {
     let trimmed = description.trim();
     if trimmed.is_empty() {
         return RoutingResult {
@@ -151,17 +163,53 @@ pub fn route(description: &str) -> RoutingResult {
         };
     }
 
-    let signals = signals::extract(trimmed);
-    let depth = rules::compute_depth(&signals);
+    let raw_signals = signals::extract(trimmed);
+    let keyword_depth = rules::compute_depth(&raw_signals);
+    let keyword_confidence = rules::compute_confidence(&raw_signals, &keyword_depth);
+
+    // Check skills first — if high-confidence match, use it
+    if let Some(skill) = skills::best_matching_skill(skills, trimmed) {
+        let depth = skill.recommended_depth.clone();
+        let pipeline = pipeline::for_depth(&depth);
+        let alternatives = generate_alternatives(&depth, &raw_signals);
+
+        let mut triggers = raw_signals;
+        triggers.push(Signal {
+            id: format!("skill:{}", skill.pattern),
+            description: format!(
+                "Matched learned skill: '{}' ({} uses, {:.0}% success)",
+                skill.pattern,
+                skill.usage_count,
+                skill.success_rate * 100.0
+            ),
+            weight: skill.confidence(),
+            minimum_depth: skill.recommended_depth.clone(),
+        });
+
+        return RoutingResult {
+            depth,
+            pipeline,
+            triggers,
+            confidence: skill.confidence(),
+            level: 0,
+            explanation: Some(format!(
+                "Skill match: '{}' ({} uses) overrides keyword rules",
+                skill.pattern, skill.usage_count
+            )),
+            alternatives,
+        };
+    }
+
+    // Fallback to keyword rules
+    let depth = keyword_depth;
     let pipeline = pipeline::for_depth(&depth);
-    let confidence = rules::compute_confidence(&signals, &depth);
-    let alternatives = generate_alternatives(&depth, &signals);
+    let alternatives = generate_alternatives(&depth, &raw_signals);
 
     RoutingResult {
         depth,
         pipeline,
-        triggers: signals,
-        confidence,
+        triggers: raw_signals,
+        confidence: keyword_confidence,
         level: 0,
         explanation: None,
         alternatives,
@@ -885,5 +933,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Skills integration (PRD-040 FR-001) ─────────────────────
+
+    fn mk_skill(pattern: &str, depth: Mode, uses: u32) -> skills::RoutingSkill {
+        let now = chrono::Utc::now();
+        skills::RoutingSkill {
+            pattern: pattern.to_lowercase(),
+            recommended_depth: depth,
+            usage_count: uses,
+            success_rate: 1.0,
+            last_used: now,
+            created_at: now,
+        }
+    }
+
+    #[test]
+    fn route_with_empty_skills_behaves_as_route() {
+        let result_plain = route("add new feature");
+        let result_empty = route_with_skills("add new feature", &[]);
+        assert_eq!(result_plain.depth, result_empty.depth);
+        assert_eq!(result_plain.confidence, result_empty.confidence);
+    }
+
+    #[test]
+    fn route_with_skill_overrides_keyword_rules() {
+        // "add feature" would normally route to Standard or higher.
+        // But skill says Tactical — check override.
+        let skills = vec![mk_skill("add feature", Mode::Tactical, 10)];
+        let result = route_with_skills("add new feature", &skills);
+        assert_eq!(result.depth, Mode::Tactical);
+        assert!(result.explanation.is_some());
+        assert!(result.explanation.as_ref().unwrap().contains("Skill match"));
+    }
+
+    #[test]
+    fn route_skill_appears_in_triggers() {
+        let skills = vec![mk_skill("bugfix", Mode::Tactical, 5)];
+        let result = route_with_skills("fix bugfix crash", &skills);
+        assert!(result.triggers.iter().any(|t| t.id.starts_with("skill:")));
+    }
+
+    #[test]
+    fn route_low_confidence_skill_does_not_override() {
+        // Only 1 use → confidence = 1/3 ≈ 0.33 → below 0.6 threshold
+        let skills = vec![mk_skill("security audit", Mode::Tactical, 1)];
+        let result = route_with_skills("security audit for auth module", &skills);
+        // Should fall back to keyword rules — "security" triggers Deep
+        assert_ne!(result.depth, Mode::Tactical);
+    }
+
+    #[test]
+    fn route_non_matching_skill_falls_back() {
+        let skills = vec![mk_skill("frontmatter parser", Mode::Tactical, 10)];
+        let result = route_with_skills("add authentication module", &skills);
+        // No match → fallback to keyword rules
+        assert!(result.explanation.is_none());
+    }
+
+    #[test]
+    fn route_empty_description_still_empty() {
+        let skills = vec![mk_skill("anything", Mode::Deep, 10)];
+        let result = route_with_skills("", &skills);
+        assert_eq!(result.depth, Mode::Tactical);
+        assert!(result.pipeline.is_empty());
+    }
+
+    #[test]
+    fn route_multiple_matching_skills_picks_highest_confidence() {
+        let skills = vec![
+            mk_skill("bugfix", Mode::Tactical, 3),        // conf 1.0
+            mk_skill("bugfix parser", Mode::Standard, 5), // conf 1.0, more specific
+        ];
+        let result = route_with_skills("bugfix in parser code", &skills);
+        // Both match; tie-break picks one — any Skill should win (not keyword)
+        assert!(result.explanation.is_some());
     }
 }
