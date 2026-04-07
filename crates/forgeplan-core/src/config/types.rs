@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::fpf::core::config::FpfConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub version: u32,
     pub project_name: String,

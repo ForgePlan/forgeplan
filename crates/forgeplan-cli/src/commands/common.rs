@@ -12,6 +12,10 @@ pub async fn open_store() -> anyhow::Result<(PathBuf, LanceStore)> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Load + validate config on every command that opens the store.
+    // This ensures IntegrityConfig::validate() runs for all code paths
+    // (new, score, list, etc. — not just commands that explicitly load config).
+    let _config = workspace::load_config(&ws)?;
     let store = LanceStore::open(&ws).await?;
     Ok((ws, store))
 }
