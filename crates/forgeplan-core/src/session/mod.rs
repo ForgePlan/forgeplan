@@ -220,8 +220,10 @@ mod tests {
 
     #[test]
     fn happy_path_transitions() {
-        let mut s = SessionState::default();
-        s.route_depth = Some("standard".into());
+        let mut s = SessionState {
+            route_depth: Some("standard".into()),
+            ..Default::default()
+        };
 
         assert!(s.transition(Phase::Routing).is_ok());
         assert_eq!(s.phase, Phase::Routing);
@@ -244,9 +246,11 @@ mod tests {
 
     #[test]
     fn blocked_skip_routing_to_coding() {
-        let mut s = SessionState::default();
-        s.phase = Phase::Routing;
-        s.route_depth = Some("standard".into());
+        let mut s = SessionState {
+            phase: Phase::Routing,
+            route_depth: Some("standard".into()),
+            ..Default::default()
+        };
 
         let result = s.transition(Phase::Coding);
         assert!(result.is_err());
@@ -255,9 +259,11 @@ mod tests {
 
     #[test]
     fn tactical_allows_anything() {
-        let mut s = SessionState::default();
-        s.route_depth = Some("tactical".into());
-        s.phase = Phase::Routing;
+        let mut s = SessionState {
+            phase: Phase::Routing,
+            route_depth: Some("tactical".into()),
+            ..Default::default()
+        };
 
         // Tactical can skip directly to PR
         assert!(s.transition(Phase::Pr).is_ok());
@@ -286,8 +292,10 @@ mod tests {
 
     #[test]
     fn history_recorded() {
-        let mut s = SessionState::default();
-        s.route_depth = Some("standard".into());
+        let mut s = SessionState {
+            route_depth: Some("standard".into()),
+            ..Default::default()
+        };
 
         s.transition(Phase::Routing).unwrap();
         s.transition(Phase::Shaping).unwrap();
@@ -301,9 +309,11 @@ mod tests {
 
     #[test]
     fn idempotent_same_phase() {
-        let mut s = SessionState::default();
-        s.phase = Phase::Coding;
-        s.route_depth = Some("standard".into());
+        let mut s = SessionState {
+            phase: Phase::Coding,
+            route_depth: Some("standard".into()),
+            ..Default::default()
+        };
 
         assert!(s.transition(Phase::Coding).is_ok());
         assert_eq!(s.phase, Phase::Coding);
@@ -311,9 +321,11 @@ mod tests {
 
     #[test]
     fn allowed_skip_shaping_to_evidence() {
-        let mut s = SessionState::default();
-        s.phase = Phase::Shaping;
-        s.route_depth = Some("standard".into());
+        let mut s = SessionState {
+            phase: Phase::Shaping,
+            route_depth: Some("standard".into()),
+            ..Default::default()
+        };
 
         // Docs-only change: skip coding
         assert!(s.transition(Phase::Evidence).is_ok());
