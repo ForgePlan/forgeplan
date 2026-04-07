@@ -127,9 +127,27 @@ enum Commands {
     Search {
         /// Search query
         query: String,
-        /// Filter by kind
+        /// Filter by kind (prd, rfc, adr, note, ...)
         #[arg(long, short = 't')]
         r#type: Option<String>,
+        /// Filter by status (draft, active, superseded, deprecated, stale)
+        #[arg(long, short = 's')]
+        status: Option<String>,
+        /// Filter by depth (tactical, standard, deep, critical)
+        #[arg(long)]
+        depth: Option<String>,
+        /// Only artifacts with evidence linked (R_eff > 0)
+        #[arg(long)]
+        with_evidence: bool,
+        /// Only artifacts WITHOUT evidence (blind spots)
+        #[arg(long, conflicts_with = "with_evidence")]
+        no_evidence: bool,
+        /// Only artifacts created after this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<String>,
+        /// Disable graph expansion (1-hop neighbors in results)
+        #[arg(long)]
+        no_expand: bool,
         /// Force keyword-only search (substring grep)
         #[arg(long, conflicts_with = "semantic")]
         keyword: bool,
@@ -588,6 +606,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Search {
             query,
             r#type,
+            status,
+            depth,
+            with_evidence,
+            no_evidence,
+            since,
+            no_expand,
             keyword,
             semantic,
             limit,
@@ -600,7 +624,20 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 commands::search::SearchMode::Smart
             };
-            commands::search::run(&query, r#type.as_deref(), mode, limit, json).await
+            commands::search::run(
+                &query,
+                r#type.as_deref(),
+                status.as_deref(),
+                depth.as_deref(),
+                with_evidence,
+                no_evidence,
+                since.as_deref(),
+                no_expand,
+                mode,
+                limit,
+                json,
+            )
+            .await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
         Commands::Session { reset } => {

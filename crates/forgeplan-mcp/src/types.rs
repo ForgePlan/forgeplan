@@ -201,7 +201,26 @@ pub struct SearchResultDto {
     pub id: String,
     pub kind: String,
     pub title: String,
+    #[serde(default)]
     pub matched_lines: Vec<String>,
+    /// Status of the artifact (draft, active, ...). Defaults empty for legacy clients.
+    #[serde(default)]
+    pub status: String,
+    /// Combined smart-search score (BM25 + semantic + boosters).
+    #[serde(default)]
+    pub score: f64,
+    /// BM25 normalized score in [0.0, 1.0].
+    #[serde(default)]
+    pub bm25_score: f64,
+    /// Semantic (cosine) similarity, 0 if embeddings unavailable.
+    #[serde(default)]
+    pub semantic_score: f64,
+    /// R_eff quality score of the artifact.
+    #[serde(default)]
+    pub r_eff: f64,
+    /// If present, this result was added via graph expansion from the given parent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded_from: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
