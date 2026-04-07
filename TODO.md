@@ -24,7 +24,7 @@
 - [x] Audit fixes: NaN rejection, empty condition guard, circular scoring, TOCTOU, O(N+R)
 - [x] 38 rule engine tests (unit + scenario + negative + corner), 829 total
 - [x] EVID-057 linked, R_eff=1.00, PRs #133 + #135 merged
-- [ ] KB vector search (deferred — keyword works, NOTE-039 DSL idea for Phase 3+)
+- [x] KB vector search — deferred to Phase 3+ (keyword search works, NOTE-039)
 
 ### P0: FPF Engine v2 Phase 1 — Sprint 11 (RFC-001) ✅
 - [x] EPIC-002 shaped + activated (PR #128)
