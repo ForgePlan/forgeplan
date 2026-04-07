@@ -3036,3 +3036,152 @@ fn test_new_accepts_force_alias() {
         .stdout(predicate::str::contains("PRD-001"))
         .stdout(predicate::str::contains("PRD-002"));
 }
+
+// ---------------------------------------------------------------------------
+// PRD-039 Sprint 13.2 — search filter flags (--status, --depth,
+// --with-evidence/--no-evidence, --since, --no-expand)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn search_status_filter_excludes_drafts() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Two PRDs: one stays draft, the other gets force-activated.
+    forgeplan()
+        .args(["new", "prd", "Active Authentication Spec"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Draft Authentication Spec"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --status active must exclude PRD-002 (draft).
+    forgeplan()
+        .args(["search", "Authentication", "--status", "active", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-002").not());
+}
+
+#[test]
+fn search_no_evidence_finds_blind_spots() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Payment Gateway"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // No evidence linked → r_eff_score == 0 → --no-evidence must return it,
+    // --with-evidence must NOT.
+    forgeplan()
+        .args(["search", "Payment", "--no-evidence", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    forgeplan()
+        .args(["search", "Payment", "--with-evidence", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}
+
+#[test]
+fn search_no_expand_disables_neighbor_expansion() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Logging System"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "Telemetry Pipeline"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // With --no-expand, querying for "Logging" must NOT pull in RFC-001 as
+    // an expanded neighbor — only the direct PRD match.
+    forgeplan()
+        .args(["search", "Logging", "--no-expand", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("RFC-001").not());
+}
+
+#[test]
+fn search_since_date_filter() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Caching Layer"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Created today → --since in the far past must match.
+    forgeplan()
+        .args(["search", "Caching", "--since", "2000-01-01", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // --since in the far future must exclude everything.
+    forgeplan()
+        .args(["search", "Caching", "--since", "2999-01-01", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+
+    // Bad date format must error out.
+    forgeplan()
+        .args(["search", "Caching", "--since", "not-a-date"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid --since date"));
+}

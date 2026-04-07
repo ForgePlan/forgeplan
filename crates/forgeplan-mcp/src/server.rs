@@ -301,13 +301,41 @@ struct EstimateParams {
     complexity: Option<String>,
 }
 
+fn default_search_limit() -> usize {
+    20
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
-    /// Search query (case-insensitive substring)
+    /// Search query (BM25 keyword + optional semantic, case-insensitive).
     query: String,
-    /// Filter by artifact kind (optional)
+    /// Filter by artifact kind (e.g. "prd", "rfc").
     #[serde(default)]
     kind: Option<String>,
+    /// Filter by status (e.g. "active", "draft").
+    #[serde(default)]
+    status: Option<String>,
+    /// Filter by depth (tactical, standard, deep, critical).
+    #[serde(default)]
+    depth: Option<String>,
+    /// Only include artifacts with linked evidence (R_eff > 0).
+    #[serde(default)]
+    with_evidence: bool,
+    /// Only include artifacts without evidence (R_eff == 0).
+    #[serde(default)]
+    no_evidence: bool,
+    /// Filter by created_at date (YYYY-MM-DD).
+    #[serde(default)]
+    since: Option<String>,
+    /// Disable 1-hop graph expansion of top results.
+    #[serde(default)]
+    no_expand: bool,
+    /// Max results (default 20).
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+    /// Search mode: "keyword", "semantic", or "smart" (default).
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1549,56 +1577,156 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Search artifacts by keyword (case-insensitive substring match on title and body). Returns matching artifacts with highlighted lines."
+        description = "Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle."
     )]
     async fn forgeplan_search(
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::graph::knowledge::KnowledgeGraph;
+        use forgeplan_core::search::filter::ArtifactFilter as SearchFilter;
+        use forgeplan_core::search::smart;
+
+        if p.query.trim().is_empty() {
+            return Ok(err_result("Search query cannot be empty."));
+        }
+
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let hits = store
-            .search_body(&p.query, p.kind.as_deref())
+        // Build composable filter from params.
+        let mut filters: Vec<SearchFilter> = Vec::new();
+        if let Some(k) = &p.kind {
+            filters.push(SearchFilter::Kind(k.clone()));
+        }
+        if let Some(s) = &p.status {
+            filters.push(SearchFilter::Status(s.clone()));
+        }
+        if let Some(d) = &p.depth {
+            filters.push(SearchFilter::Depth(d.clone()));
+        }
+        if p.with_evidence {
+            filters.push(SearchFilter::HasEvidence);
+        }
+        if p.no_evidence {
+            filters.push(SearchFilter::NoEvidence);
+        }
+        if let Some(date_str) = &p.since {
+            match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                Ok(d) => filters.push(SearchFilter::CreatedAfter(d.and_hms_opt(0, 0, 0).unwrap())),
+                Err(e) => {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "Invalid since date '{}' (expected YYYY-MM-DD): {}",
+                            date_str, e
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
+        let filter: Option<SearchFilter> = match filters.len() {
+            0 => None,
+            1 => Some(filters.into_iter().next().unwrap()),
+            _ => Some(SearchFilter::And(filters)),
+        };
+
+        let limit = if p.limit == 0 { 20 } else { p.limit };
+        let mode = p.mode.as_deref().unwrap_or("smart").to_lowercase();
+
+        // Keyword-only: legacy substring match (backward compat).
+        if mode == "keyword" {
+            let hits = store
+                .search_body(&p.query, p.kind.as_deref())
+                .await
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+            let query_lower = p.query.to_lowercase();
+            let results: Vec<SearchResultDto> = hits
+                .iter()
+                .take(limit)
+                .map(|record| {
+                    let matched_lines: Vec<String> = record
+                        .body
+                        .lines()
+                        .enumerate()
+                        .filter(|(_, line)| line.to_lowercase().contains(&query_lower))
+                        .take(5)
+                        .map(|(i, line)| {
+                            if line.chars().count() > 120 {
+                                format!(
+                                    "L{}: {}...",
+                                    i + 1,
+                                    line.chars().take(120).collect::<String>()
+                                )
+                            } else {
+                                format!("L{}: {}", i + 1, line.trim())
+                            }
+                        })
+                        .collect();
+
+                    SearchResultDto {
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        title: record.title.clone(),
+                        matched_lines,
+                        status: record.status.clone(),
+                        score: 0.0,
+                        bm25_score: 0.0,
+                        semantic_score: 0.0,
+                        r_eff: record.r_eff_score,
+                        expanded_from: None,
+                    }
+                })
+                .collect();
+            let total = results.len();
+            return Ok(json_result(&SearchResponse { results, total }));
+        }
+
+        // Smart / semantic: use smart_search over all records.
+        let records = store
+            .list_records(None)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
-        let query_lower = p.query.to_lowercase();
-        let results: Vec<SearchResultDto> = hits
-            .iter()
-            .map(|record| {
-                let matched_lines: Vec<String> = record
-                    .body
-                    .lines()
-                    .enumerate()
-                    .filter(|(_, line)| line.to_lowercase().contains(&query_lower))
-                    .take(5)
-                    .map(|(i, line)| {
-                        if line.chars().count() > 120 {
-                            format!(
-                                "L{}: {}...",
-                                i + 1,
-                                line.chars().take(120).collect::<String>()
-                            )
-                        } else {
-                            format!("L{}: {}", i + 1, line.trim())
-                        }
-                    })
-                    .collect();
+        let graph_opt = if p.no_expand {
+            None
+        } else {
+            KnowledgeGraph::from_store(&store).await.ok()
+        };
 
-                SearchResultDto {
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    title: record.title.clone(),
-                    matched_lines,
-                }
+        let results = smart::smart_search(
+            &records,
+            &p.query,
+            graph_opt.as_ref(),
+            None, // semantic_scores — not wired in MCP yet
+            filter.as_ref(),
+            limit,
+        );
+
+        let dtos: Vec<SearchResultDto> = results
+            .into_iter()
+            .map(|r| SearchResultDto {
+                id: r.id,
+                kind: r.kind,
+                title: r.title,
+                matched_lines: Vec::new(),
+                status: r.status,
+                score: r.score,
+                bm25_score: r.bm25_score,
+                semantic_score: r.semantic_score,
+                r_eff: r.r_eff,
+                expanded_from: r.expanded_from,
             })
             .collect();
 
-        let total = results.len();
-        Ok(json_result(&SearchResponse { results, total }))
+        let total = dtos.len();
+        Ok(json_result(&SearchResponse {
+            results: dtos,
+            total,
+        }))
     }
 
     #[tool(
@@ -2665,5 +2793,69 @@ mod duplicate_tests {
         let existing = vec![rec("PRD-001", "Auth System Design")];
         // 0.8 is NOT strictly > 0.8
         assert!(find_duplicate_warnings(&existing, "auth system").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod search_params_tests {
+    use super::*;
+
+    #[test]
+    fn test_search_params_backward_compat() {
+        // Legacy client only sends `query` — all new fields must default.
+        let json = r#"{"query": "auth"}"#;
+        let p: SearchParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.query, "auth");
+        assert!(p.kind.is_none());
+        assert!(p.status.is_none());
+        assert!(p.depth.is_none());
+        assert!(!p.with_evidence);
+        assert!(!p.no_evidence);
+        assert!(p.since.is_none());
+        assert!(!p.no_expand);
+        assert_eq!(p.limit, 20, "default limit should be 20");
+        assert!(p.mode.is_none());
+    }
+
+    #[test]
+    fn test_search_params_with_filters() {
+        let json = r#"{
+            "query": "auth",
+            "kind": "prd",
+            "status": "active",
+            "depth": "standard",
+            "with_evidence": true,
+            "no_evidence": false,
+            "since": "2026-01-01",
+            "no_expand": true,
+            "limit": 5,
+            "mode": "smart"
+        }"#;
+        let p: SearchParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.query, "auth");
+        assert_eq!(p.kind.as_deref(), Some("prd"));
+        assert_eq!(p.status.as_deref(), Some("active"));
+        assert_eq!(p.depth.as_deref(), Some("standard"));
+        assert!(p.with_evidence);
+        assert!(!p.no_evidence);
+        assert_eq!(p.since.as_deref(), Some("2026-01-01"));
+        assert!(p.no_expand);
+        assert_eq!(p.limit, 5);
+        assert_eq!(p.mode.as_deref(), Some("smart"));
+    }
+
+    #[test]
+    fn test_search_params_since_invalid_date_rejected() {
+        // The handler parses `since` via NaiveDate::parse_from_str and
+        // returns invalid_params on failure. Verify parse rejects garbage.
+        let bad = "not-a-date";
+        assert!(chrono::NaiveDate::parse_from_str(bad, "%Y-%m-%d").is_err());
+        let good = "2026-01-01";
+        assert!(chrono::NaiveDate::parse_from_str(good, "%Y-%m-%d").is_ok());
+    }
+
+    #[test]
+    fn test_default_search_limit() {
+        assert_eq!(default_search_limit(), 20);
     }
 }
