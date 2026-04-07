@@ -9,6 +9,8 @@ links:
   relation: based_on
 - target: NOTE-041
   relation: refines
+- target: EPIC-003
+  relation: refines
 status: draft
 title: Brownfield Discovery Engine — MCP tools, tags, discovery sessions, tiered sources
 ---
@@ -147,4 +149,5 @@ Tags: additive field, removal = delete field. Discovery tools: new, dont affect 
 | NOTE-039 | informs (DSL) |
 | ADR-003 | constrained_by |
 | ADR-006 | constrained_by |
+
 

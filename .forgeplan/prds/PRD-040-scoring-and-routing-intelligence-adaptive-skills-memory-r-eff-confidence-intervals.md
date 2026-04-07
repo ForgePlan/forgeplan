@@ -5,6 +5,8 @@ kind: prd
 links:
 - target: PRD-039
   relation: refines
+- target: EPIC-003
+  relation: refines
 status: draft
 title: Scoring and Routing Intelligence — Adaptive Skills Memory, R_eff Confidence Intervals
 ---
@@ -169,4 +171,5 @@ Routing и scoring перестают быть статичными — routing 
 |----------|----------|--------|
 | PRD-039 | Sibling (Smart Search v2) | Draft |
 | sources/RuVector | Pattern source (agenticdb.rs, conformal_prediction.rs) | External |
+
 
