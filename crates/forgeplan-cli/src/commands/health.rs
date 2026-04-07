@@ -42,6 +42,21 @@ pub async fn run(
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
             "next_actions": report.next_actions,
+            "possible_duplicates": report.possible_duplicates.iter().map(|d| serde_json::json!({
+                "id_a": d.id_a,
+                "id_b": d.id_b,
+                "similarity": d.similarity,
+                "title_a": d.title_a,
+                "title_b": d.title_b,
+                "kind": d.kind,
+            })).collect::<Vec<_>>(),
+            "active_stubs": report.active_stubs.iter().map(|s| serde_json::json!({
+                "id": s.id,
+                "kind": s.kind,
+                "title": s.title,
+                "markers_found": s.markers_found,
+                "message": s.message,
+            })).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
@@ -172,6 +187,45 @@ pub async fn run(
         );
         for id in &report.orphans {
             println!("    {} — {}", style(id).yellow(), style("no links").red());
+        }
+    }
+
+    // Possible duplicates
+    if !report.possible_duplicates.is_empty() {
+        println!();
+        println!(
+            "  {} Possible duplicates ({}):",
+            style("⧗").yellow().bold(),
+            ui::styled_count(report.possible_duplicates.len(), true)
+        );
+        for d in &report.possible_duplicates {
+            let pct = (d.similarity * 100.0).round() as u32;
+            println!(
+                "    {} ↔ {} ({}%) — \"{}\"",
+                style(&d.id_a).yellow(),
+                style(&d.id_b).yellow(),
+                pct,
+                d.title_a
+            );
+        }
+    }
+
+    // Active stubs (direct-edit bypasses of activate gate)
+    if !report.active_stubs.is_empty() {
+        println!();
+        println!(
+            "  {} Active stubs ({}):",
+            style("⚠").yellow().bold(),
+            ui::styled_count(report.active_stubs.len(), true)
+        );
+        for s in &report.active_stubs {
+            println!(
+                "    {} ({}) \"{}\" — {} markers",
+                style(&s.id).yellow(),
+                s.kind,
+                s.title,
+                s.markers_found
+            );
         }
     }
 

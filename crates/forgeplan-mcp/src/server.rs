@@ -417,12 +417,25 @@ impl ForgeplanServer {
         };
 
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
+        let template_key = artifact_kind.template_key();
+
+        // Duplicate detection (FR-004 of PRD-043) — non-blocking warnings.
+        // MCP is non-interactive, so the artifact is still created and warnings
+        // are returned for the AI agent to react to.
+        let dup_filter = ArtifactFilter {
+            kind: Some(template_key.to_string()),
+            status: None,
+        };
+        let existing = store
+            .list_artifacts(Some(&dup_filter))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Duplicate scan failed: {e}"), None))?;
+        let warnings = find_duplicate_warnings(&existing, &p.title);
+
         let id = store
             .next_id(&prefix)
             .await
             .map_err(|e| McpError::internal_error(format!("ID generation failed: {e}"), None))?;
-
-        let template_key = artifact_kind.template_key();
         let template = match get_embedded_template(template_key) {
             Some(t) => t,
             None => {
@@ -497,6 +510,7 @@ impl ForgeplanServer {
             title: p.title,
             filepath: filepath.display().to_string(),
             _next_action: Some(hint),
+            warnings,
         }))
     }
 
@@ -2533,5 +2547,79 @@ fn methodology_hint_after_new(kind: &str, id: &str) -> String {
         ),
         "note" => "Notes auto-expire in 90 days. Link to related artifacts if relevant.".into(),
         _ => format!("Next: forgeplan validate {id}"),
+    }
+}
+
+// ── Duplicate detection (FR-004 of PRD-043) ──────────────────────────────
+//
+// Uses canonical `forgeplan_core::duplicate` (Jaccard) — single source of truth
+// shared with CLI `new` and `health` (W4 C-1 fix).
+
+use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+
+/// Return all artifacts whose title similarity to `title` is at or above
+/// [`DUPLICATE_SIMILARITY_THRESHOLD`]. Sorted by similarity descending.
+fn find_duplicate_warnings(
+    existing: &[forgeplan_core::artifact::store::ArtifactSummary],
+    title: &str,
+) -> Vec<DuplicateWarning> {
+    let mut out: Vec<DuplicateWarning> = existing
+        .iter()
+        .filter_map(|s| {
+            let score = title_similarity(&s.title, title);
+            if score >= DUPLICATE_SIMILARITY_THRESHOLD {
+                Some(DuplicateWarning {
+                    id: s.id.clone(),
+                    title: s.title.clone(),
+                    similarity: score,
+                    status: s.status.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
+#[cfg(test)]
+mod duplicate_tests {
+    use super::*;
+    use forgeplan_core::artifact::store::ArtifactSummary;
+
+    fn rec(id: &str, title: &str) -> ArtifactSummary {
+        ArtifactSummary {
+            id: id.into(),
+            title: title.into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+        }
+    }
+
+    #[test]
+    fn exact_match_returns_warning() {
+        let existing = vec![rec("PRD-001", "Auth System")];
+        let w = find_duplicate_warnings(&existing, "Auth System");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].id, "PRD-001");
+        assert!(w[0].similarity >= 1.0);
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let existing = vec![rec("PRD-001", "Billing")];
+        assert!(find_duplicate_warnings(&existing, "Auth System").is_empty());
+    }
+
+    #[test]
+    fn substring_below_threshold_excluded() {
+        let existing = vec![rec("PRD-001", "Auth System Design")];
+        // 0.8 is NOT strictly > 0.8
+        assert!(find_duplicate_warnings(&existing, "auth system").is_empty());
     }
 }

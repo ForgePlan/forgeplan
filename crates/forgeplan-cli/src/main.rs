@@ -34,6 +34,9 @@ enum Commands {
         kind: String,
         /// Artifact title
         title: String,
+        /// Skip duplicate-detection prompt and create anyway
+        #[arg(long)]
+        allow_duplicate: bool,
     },
     /// List artifacts
     List {
@@ -529,7 +532,11 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
-        Commands::New { kind, title } => commands::new::run(&kind, &title).await,
+        Commands::New {
+            kind,
+            title,
+            allow_duplicate,
+        } => commands::new::run(&kind, &title, allow_duplicate).await,
         Commands::List {
             r#type,
             status,

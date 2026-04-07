@@ -64,6 +64,14 @@ pub struct InitResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DuplicateWarning {
+    pub id: String,
+    pub title: String,
+    pub similarity: f64,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NewArtifactResponse {
     pub id: String,
@@ -73,6 +81,10 @@ pub struct NewArtifactResponse {
     /// Methodology hint: what to do next after creating this artifact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _next_action: Option<String>,
+    /// Duplicate warnings (FR-004 of PRD-043). Empty if no similar artifacts found.
+    /// Artifact is still created — AI agent decides how to react.
+    #[serde(default)]
+    pub warnings: Vec<DuplicateWarning>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
