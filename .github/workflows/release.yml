@@ -143,6 +143,10 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Rust compilation cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ join(matrix.targets, '_') }}"
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
