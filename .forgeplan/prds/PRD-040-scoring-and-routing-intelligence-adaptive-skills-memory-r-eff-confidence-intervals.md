@@ -7,7 +7,7 @@ links:
   relation: refines
 - target: EPIC-003
   relation: refines
-status: draft
+status: active
 title: Scoring and Routing Intelligence — Adaptive Skills Memory, R_eff Confidence Intervals
 ---
 
@@ -29,11 +29,15 @@ projectType: cli_tool
 ## Progress
 
 ```
-FR-001   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  (  0%)  Skills Memory
-FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  (  0%)  R_eff CI
+FR-001   ████████████████████████  1/1  (100%)  Skills Memory ✓ Sprint 13.5
+FR-002   ████████████████████████  1/1  (100%)  R_eff CI      ✓ Sprint 13.5
 ─────────────────────────────────────────────────
-TOTAL                               0/2  (  0%)
+TOTAL                               2/2  (100%) — COMPLETE
 ```
+
+**Sprint 13.5 delivered:** Both FRs implemented. Skills Memory infrastructure in `routing/skills.rs` + `route_with_skills()`. R_eff Confidence Intervals in `scoring/reff.rs::r_eff_with_ci()` + CLI display. 1042 tests pass (+36 new).
+
+See EVID-062. PR #153 awaiting review.
 
 ---
 
@@ -171,5 +175,6 @@ Routing и scoring перестают быть статичными — routing 
 |----------|----------|--------|
 | PRD-039 | Sibling (Smart Search v2) | Draft |
 | sources/RuVector | Pattern source (agenticdb.rs, conformal_prediction.rs) | External |
+
 
 
