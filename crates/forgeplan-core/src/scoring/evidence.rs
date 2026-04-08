@@ -72,12 +72,12 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         .and_then(|s| s.parse::<u8>().ok())
         .map(|v| v.min(3));
 
-    if tier_cl.is_some() && explicit_cl.is_some() && tier_cl != explicit_cl {
+    if let (Some(tcl), Some(ecl)) = (tier_cl, explicit_cl)
+        && tcl != ecl
+    {
         eprintln!(
-            "warn: evidence {} has divergent source_tier (CL{}) and congruence_level (CL{}); using MIN (more conservative) to prevent trust inflation",
+            "warn: evidence {} has divergent source_tier (CL{tcl}) and congruence_level (CL{ecl}); using MIN (more conservative) to prevent trust inflation",
             record.id,
-            tier_cl.unwrap(),
-            explicit_cl.unwrap(),
         );
     }
 
