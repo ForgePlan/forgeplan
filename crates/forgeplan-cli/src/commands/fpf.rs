@@ -74,6 +74,22 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
             chunks.len()
         );
         let mut embedder = forgeplan_core::embed::Embedder::new()?;
+        // Sprint 13.7 hotfix FIX-E: runtime guard against future model swap.
+        // The fpf_spec Arrow schema hardcodes `embedding: FixedSizeList<Float32,
+        // EMBEDDING_DIM>` (1024 for BGE-M3). Swapping the Embedder to a model
+        // with a different output dim would silently corrupt the table on the
+        // next insert. Fail fast here with a clear message.
+        if embedder.dim() != forgeplan_core::db::schema::EMBEDDING_DIM as usize {
+            anyhow::bail!(
+                "Embedder dim mismatch: model '{}' outputs {} dims but the \
+                 fpf_spec schema expects {}. Sprint 13.7 hardcodes BGE-M3 \
+                 (1024 dims); swapping the embedding model requires a schema \
+                 migration.",
+                embedder.model_name(),
+                embedder.dim(),
+                forgeplan_core::db::schema::EMBEDDING_DIM as usize
+            );
+        }
         let texts: Vec<String> = chunks
             .iter()
             .map(|c| format!("{}: {}", c.title, c.body))

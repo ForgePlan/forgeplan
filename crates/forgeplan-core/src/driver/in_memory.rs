@@ -426,6 +426,18 @@ impl FpfStorage for InMemoryStore {
         state.fpf_chunks.clear();
         Ok(())
     }
+
+    async fn search_fpf_by_vector(
+        &self,
+        _query_vec: &[f32],
+        _limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        // InMemoryStore does not support vector similarity search.
+        // Tests using this driver should use the keyword path (search_fpf)
+        // instead. Explicitly stubbed (even though the trait default would
+        // produce the same value) for discoverability — Sprint 13.7 hotfix.
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

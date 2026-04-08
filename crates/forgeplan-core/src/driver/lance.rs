@@ -177,6 +177,14 @@ impl FpfStorage for LanceDriver {
         self.store.search_fpf(query, limit).await
     }
 
+    async fn search_fpf_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        self.store.search_fpf_by_vector(query_vec, limit).await
+    }
+
     async fn get_fpf_section(&self, section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
         self.store.get_fpf_section(section_id).await
     }

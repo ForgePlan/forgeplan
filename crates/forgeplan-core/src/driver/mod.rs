@@ -173,6 +173,19 @@ pub trait FpfStorage: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Semantic search over FPF knowledge base using pre-computed vector.
+    ///
+    /// Returns Ok(empty) gracefully when the embedding column has no populated
+    /// rows (pre-ingest workspace migration path). Backends without vector
+    /// support return Ok(empty) by default.
+    async fn search_fpf_by_vector(
+        &self,
+        _query_vec: &[f32],
+        _limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        Ok(Vec::new())
+    }
+
     /// Get a specific FPF section by section_id.
     async fn get_fpf_section(&self, _section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
         Ok(None)
@@ -286,6 +299,28 @@ mod tests {
 
         let batch = driver.embed_batch(&["a", "b"]).unwrap();
         assert_eq!(batch.len(), 2);
+    }
+
+    /// Sprint 13.7 hotfix FIX-D: FpfStorage trait exposes both keyword and
+    /// vector search paths, and both remain callable through `&dyn FpfStorage`
+    /// (proving the extension preserved dyn-compatibility).
+    #[tokio::test]
+    async fn fpf_storage_trait_has_both_search_methods() {
+        use crate::driver::in_memory::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let dyn_ref: &dyn FpfStorage = &store;
+
+        // Both methods must be callable via the trait object.
+        let kw = dyn_ref.search_fpf("anything", 5).await.unwrap();
+        assert!(kw.is_empty());
+
+        let q = vec![0.0_f32; 1024];
+        let sem = dyn_ref.search_fpf_by_vector(&q, 5).await.unwrap();
+        assert!(
+            sem.is_empty(),
+            "InMemoryStore stub returns empty for vector search"
+        );
     }
 
     #[test]

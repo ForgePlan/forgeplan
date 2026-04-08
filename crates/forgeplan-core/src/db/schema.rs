@@ -123,6 +123,12 @@ pub fn relations_schema() -> Arc<Schema> {
 /// - created_at    Utf8 (not null) — ISO datetime of ingestion
 /// - embedding     FixedSizeList(1024, Float32) (nullable) — vector for semantic
 ///                 search (PRD-042). Pre-semantic workspaces have null.
+///
+/// The dimension 1024 is tied to the default BGE-M3 model in
+/// `forgeplan_core::embed::Embedder`. Swapping to a different model with a
+/// different output dim requires a schema migration. See `run_ingest` in
+/// `forgeplan-cli/src/commands/fpf.rs` for the runtime assertion that
+/// catches mismatches early (Sprint 13.7 hotfix FIX-E).
 pub fn fpf_spec_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
