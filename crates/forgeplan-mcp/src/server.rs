@@ -3388,7 +3388,7 @@ mod fpf_param_validation_tests {
     fn fpf_search_params_defaults_semantic_to_false_when_absent() {
         let p: FpfSearchParams = serde_json::from_str(r#"{"query": "trust"}"#).unwrap();
         assert_eq!(p.semantic, None);
-        assert_eq!(p.semantic.unwrap_or(false), false);
+        assert!(!p.semantic.unwrap_or(false));
         assert_eq!(p.limit, None);
     }
 

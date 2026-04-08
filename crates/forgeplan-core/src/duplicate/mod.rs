@@ -96,7 +96,6 @@ mod tests {
         // Just-below boundary (0.69) MUST NOT clear the threshold.
         let below: f64 = 0.69;
         assert!(below < DUPLICATE_SIMILARITY_THRESHOLD);
-        assert!(!(below >= DUPLICATE_SIMILARITY_THRESHOLD));
 
         // Just-above boundary (0.71) MUST clear the threshold.
         let above: f64 = 0.71;

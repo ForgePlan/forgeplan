@@ -138,12 +138,11 @@ pub fn list_sessions(workspace: &Path) -> anyhow::Result<Vec<DiscoverSession>> {
     let mut sessions = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
-        if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
-            if let Ok(json) = std::fs::read_to_string(entry.path()) {
-                if let Ok(s) = serde_json::from_str::<DiscoverSession>(&json) {
-                    sessions.push(s);
-                }
-            }
+        if entry.path().extension().and_then(|s| s.to_str()) == Some("json")
+            && let Ok(json) = std::fs::read_to_string(entry.path())
+            && let Ok(s) = serde_json::from_str::<DiscoverSession>(&json)
+        {
+            sessions.push(s);
         }
     }
     sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));

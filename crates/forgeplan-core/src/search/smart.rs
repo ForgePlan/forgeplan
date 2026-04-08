@@ -226,10 +226,10 @@ pub fn expand_with_graph_neighbors(
             }
             let neighbor_score = parent.score * decay_factor;
             // Skip if we already have this neighbor with a higher score.
-            if let Some(existing) = by_id.get(&n.id) {
-                if existing.score >= neighbor_score {
-                    continue;
-                }
+            if let Some(existing) = by_id.get(&n.id)
+                && existing.score >= neighbor_score
+            {
+                continue;
             }
             // Pull metadata from records when available; fall back to graph node.
             let (title, status, r_eff) = match record_by_id.get(n.id.as_str()) {

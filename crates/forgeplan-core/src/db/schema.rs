@@ -122,7 +122,7 @@ pub fn relations_schema() -> Arc<Schema> {
 /// - file_path     Utf8 (not null) — original file path
 /// - created_at    Utf8 (not null) — ISO datetime of ingestion
 /// - embedding     FixedSizeList(1024, Float32) (nullable) — vector for semantic
-///                 search (PRD-042). Pre-semantic workspaces have null.
+///   search (PRD-042). Pre-semantic workspaces have null.
 ///
 /// The dimension 1024 is tied to the default BGE-M3 model in
 /// `forgeplan_core::embed::Embedder`. Swapping to a different model with a

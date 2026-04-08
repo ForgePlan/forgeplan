@@ -408,6 +408,7 @@ impl MemoryConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod integrity_tests {
     use super::*;
 

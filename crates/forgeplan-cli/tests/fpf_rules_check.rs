@@ -54,7 +54,10 @@ fn cli_fpf_rules_json_valid() {
     let s = String::from_utf8(output).unwrap();
     let j: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
     assert!(j.get("rules").is_some(), "has rules key");
-    assert!(j["rules"].as_array().unwrap().len() > 0, "rules non-empty");
+    assert!(
+        !j["rules"].as_array().unwrap().is_empty(),
+        "rules non-empty"
+    );
     assert!(j.get("source").is_some());
     assert!(j.get("count").is_some());
 }

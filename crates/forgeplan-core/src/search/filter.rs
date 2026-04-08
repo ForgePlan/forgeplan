@@ -51,7 +51,7 @@ pub fn has_tag_predicate(tags: &[String], filter: &str) -> bool {
 ///
 /// Typed to avoid generic-Value complexity. Each variant is a
 /// domain-specific predicate over ArtifactRecord.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ArtifactFilter {
     /// Match artifacts by kind (prd, rfc, adr, note, ...)
     Kind(String),
@@ -79,6 +79,7 @@ pub enum ArtifactFilter {
     /// Inner filter must NOT match
     Not(Box<ArtifactFilter>),
     /// Match everything (useful as default)
+    #[default]
     Any,
 }
 
@@ -113,14 +114,9 @@ impl ArtifactFilter {
     pub fn or(filters: Vec<ArtifactFilter>) -> Self {
         Self::Or(filters)
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn not(filter: ArtifactFilter) -> Self {
         Self::Not(Box::new(filter))
-    }
-}
-
-impl Default for ArtifactFilter {
-    fn default() -> Self {
-        Self::Any
     }
 }
 

@@ -570,6 +570,7 @@ fn compute_fgr_for_record(
 // ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod prd041_tests {
     use super::*;
     use crate::db::store::{LanceStore, NewArtifact};
