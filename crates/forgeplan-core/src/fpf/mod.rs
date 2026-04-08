@@ -570,7 +570,6 @@ fn compute_fgr_for_record(
 // ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod prd041_tests {
     use super::*;
     use crate::db::store::{LanceStore, NewArtifact};
@@ -614,8 +613,10 @@ mod prd041_tests {
 
     #[test]
     fn active_rules_returns_config_when_non_empty() {
-        let mut cfg = FpfConfig::default();
-        cfg.rules = vec![custom_rule("a", 10), custom_rule("b", 20)];
+        let cfg = FpfConfig {
+            rules: vec![custom_rule("a", 10), custom_rule("b", 20)],
+            ..Default::default()
+        };
         let (rules, source) = active_rules(Some(&cfg));
         assert_eq!(source, RuleSource::Config);
         assert_eq!(rules.len(), 2);
@@ -711,8 +712,10 @@ mod prd041_tests {
         let store = make_store(&tmp).await;
         seed_draft_prd(&store, "PRD-001").await;
 
-        let mut cfg = FpfConfig::default();
-        cfg.rules = vec![custom_rule("only-rule", 1)];
+        let cfg = FpfConfig {
+            rules: vec![custom_rule("only-rule", 1)],
+            ..Default::default()
+        };
 
         let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
             .await
@@ -732,17 +735,19 @@ mod prd041_tests {
         seed_draft_prd(&store, "PRD-001").await;
 
         // Custom rule that requires status="active" — won't match a draft.
-        let mut cfg = FpfConfig::default();
-        cfg.rules = vec![Rule {
-            name: "needs-active".to_string(),
-            condition: Condition {
-                status: Some(ValueMatch::Single("active".into())),
-                ..Default::default()
-            },
-            action: ActionType::Explore,
-            priority: 1,
-            message: None,
-        }];
+        let cfg = FpfConfig {
+            rules: vec![Rule {
+                name: "needs-active".to_string(),
+                condition: Condition {
+                    status: Some(ValueMatch::Single("active".into())),
+                    ..Default::default()
+                },
+                action: ActionType::Explore,
+                priority: 1,
+                message: None,
+            }],
+            ..Default::default()
+        };
 
         let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
             .await

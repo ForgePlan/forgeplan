@@ -408,7 +408,6 @@ impl MemoryConfig {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod integrity_tests {
     use super::*;
 
@@ -469,36 +468,50 @@ mod integrity_tests {
 
     #[test]
     fn test_integrity_config_validate_rejects_out_of_range_threshold() {
-        let mut cfg = IntegrityConfig::default();
-        cfg.duplicate_threshold = 1.5;
-        assert!(cfg.validate().is_err());
-        cfg.duplicate_threshold = -0.5;
-        assert!(cfg.validate().is_err());
-        cfg.duplicate_threshold = f64::NAN;
-        assert!(cfg.validate().is_err());
+        for bad in [1.5_f64, -0.5, f64::NAN] {
+            let cfg = IntegrityConfig {
+                duplicate_threshold: bad,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_err(),
+                "threshold {bad} should be rejected"
+            );
+        }
     }
 
     #[test]
     fn test_integrity_config_validate_rejects_zero_body_limit() {
-        let mut cfg = IntegrityConfig::default();
-        cfg.mcp_max_body_len = 0;
-        assert!(cfg.validate().is_err());
-        cfg.mcp_max_body_len = 1023;
-        assert!(cfg.validate().is_err());
-        cfg.mcp_max_body_len = 200 * 1024 * 1024;
-        assert!(cfg.validate().is_err());
+        for bad in [0_usize, 1023, 200 * 1024 * 1024] {
+            let cfg = IntegrityConfig {
+                mcp_max_body_len: bad,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_err(),
+                "body limit {bad} should be rejected"
+            );
+        }
     }
 
     #[test]
     fn test_integrity_config_validate_rejects_bad_title_and_pairs() {
-        let mut cfg = IntegrityConfig::default();
-        cfg.mcp_max_title_len = 8;
+        let cfg = IntegrityConfig {
+            mcp_max_title_len: 8,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
-        let mut cfg = IntegrityConfig::default();
-        cfg.duplicate_pairs_limit = 0;
+
+        let cfg = IntegrityConfig {
+            duplicate_pairs_limit: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
-        let mut cfg = IntegrityConfig::default();
-        cfg.stub_marker_threshold = 0;
+
+        let cfg = IntegrityConfig {
+            stub_marker_threshold: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 

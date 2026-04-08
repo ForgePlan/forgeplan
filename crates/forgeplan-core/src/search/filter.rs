@@ -114,9 +114,15 @@ impl ArtifactFilter {
     pub fn or(filters: Vec<ArtifactFilter>) -> Self {
         Self::Or(filters)
     }
-    #[allow(clippy::should_implement_trait)]
-    pub fn not(filter: ArtifactFilter) -> Self {
-        Self::Not(Box::new(filter))
+}
+
+/// Idiomatic negation via `!filter` syntax. Replaces the earlier
+/// `ArtifactFilter::not(filter)` constructor which shadowed the `Not` trait.
+impl std::ops::Not for ArtifactFilter {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self::Not(Box::new(self))
     }
 }
 
@@ -228,8 +234,8 @@ mod tests {
     #[test]
     fn not_filter() {
         let r = mk("PRD-1", "prd", "draft", "X");
-        assert!(ArtifactFilter::not(ArtifactFilter::Status("active".to_string())).matches(&r));
-        assert!(!ArtifactFilter::not(ArtifactFilter::Status("draft".to_string())).matches(&r));
+        assert!((!ArtifactFilter::Status("active".to_string())).matches(&r));
+        assert!(!(!ArtifactFilter::Status("draft".to_string())).matches(&r));
     }
 
     #[test]
@@ -281,7 +287,7 @@ mod tests {
                 ArtifactFilter::Kind("prd".to_string()),
                 ArtifactFilter::Kind("rfc".to_string()),
             ]),
-            ArtifactFilter::not(ArtifactFilter::Status("deprecated".to_string())),
+            !ArtifactFilter::Status("deprecated".to_string()),
             ArtifactFilter::TitleContains("auth".to_string()),
         ]);
         assert!(f.matches(&r));
