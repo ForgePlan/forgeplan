@@ -3543,3 +3543,55 @@ fn untag_writes_to_markdown_frontmatter() {
         content
     );
 }
+
+#[test]
+fn new_rejects_empty_title_no_orphan_row() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", ""])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be empty"));
+
+    // Ensure no artifact was created in the store.
+    forgeplan()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}
+
+#[test]
+fn new_rejects_too_long_title_no_orphan_row() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let long_title: String = "X".repeat(500);
+    forgeplan()
+        .args(["new", "prd", &long_title])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("too long"));
+
+    forgeplan()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}

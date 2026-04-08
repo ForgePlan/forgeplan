@@ -11,7 +11,38 @@ use forgeplan_core::template::{get_embedded_template, render_template};
 
 use crate::commands::common;
 
+/// Maximum allowed title length in characters.
+///
+/// Chosen as a safe upper bound for filesystem path limits across platforms
+/// (macOS/Linux filenames cap at 255 bytes; we leave headroom for slug
+/// prefix/suffix, extension, and multi-byte characters).
+pub const MAX_TITLE_LEN: usize = 128;
+
+/// Validate an artifact title before any DB or filesystem writes.
+///
+/// Rejects empty titles (including whitespace-only) and titles longer than
+/// [`MAX_TITLE_LEN`] characters. Called at the very start of `run` so that
+/// invalid input never produces orphan DB rows.
+pub fn validate_title(title: &str) -> Result<()> {
+    if title.trim().is_empty() {
+        anyhow::bail!("Title cannot be empty. Provide a non-empty title.");
+    }
+    let len = title.chars().count();
+    if len > MAX_TITLE_LEN {
+        anyhow::bail!(
+            "Title too long (got {} chars, max {}). Shorten the title.",
+            len,
+            MAX_TITLE_LEN
+        );
+    }
+    Ok(())
+}
+
 pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<()> {
+    // Validate title BEFORE any DB insert or filesystem write to prevent
+    // orphan rows on invalid input (see final-e2e audit for release v0.17.0).
+    validate_title(title)?;
+
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let (workspace, store) = common::open_store().await?;
@@ -226,6 +257,53 @@ mod tests {
         // 0.8 is NOT strictly > 0.8 → no dup reported
         let existing = vec![rec("PRD-001", "Auth System Design")];
         assert!(find_duplicate(&existing, "auth system").is_none());
+    }
+
+    #[test]
+    fn validate_title_accepts_normal() {
+        assert!(validate_title("Auth System").is_ok());
+    }
+
+    #[test]
+    fn validate_title_rejects_empty() {
+        let err = validate_title("").unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_title_rejects_whitespace_only() {
+        let err = validate_title("   \t\n  ").unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_title_accepts_exactly_max() {
+        let t: String = "x".repeat(MAX_TITLE_LEN);
+        assert!(validate_title(&t).is_ok());
+    }
+
+    #[test]
+    fn validate_title_rejects_over_max_by_one() {
+        let t: String = "x".repeat(MAX_TITLE_LEN + 1);
+        let err = validate_title(&t).unwrap_err().to_string();
+        assert!(err.contains("too long"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_title_rejects_very_long() {
+        let t: String = "X".repeat(500);
+        let err = validate_title(&t).unwrap_err().to_string();
+        assert!(err.contains("too long"), "got: {}", err);
+        assert!(err.contains("500"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_title_counts_chars_not_bytes() {
+        // 128 multi-byte chars is valid (char count, not byte count)
+        let t: String = "й".repeat(MAX_TITLE_LEN);
+        assert!(validate_title(&t).is_ok());
+        let t2: String = "й".repeat(MAX_TITLE_LEN + 1);
+        assert!(validate_title(&t2).is_err());
     }
 
     #[test]
