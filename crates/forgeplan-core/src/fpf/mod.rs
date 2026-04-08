@@ -559,3 +559,151 @@ fn enrich_record_for_rules(
         days_until_expiry,
     }
 }
+
+// ──────────────────────────────────────────────────────────────────
+// PRD-041 tests: active_rules + check_artifact_against_rules
+// ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod prd041_tests {
+    use super::*;
+    use crate::db::store::{LanceStore, NewArtifact};
+    use crate::fpf::core::model::ActionType;
+    use crate::fpf::ext::rules::{Condition, Rule, ValueMatch};
+    use tempfile::TempDir;
+
+    async fn make_store(tmp: &TempDir) -> LanceStore {
+        let ws = tmp.path().join(".forgeplan");
+        LanceStore::init(&ws).await.unwrap()
+    }
+
+    fn custom_rule(name: &str, priority: u8) -> Rule {
+        Rule {
+            name: name.to_string(),
+            condition: Condition {
+                status: Some(ValueMatch::Single("draft".into())),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority,
+            message: Some(format!("custom rule {name}")),
+        }
+    }
+
+    #[test]
+    fn active_rules_returns_default_when_config_none() {
+        let (rules, source) = active_rules(None);
+        assert_eq!(source, RuleSource::Default);
+        assert!(!rules.is_empty(), "default rules must be non-empty");
+    }
+
+    #[test]
+    fn active_rules_returns_default_when_empty() {
+        let cfg = FpfConfig::default();
+        assert!(cfg.rules.is_empty());
+        let (rules, source) = active_rules(Some(&cfg));
+        assert_eq!(source, RuleSource::Default);
+        assert!(!rules.is_empty());
+    }
+
+    #[test]
+    fn active_rules_returns_config_when_non_empty() {
+        let mut cfg = FpfConfig::default();
+        cfg.rules = vec![custom_rule("a", 10), custom_rule("b", 20)];
+        let (rules, source) = active_rules(Some(&cfg));
+        assert_eq!(source, RuleSource::Config);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].name, "a");
+        assert_eq!(rules[1].name, "b");
+    }
+
+    #[tokio::test]
+    async fn check_returns_error_for_missing_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let err = check_artifact_against_rules(&store, "DOES-NOT-EXIST", None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found") || msg.contains("Artifact not found"),
+            "expected not-found error, got: {msg}"
+        );
+    }
+
+    async fn seed_draft_prd(store: &LanceStore, id: &str) {
+        let a = NewArtifact {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Test PRD".to_string(),
+            body: "## Problem\nx\n".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&a).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_returns_all_matched_plus_unmatched_equals_total() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        seed_draft_prd(&store, "PRD-001").await;
+
+        let (default_rules, _) = active_rules(None);
+        let result = check_artifact_against_rules(&store, "PRD-001", None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.matched.len() + result.unmatched.len(),
+            default_rules.len(),
+            "matched + unmatched must account for every rule"
+        );
+        assert_eq!(result.artifact_id, "PRD-001");
+        assert_eq!(result.artifact_kind, "prd");
+        assert_eq!(result.artifact_status, "draft");
+    }
+
+    #[tokio::test]
+    async fn check_winning_is_first_of_matched() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        seed_draft_prd(&store, "PRD-001").await;
+
+        let result = check_artifact_against_rules(&store, "PRD-001", None)
+            .await
+            .unwrap();
+
+        if let Some(winning) = &result.winning {
+            let first = result.matched.first().expect("matched non-empty");
+            assert_eq!(winning.name, first.name);
+            // priority-sorted ascending — winning priority <= any other matched
+            for m in result.matched.iter().skip(1) {
+                assert!(winning.priority <= m.priority);
+            }
+        } else {
+            assert!(result.matched.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn check_finds_winning_rule_in_priority_order() {
+        // Draft PRD with r_eff = 0.0 should match `blind-spot` (priority 1).
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        seed_draft_prd(&store, "PRD-001").await;
+
+        let result = check_artifact_against_rules(&store, "PRD-001", None)
+            .await
+            .unwrap();
+
+        let winning = result.winning.expect("should have winning rule");
+        assert_eq!(winning.name, "blind-spot");
+        assert_eq!(winning.priority, 1);
+        assert_eq!(winning.action, "EXPLORE");
+    }
+}
