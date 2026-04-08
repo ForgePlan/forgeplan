@@ -362,7 +362,20 @@ impl FpfStorage for InMemoryStore {
             .is_ok_and(|s| !s.fpf_chunks.is_empty())
     }
 
-    async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
+    async fn insert_fpf_chunks(
+        &self,
+        chunks: &[FpfChunk],
+        embeddings: Option<&[Vec<f32>]>,
+    ) -> anyhow::Result<usize> {
+        if let Some(vecs) = embeddings
+            && vecs.len() != chunks.len()
+        {
+            anyhow::bail!(
+                "embeddings length ({}) must match chunks length ({})",
+                vecs.len(),
+                chunks.len()
+            );
+        }
         let mut state = self.state.write().await;
         let count = chunks.len();
         state.fpf_chunks.extend(chunks.iter().cloned());
@@ -796,7 +809,7 @@ mod tests {
             },
         ];
 
-        let inserted = store.insert_fpf_chunks(&chunks).await.unwrap();
+        let inserted = store.insert_fpf_chunks(&chunks, None).await.unwrap();
         assert_eq!(inserted, 2);
         assert!(store.has_fpf());
 

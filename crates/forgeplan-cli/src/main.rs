@@ -572,6 +572,9 @@ enum FpfCommands {
         /// Max results
         #[arg(long, default_value = "5")]
         limit: usize,
+        /// Use semantic vector search (requires --features semantic-search; falls back to keyword otherwise)
+        #[arg(long)]
+        semantic: bool,
     },
     /// Show a specific FPF section
     Section {
@@ -796,7 +799,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Fpf(sub) => match sub {
             FpfCommands::Dashboard => commands::fpf::run_dashboard().await,
             FpfCommands::Ingest { path } => commands::fpf::run_ingest(path.as_deref()).await,
-            FpfCommands::Search { query, limit } => commands::fpf::run_search(&query, limit).await,
+            FpfCommands::Search {
+                query,
+                limit,
+                semantic,
+            } => commands::fpf::run_search(&query, limit, semantic).await,
             FpfCommands::Section { id, summary } => commands::fpf::run_section(&id, summary).await,
             FpfCommands::List => commands::fpf::run_list().await,
             FpfCommands::Status => commands::fpf::run_status().await,

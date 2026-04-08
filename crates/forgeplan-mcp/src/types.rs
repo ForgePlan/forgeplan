@@ -334,11 +334,24 @@ pub struct SignalDto {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FpfSearchResponse {
     pub query: String,
+    /// Whether the query was executed via semantic (vector) search. When the
+    /// `semantic-search` feature is not compiled in, or when the semantic path
+    /// failed at runtime, the handler transparently falls back to keyword
+    /// search and surfaces the reason via `warning`.
+    pub semantic: bool,
+    pub count: usize,
     pub results: Vec<FpfSearchHit>,
+    /// Non-null when the semantic path was requested but could not complete
+    /// (feature not compiled in, embedder init failure, encode failure, or
+    /// vector search failure) and the handler fell back to keyword search.
+    /// Serializes as `"warning": null` when absent, matching the pre-existing
+    /// JSON contract emitted by the handler.
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FpfSearchHit {
+    pub id: String,
     pub section_id: String,
     pub title: String,
     pub snippet: String,
@@ -364,4 +377,53 @@ pub struct FpfListItem {
     pub section_id: String,
     pub title: String,
     pub line_count: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fpf_search_response_none_warning_serializes_as_null() {
+        let resp = FpfSearchResponse {
+            query: "trust".to_string(),
+            semantic: false,
+            count: 0,
+            results: vec![],
+            warning: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["query"], "trust");
+        assert_eq!(v["semantic"], false);
+        assert_eq!(v["count"], 0);
+        assert!(v["results"].is_array());
+        // Pre-existing json! macro contract: warning is emitted as null, not omitted.
+        assert!(v.get("warning").is_some(), "warning key must be present");
+        assert!(
+            v["warning"].is_null(),
+            "warning: None must serialize as null"
+        );
+    }
+
+    #[test]
+    fn fpf_search_response_some_warning_serializes_as_string() {
+        let resp = FpfSearchResponse {
+            query: "q".to_string(),
+            semantic: true,
+            count: 1,
+            results: vec![FpfSearchHit {
+                id: "fpf-b3".to_string(),
+                section_id: "B.3".to_string(),
+                title: "Trust Calculus".to_string(),
+                snippet: "...".to_string(),
+                line_count: 42,
+            }],
+            warning: Some("fell back".to_string()),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["warning"], "fell back");
+        assert_eq!(v["results"][0]["id"], "fpf-b3");
+        assert_eq!(v["results"][0]["section_id"], "B.3");
+        assert_eq!(v["results"][0]["line_count"], 42);
+    }
 }

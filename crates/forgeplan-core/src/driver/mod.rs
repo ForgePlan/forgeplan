@@ -155,8 +155,16 @@ pub trait FpfStorage: Send + Sync {
         false
     }
 
-    /// Insert FPF chunks in batch. Returns number inserted.
-    async fn insert_fpf_chunks(&self, _chunks: &[FpfChunk]) -> anyhow::Result<usize> {
+    /// Insert FPF chunks in batch, optionally with pre-computed embeddings
+    /// (PRD-042). When `embeddings` is `Some`, its length MUST match `chunks`
+    /// and every vector MUST have dimension 1024. When `None`, the embedding
+    /// column is filled with typed nulls (pre-semantic workspaces). Returns
+    /// number inserted.
+    async fn insert_fpf_chunks(
+        &self,
+        _chunks: &[FpfChunk],
+        _embeddings: Option<&[Vec<f32>]>,
+    ) -> anyhow::Result<usize> {
         Ok(0)
     }
 
