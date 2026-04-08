@@ -363,6 +363,9 @@ struct ImportParams {
 
 /// Exposed for integration test harness in tests/fpf_search_handler.rs.
 /// Fields remain pub(crate) — only the struct itself is visible externally.
+/// `#[doc(hidden)]` because this is unstable test infrastructure, not a
+/// supported public API (Sprint 13.7 hotfix re-audit M3).
+#[doc(hidden)]
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct FpfSearchParams {
     /// Search query — keyword or semantic depending on `semantic` flag
@@ -2381,6 +2384,9 @@ impl ForgeplanServer {
         description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take 10–30 seconds if the BGE-M3 model needs to be downloaded (~150MB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false)."
     )]
     /// Exposed for integration test harness in tests/fpf_search_handler.rs.
+    /// `#[doc(hidden)]` because this is unstable test infrastructure, not a
+    /// supported public API (Sprint 13.7 hotfix re-audit M3).
+    #[doc(hidden)]
     pub async fn forgeplan_fpf_search(
         &self,
         Parameters(p): Parameters<FpfSearchParams>,
