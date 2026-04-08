@@ -1,12 +1,16 @@
 # TODO — Forgeplan
 
-## Current: v0.17.0-rc — EPIC-003 complete, ready to tag
+## Current: v0.17.0 RELEASED 2026-04-08 — EPIC-003 complete ✅
 
-### Stats (v0.17.0)
-- ~56 CLI commands, ~47 MCP tools, **1109 tests** (+280 from v0.16)
+**GitHub Release**: https://github.com/ForgePlan/forgeplan/releases/tag/v0.17.0
+**Install**: `brew install forgeplan` or `curl -LsSf .../forgeplan-installer.sh | sh`
+
+### Stats (v0.17.0 released)
+- ~56 CLI commands, ~47 MCP tools, **1128 tests** (+299 from v0.16)
 - Workspace: 0 warnings on both default and `--features semantic-search`
-- ~13.8K LOC added across EPIC-003 (Sprints 13.0 → 13.7 + post-closeout hotfix)
-- PRs #141-#156
+- Clippy 1.94 strict (`-D warnings`) clean on both feature configs
+- ~13.8K LOC added across EPIC-003 (Sprints 13.0 → 13.7 + post-closeout hotfix + final audit)
+- PRs #141-#158 (57 merged)
 - E2E: sprint-13.6-regression.sh (16 checks) + sprint-13.7-regression.sh (16 + SEMANTIC_E2E opt-in), 0 failures
 - LLM: gemini-3-flash-preview
 - Distribution: cargo-dist v0.31.0, 5 targets, brew + install.sh + checksums
@@ -38,11 +42,25 @@
 - [x] Title validation bugfix (fa97f10, tag-prep-bugfix agent)
 - [x] Commit tag-prep changes (6a1904f)
 
-### P1: After release PR merged
-- PR release/v0.17.0 → main (merge commit)
-- Tag v0.17.0 + push
-- Sync main → dev
-- Hindsight memory_retain EPIC-003 finale
+### P1: After release PR merged — DONE ✅ 2026-04-08
+- [x] PR #157 release/v0.17.0 → main (merge 16ed835)
+- [x] Tag v0.17.0 + push (annotated, SHA a2268270)
+- [x] cargo-dist Release workflow: 5 platforms + homebrew + installers published
+- [x] GitHub Release page: https://github.com/ForgePlan/forgeplan/releases/tag/v0.17.0
+- [x] PR #158 sync main → dev (merge 6645268)
+- [x] Hindsight memory_retain EPIC-003 finale
+
+### Next: EPIC-004 shaping (backlog triage)
+
+From NOTE-045 Sprint 13.7 Deferred Debts + final-arch refactor candidates:
+- Split store.rs (3466 LOC god module), mcp/server.rs (3420 LOC), fpf/mod.rs (827 LOC)
+- run_migrations → Tables<'_> struct refactor (before next schema change)
+- knowledge.rs ingest ownership refactor (Arch M3/M4)
+- PRD-035 Phase 2 (multi-pass discovery deepening, 5 FRs)
+- PRD-044 Orchestration Patterns (from Sprint 13.7 PROB-025)
+- Agent memory enhancements
+- IVF-PQ vector index when KB > 2k sections
+- Embedder cold load caching for MCP hot path
 
 ### P0: FPF Engine v2 Phase 2 — Sprint 12 (RFC-001) ✅
 - [x] ADI reasoning: H2 Two-tier Rules selected (FPF B.5.2 Abductive Loop)
