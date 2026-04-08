@@ -47,6 +47,9 @@ pub struct Condition {
     pub days_until_expiry: Option<NumericExpr>,
 }
 
+/// Max length of a human-readable condition summary (chars).
+pub const CONDITION_SUMMARY_MAX: usize = 120;
+
 impl Condition {
     /// Returns true if this condition requires enrichment data (Tier 2).
     pub fn needs_enrichment(&self) -> bool {
@@ -64,6 +67,72 @@ impl Condition {
             && self.is_stale.is_none()
             && self.links_missing.is_none()
             && self.days_until_expiry.is_none()
+    }
+
+    /// Render as "kind=prd AND status=active AND r_eff<0.5" (≤ `CONDITION_SUMMARY_MAX` chars).
+    /// Empty conditions return "(always matches)".
+    pub fn summarize(&self) -> String {
+        if self.is_empty() {
+            return "(always matches)".to_string();
+        }
+
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(v) = &self.kind {
+            parts.push(format!("kind={}", format_value_match(v)));
+        }
+        if let Some(v) = &self.status {
+            parts.push(format!("status={}", format_value_match(v)));
+        }
+        if let Some(v) = &self.depth {
+            parts.push(format!("depth={}", format_value_match(v)));
+        }
+        if let Some(n) = &self.r_eff {
+            parts.push(format!("r_eff{}", format_numeric(n)));
+        }
+        if let Some(n) = &self.overall {
+            parts.push(format!("overall{}", format_numeric(n)));
+        }
+        if let Some(n) = &self.link_count {
+            parts.push(format!("link_count{}", format_numeric(n)));
+        }
+        if let Some(b) = self.is_stale {
+            parts.push(format!("is_stale={b}"));
+        }
+        if let Some(links) = &self.links_missing {
+            parts.push(format!("links_missing={}", links.join(",")));
+        }
+        if let Some(n) = &self.days_until_expiry {
+            parts.push(format!("days_until_expiry{}", format_numeric(n)));
+        }
+
+        let mut joined = parts.join(" AND ");
+        if joined.chars().count() > CONDITION_SUMMARY_MAX {
+            joined = joined
+                .chars()
+                .take(CONDITION_SUMMARY_MAX - 1)
+                .collect::<String>();
+            joined.push('…');
+        }
+        joined
+    }
+}
+
+fn format_value_match(v: &ValueMatch) -> String {
+    match v {
+        ValueMatch::Single(s) => s.clone(),
+        ValueMatch::Multiple(list) => format!("[{}]", list.join("|")),
+    }
+}
+
+fn format_numeric(n: &NumericExpr) -> String {
+    match n {
+        NumericExpr::Lt(v) => format!("<{v}"),
+        NumericExpr::Le(v) => format!("<={v}"),
+        NumericExpr::Gt(v) => format!(">{v}"),
+        NumericExpr::Ge(v) => format!(">={v}"),
+        NumericExpr::Eq(v) => format!("=={v}"),
+        NumericExpr::Range(lo, hi) => format!("={lo}..{hi}"),
     }
 }
 
@@ -445,6 +514,62 @@ pub fn default_rules() -> Vec<Rule> {
 mod tests {
     use super::*;
     use crate::fpf::core::trust::TrustScore;
+
+    #[test]
+    fn summarize_empty_condition() {
+        let c = Condition::default();
+        assert_eq!(c.summarize(), "(always matches)");
+    }
+
+    #[test]
+    fn summarize_flat_condition_joined_with_and() {
+        let c = Condition {
+            kind: Some(ValueMatch::Single("prd".into())),
+            status: Some(ValueMatch::Single("active".into())),
+            r_eff: Some(NumericExpr::Lt(0.5)),
+            ..Default::default()
+        };
+        let s = c.summarize();
+        assert!(s.contains("kind=prd"));
+        assert!(s.contains("status=active"));
+        assert!(s.contains("r_eff<0.5"));
+        assert!(s.contains(" AND "));
+    }
+
+    #[test]
+    fn summarize_multi_value_match() {
+        let c = Condition {
+            status: Some(ValueMatch::Multiple(vec!["draft".into(), "stale".into()])),
+            ..Default::default()
+        };
+        assert_eq!(c.summarize(), "status=[draft|stale]");
+    }
+
+    #[test]
+    fn summarize_truncates_long_output() {
+        let links: Vec<String> = (0..60).map(|i| format!("link{i}")).collect();
+        let c = Condition {
+            links_missing: Some(links),
+            ..Default::default()
+        };
+        let s = c.summarize();
+        assert!(s.chars().count() <= CONDITION_SUMMARY_MAX);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_uses_all_numeric_operators() {
+        let c = Condition {
+            r_eff: Some(NumericExpr::Ge(0.7)),
+            overall: Some(NumericExpr::Range(0.1, 0.5)),
+            link_count: Some(NumericExpr::Eq(0.0)),
+            ..Default::default()
+        };
+        let s = c.summarize();
+        assert!(s.contains("r_eff>=0.7"));
+        assert!(s.contains("overall=0.1..0.5"));
+        assert!(s.contains("link_count==0"));
+    }
 
     fn make_data(id: &str, status: &str, r_eff: f64, link_count: usize) -> ArtifactData {
         let trust = TrustScore {

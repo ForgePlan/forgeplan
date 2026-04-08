@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use console::style;
 use forgeplan_core::db::store::{FpfChunk, LanceStore};
 use forgeplan_core::fpf;
-use forgeplan_core::fpf::ext::rules::{Condition, NumericExpr, Rule, ValueMatch};
+use forgeplan_core::fpf::ext::rules::Rule;
 use forgeplan_core::fpf::knowledge;
 use forgeplan_core::workspace;
 
@@ -246,71 +246,6 @@ pub async fn run_list() -> anyhow::Result<()> {
 // PRD-041 FR-001: `forgeplan fpf rules`
 // ──────────────────────────────────────────────────────────────────
 
-/// Render a single `Condition` as a human-readable "k=v AND k>0.5" string.
-///
-/// Condition is a flat implicit-AND struct; every Some(...) field becomes one
-/// "key op value" clause joined with " AND ". Truncates to 120 chars with "…".
-pub(crate) fn summarize_condition(cond: &Condition) -> String {
-    if cond.is_empty() {
-        return "(always matches)".to_string();
-    }
-
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(v) = &cond.kind {
-        parts.push(format!("kind={}", format_value_match(v)));
-    }
-    if let Some(v) = &cond.status {
-        parts.push(format!("status={}", format_value_match(v)));
-    }
-    if let Some(v) = &cond.depth {
-        parts.push(format!("depth={}", format_value_match(v)));
-    }
-    if let Some(n) = &cond.r_eff {
-        parts.push(format!("r_eff{}", format_numeric(n)));
-    }
-    if let Some(n) = &cond.overall {
-        parts.push(format!("overall{}", format_numeric(n)));
-    }
-    if let Some(n) = &cond.link_count {
-        parts.push(format!("link_count{}", format_numeric(n)));
-    }
-    if let Some(b) = cond.is_stale {
-        parts.push(format!("is_stale={b}"));
-    }
-    if let Some(links) = &cond.links_missing {
-        parts.push(format!("links_missing={}", links.join(",")));
-    }
-    if let Some(n) = &cond.days_until_expiry {
-        parts.push(format!("days_until_expiry{}", format_numeric(n)));
-    }
-
-    let mut joined = parts.join(" AND ");
-    if joined.chars().count() > 120 {
-        joined = joined.chars().take(119).collect::<String>();
-        joined.push('…');
-    }
-    joined
-}
-
-fn format_value_match(v: &ValueMatch) -> String {
-    match v {
-        ValueMatch::Single(s) => s.clone(),
-        ValueMatch::Multiple(list) => format!("[{}]", list.join("|")),
-    }
-}
-
-fn format_numeric(n: &NumericExpr) -> String {
-    match n {
-        NumericExpr::Lt(v) => format!("<{v}"),
-        NumericExpr::Le(v) => format!("<={v}"),
-        NumericExpr::Gt(v) => format!(">{v}"),
-        NumericExpr::Ge(v) => format!(">={v}"),
-        NumericExpr::Eq(v) => format!("=={v}"),
-        NumericExpr::Range(lo, hi) => format!("={lo}..{hi}"),
-    }
-}
-
 fn style_action(action: &str) -> String {
     match action {
         "EXPLORE" => style(action).cyan().bold().to_string(),
@@ -379,7 +314,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
                 r.priority,
                 truncate(&r.name, 28),
                 style_action(&action),
-                summarize_condition(&r.condition),
+                r.condition.summarize(),
             );
         }
         println!();
@@ -435,7 +370,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
                 "  {}{}     {}",
                 vbar,
                 rule_vbar,
-                style(summarize_condition(&rule.condition)).dim()
+                style(rule.condition.summarize()).dim()
             );
             if let Some(msg) = &rule.message {
                 println!("  {}{}     {}", vbar, rule_vbar, style(msg).italic().dim());
@@ -469,36 +404,32 @@ pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()
     let fpf_config = config.fpf.as_ref();
 
     let result = match fpf::check_artifact_against_rules(&store, id, fpf_config).await {
-        Ok(r) => r,
-        Err(e) => {
+        Ok(Some(r)) => r,
+        Ok(None) => {
             ui::error_hint(
-                &format!("Artifact '{id}' not found: {e}"),
+                &format!("Artifact '{id}' not found"),
                 "forgeplan list --kind prd",
             );
             return Err(anyhow::anyhow!("artifact not found"));
         }
+        Err(_) => {
+            ui::error_hint(
+                &format!("Failed to check artifact '{id}'"),
+                "forgeplan health",
+            );
+            return Err(anyhow::anyhow!("check failed"));
+        }
     };
 
     if json {
-        let out = serde_json::json!({
-            "artifact_id": result.artifact_id,
-            "artifact_kind": result.artifact_kind,
-            "artifact_status": result.artifact_status,
-            "matched": result.matched.iter().map(|m| serde_json::json!({
-                "name": m.name,
-                "priority": m.priority,
-                "action": m.action,
-                "message": m.message,
-            })).collect::<Vec<_>>(),
-            "unmatched": result.unmatched,
-            "winning": result.winning.as_ref().map(|m| serde_json::json!({
-                "name": m.name,
-                "priority": m.priority,
-                "action": m.action,
-                "message": m.message,
-            })),
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        let mut val = serde_json::to_value(&result)?;
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert(
+                "summary".to_string(),
+                serde_json::Value::String(result.summary_line()),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&val)?);
         return Ok(());
     }
 
@@ -558,49 +489,7 @@ pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()
 mod tests {
     use super::*;
     use forgeplan_core::fpf::core::model::ActionType;
-    use forgeplan_core::fpf::ext::rules::{Condition, NumericExpr, Rule, ValueMatch};
-
-    #[test]
-    fn summarize_empty_condition() {
-        let c = Condition::default();
-        assert_eq!(summarize_condition(&c), "(always matches)");
-    }
-
-    #[test]
-    fn summarize_flat_condition_joined_with_and() {
-        let c = Condition {
-            kind: Some(ValueMatch::Single("prd".into())),
-            status: Some(ValueMatch::Single("active".into())),
-            r_eff: Some(NumericExpr::Lt(0.5)),
-            ..Default::default()
-        };
-        let s = summarize_condition(&c);
-        assert!(s.contains("kind=prd"));
-        assert!(s.contains("status=active"));
-        assert!(s.contains("r_eff<0.5"));
-        assert!(s.contains(" AND "));
-    }
-
-    #[test]
-    fn summarize_multi_value_match() {
-        let c = Condition {
-            status: Some(ValueMatch::Multiple(vec!["draft".into(), "stale".into()])),
-            ..Default::default()
-        };
-        assert_eq!(summarize_condition(&c), "status=[draft|stale]");
-    }
-
-    #[test]
-    fn summarize_truncates_long_output() {
-        let links: Vec<String> = (0..60).map(|i| format!("link{i}")).collect();
-        let c = Condition {
-            links_missing: Some(links),
-            ..Default::default()
-        };
-        let s = summarize_condition(&c);
-        assert!(s.chars().count() <= 120);
-        assert!(s.ends_with('…'));
-    }
+    use forgeplan_core::fpf::ext::rules::{Condition, Rule};
 
     #[test]
     fn style_action_returns_nonempty_for_known_actions() {
@@ -620,20 +509,6 @@ mod tests {
         let t = truncate("abcdefghijklmn", 5);
         assert_eq!(t.chars().count(), 5);
         assert!(t.ends_with('…'));
-    }
-
-    #[test]
-    fn summarize_uses_all_numeric_operators() {
-        let c = Condition {
-            r_eff: Some(NumericExpr::Ge(0.7)),
-            overall: Some(NumericExpr::Range(0.1, 0.5)),
-            link_count: Some(NumericExpr::Eq(0.0)),
-            ..Default::default()
-        };
-        let s = summarize_condition(&c);
-        assert!(s.contains("r_eff>=0.7"));
-        assert!(s.contains("overall=0.1..0.5"));
-        assert!(s.contains("link_count==0"));
     }
 
     // Smoke: a Rule with ActionType serializes via Display as expected

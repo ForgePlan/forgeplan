@@ -2477,6 +2477,17 @@ impl ForgeplanServer {
 
         let ws_config = self.load_workspace_config().await;
         let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
+        // FIX 4: validate param lengths before doing any work.
+        if p.action.as_deref().map(|s| s.len()).unwrap_or(0) > 64 {
+            return Ok(err_result("action filter too long (max 64)"));
+        }
+        if p.name.as_deref().map(|s| s.len()).unwrap_or(0) > 128 {
+            return Ok(err_result("name filter too long (max 128)"));
+        }
+        if p.source.as_deref().map(|s| s.len()).unwrap_or(0) > 16 {
+            return Ok(err_result("source filter too long (max 16)"));
+        }
+
         let (rules, source) = fpf::active_rules(fpf_cfg);
 
         let source_str = match source {
@@ -2538,6 +2549,7 @@ impl ForgeplanServer {
                         "action": r.action.to_string(),
                         "condition": serde_json::to_value(&r.condition)
                             .unwrap_or(serde_json::Value::Null),
+                        "condition_summary": r.condition.summarize(),
                         "message": r.message,
                     })
                 }
@@ -2565,62 +2577,35 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // FIX 4: param length bound.
+        if p.id.len() > 128 {
+            return Ok(err_result("artifact id too long (max 128)"));
+        }
+
         let ws_config = self.load_workspace_config().await;
         let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
 
         let result = match fpf::check_artifact_against_rules(&store, &p.id, fpf_cfg).await {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("Artifact not found") {
-                    return Ok(err_result(&format!("Artifact not found: {}", p.id)));
-                }
-                return Ok(err_result(&format!("Failed to check artifact: {msg}")));
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return Ok(err_result(&format!("Artifact not found: {}", p.id)));
+            }
+            Err(_) => {
+                return Ok(err_result(&format!("Failed to check artifact: {}", p.id)));
             }
         };
 
-        let matched_json: Vec<serde_json::Value> = result
-            .matched
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "name": m.name,
-                    "priority": m.priority,
-                    "action": m.action,
-                    "message": m.message,
-                })
-            })
-            .collect();
-
-        let winning_json = result.winning.as_ref().map(|m| {
-            serde_json::json!({
-                "name": m.name,
-                "priority": m.priority,
-                "action": m.action,
-                "message": m.message,
-            })
-        });
-
-        let summary = format!(
-            "{} matched, {} unmatched, winning: {}",
-            result.matched.len(),
-            result.unmatched.len(),
-            result
-                .winning
-                .as_ref()
-                .map(|m| m.name.as_str())
-                .unwrap_or("none"),
-        );
-
-        Ok(json_result(&serde_json::json!({
-            "artifact_id": result.artifact_id,
-            "kind": result.artifact_kind,
-            "status": result.artifact_status,
-            "winning": winning_json,
-            "matched": matched_json,
-            "unmatched": result.unmatched,
-            "summary": summary,
-        })))
+        // Canonical JSON — serialize the core struct (kind/status already renamed
+        // via serde) and splice the summary line.
+        let summary = result.summary_line();
+        let mut val = match serde_json::to_value(&result) {
+            Ok(v) => v,
+            Err(e) => return Ok(err_result(&format!("serialize failed: {e}"))),
+        };
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert("summary".to_string(), serde_json::Value::String(summary));
+        }
+        Ok(json_result(&val))
     }
 
     #[tool(
@@ -3266,5 +3251,47 @@ mod search_params_tests {
     #[test]
     fn test_default_search_limit() {
         assert_eq!(default_search_limit(), 20);
+    }
+}
+
+#[cfg(test)]
+mod fpf_param_validation_tests {
+    use super::*;
+
+    /// Helper: build FpfRulesParams from JSON.
+    fn rules_params(json: &str) -> FpfRulesParams {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn rules_params_accepts_short_filters() {
+        let p = rules_params(r#"{"action": "EXPLORE", "name": "blind-spot", "source": "config"}"#);
+        assert_eq!(p.action.as_deref(), Some("EXPLORE"));
+        assert_eq!(p.name.as_deref(), Some("blind-spot"));
+        assert_eq!(p.source.as_deref(), Some("config"));
+        // Bounds we enforce in handler
+        assert!(p.action.as_deref().unwrap().len() <= 64);
+        assert!(p.name.as_deref().unwrap().len() <= 128);
+        assert!(p.source.as_deref().unwrap().len() <= 16);
+    }
+
+    #[test]
+    fn rules_params_action_too_long_detected() {
+        let long = "X".repeat(65);
+        let p = rules_params(&format!(r#"{{"action": "{long}"}}"#));
+        assert!(p.action.as_deref().unwrap().len() > 64);
+    }
+
+    #[test]
+    fn check_params_id_too_long_detected() {
+        let id = "A".repeat(200);
+        let p: FpfCheckParams = serde_json::from_str(&format!(r#"{{"id": "{id}"}}"#)).unwrap();
+        assert!(p.id.len() > 128);
+    }
+
+    #[test]
+    fn check_params_normal_id_within_bounds() {
+        let p: FpfCheckParams = serde_json::from_str(r#"{"id": "PRD-001"}"#).unwrap();
+        assert!(p.id.len() <= 128);
     }
 }

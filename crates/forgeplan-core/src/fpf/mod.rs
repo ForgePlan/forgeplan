@@ -9,7 +9,9 @@ pub mod explore;
 pub mod ext;
 pub mod knowledge;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+
+use serde::{Deserialize, Serialize};
 
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::LanceStore;
@@ -211,38 +213,12 @@ fn build_rule_actions(
     config: &FpfConfig,
 ) -> Vec<Action> {
     // Pre-build lookup maps for O(1) access (audit fix: O(N²) → O(N+R))
-    let kind_map: std::collections::HashMap<&str, &str> = records
-        .iter()
-        .map(|r| (r.id.as_str(), r.kind.as_str()))
-        .collect();
+    let (kind_map, linked_kinds_map, link_count_map) = build_lookup_maps(records, relations);
 
     let fgr_map: std::collections::HashMap<&str, &fgr::FgrScore> = fgr_scores
         .iter()
         .map(|s| (s.artifact_id.as_str(), s))
         .collect();
-
-    // Build linked_kinds and link_count per artifact from relations
-    let mut linked_kinds_map: std::collections::HashMap<&str, Vec<String>> =
-        std::collections::HashMap::new();
-    let mut link_count_map: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
-
-    for (src, tgt, _) in relations {
-        *link_count_map.entry(src.as_str()).or_default() += 1;
-        *link_count_map.entry(tgt.as_str()).or_default() += 1;
-        if let Some(&kind) = kind_map.get(tgt.as_str()) {
-            linked_kinds_map
-                .entry(src.as_str())
-                .or_default()
-                .push(kind.to_string());
-        }
-        if let Some(&kind) = kind_map.get(src.as_str()) {
-            linked_kinds_map
-                .entry(tgt.as_str())
-                .or_default()
-                .push(kind.to_string());
-        }
-    }
 
     // Pre-sort rules by priority (audit fix: sort once, not per-artifact)
     let mut sorted_rules: Vec<&rules::Rule> = active_rules.iter().collect();
@@ -258,62 +234,27 @@ fn build_rule_actions(
             continue;
         }
 
-        let link_count = link_count_map.get(record.id.as_str()).copied().unwrap_or(0);
-
-        let is_stale = record
-            .valid_until
-            .as_ref()
-            .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
-            .is_some_and(|dt| now > dt);
-
-        let fgr_score = fgr_map.get(record.id.as_str()).copied();
-        let formality = fgr_score.map(|s| s.formality).unwrap_or(0.0);
-        let granularity = fgr_score.map(|s| s.granularity).unwrap_or(0.0);
-
-        // Use stored r_eff directly — don't recompute from fake evidence (avoids circular scoring)
-        let reliability =
-            TrustScore::compute_reliability(record.r_eff_score, link_count, is_stale, config);
-        let overall = (formality * granularity * reliability).cbrt();
-
-        let trust = TrustScore {
-            r_eff: record.r_eff_score,
-            formality,
-            granularity,
-            reliability,
-            overall,
-            weakest_link: None,
+        // Resolve FGR or fall back to a zero score — enrich_one expects a real ref.
+        let zero_fgr = fgr::FgrScore {
+            artifact_id: record.id.clone(),
+            formality: 0.0,
+            granularity: 0.0,
+            reliability: 0.0,
         };
-
-        let data = ArtifactData {
-            id: record.id.clone(),
-            status: record.status.clone(),
-            kind: record.kind.clone(),
-            depth: record.depth.clone(),
-            evidence: vec![], // not needed — r_eff used directly from store
-            formality,
-            granularity,
-            link_count,
-            is_stale,
-            trust,
-        };
-
-        let linked_kinds = linked_kinds_map
+        let fgr_score = fgr_map
             .get(record.id.as_str())
-            .cloned()
-            .unwrap_or_default();
+            .copied()
+            .unwrap_or(&zero_fgr);
 
-        // days_until_expiry: negative = already expired (documented behavior)
-        let days_until_expiry = record.valid_until.as_ref().and_then(|v| {
-            chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .map(|dt| (dt - now).num_days())
-        });
-
-        let enriched = rules::EnrichedData {
-            base: data,
-            linked_kinds,
-            days_until_expiry,
-        };
+        let enriched = enrich_one(
+            record,
+            &kind_map,
+            &linked_kinds_map,
+            &link_count_map,
+            fgr_score,
+            now,
+            config,
+        );
 
         // Use pre-sorted rules directly (no sort inside run_rules needed)
         for rule in &sorted_rules {
@@ -347,7 +288,8 @@ fn build_rule_actions(
 // ──────────────────────────────────────────────────────────────────
 
 /// Active rules source — whether they come from config.yaml or defaults.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuleSource {
     /// User-defined in .forgeplan/config.yaml under `fpf.rules`
     Config,
@@ -367,10 +309,12 @@ pub fn active_rules(fpf_config: Option<&FpfConfig>) -> (Vec<rules::Rule>, RuleSo
 }
 
 /// Result of checking a single artifact against the rule engine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleCheckResult {
     pub artifact_id: String,
+    #[serde(rename = "kind")]
     pub artifact_kind: String,
+    #[serde(rename = "status")]
     pub artifact_status: String,
     /// All rules that matched (priority-sorted ascending = highest priority first).
     pub matched: Vec<MatchedRule>,
@@ -380,8 +324,23 @@ pub struct RuleCheckResult {
     pub winning: Option<MatchedRule>,
 }
 
+impl RuleCheckResult {
+    /// One-line human summary: "N matched, N unmatched, winning: <name-or-none>".
+    pub fn summary_line(&self) -> String {
+        format!(
+            "{} matched, {} unmatched, winning: {}",
+            self.matched.len(),
+            self.unmatched.len(),
+            self.winning
+                .as_ref()
+                .map(|m| m.name.as_str())
+                .unwrap_or("none"),
+        )
+    }
+}
+
 /// A matched rule with its action and message.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchedRule {
     pub name: String,
     pub priority: u8,
@@ -391,26 +350,43 @@ pub struct MatchedRule {
 
 /// Check a single artifact against all active rules.
 ///
-/// Returns ALL matching rules (not just first) — used by `forgeplan fpf check`
-/// for full introspection. Also returns the "winning" rule (first in priority
-/// order) which matches the runtime behavior of `run_rules()`.
+/// Returns `Ok(None)` if the artifact does not exist, `Ok(Some(result))`
+/// with all matched/unmatched/winning rules for introspection, or `Err`
+/// on I/O / store errors.
+///
+/// NOTE: scans the full workspace (list_records + get_all_relations) to
+/// build enrichment maps — O(N) in artifact count. For large workspaces
+/// consider batching multiple check calls via `build_rule_actions`.
 pub async fn check_artifact_against_rules(
     store: &LanceStore,
     artifact_id: &str,
     fpf_config: Option<&FpfConfig>,
-) -> anyhow::Result<RuleCheckResult> {
-    let record = store
-        .get_record(artifact_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
+) -> anyhow::Result<Option<RuleCheckResult>> {
+    let record = match store.get_record(artifact_id).await? {
+        Some(r) => r,
+        None => return Ok(None),
+    };
 
     let all_relations = store.get_all_relations().await?;
     let records = store.list_records(None).await?;
 
-    // Reuse the existing enrichment logic from build_rule_actions.
+    // Build shared lookup maps once (same as build_rule_actions).
+    let (kind_map, linked_kinds_map, link_count_map) = build_lookup_maps(&records, &all_relations);
+
     let fgr_score = compute_fgr_for_record(&record, &all_relations, fpf_config);
-    let enriched =
-        enrich_record_for_rules(&record, &records, &all_relations, &fgr_score, fpf_config);
+    let cfg_default = FpfConfig::default();
+    let cfg = fpf_config.unwrap_or(&cfg_default);
+    let now = chrono::Utc::now().naive_utc();
+
+    let enriched = enrich_one(
+        &record,
+        &kind_map,
+        &linked_kinds_map,
+        &link_count_map,
+        &fgr_score,
+        now,
+        cfg,
+    );
 
     let (active, _source) = active_rules(fpf_config);
     let mut sorted: Vec<&rules::Rule> = active.iter().collect();
@@ -442,14 +418,117 @@ pub async fn check_artifact_against_rules(
 
     let winning = matched.first().cloned();
 
-    Ok(RuleCheckResult {
+    Ok(Some(RuleCheckResult {
         artifact_id: artifact_id.to_string(),
         artifact_kind: record.kind,
         artifact_status: record.status,
         matched,
         unmatched,
         winning,
-    })
+    }))
+}
+
+/// Build the three enrichment lookup maps shared by `build_rule_actions`
+/// and `check_artifact_against_rules`. O(N + R).
+#[allow(clippy::type_complexity)]
+fn build_lookup_maps<'a>(
+    records: &'a [crate::db::store::ArtifactRecord],
+    relations: &'a [(String, String, String)],
+) -> (
+    HashMap<&'a str, &'a str>,
+    HashMap<String, Vec<String>>,
+    HashMap<String, usize>,
+) {
+    let kind_map: HashMap<&str, &str> = records
+        .iter()
+        .map(|r| (r.id.as_str(), r.kind.as_str()))
+        .collect();
+
+    let mut linked_kinds_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut link_count_map: HashMap<String, usize> = HashMap::new();
+
+    for (src, tgt, _) in relations {
+        *link_count_map.entry(src.clone()).or_default() += 1;
+        *link_count_map.entry(tgt.clone()).or_default() += 1;
+        if let Some(&kind) = kind_map.get(tgt.as_str()) {
+            linked_kinds_map
+                .entry(src.clone())
+                .or_default()
+                .push(kind.to_string());
+        }
+        if let Some(&kind) = kind_map.get(src.as_str()) {
+            linked_kinds_map
+                .entry(tgt.clone())
+                .or_default()
+                .push(kind.to_string());
+        }
+    }
+
+    (kind_map, linked_kinds_map, link_count_map)
+}
+
+/// Build EnrichedData for ONE record using pre-built lookup maps.
+/// Single source of truth for enrichment — used by both bulk and single-record paths.
+#[allow(clippy::too_many_arguments)]
+fn enrich_one(
+    record: &crate::db::store::ArtifactRecord,
+    _kind_map: &HashMap<&str, &str>,
+    linked_kinds_map: &HashMap<String, Vec<String>>,
+    link_count_map: &HashMap<String, usize>,
+    fgr_score: &fgr::FgrScore,
+    now: chrono::NaiveDateTime,
+    config: &FpfConfig,
+) -> rules::EnrichedData {
+    let link_count = link_count_map.get(&record.id).copied().unwrap_or(0);
+
+    let is_stale = record
+        .valid_until
+        .as_ref()
+        .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
+        .is_some_and(|dt| now > dt);
+
+    let reliability =
+        TrustScore::compute_reliability(record.r_eff_score, link_count, is_stale, config);
+    let overall = (fgr_score.formality * fgr_score.granularity * reliability).cbrt();
+
+    let trust = TrustScore {
+        r_eff: record.r_eff_score,
+        formality: fgr_score.formality,
+        granularity: fgr_score.granularity,
+        reliability,
+        overall,
+        weakest_link: None,
+    };
+
+    let base = ArtifactData {
+        id: record.id.clone(),
+        status: record.status.clone(),
+        kind: record.kind.clone(),
+        depth: record.depth.clone(),
+        evidence: vec![],
+        formality: fgr_score.formality,
+        granularity: fgr_score.granularity,
+        link_count,
+        is_stale,
+        trust,
+    };
+
+    let linked_kinds = linked_kinds_map
+        .get(&record.id)
+        .cloned()
+        .unwrap_or_default();
+
+    let days_until_expiry = record.valid_until.as_ref().and_then(|v| {
+        chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
+            .ok()
+            .map(|dt| (dt - now).num_days())
+    });
+
+    rules::EnrichedData {
+        base,
+        linked_kinds,
+        days_until_expiry,
+    }
 }
 
 /// Compute FGR score for a single record (helper for rule enrichment).
@@ -484,81 +563,7 @@ fn compute_fgr_for_record(
     )
 }
 
-/// Build EnrichedData for a single record (helper extracted from `build_rule_actions`).
-fn enrich_record_for_rules(
-    record: &crate::db::store::ArtifactRecord,
-    all_records: &[crate::db::store::ArtifactRecord],
-    all_relations: &[(String, String, String)],
-    fgr_score: &fgr::FgrScore,
-    fpf_config: Option<&FpfConfig>,
-) -> rules::EnrichedData {
-    let kind_map: std::collections::HashMap<&str, &str> = all_records
-        .iter()
-        .map(|r| (r.id.as_str(), r.kind.as_str()))
-        .collect();
-
-    let mut linked_kinds = Vec::new();
-    let mut link_count = 0usize;
-    for (src, tgt, _) in all_relations {
-        if src == &record.id {
-            link_count += 1;
-            if let Some(&kind) = kind_map.get(tgt.as_str()) {
-                linked_kinds.push(kind.to_string());
-            }
-        } else if tgt == &record.id {
-            link_count += 1;
-            if let Some(&kind) = kind_map.get(src.as_str()) {
-                linked_kinds.push(kind.to_string());
-            }
-        }
-    }
-
-    let now = chrono::Utc::now().naive_utc();
-    let is_stale = record
-        .valid_until
-        .as_ref()
-        .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
-        .is_some_and(|dt| now > dt);
-
-    let cfg = fpf_config.cloned().unwrap_or_default();
-    let reliability =
-        TrustScore::compute_reliability(record.r_eff_score, link_count, is_stale, &cfg);
-    let overall = (fgr_score.formality * fgr_score.granularity * reliability).cbrt();
-
-    let trust = TrustScore {
-        r_eff: record.r_eff_score,
-        formality: fgr_score.formality,
-        granularity: fgr_score.granularity,
-        reliability,
-        overall,
-        weakest_link: None,
-    };
-
-    let base = ArtifactData {
-        id: record.id.clone(),
-        status: record.status.clone(),
-        kind: record.kind.clone(),
-        depth: record.depth.clone(),
-        evidence: vec![],
-        formality: fgr_score.formality,
-        granularity: fgr_score.granularity,
-        link_count,
-        is_stale,
-        trust,
-    };
-
-    let days_until_expiry = record.valid_until.as_ref().and_then(|v| {
-        chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S")
-            .ok()
-            .map(|dt| (dt - now).num_days())
-    });
-
-    rules::EnrichedData {
-        base,
-        linked_kinds,
-        days_until_expiry,
-    }
-}
+// `enrich_record_for_rules` replaced by shared `enrich_one` + `build_lookup_maps`.
 
 // ──────────────────────────────────────────────────────────────────
 // PRD-041 tests: active_rules + check_artifact_against_rules
@@ -618,17 +623,13 @@ mod prd041_tests {
     }
 
     #[tokio::test]
-    async fn check_returns_error_for_missing_id() {
+    async fn check_returns_none_for_missing_id() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
-        let err = check_artifact_against_rules(&store, "DOES-NOT-EXIST", None)
+        let res = check_artifact_against_rules(&store, "DOES-NOT-EXIST", None)
             .await
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("not found") || msg.contains("Artifact not found"),
-            "expected not-found error, got: {msg}"
-        );
+            .unwrap();
+        assert!(res.is_none(), "missing artifact must return Ok(None)");
     }
 
     async fn seed_draft_prd(store: &LanceStore, id: &str) {
@@ -656,7 +657,8 @@ mod prd041_tests {
         let (default_rules, _) = active_rules(None);
         let result = check_artifact_against_rules(&store, "PRD-001", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("PRD-001 exists");
 
         assert_eq!(
             result.matched.len() + result.unmatched.len(),
@@ -676,7 +678,8 @@ mod prd041_tests {
 
         let result = check_artifact_against_rules(&store, "PRD-001", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("PRD-001 exists");
 
         if let Some(winning) = &result.winning {
             let first = result.matched.first().expect("matched non-empty");
@@ -690,6 +693,120 @@ mod prd041_tests {
         }
     }
 
+    #[test]
+    fn active_rules_with_custom_config_returns_config_source() {
+        let mut cfg = FpfConfig::default();
+        let custom = custom_rule("custom-only", 5);
+        cfg.rules = vec![custom.clone()];
+        let (rules, source) = active_rules(Some(&cfg));
+        assert_eq!(source, RuleSource::Config);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "custom-only");
+    }
+
+    #[tokio::test]
+    async fn check_uses_custom_config_rules() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        seed_draft_prd(&store, "PRD-001").await;
+
+        let mut cfg = FpfConfig::default();
+        cfg.rules = vec![custom_rule("only-rule", 1)];
+
+        let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
+            .await
+            .unwrap()
+            .expect("PRD-001 exists");
+
+        assert_eq!(result.matched.len(), 1);
+        assert_eq!(result.matched[0].name, "only-rule");
+        let win = result.winning.expect("winning rule");
+        assert_eq!(win.name, "only-rule");
+    }
+
+    #[tokio::test]
+    async fn check_returns_empty_when_all_unmatched() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        seed_draft_prd(&store, "PRD-001").await;
+
+        // Custom rule that requires status="active" — won't match a draft.
+        let mut cfg = FpfConfig::default();
+        cfg.rules = vec![Rule {
+            name: "needs-active".to_string(),
+            condition: Condition {
+                status: Some(ValueMatch::Single("active".into())),
+                ..Default::default()
+            },
+            action: ActionType::Explore,
+            priority: 1,
+            message: None,
+        }];
+
+        let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
+            .await
+            .unwrap()
+            .expect("PRD-001 exists");
+
+        assert!(result.matched.is_empty());
+        assert!(result.winning.is_none());
+        assert_eq!(result.unmatched.len(), 1);
+    }
+
+    #[test]
+    fn rule_check_result_summary_line_with_winning() {
+        let r = RuleCheckResult {
+            artifact_id: "PRD-001".into(),
+            artifact_kind: "prd".into(),
+            artifact_status: "draft".into(),
+            matched: vec![MatchedRule {
+                name: "rule-a".into(),
+                priority: 1,
+                action: "EXPLORE".into(),
+                message: "x".into(),
+            }],
+            unmatched: vec!["rule-b".into(), "rule-c".into()],
+            winning: Some(MatchedRule {
+                name: "rule-a".into(),
+                priority: 1,
+                action: "EXPLORE".into(),
+                message: "x".into(),
+            }),
+        };
+        assert_eq!(r.summary_line(), "1 matched, 2 unmatched, winning: rule-a");
+    }
+
+    #[test]
+    fn rule_check_result_summary_line_no_match() {
+        let r = RuleCheckResult {
+            artifact_id: "PRD-001".into(),
+            artifact_kind: "prd".into(),
+            artifact_status: "draft".into(),
+            matched: vec![],
+            unmatched: vec!["a".into()],
+            winning: None,
+        };
+        assert_eq!(r.summary_line(), "0 matched, 1 unmatched, winning: none");
+    }
+
+    #[test]
+    fn rule_check_result_serializes_canonical_kind_status() {
+        let r = RuleCheckResult {
+            artifact_id: "PRD-001".into(),
+            artifact_kind: "prd".into(),
+            artifact_status: "draft".into(),
+            matched: vec![],
+            unmatched: vec![],
+            winning: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["artifact_id"], "PRD-001");
+        assert_eq!(v["kind"], "prd");
+        assert_eq!(v["status"], "draft");
+        assert!(v.get("artifact_kind").is_none());
+        assert!(v.get("artifact_status").is_none());
+    }
+
     #[tokio::test]
     async fn check_finds_winning_rule_in_priority_order() {
         // Draft PRD with r_eff = 0.0 should match `blind-spot` (priority 1).
@@ -699,7 +816,8 @@ mod prd041_tests {
 
         let result = check_artifact_against_rules(&store, "PRD-001", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("PRD-001 exists");
 
         let winning = result.winning.expect("should have winning rule");
         assert_eq!(winning.name, "blind-spot");

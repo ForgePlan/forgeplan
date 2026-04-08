@@ -64,12 +64,26 @@ fn cli_fpf_rules_flat_has_priorities() {
     let tmp = TempDir::new().unwrap();
     init_ws(&tmp);
 
-    forgeplan()
+    let output = forgeplan()
         .args(["fpf", "rules", "--flat"])
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("["));
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(output).unwrap();
+    // Flat mode must emit at least one concrete priority marker like [1] or [10].
+    let has_digit_bracket = (0..=20).any(|n| s.contains(&format!("[{n}]")));
+    assert!(
+        has_digit_bracket,
+        "flat output should contain [<digit>] priority marker"
+    );
+    // And no tree box-drawing chars.
+    assert!(
+        !s.contains("├─") && !s.contains("└─"),
+        "flat output must not contain tree branches"
+    );
 }
 
 #[test]
@@ -95,7 +109,21 @@ fn cli_fpf_check_existing_artifact() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("PRD-001"));
+        .stdout(predicate::str::contains("Winning rule").or(predicate::str::contains("No rules")));
+}
+
+#[test]
+fn cli_fpf_check_verbose_shows_unmatched() {
+    let tmp = TempDir::new().unwrap();
+    init_ws(&tmp);
+    make_prd(&tmp);
+
+    forgeplan()
+        .args(["fpf", "check", "PRD-001", "--verbose"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unmatched"));
 }
 
 #[test]
@@ -116,13 +144,15 @@ fn cli_fpf_check_json_has_required_fields() {
     let j: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
     for key in [
         "artifact_id",
-        "artifact_kind",
-        "artifact_status",
+        "kind",
+        "status",
         "matched",
         "unmatched",
+        "summary",
     ] {
         assert!(j.get(key).is_some(), "missing key: {key}");
     }
     assert!(j["matched"].is_array());
     assert!(j["unmatched"].is_array());
+    assert!(j["summary"].is_string());
 }
