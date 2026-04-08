@@ -7,7 +7,7 @@ links:
   relation: refines
 - target: PRD-018
   relation: supersedes
-status: draft
+status: active
 title: FPF Knowledge Base — Vector Search via EmbedDriver
 ---
 
@@ -28,12 +28,39 @@ parent_epic: EPIC-003
 ## Progress
 
 ```
-FR-001  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Vector search в knowledge.rs
-FR-002  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  CLI flag --semantic
-FR-003  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Graceful fallback to keyword
+FR-001  ████████████████████████  1/1  Vector search (core + CLI + MCP)   ✓ Sprint 13.7
+FR-002  ████████████████████████  1/1  CLI flag --semantic                ✓ Sprint 13.7
+FR-003  ████████████████████████  1/1  Graceful fallback (compile + runtime) ✓ Sprint 13.7
 ─────────────────────────────────────────────────
-TOTAL                              0/3  ( 0%)
+TOTAL                              3/3  (100%) — COMPLETE
 ```
+
+## Implementation map (FR → file:line → test)
+
+| FR | Surface | Implementation | Tests |
+|---|---|---|---|
+| FR-001 | `LanceStore::search_fpf_by_vector(query_vec, limit)` | `crates/forgeplan-core/src/db/store.rs::search_fpf_by_vector` — LanceDB native vector_search with Cosine distance | `search_fpf_by_vector_happy_path` (ordering + len), `search_fpf_by_vector_empty_db_returns_empty`, `search_fpf_by_vector_all_null_column_returns_empty` (migration path), `search_fpf_by_vector_nan_query_handled`, `search_fpf_by_vector_inf_query_handled`, `search_fpf_by_vector_off_by_one_dim_errors`, `search_fpf_by_vector_empty_slice_errors`, `search_fpf_by_vector_limit_zero`, `search_fpf_by_vector_limit_max`, `search_fpf_by_vector_unicode_query_chunks` |
+| FR-001 | CLI `forgeplan fpf search --semantic` | `crates/forgeplan-cli/src/commands/fpf.rs::run_search` + `try_semantic_search` helper | unit tests for validation + fallback path |
+| FR-001 | MCP `forgeplan_fpf_search` with `semantic: Option<bool>` | `crates/forgeplan-mcp/src/server.rs::forgeplan_fpf_search` — typed `FpfSearchResponse` with warning field | `fpf_param_validation_tests` + types.rs serialization tests |
+| FR-002 | CLI `--semantic` flag | `crates/forgeplan-cli/src/main.rs::FpfCommands::Search` | parsing tests |
+| FR-003 | **compile-time** fallback (feature off) | `#[cfg(not(feature = "semantic-search"))]` warning + keyword path in both CLI and MCP | `run_search_semantic_fallback_warning` unit test + E2E script |
+| FR-003 | **runtime** fallback (feature on but Embedder init / encode / vector search fails) | `try_semantic_search` helper with encoder closure in CLI; MCP handler defensive chain | `semantic_fallback_on_embedder_init_fail`, `semantic_fallback_on_encode_fail`, `semantic_fallback_on_search_fail`, `semantic_success_returns_results` |
+
+### Core API additions
+
+- **Schema**: `crates/forgeplan-core/src/db/schema.rs::fpf_spec_schema()` — new `embedding` column `FixedSizeList<Float32, 1024>`, nullable. Rustdoc documents feature-flag contract: column is unconditional, encoding is feature-gated.
+- **Migration**: `crates/forgeplan-core/src/db/migrate.rs::migrate_fpf_spec()` — `NewColumnTransform::AllNulls`, idempotent, preserves pre-existing rows. Called from `run_migrations` when fpf_spec table exists.
+- **Store**: `LanceStore::insert_fpf_chunks(&[FpfChunk], Option<&[Vec<f32>]>)` — accepts optional embeddings, validates length match + per-vec dim=1024 + **NaN/Inf rejection** at boundaries.
+- **Store**: `LanceStore::search_fpf_by_vector(&[f32], usize)` — validates dim=1024, uses LanceDB native `table.vector_search()` with `DistanceType::Cosine`. Graceful Ok(empty) on all-null column (migration path) or LanceDB errors (logged to stderr).
+- **Trait**: `FpfStorage::insert_fpf_chunks` signature extended with `Option<&[Vec<f32>]>` — architectural honesty restored (audit Arch H1 fix).
+- **CLI helper**: `try_semantic_search<F>(store, query, limit, encoder: F) -> Result<Vec<FpfChunk>>` — closure-based defensive wrapper, testable without BGE-M3.
+- **Response type**: `FpfSearchResponse { query, semantic, count, results, warning }` + `FpfSearchHit { id, section_id, title, snippet, line_count }` — typed MCP contract.
+
+**Sprint 13.7 delivered:** All 3 FRs implemented across CLI + MCP (two surfaces), with 5-commit progression (core → CLI → MCP parity → audit fixes → wave 2 completion). 5 commits on `feat/sprint-13.7-prd-042-kb-vector-search`. 1109 tests pass (+34 from baseline). E2E regression 16/16 on release binary. Full /forge-cycle: 4 parallel auditors → fixer → MCP parity agent → completer → manual UX verification by team-lead.
+
+See EVID-064 for full audit + fix detail.
+
+**Supersedes PRD-018** (false-active stub from Sprint 12 deferred item).
 
 ---
 
@@ -180,5 +207,6 @@ Search логика для FPF KB живёт в `core/db/store.rs::search_fpf` (
 | RFC-003 | foundation (Driver Layer with EmbedDriver) | active |
 | NOTE-039 | source idea (deferred Sprint 12) | active |
 | sources/RuVector | inspiration (vector search patterns) | external |
+
 
 
