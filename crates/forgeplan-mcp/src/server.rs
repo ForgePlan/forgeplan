@@ -2458,34 +2458,33 @@ impl ForgeplanServer {
             })
         };
 
-        let hits: Vec<serde_json::Value> = results
+        let hits: Vec<FpfSearchHit> = results
             .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "id": c.id,
-                    "section_id": c.section_id,
-                    "title": c.title,
-                    "snippet": c
-                        .body
-                        .lines()
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .chars()
-                        .take(200)
-                        .collect::<String>(),
-                    "line_count": c.line_count,
-                })
+            .map(|c| FpfSearchHit {
+                id: c.id.clone(),
+                section_id: c.section_id.clone(),
+                title: c.title.clone(),
+                snippet: c
+                    .body
+                    .lines()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(200)
+                    .collect::<String>(),
+                line_count: c.line_count,
             })
             .collect();
 
-        Ok(json_result(&serde_json::json!({
-            "query": p.query,
-            "semantic": semantic,
-            "count": hits.len(),
-            "results": hits,
-            "warning": warning,
-        })))
+        let response = FpfSearchResponse {
+            query: p.query.clone(),
+            semantic,
+            count: hits.len(),
+            results: hits,
+            warning,
+        };
+        Ok(json_result(&response))
     }
 
     #[tool(

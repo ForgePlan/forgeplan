@@ -103,6 +103,35 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Helper for the semantic-search path with injectable encoder.
+///
+/// Extracted so fallback logic (embedder init failure, encode failure, vector
+/// search failure) can be unit-tested via closure injection without requiring
+/// the real fastembed model. Encoder is a sync closure because BGE-M3's
+/// `Embedder::embed` is sync; the vector search itself is async and handled
+/// via `store.search_fpf_by_vector`.
+///
+/// Returns the results on success, or a propagated error on any of the 3
+/// failure modes. Callers convert that error into a stderr warning and fall
+/// back to keyword search — this helper does NOT perform the fallback itself,
+/// so tests can assert on which failure mode was hit.
+#[cfg_attr(not(feature = "semantic-search"), allow(dead_code))]
+pub async fn try_semantic_search<F>(
+    store: &LanceStore,
+    query: &str,
+    limit: usize,
+    encoder: F,
+) -> anyhow::Result<Vec<FpfChunk>>
+where
+    F: FnOnce(&str) -> anyhow::Result<Vec<f32>>,
+{
+    let query_vec = encoder(query)?;
+    store
+        .search_fpf_by_vector(&query_vec, limit)
+        .await
+        .map_err(|e| anyhow::anyhow!("vector search failed: {e}"))
+}
+
 /// `forgeplan fpf search <query> [--limit N] [--semantic]`
 pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Result<()> {
     // Input validation (Sprint 13.7 audit M1): fail fast on empty / oversized
@@ -125,15 +154,30 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
     let store = LanceStore::open(&ws).await?;
 
     // PRD-042 FR-003: Semantic search with graceful fallback to keyword.
+    // Sprint 13.7 wave 2 C2: match MCP parity — ANY runtime failure in the
+    // semantic path (embedder init, encode, vector search) degrades to
+    // keyword search with a warning on stderr instead of bubbling up.
     let (results, header): (Vec<FpfChunk>, Option<&'static str>) = if semantic {
         #[cfg(feature = "semantic-search")]
         {
-            let mut embedder = forgeplan_core::embed::Embedder::new()?;
-            let query_vec = embedder.embed(query)?;
-            (
-                store.search_fpf_by_vector(&query_vec, limit).await?,
-                Some("[semantic search: BGE-M3]"),
-            )
+            let encoder = |q: &str| -> anyhow::Result<Vec<f32>> {
+                let mut embedder = forgeplan_core::embed::Embedder::new()
+                    .map_err(|e| anyhow::anyhow!("failed to initialize embedder: {e}"))?;
+                embedder
+                    .embed(q)
+                    .map_err(|e| anyhow::anyhow!("failed to encode query: {e}"))
+            };
+            match try_semantic_search(&store, query, limit, encoder).await {
+                Ok(vecs) => (vecs, Some("[semantic search: BGE-M3]")),
+                Err(e) => {
+                    eprintln!(
+                        "{} {}; falling back to keyword search",
+                        style("⚠").yellow().bold(),
+                        e
+                    );
+                    (store.search_fpf(query, limit).await?, None)
+                }
+            }
         }
         #[cfg(not(feature = "semantic-search"))]
         {
@@ -611,6 +655,104 @@ mod tests {
             msg.contains("too long"),
             "error must mention too long: {msg}"
         );
+    }
+
+    // ── Sprint 13.7 wave 2 C3: fallback helper tests ────────────
+
+    async fn make_fpf_store() -> (tempfile::TempDir, LanceStore) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+        (tmp, store)
+    }
+
+    #[tokio::test]
+    async fn semantic_fallback_on_embedder_init_fail() {
+        // Encoder simulates Embedder::new() failing (e.g. model download error).
+        let (_tmp, store) = make_fpf_store().await;
+        let encoder =
+            |_q: &str| -> anyhow::Result<Vec<f32>> { Err(anyhow::anyhow!("embedder init failed")) };
+        let err = try_semantic_search(&store, "trust", 5, encoder)
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("embedder init failed"),
+            "error must bubble through: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_fallback_on_encode_fail() {
+        // Encoder simulates embed() failing on a valid embedder.
+        let (_tmp, store) = make_fpf_store().await;
+        let encoder = |_q: &str| -> anyhow::Result<Vec<f32>> {
+            Err(anyhow::anyhow!("failed to encode query"))
+        };
+        let err = try_semantic_search(&store, "ctx", 5, encoder)
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("encode"), "error must mention encode: {msg}");
+    }
+
+    #[tokio::test]
+    async fn semantic_fallback_on_search_fail() {
+        // Encoder returns an invalid-dim vector, which makes
+        // search_fpf_by_vector fail with the dim-mismatch check. The helper
+        // must propagate that error so the caller can fall back.
+        let (_tmp, store) = make_fpf_store().await;
+        let encoder = |_q: &str| -> anyhow::Result<Vec<f32>> { Ok(vec![0.0f32; 512]) };
+        let err = try_semantic_search(&store, "q", 5, encoder)
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("vector search failed") || msg.contains("wrong dim"),
+            "error must surface vector search failure: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_success_returns_results() {
+        // Happy path through the helper: seed 2 chunks, encoder returns a
+        // valid 1024-dim vector, and the helper returns the store results.
+        let (_tmp, store) = make_fpf_store().await;
+        let dim = forgeplan_core::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![
+            FpfChunk {
+                id: "fpf-h-1".into(),
+                section_id: "H.1".into(),
+                parent_section: None,
+                title: "T1".into(),
+                body: "body".into(),
+                line_count: 1,
+                file_path: "a.md".into(),
+                created_at: "2026-01-01".into(),
+            },
+            FpfChunk {
+                id: "fpf-h-2".into(),
+                section_id: "H.2".into(),
+                parent_section: None,
+                title: "T2".into(),
+                body: "body".into(),
+                line_count: 1,
+                file_path: "a.md".into(),
+                created_at: "2026-01-01".into(),
+            },
+        ];
+        let mut e1 = vec![0.0f32; dim];
+        e1[0] = 1.0;
+        let mut e2 = vec![0.0f32; dim];
+        e2[1] = 1.0;
+        store
+            .insert_fpf_chunks(&chunks, Some(&[e1.clone(), e2]))
+            .await
+            .unwrap();
+        let encoder = move |_q: &str| -> anyhow::Result<Vec<f32>> { Ok(e1.clone()) };
+        let results = try_semantic_search(&store, "q", 2, encoder).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, "fpf-h-1");
     }
 
     // Smoke: a Rule with ActionType serializes via Display as expected

@@ -1093,6 +1093,16 @@ impl LanceStore {
                             v.len()
                         );
                     }
+                    // Sprint 13.7 wave 2 C4.8: reject non-finite values at the
+                    // boundary. LanceDB's cosine distance on NaN/Inf is
+                    // undefined, so refuse to persist garbage.
+                    if let Some(pos) = v.iter().position(|f| !f.is_finite()) {
+                        anyhow::bail!(
+                            "embedding[{}] contains non-finite value at index {}",
+                            i,
+                            pos
+                        );
+                    }
                 }
                 use arrow_array::{FixedSizeListArray, Float32Array};
                 use arrow_schema::Field as ArrowField;
@@ -3019,5 +3029,167 @@ mod tests {
             "all-null embedding column should return empty, got {} rows",
             result.len()
         );
+    }
+
+    // ── Sprint 13.7 wave 2 C4: corner case tests ────────────────────
+
+    async fn seeded_fpf_store(tmp: &TempDir) -> LanceStore {
+        let store = make_store(tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut e1 = vec![0.0f32; dim];
+        e1[0] = 1.0;
+        let mut e2 = vec![0.0f32; dim];
+        e2[1] = 1.0;
+        let mut e3 = vec![0.0f32; dim];
+        e3[2] = 1.0;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        store
+            .insert_fpf_chunks(&chunks, Some(&[e1, e2, e3]))
+            .await
+            .unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_nan_query_handled() {
+        // C4.1: NaN query. LanceDB cosine on NaN is undefined — our contract
+        // is graceful degrade (Ok) OR an Err. Document whichever actually
+        // happens; the must-not is a panic.
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![f32::NAN; dim];
+        let result = store.search_fpf_by_vector(&q, 5).await;
+        // Whatever the backend does, it must not panic. Both Ok and Err are
+        // acceptable; documented behavior right now is degraded Ok/empty.
+        match result {
+            Ok(rows) => {
+                // NaN distance sort is undefined; zero rows is the safest
+                // observed outcome.
+                assert!(rows.len() <= 3, "must not exceed table size");
+            }
+            Err(_) => {
+                // Explicit failure is also acceptable.
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_inf_query_handled() {
+        // C4.2: same for +INF.
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![f32::INFINITY; dim];
+        let _ = store.search_fpf_by_vector(&q, 5).await; // must not panic
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_off_by_one_dim_errors() {
+        // C4.3: dim-1 and dim+1 both rejected with a clear message.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        for bad_len in &[dim - 1, dim + 1] {
+            let q = vec![0.0f32; *bad_len];
+            let err = store.search_fpf_by_vector(&q, 5).await.unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("wrong dim") && msg.contains(&dim.to_string()),
+                "error must mention expected dim: {msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_empty_slice_errors() {
+        // C4.4: empty query slice — rejected by dim check.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let err = store.search_fpf_by_vector(&[], 5).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("wrong dim"), "error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_limit_zero() {
+        // C4.5: limit=0 should yield an empty result (LanceDB honors limit).
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![0.0f32; dim];
+        let results = store.search_fpf_by_vector(&q, 0).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "limit=0 must return empty, got {} rows",
+            results.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_limit_max() {
+        // C4.6: limit=usize::MAX must be capped internally and not OOM on 3
+        // rows.
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut q = vec![0.0f32; dim];
+        q[0] = 1.0;
+        let results = store.search_fpf_by_vector(&q, usize::MAX).await.unwrap();
+        assert!(
+            results.len() <= 3,
+            "must cap at table size, got {}",
+            results.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_unicode_query_chunks() {
+        // C4.7: chunks with unicode bodies are persistable and findable via
+        // vector search.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut chunk = fpf_chunk(1);
+        chunk.title = "Привет Мир".to_string();
+        chunk.body = "привет мир 🚀 тестовое содержимое".to_string();
+        let mut e = vec![0.0f32; dim];
+        e[0] = 1.0;
+        store
+            .insert_fpf_chunks(&[chunk], Some(&[e.clone()]))
+            .await
+            .unwrap();
+        let results = store.search_fpf_by_vector(&e, 1).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].body.contains("🚀"));
+        assert!(results[0].title.contains("Привет"));
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_nan_in_embedding_rejected() {
+        // C4.8: NaN in an embedding vec is refused at the boundary.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut bad = vec![0.0f32; dim];
+        bad[42] = f32::NAN;
+        let err = store
+            .insert_fpf_chunks(&[fpf_chunk(1)], Some(&[bad]))
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("non-finite"),
+            "error must mention non-finite: {msg}"
+        );
+
+        // +Inf also rejected.
+        let mut bad2 = vec![0.0f32; dim];
+        bad2[0] = f32::INFINITY;
+        let err2 = store
+            .insert_fpf_chunks(&[fpf_chunk(2)], Some(&[bad2]))
+            .await
+            .unwrap_err();
+        assert!(format!("{err2}").contains("non-finite"));
     }
 }
