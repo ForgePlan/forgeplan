@@ -361,13 +361,19 @@ struct ImportParams {
     force: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct FpfSearchParams {
-    /// Search query for FPF knowledge base
+    /// Search query — keyword or semantic depending on `semantic` flag
     query: String,
-    /// Max results (default 5)
+    /// Max results (default 5, max 50)
     #[serde(default)]
     limit: Option<usize>,
+    /// Use semantic (vector) search instead of keyword. Requires `semantic-search`
+    /// feature at build time. When the feature is not compiled in, the query
+    /// gracefully falls back to keyword search and the response includes a
+    /// `warning` field explaining why.
+    #[serde(default)]
+    semantic: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2370,12 +2376,23 @@ impl ForgeplanServer {
     // ── FPF Knowledge Base tools ────────────────────────────────
 
     #[tool(
-        description = "Search FPF (First Principles Framework) knowledge base for relevant patterns and concepts. Returns matching sections with titles and snippets."
+        description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take 10–30 seconds if the BGE-M3 model needs to be downloaded (~150MB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false)."
     )]
     async fn forgeplan_fpf_search(
         &self,
         Parameters(p): Parameters<FpfSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Param validation — parity with Sprint 13.6 bounds.
+        if p.query.trim().is_empty() {
+            return Ok(err_result("query cannot be empty"));
+        }
+        if p.query.len() > 8192 {
+            return Ok(err_result(&format!(
+                "query too long (max 8192 chars, got {})",
+                p.query.len()
+            )));
+        }
+
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -2387,20 +2404,68 @@ impl ForgeplanServer {
             ));
         }
 
-        let limit = p.limit.unwrap_or(5);
-        let results = store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
-            tracing::warn!("FPF search failed: {e}");
-            Vec::new()
-        });
+        let limit = p.limit.unwrap_or(5).min(50);
+        let semantic = p.semantic.unwrap_or(false);
+        let mut warning: Option<String> = None;
 
-        Ok(json_result(&FpfSearchResponse {
-            query: p.query,
-            results: results
-                .iter()
-                .map(|c| FpfSearchHit {
-                    section_id: c.section_id.clone(),
-                    title: c.title.clone(),
-                    snippet: c
+        let results = if semantic {
+            #[cfg(feature = "semantic-search")]
+            {
+                match forgeplan_core::embed::Embedder::new() {
+                    Ok(mut embedder) => match embedder.embed(&p.query) {
+                        Ok(qvec) => match store.search_fpf_by_vector(&qvec, limit).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!("FPF vector search failed: {e}");
+                                warning = Some(format!(
+                                    "vector search failed ({e}); fell back to keyword search"
+                                ));
+                                store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("FPF query encoding failed: {e}");
+                            warning = Some(format!(
+                                "failed to encode query ({e}); fell back to keyword search"
+                            ));
+                            store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("FPF embedder init failed: {e}");
+                        warning = Some(format!(
+                            "failed to init embedder ({e}); fell back to keyword search"
+                        ));
+                        store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                    }
+                }
+            }
+            #[cfg(not(feature = "semantic-search"))]
+            {
+                warning = Some(
+                    "semantic-search feature not compiled in; falling back to keyword search"
+                        .to_string(),
+                );
+                store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
+                    tracing::warn!("FPF search failed: {e}");
+                    Vec::new()
+                })
+            }
+        } else {
+            store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
+                tracing::warn!("FPF search failed: {e}");
+                Vec::new()
+            })
+        };
+
+        let hits: Vec<serde_json::Value> = results
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "section_id": c.section_id,
+                    "title": c.title,
+                    "snippet": c
                         .body
                         .lines()
                         .take(3)
@@ -2408,11 +2473,19 @@ impl ForgeplanServer {
                         .join(" ")
                         .chars()
                         .take(200)
-                        .collect(),
-                    line_count: c.line_count,
+                        .collect::<String>(),
+                    "line_count": c.line_count,
                 })
-                .collect(),
-        }))
+            })
+            .collect();
+
+        Ok(json_result(&serde_json::json!({
+            "query": p.query,
+            "semantic": semantic,
+            "count": hits.len(),
+            "results": hits,
+            "warning": warning,
+        })))
     }
 
     #[tool(
@@ -3293,5 +3366,47 @@ mod fpf_param_validation_tests {
     fn check_params_normal_id_within_bounds() {
         let p: FpfCheckParams = serde_json::from_str(r#"{"id": "PRD-001"}"#).unwrap();
         assert!(p.id.len() <= 128);
+    }
+
+    #[test]
+    fn fpf_search_params_accepts_semantic_flag() {
+        let p: FpfSearchParams =
+            serde_json::from_str(r#"{"query": "trust", "semantic": true}"#).unwrap();
+        assert_eq!(p.query, "trust");
+        assert_eq!(p.semantic, Some(true));
+    }
+
+    #[test]
+    fn fpf_search_params_defaults_semantic_to_false_when_absent() {
+        let p: FpfSearchParams = serde_json::from_str(r#"{"query": "trust"}"#).unwrap();
+        assert_eq!(p.semantic, None);
+        assert_eq!(p.semantic.unwrap_or(false), false);
+        assert_eq!(p.limit, None);
+    }
+
+    #[test]
+    fn fpf_search_params_accepts_limit_and_semantic_false() {
+        let p: FpfSearchParams =
+            serde_json::from_str(r#"{"query": "q", "limit": 10, "semantic": false}"#).unwrap();
+        assert_eq!(p.limit, Some(10));
+        assert_eq!(p.semantic, Some(false));
+    }
+
+    #[test]
+    fn fpf_search_params_query_length_bounds() {
+        // Empty query — caller-side validation rejects trim().is_empty()
+        let p: FpfSearchParams = serde_json::from_str(r#"{"query": "   "}"#).unwrap();
+        assert!(p.query.trim().is_empty());
+
+        // Oversize query — caller-side validation rejects len > 8192
+        let long = "x".repeat(8193);
+        let p: FpfSearchParams =
+            serde_json::from_str(&format!(r#"{{"query": "{long}"}}"#)).unwrap();
+        assert!(p.query.len() > 8192);
+
+        // Normal query within bounds
+        let p: FpfSearchParams = serde_json::from_str(r#"{"query": "trust calculus"}"#).unwrap();
+        assert!(!p.query.trim().is_empty());
+        assert!(p.query.len() <= 8192);
     }
 }
