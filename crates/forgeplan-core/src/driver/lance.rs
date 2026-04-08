@@ -166,7 +166,10 @@ impl FpfStorage for LanceDriver {
     }
 
     async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
-        self.store.insert_fpf_chunks(chunks).await
+        // PRD-042 W1: forwarder keeps the existing trait signature (no
+        // embeddings) — ingest pipeline (W2) will call the store method
+        // directly to pass embeddings.
+        self.store.insert_fpf_chunks(chunks, None).await
     }
 
     async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {

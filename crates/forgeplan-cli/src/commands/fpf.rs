@@ -66,7 +66,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
         })
         .collect();
 
-    let count = store.insert_fpf_chunks(&fpf_chunks).await?;
+    let count = store.insert_fpf_chunks(&fpf_chunks, None).await?;
     println!("  Ingested {} FPF sections into LanceDB", count);
     Ok(())
 }

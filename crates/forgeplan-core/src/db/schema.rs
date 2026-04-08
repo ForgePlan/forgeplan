@@ -107,6 +107,8 @@ pub fn relations_schema() -> Arc<Schema> {
 /// - line_count    Int32 (not null) — number of lines
 /// - file_path     Utf8 (not null) — original file path
 /// - created_at    Utf8 (not null) — ISO datetime of ingestion
+/// - embedding     FixedSizeList(1024, Float32) (nullable) — vector for semantic
+///                 search (PRD-042). Pre-semantic workspaces have null.
 pub fn fpf_spec_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -117,6 +119,14 @@ pub fn fpf_spec_schema() -> Arc<Schema> {
         Field::new("line_count", DataType::Int32, false),
         Field::new("file_path", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                EMBEDDING_DIM,
+            ),
+            true,
+        ),
     ]))
 }
 
@@ -236,6 +246,7 @@ mod tests {
         assert!(names.contains(&"line_count"));
         assert!(names.contains(&"file_path"));
         assert!(names.contains(&"created_at"));
+        assert!(names.contains(&"embedding"));
     }
 
     #[test]
@@ -247,6 +258,20 @@ mod tests {
             .filter(|f| f.is_nullable())
             .map(|f| f.name().as_str())
             .collect();
-        assert_eq!(nullable, vec!["parent_section"]);
+        assert_eq!(nullable, vec!["parent_section", "embedding"]);
+    }
+
+    #[test]
+    fn fpf_spec_schema_embedding_type() {
+        let schema = fpf_spec_schema();
+        let emb = schema.field_with_name("embedding").unwrap();
+        assert!(emb.is_nullable());
+        match emb.data_type() {
+            DataType::FixedSizeList(inner, size) => {
+                assert_eq!(*size, EMBEDDING_DIM);
+                assert_eq!(*inner.data_type(), DataType::Float32);
+            }
+            _ => panic!("embedding should be FixedSizeList"),
+        }
     }
 }

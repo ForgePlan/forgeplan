@@ -253,7 +253,13 @@ impl LanceStore {
         let change_log = db.open_table("change_log").execute().await.ok();
 
         // Run migrations (idempotent — safe on every open)
-        migrate::run_migrations(&artifacts, &relations, change_log.as_ref()).await?;
+        migrate::run_migrations(
+            &artifacts,
+            &relations,
+            change_log.as_ref(),
+            fpf_spec.as_ref(),
+        )
+        .await?;
 
         Ok(Self {
             _db: db,
@@ -1043,8 +1049,16 @@ impl LanceStore {
         self.fpf_spec.is_some()
     }
 
-    /// Insert FPF chunks in batch.
-    pub async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
+    /// Insert FPF chunks in batch, optionally with pre-computed embeddings
+    /// (PRD-042). When `embeddings` is `Some`, the slice MUST have the same
+    /// length as `chunks` and every vector MUST have length
+    /// `EMBEDDING_DIM` (1024). When `None`, the embedding column is filled
+    /// with typed nulls — pre-semantic workspaces and tests use this path.
+    pub async fn insert_fpf_chunks(
+        &self,
+        chunks: &[FpfChunk],
+        embeddings: Option<&[Vec<f32>]>,
+    ) -> anyhow::Result<usize> {
         let table = self.fpf_spec.as_ref().ok_or_else(|| {
             anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
         })?;
@@ -1059,6 +1073,45 @@ impl LanceStore {
         let file_paths: Vec<&str> = chunks.iter().map(|c| c.file_path.as_str()).collect();
         let created_ats: Vec<&str> = chunks.iter().map(|c| c.created_at.as_str()).collect();
 
+        let dim = schema::EMBEDDING_DIM as usize;
+        let embedding_col: Arc<dyn Array> = match embeddings {
+            None => convert::make_null_embedding_col(chunks.len()),
+            Some(vecs) => {
+                if vecs.len() != chunks.len() {
+                    anyhow::bail!(
+                        "embeddings length ({}) must match chunks length ({})",
+                        vecs.len(),
+                        chunks.len()
+                    );
+                }
+                for (i, v) in vecs.iter().enumerate() {
+                    if v.len() != dim {
+                        anyhow::bail!(
+                            "embedding[{}] has wrong dim: expected {}, got {}",
+                            i,
+                            dim,
+                            v.len()
+                        );
+                    }
+                }
+                use arrow_array::{FixedSizeListArray, Float32Array};
+                use arrow_schema::Field as ArrowField;
+                let total: Vec<f32> = vecs.iter().flatten().copied().collect();
+                let values = Arc::new(Float32Array::from(total));
+                let item_field = Arc::new(ArrowField::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                ));
+                Arc::new(FixedSizeListArray::new(
+                    item_field,
+                    schema::EMBEDDING_DIM,
+                    values,
+                    None,
+                ))
+            }
+        };
+
         let batch = RecordBatch::try_new(
             schema::fpf_spec_schema(),
             vec![
@@ -1070,11 +1123,71 @@ impl LanceStore {
                 Arc::new(Int32Array::from(line_counts)),
                 Arc::new(StringArray::from(file_paths)),
                 Arc::new(StringArray::from(created_ats)),
+                embedding_col,
             ],
         )?;
 
         table.add(vec![batch]).execute().await?;
         Ok(chunks.len())
+    }
+
+    /// Vector similarity search over FPF chunks (PRD-042).
+    ///
+    /// Uses LanceDB's native `vector_search` with cosine distance — the same
+    /// path artifacts already use for semantic search. No fastembed feature
+    /// flag is required at the storage layer; callers are responsible for
+    /// producing the query embedding (via `Embedder` behind the
+    /// `semantic-search` feature, or any other source).
+    ///
+    /// Behaviour:
+    /// - errors when `query_vec.len() != EMBEDDING_DIM` (1024).
+    /// - returns an empty Vec when the table has no rows or all embedding
+    ///   cells are NULL (pre-ingest workspace).
+    /// - returns up to `limit` chunks ordered by ascending cosine distance
+    ///   (closest first).
+    pub async fn search_fpf_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        let dim = schema::EMBEDDING_DIM as usize;
+        if query_vec.len() != dim {
+            anyhow::bail!(
+                "query vector has wrong dim: expected {}, got {}",
+                dim,
+                query_vec.len()
+            );
+        }
+
+        let table = self
+            .fpf_spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
+
+        // LanceDB native vector search. On an empty/all-null column LanceDB
+        // returns zero rows rather than erroring; we surface that as Ok([]).
+        let stream = match table
+            .vector_search(query_vec)
+            .map_err(|e| anyhow::anyhow!("FPF vector search failed: {e}"))?
+            .distance_type(lancedb::DistanceType::Cosine)
+            .limit(limit)
+            .execute()
+            .await
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let batches = collect_batches(stream).await?;
+        let mut results = Vec::new();
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                if let Some(chunk) = extract_fpf_chunk(batch, row) {
+                    results.push(chunk);
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
@@ -1478,6 +1591,7 @@ fn empty_fpf_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, Arr
             Arc::new(Int32Array::from(Vec::<i32>::new())),   // line_count
             Arc::new(StringArray::from(Vec::<&str>::new())), // file_path
             Arc::new(StringArray::from(Vec::<&str>::new())), // created_at
+            convert::make_null_embedding_col(0),             // embedding
         ],
     )
 }
@@ -2695,5 +2809,136 @@ mod tests {
             .add_tags("PRD-999", &["source=code".to_string()])
             .await;
         assert!(err.is_err());
+    }
+
+    // ── PRD-042 fpf_spec embedding column / vector search ────────────
+
+    fn fpf_chunk(idx: usize) -> FpfChunk {
+        FpfChunk {
+            id: format!("fpf-test-{:03}", idx),
+            section_id: format!("T.{}", idx),
+            parent_section: None,
+            title: format!("Test section {}", idx),
+            body: format!("body content {}", idx),
+            line_count: 1,
+            file_path: "test.md".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_none_embeddings_writes_null() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
+        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(n, 2);
+
+        // Read back and verify embedding column is null for all rows.
+        let table = store.fpf_spec.as_ref().unwrap();
+        let batches = collect_batches(table.query().execute().await.unwrap())
+            .await
+            .unwrap();
+        let mut total = 0;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("embedding")
+                .expect("embedding column must exist");
+            for row in 0..batch.num_rows() {
+                assert!(col.is_null(row), "row {} should be null", row);
+                total += 1;
+            }
+        }
+        assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_with_embeddings_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
+        let embeds: Vec<Vec<f32>> = vec![vec![0.1f32; dim], vec![0.2f32; dim]];
+        let n = store
+            .insert_fpf_chunks(&chunks, Some(&embeds))
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let table = store.fpf_spec.as_ref().unwrap();
+        let batches = collect_batches(table.query().execute().await.unwrap())
+            .await
+            .unwrap();
+        let mut non_null = 0;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("embedding")
+                .expect("embedding column must exist");
+            for row in 0..batch.num_rows() {
+                if !col.is_null(row) {
+                    non_null += 1;
+                }
+            }
+        }
+        assert_eq!(non_null, 2, "both rows should have non-null embeddings");
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_wrong_dim_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let chunks = vec![fpf_chunk(1)];
+        let bad: Vec<Vec<f32>> = vec![vec![0.5f32; 512]];
+        let err = store.insert_fpf_chunks(&chunks, Some(&bad)).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_validates_dim() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let bad = vec![0.0f32; 512];
+        let err = store.search_fpf_by_vector(&bad, 5).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_empty_db_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![0.0f32; dim];
+        let results = store.search_fpf_by_vector(&q, 5).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_happy_path() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+
+        // Three chunks with distinct embeddings: only chunk 1 is close to the
+        // query vector (which is dominated by axis 0).
+        let mut e1 = vec![0.0f32; dim];
+        e1[0] = 1.0;
+        let mut e2 = vec![0.0f32; dim];
+        e2[1] = 1.0;
+        let mut e3 = vec![0.0f32; dim];
+        e3[2] = 1.0;
+
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        let embeds = vec![e1.clone(), e2, e3];
+        store
+            .insert_fpf_chunks(&chunks, Some(&embeds))
+            .await
+            .unwrap();
+
+        let results = store.search_fpf_by_vector(&e1, 3).await.unwrap();
+        assert!(!results.is_empty(), "expected at least one hit");
+        assert_eq!(
+            results[0].id, "fpf-test-001",
+            "closest match should be chunk 1"
+        );
     }
 }
