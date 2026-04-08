@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: EPIC-003
   relation: refines
-status: draft
+status: active
 title: FPF Rules — CLI list/check + MCP tools (RFC-001 Phase 3)
 ---
 
@@ -26,13 +26,34 @@ parent_epic: EPIC-003
 ## Progress
 
 ```
-FR-001  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  forgeplan fpf rules
-FR-002  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  forgeplan fpf check
-FR-003  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  MCP fpf_rules tool
-FR-004  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  MCP fpf_check tool
+FR-001  ████████████████████████  1/1  forgeplan fpf rules    ✓ Sprint 13.6
+FR-002  ████████████████████████  1/1  forgeplan fpf check    ✓ Sprint 13.6
+FR-003  ████████████████████████  1/1  MCP fpf_rules tool     ✓ Sprint 13.6
+FR-004  ████████████████████████  1/1  MCP fpf_check tool     ✓ Sprint 13.6
 ─────────────────────────────────────────────────
-TOTAL                              0/4  ( 0%)
+TOTAL                              4/4  (100%) — COMPLETE
 ```
+
+## Implementation map (FR → file:line → test)
+
+| FR | Surface | Implementation | Tests |
+|---|---|---|---|
+| FR-001 | `forgeplan fpf rules [--flat] [--json]` | `crates/forgeplan-cli/src/commands/fpf.rs::run_rules()` + `crates/forgeplan-cli/src/main.rs::FpfCommands::Rules` | `cli_fpf_rules_shows_default_source`, `cli_fpf_rules_json_valid`, `cli_fpf_rules_flat_has_priorities` (tests/fpf_rules_check.rs) + `summarize_condition` unit tests |
+| FR-002 | `forgeplan fpf check <id> [--verbose] [--json]` | `crates/forgeplan-cli/src/commands/fpf.rs::run_check()` + `crates/forgeplan-cli/src/main.rs::FpfCommands::Check` | `cli_fpf_check_missing_artifact_errors`, `cli_fpf_check_existing_artifact`, `cli_fpf_check_verbose_shows_unmatched`, `cli_fpf_check_json_has_required_fields` |
+| FR-003 | MCP `forgeplan_fpf_rules` (params: action/name/summary/source) | `crates/forgeplan-mcp/src/server.rs::forgeplan_fpf_rules()` | `fpf_param_validation_tests` (rules bounds) + core `active_rules` tests in `forgeplan-core/src/fpf/mod.rs::prd041_tests` |
+| FR-004 | MCP `forgeplan_fpf_check` (param: id) | `crates/forgeplan-mcp/src/server.rs::forgeplan_fpf_check()` | `fpf_param_validation_tests` (id bound) + core `check_artifact_against_rules` tests (missing id, custom config, canonical serialize, summary_line variants) |
+
+### Core API (shared by CLI + MCP)
+- `forgeplan_core::fpf::RuleSource` — Config | Default
+- `forgeplan_core::fpf::active_rules(fpf_config) -> (Vec<Rule>, RuleSource)`
+- `forgeplan_core::fpf::RuleCheckResult { artifact_id, artifact_kind, artifact_status, matched, unmatched, winning }` + `Serialize` (canonical JSON: `kind`/`status`) + `summary_line()` method
+- `forgeplan_core::fpf::check_artifact_against_rules(store, id, config) -> Result<Option<RuleCheckResult>>`
+- `forgeplan_core::fpf::ext::rules::Condition::summarize()` — human-readable one-liner for rules surface
+- Private helpers: `build_lookup_maps`, `enrich_one` (shared between `build_rule_actions` and `check_artifact_against_rules`, O(N+R))
+
+**Sprint 13.6 delivered:** All 4 FRs implemented, audited (0 CRITICAL, 0 HIGH remaining after fixes), re-audited READY TO MERGE. 1075 tests pass, E2E regression 12/12 pass on release binary.
+
+See EVID-063 for full evidence.
 
 ---
 
@@ -180,4 +201,5 @@ CLI/MCP просто читают `FpfConfig.rules` и вызывают `run_rul
 | RFC-001 | parent (FPF Engine) | active |
 | EVID-057 | source evidence (Sprint 12 rule engine) | active |
 | sources/RuVector | inspiration (filter expressions) | external |
+
 

@@ -585,6 +585,26 @@ enum FpfCommands {
     List,
     /// Show FPF knowledge base status — source, ingested count, staleness
     Status,
+    /// List active FPF rules grouped by action (EXPLORE/INVESTIGATE/EXPLOIT)
+    Rules {
+        /// Flat priority-linear table instead of action-grouped tree
+        #[arg(long)]
+        flat: bool,
+        /// Output full rule dump as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check which FPF rules match a given artifact
+    Check {
+        /// Artifact ID (e.g. PRD-041)
+        id: String,
+        /// Show unmatched rule names too
+        #[arg(long)]
+        verbose: bool,
+        /// Output full RuleCheckResult as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -780,6 +800,10 @@ async fn main() -> anyhow::Result<()> {
             FpfCommands::Section { id, summary } => commands::fpf::run_section(&id, summary).await,
             FpfCommands::List => commands::fpf::run_list().await,
             FpfCommands::Status => commands::fpf::run_status().await,
+            FpfCommands::Rules { flat, json } => commands::fpf::run_rules(flat, json).await,
+            FpfCommands::Check { id, verbose, json } => {
+                commands::fpf::run_check(&id, verbose, json).await
+            }
         },
         Commands::Gaps => commands::gaps::run().await,
         Commands::Fgr { id, json } => commands::fgr::run(id.as_deref(), json).await,

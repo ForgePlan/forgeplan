@@ -1,10 +1,14 @@
 use std::env;
 use std::path::PathBuf;
 
+use console::style;
 use forgeplan_core::db::store::{FpfChunk, LanceStore};
 use forgeplan_core::fpf;
+use forgeplan_core::fpf::ext::rules::Rule;
 use forgeplan_core::fpf::knowledge;
 use forgeplan_core::workspace;
+
+use crate::ui;
 
 /// FPF Dashboard (original command, now `forgeplan fpf dashboard`)
 pub async fn run_dashboard() -> anyhow::Result<()> {
@@ -236,4 +240,290 @@ pub async fn run_list() -> anyhow::Result<()> {
     println!();
     println!("  {} sections total", sections.len());
     Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────
+// PRD-041 FR-001: `forgeplan fpf rules`
+// ──────────────────────────────────────────────────────────────────
+
+fn style_action(action: &str) -> String {
+    match action {
+        "EXPLORE" => style(action).cyan().bold().to_string(),
+        "INVESTIGATE" => style(action).yellow().bold().to_string(),
+        "EXPLOIT" => style(action).green().bold().to_string(),
+        _ => action.to_string(),
+    }
+}
+
+/// `forgeplan fpf rules [--flat] [--json]`
+pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
+    let cwd = env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
+    let fpf_config = config.fpf.as_ref();
+
+    let (rules, source) = fpf::active_rules(fpf_config);
+    let source_label = match source {
+        fpf::RuleSource::Config => "Config",
+        fpf::RuleSource::Default => "Default",
+    };
+
+    if json {
+        let dump: Vec<serde_json::Value> = rules
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "priority": r.priority,
+                    "action": r.action.to_string(),
+                    "condition": serde_json::to_value(&r.condition).unwrap_or(serde_json::Value::Null),
+                    "condition_summary": r.condition.summarize(),
+                    "message": r.message,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "source": source_label,
+            "count": rules.len(),
+            "rules": dump,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    let mut sorted: Vec<&Rule> = rules.iter().collect();
+    sorted.sort_by_key(|r| r.priority);
+
+    if flat {
+        ui::header(
+            "FPF Rules",
+            &format!("{} active (source: {source_label})", sorted.len()),
+        );
+        println!(
+            "  {:<4}  {:<28}  {:<13}  {}",
+            style("prio").bold(),
+            style("name").bold(),
+            style("action").bold(),
+            style("condition").bold()
+        );
+        println!("  {}", style("-".repeat(90)).dim());
+        for r in &sorted {
+            let action = r.action.to_string();
+            println!(
+                "  [{}]   {:<28}  {:<13}  {}",
+                r.priority,
+                truncate(&r.name, 28),
+                style_action(&action),
+                r.condition.summarize(),
+            );
+        }
+        println!();
+        return Ok(());
+    }
+
+    // Tree view — group by action
+    ui::header(
+        "FPF Rules",
+        &format!("{} active (source: {source_label})", sorted.len()),
+    );
+    println!(
+        "  {}",
+        style("Evaluation order: priority ascending — first match wins").dim()
+    );
+
+    let groups: [(&str, &str, bool); 3] = [
+        ("EXPLORE", "когда исследовать варианты", false),
+        ("INVESTIGATE", "когда собрать больше данных", false),
+        ("EXPLOIT", "когда действовать решительно", true),
+    ];
+
+    for (action, descr, is_last_group) in groups {
+        let in_group: Vec<&&Rule> = sorted
+            .iter()
+            .filter(|r| r.action.to_string() == action)
+            .collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        let branch = if is_last_group { "└─" } else { "├─" };
+        let vbar = if is_last_group { "   " } else { "│  " };
+        println!();
+        let plural = if in_group.len() == 1 { "rule" } else { "rules" };
+        println!(
+            "  {} {} ({} {}) — {}",
+            branch,
+            style_action(action),
+            in_group.len(),
+            plural,
+            style(descr).dim()
+        );
+        let last_idx = in_group.len().saturating_sub(1);
+        for (i, rule) in in_group.iter().enumerate() {
+            let rule_branch = if i == last_idx { "└─" } else { "├─" };
+            let rule_vbar = if i == last_idx { "   " } else { "│  " };
+            println!(
+                "  {}{} [{}] {}",
+                vbar,
+                rule_branch,
+                rule.priority,
+                style(&rule.name).bold()
+            );
+            println!(
+                "  {}{}     {}",
+                vbar,
+                rule_vbar,
+                style(rule.condition.summarize()).dim()
+            );
+            if let Some(msg) = &rule.message {
+                println!("  {}{}     {}", vbar, rule_vbar, style(msg).italic().dim());
+            }
+        }
+    }
+    println!();
+    Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{t}…")
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// PRD-041 FR-002: `forgeplan fpf check <id>`
+// ──────────────────────────────────────────────────────────────────
+
+/// `forgeplan fpf check <id> [--verbose] [--json]`
+pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()> {
+    let cwd = env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let store = LanceStore::open(&ws).await?;
+    let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
+    let fpf_config = config.fpf.as_ref();
+
+    let result = match fpf::check_artifact_against_rules(&store, id, fpf_config).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            ui::error_hint(
+                &format!("Artifact '{id}' not found"),
+                "forgeplan list --kind prd",
+            );
+            std::process::exit(1);
+        }
+        Err(_) => {
+            ui::error_hint(
+                &format!("Failed to check artifact '{id}'"),
+                "forgeplan health",
+            );
+            std::process::exit(1);
+        }
+    };
+
+    if json {
+        let mut val = serde_json::to_value(&result)?;
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert(
+                "summary".to_string(),
+                serde_json::Value::String(result.summary_line()),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&val)?);
+        return Ok(());
+    }
+
+    ui::header(
+        &result.artifact_id,
+        &format!("[{}, {}]", result.artifact_kind, result.artifact_status),
+    );
+
+    if let Some(win) = &result.winning {
+        ui::section("Winning rule");
+        println!(
+            "  {} {} (priority {}) → {}",
+            style("★").yellow().bold(),
+            style(&win.name).bold(),
+            win.priority,
+            style_action(&win.action),
+        );
+        println!("    {}", style(&win.message).dim());
+
+        if result.matched.len() > 1 {
+            ui::section("Other matched rules");
+            for m in result.matched.iter().skip(1) {
+                println!(
+                    "  - {} (priority {}) → {}",
+                    m.name,
+                    m.priority,
+                    style_action(&m.action)
+                );
+            }
+        }
+    } else {
+        ui::section("Result");
+        println!("  No rules matched this artifact.");
+    }
+
+    if verbose && !result.unmatched.is_empty() {
+        ui::section("Unmatched rules");
+        for name in &result.unmatched {
+            println!("  - {name}");
+        }
+    } else if !result.unmatched.is_empty() {
+        println!();
+        println!(
+            "  {}",
+            style(format!(
+                "{} other rule(s) did not match.",
+                result.unmatched.len()
+            ))
+            .dim()
+        );
+    }
+    println!();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forgeplan_core::fpf::core::model::ActionType;
+    use forgeplan_core::fpf::ext::rules::{Condition, Rule};
+
+    #[test]
+    fn style_action_returns_nonempty_for_known_actions() {
+        assert!(!style_action("EXPLORE").is_empty());
+        assert!(!style_action("INVESTIGATE").is_empty());
+        assert!(!style_action("EXPLOIT").is_empty());
+        assert!(!style_action("UNKNOWN").is_empty());
+    }
+
+    #[test]
+    fn truncate_short_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_long_appends_ellipsis() {
+        let t = truncate("abcdefghijklmn", 5);
+        assert_eq!(t.chars().count(), 5);
+        assert!(t.ends_with('…'));
+    }
+
+    // Smoke: a Rule with ActionType serializes via Display as expected
+    #[test]
+    fn rule_action_display_matches_expected() {
+        let r = Rule {
+            name: "t".into(),
+            priority: 1,
+            condition: Condition::default(),
+            action: ActionType::Explore,
+            message: None,
+        };
+        assert_eq!(r.action.to_string(), "EXPLORE");
+    }
 }
