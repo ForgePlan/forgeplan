@@ -498,6 +498,87 @@ mod tests {
         }
     }
 
+    /// Build a one-row legacy fpf_spec batch (no embedding column).
+    fn legacy_fpf_row(id: &str, section_id: &str, title: &str, body: &str) -> RecordBatch {
+        let schema = legacy_fpf_spec_schema();
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![id])),
+                Arc::new(StringArray::from(vec![section_id])),
+                Arc::new(StringArray::from(vec![Option::<&str>::None])),
+                Arc::new(StringArray::from(vec![title])),
+                Arc::new(LargeStringArray::from(vec![body])),
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["fpf.md"])),
+                Arc::new(StringArray::from(vec!["2026-01-01T00:00:00Z"])),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migrate_fpf_spec_preserves_pre_existing_rows() {
+        // Legacy v3-style fpf_spec workspace: 2 rows, no embedding column.
+        // After migrate_fpf_spec, both rows must still be present and the
+        // embedding column must exist with null values for the legacy rows.
+        let tmp = TempDir::new().unwrap();
+        let table = create_legacy_fpf_spec_table(tmp.path()).await;
+        table
+            .add(vec![legacy_fpf_row(
+                "fpf-B.3-001",
+                "B.3",
+                "Trust",
+                "body 1",
+            )])
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add(vec![legacy_fpf_row("fpf-A.1-001", "A.1", "ADI", "body 2")])
+            .execute()
+            .await
+            .unwrap();
+
+        let pre = collect_rows(&table).await;
+        let pre_rows: usize = pre.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(pre_rows, 2, "precondition: 2 legacy rows inserted");
+
+        migrate_fpf_spec(&table).await.unwrap();
+
+        // Schema now has embedding
+        let schema = table.schema().await.unwrap();
+        assert!(
+            schema.fields().iter().any(|f| f.name() == "embedding"),
+            "embedding column should exist after migration"
+        );
+
+        // Rows preserved
+        let post = collect_rows(&table).await;
+        let post_rows: usize = post.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(post_rows, 2, "existing rows must survive migration");
+
+        // Content preserved + embedding is null for legacy rows
+        let mut seen_ids: Vec<String> = Vec::new();
+        for batch in &post {
+            let ids = batch
+                .column_by_name("id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .unwrap();
+            let emb_col = batch.column_by_name("embedding").unwrap();
+            for row in 0..batch.num_rows() {
+                seen_ids.push(ids.value(row).to_string());
+                assert!(
+                    emb_col.is_null(row),
+                    "legacy row {} should have null embedding",
+                    ids.value(row)
+                );
+            }
+        }
+        seen_ids.sort();
+        assert_eq!(seen_ids, vec!["fpf-A.1-001", "fpf-B.3-001"]);
+    }
+
     #[tokio::test]
     async fn migrate_fpf_spec_is_idempotent() {
         let tmp = TempDir::new().unwrap();

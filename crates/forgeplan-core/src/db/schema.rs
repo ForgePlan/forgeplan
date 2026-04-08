@@ -96,7 +96,21 @@ pub fn relations_schema() -> Arc<Schema> {
     ]))
 }
 
-/// Arrow schema for the `fpf_spec` table — FPF knowledge base chunks.
+/// Arrow schema for the FPF Knowledge Base `fpf_spec` table.
+///
+/// # Feature-flag contract
+///
+/// The `embedding` column is present **unconditionally**, regardless of whether
+/// the `semantic-search` feature is enabled. This is intentional:
+/// - Binary compatibility: workspaces built with `semantic-search` can be read
+///   by binaries without the feature (and vice versa).
+/// - Migration safety: no conditional schema branches means no "semantic-enabled
+///   vs disabled" workspace drift.
+///
+/// The *encoding* of embeddings (turning text into `Vec<f32>`) is feature-gated
+/// in `crates/forgeplan-core/src/embed/mod.rs` and consumers in
+/// `crates/forgeplan-cli/src/commands/fpf.rs::run_ingest`. When the feature is
+/// disabled, the column stays null and keyword search continues to work.
 ///
 /// Columns:
 /// - id            Utf8 (not null) — unique chunk ID: "fpf-B.3-001"

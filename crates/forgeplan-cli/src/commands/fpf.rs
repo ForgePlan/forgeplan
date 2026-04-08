@@ -105,6 +105,19 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
 
 /// `forgeplan fpf search <query> [--limit N] [--semantic]`
 pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Result<()> {
+    // Input validation (Sprint 13.7 audit M1): fail fast on empty / oversized
+    // queries before touching the store, so both keyword and semantic paths
+    // get consistent UX.
+    if query.trim().is_empty() {
+        anyhow::bail!("Search query cannot be empty");
+    }
+    if query.len() > 8192 {
+        anyhow::bail!(
+            "Search query too long (max 8192 chars, got {})",
+            query.len()
+        );
+    }
+
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -135,7 +148,10 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
     };
 
     if results.is_empty() {
-        println!("  No FPF sections match '{}'", query);
+        // Sprint 13.7 audit M2: strip control chars from echoed query so a
+        // crafted query can't inject ANSI escapes into user-facing output.
+        let safe_query: String = query.chars().filter(|c| !c.is_control()).collect();
+        println!("  No FPF sections match '{}'", safe_query);
         println!("  Hint: Run `forgeplan fpf ingest` first");
         return Ok(());
     }
@@ -569,6 +585,32 @@ mod tests {
         let t = truncate("abcdefghijklmn", 5);
         assert_eq!(t.chars().count(), 5);
         assert!(t.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn run_search_empty_query_errors() {
+        let err = super::run_search("", 5, false).await;
+        assert!(err.is_err(), "empty query must error");
+        let msg = format!("{:?}", err.unwrap_err());
+        assert!(msg.contains("empty"), "error must mention empty: {msg}");
+    }
+
+    #[tokio::test]
+    async fn run_search_whitespace_query_errors() {
+        let err = super::run_search("   ", 5, false).await;
+        assert!(err.is_err(), "whitespace query must error");
+    }
+
+    #[tokio::test]
+    async fn run_search_oversized_query_errors() {
+        let big = "a".repeat(9000);
+        let err = super::run_search(&big, 5, false).await;
+        assert!(err.is_err(), "oversized query must error");
+        let msg = format!("{:?}", err.unwrap_err());
+        assert!(
+            msg.contains("too long"),
+            "error must mention too long: {msg}"
+        );
     }
 
     // Smoke: a Rule with ActionType serializes via Display as expected

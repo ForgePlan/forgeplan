@@ -1133,13 +1133,20 @@ impl LanceStore {
 
     /// Vector similarity search over FPF chunks (PRD-042).
     ///
-    /// Uses LanceDB's native `vector_search` with cosine distance — the same
-    /// path artifacts already use for semantic search. No fastembed feature
-    /// flag is required at the storage layer; callers are responsible for
-    /// producing the query embedding (via `Embedder` behind the
-    /// `semantic-search` feature, or any other source).
+    /// # Feature-flag contract
     ///
-    /// Behaviour:
+    /// This method does NOT require the `semantic-search` feature — it only
+    /// does vector similarity search against the `embedding` column.
+    /// Feature-gated callers (like `forgeplan fpf search --semantic`) compute
+    /// the query vector using `Embedder` and pass it here. Callers without the
+    /// feature cannot produce query vectors, so this method is effectively
+    /// unused in keyword-only builds, but the code path remains compiled for
+    /// testability.
+    ///
+    /// Uses LanceDB's native `vector_search` with cosine distance — the same
+    /// path artifacts already use for semantic search.
+    ///
+    /// # Behavior
     /// - errors when `query_vec.len() != EMBEDDING_DIM` (1024).
     /// - returns an empty Vec when the table has no rows or all embedding
     ///   cells are NULL (pre-ingest workspace).
@@ -1159,23 +1166,32 @@ impl LanceStore {
             );
         }
 
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
+        let table = self.fpf_spec.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
+        })?;
 
         // LanceDB native vector search. On an empty/all-null column LanceDB
-        // returns zero rows rather than erroring; we surface that as Ok([]).
-        let stream = match table
-            .vector_search(query_vec)
-            .map_err(|e| anyhow::anyhow!("FPF vector search failed: {e}"))?
+        // may either return zero rows or error; we silently degrade to Ok([])
+        // as the documented contract, but log the underlying reason so
+        // debugging is possible.
+        let search_builder = match table.vector_search(query_vec) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  [search_fpf_by_vector] vector search builder failed: {e}");
+                return Ok(Vec::new());
+            }
+        };
+        let stream = match search_builder
             .distance_type(lancedb::DistanceType::Cosine)
             .limit(limit)
             .execute()
             .await
         {
             Ok(s) => s,
-            Err(_) => return Ok(Vec::new()),
+            Err(e) => {
+                eprintln!("  [search_fpf_by_vector] vector search failed: {e}");
+                return Ok(Vec::new());
+            }
         };
 
         let batches = collect_batches(stream).await?;
@@ -2894,6 +2910,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn insert_fpf_chunks_length_mismatch_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        // Only 2 embeddings for 3 chunks
+        let embeds: Vec<Vec<f32>> = vec![vec![0.0_f32; dim], vec![0.0_f32; dim]];
+        let err = store.insert_fpf_chunks(&chunks, Some(&embeds)).await;
+        assert!(err.is_err(), "length mismatch must error");
+        let msg = format!("{:?}", err.unwrap_err());
+        assert!(
+            msg.contains("length") || msg.contains("embedding"),
+            "error should mention length/embedding, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_mixed_dim_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
+        // First vector correct, second wrong dim.
+        let embeds: Vec<Vec<f32>> = vec![vec![0.0_f32; dim], vec![0.0_f32; 512]];
+        let err = store.insert_fpf_chunks(&chunks, Some(&embeds)).await;
+        assert!(err.is_err(), "mixed-dim vectors must error");
+    }
+
+    #[tokio::test]
     async fn search_fpf_by_vector_validates_dim() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;
@@ -2935,10 +2980,44 @@ mod tests {
             .unwrap();
 
         let results = store.search_fpf_by_vector(&e1, 3).await.unwrap();
-        assert!(!results.is_empty(), "expected at least one hit");
+        assert_eq!(results.len(), 3, "should return all 3 chunks when limit=3");
         assert_eq!(
             results[0].id, "fpf-test-001",
             "closest match should be chunk 1"
+        );
+        // Ordering: the last result must not be the closest chunk — proves
+        // LanceDB is actually ranking, not just returning insertion order.
+        assert_ne!(
+            results[2].id, "fpf-test-001",
+            "last result should not be the closest match"
+        );
+        // No duplicates: top-2 are distinct ids.
+        assert_ne!(
+            results[0].id, results[1].id,
+            "consecutive results must be distinct"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_all_null_column_returns_empty() {
+        // Migration path: workspace upgraded to v4 schema (embedding column
+        // exists) but user hasn't run `forgeplan fpf ingest` yet — all rows
+        // have NULL embeddings. LanceDB may either return no rows or surface
+        // an error; both cases must degrade to Ok(empty).
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3), fpf_chunk(4)];
+        // Insert WITHOUT embeddings — column is present but all null.
+        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(n, 4);
+
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let query = vec![0.1_f32; dim];
+        let result = store.search_fpf_by_vector(&query, 5).await.unwrap();
+        assert!(
+            result.is_empty(),
+            "all-null embedding column should return empty, got {} rows",
+            result.len()
         );
     }
 }

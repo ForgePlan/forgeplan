@@ -114,13 +114,25 @@ fi
 # ─────────────────────────────────────────────────────────────
 # Sprint 13.7 — NEW: fpf search --semantic (graceful fallback)
 # ─────────────────────────────────────────────────────────────
-# Ingest FPF KB first so keyword search has something to match
-"$BIN" fpf ingest >/dev/null 2>&1 || true
+# Ingest FPF KB first so keyword search has something to match.
+# Sprint 13.7 audit Q3: assert exit 0 from ingest when spec is available; if
+# the FPF spec isn't installed at the default path, mark 13.7 semantic checks
+# as skipped rather than silently swallowing the failure.
+SKIP_SEMANTIC=0
+if ! "$BIN" fpf ingest >/tmp/forgeplan-fpf-ingest.log 2>&1; then
+  echo "⚠ fpf ingest failed (FPF spec likely not installed at default path) — skipping 13.7 semantic checks"
+  cat /tmp/forgeplan-fpf-ingest.log | head -10
+  SKIP_SEMANTIC=1
+else
+  echo "✓ 13.7 fpf ingest exit 0"
+fi
 
 # 1. --semantic with default build (no semantic-search feature) MUST warn + fallback + succeed
 OUT="$("$BIN" fpf search "trust" --semantic 2>&1 || true)"
-if echo "$OUT" | grep -qi "fallback\|falling back"; then
-  echo "✓ 13.7 fpf search --semantic prints fallback warning"
+if echo "$OUT" | grep -q "semantic-search feature not compiled in"; then
+  echo "✓ 13.7 fpf search --semantic prints specific fallback warning"
+elif echo "$OUT" | grep -qi "fallback\|falling back"; then
+  echo "✓ 13.7 fpf search --semantic prints fallback warning (generic)"
 else
   echo "✗ 13.7 fpf search --semantic fallback warning FAILED"
   echo "$OUT" | head -20
