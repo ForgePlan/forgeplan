@@ -376,6 +376,30 @@ struct FpfSectionParams {
     id: String,
 }
 
+// ── FPF Rules params (PRD-041 FR-003, FR-004) ────────────────
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct FpfRulesParams {
+    /// Filter by action: "EXPLORE", "INVESTIGATE", or "EXPLOIT". Omit for all.
+    #[serde(default)]
+    action: Option<String>,
+    /// Fetch single rule by name. Returns 1 rule or error if not found.
+    #[serde(default)]
+    name: Option<String>,
+    /// If true, return only {name, priority, action} without condition details.
+    #[serde(default)]
+    summary: Option<bool>,
+    /// Filter by source: "config" or "default". For debugging workspace state.
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct FpfCheckParams {
+    /// Artifact ID to check (e.g. "PRD-041")
+    id: String,
+}
+
 // ── Discover params (PRD-035 FR-004..006) ────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2440,6 +2464,163 @@ impl ForgeplanServer {
                 .collect(),
             total: sections.len(),
         }))
+    }
+
+    #[tool(
+        description = "List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned."
+    )]
+    async fn forgeplan_fpf_rules(
+        &self,
+        Parameters(p): Parameters<FpfRulesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::fpf;
+
+        let ws_config = self.load_workspace_config().await;
+        let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
+        let (rules, source) = fpf::active_rules(fpf_cfg);
+
+        let source_str = match source {
+            fpf::RuleSource::Config => "config",
+            fpf::RuleSource::Default => "default",
+        };
+
+        // Filter by source if requested.
+        let mut filtered: Vec<&fpf::ext::rules::Rule> = if let Some(src) = p.source.as_deref() {
+            if !src.eq_ignore_ascii_case(source_str) {
+                Vec::new()
+            } else {
+                rules.iter().collect()
+            }
+        } else {
+            rules.iter().collect()
+        };
+
+        // Filter by name (exact match).
+        if let Some(name) = p.name.as_deref() {
+            let found: Vec<&fpf::ext::rules::Rule> = filtered
+                .iter()
+                .copied()
+                .filter(|r| r.name == name)
+                .collect();
+            if found.is_empty() {
+                let available: Vec<String> = rules.iter().map(|r| r.name.clone()).collect();
+                return Ok(json_result(&serde_json::json!({
+                    "error": "rule not found",
+                    "name": name,
+                    "available": available,
+                })));
+            }
+            filtered = found;
+        }
+
+        // Filter by action (case-insensitive).
+        if let Some(action) = p.action.as_deref() {
+            filtered.retain(|r| r.action.to_string().eq_ignore_ascii_case(action));
+        }
+
+        // Sort by priority ascending (highest-priority first at runtime).
+        filtered.sort_by_key(|r| r.priority);
+
+        let summary_only = p.summary.unwrap_or(false);
+        let rules_json: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|r| {
+                if summary_only {
+                    serde_json::json!({
+                        "name": r.name,
+                        "priority": r.priority,
+                        "action": r.action.to_string(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": r.name,
+                        "priority": r.priority,
+                        "action": r.action.to_string(),
+                        "condition": serde_json::to_value(&r.condition)
+                            .unwrap_or(serde_json::Value::Null),
+                        "message": r.message,
+                    })
+                }
+            })
+            .collect();
+
+        Ok(json_result(&serde_json::json!({
+            "source": source_str,
+            "count": rules_json.len(),
+            "rules": rules_json,
+        })))
+    }
+
+    #[tool(
+        description = "Check which FPF rules match a given artifact, showing all matched rules, the winning rule (first in priority order, same as runtime), and rules that did not match. Use this to understand FPF engine behavior for a specific artifact before acting on it."
+    )]
+    async fn forgeplan_fpf_check(
+        &self,
+        Parameters(p): Parameters<FpfCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::fpf;
+
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let ws_config = self.load_workspace_config().await;
+        let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
+
+        let result = match fpf::check_artifact_against_rules(&store, &p.id, fpf_cfg).await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("Artifact not found") {
+                    return Ok(err_result(&format!("Artifact not found: {}", p.id)));
+                }
+                return Ok(err_result(&format!("Failed to check artifact: {msg}")));
+            }
+        };
+
+        let matched_json: Vec<serde_json::Value> = result
+            .matched
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "name": m.name,
+                    "priority": m.priority,
+                    "action": m.action,
+                    "message": m.message,
+                })
+            })
+            .collect();
+
+        let winning_json = result.winning.as_ref().map(|m| {
+            serde_json::json!({
+                "name": m.name,
+                "priority": m.priority,
+                "action": m.action,
+                "message": m.message,
+            })
+        });
+
+        let summary = format!(
+            "{} matched, {} unmatched, winning: {}",
+            result.matched.len(),
+            result.unmatched.len(),
+            result
+                .winning
+                .as_ref()
+                .map(|m| m.name.as_str())
+                .unwrap_or("none"),
+        );
+
+        Ok(json_result(&serde_json::json!({
+            "artifact_id": result.artifact_id,
+            "kind": result.artifact_kind,
+            "status": result.artifact_status,
+            "winning": winning_json,
+            "matched": matched_json,
+            "unmatched": result.unmatched,
+            "summary": summary,
+        })))
     }
 
     #[tool(
