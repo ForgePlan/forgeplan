@@ -35,12 +35,14 @@
 - [x] 7 EVIDs activated (058..064) + EVID-065 backfill for Sprint 13.2
 - [x] PRD-039 activated (R_eff=1.00, F-G-R=0.88 A)
 - [x] EPIC-003 activated
-- [ ] Title validation bugfix (tag-prep-bugfix agent in flight)
-- [ ] Commit tag-prep changes
-- [ ] PR release/v0.17.0 → main (merge commit)
-- [ ] Tag v0.17.0 + push
-- [ ] Sync main → dev
-- [ ] Hindsight memory_retain EPIC-003 finale
+- [x] Title validation bugfix (fa97f10, tag-prep-bugfix agent)
+- [x] Commit tag-prep changes (6a1904f)
+
+### P1: After release PR merged
+- PR release/v0.17.0 → main (merge commit)
+- Tag v0.17.0 + push
+- Sync main → dev
+- Hindsight memory_retain EPIC-003 finale
 
 ### P0: FPF Engine v2 Phase 2 — Sprint 12 (RFC-001) ✅
 - [x] ADI reasoning: H2 Two-tier Rules selected (FPF B.5.2 Abductive Loop)
