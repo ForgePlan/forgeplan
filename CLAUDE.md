@@ -23,13 +23,19 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 
 ## Текущий статус
 
-- **v0.7.0** released — EPIC-001 complete
-- **33 CLI команд**, **28 MCP tools**, **225 тестов**
-- **20 dogfood артефактов** в LanceDB (5 active, 15 draft)
-- **Phase 0–4** — DONE
+- **v0.17.0** released — **EPIC-003 complete** (Search, Discovery, Intelligence)
+- **~56 CLI команд**, **~47 MCP tools**, **1109 тестов** (+280 от v0.16)
+- **0 warnings** на обоих feature configs (default + `semantic-search`)
+- EPIC-001 (foundation) ✅ | EPIC-002 (v2.0 vision) ✅ | **EPIC-003 (v0.17.0)** ✅
+- **7 PRDs активированы** в v0.17.0: PRD-035 (tags + discover), PRD-039 (BM25 search),
+  PRD-040 (scoring intelligence), PRD-041 (FPF rules), PRD-042 (FPF KB vector search,
+  supersedes PRD-018), PRD-043 (methodology integrity), PRD-044 (не используется)
+- **NOTE-044** (Sprint Checklist Framework) + **NOTE-045** (deferred debts) как
+  reusable quality gates для будущих спринтов
+- **FPF KB** поддерживает semantic search через BGE-M3 (feature-gated, graceful fallback)
 - **Phase 5** (Desktop App, Tauri) — backlog
 
-Подробности: `TODO.md` (текущие приоритеты).
+Подробности: `TODO.md` (текущие приоритеты), `CHANGELOG.md` (история релизов).
 
 ## Как начать работу в новом чате
 
@@ -422,6 +428,33 @@ git checkout dev && git pull origin dev   # ВСЕГДА вытягивать п
 git checkout -b feat/my-feature
 ```
 **НЕ создавать ветки из stale dev.** Всегда `git pull` первым.
+
+#### КРИТИЧНО: Dependent sprint branch base verification
+
+**Урок из Sprint 13.1.5 (2026-04-07):** если новый sprint зависит от кода другого sprint'а (ещё не merged), ОБЯЗАТЕЛЬНО проверить что base branch содержит нужные коммиты ПЕРЕД стартом. Иначе teammates упрутся в "код не существует" и придётся rebase + re-spawn.
+
+**Проверка перед стартом dependent sprint'а:**
+```bash
+# Убедиться что нужный PR/commit уже в base branch
+git log release/v0.17.0 --oneline | grep "PRD-043\|feat(integrity)"
+# Если нет — либо ждать merge, либо branched FROM dependent feature branch, либо rebase после merge
+```
+
+**Правильная цепочка:**
+```
+PR-A (foundation) → merge → release/v0.17.0 ← base для dependent PR-B
+```
+
+**Неправильная цепочка (то что было в Sprint 13.1.5):**
+```
+release/v0.17.0 (без PRD-043) ← base для hardening sprint, который фиксит PRD-043 код
+   ↓
+   hardening branch не содержит check_stub — fixers корректно отказались работать
+```
+
+**Починка:** `git rebase release/v0.17.0` ПОСЛЕ merge зависимости, resolve конфликтов, re-spawn заблокированных fixers.
+
+**Positive observation:** teammates правильно сообщили "BLOCKER — target code не существует" вместо false-green отчётов. Это показывает что strict file ownership + "run cargo test before reporting done" работают — teammates не делают фейковую работу.
 
 #### Lifecycle ветки:
 ```

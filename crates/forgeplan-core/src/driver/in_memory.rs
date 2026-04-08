@@ -86,6 +86,9 @@ impl ArtifactStorage for InMemoryStore {
             valid_until: artifact.valid_until.clone(),
             created_at: now.clone(),
             updated_at: now,
+            tags: artifact.tags.clone(),
+            body_hash: None,
+            embedding: None,
         };
         let id = record.id.clone();
         self.state
@@ -359,7 +362,20 @@ impl FpfStorage for InMemoryStore {
             .is_ok_and(|s| !s.fpf_chunks.is_empty())
     }
 
-    async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
+    async fn insert_fpf_chunks(
+        &self,
+        chunks: &[FpfChunk],
+        embeddings: Option<&[Vec<f32>]>,
+    ) -> anyhow::Result<usize> {
+        if let Some(vecs) = embeddings
+            && vecs.len() != chunks.len()
+        {
+            anyhow::bail!(
+                "embeddings length ({}) must match chunks length ({})",
+                vecs.len(),
+                chunks.len()
+            );
+        }
         let mut state = self.state.write().await;
         let count = chunks.len();
         state.fpf_chunks.extend(chunks.iter().cloned());
@@ -410,6 +426,23 @@ impl FpfStorage for InMemoryStore {
         state.fpf_chunks.clear();
         Ok(())
     }
+
+    async fn search_fpf_by_vector(
+        &self,
+        _query_vec: &[f32],
+        _limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        // InMemoryStore does not support vector similarity search — it has
+        // no embedding storage or cosine computation. Return an explicit Err
+        // rather than silently returning Ok(empty), because silent success is
+        // indistinguishable from "no matches" and creates a landmine for
+        // tests that accidentally route through this backend.
+        // See NOTE-045 H1 (Sprint 13.7 post-closeout re-audit).
+        anyhow::bail!(
+            "search_fpf_by_vector is not supported by InMemoryStore; \
+             use LanceDriver for semantic search or keyword search via search_fpf"
+        )
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +460,7 @@ mod tests {
             author: Some("test".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -650,6 +684,7 @@ mod tests {
                     author: None,
                     parent_epic: None,
                     valid_until: None,
+                    tags: Vec::new(),
                 };
                 store1.create_artifact(&art).await.unwrap();
             }
@@ -669,6 +704,7 @@ mod tests {
                     author: None,
                     parent_epic: None,
                     valid_until: None,
+                    tags: Vec::new(),
                 };
                 store2.create_artifact(&art).await.unwrap();
             }
@@ -704,6 +740,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: Some("2020-01-01T00:00:00Z".to_string()),
+            tags: Vec::new(),
         };
         store.create_artifact(&art).await.unwrap();
 
@@ -719,6 +756,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: Some("2020-06-15".to_string()),
+            tags: Vec::new(),
         };
         store.create_artifact(&art_naive).await.unwrap();
 
@@ -734,6 +772,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&art3).await.unwrap();
 
@@ -749,6 +788,7 @@ mod tests {
             author: None,
             parent_epic: None,
             valid_until: Some("2099-12-31T23:59:59Z".to_string()),
+            tags: Vec::new(),
         };
         store.create_artifact(&art4).await.unwrap();
 
@@ -786,7 +826,7 @@ mod tests {
             },
         ];
 
-        let inserted = store.insert_fpf_chunks(&chunks).await.unwrap();
+        let inserted = store.insert_fpf_chunks(&chunks, None).await.unwrap();
         assert_eq!(inserted, 2);
         assert!(store.has_fpf());
 

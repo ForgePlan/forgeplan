@@ -9,7 +9,9 @@ links:
   relation: based_on
 - target: NOTE-041
   relation: refines
-status: draft
+- target: EPIC-003
+  relation: refines
+status: active
 title: Brownfield Discovery Engine — MCP tools, tags, discovery sessions, tiered sources
 ---
 
@@ -18,11 +20,24 @@ title: Brownfield Discovery Engine — MCP tools, tags, discovery sessions, tier
 ## Progress
 
 ```
-Phase 1  ░░░░░░░░░░░░░░░░░░░░░░░░  0/8  (  0%)
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)
+Phase 1  ████████████████████████  8/8  (100%)  ✓ Sprint 13.3 + 13.4 — COMPLETE
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)  ← Sprint 14+ (deferred, deepening)
 ─────────────────────────────────────────────────
-TOTAL                               0/13 (  0%)
+TOTAL                               8/13 ( 62%) — Phase 1 shipped in v0.17.0
 ```
+
+**Sprint 13.3 delivered (Phase 1a):** Tags system (FR-001..003) + Source
+tier mapping (FR-008). PR #150 merged to release/v0.17.0. 1006 tests pass.
+7 audit findings resolved (2 CRITICAL + 5 HIGH). See EVID-060.
+
+**Sprint 13.4 delivered (Phase 1b):** MCP tools `forgeplan_discover_start`,
+`forgeplan_discover_finding`, `forgeplan_discover_complete` (FR-004..006);
+CLI `forgeplan discover` command (FR-007). PR #152 merged to release/v0.17.0.
+See EVID-061.
+
+**Phase 2 (FRs 009..013) — deferred to Sprint 14+** per PRD scope. Phase 2
+covers multi-pass discovery deepening (`--deep`, Pass 1 + Pass 2),
+explicitly out of v0.17.0 scope.
 
 ## Problem
 
@@ -62,14 +77,14 @@ Impact: ForgePlan бесполезен на brownfield проектах без �
 
 ### Phase 1: Core Infrastructure (Sprint 13)
 
-- [ ] FR-001: [System] can store tags on artifacts (frontmatter field tags: [])
-- [ ] FR-002: [Developer] can add/remove tags: forgeplan tag/untag id key=value
-- [ ] FR-003: [Developer] can filter by tags: forgeplan list --tag source=legacy-doc
-- [ ] FR-004: [MCP] forgeplan_discover_start(project_name) creates session, returns protocol
-- [ ] FR-005: [MCP] forgeplan_discover_finding(session, phase, tier, kind, title, body) creates artifact + links + tags
-- [ ] FR-006: [MCP] forgeplan_discover_complete(session) generates summary + health check
-- [ ] FR-007: [CLI] forgeplan discover creates session, outputs protocol, tracks progress
-- [ ] FR-008: [System] map source tier to CL for R_eff: tier 1=CL3, tier 2=CL2, tier 3=CL1
+- [x] FR-001: [System] can store tags on artifacts (frontmatter field tags: []) — Sprint 13.3, PR #150
+- [x] FR-002: [Developer] can add/remove tags: forgeplan tag/untag id key=value — Sprint 13.3, PR #150
+- [x] FR-003: [Developer] can filter by tags: forgeplan list --tag source=legacy-doc — Sprint 13.3, PR #150
+- [x] FR-004: [MCP] forgeplan_discover_start(project_name) creates session, returns protocol — Sprint 13.4
+- [x] FR-005: [MCP] forgeplan_discover_finding(session, phase, tier, kind, title, body) creates artifact + links + tags — Sprint 13.4
+- [x] FR-006: [MCP] forgeplan_discover_complete(session) generates summary + health check — Sprint 13.4
+- [x] FR-007: [CLI] forgeplan discover creates session, outputs protocol, tracks progress — Sprint 13.4
+- [x] FR-008: [System] map source tier to CL for R_eff: tier 1=CL3, tier 2=CL2, tier 3=CL1 — Sprint 13.3, PR #150
 
 ### Phase 2: Deepening and Multi-Pass (Sprint 14+)
 
@@ -147,4 +162,6 @@ Tags: additive field, removal = delete field. Discovery tools: new, dont affect 
 | NOTE-039 | informs (DSL) |
 | ADR-003 | constrained_by |
 | ADR-006 | constrained_by |
+
+
 

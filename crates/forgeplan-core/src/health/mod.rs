@@ -12,6 +12,11 @@ use crate::validation;
 /// R_eff threshold below which an artifact is considered AT RISK.
 const REFF_AT_RISK_THRESHOLD: f64 = 0.3;
 
+use crate::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+
+/// Maximum number of duplicate pairs to report.
+const DUPLICATE_PAIRS_LIMIT: usize = 10;
+
 /// Full health report for a Forgeplan workspace.
 #[derive(Debug, Clone)]
 pub struct HealthReport {
@@ -24,6 +29,27 @@ pub struct HealthReport {
     pub orphans: Vec<String>,
     pub by_derived_status: Vec<(DerivedStatus, usize)>,
     pub next_actions: Vec<String>,
+    pub possible_duplicates: Vec<DuplicatePair>,
+    pub active_stubs: Vec<ActiveStub>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveStub {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub markers_found: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DuplicatePair {
+    pub id_a: String,
+    pub id_b: String,
+    pub similarity: f64,
+    pub title_a: String,
+    pub title_b: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +119,9 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     let next_actions =
         generate_next_actions(total, &by_status, &blind_spots, stale_count, &orphans);
 
+    let possible_duplicates = find_duplicate_pairs(&all, DUPLICATE_SIMILARITY_THRESHOLD);
+    let active_stubs = find_active_stubs(&all);
+
     Ok(HealthReport {
         total,
         by_kind: by_kind.into_iter().collect(),
@@ -103,7 +132,74 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         orphans,
         by_derived_status,
         next_actions,
+        possible_duplicates,
+        active_stubs,
     })
+}
+
+/// Find active artifacts that look like stubs (template-only content).
+/// Surfaces direct-edit + scan-import bypasses of the activate gate (ADR-003 files=truth).
+pub fn find_active_stubs(records: &[ArtifactRecord]) -> Vec<ActiveStub> {
+    let mut stubs = Vec::new();
+    for r in records {
+        if r.status != "active" {
+            continue;
+        }
+        // Skip kinds that don't carry shapeable bodies
+        if matches!(r.kind.as_str(), "evidence" | "memory" | "note") {
+            continue;
+        }
+        let fm = r.frontmatter_map();
+
+        if let Some(report) = validation::rules::check_stub_detailed(&r.body, &fm) {
+            stubs.push(ActiveStub {
+                id: r.id.clone(),
+                kind: r.kind.clone(),
+                title: r.title.clone(),
+                markers_found: report.count,
+                message: report.message,
+            });
+        }
+    }
+    stubs
+}
+
+/// Find pairs of artifacts with title similarity above threshold.
+/// Only compares same-kind artifacts. O(n²) but n is typically < 200.
+pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<DuplicatePair> {
+    let active: Vec<&ArtifactRecord> = records
+        .iter()
+        .filter(|r| !matches!(r.status.as_str(), "deprecated" | "superseded"))
+        .collect();
+
+    let mut pairs = Vec::new();
+    for i in 0..active.len() {
+        for j in (i + 1)..active.len() {
+            let a = active[i];
+            let b = active[j];
+            if a.kind != b.kind {
+                continue;
+            }
+            let sim = title_similarity(&a.title, &b.title);
+            if sim >= threshold {
+                pairs.push(DuplicatePair {
+                    id_a: a.id.clone(),
+                    id_b: b.id.clone(),
+                    similarity: sim,
+                    title_a: a.title.clone(),
+                    title_b: b.title.clone(),
+                    kind: a.kind.clone(),
+                });
+            }
+        }
+    }
+    pairs.sort_by(|x, y| {
+        y.similarity
+            .partial_cmp(&x.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    pairs.truncate(DUPLICATE_PAIRS_LIMIT);
+    pairs
 }
 
 fn build_relation_index(relations: &[(String, String, String)]) -> (RelationIndex, RelationIndex) {
@@ -388,6 +484,9 @@ mod tests {
             valid_until: None,
             created_at: "2026-01-01T00:00:00".into(),
             updated_at: "2026-01-01T00:00:00".into(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 
@@ -560,6 +659,53 @@ mod tests {
     }
 
     #[test]
+    fn test_find_duplicate_pairs_finds_similar_titles() {
+        let mut a = make_record("PRD-001", "prd");
+        a.title = "FPF Knowledge Base ingestion".into();
+        let mut b = make_record("PRD-002", "prd");
+        b.title = "FPF Knowledge Base ingestion".into();
+        let recs = vec![a, b];
+        let pairs = find_duplicate_pairs(&recs, 0.8);
+        assert_eq!(pairs.len(), 1);
+        assert!(pairs[0].similarity >= 0.8);
+        assert_eq!(pairs[0].kind, "prd");
+    }
+
+    #[test]
+    fn test_find_duplicate_pairs_skips_different_kinds() {
+        let mut a = make_record("PRD-001", "prd");
+        a.title = "Auth System Design".into();
+        let mut b = make_record("RFC-001", "rfc");
+        b.title = "Auth System Design".into();
+        let recs = vec![a, b];
+        let pairs = find_duplicate_pairs(&recs, 0.8);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn test_find_duplicate_pairs_below_threshold() {
+        let mut a = make_record("PRD-001", "prd");
+        a.title = "Authentication system".into();
+        let mut b = make_record("PRD-002", "prd");
+        b.title = "Database migration tooling".into();
+        let recs = vec![a, b];
+        let pairs = find_duplicate_pairs(&recs, 0.8);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn test_find_duplicate_pairs_skips_deprecated() {
+        let mut a = make_record("PRD-001", "prd");
+        a.title = "FPF Knowledge Base".into();
+        let mut b = make_record("PRD-002", "prd");
+        b.title = "FPF Knowledge Base".into();
+        b.status = "deprecated".into();
+        let recs = vec![a, b];
+        let pairs = find_duplicate_pairs(&recs, 0.8);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
     fn next_actions_capped_at_three() {
         let mut by_status = BTreeMap::new();
         by_status.insert("draft".into(), 5);
@@ -572,5 +718,41 @@ mod tests {
 
         let actions = generate_next_actions(5, &by_status, &blind_spots, 2, &orphans);
         assert!(actions.len() <= 3);
+    }
+
+    fn stub_body() -> String {
+        // 3 markers: phrase + placeholder + actor pattern
+        "## Vision\nWhat we are building and why\n\n## Users\n[Actor] can [capability]\n\n## Notes\nUse {placeholder} here\n".to_string()
+    }
+
+    #[test]
+    fn test_find_active_stubs_finds_stub() {
+        let mut r = make_record("PRD-001", "prd");
+        r.status = "active".into();
+        r.body = stub_body();
+        let stubs = find_active_stubs(&[r]);
+        assert_eq!(stubs.len(), 1);
+        assert_eq!(stubs[0].id, "PRD-001");
+        assert!(stubs[0].markers_found >= 3);
+    }
+
+    #[test]
+    fn test_find_active_stubs_skips_drafts() {
+        let mut r = make_record("PRD-001", "prd");
+        r.status = "draft".into();
+        r.body = stub_body();
+        let stubs = find_active_stubs(&[r]);
+        assert!(stubs.is_empty());
+    }
+
+    #[test]
+    fn test_find_active_stubs_skips_filled() {
+        let mut r = make_record("PRD-001", "prd");
+        r.status = "active".into();
+        r.body =
+            "## Problem\nReal problem text describing real concerns.\n\n## Goals\nReal goals.\n"
+                .into();
+        let stubs = find_active_stubs(&[r]);
+        assert!(stubs.is_empty());
     }
 }

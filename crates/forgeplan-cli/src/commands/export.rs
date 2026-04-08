@@ -21,6 +21,7 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
                 "valid_until": r.valid_until,
                 "created_at": r.created_at,
                 "updated_at": r.updated_at,
+                "tags": r.tags,
             })
         })
         .collect();

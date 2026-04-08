@@ -66,6 +66,116 @@ pub fn supports_lifecycle(kind: &str) -> bool {
     LIFECYCLE_KINDS.contains(&kind.to_lowercase().as_str())
 }
 
+/// Result of running activation gates against an artifact.
+///
+/// Collected by [`collect_activation_gates`] so that [`review`] and [`activate`]
+/// stay in lock-step: any gate that blocks activation must also cause review
+/// to report `can_activate = false`. Prevents the footgun where
+/// `forgeplan review X` returns PASS but `forgeplan activate X` bails.
+#[derive(Debug, Clone, Default)]
+pub struct GatesReport {
+    pub length_ok: bool,
+    pub length_msg: Option<String>,
+    pub evidence_ok: bool,
+    pub evidence_msg: Option<String>,
+    /// True when stub-content check passes. Calls `validation::rules::check_stub`
+    /// which detects unfilled template bodies via marker counting.
+    pub stub_ok: bool,
+    pub stub_msg: Option<String>,
+}
+
+impl GatesReport {
+    pub fn all_pass(&self) -> bool {
+        self.length_ok && self.evidence_ok && self.stub_ok
+    }
+
+    /// Collect all failing-gate messages for display.
+    pub fn errors(&self) -> Vec<&str> {
+        let mut errs = Vec::new();
+        if let Some(m) = &self.length_msg {
+            errs.push(m.as_str());
+        }
+        if let Some(m) = &self.evidence_msg {
+            errs.push(m.as_str());
+        }
+        if let Some(m) = &self.stub_msg {
+            errs.push(m.as_str());
+        }
+        errs
+    }
+}
+
+/// Run all methodology activation gates against an artifact and return a
+/// structured report. Used by both [`review`] and [`activate`] so that both
+/// commands produce consistent verdicts (fixes M-4: DRY violation).
+///
+/// Gates run only for [`LIFECYCLE_KINDS`]; lightweight kinds (note, problem)
+/// get an all-pass report.
+pub async fn collect_activation_gates(
+    store: &LanceStore,
+    record: &crate::db::store::ArtifactRecord,
+) -> anyhow::Result<GatesReport> {
+    // Lightweight kinds skip gates entirely.
+    if !supports_lifecycle(&record.kind) {
+        return Ok(GatesReport {
+            length_ok: true,
+            evidence_ok: true,
+            stub_ok: true,
+            ..Default::default()
+        });
+    }
+
+    // 1. Length gate — body too short = MUST sections not filled.
+    let body_len = record.body.trim().len();
+    let length_ok = body_len >= 100;
+    let length_msg = if !length_ok {
+        Some(format!(
+            "Body too short ({body_len} chars, need 100+) — fill MUST sections before activating"
+        ))
+    } else {
+        None
+    };
+
+    // 2. Evidence gate — no evidence linked = blind spot.
+    let relations = store.get_relations(&record.id).await.unwrap_or_default();
+    let incoming = store
+        .get_incoming_relations(&record.id)
+        .await
+        .unwrap_or_default();
+    let has_evidence = relations
+        .iter()
+        .any(|(_, r)| r == "informs" || r == "supports")
+        || incoming
+            .iter()
+            .any(|(source_id, _)| source_id.to_uppercase().starts_with("EVID-"));
+    let evidence_ok = has_evidence;
+    let evidence_msg = if !evidence_ok {
+        Some("No evidence linked — create evidence and link it before activating".to_string())
+    } else {
+        None
+    };
+
+    // 3. Stub gate — calls validation::rules::check_stub (PRD-043 FR-003).
+    // Detects unfilled template bodies (template markers, placeholders, "..." sections).
+    let stub_check = crate::validation::rules::check_stub(&record.body, &record.frontmatter_map());
+    let stub_ok = stub_check.is_none();
+    let stub_msg = stub_check.map(|msg| {
+        format!(
+            "{msg} → Fill MUST sections (Problem, Goals, FR) before activating. \
+             See PRD-043 FR-003 for stub detection rules."
+        )
+    });
+
+    Ok(GatesReport {
+        length_ok,
+        length_msg,
+        evidence_ok,
+        evidence_msg,
+        stub_ok,
+        stub_msg,
+    })
+}
+
 /// Review an artifact: run validation and check lifecycle warnings.
 pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<ReviewResult> {
     let record = store
@@ -110,40 +220,15 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
         }
     }
 
-    // Methodology gates: same checks as activate() so review doesn't false-PASS
-    let mut gates_ok = true;
-    if supports_lifecycle(&record.kind) {
-        // Stub check: body too short means MUST sections not filled
-        if record.body.trim().len() < 100 {
-            warnings.push(format!(
-                "Body too short ({} chars, need 100+) — fill MUST sections before activating",
-                record.body.trim().len()
-            ));
-            gates_ok = false;
-        }
-
-        // Evidence check: no evidence linked = blind spot
-        let incoming = store
-            .get_incoming_relations(artifact_id)
-            .await
-            .unwrap_or_default();
-        let has_evidence = relations
-            .iter()
-            .any(|(_, r)| r == "informs" || r == "supports")
-            || incoming
-                .iter()
-                .any(|(source_id, _)| source_id.to_uppercase().starts_with("EVID-"));
-        if !has_evidence {
-            warnings.push(
-                "No evidence linked — create evidence and link it before activating".to_string(),
-            );
-            gates_ok = false;
-        }
+    // Methodology gates — single source of truth, shared with activate().
+    let gates = collect_activation_gates(store, &record).await?;
+    for err in gates.errors() {
+        warnings.push(err.to_string());
     }
 
     Ok(ReviewResult {
         artifact_id: artifact_id.to_string(),
-        can_activate: must_findings.is_empty() && gates_ok,
+        can_activate: must_findings.is_empty() && gates.all_pass(),
         must_findings,
         should_findings,
         warnings,
@@ -188,55 +273,43 @@ pub async fn activate(
         });
     }
 
-    // Methodology enforcement: stub check (body too short = not filled)
-    if record.body.trim().len() < 100 && !force {
-        anyhow::bail!(
-            "Cannot activate {}: body too short ({} chars). Fill required sections first.\n\
-             Current state: STUB → need VALIDATED before ACTIVATED.\n\
-             Run: forgeplan update {} --body \"...\"",
-            artifact_id,
-            record.body.trim().len(),
-            artifact_id
-        );
-    }
-
-    // Methodology enforcement: evidence check (no evidence = blind spot)
-    if !force {
-        let relations = store.get_relations(artifact_id).await.unwrap_or_default();
-        let incoming = store
-            .get_incoming_relations(artifact_id)
-            .await
-            .unwrap_or_default();
-        let has_evidence = relations
-            .iter()
-            .any(|(_, r)| r == "informs" || r == "supports")
-            || incoming
-                .iter()
-                .any(|(source_id, _)| source_id.to_uppercase().starts_with("EVID-"));
-        if !has_evidence {
-            anyhow::bail!(
-                "Cannot activate {}: no evidence linked. Create evidence first.\n\
-                 Current state: VALIDATED → need EVIDENCED before ACTIVATED.\n\
-                 Run: forgeplan new evidence \"...\" && forgeplan link EVID-XXX {} --relation informs",
-                artifact_id,
-                artifact_id
-            );
+    // Methodology enforcement — shared gates with review() (M-4 DRY fix).
+    // collect_activation_gates runs length, evidence, and stub checks (incl. PRD-043 FR-003).
+    let gates = collect_activation_gates(store, &record).await?;
+    if !gates.all_pass() && !force {
+        let errs = gates.errors();
+        let mut msg = format!("Cannot activate {artifact_id}: methodology gates failed:");
+        for e in &errs {
+            msg.push_str(&format!("\n  - {e}"));
         }
+        msg.push_str("\n\nUse --force to override.");
+        anyhow::bail!("{msg}");
     }
 
-    // Must pass validation before activation (unless --force)
-    let review_result = review(store, artifact_id).await?;
-    if !review_result.can_activate && !force {
+    // Must pass validation before activation (unless --force).
+    // Call the validator directly instead of going through review() —
+    // review() would re-run collect_activation_gates, duplicating work (M-5 fix).
+    let kind = record.kind.parse()?;
+    let depth = record
+        .depth
+        .parse()
+        .unwrap_or(crate::artifact::types::Mode::Standard);
+    let fm = record.frontmatter_map();
+    let validation_result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
+    let must_findings: Vec<String> = validation_result
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Must)
+        .map(|f| format!("{}: {}", f.rule_id, f.message))
+        .collect();
+
+    if !must_findings.is_empty() && !force {
         let mut msg = format!(
             "Validation failed ({} MUST error{}):",
-            review_result.must_findings.len(),
-            if review_result.must_findings.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
+            must_findings.len(),
+            if must_findings.len() == 1 { "" } else { "s" }
         );
-        for finding in &review_result.must_findings {
+        for finding in &must_findings {
             msg.push_str(&format!("\n  - {finding}"));
         }
         msg.push_str("\n\nUse --force to override.");
@@ -249,8 +322,8 @@ pub async fn activate(
 
     Ok(ActivateResult {
         artifact_id: artifact_id.to_string(),
-        forced: force && !review_result.must_findings.is_empty(),
-        must_errors: review_result.must_findings,
+        forced: force && !must_findings.is_empty(),
+        must_errors: must_findings,
     })
 }
 
@@ -487,6 +560,7 @@ pub async fn reopen(
         author: record.author.clone(),
         parent_epic: record.parent_epic.clone(),
         valid_until: None,
+        tags: record.tags.clone(),
     };
     store.create_artifact(&new_artifact).await?;
 
@@ -531,6 +605,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -550,6 +625,7 @@ mod tests {
             author: Some("test".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
         store.create_artifact(&art).await.unwrap();
 
@@ -613,6 +689,7 @@ mod tests {
             author: Some("tester".to_string()),
             parent_epic: None,
             valid_until: Some("2026-01-01".to_string()),
+            tags: Vec::new(),
         }
     }
 
@@ -779,6 +856,144 @@ mod tests {
         );
     }
 
+    // ── collect_activation_gates tests (F5 DRY refactor) ──────
+
+    fn full_prd(id: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: format!("Full PRD {id}"),
+            body: "## Problem\n\nSomething is broken.\n\n## Goals\n\nFix it.\n\n\
+                   ## Non-Goals\n\nNot rewriting the world.\n\n## Target Users\n\nDevelopers.\n\n\
+                   ## Functional Requirements\n\nFR-001 user can do X.\n"
+                .to_string(),
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    fn evidence(id: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "evidence".to_string(),
+            status: "active".to_string(),
+            title: format!("Evidence {id}"),
+            body: "verdict: supports\ncongruence_level: 3\nevidence_type: test".to_string(),
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collect_activation_gates_all_pass() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        store.create_artifact(&full_prd("PRD-400")).await.unwrap();
+        store.create_artifact(&evidence("EVID-400")).await.unwrap();
+        store
+            .add_relation("EVID-400", "PRD-400", "informs")
+            .await
+            .unwrap();
+
+        let record = store.get_record("PRD-400").await.unwrap().unwrap();
+        let gates = collect_activation_gates(&store, &record).await.unwrap();
+
+        assert!(gates.length_ok, "length gate should pass");
+        assert!(gates.evidence_ok, "evidence gate should pass");
+        assert!(gates.stub_ok, "stub gate should pass");
+        assert!(gates.all_pass());
+        assert!(gates.errors().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_collect_activation_gates_length_blocks() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let stub = NewArtifact {
+            id: "PRD-401".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Stub".to_string(),
+            body: "too short".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&stub).await.unwrap();
+
+        let record = store.get_record("PRD-401").await.unwrap().unwrap();
+        let gates = collect_activation_gates(&store, &record).await.unwrap();
+
+        assert!(!gates.length_ok);
+        assert!(!gates.all_pass());
+        assert!(gates.length_msg.as_ref().unwrap().contains("too short"));
+        // Stub gate is now real (calls validation::rules::check_stub from PRD-043).
+        // A short body without template markers does NOT trigger stub gate —
+        // length and stub are independent gates.
+        assert!(gates.stub_ok);
+    }
+
+    #[tokio::test]
+    async fn test_collect_activation_gates_lightweight_kinds_all_pass() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&active_note("NOTE-400"))
+            .await
+            .unwrap();
+
+        let record = store.get_record("NOTE-400").await.unwrap().unwrap();
+        let gates = collect_activation_gates(&store, &record).await.unwrap();
+
+        // Notes skip gates entirely.
+        assert!(gates.all_pass());
+    }
+
+    #[tokio::test]
+    async fn test_review_and_activate_agree_on_gates() {
+        // Regression for M-4: review() and activate() must produce consistent
+        // verdicts. Previously review could PASS on a stub PRD that activate
+        // would then reject.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let stub = NewArtifact {
+            id: "PRD-402".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Stub PRD".to_string(),
+            body: "stub".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&stub).await.unwrap();
+
+        let review_result = review(&store, "PRD-402").await.unwrap();
+        assert!(!review_result.can_activate, "review must NOT pass on stub");
+
+        let activate_result = activate(&store, "PRD-402", false).await;
+        assert!(activate_result.is_err(), "activate must bail on stub");
+        let err = activate_result.unwrap_err().to_string();
+        assert!(
+            err.contains("methodology gates failed"),
+            "should cite shared gate error, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn reopen_active_works() {
         let tmp = TempDir::new().unwrap();
@@ -798,5 +1013,123 @@ mod tests {
 
         let new = store.get_record("NOTE-301").await.unwrap().unwrap();
         assert_eq!(new.status, "draft");
+    }
+
+    // ── Stub-content gate (PRD-043 FR-003) ─────────────────────
+
+    #[tokio::test]
+    async fn test_activate_blocks_stub_body() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Body has 4+ template markers — should be detected as stub
+        let stub_body = "## Problem\n\nЧто мы строим и почему это важно\n\n\
+            ## Goals\n\n[Actor] can [capability]\n\n\
+            ## Users\n\nКак проблема влияет на пользователей\n\n\
+            ## Scope\n\nЧто входит в минимально жизнеспособный продукт\n\n\
+            ## Differentiation\n\nЧем наше решение отличается\n";
+        // Pad to >100 chars to bypass the length gate and reach the stub-content gate
+        let padded_body = format!(
+            "{stub_body}\n\nExtra padding text to exceed the minimum length threshold for activation gates."
+        );
+
+        let prd = NewArtifact {
+            id: "PRD-900".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Stub PRD".to_string(),
+            body: padded_body,
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&prd).await.unwrap();
+
+        // Add evidence so we pass the evidence gate and reach the stub-content gate
+        let evid = NewArtifact {
+            id: "EVID-900".to_string(),
+            kind: "evidence".to_string(),
+            status: "active".to_string(),
+            title: "Evidence".to_string(),
+            body: "verdict: supports".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&evid).await.unwrap();
+        store
+            .add_relation("EVID-900", "PRD-900", "informs")
+            .await
+            .unwrap();
+
+        let result = activate(&store, "PRD-900", false).await;
+        assert!(result.is_err(), "activate should reject stub body");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("stub artifact") || msg.contains("PRD-043"),
+            "error should mention stub gate, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_activate_allows_filled_body() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Real-looking PRD body without template markers
+        let body = "## Problem\n\n\
+            Users cannot reliably promote artifacts to active state because the gate \
+            does not detect template-only stubs. This leads to false-active artifacts \
+            that pollute health reports and erode trust in the methodology.\n\n\
+            ## Goals\n\n\
+            Block activation when the body is still an unfilled template, while \
+            preserving the existing length and evidence checks.\n\n\
+            ## Functional Requirements\n\n\
+            FR-1: activate must call check_stub before promoting.\n";
+        let prd = NewArtifact {
+            id: "PRD-901".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Filled PRD".to_string(),
+            body: body.to_string(),
+            depth: "standard".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&prd).await.unwrap();
+
+        let evid = NewArtifact {
+            id: "EVID-901".to_string(),
+            kind: "evidence".to_string(),
+            status: "active".to_string(),
+            title: "Evidence".to_string(),
+            body: "verdict: supports".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&evid).await.unwrap();
+        store
+            .add_relation("EVID-901", "PRD-901", "informs")
+            .await
+            .unwrap();
+
+        // May still fail validation MUST rules, but must NOT fail with stub error
+        let result = activate(&store, "PRD-901", false).await;
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("stub artifact"),
+                "filled body should not trigger stub gate, got: {msg}"
+            );
+        }
     }
 }

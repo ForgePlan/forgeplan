@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::fpf::core::config::FpfConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub version: u32,
     pub project_name: String,
@@ -23,6 +24,102 @@ pub struct Config {
     /// FPF Engine configuration (trust calculus thresholds, weights, ADI settings).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fpf: Option<FpfConfig>,
+    /// Integrity/health thresholds and MCP DoS protection limits.
+    #[serde(default)]
+    pub integrity: IntegrityConfig,
+}
+
+/// Integrity/health thresholds and MCP input limits (DoS protection).
+///
+/// All fields have safe defaults and can be overridden via `.forgeplan/config.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrityConfig {
+    /// Similarity threshold (Jaccard) for duplicate detection (0.0..1.0)
+    #[serde(default = "default_duplicate_threshold")]
+    pub duplicate_threshold: f64,
+
+    /// Max duplicate pairs to display in health output
+    #[serde(default = "default_duplicate_pairs_limit")]
+    pub duplicate_pairs_limit: usize,
+
+    /// Min markers to flag artifact body as stub
+    #[serde(default = "default_stub_marker_threshold")]
+    pub stub_marker_threshold: usize,
+
+    /// Max title length accepted via MCP forgeplan_new (DoS protection)
+    #[serde(default = "default_mcp_max_title_len")]
+    pub mcp_max_title_len: usize,
+
+    /// Max body length accepted via MCP forgeplan_new / forgeplan_update (DoS protection)
+    #[serde(default = "default_mcp_max_body_len")]
+    pub mcp_max_body_len: usize,
+}
+
+fn default_duplicate_threshold() -> f64 {
+    0.7
+}
+fn default_duplicate_pairs_limit() -> usize {
+    10
+}
+fn default_stub_marker_threshold() -> usize {
+    3
+}
+fn default_mcp_max_title_len() -> usize {
+    256
+}
+fn default_mcp_max_body_len() -> usize {
+    1_048_576
+}
+
+impl IntegrityConfig {
+    /// Validate field ranges. Called from `workspace::load_config` after YAML parse.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(0.0..=1.0).contains(&self.duplicate_threshold) || self.duplicate_threshold.is_nan() {
+            anyhow::bail!(
+                "integrity.duplicate_threshold must be in [0.0, 1.0], got {}",
+                self.duplicate_threshold
+            );
+        }
+        if self.stub_marker_threshold < 1 {
+            anyhow::bail!(
+                "integrity.stub_marker_threshold must be >= 1, got {}",
+                self.stub_marker_threshold
+            );
+        }
+        if !(16..=4096).contains(&self.mcp_max_title_len) {
+            anyhow::bail!(
+                "integrity.mcp_max_title_len must be in [16, 4096], got {}",
+                self.mcp_max_title_len
+            );
+        }
+        const MAX_BODY: usize = 100 * 1024 * 1024;
+        if !(1024..=MAX_BODY).contains(&self.mcp_max_body_len) {
+            anyhow::bail!(
+                "integrity.mcp_max_body_len must be in [1024, {}], got {}",
+                MAX_BODY,
+                self.mcp_max_body_len
+            );
+        }
+        if !(1..=10_000).contains(&self.duplicate_pairs_limit) {
+            anyhow::bail!(
+                "integrity.duplicate_pairs_limit must be in [1, 10000], got {}",
+                self.duplicate_pairs_limit
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Default for IntegrityConfig {
+    fn default() -> Self {
+        Self {
+            duplicate_threshold: default_duplicate_threshold(),
+            duplicate_pairs_limit: default_duplicate_pairs_limit(),
+            stub_marker_threshold: default_stub_marker_threshold(),
+            mcp_max_title_len: default_mcp_max_title_len(),
+            mcp_max_body_len: default_mcp_max_body_len(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -39,6 +136,7 @@ impl Default for Config {
             memory: None,
             estimate: None,
             fpf: None,
+            integrity: IntegrityConfig::default(),
         }
     }
 }
@@ -306,5 +404,121 @@ impl MemoryConfig {
             self.driver = v;
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+
+    #[test]
+    fn test_integrity_config_default() {
+        let cfg = IntegrityConfig::default();
+        assert!((cfg.duplicate_threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(cfg.duplicate_pairs_limit, 10);
+        assert_eq!(cfg.stub_marker_threshold, 3);
+        assert_eq!(cfg.mcp_max_title_len, 256);
+        assert_eq!(cfg.mcp_max_body_len, 1_048_576);
+    }
+
+    #[test]
+    fn test_config_default_contains_integrity_defaults() {
+        let c = Config::default();
+        assert_eq!(c.integrity.mcp_max_title_len, 256);
+        assert_eq!(c.integrity.mcp_max_body_len, 1_048_576);
+    }
+
+    #[test]
+    fn test_integrity_config_yaml_partial_override_uses_defaults() {
+        // Missing fields must fall back to per-field defaults.
+        let yaml = "duplicate_threshold: 0.9\nmcp_max_title_len: 128\n";
+        let cfg: IntegrityConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!((cfg.duplicate_threshold - 0.9).abs() < f64::EPSILON);
+        assert_eq!(cfg.mcp_max_title_len, 128);
+        // Defaults for the rest:
+        assert_eq!(cfg.mcp_max_body_len, 1_048_576);
+        assert_eq!(cfg.duplicate_pairs_limit, 10);
+        assert_eq!(cfg.stub_marker_threshold, 3);
+    }
+
+    #[test]
+    fn test_config_yaml_omitted_integrity_uses_default() {
+        // Legacy config without integrity section must still parse.
+        let yaml = "version: 1\nproject_name: test\ndefault_depth: standard\nid_digits: 3\ncreated_at: 2026-01-01\n";
+        let c: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(c.integrity.mcp_max_title_len, 256);
+        assert_eq!(c.integrity.mcp_max_body_len, 1_048_576);
+    }
+
+    #[test]
+    fn test_mcp_title_length_check_boundary() {
+        // Simulate the MCP server's length guard logic.
+        let cfg = IntegrityConfig::default();
+        let ok_title = "x".repeat(cfg.mcp_max_title_len);
+        let bad_title = "x".repeat(cfg.mcp_max_title_len + 1);
+        assert!(ok_title.len() <= cfg.mcp_max_title_len);
+        assert!(bad_title.len() > cfg.mcp_max_title_len);
+    }
+
+    #[test]
+    fn test_integrity_config_validate_accepts_defaults() {
+        let cfg = IntegrityConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_integrity_config_validate_rejects_out_of_range_threshold() {
+        for bad in [1.5_f64, -0.5, f64::NAN] {
+            let cfg = IntegrityConfig {
+                duplicate_threshold: bad,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_err(),
+                "threshold {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_integrity_config_validate_rejects_zero_body_limit() {
+        for bad in [0_usize, 1023, 200 * 1024 * 1024] {
+            let cfg = IntegrityConfig {
+                mcp_max_body_len: bad,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_err(),
+                "body limit {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_integrity_config_validate_rejects_bad_title_and_pairs() {
+        let cfg = IntegrityConfig {
+            mcp_max_title_len: 8,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = IntegrityConfig {
+            duplicate_pairs_limit: 0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = IntegrityConfig {
+            stub_marker_threshold: 0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_mcp_body_length_check_boundary() {
+        let cfg = IntegrityConfig::default();
+        let bad_body_len = cfg.mcp_max_body_len + 1;
+        assert!(bad_body_len > cfg.mcp_max_body_len);
     }
 }

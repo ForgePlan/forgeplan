@@ -1,17 +1,48 @@
 # TODO — Forgeplan
 
-## Current: v0.16-dev (post-v0.15.5)
+## Current: v0.17.0-rc — EPIC-003 complete, ready to tag
 
-### Stats
-- 56 CLI commands, 37 MCP tools, 829 tests
-- 163 dogfood artifacts (93 active, 35 draft, 33 deprecated, 2 superseded)
-- ~28K LOC Rust
-- PRs #60-#135
-- E2E: 139 commands tested (Waves 1-11 complete), 0 failures
-- LLM: gemini-3-flash-preview (benchmarked 4 models, 7 artifacts)
+### Stats (v0.17.0)
+- ~56 CLI commands, ~47 MCP tools, **1109 tests** (+280 from v0.16)
+- Workspace: 0 warnings on both default and `--features semantic-search`
+- ~13.8K LOC added across EPIC-003 (Sprints 13.0 → 13.7 + post-closeout hotfix)
+- PRs #141-#156
+- E2E: sprint-13.6-regression.sh (16 checks) + sprint-13.7-regression.sh (16 + SEMANTIC_E2E opt-in), 0 failures
+- LLM: gemini-3-flash-preview
 - Distribution: cargo-dist v0.31.0, 5 targets, brew + install.sh + checksums
-- Pipeline: Code→Audit→Fix→Test→Fmt→Lint→Verify→PR
+- Pipeline: Shape→Validate→ADI→Code→Test→Fmt→Lint→Audit→Fix→Re-audit→Manual UX→Closeout
+- **Sprint Checklist Framework (NOTE-044)** landed 2026-04-08 as reusable quality gate
 - ADI mandatory for Standard+ depth (CLAUDE.md methodology update)
+
+### v0.17.0 done — EPIC-003 Search, Discovery, Intelligence ✅
+
+- [x] **Sprint 13.0** Security + ADR-007 (2h, no artifact)
+- [x] **Sprint 13.1** PRD-043 Methodology Integrity — EVID-058, PR #145
+- [x] **Sprint 13.1.5/.7** Hardening + integrity config wiring — EVID-059
+- [x] **Sprint 13.2** PRD-039 Smart Search v2 (BM25 + filter DSL + graph expansion) — EVID-065 (backfill during final audit)
+- [x] **Sprint 13.3** PRD-035 p1 Tags + Source Tier — EVID-060
+- [x] **Sprint 13.4** PRD-035 p2 Discover MCP tools + CLI — EVID-061
+- [x] **Sprint 13.5** PRD-040 Scoring Intelligence (Skills Memory + R_eff CI) — EVID-062, PR #153
+- [x] **Sprint 13.6** PRD-041 FPF Rules CLI + MCP — EVID-063, PR #154
+- [x] **Sprint 13.7** PRD-042 FPF KB Vector Search (supersedes PRD-018) — EVID-064, PR #155
+- [x] **Sprint 13.7 post-closeout hotfix** — 19 debts triaged, 11 fixed, NOTE-044/045 (PR #156)
+- [x] **Final release audit** — 4 parallel auditors, version bump, CHANGELOG, bugfix agent
+- [x] **PRD-018 superseded** by PRD-042, **EPIC-003 activated**
+
+### P0: Release v0.17.0 tag
+- [x] Cargo.toml version bump 0.16.0 → 0.17.0 (workspace + 3 path deps)
+- [x] CHANGELOG.md created with full v0.17.0 entry
+- [x] 7 EVIDs activated (058..064) + EVID-065 backfill for Sprint 13.2
+- [x] PRD-039 activated (R_eff=1.00, F-G-R=0.88 A)
+- [x] EPIC-003 activated
+- [x] Title validation bugfix (fa97f10, tag-prep-bugfix agent)
+- [x] Commit tag-prep changes (6a1904f)
+
+### P1: After release PR merged
+- PR release/v0.17.0 → main (merge commit)
+- Tag v0.17.0 + push
+- Sync main → dev
+- Hindsight memory_retain EPIC-003 finale
 
 ### P0: FPF Engine v2 Phase 2 — Sprint 12 (RFC-001) ✅
 - [x] ADI reasoning: H2 Two-tier Rules selected (FPF B.5.2 Abductive Loop)

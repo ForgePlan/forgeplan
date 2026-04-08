@@ -5,7 +5,9 @@ kind: prd
 links:
 - target: PRD-040
   relation: refines
-status: draft
+- target: EPIC-003
+  relation: refines
+status: active
 title: Smart Search v2 — BM25, Composable Filters, Graph Expansion
 ---
 
@@ -27,12 +29,18 @@ projectType: cli_tool
 ## Progress
 
 ```
-FR-001   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  (  0%)  BM25
-FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  (  0%)  Filters
-FR-003   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  (  0%)  Graph expansion
+FR-001   ████████████████████████  1/1  (100%)  BM25            ✓ Sprint 13.2
+FR-002   ████████████████████████  1/1  (100%)  Filters         ✓ Sprint 13.2
+FR-003   ████████████████████████  1/1  (100%)  Graph expansion ✓ Sprint 13.2
 ─────────────────────────────────────────────────
-TOTAL                               0/3  (  0%)
+TOTAL                               3/3  (100%) — COMPLETE
 ```
+
+**Sprint 13.2 delivered:** BM25 scoring replaces substring match in
+`store::search`; `ArtifactFilter` DSL with kind/status/depth/tags/since/
+with_evidence fields; 1-hop graph neighbor expansion via informs/based_on/
+refines relations with `--no-expand` opt-out; CLI and MCP `SearchParams`
+extended. See EVID-065 (backfill) for FR→file:line mapping.
 
 ---
 
@@ -173,4 +181,6 @@ Smart Search v2 заменяет примитивный substring grep на по
 |----------|----------|--------|
 | PRD-040 | Sibling (Scoring Intelligence) | Draft |
 | sources/RuVector | Pattern source (BM25, Filter DSL) | External |
+
+
 

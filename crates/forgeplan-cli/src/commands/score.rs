@@ -183,6 +183,9 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         fpf_weights.as_ref(),
     );
 
+    // --- R_eff Confidence Interval (PRD-040 FR-002) ---
+    let ci = reff::r_eff_with_ci(&evidence_items);
+
     // --- JSON output ---
     if json {
         let evidence_json: Vec<_> = evidence_items
@@ -203,6 +206,15 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             "id": target.id,
             "title": target.title,
             "r_eff": report.r_eff,
+            "r_eff_ci": {
+                "point": ci.point,
+                "low": ci.low,
+                "high": ci.high,
+                "evidence_count": ci.evidence_count,
+                "stale_count": ci.stale_count,
+                "insufficient": ci.is_insufficient(),
+                "width": ci.width(),
+            },
             "weakest_link": report.weakest_link,
             "factors": report.factors,
             "evidence": evidence_json,
@@ -262,6 +274,27 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             "R_eff",
             &format!("{} -- {}", ui::styled_reff(report.r_eff), status),
         );
+
+        // Confidence interval (PRD-040 FR-002)
+        if ci.evidence_count > 0 {
+            let ci_label = if ci.is_insufficient() {
+                format!("insufficient ({} evidence)", ci.evidence_count)
+            } else if ci.stale_count > 0 {
+                format!(
+                    "[{:.2} — {:.2}] ({} fresh, {} stale)",
+                    ci.low,
+                    ci.high,
+                    ci.evidence_count - ci.stale_count,
+                    ci.stale_count
+                )
+            } else {
+                format!(
+                    "[{:.2} — {:.2}] ({} evidence)",
+                    ci.low, ci.high, ci.evidence_count
+                )
+            };
+            ui::kv("Confidence", &ci_label);
+        }
     }
 
     if let Some(ref wl) = report.weakest_link {

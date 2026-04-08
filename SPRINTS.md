@@ -85,39 +85,43 @@
 
 ---
 
-## Sprint 13: CLI Polish + Agent Memory Implementation
+## Sprint 13: v0.17.0 Release Series (EPIC-003)
 
-**Цель:** CLI UX доводка и начало реализации Agent Memory.
-**Depth:** Standard
-**Ветка из:** `dev`
+**Цель:** Ship v0.17.0 — Search, Discovery, Intelligence.
+**Depth:** Deep
+**Branch:** `release/v0.17.0` (integration) ← `feat/sprint-13.x-*` feature branches
 
-### Tasks
+### Tasks (sequential execution pattern)
 
-- [ ] **13.1** CLI UX Polish (NOTE-029)
-  - `forgeplan links` — show all artifact connections
-  - `forgeplan doctor` — diagnose workspace issues
-  - `--ci` mode — machine-readable output for pipelines
-  - Error message consistency across all 33 commands
-  - Branch: `feat/cli-ux-polish`
+- [x] **13.0** Security hotfix — vite CVEs #4-6 (PR #144)
+- [x] **13.1** PRD-043 Methodology Integrity — duplicate guard, stub detection, health (PR #145)
+- [x] **13.1.5** Hardening — 7 audit findings fix + IntegrityConfig (PR #146)
+- [x] **13.1.6** Audit followup — 5 H/M fixes + lesson learned in CLAUDE.md (PR #147)
+- [x] **13.1.7** IntegrityConfig wiring fix — open_store validates config (PR #148)
+- [x] **13.2** PRD-039 Smart Search v2 — BM25 + Filter DSL + Graph Expansion (PR #149)
+- [x] **13.3** PRD-035 p1 — Tags system + Source Tier (PR #150)
+  - FR-001..003: tags in frontmatter + CLI tag/untag/list --tag
+  - FR-008: SourceTier → CL mapping (T1→CL3, T2→CL2, T3→CL1)
+  - Multi-agent audit (4 auditors + 7 fixers) — 2 CRITICAL + 5 HIGH resolved
+  - Release-blocker fixed: migration v3→v4 via NewColumnTransform::AllNulls
+  - EVID-060 linked, R_eff 0.90, PRD-035 activated
+  - PROB-026 (deferred M/L) + PROB-027 (reindex-from-zero) tracked
+- [ ] **13.4** PRD-035 p2 — Discover MCP tools + CLI command (FR-004..007)
+  - Depends on: 13.3 merge ✓
+  - Files: mcp/server.rs (3 new tools), cli/commands/discover.rs (NEW)
+- [ ] **13.5** PRD-040 — Scoring Intelligence (adaptive routing, R_eff CI)
+- [ ] **13.6** PRD-041 — FPF Rules CLI/MCP (rules list, check)
+- [ ] **13.7** PRD-042 — FPF KB Vector Search via EmbedDriver
+- [ ] **Final** `/forge-cycle` audit on release/v0.17.0 → merge to main → tag v0.17.0
 
-- [ ] **13.2** Agent Memory Engine — Phase 1 implementation
-  - Based on PRD from Sprint 12
-  - Memory storage, recall, retention for AI agents
-  - MCP tools: `forgeplan_memory_*`
-  - Branch: `feat/agent-memory-p1`
+### Deferred from original Sprint 13 plan
 
-- [ ] **13.3** generate-docs command (NOTE-030 partial)
-  - `forgeplan generate-docs` — auto-generate documentation from artifacts
-  - Markdown report: all artifacts, their status, R_eff, links
-  - Branch: `feat/generate-docs`
+The original Sprint 13 plan (CLI Polish + Agent Memory + generate-docs + Brownfield Discovery) was reorganized around EPIC-003 v0.17.0. Original items moved:
 
-- [ ] **13.4** Brownfield Discovery — `forgeplan discover` (PROB-022)
-  - Deep depth: PRD → Spec → RFC → ADR
-  - MCP tools: discover_start, discover_finding, discover_complete
-  - Agent-driven: ForgePlan = protocol + storage, Agent = code analysis
-  - Tiered sources: code (T1) > git (T1) > tests (T2) > docs (T3, legacy-doc)
-  - Marketplace: `.claude/agents/discover.md` agent config
-  - Branch: `feat/discover`
+- CLI UX Polish (NOTE-029) → future sprint
+- Agent Memory Engine → future sprint
+- generate-docs command → future sprint
+- Brownfield Discovery → **split into PRD-035 p1 (13.3) + p2 (13.4)** ✓
 
 ### Definition of Done
 - [ ] `forgeplan links`, `forgeplan doctor` working
