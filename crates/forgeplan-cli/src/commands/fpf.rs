@@ -66,19 +66,73 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
         })
         .collect();
 
-    let count = store.insert_fpf_chunks(&fpf_chunks, None).await?;
-    println!("  Ingested {} FPF sections into LanceDB", count);
+    // PRD-042 FR-002: Encode embeddings for each chunk when semantic-search feature is enabled.
+    #[cfg(feature = "semantic-search")]
+    let embeddings: Option<Vec<Vec<f32>>> = {
+        println!(
+            "  Encoding {} sections with BGE-M3 (first run downloads model ~150MB)...",
+            chunks.len()
+        );
+        let mut embedder = forgeplan_core::embed::Embedder::new()?;
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(|c| format!("{}: {}", c.title, c.body))
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let vecs = embedder.embed_batch(&text_refs)?;
+        println!(
+            "  Encoded {} embeddings (dim={})",
+            vecs.len(),
+            vecs.first().map(|v| v.len()).unwrap_or(0)
+        );
+        Some(vecs)
+    };
+    #[cfg(not(feature = "semantic-search"))]
+    let embeddings: Option<Vec<Vec<f32>>> = None;
+
+    let count = store
+        .insert_fpf_chunks(&fpf_chunks, embeddings.as_deref())
+        .await?;
+    #[cfg(feature = "semantic-search")]
+    println!("  Ingested {} FPF sections with embeddings", count);
+    #[cfg(not(feature = "semantic-search"))]
+    println!(
+        "  Ingested {} FPF sections (keyword-only — build with --features semantic-search for vector search)",
+        count
+    );
     Ok(())
 }
 
-/// `forgeplan fpf search <query> [--limit N]`
-pub async fn run_search(query: &str, limit: usize) -> anyhow::Result<()> {
+/// `forgeplan fpf search <query> [--limit N] [--semantic]`
+pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
     let store = LanceStore::open(&ws).await?;
-    let results = store.search_fpf(query, limit).await?;
+
+    // PRD-042 FR-003: Semantic search with graceful fallback to keyword.
+    let (results, header): (Vec<FpfChunk>, Option<&'static str>) = if semantic {
+        #[cfg(feature = "semantic-search")]
+        {
+            let mut embedder = forgeplan_core::embed::Embedder::new()?;
+            let query_vec = embedder.embed(query)?;
+            (
+                store.search_fpf_by_vector(&query_vec, limit).await?,
+                Some("[semantic search: BGE-M3]"),
+            )
+        }
+        #[cfg(not(feature = "semantic-search"))]
+        {
+            eprintln!(
+                "{} semantic-search feature not compiled in; falling back to keyword search",
+                style("⚠").yellow().bold()
+            );
+            (store.search_fpf(query, limit).await?, None)
+        }
+    } else {
+        (store.search_fpf(query, limit).await?, None)
+    };
 
     if results.is_empty() {
         println!("  No FPF sections match '{}'", query);
@@ -87,6 +141,9 @@ pub async fn run_search(query: &str, limit: usize) -> anyhow::Result<()> {
     }
 
     println!();
+    if let Some(h) = header {
+        println!("  {}", style(h).dim());
+    }
     for (i, chunk) in results.iter().enumerate() {
         let snippet: String = chunk
             .body
