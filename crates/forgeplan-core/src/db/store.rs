@@ -3192,4 +3192,275 @@ mod tests {
             .unwrap_err();
         assert!(format!("{err2}").contains("non-finite"));
     }
+
+    // ── Sprint 13.7 hotfix (fix/sprint-13.7-post-closeout-hardening) ────────
+
+    /// FIX-A: real end-to-end semantic roundtrip via actual BGE-M3 model.
+    ///
+    /// This test is `#[ignore]` because it downloads ~150MB on first run and
+    /// exercises the full encoder stack. Run manually with:
+    ///
+    /// ```text
+    /// cargo test -p forgeplan-core --features semantic-search -- \
+    ///     --ignored real_semantic_roundtrip_with_bge_m3 --nocapture
+    /// ```
+    ///
+    /// Validates the complete code path no unit test can: Embedder::new →
+    /// embed_batch → insert_fpf_chunks → embed(query) → search_fpf_by_vector
+    /// → ranked results. Every other FPF vector test uses synthetic vectors.
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    #[ignore = "requires BGE-M3 model download (~150MB); run with --features semantic-search -- --ignored"]
+    async fn real_semantic_roundtrip_with_bge_m3() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let chunks = vec![
+            FpfChunk {
+                id: "real-1".into(),
+                section_id: "A.1".into(),
+                parent_section: None,
+                title: "Trust calculus".into(),
+                body: "F-G-R scoring with evidence congruence".into(),
+                line_count: 1,
+                file_path: "a.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+            FpfChunk {
+                id: "real-2".into(),
+                section_id: "B.2".into(),
+                parent_section: None,
+                title: "Deployment patterns".into(),
+                body: "Kubernetes orchestration and service mesh".into(),
+                line_count: 1,
+                file_path: "b.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+        ];
+
+        let mut embedder =
+            crate::embed::Embedder::new().expect("BGE-M3 Embedder::new should succeed");
+
+        let bodies: Vec<String> = chunks
+            .iter()
+            .map(|c| format!("{}: {}", c.title, c.body))
+            .collect();
+        let body_refs: Vec<&str> = bodies.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder
+            .embed_batch(&body_refs)
+            .expect("embed_batch should succeed");
+
+        assert_eq!(embeddings.len(), 2, "two chunks → two embeddings");
+        assert_eq!(
+            embeddings[0].len(),
+            crate::db::schema::EMBEDDING_DIM as usize,
+            "BGE-M3 must output 1024 dims"
+        );
+
+        store
+            .insert_fpf_chunks(&chunks, Some(&embeddings))
+            .await
+            .unwrap();
+
+        // Query is semantically close to chunk 1 (trust/evidence), not
+        // chunk 2 (kubernetes).
+        let query_vec = embedder
+            .embed("How do we measure confidence in evidence")
+            .expect("query encoding should succeed");
+
+        let results = store.search_fpf_by_vector(&query_vec, 5).await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "semantic query should return at least one chunk"
+        );
+        assert_eq!(
+            results[0].id, "real-1",
+            "trust-calculus chunk should outrank kubernetes chunk for this query"
+        );
+    }
+
+    /// FIX-B: exercise the FULL migration → insert → query path on a legacy
+    /// v3 fpf_spec workspace.
+    ///
+    /// Creates a tempdir LanceDB with a legacy 8-column fpf_spec table (no
+    /// embedding column) alongside the other workspace tables, then opens it
+    /// via `LanceStore::open` which runs migrations (including
+    /// `migrate_fpf_spec` that adds the embedding column). Inserts chunks
+    /// without embeddings (legacy ingest style), verifies the embedding
+    /// column exists and is null for every row, and finally calls
+    /// `search_fpf_by_vector` — which must return Ok(empty) gracefully on an
+    /// all-null column rather than panicking or erroring.
+    #[tokio::test]
+    async fn migrate_real_v3_workspace_adds_fpf_spec_embedding_column() {
+        use arrow_schema::{DataType, Field, Schema};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        // Step 1: create a full modern workspace (artifacts/evidence/relations
+        // /change_log tables present so LanceStore::open won't bail).
+        {
+            let _store = LanceStore::init(&ws).await.unwrap();
+            // drop at end of scope so we can re-create the fpf_spec table
+            // via a direct connection.
+        }
+
+        // Step 2: drop the modern fpf_spec and recreate it in legacy shape
+        // (8 columns, no embedding). Direct LanceDB connection on the same
+        // dir as LanceStore uses.
+        let lance_dir = ws.join("lance");
+        {
+            let conn = lancedb::connect(lance_dir.to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+            conn.drop_table("fpf_spec", &[]).await.unwrap();
+
+            // Legacy pre-PRD-042 fpf_spec schema: 8 columns, no embedding.
+            let legacy_schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Utf8, false),
+                Field::new("section_id", DataType::Utf8, false),
+                Field::new("parent_section", DataType::Utf8, true),
+                Field::new("title", DataType::Utf8, false),
+                Field::new("body", DataType::LargeUtf8, false),
+                Field::new("line_count", DataType::Int32, false),
+                Field::new("file_path", DataType::Utf8, false),
+                Field::new("created_at", DataType::Utf8, false),
+            ]));
+            let empty = RecordBatch::new_empty(legacy_schema);
+            conn.create_table("fpf_spec", vec![empty])
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        // Step 3: reopen via LanceStore::open — this triggers
+        // run_migrations → migrate_fpf_spec → embedding column added back.
+        let store = LanceStore::open(&ws).await.unwrap();
+
+        // Verify embedding column now exists on the table.
+        let table = store.fpf_spec.as_ref().expect("fpf_spec must be present");
+        let schema = table.schema().await.unwrap();
+        assert!(
+            schema.fields().iter().any(|f| f.name() == "embedding"),
+            "post-migration fpf_spec must have embedding column"
+        );
+
+        // Step 4: insert legacy-style rows (no embeddings).
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(n, 3);
+
+        // Step 5: embedding column is null for every newly-inserted row.
+        let batches = collect_batches(table.query().execute().await.unwrap())
+            .await
+            .unwrap();
+        let mut total = 0;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("embedding")
+                .expect("embedding column must exist");
+            for row in 0..batch.num_rows() {
+                assert!(
+                    col.is_null(row),
+                    "legacy-style insert row {row} must leave embedding null"
+                );
+                total += 1;
+            }
+        }
+        assert_eq!(total, 3);
+
+        // Step 6: search_fpf_by_vector on an all-null column must return
+        // Ok(empty) — the documented migration contract.
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let query = vec![0.25_f32; dim];
+        let results = store.search_fpf_by_vector(&query, 5).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "all-null embedding column must yield empty results, got {}",
+            results.len()
+        );
+    }
+
+    /// FIX-C: semantic and keyword search agree on the top result for an
+    /// obvious match. Uses synthetic orthogonal embeddings (no real model)
+    /// so it's fast and deterministic.
+    #[tokio::test]
+    async fn semantic_and_keyword_top_result_agrees_for_clear_match() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+
+        // Three chunks; chunk `m6-2` is the obvious match for "trust":
+        // it contains the keyword AND gets embedding axis 0 = 1.0.
+        let chunks = vec![
+            FpfChunk {
+                id: "m6-1".into(),
+                section_id: "A.1".into(),
+                parent_section: None,
+                title: "Deployment basics".into(),
+                body: "How to deploy services".into(),
+                line_count: 1,
+                file_path: "a.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+            FpfChunk {
+                id: "m6-2".into(),
+                section_id: "B.3".into(),
+                parent_section: None,
+                title: "Trust calculus".into(),
+                body: "Trust scoring with evidence and congruence".into(),
+                line_count: 1,
+                file_path: "b.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+            FpfChunk {
+                id: "m6-3".into(),
+                section_id: "C.1".into(),
+                parent_section: None,
+                title: "Database schemas".into(),
+                body: "Arrow schema definitions for tables".into(),
+                line_count: 1,
+                file_path: "c.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+        ];
+
+        let mut e1 = vec![0.0_f32; dim];
+        e1[1] = 1.0; // deployment axis
+        let mut e2 = vec![0.0_f32; dim];
+        e2[0] = 1.0; // trust axis
+        let mut e3 = vec![0.0_f32; dim];
+        e3[2] = 1.0; // schema axis
+        let embeddings = vec![e1, e2, e3];
+
+        store
+            .insert_fpf_chunks(&chunks, Some(&embeddings))
+            .await
+            .unwrap();
+
+        // Keyword path — substring match on "trust".
+        let kw_results = store.search_fpf("trust", 3).await.unwrap();
+        assert!(!kw_results.is_empty(), "keyword search returned nothing");
+        assert_eq!(
+            kw_results[0].id, "m6-2",
+            "keyword search top result must be the trust chunk"
+        );
+
+        // Semantic path — query vector aligned with trust axis.
+        let mut query_vec = vec![0.0_f32; dim];
+        query_vec[0] = 1.0;
+        let sem_results = store.search_fpf_by_vector(&query_vec, 3).await.unwrap();
+        assert!(!sem_results.is_empty(), "semantic search returned nothing");
+        assert_eq!(
+            sem_results[0].id, "m6-2",
+            "semantic search top result must be the trust chunk"
+        );
+
+        // Both paths agree — the core M6 property.
+        assert_eq!(
+            kw_results[0].id, sem_results[0].id,
+            "semantic and keyword top result must agree for this clear match"
+        );
+    }
 }

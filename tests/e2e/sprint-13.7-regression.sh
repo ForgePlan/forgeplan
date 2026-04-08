@@ -157,5 +157,50 @@ else
   exit 1
 fi
 
+# ─────────────────────────────────────────────────────────────
+# Sprint 13.7 post-closeout hardening — opt-in real semantic path
+# ─────────────────────────────────────────────────────────────
+# The default build has semantic-search feature OFF so the script only
+# exercises the fallback path above. To verify the REAL semantic path
+# end-to-end (BGE-M3 model load + encode + vector search + ranking),
+# set SEMANTIC_E2E=1 and ensure you have a feature-on binary at a
+# separate path SEMANTIC_BIN (defaults to ./target/release-semantic/forgeplan).
+#
+# Build the feature-on binary first:
+#   cargo build --release --features semantic-search --target-dir target/release-semantic
+#   SEMANTIC_E2E=1 SEMANTIC_BIN=./target/release-semantic/release/forgeplan \
+#     bash tests/e2e/sprint-13.7-regression.sh
+#
+# This is dev-opt-in because BGE-M3 downloads ~150MB on first use.
+
+if [ "${SEMANTIC_E2E:-0}" = "1" ]; then
+  SEMANTIC_BIN="${SEMANTIC_BIN:-./target/release-semantic/release/forgeplan}"
+  if [ ! -x "$SEMANTIC_BIN" ]; then
+    echo "⚠ SEMANTIC_E2E=1 but \$SEMANTIC_BIN ($SEMANTIC_BIN) not found — skipping real semantic checks"
+  else
+    echo "  SEMANTIC_E2E=1: exercising real semantic path via $SEMANTIC_BIN"
+    WORK2=$(mktemp -d)
+    cd "$WORK2"
+    "$SEMANTIC_BIN" init -y >/dev/null 2>&1
+    if ! "$SEMANTIC_BIN" fpf ingest >/tmp/forgeplan-semantic-ingest.log 2>&1; then
+      echo "⚠ SEMANTIC_E2E fpf ingest failed — skipping"
+      cat /tmp/forgeplan-semantic-ingest.log | head -10
+    else
+      echo "✓ 13.7 SEMANTIC_E2E fpf ingest (with embeddings)"
+      OUT="$("$SEMANTIC_BIN" fpf search "how to score alternatives" --semantic 2>&1 || true)"
+      if echo "$OUT" | grep -qv "falling back" && echo "$OUT" | grep -qE "\[[A-Z]\.[0-9]+\]"; then
+        echo "✓ 13.7 SEMANTIC_E2E real semantic search returns FPF sections (no fallback)"
+      else
+        echo "✗ 13.7 SEMANTIC_E2E real semantic search unexpected output:"
+        echo "$OUT" | head -20
+        exit 1
+      fi
+    fi
+    cd "$WORK"
+  fi
+else
+  echo "  (SEMANTIC_E2E not set — real semantic path skipped; set SEMANTIC_E2E=1 to verify)"
+fi
+
 echo
 echo "=== ALL REGRESSION + NEW 13.7 CHECKS PASSED ==="

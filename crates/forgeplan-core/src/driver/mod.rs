@@ -173,6 +173,27 @@ pub trait FpfStorage: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Semantic search over FPF knowledge base using pre-computed vector.
+    ///
+    /// # Contract
+    /// - Backends WITH vector support (e.g. `LanceDriver`) MUST override this
+    ///   method. They return `Ok(empty)` only for legitimately empty results
+    ///   (pre-ingest workspace, all-null embedding column, no matches).
+    /// - Backends WITHOUT vector support (e.g. `InMemoryStore`) MUST override
+    ///   this method to return an explicit `Err` rather than silently returning
+    ///   empty. Silently returning `Ok(empty)` from an unsupported backend is a
+    ///   landmine: tests and callers cannot distinguish "unsupported" from
+    ///   "no matches" and will silently pass while exercising nothing.
+    ///
+    /// The trait provides NO default implementation on purpose — every
+    /// concrete backend must make an explicit choice about its semantic
+    /// support. Sprint 13.7 post-closeout re-audit (see NOTE-045 H1).
+    async fn search_fpf_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>>;
+
     /// Get a specific FPF section by section_id.
     async fn get_fpf_section(&self, _section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
         Ok(None)
@@ -286,6 +307,39 @@ mod tests {
 
         let batch = driver.embed_batch(&["a", "b"]).unwrap();
         assert_eq!(batch.len(), 2);
+    }
+
+    /// Sprint 13.7 hotfix FIX-D + re-audit H1 fix: FpfStorage trait exposes
+    /// both keyword and vector search paths, and both remain callable through
+    /// `&dyn FpfStorage` (dyn-compatibility preserved).
+    ///
+    /// InMemoryStore explicitly returns `Err` from `search_fpf_by_vector`
+    /// rather than silently `Ok(empty)` — so a test accidentally routing
+    /// semantic search through the in-memory backend fails loudly instead of
+    /// silently passing with zero results. See NOTE-045 H1.
+    #[tokio::test]
+    async fn fpf_storage_trait_has_both_search_methods() {
+        use crate::driver::in_memory::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let dyn_ref: &dyn FpfStorage = &store;
+
+        // Keyword path: callable via dyn, returns Ok(empty) for empty store.
+        let kw = dyn_ref.search_fpf("anything", 5).await.unwrap();
+        assert!(kw.is_empty());
+
+        // Vector path: callable via dyn, but InMemoryStore MUST return Err
+        // — it has no vector support and silent empty is a landmine.
+        let q = vec![0.0_f32; 1024];
+        let err = dyn_ref
+            .search_fpf_by_vector(&q, 5)
+            .await
+            .expect_err("InMemoryStore must error (not silently Ok-empty) for vector search");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not supported") || msg.contains("InMemoryStore"),
+            "error should explain the reason, got: {msg}"
+        );
     }
 
     #[test]

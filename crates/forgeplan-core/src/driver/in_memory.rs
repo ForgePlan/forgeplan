@@ -426,6 +426,23 @@ impl FpfStorage for InMemoryStore {
         state.fpf_chunks.clear();
         Ok(())
     }
+
+    async fn search_fpf_by_vector(
+        &self,
+        _query_vec: &[f32],
+        _limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        // InMemoryStore does not support vector similarity search — it has
+        // no embedding storage or cosine computation. Return an explicit Err
+        // rather than silently returning Ok(empty), because silent success is
+        // indistinguishable from "no matches" and creates a landmine for
+        // tests that accidentally route through this backend.
+        // See NOTE-045 H1 (Sprint 13.7 post-closeout re-audit).
+        anyhow::bail!(
+            "search_fpf_by_vector is not supported by InMemoryStore; \
+             use LanceDriver for semantic search or keyword search via search_fpf"
+        )
+    }
 }
 
 #[cfg(test)]
