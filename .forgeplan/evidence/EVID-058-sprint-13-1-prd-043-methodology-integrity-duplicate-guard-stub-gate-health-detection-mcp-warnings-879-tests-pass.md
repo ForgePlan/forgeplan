@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PRD-043
   relation: informs
-status: draft
+status: active
 title: Sprint 13.1 PRD-043 Methodology Integrity — duplicate guard, stub gate, health detection, MCP warnings — 879 tests pass
 ---
 
@@ -129,4 +129,5 @@ Total: ~895 LOC source + tests across 11 files.
 | PRD-043 | informs (this evidence supports it) |
 | PROB-024 | informs (PRD-043 solves this problem) |
 | EPIC-003 | informs (Sprint 13.1 of EPIC-003) |
+
 

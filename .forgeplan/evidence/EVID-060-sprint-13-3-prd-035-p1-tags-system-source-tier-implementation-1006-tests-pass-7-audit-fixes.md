@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-035
   relation: informs
-status: draft
+status: active
 title: Sprint 13.3 PRD-035 p1 — Tags system + Source Tier implementation — 1006 tests pass, 7 audit fixes
 ---
 
@@ -158,3 +158,4 @@ Key paths:
 | PROB-027 | informs (reindex rebuild-from-zero follow-up) |
 | EVID-059 | informs (preceding Sprint 13.1.5 hardening evidence) |
 | NOTE-043 | informs (team orchestration pattern used for W5) |
+

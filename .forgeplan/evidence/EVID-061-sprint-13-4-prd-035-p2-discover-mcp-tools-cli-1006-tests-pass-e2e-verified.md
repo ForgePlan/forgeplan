@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-035
   relation: informs
-status: draft
+status: active
 title: Sprint 13.4 PRD-035 p2 Discover MCP tools + CLI — 1006 tests pass, E2E verified
 ---
 
@@ -141,3 +141,4 @@ All 4 CLI commands verified working on compiled release binary.
 | EPIC-003 | informs (Sprint 13 series) |
 | EVID-060 | informs (Sprint 13.3 p1 predecessor) |
 | NOTE-041 | informs (original tiered sources idea) |
+

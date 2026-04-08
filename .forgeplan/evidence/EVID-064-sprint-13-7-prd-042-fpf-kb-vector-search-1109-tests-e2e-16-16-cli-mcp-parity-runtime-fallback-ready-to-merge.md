@@ -5,7 +5,9 @@ kind: evidence
 links:
 - target: PRD-042
   relation: informs
-status: draft
+- target: EPIC-003
+  relation: informs
+status: active
 title: Sprint 13.7 PRD-042 FPF KB Vector Search — 1109 tests, E2E 16/16, CLI+MCP parity, runtime fallback, READY TO MERGE
 ---
 
@@ -239,3 +241,5 @@ Multi-agent team ran cleanly this sprint:
 | EVID-063 | predecessor (Sprint 13.6 closeout) |
 | NOTE-039 | closes (deferred Sprint 12 FPF KB vector search item) |
 | sources/RuVector | external pattern source (vector search reference) |
+
+

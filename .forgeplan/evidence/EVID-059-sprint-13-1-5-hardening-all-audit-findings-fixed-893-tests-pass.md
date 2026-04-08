@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-043
   relation: informs
-status: draft
+status: active
 title: Sprint 13.1.5 hardening — all audit findings fixed, 893 tests pass
 ---
 
@@ -116,3 +116,4 @@ Sprint 13.1.5 applied 7 fixes addressing all HIGH findings from the Sprint 13.1 
 | EPIC-003 | informs (Sprint 13 series) |
 | NOTE-043 | informs (orchestration pattern used) |
 | EVID-058 | informs (prior sprint) |
+

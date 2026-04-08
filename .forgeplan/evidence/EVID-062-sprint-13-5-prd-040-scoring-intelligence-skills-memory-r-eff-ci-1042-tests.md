@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-040
   relation: informs
-status: draft
+status: active
 title: Sprint 13.5 PRD-040 Scoring Intelligence — Skills Memory + R_eff CI, 1042 tests
 ---
 
@@ -157,3 +157,4 @@ Similarly, automatic success recording (agent marks route as successful after ar
 | EPIC-003 | informs (Sprint 13 v0.17.0 series) |
 | EVID-061 | informs (Sprint 13.4 predecessor) |
 | sources/RuVector | pattern source (agenticdb Skills) |
+

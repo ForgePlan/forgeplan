@@ -1,8 +1,8 @@
 ---
-depth: deep
+depth: standard
 id: EPIC-003
 kind: epic
-status: draft
+status: active
 title: Sprint 13 — Search, Discovery, Intelligence (v0.17.0)
 ---
 
@@ -219,3 +219,4 @@ main → dev (sync back) + tag v0.17.0
 | PROB-024 | source problem (duplicate/stub guard) | draft |
 | EPIC-002 | parent epic (v2.0 vision) | active |
 | sources/RuVector | pattern source | external |
+

@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-041
   relation: informs
-status: draft
+status: active
 title: Sprint 13.6 PRD-041 FPF Rules CLI + MCP — 1075 tests pass, 12/12 E2E, READY TO MERGE
 ---
 
@@ -169,3 +169,4 @@ Hybrid team-up pattern worked well:
 | EVID-062 | predecessor (Sprint 13.5) |
 | PRD-040 | context (Sprint 13.5) |
 | PRD-042 | blocked-until-now (Sprint 13.7 needs 13.6 merged — shared fpf.rs + server.rs files) |
+
