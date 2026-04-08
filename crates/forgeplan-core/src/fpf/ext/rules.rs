@@ -131,7 +131,7 @@ fn format_numeric(n: &NumericExpr) -> String {
         NumericExpr::Le(v) => format!("<={v}"),
         NumericExpr::Gt(v) => format!(">{v}"),
         NumericExpr::Ge(v) => format!(">={v}"),
-        NumericExpr::Eq(v) => format!("=={v}"),
+        NumericExpr::Eq(v) => format!("={v}"),
         NumericExpr::Range(lo, hi) => format!("={lo}..{hi}"),
     }
 }
@@ -568,7 +568,7 @@ mod tests {
         let s = c.summarize();
         assert!(s.contains("r_eff>=0.7"));
         assert!(s.contains("overall=0.1..0.5"));
-        assert!(s.contains("link_count==0"));
+        assert!(s.contains("link_count=0"));
     }
 
     fn make_data(id: &str, status: &str, r_eff: f64, link_count: usize) -> ArtifactData {

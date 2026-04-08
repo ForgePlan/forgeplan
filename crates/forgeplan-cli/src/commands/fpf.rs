@@ -278,6 +278,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
                     "priority": r.priority,
                     "action": r.action.to_string(),
                     "condition": serde_json::to_value(&r.condition).unwrap_or(serde_json::Value::Null),
+                    "condition_summary": r.condition.summarize(),
                     "message": r.message,
                 })
             })
@@ -348,11 +349,13 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
         let branch = if is_last_group { "└─" } else { "├─" };
         let vbar = if is_last_group { "   " } else { "│  " };
         println!();
+        let plural = if in_group.len() == 1 { "rule" } else { "rules" };
         println!(
-            "  {} {} ({} rules) — {}",
+            "  {} {} ({} {}) — {}",
             branch,
             style_action(action),
             in_group.len(),
+            plural,
             style(descr).dim()
         );
         let last_idx = in_group.len().saturating_sub(1);
@@ -410,14 +413,14 @@ pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()
                 &format!("Artifact '{id}' not found"),
                 "forgeplan list --kind prd",
             );
-            return Err(anyhow::anyhow!("artifact not found"));
+            std::process::exit(1);
         }
         Err(_) => {
             ui::error_hint(
                 &format!("Failed to check artifact '{id}'"),
                 "forgeplan health",
             );
-            return Err(anyhow::anyhow!("check failed"));
+            std::process::exit(1);
         }
     };
 
