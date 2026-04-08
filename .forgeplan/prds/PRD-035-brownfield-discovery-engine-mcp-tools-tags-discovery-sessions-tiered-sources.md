@@ -20,15 +20,24 @@ title: Brownfield Discovery Engine — MCP tools, tags, discovery sessions, tier
 ## Progress
 
 ```
-Phase 1  ████████████░░░░░░░░░░░░  4/8  ( 50%)  ← Sprint 13.3 (FR-001..003 + FR-008)
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)  ← Sprint 14+
+Phase 1  ████████████████████████  8/8  (100%)  ✓ Sprint 13.3 + 13.4 — COMPLETE
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)  ← Sprint 14+ (deferred, deepening)
 ─────────────────────────────────────────────────
-TOTAL                               4/13 ( 31%)
+TOTAL                               8/13 ( 62%) — Phase 1 shipped in v0.17.0
 ```
 
-**Sprint 13.3 delivered:** Tags system (FR-001..003) + Source tier mapping (FR-008). PR #150 merged to release/v0.17.0. 1006 tests pass. 7 audit findings resolved (2 CRITICAL + 5 HIGH). See EVID-060.
+**Sprint 13.3 delivered (Phase 1a):** Tags system (FR-001..003) + Source
+tier mapping (FR-008). PR #150 merged to release/v0.17.0. 1006 tests pass.
+7 audit findings resolved (2 CRITICAL + 5 HIGH). See EVID-060.
 
-**Sprint 13.4 will deliver:** MCP discover tools (FR-004..006) + CLI discover command (FR-007).
+**Sprint 13.4 delivered (Phase 1b):** MCP tools `forgeplan_discover_start`,
+`forgeplan_discover_finding`, `forgeplan_discover_complete` (FR-004..006);
+CLI `forgeplan discover` command (FR-007). PR #152 merged to release/v0.17.0.
+See EVID-061.
+
+**Phase 2 (FRs 009..013) — deferred to Sprint 14+** per PRD scope. Phase 2
+covers multi-pass discovery deepening (`--deep`, Pass 1 + Pass 2),
+explicitly out of v0.17.0 scope.
 
 ## Problem
 

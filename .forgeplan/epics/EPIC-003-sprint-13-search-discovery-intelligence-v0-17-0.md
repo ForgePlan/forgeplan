@@ -22,15 +22,26 @@ depth: deep
 ## Progress
 
 ```
-PRD-043  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   Methodology Integrity (FOUNDATION)
-PRD-039  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   Smart Search v2
-PRD-035  ░░░░░░░░░░░░░░░░░░░░░░░░  0/13  Brownfield Discovery
-PRD-040  ░░░░░░░░░░░░░░░░░░░░░░░░  0/2   Scoring Intelligence
-PRD-041  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   FPF Rules CLI/MCP
-PRD-042  ░░░░░░░░░░░░░░░░░░░░░░░░  0/3   KB Vector Search (supersedes PRD-018)
+PRD-043  ████████████████████████  4/4   Methodology Integrity       ✓ Sprint 13.1
+PRD-039  ████████████████████████  3/3   Smart Search v2             ✓ Sprint 13.2
+PRD-035  ██████████████░░░░░░░░░░  8/13  Brownfield Discovery P1     ✓ Sprint 13.3 + 13.4
+                                         (P2 FRs 009..013 deferred to Sprint 14+)
+PRD-040  ████████████████████████  2/2   Scoring Intelligence        ✓ Sprint 13.5
+PRD-041  ████████████████████████  4/4   FPF Rules CLI/MCP           ✓ Sprint 13.6
+PRD-042  ████████████████████████  3/3   KB Vector Search            ✓ Sprint 13.7 (supersedes PRD-018)
 ─────────────────────────────────────────────────
-TOTAL                              0/29  ( 0%)
+TOTAL                              24/29 (83%) — v0.17.0 COMPLETE
+                                   (5/29 deferred = PRD-035 Phase 2)
 ```
+
+**EPIC-003 shipped as v0.17.0 (2026-04-08):** 24 FRs delivered across 8
+sprints (13.0 → 13.7 + post-closeout hotfix + final release audit).
+5 FRs (PRD-035 Phase 2 — multi-pass discovery deepening) explicitly
+deferred to Sprint 14+ per original PRD scope.
+
+See CHANGELOG.md for full release notes, EVID-058..065 for per-sprint
+evidence, NOTE-044 for reusable Sprint Checklist Framework, NOTE-045 for
+Sprint 13.7 deferred debts backlog.
 
 ---
 

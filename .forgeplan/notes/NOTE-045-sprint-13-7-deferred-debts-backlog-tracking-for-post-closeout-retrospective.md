@@ -2,7 +2,10 @@
 depth: tactical
 id: NOTE-045
 kind: note
-status: active
+links:
+- target: PRD-042
+  relation: informs
+status: draft
 title: Sprint 13.7 Deferred Debts — backlog tracking for post-closeout retrospective
 ---
 
@@ -135,3 +138,4 @@ All 6 encoded as checklist items or red flags in NOTE-044.
 | EVID-064 | context (Sprint 13.7 evidence) |
 | PRD-042 | subject (Sprint 13.7 PRD that triggered debts) |
 | EPIC-003 | context |
+

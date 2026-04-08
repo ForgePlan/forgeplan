@@ -2,7 +2,10 @@
 depth: tactical
 id: NOTE-044
 kind: note
-status: active
+links:
+- target: EPIC-003
+  relation: refines
+status: draft
 title: Sprint Checklist Framework — reusable quality gate for every sprint
 ---
 
@@ -162,3 +165,4 @@ Use by copying relevant sections into sprint planning + reviewing at each phase.
 | EVID-064 | context (Sprint 13.7 evidence that triggered this retrospective) |
 | EPIC-003 | context (v0.17.0 series) |
 | CLAUDE.md | authoritative (governing conventions) |
+
