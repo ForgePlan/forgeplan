@@ -23,6 +23,7 @@ pub const EMBEDDING_DIM: i32 = 1024;
 /// - updated_at  Utf8 (not null) — ISO datetime
 /// - body_hash   Utf8 (nullable) — hash of body for change detection
 /// - embedding   FixedSizeList(1024, Float32) (nullable) — vector for semantic search
+/// - tags        List(Utf8) (nullable) — string tags like "source=code", "layer=domain"
 pub fn artifacts_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -44,6 +45,11 @@ pub fn artifacts_schema() -> Arc<Schema> {
                 Arc::new(Field::new("item", DataType::Float32, true)),
                 EMBEDDING_DIM,
             ),
+            true,
+        ),
+        Field::new(
+            "tags",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             true,
         ),
     ]))
@@ -90,7 +96,21 @@ pub fn relations_schema() -> Arc<Schema> {
     ]))
 }
 
-/// Arrow schema for the `fpf_spec` table — FPF knowledge base chunks.
+/// Arrow schema for the FPF Knowledge Base `fpf_spec` table.
+///
+/// # Feature-flag contract
+///
+/// The `embedding` column is present **unconditionally**, regardless of whether
+/// the `semantic-search` feature is enabled. This is intentional:
+/// - Binary compatibility: workspaces built with `semantic-search` can be read
+///   by binaries without the feature (and vice versa).
+/// - Migration safety: no conditional schema branches means no "semantic-enabled
+///   vs disabled" workspace drift.
+///
+/// The *encoding* of embeddings (turning text into `Vec<f32>`) is feature-gated
+/// in `crates/forgeplan-core/src/embed/mod.rs` and consumers in
+/// `crates/forgeplan-cli/src/commands/fpf.rs::run_ingest`. When the feature is
+/// disabled, the column stays null and keyword search continues to work.
 ///
 /// Columns:
 /// - id            Utf8 (not null) — unique chunk ID: "fpf-B.3-001"
@@ -101,6 +121,14 @@ pub fn relations_schema() -> Arc<Schema> {
 /// - line_count    Int32 (not null) — number of lines
 /// - file_path     Utf8 (not null) — original file path
 /// - created_at    Utf8 (not null) — ISO datetime of ingestion
+/// - embedding     FixedSizeList(1024, Float32) (nullable) — vector for semantic
+///   search (PRD-042). Pre-semantic workspaces have null.
+///
+/// The dimension 1024 is tied to the default BGE-M3 model in
+/// `forgeplan_core::embed::Embedder`. Swapping to a different model with a
+/// different output dim requires a schema migration. See `run_ingest` in
+/// `forgeplan-cli/src/commands/fpf.rs` for the runtime assertion that
+/// catches mismatches early (Sprint 13.7 hotfix FIX-E).
 pub fn fpf_spec_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -111,6 +139,14 @@ pub fn fpf_spec_schema() -> Arc<Schema> {
         Field::new("line_count", DataType::Int32, false),
         Field::new("file_path", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                EMBEDDING_DIM,
+            ),
+            true,
+        ),
     ]))
 }
 
@@ -188,6 +224,17 @@ mod tests {
     }
 
     #[test]
+    fn artifacts_schema_tags_is_nullable_list_of_utf8() {
+        let schema = artifacts_schema();
+        let tags = schema.field_with_name("tags").unwrap();
+        assert!(tags.is_nullable());
+        match tags.data_type() {
+            DataType::List(inner) => assert_eq!(*inner.data_type(), DataType::Utf8),
+            _ => panic!("tags should be List(Utf8)"),
+        }
+    }
+
+    #[test]
     fn evidence_schema_has_required_columns() {
         let schema = evidence_schema();
         let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
@@ -219,6 +266,7 @@ mod tests {
         assert!(names.contains(&"line_count"));
         assert!(names.contains(&"file_path"));
         assert!(names.contains(&"created_at"));
+        assert!(names.contains(&"embedding"));
     }
 
     #[test]
@@ -230,6 +278,20 @@ mod tests {
             .filter(|f| f.is_nullable())
             .map(|f| f.name().as_str())
             .collect();
-        assert_eq!(nullable, vec!["parent_section"]);
+        assert_eq!(nullable, vec!["parent_section", "embedding"]);
+    }
+
+    #[test]
+    fn fpf_spec_schema_embedding_type() {
+        let schema = fpf_spec_schema();
+        let emb = schema.field_with_name("embedding").unwrap();
+        assert!(emb.is_nullable());
+        match emb.data_type() {
+            DataType::FixedSizeList(inner, size) => {
+                assert_eq!(*size, EMBEDDING_DIM);
+                assert_eq!(*inner.data_type(), DataType::Float32);
+            }
+            _ => panic!("embedding should be FixedSizeList"),
+        }
     }
 }

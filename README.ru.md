@@ -20,7 +20,7 @@
 **[Документация](docs/README.md)** ·
 **[Методология](docs/methodology/FORGEPLAN-GUIDE.md)** ·
 **[Релизы](https://github.com/ForgePlan/forgeplan/releases)** ·
-**[Marketplace](marketplace/)**
+**[Marketplace](https://github.com/ForgePlan/marketplace)**
 
 <br>
 

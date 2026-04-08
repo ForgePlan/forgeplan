@@ -5,7 +5,9 @@ kind: prd
 links:
 - target: PROB-010
   relation: based_on
-status: active
+- target: PRD-042
+  relation: supersedes
+status: superseded
 title: FPF Knowledge Base — semantic search
 ---
 
@@ -284,5 +286,6 @@ Then  [результат]
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
+
 
 

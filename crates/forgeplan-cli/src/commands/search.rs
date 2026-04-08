@@ -12,9 +12,16 @@ pub enum SearchMode {
     Semantic,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     query: &str,
     kind: Option<&str>,
+    status: Option<&str>,
+    depth: Option<&str>,
+    with_evidence: bool,
+    no_evidence: bool,
+    since: Option<&str>,
+    no_expand: bool,
     mode: SearchMode,
     limit: usize,
     json: bool,
@@ -22,10 +29,61 @@ pub async fn run(
     if query.trim().is_empty() {
         anyhow::bail!("Search query cannot be empty.");
     }
+
+    // Parse --since (YYYY-MM-DD) once, fail fast on bad input.
+    let since_dt = if let Some(s) = since {
+        match chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            Ok(d) => Some(d.and_hms_opt(0, 0, 0).unwrap()),
+            Err(e) => anyhow::bail!("Invalid --since date '{}' (expected YYYY-MM-DD): {}", s, e),
+        }
+    } else {
+        None
+    };
+
+    // Build composite filter from CLI flags.
+    let filter = build_filter(kind, status, depth, with_evidence, no_evidence, since_dt);
+
     match mode {
         SearchMode::Keyword => run_keyword(query, kind, json).await,
         SearchMode::Semantic => run_semantic_only(query, kind, json).await,
-        SearchMode::Smart => run_smart(query, kind, limit, json).await,
+        SearchMode::Smart => run_smart(query, filter, no_expand, limit, json).await,
+    }
+}
+
+fn build_filter(
+    kind: Option<&str>,
+    status: Option<&str>,
+    depth: Option<&str>,
+    with_evidence: bool,
+    no_evidence: bool,
+    since: Option<chrono::NaiveDateTime>,
+) -> Option<forgeplan_core::search::filter::ArtifactFilter> {
+    use forgeplan_core::search::filter::ArtifactFilter;
+    let mut filters: Vec<ArtifactFilter> = Vec::new();
+    if let Some(k) = kind {
+        filters.push(ArtifactFilter::Kind(k.to_string()));
+    }
+    if let Some(s) = status {
+        filters.push(ArtifactFilter::Status(s.to_string()));
+    }
+    if let Some(d) = depth {
+        filters.push(ArtifactFilter::Depth(d.to_string()));
+    }
+    if with_evidence {
+        filters.push(ArtifactFilter::HasEvidence);
+    }
+    if no_evidence {
+        filters.push(ArtifactFilter::NoEvidence);
+    }
+    if let Some(dt) = since {
+        filters.push(ArtifactFilter::CreatedAfter(dt));
+    }
+    if filters.is_empty() {
+        None
+    } else if filters.len() == 1 {
+        Some(filters.into_iter().next().unwrap())
+    } else {
+        Some(ArtifactFilter::And(filters))
     }
 }
 
@@ -180,7 +238,8 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
 /// Graceful degradation: if embeddings unavailable, uses keyword only + hint.
 async fn run_smart(
     query: &str,
-    kind: Option<&str>,
+    filter: Option<forgeplan_core::search::filter::ArtifactFilter>,
+    no_expand: bool,
     limit: usize,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -189,7 +248,7 @@ async fn run_smart(
 
     let store = common::store().await?;
 
-    // Load all records (with optional kind filter applied after scoring)
+    // Load all records — filter pushed down into smart_search.
     let records = store.list_records(None).await?;
     if records.is_empty() {
         if json {
@@ -205,27 +264,24 @@ async fn run_smart(
     // Try to get semantic scores (graceful degradation)
     let (semantic_scores, has_embeddings) = get_semantic_scores(&store, query).await;
 
-    // Build knowledge graph for centrality booster
-    let graph = KnowledgeGraph::from_store(&store).await.ok();
+    // Build knowledge graph for centrality booster + neighbor expansion.
+    // --no-expand disables expansion (graph passed as None) AND drops the
+    // centrality booster — acceptable trade-off for "strict matches only".
+    let graph = if no_expand {
+        None
+    } else {
+        KnowledgeGraph::from_store(&store).await.ok()
+    };
 
-    // Run smart search
+    // Run smart search with composite filter pushed down into core.
     let results = smart::smart_search(
         &records,
         query,
-        semantic_scores.as_ref(),
         graph.as_ref(),
+        semantic_scores.as_ref(),
+        filter.as_ref(),
         limit,
     );
-
-    // Apply kind filter post-scoring (so boosters still use full graph)
-    let results: Vec<_> = if let Some(k) = kind {
-        results
-            .into_iter()
-            .filter(|r| r.kind.eq_ignore_ascii_case(k))
-            .collect()
-    } else {
-        results
-    };
 
     if results.is_empty() {
         if json {
@@ -252,6 +308,7 @@ async fn run_smart(
                     "semantic_score": (r.semantic_score * 100.0).round() / 100.0,
                     "r_eff": (r.r_eff * 100.0).round() / 100.0,
                     "graph_centrality": (r.graph_centrality * 100.0).round() / 100.0,
+                    "expanded_from": r.expanded_from,
                     "mode": "smart",
                     "semantic_available": has_embeddings,
                 })
@@ -273,6 +330,9 @@ async fn run_smart(
                 "  {:.2}  {} [{}|{}] \"{}\"",
                 r.score, r.id, r.kind, r.status, r.title
             );
+            if let Some(parent) = &r.expanded_from {
+                println!("        via {} (expanded neighbor)", parent);
+            }
             println!("        {}", signals);
         }
 

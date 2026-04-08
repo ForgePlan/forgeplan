@@ -301,13 +301,41 @@ struct EstimateParams {
     complexity: Option<String>,
 }
 
+fn default_search_limit() -> usize {
+    20
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
-    /// Search query (case-insensitive substring)
+    /// Search query (BM25 keyword + optional semantic, case-insensitive).
     query: String,
-    /// Filter by artifact kind (optional)
+    /// Filter by artifact kind (e.g. "prd", "rfc").
     #[serde(default)]
     kind: Option<String>,
+    /// Filter by status (e.g. "active", "draft").
+    #[serde(default)]
+    status: Option<String>,
+    /// Filter by depth (tactical, standard, deep, critical).
+    #[serde(default)]
+    depth: Option<String>,
+    /// Only include artifacts with linked evidence (R_eff > 0).
+    #[serde(default)]
+    with_evidence: bool,
+    /// Only include artifacts without evidence (R_eff == 0).
+    #[serde(default)]
+    no_evidence: bool,
+    /// Filter by created_at date (YYYY-MM-DD).
+    #[serde(default)]
+    since: Option<String>,
+    /// Disable 1-hop graph expansion of top results.
+    #[serde(default)]
+    no_expand: bool,
+    /// Max results (default 20).
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+    /// Search mode: "keyword", "semantic", or "smart" (default).
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -333,19 +361,87 @@ struct ImportParams {
     force: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct FpfSearchParams {
-    /// Search query for FPF knowledge base
-    query: String,
-    /// Max results (default 5)
+/// Exposed for integration test harness in tests/fpf_search_handler.rs.
+/// Fields remain pub(crate) — only the struct itself is visible externally.
+/// `#[doc(hidden)]` because this is unstable test infrastructure, not a
+/// supported public API (Sprint 13.7 hotfix re-audit M3).
+#[doc(hidden)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct FpfSearchParams {
+    /// Search query — keyword or semantic depending on `semantic` flag
+    pub query: String,
+    /// Max results (default 5, max 50)
     #[serde(default)]
-    limit: Option<usize>,
+    pub limit: Option<usize>,
+    /// Use semantic (vector) search instead of keyword. Requires `semantic-search`
+    /// feature at build time. When the feature is not compiled in, the query
+    /// gracefully falls back to keyword search and the response includes a
+    /// `warning` field explaining why.
+    #[serde(default)]
+    pub semantic: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FpfSectionParams {
     /// FPF section ID (e.g. "B.3", "C.2.2")
     id: String,
+}
+
+// ── FPF Rules params (PRD-041 FR-003, FR-004) ────────────────
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct FpfRulesParams {
+    /// Filter by action: "EXPLORE", "INVESTIGATE", or "EXPLOIT". Omit for all.
+    #[serde(default)]
+    action: Option<String>,
+    /// Fetch single rule by name. Returns 1 rule or error if not found.
+    #[serde(default)]
+    name: Option<String>,
+    /// If true, return only {name, priority, action} without condition details.
+    #[serde(default)]
+    summary: Option<bool>,
+    /// Filter by source: "config" or "default". For debugging workspace state.
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct FpfCheckParams {
+    /// Artifact ID to check (e.g. "PRD-041")
+    id: String,
+}
+
+// ── Discover params (PRD-035 FR-004..006) ────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverStartParams {
+    /// Project name for the discovery session
+    project_name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverFindingParams {
+    /// Session ID returned by discover_start
+    session_id: String,
+    /// Phase (detect / structure / code / git / tests / docs / synthesize)
+    phase: String,
+    /// Source tier (1, 2, or 3)
+    tier: u8,
+    /// Artifact kind to create (note / prd / rfc / problem / evidence)
+    kind: String,
+    /// Artifact title
+    title: String,
+    /// Artifact body (markdown)
+    body: String,
+    /// Source file paths that informed this finding
+    #[serde(default)]
+    source_files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverCompleteParams {
+    /// Session ID to complete
+    session_id: String,
 }
 
 // ── Tool implementations ─────────────────────────────────────
@@ -411,18 +507,46 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // DoS protection: enforce configurable input limits.
+        let integrity_config = workspace::load_config(&ws)
+            .map(|c| c.integrity)
+            .unwrap_or_default();
+        if p.title.len() > integrity_config.mcp_max_title_len {
+            return Err(McpError::invalid_params(
+                format!(
+                    "title too long: {} bytes (max: {})",
+                    p.title.len(),
+                    integrity_config.mcp_max_title_len
+                ),
+                None,
+            ));
+        }
+
         let artifact_kind: ArtifactKind = match p.kind.parse() {
             Ok(k) => k,
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
+        let template_key = artifact_kind.template_key();
+
+        // Duplicate detection (FR-004 of PRD-043) — non-blocking warnings.
+        // MCP is non-interactive, so the artifact is still created and warnings
+        // are returned for the AI agent to react to.
+        let dup_filter = ArtifactFilter {
+            kind: Some(template_key.to_string()),
+            status: None,
+        };
+        let existing = store
+            .list_artifacts(Some(&dup_filter))
+            .await
+            .map_err(|e| McpError::internal_error(format!("Duplicate scan failed: {e}"), None))?;
+        let warnings = find_duplicate_warnings(&existing, &p.title);
+
         let id = store
             .next_id(&prefix)
             .await
             .map_err(|e| McpError::internal_error(format!("ID generation failed: {e}"), None))?;
-
-        let template_key = artifact_kind.template_key();
         let template = match get_embedded_template(template_key) {
             Some(t) => t,
             None => {
@@ -466,6 +590,7 @@ impl ForgeplanServer {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
 
         store
@@ -497,6 +622,7 @@ impl ForgeplanServer {
             title: p.title,
             filepath: filepath.display().to_string(),
             _next_action: Some(hint),
+            warnings,
         }))
     }
 
@@ -893,6 +1019,35 @@ impl ForgeplanServer {
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
             return Ok(err_result(
                 "Nothing to update. Provide status, title, or body.",
+            ));
+        }
+
+        // DoS protection: enforce configurable input limits.
+        let integrity_config = workspace::load_config(&ws)
+            .map(|c| c.integrity)
+            .unwrap_or_default();
+        if let Some(ref t) = p.title
+            && t.len() > integrity_config.mcp_max_title_len
+        {
+            return Err(McpError::invalid_params(
+                format!(
+                    "title too long: {} bytes (max: {})",
+                    t.len(),
+                    integrity_config.mcp_max_title_len
+                ),
+                None,
+            ));
+        }
+        if let Some(ref b) = p.body
+            && b.len() > integrity_config.mcp_max_body_len
+        {
+            return Err(McpError::invalid_params(
+                format!(
+                    "body too long: {} bytes (max: {})",
+                    b.len(),
+                    integrity_config.mcp_max_body_len
+                ),
+                None,
             ));
         }
 
@@ -1296,6 +1451,7 @@ impl ForgeplanServer {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
 
         store
@@ -1491,56 +1647,156 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Search artifacts by keyword (case-insensitive substring match on title and body). Returns matching artifacts with highlighted lines."
+        description = "Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle."
     )]
     async fn forgeplan_search(
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::graph::knowledge::KnowledgeGraph;
+        use forgeplan_core::search::filter::ArtifactFilter as SearchFilter;
+        use forgeplan_core::search::smart;
+
+        if p.query.trim().is_empty() {
+            return Ok(err_result("Search query cannot be empty."));
+        }
+
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let hits = store
-            .search_body(&p.query, p.kind.as_deref())
+        // Build composable filter from params.
+        let mut filters: Vec<SearchFilter> = Vec::new();
+        if let Some(k) = &p.kind {
+            filters.push(SearchFilter::Kind(k.clone()));
+        }
+        if let Some(s) = &p.status {
+            filters.push(SearchFilter::Status(s.clone()));
+        }
+        if let Some(d) = &p.depth {
+            filters.push(SearchFilter::Depth(d.clone()));
+        }
+        if p.with_evidence {
+            filters.push(SearchFilter::HasEvidence);
+        }
+        if p.no_evidence {
+            filters.push(SearchFilter::NoEvidence);
+        }
+        if let Some(date_str) = &p.since {
+            match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                Ok(d) => filters.push(SearchFilter::CreatedAfter(d.and_hms_opt(0, 0, 0).unwrap())),
+                Err(e) => {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "Invalid since date '{}' (expected YYYY-MM-DD): {}",
+                            date_str, e
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
+        let filter: Option<SearchFilter> = match filters.len() {
+            0 => None,
+            1 => Some(filters.into_iter().next().unwrap()),
+            _ => Some(SearchFilter::And(filters)),
+        };
+
+        let limit = if p.limit == 0 { 20 } else { p.limit };
+        let mode = p.mode.as_deref().unwrap_or("smart").to_lowercase();
+
+        // Keyword-only: legacy substring match (backward compat).
+        if mode == "keyword" {
+            let hits = store
+                .search_body(&p.query, p.kind.as_deref())
+                .await
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+            let query_lower = p.query.to_lowercase();
+            let results: Vec<SearchResultDto> = hits
+                .iter()
+                .take(limit)
+                .map(|record| {
+                    let matched_lines: Vec<String> = record
+                        .body
+                        .lines()
+                        .enumerate()
+                        .filter(|(_, line)| line.to_lowercase().contains(&query_lower))
+                        .take(5)
+                        .map(|(i, line)| {
+                            if line.chars().count() > 120 {
+                                format!(
+                                    "L{}: {}...",
+                                    i + 1,
+                                    line.chars().take(120).collect::<String>()
+                                )
+                            } else {
+                                format!("L{}: {}", i + 1, line.trim())
+                            }
+                        })
+                        .collect();
+
+                    SearchResultDto {
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        title: record.title.clone(),
+                        matched_lines,
+                        status: record.status.clone(),
+                        score: 0.0,
+                        bm25_score: 0.0,
+                        semantic_score: 0.0,
+                        r_eff: record.r_eff_score,
+                        expanded_from: None,
+                    }
+                })
+                .collect();
+            let total = results.len();
+            return Ok(json_result(&SearchResponse { results, total }));
+        }
+
+        // Smart / semantic: use smart_search over all records.
+        let records = store
+            .list_records(None)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
-        let query_lower = p.query.to_lowercase();
-        let results: Vec<SearchResultDto> = hits
-            .iter()
-            .map(|record| {
-                let matched_lines: Vec<String> = record
-                    .body
-                    .lines()
-                    .enumerate()
-                    .filter(|(_, line)| line.to_lowercase().contains(&query_lower))
-                    .take(5)
-                    .map(|(i, line)| {
-                        if line.chars().count() > 120 {
-                            format!(
-                                "L{}: {}...",
-                                i + 1,
-                                line.chars().take(120).collect::<String>()
-                            )
-                        } else {
-                            format!("L{}: {}", i + 1, line.trim())
-                        }
-                    })
-                    .collect();
+        let graph_opt = if p.no_expand {
+            None
+        } else {
+            KnowledgeGraph::from_store(&store).await.ok()
+        };
 
-                SearchResultDto {
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    title: record.title.clone(),
-                    matched_lines,
-                }
+        let results = smart::smart_search(
+            &records,
+            &p.query,
+            graph_opt.as_ref(),
+            None, // semantic_scores — not wired in MCP yet
+            filter.as_ref(),
+            limit,
+        );
+
+        let dtos: Vec<SearchResultDto> = results
+            .into_iter()
+            .map(|r| SearchResultDto {
+                id: r.id,
+                kind: r.kind,
+                title: r.title,
+                matched_lines: Vec::new(),
+                status: r.status,
+                score: r.score,
+                bm25_score: r.bm25_score,
+                semantic_score: r.semantic_score,
+                r_eff: r.r_eff,
+                expanded_from: r.expanded_from,
             })
             .collect();
 
-        let total = results.len();
-        Ok(json_result(&SearchResponse { results, total }))
+        let total = dtos.len();
+        Ok(json_result(&SearchResponse {
+            results: dtos,
+            total,
+        }))
     }
 
     #[tool(
@@ -1929,6 +2185,7 @@ impl ForgeplanServer {
             author: None,
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         };
 
         store
@@ -2090,6 +2347,7 @@ impl ForgeplanServer {
                 author: art["author"].as_str().map(String::from),
                 parent_epic: art["parent_epic"].as_str().map(String::from),
                 valid_until: art["valid_until"].as_str().map(String::from),
+                tags: Vec::new(),
             };
 
             if let Err(e) = store.create_artifact(&new_art).await {
@@ -2123,12 +2381,27 @@ impl ForgeplanServer {
     // ── FPF Knowledge Base tools ────────────────────────────────
 
     #[tool(
-        description = "Search FPF (First Principles Framework) knowledge base for relevant patterns and concepts. Returns matching sections with titles and snippets."
+        description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take 10–30 seconds if the BGE-M3 model needs to be downloaded (~150MB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false)."
     )]
-    async fn forgeplan_fpf_search(
+    /// Exposed for integration test harness in tests/fpf_search_handler.rs.
+    /// `#[doc(hidden)]` because this is unstable test infrastructure, not a
+    /// supported public API (Sprint 13.7 hotfix re-audit M3).
+    #[doc(hidden)]
+    pub async fn forgeplan_fpf_search(
         &self,
         Parameters(p): Parameters<FpfSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Param validation — parity with Sprint 13.6 bounds.
+        if p.query.trim().is_empty() {
+            return Ok(err_result("query cannot be empty"));
+        }
+        if p.query.len() > 8192 {
+            return Ok(err_result(&format!(
+                "query too long (max 8192 chars, got {})",
+                p.query.len()
+            )));
+        }
+
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -2140,32 +2413,87 @@ impl ForgeplanServer {
             ));
         }
 
-        let limit = p.limit.unwrap_or(5);
-        let results = store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
-            tracing::warn!("FPF search failed: {e}");
-            Vec::new()
-        });
+        let limit = p.limit.unwrap_or(5).min(50);
+        let semantic = p.semantic.unwrap_or(false);
+        let mut warning: Option<String> = None;
 
-        Ok(json_result(&FpfSearchResponse {
-            query: p.query,
-            results: results
-                .iter()
-                .map(|c| FpfSearchHit {
-                    section_id: c.section_id.clone(),
-                    title: c.title.clone(),
-                    snippet: c
-                        .body
-                        .lines()
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .chars()
-                        .take(200)
-                        .collect(),
-                    line_count: c.line_count,
+        let results = if semantic {
+            #[cfg(feature = "semantic-search")]
+            {
+                match forgeplan_core::embed::Embedder::new() {
+                    Ok(mut embedder) => match embedder.embed(&p.query) {
+                        Ok(qvec) => match store.search_fpf_by_vector(&qvec, limit).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!("FPF vector search failed: {e}");
+                                warning = Some(format!(
+                                    "vector search failed ({e}); fell back to keyword search"
+                                ));
+                                store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("FPF query encoding failed: {e}");
+                            warning = Some(format!(
+                                "failed to encode query ({e}); fell back to keyword search"
+                            ));
+                            store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("FPF embedder init failed: {e}");
+                        warning = Some(format!(
+                            "failed to init embedder ({e}); fell back to keyword search"
+                        ));
+                        store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                    }
+                }
+            }
+            #[cfg(not(feature = "semantic-search"))]
+            {
+                warning = Some(
+                    "semantic-search feature not compiled in; falling back to keyword search"
+                        .to_string(),
+                );
+                store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
+                    tracing::warn!("FPF search failed: {e}");
+                    Vec::new()
                 })
-                .collect(),
-        }))
+            }
+        } else {
+            store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
+                tracing::warn!("FPF search failed: {e}");
+                Vec::new()
+            })
+        };
+
+        let hits: Vec<FpfSearchHit> = results
+            .iter()
+            .map(|c| FpfSearchHit {
+                id: c.id.clone(),
+                section_id: c.section_id.clone(),
+                title: c.title.clone(),
+                snippet: c
+                    .body
+                    .lines()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(200)
+                    .collect::<String>(),
+                line_count: c.line_count,
+            })
+            .collect();
+
+        let response = FpfSearchResponse {
+            query: p.query.clone(),
+            semantic,
+            count: hits.len(),
+            results: hits,
+            warning,
+        };
+        Ok(json_result(&response))
     }
 
     #[tool(
@@ -2217,6 +2545,148 @@ impl ForgeplanServer {
                 .collect(),
             total: sections.len(),
         }))
+    }
+
+    #[tool(
+        description = "List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned."
+    )]
+    async fn forgeplan_fpf_rules(
+        &self,
+        Parameters(p): Parameters<FpfRulesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::fpf;
+
+        let ws_config = self.load_workspace_config().await;
+        let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
+        // FIX 4: validate param lengths before doing any work.
+        if p.action.as_deref().map(|s| s.len()).unwrap_or(0) > 64 {
+            return Ok(err_result("action filter too long (max 64)"));
+        }
+        if p.name.as_deref().map(|s| s.len()).unwrap_or(0) > 128 {
+            return Ok(err_result("name filter too long (max 128)"));
+        }
+        if p.source.as_deref().map(|s| s.len()).unwrap_or(0) > 16 {
+            return Ok(err_result("source filter too long (max 16)"));
+        }
+
+        let (rules, source) = fpf::active_rules(fpf_cfg);
+
+        let source_str = match source {
+            fpf::RuleSource::Config => "config",
+            fpf::RuleSource::Default => "default",
+        };
+
+        // Filter by source if requested.
+        let mut filtered: Vec<&fpf::ext::rules::Rule> = if let Some(src) = p.source.as_deref() {
+            if !src.eq_ignore_ascii_case(source_str) {
+                Vec::new()
+            } else {
+                rules.iter().collect()
+            }
+        } else {
+            rules.iter().collect()
+        };
+
+        // Filter by name (exact match).
+        if let Some(name) = p.name.as_deref() {
+            let found: Vec<&fpf::ext::rules::Rule> = filtered
+                .iter()
+                .copied()
+                .filter(|r| r.name == name)
+                .collect();
+            if found.is_empty() {
+                let available: Vec<String> = rules.iter().map(|r| r.name.clone()).collect();
+                return Ok(json_result(&serde_json::json!({
+                    "error": "rule not found",
+                    "name": name,
+                    "available": available,
+                })));
+            }
+            filtered = found;
+        }
+
+        // Filter by action (case-insensitive).
+        if let Some(action) = p.action.as_deref() {
+            filtered.retain(|r| r.action.to_string().eq_ignore_ascii_case(action));
+        }
+
+        // Sort by priority ascending (highest-priority first at runtime).
+        filtered.sort_by_key(|r| r.priority);
+
+        let summary_only = p.summary.unwrap_or(false);
+        let rules_json: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|r| {
+                if summary_only {
+                    serde_json::json!({
+                        "name": r.name,
+                        "priority": r.priority,
+                        "action": r.action.to_string(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": r.name,
+                        "priority": r.priority,
+                        "action": r.action.to_string(),
+                        "condition": serde_json::to_value(&r.condition)
+                            .unwrap_or(serde_json::Value::Null),
+                        "condition_summary": r.condition.summarize(),
+                        "message": r.message,
+                    })
+                }
+            })
+            .collect();
+
+        Ok(json_result(&serde_json::json!({
+            "source": source_str,
+            "count": rules_json.len(),
+            "rules": rules_json,
+        })))
+    }
+
+    #[tool(
+        description = "Check which FPF rules match a given artifact, showing all matched rules, the winning rule (first in priority order, same as runtime), and rules that did not match. Use this to understand FPF engine behavior for a specific artifact before acting on it."
+    )]
+    async fn forgeplan_fpf_check(
+        &self,
+        Parameters(p): Parameters<FpfCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::fpf;
+
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // FIX 4: param length bound.
+        if p.id.len() > 128 {
+            return Ok(err_result("artifact id too long (max 128)"));
+        }
+
+        let ws_config = self.load_workspace_config().await;
+        let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
+
+        let result = match fpf::check_artifact_against_rules(&store, &p.id, fpf_cfg).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return Ok(err_result(&format!("Artifact not found: {}", p.id)));
+            }
+            Err(_) => {
+                return Ok(err_result(&format!("Failed to check artifact: {}", p.id)));
+            }
+        };
+
+        // Canonical JSON — serialize the core struct (kind/status already renamed
+        // via serde) and splice the summary line.
+        let summary = result.summary_line();
+        let mut val = match serde_json::to_value(&result) {
+            Ok(v) => v,
+            Err(e) => return Ok(err_result(&format!("serialize failed: {e}"))),
+        };
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert("summary".to_string(), serde_json::Value::String(summary));
+        }
+        Ok(json_result(&val))
     }
 
     #[tool(
@@ -2491,6 +2961,197 @@ impl ForgeplanServer {
             "next_action": session.next_action_hint(),
         })))
     }
+
+    // ── Discover tools (PRD-035 FR-004..006) ────────────────────
+
+    #[tool(
+        description = "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding."
+    )]
+    async fn forgeplan_discover_start(
+        &self,
+        Parameters(p): Parameters<DiscoverStartParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let session = forgeplan_core::discover::DiscoverSession::new(&p.project_name);
+        let protocol = forgeplan_core::discover::Protocol::default();
+
+        if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
+            return Ok(err_result(&format!("Failed to save session: {e}")));
+        }
+
+        Ok(json_result(&serde_json::json!({
+            "session_id": session.id,
+            "project_name": session.project_name,
+            "status": session.status,
+            "current_phase": session.current_phase,
+            "protocol": protocol,
+            "_next_action": format!(
+                "Start with phase 1 (detect): {}",
+                forgeplan_core::discover::Phase::Detect.instructions()
+            ),
+        })))
+    }
+
+    #[tool(
+        description = "Report a discovery finding. The agent calls this after analyzing a file/module/git-log during a phase. ForgePlan creates an artifact (note/prd/rfc/problem/evidence) with the finding content, tags it with the source tier, and links it to the discovery session."
+    )]
+    async fn forgeplan_discover_finding(
+        &self,
+        Parameters(p): Parameters<DiscoverFindingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Parse phase
+        let phase = match p.phase.to_lowercase().as_str() {
+            "detect" => forgeplan_core::discover::Phase::Detect,
+            "structure" => forgeplan_core::discover::Phase::Structure,
+            "code" => forgeplan_core::discover::Phase::Code,
+            "git" => forgeplan_core::discover::Phase::Git,
+            "tests" => forgeplan_core::discover::Phase::Tests,
+            "docs" => forgeplan_core::discover::Phase::Docs,
+            "synthesize" => forgeplan_core::discover::Phase::Synthesize,
+            _ => return Ok(err_result(&format!("Unknown phase: {}", p.phase))),
+        };
+
+        // Validate tier
+        if !(1..=3).contains(&p.tier) {
+            return Ok(err_result(&format!(
+                "Invalid tier: {} (must be 1, 2, or 3)",
+                p.tier
+            )));
+        }
+
+        // Load session
+        let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+        };
+
+        // Create artifact from finding
+        let artifact_kind: ArtifactKind = match p.kind.parse() {
+            Ok(k) => k,
+            Err(e) => return Ok(err_result(&format!("Invalid kind: {e}"))),
+        };
+        let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
+        let id = match store.next_id(&prefix).await {
+            Ok(id) => id,
+            Err(e) => return Ok(err_result(&format!("ID generation failed: {e}"))),
+        };
+
+        // Build tags: source=tier{N} + phase={phase_name} + optionally legacy-doc for tier 3
+        let mut tags = vec![
+            format!("source=tier{}", p.tier),
+            format!("phase={}", phase.name()),
+        ];
+        if p.tier == 3 {
+            tags.push("source=legacy-doc".into());
+        }
+        tags.push(format!("discover-session={}", session.id));
+
+        // Format body with source files metadata
+        let mut full_body = p.body.clone();
+        if !p.source_files.is_empty() {
+            full_body.push_str("\n\n## Source Files\n\n");
+            for f in &p.source_files {
+                full_body.push_str(&format!("- `{}`\n", f));
+            }
+        }
+
+        let new_artifact = NewArtifact {
+            id: id.clone(),
+            kind: artifact_kind.template_key().to_string(),
+            status: "draft".to_string(),
+            title: p.title.clone(),
+            body: full_body,
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: tags.clone(),
+        };
+
+        if let Err(e) = store.create_artifact(&new_artifact).await {
+            return Ok(err_result(&format!("Failed to create artifact: {e}")));
+        }
+
+        // Update session
+        let finding = forgeplan_core::discover::Finding {
+            phase,
+            tier: p.tier,
+            kind: p.kind.clone(),
+            title: p.title.clone(),
+            body: p.body.clone(),
+            source_files: p.source_files.clone(),
+            artifact_id: Some(id.clone()),
+            created_at: chrono::Utc::now(),
+        };
+        session.add_finding(finding);
+        session.current_phase = phase;
+
+        if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
+            return Ok(err_result(&format!("Failed to update session: {e}")));
+        }
+
+        Ok(json_result(&serde_json::json!({
+            "session_id": session.id,
+            "artifact_id": id,
+            "phase": phase.name(),
+            "tier": p.tier,
+            "total_findings": session.findings.len(),
+            "status": session.status,
+            "_next_action": "Continue to next finding or call forgeplan_discover_complete when done with all phases",
+        })))
+    }
+
+    #[tool(
+        description = "Complete a discovery session. Generates a summary report with findings per phase/tier, runs forgeplan health, and marks the session as completed."
+    )]
+    async fn forgeplan_discover_complete(
+        &self,
+        Parameters(p): Parameters<DiscoverCompleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+        };
+
+        session.complete();
+
+        if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
+            return Ok(err_result(&format!("Failed to save session: {e}")));
+        }
+
+        let phase_counts = session.phase_counts();
+        let tier_counts = session.tier_counts();
+
+        Ok(json_result(&serde_json::json!({
+            "session_id": session.id,
+            "project_name": session.project_name,
+            "status": session.status,
+            "total_findings": session.findings.len(),
+            "phase_counts": phase_counts.iter().map(|(p, c)| (p.name(), c)).collect::<std::collections::HashMap<_, _>>(),
+            "tier_counts": tier_counts,
+            "artifacts_created": session.findings.iter().filter_map(|f| f.artifact_id.clone()).collect::<Vec<_>>(),
+            "completed_at": session.completed_at,
+            "_next_action": "Run forgeplan health to validate discovery, then forgeplan validate each new artifact",
+        })))
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────
@@ -2533,5 +3194,227 @@ fn methodology_hint_after_new(kind: &str, id: &str) -> String {
         ),
         "note" => "Notes auto-expire in 90 days. Link to related artifacts if relevant.".into(),
         _ => format!("Next: forgeplan validate {id}"),
+    }
+}
+
+// ── Duplicate detection (FR-004 of PRD-043) ──────────────────────────────
+//
+// Uses canonical `forgeplan_core::duplicate` (Jaccard) — single source of truth
+// shared with CLI `new` and `health` (W4 C-1 fix).
+
+use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+
+/// Return all artifacts whose title similarity to `title` is at or above
+/// [`DUPLICATE_SIMILARITY_THRESHOLD`]. Sorted by similarity descending.
+fn find_duplicate_warnings(
+    existing: &[forgeplan_core::artifact::store::ArtifactSummary],
+    title: &str,
+) -> Vec<DuplicateWarning> {
+    let mut out: Vec<DuplicateWarning> = existing
+        .iter()
+        .filter_map(|s| {
+            let score = title_similarity(&s.title, title);
+            if score >= DUPLICATE_SIMILARITY_THRESHOLD {
+                Some(DuplicateWarning {
+                    id: s.id.clone(),
+                    title: s.title.clone(),
+                    similarity: score,
+                    status: s.status.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
+#[cfg(test)]
+mod duplicate_tests {
+    use super::*;
+    use forgeplan_core::artifact::store::ArtifactSummary;
+
+    fn rec(id: &str, title: &str) -> ArtifactSummary {
+        ArtifactSummary {
+            id: id.into(),
+            title: title.into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+        }
+    }
+
+    #[test]
+    fn exact_match_returns_warning() {
+        let existing = vec![rec("PRD-001", "Auth System")];
+        let w = find_duplicate_warnings(&existing, "Auth System");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].id, "PRD-001");
+        assert!(w[0].similarity >= 1.0);
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let existing = vec![rec("PRD-001", "Billing")];
+        assert!(find_duplicate_warnings(&existing, "Auth System").is_empty());
+    }
+
+    #[test]
+    fn substring_below_threshold_excluded() {
+        let existing = vec![rec("PRD-001", "Auth System Design")];
+        // 0.8 is NOT strictly > 0.8
+        assert!(find_duplicate_warnings(&existing, "auth system").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod search_params_tests {
+    use super::*;
+
+    #[test]
+    fn test_search_params_backward_compat() {
+        // Legacy client only sends `query` — all new fields must default.
+        let json = r#"{"query": "auth"}"#;
+        let p: SearchParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.query, "auth");
+        assert!(p.kind.is_none());
+        assert!(p.status.is_none());
+        assert!(p.depth.is_none());
+        assert!(!p.with_evidence);
+        assert!(!p.no_evidence);
+        assert!(p.since.is_none());
+        assert!(!p.no_expand);
+        assert_eq!(p.limit, 20, "default limit should be 20");
+        assert!(p.mode.is_none());
+    }
+
+    #[test]
+    fn test_search_params_with_filters() {
+        let json = r#"{
+            "query": "auth",
+            "kind": "prd",
+            "status": "active",
+            "depth": "standard",
+            "with_evidence": true,
+            "no_evidence": false,
+            "since": "2026-01-01",
+            "no_expand": true,
+            "limit": 5,
+            "mode": "smart"
+        }"#;
+        let p: SearchParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.query, "auth");
+        assert_eq!(p.kind.as_deref(), Some("prd"));
+        assert_eq!(p.status.as_deref(), Some("active"));
+        assert_eq!(p.depth.as_deref(), Some("standard"));
+        assert!(p.with_evidence);
+        assert!(!p.no_evidence);
+        assert_eq!(p.since.as_deref(), Some("2026-01-01"));
+        assert!(p.no_expand);
+        assert_eq!(p.limit, 5);
+        assert_eq!(p.mode.as_deref(), Some("smart"));
+    }
+
+    #[test]
+    fn test_search_params_since_invalid_date_rejected() {
+        // The handler parses `since` via NaiveDate::parse_from_str and
+        // returns invalid_params on failure. Verify parse rejects garbage.
+        let bad = "not-a-date";
+        assert!(chrono::NaiveDate::parse_from_str(bad, "%Y-%m-%d").is_err());
+        let good = "2026-01-01";
+        assert!(chrono::NaiveDate::parse_from_str(good, "%Y-%m-%d").is_ok());
+    }
+
+    #[test]
+    fn test_default_search_limit() {
+        assert_eq!(default_search_limit(), 20);
+    }
+}
+
+#[cfg(test)]
+mod fpf_param_validation_tests {
+    use super::*;
+
+    /// Helper: build FpfRulesParams from JSON.
+    fn rules_params(json: &str) -> FpfRulesParams {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn rules_params_accepts_short_filters() {
+        let p = rules_params(r#"{"action": "EXPLORE", "name": "blind-spot", "source": "config"}"#);
+        assert_eq!(p.action.as_deref(), Some("EXPLORE"));
+        assert_eq!(p.name.as_deref(), Some("blind-spot"));
+        assert_eq!(p.source.as_deref(), Some("config"));
+        // Bounds we enforce in handler
+        assert!(p.action.as_deref().unwrap().len() <= 64);
+        assert!(p.name.as_deref().unwrap().len() <= 128);
+        assert!(p.source.as_deref().unwrap().len() <= 16);
+    }
+
+    #[test]
+    fn rules_params_action_too_long_detected() {
+        let long = "X".repeat(65);
+        let p = rules_params(&format!(r#"{{"action": "{long}"}}"#));
+        assert!(p.action.as_deref().unwrap().len() > 64);
+    }
+
+    #[test]
+    fn check_params_id_too_long_detected() {
+        let id = "A".repeat(200);
+        let p: FpfCheckParams = serde_json::from_str(&format!(r#"{{"id": "{id}"}}"#)).unwrap();
+        assert!(p.id.len() > 128);
+    }
+
+    #[test]
+    fn check_params_normal_id_within_bounds() {
+        let p: FpfCheckParams = serde_json::from_str(r#"{"id": "PRD-001"}"#).unwrap();
+        assert!(p.id.len() <= 128);
+    }
+
+    #[test]
+    fn fpf_search_params_accepts_semantic_flag() {
+        let p: FpfSearchParams =
+            serde_json::from_str(r#"{"query": "trust", "semantic": true}"#).unwrap();
+        assert_eq!(p.query, "trust");
+        assert_eq!(p.semantic, Some(true));
+    }
+
+    #[test]
+    fn fpf_search_params_defaults_semantic_to_false_when_absent() {
+        let p: FpfSearchParams = serde_json::from_str(r#"{"query": "trust"}"#).unwrap();
+        assert_eq!(p.semantic, None);
+        assert!(!p.semantic.unwrap_or(false));
+        assert_eq!(p.limit, None);
+    }
+
+    #[test]
+    fn fpf_search_params_accepts_limit_and_semantic_false() {
+        let p: FpfSearchParams =
+            serde_json::from_str(r#"{"query": "q", "limit": 10, "semantic": false}"#).unwrap();
+        assert_eq!(p.limit, Some(10));
+        assert_eq!(p.semantic, Some(false));
+    }
+
+    #[test]
+    fn fpf_search_params_query_length_bounds() {
+        // Empty query — caller-side validation rejects trim().is_empty()
+        let p: FpfSearchParams = serde_json::from_str(r#"{"query": "   "}"#).unwrap();
+        assert!(p.query.trim().is_empty());
+
+        // Oversize query — caller-side validation rejects len > 8192
+        let long = "x".repeat(8193);
+        let p: FpfSearchParams =
+            serde_json::from_str(&format!(r#"{{"query": "{long}"}}"#)).unwrap();
+        assert!(p.query.len() > 8192);
+
+        // Normal query within bounds
+        let p: FpfSearchParams = serde_json::from_str(r#"{"query": "trust calculus"}"#).unwrap();
+        assert!(!p.query.trim().is_empty());
+        assert!(p.query.len() <= 8192);
     }
 }

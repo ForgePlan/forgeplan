@@ -84,6 +84,98 @@ pub fn r_eff(evidence: &[EvidenceItem]) -> f64 {
         .unwrap_or(0.0)
 }
 
+// ──────────────────────────────────────────────────────────────────
+// PRD-040 FR-002: R_eff Confidence Interval
+// ──────────────────────────────────────────────────────────────────
+
+/// Confidence interval for R_eff computed from evidence count + freshness.
+///
+/// Not a statistical CI in the Bayesian sense — a heuristic band that
+/// widens when evidence is sparse or stale. Designed for operator
+/// intuition: "wide CI → don't fully trust this score".
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ReffCi {
+    /// Point estimate (same as `r_eff()`)
+    pub point: f64,
+    /// Lower bound of the interval
+    pub low: f64,
+    /// Upper bound of the interval
+    pub high: f64,
+    /// Number of evidence items used (for "insufficient evidence" labels)
+    pub evidence_count: usize,
+    /// Number of stale items (expired valid_until)
+    pub stale_count: usize,
+}
+
+impl ReffCi {
+    /// True when there is not enough evidence to form a meaningful CI (< 3 items).
+    pub fn is_insufficient(&self) -> bool {
+        self.evidence_count < 3
+    }
+
+    /// Width of the interval (upper - lower).
+    pub fn width(&self) -> f64 {
+        (self.high - self.low).max(0.0)
+    }
+
+    /// Formatted as "0.85 [0.70 — 1.00]" or "0.70 (insufficient evidence)".
+    pub fn format(&self) -> String {
+        if self.is_insufficient() && self.evidence_count > 0 {
+            format!("{:.2} (insufficient evidence)", self.point)
+        } else if self.evidence_count == 0 {
+            "0.00 (no evidence)".to_string()
+        } else {
+            format!("{:.2} [{:.2} — {:.2}]", self.point, self.low, self.high)
+        }
+    }
+}
+
+/// Compute R_eff with a confidence interval.
+///
+/// # Heuristic
+///
+/// - Point = weakest-link min (same as `r_eff`)
+/// - Uncertainty base = 0.30 / sqrt(evidence_count) capped at 0.30
+/// - Stale items add +0.10 per stale item (capped at +0.30)
+/// - Interval = [point - uncertainty, point + uncertainty], clamped to [0, 1]
+///
+/// With N=1 evidence, uncertainty ≈ 0.30 (very wide).
+/// With N=9 evidence, uncertainty ≈ 0.10 (tighter).
+/// With N=100 evidence, uncertainty ≈ 0.03 (confident).
+pub fn r_eff_with_ci(evidence: &[EvidenceItem]) -> ReffCi {
+    let point = r_eff(evidence);
+    let count = evidence.len();
+    let stale_count = evidence
+        .iter()
+        .filter(|e| is_expired(e.valid_until))
+        .count();
+
+    if count == 0 {
+        return ReffCi {
+            point: 0.0,
+            low: 0.0,
+            high: 0.0,
+            evidence_count: 0,
+            stale_count: 0,
+        };
+    }
+
+    let base_uncertainty = (0.30 / (count as f64).sqrt()).min(0.30);
+    let stale_penalty = (stale_count as f64 * 0.10).min(0.30);
+    let uncertainty = (base_uncertainty + stale_penalty).min(0.50);
+
+    let low = (point - uncertainty).max(0.0);
+    let high = (point + uncertainty).min(1.0);
+
+    ReffCi {
+        point,
+        low,
+        high,
+        evidence_count: count,
+        stale_count,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Recursive R_eff engine (Wave 1, PRD-016)
 // ---------------------------------------------------------------------------
@@ -508,5 +600,122 @@ mod tests {
             (score - 0.9).abs() < f64::EPSILON,
             "Expected 0.9, got {score}"
         );
+    }
+
+    // ── R_eff CI tests (PRD-040 FR-002) ─────────────────────────────
+
+    fn mk_ev(cl: u8) -> EvidenceItem {
+        EvidenceItem {
+            id: "e".to_string(),
+            evidence_type: EvidenceType::Test,
+            verdict: Verdict::Supports,
+            congruence_level: cl,
+            valid_until: None,
+        }
+    }
+
+    fn mk_stale_ev(cl: u8) -> EvidenceItem {
+        EvidenceItem {
+            id: "e-stale".to_string(),
+            evidence_type: EvidenceType::Test,
+            verdict: Verdict::Supports,
+            congruence_level: cl,
+            valid_until: Some(
+                chrono::NaiveDate::from_ymd_opt(2020, 1, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+            ),
+        }
+    }
+
+    #[test]
+    fn ci_empty_evidence_is_zero() {
+        let ci = r_eff_with_ci(&[]);
+        assert_eq!(ci.point, 0.0);
+        assert_eq!(ci.low, 0.0);
+        assert_eq!(ci.high, 0.0);
+        assert_eq!(ci.evidence_count, 0);
+        assert!(ci.format().contains("no evidence"));
+    }
+
+    #[test]
+    fn ci_single_evidence_is_insufficient() {
+        let ci = r_eff_with_ci(&[mk_ev(3)]);
+        assert_eq!(ci.evidence_count, 1);
+        assert!(ci.is_insufficient());
+        assert!(ci.format().contains("insufficient"));
+    }
+
+    #[test]
+    fn ci_three_evidence_meaningful_range() {
+        let ci = r_eff_with_ci(&[mk_ev(3), mk_ev(3), mk_ev(3)]);
+        assert_eq!(ci.evidence_count, 3);
+        assert!(!ci.is_insufficient());
+        // point = 1.0 (all CL3, no penalty)
+        assert!((ci.point - 1.0).abs() < f64::EPSILON);
+        // uncertainty = 0.30 / sqrt(3) ≈ 0.173
+        // high = 1.0 (clamped), low ≈ 0.827
+        assert_eq!(ci.high, 1.0);
+        assert!(ci.low < 0.9 && ci.low > 0.7);
+    }
+
+    #[test]
+    fn ci_many_evidence_tight_range() {
+        let evidence: Vec<_> = (0..9).map(|_| mk_ev(3)).collect();
+        let ci = r_eff_with_ci(&evidence);
+        assert_eq!(ci.evidence_count, 9);
+        // uncertainty = 0.30 / 3 = 0.10
+        assert!(ci.width() < 0.25);
+    }
+
+    #[test]
+    fn ci_stale_evidence_widens_ci() {
+        let fresh = r_eff_with_ci(&[mk_ev(3), mk_ev(3), mk_ev(3)]);
+        let stale = r_eff_with_ci(&[mk_ev(3), mk_ev(3), mk_stale_ev(3)]);
+        assert!(stale.stale_count == 1);
+        assert!(stale.width() > fresh.width());
+    }
+
+    #[test]
+    fn ci_point_matches_r_eff() {
+        let ev = vec![mk_ev(3), mk_ev(2), mk_ev(1)];
+        let ci = r_eff_with_ci(&ev);
+        assert!((ci.point - r_eff(&ev)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ci_format_insufficient_has_point() {
+        let ci = r_eff_with_ci(&[mk_ev(3), mk_ev(3)]);
+        let formatted = ci.format();
+        assert!(formatted.contains("1.00") || formatted.contains("0.9"));
+        assert!(formatted.contains("insufficient"));
+    }
+
+    #[test]
+    fn ci_format_sufficient_has_brackets() {
+        let ci = r_eff_with_ci(&[mk_ev(3), mk_ev(3), mk_ev(3)]);
+        let formatted = ci.format();
+        assert!(formatted.contains("["));
+        assert!(formatted.contains("]"));
+        assert!(formatted.contains("—"));
+    }
+
+    #[test]
+    fn ci_clamps_to_valid_range() {
+        let ev: Vec<_> = (0..2).map(|_| mk_ev(3)).collect();
+        let ci = r_eff_with_ci(&ev);
+        assert!(ci.low >= 0.0);
+        assert!(ci.high <= 1.0);
+    }
+
+    #[test]
+    fn ci_many_stale_caps_penalty() {
+        // 5 stale items — should cap stale_penalty at 0.30
+        let ev: Vec<_> = (0..5).map(|_| mk_stale_ev(3)).collect();
+        let ci = r_eff_with_ci(&ev);
+        assert_eq!(ci.stale_count, 5);
+        // width ≤ 2 * 0.50 = 1.0 (max uncertainty * 2)
+        assert!(ci.width() <= 1.0);
     }
 }

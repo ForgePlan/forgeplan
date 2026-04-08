@@ -49,6 +49,8 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         author: None,
         parent_epic: None,
         valid_until: None,
+        // C1: AI-generated artifacts start untagged; users can tag post-review.
+        tags: Vec::new(),
     };
 
     store

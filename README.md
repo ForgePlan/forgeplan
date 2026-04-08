@@ -20,7 +20,7 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 **[Documentation](docs/README.md)** ·
 **[Methodology](docs/methodology/FORGEPLAN-GUIDE.md)** ·
 **[Releases](https://github.com/ForgePlan/forgeplan/releases)** ·
-**[Marketplace](marketplace/)**
+**[Marketplace](https://github.com/ForgePlan/marketplace)**
 
 <br>
 

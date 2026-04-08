@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{Array, Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::ArrowError;
 use chrono::Utc;
 use futures::StreamExt;
@@ -37,15 +37,27 @@ fn validate_id_for_filter(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Filter for listing artifacts.
+/// Storage-layer filter for listing artifacts by kind/status.
+///
+/// Semantically distinct from the composable query DSL in
+/// `crate::search::filter::ArtifactFilter` — this struct is a flat,
+/// SQL-translatable predicate used by the LanceDB store. Sprint 13.3 H1
+/// renamed it from `ArtifactFilter` to resolve a name collision with the
+/// query DSL introduced in Sprint 13.2 (PRD-039).
 #[derive(Debug, Default)]
-pub struct ArtifactFilter {
+pub struct ListFilter {
     pub kind: Option<String>,
     pub status: Option<String>,
 }
 
+/// Deprecated alias kept for source compatibility. New code should use
+/// [`ListFilter`] for storage-layer queries or
+/// [`crate::search::filter::ArtifactFilter`] for the composable DSL.
+#[allow(dead_code)]
+pub type ArtifactFilter = ListFilter;
+
 /// Minimal artifact data for creation.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NewArtifact {
     pub id: String,
     pub kind: String,
@@ -56,10 +68,13 @@ pub struct NewArtifact {
     pub author: Option<String>,
     pub parent_epic: Option<String>,
     pub valid_until: Option<String>,
+    /// Free-form tags — "key=value" pairs (e.g. "source=code") or bare keys
+    /// (e.g. "legacy"). PRD-035 FR-001. Defaults to empty.
+    pub tags: Vec<String>,
 }
 
 /// Full artifact record from LanceDB — includes body and all metadata.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactRecord {
     pub id: String,
     pub kind: String,
@@ -73,6 +88,17 @@ pub struct ArtifactRecord {
     pub valid_until: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Free-form tags. Defaults to empty (legacy artifacts / NULL column).
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Body content hash (PRD-043 integrity). Preserved across full-row
+    /// rewrites such as `replace_record` so tag mutations don't drop it.
+    #[serde(default)]
+    pub body_hash: Option<String>,
+    /// Pre-computed embedding vector. Preserved across full-row rewrites
+    /// (Sprint 13.3 C2 fix) so tag mutations don't null semantic search.
+    #[serde(default, skip_serializing)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 /// Vector search result: an artifact record paired with its distance from the query.
@@ -147,6 +173,12 @@ impl ArtifactRecord {
             "updated_at".to_string(),
             Value::String(self.updated_at.clone()),
         );
+        if !self.tags.is_empty() {
+            map.insert(
+                "tags".to_string(),
+                Value::Sequence(self.tags.iter().map(|t| Value::String(t.clone())).collect()),
+            );
+        }
         map
     }
 }
@@ -221,7 +253,13 @@ impl LanceStore {
         let change_log = db.open_table("change_log").execute().await.ok();
 
         // Run migrations (idempotent — safe on every open)
-        migrate::run_migrations(&artifacts, &relations, change_log.as_ref()).await?;
+        migrate::run_migrations(
+            &artifacts,
+            &relations,
+            change_log.as_ref(),
+            fpf_spec.as_ref(),
+        )
+        .await?;
 
         Ok(Self {
             _db: db,
@@ -452,6 +490,128 @@ impl LanceStore {
             .execute()
             .await?;
         Ok(())
+    }
+
+    /// Atomically replace the full row for an artifact via LanceDB's
+    /// `merge_insert` upsert API. Used by list-column updates (tags) which
+    /// LanceDB's SQL `update` path cannot express.
+    ///
+    /// Preserves existing `created_at`; callers should update `updated_at`
+    /// on the record before calling.
+    ///
+    /// # Crash safety
+    ///
+    /// Prior to Sprint 13.3 audit fix H3 this routine performed
+    /// `delete` followed by `add` as two separate awaits. If the process
+    /// crashed between them — or the `add` failed — the artifact was
+    /// permanently lost from the LanceDB index (only recoverable via
+    /// `forgeplan scan-import` from the markdown source of truth).
+    ///
+    /// We now use `Table::merge_insert(&["id"])` with
+    /// `when_matched_update_all` + `when_not_matched_insert_all`, which
+    /// LanceDB executes as a single transactional operation against the
+    /// underlying Lance dataset. Either the new row is committed or the
+    /// previous row remains intact — there is no observable intermediate
+    /// state. Concurrent merge_inserts on the same `id` are serialized by
+    /// Lance's optimistic-concurrency commit loop with retries.
+    ///
+    /// See Sprint 13.3 audit finding H3 for context.
+    async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
+        validate_id_for_filter(&record.id)?;
+        let schema = schema::artifacts_schema();
+        let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![record.id.as_str()])),
+                Arc::new(StringArray::from(vec![record.kind.as_str()])),
+                Arc::new(StringArray::from(vec![record.status.as_str()])),
+                Arc::new(StringArray::from(vec![record.title.as_str()])),
+                Arc::new(arrow_array::LargeStringArray::from(vec![
+                    record.body.as_str(),
+                ])),
+                Arc::new(StringArray::from(vec![record.depth.as_str()])),
+                Arc::new(StringArray::from(vec![record.author.as_deref()])),
+                Arc::new(StringArray::from(vec![record.parent_epic.as_deref()])),
+                Arc::new(Float64Array::from(vec![record.r_eff_score])),
+                Arc::new(StringArray::from(vec![record.valid_until.as_deref()])),
+                Arc::new(StringArray::from(vec![record.created_at.as_str()])),
+                Arc::new(StringArray::from(vec![record.updated_at.as_str()])),
+                Arc::new(StringArray::from(vec![record.body_hash.as_deref()])),
+                convert::make_embedding_col_from_option(record.embedding.as_deref()),
+                Arc::new(convert::build_tags_list_array(tags_slices)),
+            ],
+        )?;
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let mut builder = self.artifacts.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(reader).await.map_err(|e| {
+            anyhow::anyhow!(
+                "replace_record: merge_insert failed for '{}': {}. \
+                 Run `forgeplan scan-import` to rebuild the index from markdown if data is missing.",
+                record.id,
+                e
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Add tags to an existing artifact. Existing tags are merged and
+    /// deduplicated (case-sensitive). No-op if all tags are already present.
+    /// Returns error if the artifact does not exist.
+    pub async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
+        let mut record = self
+            .get_record(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+        let before = record.tags.len();
+        for t in new_tags {
+            let trimmed = t.trim();
+            if !trimmed.is_empty() && !record.tags.iter().any(|x| x == trimmed) {
+                record.tags.push(trimmed.to_string());
+            }
+        }
+        if record.tags.len() == before {
+            return Ok(());
+        }
+        record.updated_at = Utc::now().to_rfc3339();
+        self.replace_record(&record).await
+    }
+
+    /// Remove the given tags from an existing artifact. Unknown tags are
+    /// silently ignored. Returns error if the artifact does not exist.
+    pub async fn remove_tags(&self, id: &str, to_remove: &[String]) -> anyhow::Result<()> {
+        let mut record = self
+            .get_record(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+        let before = record.tags.len();
+        record.tags.retain(|t| !to_remove.iter().any(|r| r == t));
+        if record.tags.len() == before {
+            return Ok(());
+        }
+        record.updated_at = Utc::now().to_rfc3339();
+        self.replace_record(&record).await
+    }
+
+    /// List artifacts matching a tag filter.
+    ///
+    /// Filter syntax:
+    /// - `"key=value"` → matches artifacts whose tags contain exactly that string.
+    /// - `"key"` → matches any tag equal to `"key"` or starting with `"key="`.
+    ///
+    /// Matching is done Rust-side after a full scan (LanceDB list column
+    /// filtering is not uniformly supported).
+    pub async fn list_by_tag(&self, tag_filter: &str) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let all = self.list_records(None).await?;
+        let matched: Vec<ArtifactRecord> = all
+            .into_iter()
+            .filter(|r| crate::search::filter::has_tag_predicate(&r.tags, tag_filter))
+            .collect();
+        Ok(matched)
     }
 
     /// Delete an artifact by ID.
@@ -889,8 +1049,16 @@ impl LanceStore {
         self.fpf_spec.is_some()
     }
 
-    /// Insert FPF chunks in batch.
-    pub async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
+    /// Insert FPF chunks in batch, optionally with pre-computed embeddings
+    /// (PRD-042). When `embeddings` is `Some`, the slice MUST have the same
+    /// length as `chunks` and every vector MUST have length
+    /// `EMBEDDING_DIM` (1024). When `None`, the embedding column is filled
+    /// with typed nulls — pre-semantic workspaces and tests use this path.
+    pub async fn insert_fpf_chunks(
+        &self,
+        chunks: &[FpfChunk],
+        embeddings: Option<&[Vec<f32>]>,
+    ) -> anyhow::Result<usize> {
         let table = self.fpf_spec.as_ref().ok_or_else(|| {
             anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
         })?;
@@ -905,6 +1073,55 @@ impl LanceStore {
         let file_paths: Vec<&str> = chunks.iter().map(|c| c.file_path.as_str()).collect();
         let created_ats: Vec<&str> = chunks.iter().map(|c| c.created_at.as_str()).collect();
 
+        let dim = schema::EMBEDDING_DIM as usize;
+        let embedding_col: Arc<dyn Array> = match embeddings {
+            None => convert::make_null_embedding_col(chunks.len()),
+            Some(vecs) => {
+                if vecs.len() != chunks.len() {
+                    anyhow::bail!(
+                        "embeddings length ({}) must match chunks length ({})",
+                        vecs.len(),
+                        chunks.len()
+                    );
+                }
+                for (i, v) in vecs.iter().enumerate() {
+                    if v.len() != dim {
+                        anyhow::bail!(
+                            "embedding[{}] has wrong dim: expected {}, got {}",
+                            i,
+                            dim,
+                            v.len()
+                        );
+                    }
+                    // Sprint 13.7 wave 2 C4.8: reject non-finite values at the
+                    // boundary. LanceDB's cosine distance on NaN/Inf is
+                    // undefined, so refuse to persist garbage.
+                    if let Some(pos) = v.iter().position(|f| !f.is_finite()) {
+                        anyhow::bail!(
+                            "embedding[{}] contains non-finite value at index {}",
+                            i,
+                            pos
+                        );
+                    }
+                }
+                use arrow_array::{FixedSizeListArray, Float32Array};
+                use arrow_schema::Field as ArrowField;
+                let total: Vec<f32> = vecs.iter().flatten().copied().collect();
+                let values = Arc::new(Float32Array::from(total));
+                let item_field = Arc::new(ArrowField::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                ));
+                Arc::new(FixedSizeListArray::new(
+                    item_field,
+                    schema::EMBEDDING_DIM,
+                    values,
+                    None,
+                ))
+            }
+        };
+
         let batch = RecordBatch::try_new(
             schema::fpf_spec_schema(),
             vec![
@@ -916,11 +1133,87 @@ impl LanceStore {
                 Arc::new(Int32Array::from(line_counts)),
                 Arc::new(StringArray::from(file_paths)),
                 Arc::new(StringArray::from(created_ats)),
+                embedding_col,
             ],
         )?;
 
         table.add(vec![batch]).execute().await?;
         Ok(chunks.len())
+    }
+
+    /// Vector similarity search over FPF chunks (PRD-042).
+    ///
+    /// # Feature-flag contract
+    ///
+    /// This method does NOT require the `semantic-search` feature — it only
+    /// does vector similarity search against the `embedding` column.
+    /// Feature-gated callers (like `forgeplan fpf search --semantic`) compute
+    /// the query vector using `Embedder` and pass it here. Callers without the
+    /// feature cannot produce query vectors, so this method is effectively
+    /// unused in keyword-only builds, but the code path remains compiled for
+    /// testability.
+    ///
+    /// Uses LanceDB's native `vector_search` with cosine distance — the same
+    /// path artifacts already use for semantic search.
+    ///
+    /// # Behavior
+    /// - errors when `query_vec.len() != EMBEDDING_DIM` (1024).
+    /// - returns an empty Vec when the table has no rows or all embedding
+    ///   cells are NULL (pre-ingest workspace).
+    /// - returns up to `limit` chunks ordered by ascending cosine distance
+    ///   (closest first).
+    pub async fn search_fpf_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        let dim = schema::EMBEDDING_DIM as usize;
+        if query_vec.len() != dim {
+            anyhow::bail!(
+                "query vector has wrong dim: expected {}, got {}",
+                dim,
+                query_vec.len()
+            );
+        }
+
+        let table = self.fpf_spec.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
+        })?;
+
+        // LanceDB native vector search. On an empty/all-null column LanceDB
+        // may either return zero rows or error; we silently degrade to Ok([])
+        // as the documented contract, but log the underlying reason so
+        // debugging is possible.
+        let search_builder = match table.vector_search(query_vec) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  [search_fpf_by_vector] vector search builder failed: {e}");
+                return Ok(Vec::new());
+            }
+        };
+        let stream = match search_builder
+            .distance_type(lancedb::DistanceType::Cosine)
+            .limit(limit)
+            .execute()
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  [search_fpf_by_vector] vector search failed: {e}");
+                return Ok(Vec::new());
+            }
+        };
+
+        let batches = collect_batches(stream).await?;
+        let mut results = Vec::new();
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                if let Some(chunk) = extract_fpf_chunk(batch, row) {
+                    results.push(chunk);
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
@@ -1105,6 +1398,9 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let valid_until = get_string(batch, "valid_until", row);
     let created_at = get_string(batch, "created_at", row).unwrap_or_default();
     let updated_at = get_string(batch, "updated_at", row).unwrap_or_default();
+    let tags = convert::extract_tags(batch, row);
+    let body_hash = get_string(batch, "body_hash", row);
+    let embedding = convert::extract_embedding(batch, row);
     Some(ArtifactRecord {
         id,
         kind,
@@ -1118,6 +1414,9 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
         valid_until,
         created_at,
         updated_at,
+        tags,
+        body_hash,
+        embedding,
     })
 }
 
@@ -1212,6 +1511,7 @@ fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
 
 /// Create an empty RecordBatch for artifacts (used when initializing tables).
 fn empty_artifacts_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
+    let empty_tags: Vec<&[String]> = Vec::new();
     RecordBatch::try_new(
         schema,
         vec![
@@ -1229,6 +1529,7 @@ fn empty_artifacts_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatc
             Arc::new(StringArray::from(Vec::<&str>::new())),
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             convert::make_null_embedding_col(0),
+            Arc::new(convert::build_tags_list_array(empty_tags)),
         ],
     )
 }
@@ -1316,6 +1617,7 @@ fn empty_fpf_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, Arr
             Arc::new(Int32Array::from(Vec::<i32>::new())),   // line_count
             Arc::new(StringArray::from(Vec::<&str>::new())), // file_path
             Arc::new(StringArray::from(Vec::<&str>::new())), // created_at
+            convert::make_null_embedding_col(0),             // embedding
         ],
     )
 }
@@ -1341,6 +1643,7 @@ mod tests {
             author: Some("test-author".to_string()),
             parent_epic: None,
             valid_until: None,
+            tags: Vec::new(),
         }
     }
 
@@ -1803,6 +2106,9 @@ mod tests {
             valid_until: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         let summary = record.to_summary();
@@ -1827,6 +2133,9 @@ mod tests {
             valid_until: Some("2025-06-01".to_string()),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-06-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         let map = record.frontmatter_map();
@@ -1852,6 +2161,40 @@ mod tests {
         assert!(map.contains_key("r_eff_score"));
         assert!(map.contains_key("created_at"));
         assert!(map.contains_key("updated_at"));
+        // Empty tags should NOT be emitted
+        assert!(!map.contains_key("tags"));
+    }
+
+    #[tokio::test]
+    async fn roundtrip_artifact_with_tags_through_frontmatter_map() {
+        let record = ArtifactRecord {
+            id: "PRD-099".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Tags".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            tags: vec!["source=code".to_string(), "layer=auth".to_string()],
+            body_hash: None,
+            embedding: None,
+        };
+
+        let map = record.frontmatter_map();
+        let seq = match map.get("tags").unwrap() {
+            serde_yaml::Value::Sequence(s) => s,
+            _ => panic!("tags should be a sequence"),
+        };
+        assert_eq!(seq.len(), 2);
+
+        // Round-trip through tags_from_frontmatter
+        let tags = crate::artifact::frontmatter::tags_from_frontmatter(&map);
+        assert_eq!(tags, vec!["source=code", "layer=auth"]);
     }
 
     #[tokio::test]
@@ -1974,6 +2317,9 @@ mod tests {
             valid_until: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         let text = record.embedding_text(2000);
@@ -2008,6 +2354,9 @@ mod tests {
             valid_until: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         };
 
         // Default chunk_size=2000
@@ -2045,6 +2394,9 @@ mod tests {
             valid_until: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
         }
     }
 
@@ -2191,5 +2543,924 @@ mod tests {
         assert!(validate_id_for_filter("123-invalid").is_err());
         assert!(validate_id_for_filter("has space").is_err());
         assert!(validate_id_for_filter("has;semicolon").is_err());
+    }
+
+    // ── Tags (PRD-035 FR-001) ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_artifact_with_tags_roundtrips() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-100");
+        art.tags = vec!["source=code".to_string(), "layer=domain".to_string()];
+        store.create_artifact(&art).await.unwrap();
+        let rec = store.get_record("PRD-100").await.unwrap().unwrap();
+        assert_eq!(rec.tags, vec!["source=code", "layer=domain"]);
+    }
+
+    #[tokio::test]
+    async fn tags_empty_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-101"))
+            .await
+            .unwrap();
+        let rec = store.get_record("PRD-101").await.unwrap().unwrap();
+        assert!(rec.tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_tags_merges_and_deduplicates() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-102");
+        art.tags = vec!["source=code".to_string()];
+        store.create_artifact(&art).await.unwrap();
+
+        store
+            .add_tags(
+                "PRD-102",
+                &[
+                    "source=code".to_string(), // dup — ignored
+                    "layer=domain".to_string(),
+                    "reviewed".to_string(),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rec = store.get_record("PRD-102").await.unwrap().unwrap();
+        assert_eq!(rec.tags, vec!["source=code", "layer=domain", "reviewed"]);
+    }
+
+    #[tokio::test]
+    async fn remove_tags_drops_matching_only() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-103");
+        art.tags = vec![
+            "source=code".to_string(),
+            "layer=domain".to_string(),
+            "reviewed".to_string(),
+        ];
+        store.create_artifact(&art).await.unwrap();
+
+        store
+            .remove_tags(
+                "PRD-103",
+                &["layer=domain".to_string(), "missing".to_string()],
+            )
+            .await
+            .unwrap();
+
+        let rec = store.get_record("PRD-103").await.unwrap().unwrap();
+        assert_eq!(rec.tags, vec!["source=code", "reviewed"]);
+    }
+
+    /// Sprint 13.3 audit H3 regression: `replace_record` must be atomic.
+    /// The previous implementation did delete-then-add as two awaits — a
+    /// crash or a failed `add` left the artifact permanently lost. We now
+    /// use `merge_insert`, which Lance commits atomically. This test
+    /// guards against accidental reintroduction of the delete/add pattern
+    /// by confirming that after a successful `add_tags` (which calls
+    /// `replace_record`) all original fields are preserved and the row
+    /// count for the id stays at exactly 1 — i.e. no duplicates and no
+    /// missing rows, as you'd see with a non-atomic implementation that
+    /// races against itself.
+    #[tokio::test]
+    async fn replace_record_is_atomic_preserves_fields() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-150");
+        art.tags = vec!["source=code".to_string()];
+        art.author = Some("alice".to_string());
+        art.parent_epic = Some("EPIC-001".to_string());
+        store.create_artifact(&art).await.unwrap();
+
+        let original_created_at = store
+            .get_record("PRD-150")
+            .await
+            .unwrap()
+            .unwrap()
+            .created_at
+            .clone();
+
+        // Trigger replace_record via add_tags.
+        store
+            .add_tags("PRD-150", &["layer=domain".to_string()])
+            .await
+            .unwrap();
+
+        // Row must still exist with all fields intact (no data loss).
+        let rec = store.get_record("PRD-150").await.unwrap().unwrap();
+        assert_eq!(rec.id, "PRD-150");
+        assert_eq!(rec.kind, art.kind);
+        assert_eq!(rec.title, art.title);
+        assert_eq!(rec.body, art.body);
+        assert_eq!(rec.author.as_deref(), Some("alice"));
+        assert_eq!(rec.parent_epic.as_deref(), Some("EPIC-001"));
+        assert_eq!(rec.created_at, original_created_at);
+        assert_eq!(rec.tags, vec!["source=code", "layer=domain"]);
+
+        // And exactly one row exists (merge_insert must not duplicate).
+        let listed = store.list_records(None).await.unwrap();
+        let matches: Vec<_> = listed.iter().filter(|r| r.id == "PRD-150").collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "merge_insert must produce exactly one row per id"
+        );
+    }
+
+    /// Sprint 13.3 audit H3: repeated replace_record calls must be safe
+    /// — no row loss, no duplicates — even when invoked back-to-back.
+    /// This is the closest we can get to exercising the atomic-commit
+    /// path without injecting failures into the LanceDB internals.
+    #[tokio::test]
+    async fn replace_record_repeated_calls_no_data_loss() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-151");
+        art.tags = vec!["a".to_string()];
+        store.create_artifact(&art).await.unwrap();
+
+        for i in 0..5 {
+            store
+                .add_tags("PRD-151", &[format!("tag{i}")])
+                .await
+                .unwrap();
+        }
+
+        let rec = store.get_record("PRD-151").await.unwrap().unwrap();
+        assert_eq!(rec.tags, vec!["a", "tag0", "tag1", "tag2", "tag3", "tag4"]);
+
+        let listed = store.list_records(None).await.unwrap();
+        assert_eq!(
+            listed.iter().filter(|r| r.id == "PRD-151").count(),
+            1,
+            "repeated replace_record must not duplicate rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_by_tag_key_value_filter() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut a = sample_artifact("PRD-110");
+        a.tags = vec!["source=code".to_string()];
+        store.create_artifact(&a).await.unwrap();
+        let mut b = sample_artifact("PRD-111");
+        b.tags = vec!["source=docs".to_string()];
+        store.create_artifact(&b).await.unwrap();
+        let mut c = sample_artifact("PRD-112");
+        c.tags = vec!["source=code".to_string(), "layer=domain".to_string()];
+        store.create_artifact(&c).await.unwrap();
+
+        let hits = store.list_by_tag("source=code").await.unwrap();
+        let ids: Vec<String> = hits.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"PRD-110".to_string()));
+        assert!(ids.contains(&"PRD-112".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_by_tag_key_only_matches_prefix_and_bare() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut a = sample_artifact("PRD-120");
+        a.tags = vec!["source=code".to_string()];
+        store.create_artifact(&a).await.unwrap();
+        let mut b = sample_artifact("PRD-121");
+        b.tags = vec!["reviewed".to_string()];
+        store.create_artifact(&b).await.unwrap();
+        let mut c = sample_artifact("PRD-122");
+        c.tags = vec!["layer=domain".to_string()];
+        store.create_artifact(&c).await.unwrap();
+
+        let src = store.list_by_tag("source").await.unwrap();
+        assert_eq!(src.len(), 1);
+        assert_eq!(src[0].id, "PRD-120");
+
+        let rev = store.list_by_tag("reviewed").await.unwrap();
+        assert_eq!(rev.len(), 1);
+        assert_eq!(rev[0].id, "PRD-121");
+    }
+
+    #[tokio::test]
+    async fn add_tags_preserves_body_hash() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-200"))
+            .await
+            .unwrap();
+
+        // Seed body_hash via replace_record (simulates PRD-043 integrity write).
+        let mut rec = store.get_record("PRD-200").await.unwrap().unwrap();
+        rec.body_hash = Some("deadbeef-0000abcd".to_string());
+        store.replace_record(&rec).await.unwrap();
+
+        store
+            .add_tags("PRD-200", &["source=code".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-200").await.unwrap().unwrap();
+        assert_eq!(
+            after.body_hash.as_deref(),
+            Some("deadbeef-0000abcd"),
+            "C2: add_tags must preserve body_hash"
+        );
+        assert_eq!(after.tags, vec!["source=code"]);
+    }
+
+    #[tokio::test]
+    async fn add_tags_preserves_embedding() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-201"))
+            .await
+            .unwrap();
+
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let vec_in: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.001).collect();
+        let mut rec = store.get_record("PRD-201").await.unwrap().unwrap();
+        rec.embedding = Some(vec_in.clone());
+        store.replace_record(&rec).await.unwrap();
+
+        store
+            .add_tags("PRD-201", &["layer=domain".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-201").await.unwrap().unwrap();
+        let got = after.embedding.expect("C2: embedding must be preserved");
+        assert_eq!(got.len(), dim);
+        assert_eq!(got, vec_in);
+    }
+
+    #[tokio::test]
+    async fn remove_tags_preserves_body_hash_and_embedding() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mut art = sample_artifact("PRD-202");
+        art.tags = vec!["source=code".to_string(), "drop_me".to_string()];
+        store.create_artifact(&art).await.unwrap();
+
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let vec_in: Vec<f32> = vec![0.5f32; dim];
+        let mut rec = store.get_record("PRD-202").await.unwrap().unwrap();
+        rec.body_hash = Some("cafef00d-12345678".to_string());
+        rec.embedding = Some(vec_in.clone());
+        store.replace_record(&rec).await.unwrap();
+
+        store
+            .remove_tags("PRD-202", &["drop_me".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-202").await.unwrap().unwrap();
+        assert_eq!(after.body_hash.as_deref(), Some("cafef00d-12345678"));
+        assert_eq!(after.embedding.as_deref(), Some(vec_in.as_slice()));
+        assert_eq!(after.tags, vec!["source=code"]);
+    }
+
+    #[tokio::test]
+    async fn add_tags_missing_artifact_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let err = store
+            .add_tags("PRD-999", &["source=code".to_string()])
+            .await;
+        assert!(err.is_err());
+    }
+
+    // ── PRD-042 fpf_spec embedding column / vector search ────────────
+
+    fn fpf_chunk(idx: usize) -> FpfChunk {
+        FpfChunk {
+            id: format!("fpf-test-{:03}", idx),
+            section_id: format!("T.{}", idx),
+            parent_section: None,
+            title: format!("Test section {}", idx),
+            body: format!("body content {}", idx),
+            line_count: 1,
+            file_path: "test.md".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_none_embeddings_writes_null() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
+        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(n, 2);
+
+        // Read back and verify embedding column is null for all rows.
+        let table = store.fpf_spec.as_ref().unwrap();
+        let batches = collect_batches(table.query().execute().await.unwrap())
+            .await
+            .unwrap();
+        let mut total = 0;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("embedding")
+                .expect("embedding column must exist");
+            for row in 0..batch.num_rows() {
+                assert!(col.is_null(row), "row {} should be null", row);
+                total += 1;
+            }
+        }
+        assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_with_embeddings_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
+        let embeds: Vec<Vec<f32>> = vec![vec![0.1f32; dim], vec![0.2f32; dim]];
+        let n = store
+            .insert_fpf_chunks(&chunks, Some(&embeds))
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let table = store.fpf_spec.as_ref().unwrap();
+        let batches = collect_batches(table.query().execute().await.unwrap())
+            .await
+            .unwrap();
+        let mut non_null = 0;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("embedding")
+                .expect("embedding column must exist");
+            for row in 0..batch.num_rows() {
+                if !col.is_null(row) {
+                    non_null += 1;
+                }
+            }
+        }
+        assert_eq!(non_null, 2, "both rows should have non-null embeddings");
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_wrong_dim_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let chunks = vec![fpf_chunk(1)];
+        let bad: Vec<Vec<f32>> = vec![vec![0.5f32; 512]];
+        let err = store.insert_fpf_chunks(&chunks, Some(&bad)).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_length_mismatch_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        // Only 2 embeddings for 3 chunks
+        let embeds: Vec<Vec<f32>> = vec![vec![0.0_f32; dim], vec![0.0_f32; dim]];
+        let err = store.insert_fpf_chunks(&chunks, Some(&embeds)).await;
+        assert!(err.is_err(), "length mismatch must error");
+        let msg = format!("{:?}", err.unwrap_err());
+        assert!(
+            msg.contains("length") || msg.contains("embedding"),
+            "error should mention length/embedding, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_mixed_dim_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
+        // First vector correct, second wrong dim.
+        let embeds: Vec<Vec<f32>> = vec![vec![0.0_f32; dim], vec![0.0_f32; 512]];
+        let err = store.insert_fpf_chunks(&chunks, Some(&embeds)).await;
+        assert!(err.is_err(), "mixed-dim vectors must error");
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_validates_dim() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let bad = vec![0.0f32; 512];
+        let err = store.search_fpf_by_vector(&bad, 5).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_empty_db_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![0.0f32; dim];
+        let results = store.search_fpf_by_vector(&q, 5).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_happy_path() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+
+        // Three chunks with distinct embeddings: only chunk 1 is close to the
+        // query vector (which is dominated by axis 0).
+        let mut e1 = vec![0.0f32; dim];
+        e1[0] = 1.0;
+        let mut e2 = vec![0.0f32; dim];
+        e2[1] = 1.0;
+        let mut e3 = vec![0.0f32; dim];
+        e3[2] = 1.0;
+
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        let embeds = vec![e1.clone(), e2, e3];
+        store
+            .insert_fpf_chunks(&chunks, Some(&embeds))
+            .await
+            .unwrap();
+
+        let results = store.search_fpf_by_vector(&e1, 3).await.unwrap();
+        assert_eq!(results.len(), 3, "should return all 3 chunks when limit=3");
+        assert_eq!(
+            results[0].id, "fpf-test-001",
+            "closest match should be chunk 1"
+        );
+        // Ordering: the last result must not be the closest chunk — proves
+        // LanceDB is actually ranking, not just returning insertion order.
+        assert_ne!(
+            results[2].id, "fpf-test-001",
+            "last result should not be the closest match"
+        );
+        // No duplicates: top-2 are distinct ids.
+        assert_ne!(
+            results[0].id, results[1].id,
+            "consecutive results must be distinct"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_all_null_column_returns_empty() {
+        // Migration path: workspace upgraded to v4 schema (embedding column
+        // exists) but user hasn't run `forgeplan fpf ingest` yet — all rows
+        // have NULL embeddings. LanceDB may either return no rows or surface
+        // an error; both cases must degrade to Ok(empty).
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3), fpf_chunk(4)];
+        // Insert WITHOUT embeddings — column is present but all null.
+        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(n, 4);
+
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let query = vec![0.1_f32; dim];
+        let result = store.search_fpf_by_vector(&query, 5).await.unwrap();
+        assert!(
+            result.is_empty(),
+            "all-null embedding column should return empty, got {} rows",
+            result.len()
+        );
+    }
+
+    // ── Sprint 13.7 wave 2 C4: corner case tests ────────────────────
+
+    async fn seeded_fpf_store(tmp: &TempDir) -> LanceStore {
+        let store = make_store(tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut e1 = vec![0.0f32; dim];
+        e1[0] = 1.0;
+        let mut e2 = vec![0.0f32; dim];
+        e2[1] = 1.0;
+        let mut e3 = vec![0.0f32; dim];
+        e3[2] = 1.0;
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        store
+            .insert_fpf_chunks(&chunks, Some(&[e1, e2, e3]))
+            .await
+            .unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_nan_query_handled() {
+        // C4.1: NaN query. LanceDB cosine on NaN is undefined — our contract
+        // is graceful degrade (Ok) OR an Err. Document whichever actually
+        // happens; the must-not is a panic.
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![f32::NAN; dim];
+        let result = store.search_fpf_by_vector(&q, 5).await;
+        // Whatever the backend does, it must not panic. Both Ok and Err are
+        // acceptable; documented behavior right now is degraded Ok/empty.
+        match result {
+            Ok(rows) => {
+                // NaN distance sort is undefined; zero rows is the safest
+                // observed outcome.
+                assert!(rows.len() <= 3, "must not exceed table size");
+            }
+            Err(_) => {
+                // Explicit failure is also acceptable.
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_inf_query_handled() {
+        // C4.2: same for +INF.
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![f32::INFINITY; dim];
+        let _ = store.search_fpf_by_vector(&q, 5).await; // must not panic
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_off_by_one_dim_errors() {
+        // C4.3: dim-1 and dim+1 both rejected with a clear message.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        for bad_len in &[dim - 1, dim + 1] {
+            let q = vec![0.0f32; *bad_len];
+            let err = store.search_fpf_by_vector(&q, 5).await.unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("wrong dim") && msg.contains(&dim.to_string()),
+                "error must mention expected dim: {msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_empty_slice_errors() {
+        // C4.4: empty query slice — rejected by dim check.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let err = store.search_fpf_by_vector(&[], 5).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("wrong dim"), "error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_limit_zero() {
+        // C4.5: limit=0 should yield an empty result (LanceDB honors limit).
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let q = vec![0.0f32; dim];
+        let results = store.search_fpf_by_vector(&q, 0).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "limit=0 must return empty, got {} rows",
+            results.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_limit_max() {
+        // C4.6: limit=usize::MAX must be capped internally and not OOM on 3
+        // rows.
+        let tmp = TempDir::new().unwrap();
+        let store = seeded_fpf_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut q = vec![0.0f32; dim];
+        q[0] = 1.0;
+        let results = store.search_fpf_by_vector(&q, usize::MAX).await.unwrap();
+        assert!(
+            results.len() <= 3,
+            "must cap at table size, got {}",
+            results.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fpf_by_vector_unicode_query_chunks() {
+        // C4.7: chunks with unicode bodies are persistable and findable via
+        // vector search.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut chunk = fpf_chunk(1);
+        chunk.title = "Привет Мир".to_string();
+        chunk.body = "привет мир 🚀 тестовое содержимое".to_string();
+        let mut e = vec![0.0f32; dim];
+        e[0] = 1.0;
+        store
+            .insert_fpf_chunks(&[chunk], Some(&[e.clone()]))
+            .await
+            .unwrap();
+        let results = store.search_fpf_by_vector(&e, 1).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].body.contains("🚀"));
+        assert!(results[0].title.contains("Привет"));
+    }
+
+    #[tokio::test]
+    async fn insert_fpf_chunks_nan_in_embedding_rejected() {
+        // C4.8: NaN in an embedding vec is refused at the boundary.
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let mut bad = vec![0.0f32; dim];
+        bad[42] = f32::NAN;
+        let err = store
+            .insert_fpf_chunks(&[fpf_chunk(1)], Some(&[bad]))
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("non-finite"),
+            "error must mention non-finite: {msg}"
+        );
+
+        // +Inf also rejected.
+        let mut bad2 = vec![0.0f32; dim];
+        bad2[0] = f32::INFINITY;
+        let err2 = store
+            .insert_fpf_chunks(&[fpf_chunk(2)], Some(&[bad2]))
+            .await
+            .unwrap_err();
+        assert!(format!("{err2}").contains("non-finite"));
+    }
+
+    // ── Sprint 13.7 hotfix (fix/sprint-13.7-post-closeout-hardening) ────────
+
+    /// FIX-A: real end-to-end semantic roundtrip via actual BGE-M3 model.
+    ///
+    /// This test is `#[ignore]` because it downloads ~150MB on first run and
+    /// exercises the full encoder stack. Run manually with:
+    ///
+    /// ```text
+    /// cargo test -p forgeplan-core --features semantic-search -- \
+    ///     --ignored real_semantic_roundtrip_with_bge_m3 --nocapture
+    /// ```
+    ///
+    /// Validates the complete code path no unit test can: Embedder::new →
+    /// embed_batch → insert_fpf_chunks → embed(query) → search_fpf_by_vector
+    /// → ranked results. Every other FPF vector test uses synthetic vectors.
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    #[ignore = "requires BGE-M3 model download (~150MB); run with --features semantic-search -- --ignored"]
+    async fn real_semantic_roundtrip_with_bge_m3() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let chunks = vec![
+            FpfChunk {
+                id: "real-1".into(),
+                section_id: "A.1".into(),
+                parent_section: None,
+                title: "Trust calculus".into(),
+                body: "F-G-R scoring with evidence congruence".into(),
+                line_count: 1,
+                file_path: "a.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+            FpfChunk {
+                id: "real-2".into(),
+                section_id: "B.2".into(),
+                parent_section: None,
+                title: "Deployment patterns".into(),
+                body: "Kubernetes orchestration and service mesh".into(),
+                line_count: 1,
+                file_path: "b.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+        ];
+
+        let mut embedder =
+            crate::embed::Embedder::new().expect("BGE-M3 Embedder::new should succeed");
+
+        let bodies: Vec<String> = chunks
+            .iter()
+            .map(|c| format!("{}: {}", c.title, c.body))
+            .collect();
+        let body_refs: Vec<&str> = bodies.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder
+            .embed_batch(&body_refs)
+            .expect("embed_batch should succeed");
+
+        assert_eq!(embeddings.len(), 2, "two chunks → two embeddings");
+        assert_eq!(
+            embeddings[0].len(),
+            crate::db::schema::EMBEDDING_DIM as usize,
+            "BGE-M3 must output 1024 dims"
+        );
+
+        store
+            .insert_fpf_chunks(&chunks, Some(&embeddings))
+            .await
+            .unwrap();
+
+        // Query is semantically close to chunk 1 (trust/evidence), not
+        // chunk 2 (kubernetes).
+        let query_vec = embedder
+            .embed("How do we measure confidence in evidence")
+            .expect("query encoding should succeed");
+
+        let results = store.search_fpf_by_vector(&query_vec, 5).await.unwrap();
+        assert!(
+            !results.is_empty(),
+            "semantic query should return at least one chunk"
+        );
+        assert_eq!(
+            results[0].id, "real-1",
+            "trust-calculus chunk should outrank kubernetes chunk for this query"
+        );
+    }
+
+    /// FIX-B: exercise the FULL migration → insert → query path on a legacy
+    /// v3 fpf_spec workspace.
+    ///
+    /// Creates a tempdir LanceDB with a legacy 8-column fpf_spec table (no
+    /// embedding column) alongside the other workspace tables, then opens it
+    /// via `LanceStore::open` which runs migrations (including
+    /// `migrate_fpf_spec` that adds the embedding column). Inserts chunks
+    /// without embeddings (legacy ingest style), verifies the embedding
+    /// column exists and is null for every row, and finally calls
+    /// `search_fpf_by_vector` — which must return Ok(empty) gracefully on an
+    /// all-null column rather than panicking or erroring.
+    #[tokio::test]
+    async fn migrate_real_v3_workspace_adds_fpf_spec_embedding_column() {
+        use arrow_schema::{DataType, Field, Schema};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        // Step 1: create a full modern workspace (artifacts/evidence/relations
+        // /change_log tables present so LanceStore::open won't bail).
+        {
+            let _store = LanceStore::init(&ws).await.unwrap();
+            // drop at end of scope so we can re-create the fpf_spec table
+            // via a direct connection.
+        }
+
+        // Step 2: drop the modern fpf_spec and recreate it in legacy shape
+        // (8 columns, no embedding). Direct LanceDB connection on the same
+        // dir as LanceStore uses.
+        let lance_dir = ws.join("lance");
+        {
+            let conn = lancedb::connect(lance_dir.to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+            conn.drop_table("fpf_spec", &[]).await.unwrap();
+
+            // Legacy pre-PRD-042 fpf_spec schema: 8 columns, no embedding.
+            let legacy_schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Utf8, false),
+                Field::new("section_id", DataType::Utf8, false),
+                Field::new("parent_section", DataType::Utf8, true),
+                Field::new("title", DataType::Utf8, false),
+                Field::new("body", DataType::LargeUtf8, false),
+                Field::new("line_count", DataType::Int32, false),
+                Field::new("file_path", DataType::Utf8, false),
+                Field::new("created_at", DataType::Utf8, false),
+            ]));
+            let empty = RecordBatch::new_empty(legacy_schema);
+            conn.create_table("fpf_spec", vec![empty])
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        // Step 3: reopen via LanceStore::open — this triggers
+        // run_migrations → migrate_fpf_spec → embedding column added back.
+        let store = LanceStore::open(&ws).await.unwrap();
+
+        // Verify embedding column now exists on the table.
+        let table = store.fpf_spec.as_ref().expect("fpf_spec must be present");
+        let schema = table.schema().await.unwrap();
+        assert!(
+            schema.fields().iter().any(|f| f.name() == "embedding"),
+            "post-migration fpf_spec must have embedding column"
+        );
+
+        // Step 4: insert legacy-style rows (no embeddings).
+        let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
+        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(n, 3);
+
+        // Step 5: embedding column is null for every newly-inserted row.
+        let batches = collect_batches(table.query().execute().await.unwrap())
+            .await
+            .unwrap();
+        let mut total = 0;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("embedding")
+                .expect("embedding column must exist");
+            for row in 0..batch.num_rows() {
+                assert!(
+                    col.is_null(row),
+                    "legacy-style insert row {row} must leave embedding null"
+                );
+                total += 1;
+            }
+        }
+        assert_eq!(total, 3);
+
+        // Step 6: search_fpf_by_vector on an all-null column must return
+        // Ok(empty) — the documented migration contract.
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+        let query = vec![0.25_f32; dim];
+        let results = store.search_fpf_by_vector(&query, 5).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "all-null embedding column must yield empty results, got {}",
+            results.len()
+        );
+    }
+
+    /// FIX-C: semantic and keyword search agree on the top result for an
+    /// obvious match. Uses synthetic orthogonal embeddings (no real model)
+    /// so it's fast and deterministic.
+    #[tokio::test]
+    async fn semantic_and_keyword_top_result_agrees_for_clear_match() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let dim = crate::db::schema::EMBEDDING_DIM as usize;
+
+        // Three chunks; chunk `m6-2` is the obvious match for "trust":
+        // it contains the keyword AND gets embedding axis 0 = 1.0.
+        let chunks = vec![
+            FpfChunk {
+                id: "m6-1".into(),
+                section_id: "A.1".into(),
+                parent_section: None,
+                title: "Deployment basics".into(),
+                body: "How to deploy services".into(),
+                line_count: 1,
+                file_path: "a.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+            FpfChunk {
+                id: "m6-2".into(),
+                section_id: "B.3".into(),
+                parent_section: None,
+                title: "Trust calculus".into(),
+                body: "Trust scoring with evidence and congruence".into(),
+                line_count: 1,
+                file_path: "b.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+            FpfChunk {
+                id: "m6-3".into(),
+                section_id: "C.1".into(),
+                parent_section: None,
+                title: "Database schemas".into(),
+                body: "Arrow schema definitions for tables".into(),
+                line_count: 1,
+                file_path: "c.md".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+        ];
+
+        let mut e1 = vec![0.0_f32; dim];
+        e1[1] = 1.0; // deployment axis
+        let mut e2 = vec![0.0_f32; dim];
+        e2[0] = 1.0; // trust axis
+        let mut e3 = vec![0.0_f32; dim];
+        e3[2] = 1.0; // schema axis
+        let embeddings = vec![e1, e2, e3];
+
+        store
+            .insert_fpf_chunks(&chunks, Some(&embeddings))
+            .await
+            .unwrap();
+
+        // Keyword path — substring match on "trust".
+        let kw_results = store.search_fpf("trust", 3).await.unwrap();
+        assert!(!kw_results.is_empty(), "keyword search returned nothing");
+        assert_eq!(
+            kw_results[0].id, "m6-2",
+            "keyword search top result must be the trust chunk"
+        );
+
+        // Semantic path — query vector aligned with trust axis.
+        let mut query_vec = vec![0.0_f32; dim];
+        query_vec[0] = 1.0;
+        let sem_results = store.search_fpf_by_vector(&query_vec, 3).await.unwrap();
+        assert!(!sem_results.is_empty(), "semantic search returned nothing");
+        assert_eq!(
+            sem_results[0].id, "m6-2",
+            "semantic search top result must be the trust chunk"
+        );
+
+        // Both paths agree — the core M6 property.
+        assert_eq!(
+            kw_results[0].id, sem_results[0].id,
+            "semantic and keyword top result must agree for this clear match"
+        );
     }
 }

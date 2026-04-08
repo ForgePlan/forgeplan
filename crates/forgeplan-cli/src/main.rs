@@ -34,6 +34,9 @@ enum Commands {
         kind: String,
         /// Artifact title
         title: String,
+        /// Skip duplicate-detection prompt and create anyway
+        #[arg(long, visible_alias = "force")]
+        allow_duplicate: bool,
     },
     /// List artifacts
     List {
@@ -43,12 +46,37 @@ enum Commands {
         /// Filter by status (draft, active, etc.)
         #[arg(long, short)]
         status: Option<String>,
+        /// Filter by tag. Supports "key=value" or bare "key" (matches any value).
+        /// Examples: --tag source=code, --tag legacy
+        #[arg(long)]
+        tag: Option<String>,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
     },
     /// Show project status dashboard
     Status,
+    /// Add tags to an artifact
+    Tag {
+        /// Artifact ID (e.g. PRD-001)
+        id: String,
+        /// Tags to add (e.g. source=code layer=auth legacy)
+        #[arg(required = true)]
+        tags: Vec<String>,
+    },
+    /// Remove tags from an artifact
+    Untag {
+        /// Artifact ID
+        id: String,
+        /// Tags to remove
+        #[arg(required = true)]
+        tags: Vec<String>,
+    },
+    /// Start brownfield discovery — creates session, prints protocol for agent
+    Discover {
+        #[command(subcommand)]
+        action: DiscoverAction,
+    },
     /// Validate artifact completeness against schema rules
     Validate {
         /// Artifact ID (validates all if omitted)
@@ -124,9 +152,27 @@ enum Commands {
     Search {
         /// Search query
         query: String,
-        /// Filter by kind
+        /// Filter by kind (prd, rfc, adr, note, ...)
         #[arg(long, short = 't')]
         r#type: Option<String>,
+        /// Filter by status (draft, active, superseded, deprecated, stale)
+        #[arg(long, short = 's')]
+        status: Option<String>,
+        /// Filter by depth (tactical, standard, deep, critical)
+        #[arg(long)]
+        depth: Option<String>,
+        /// Only artifacts with evidence linked (R_eff > 0)
+        #[arg(long)]
+        with_evidence: bool,
+        /// Only artifacts WITHOUT evidence (blind spots)
+        #[arg(long, conflicts_with = "with_evidence")]
+        no_evidence: bool,
+        /// Only artifacts created after this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<String>,
+        /// Disable graph expansion (1-hop neighbors in results)
+        #[arg(long)]
+        no_expand: bool,
         /// Force keyword-only search (substring grep)
         #[arg(long, conflicts_with = "semantic")]
         keyword: bool,
@@ -489,6 +535,27 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum DiscoverAction {
+    /// Start a new discovery session — prints protocol for AI agent
+    Start {
+        /// Project name for the discovery session
+        name: String,
+    },
+    /// List all discovery sessions in the workspace
+    List,
+    /// Show status of a discovery session
+    Show {
+        /// Session ID (e.g. disc-20260407-abc)
+        session_id: String,
+    },
+    /// Mark a discovery session as completed
+    Complete {
+        /// Session ID to complete
+        session_id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum FpfCommands {
     /// Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
     Dashboard,
@@ -505,6 +572,9 @@ enum FpfCommands {
         /// Max results
         #[arg(long, default_value = "5")]
         limit: usize,
+        /// Use semantic vector search (requires --features semantic-search; falls back to keyword otherwise)
+        #[arg(long)]
+        semantic: bool,
     },
     /// Show a specific FPF section
     Section {
@@ -518,6 +588,26 @@ enum FpfCommands {
     List,
     /// Show FPF knowledge base status — source, ingested count, staleness
     Status,
+    /// List active FPF rules grouped by action (EXPLORE/INVESTIGATE/EXPLOIT)
+    Rules {
+        /// Flat priority-linear table instead of action-grouped tree
+        #[arg(long)]
+        flat: bool,
+        /// Output full rule dump as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check which FPF rules match a given artifact
+    Check {
+        /// Artifact ID (e.g. PRD-041)
+        id: String,
+        /// Show unmatched rule names too
+        #[arg(long)]
+        verbose: bool,
+        /// Output full RuleCheckResult as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -529,13 +619,28 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
-        Commands::New { kind, title } => commands::new::run(&kind, &title).await,
+        Commands::New {
+            kind,
+            title,
+            allow_duplicate,
+        } => commands::new::run(&kind, &title, allow_duplicate).await,
         Commands::List {
             r#type,
             status,
+            tag,
             json,
-        } => commands::list::run(r#type.as_deref(), status.as_deref(), json).await,
+        } => commands::list::run(r#type.as_deref(), status.as_deref(), tag.as_deref(), json).await,
         Commands::Status => commands::status::run().await,
+        Commands::Tag { id, tags } => commands::tag::run_add(&id, &tags).await,
+        Commands::Untag { id, tags } => commands::tag::run_remove(&id, &tags).await,
+        Commands::Discover { action } => match action {
+            DiscoverAction::Start { name } => commands::discover::run_start(&name).await,
+            DiscoverAction::List => commands::discover::run_list().await,
+            DiscoverAction::Show { session_id } => commands::discover::run_show(&session_id).await,
+            DiscoverAction::Complete { session_id } => {
+                commands::discover::run_complete(&session_id).await
+            }
+        },
         Commands::Validate {
             id,
             json,
@@ -581,6 +686,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Search {
             query,
             r#type,
+            status,
+            depth,
+            with_evidence,
+            no_evidence,
+            since,
+            no_expand,
             keyword,
             semantic,
             limit,
@@ -593,7 +704,20 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 commands::search::SearchMode::Smart
             };
-            commands::search::run(&query, r#type.as_deref(), mode, limit, json).await
+            commands::search::run(
+                &query,
+                r#type.as_deref(),
+                status.as_deref(),
+                depth.as_deref(),
+                with_evidence,
+                no_evidence,
+                since.as_deref(),
+                no_expand,
+                mode,
+                limit,
+                json,
+            )
+            .await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
         Commands::Session { reset } => {
@@ -675,10 +799,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::Fpf(sub) => match sub {
             FpfCommands::Dashboard => commands::fpf::run_dashboard().await,
             FpfCommands::Ingest { path } => commands::fpf::run_ingest(path.as_deref()).await,
-            FpfCommands::Search { query, limit } => commands::fpf::run_search(&query, limit).await,
+            FpfCommands::Search {
+                query,
+                limit,
+                semantic,
+            } => commands::fpf::run_search(&query, limit, semantic).await,
             FpfCommands::Section { id, summary } => commands::fpf::run_section(&id, summary).await,
             FpfCommands::List => commands::fpf::run_list().await,
             FpfCommands::Status => commands::fpf::run_status().await,
+            FpfCommands::Rules { flat, json } => commands::fpf::run_rules(flat, json).await,
+            FpfCommands::Check { id, verbose, json } => {
+                commands::fpf::run_check(&id, verbose, json).await
+            }
         },
         Commands::Gaps => commands::gaps::run().await,
         Commands::Fgr { id, json } => commands::fgr::run(id.as_deref(), json).await,

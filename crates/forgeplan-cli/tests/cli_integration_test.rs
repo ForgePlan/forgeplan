@@ -1290,6 +1290,111 @@ fn e2e_export_import_preserves_data() {
         .stdout(predicate::str::contains("Feature A"));
 }
 
+// ── F3: Import stub gate (PRD-043) ─────────────────────────
+
+/// A body that clearly triggers `check_stub_detailed` — contains multiple
+/// known template markers ("Что мы строим", "[Actor] can [capability]", etc.).
+const STUB_BODY: &str = "# PRD\n\n## Problem\n\nЧто мы строим и почему это важно\n\n## Goals\n\n[Actor] can [capability]\n\n## Non-Goals\n\n...\n\n## Target Users\n\n...\n\n## Related\n\n...\n";
+
+/// A filled body with enough real content to pass stub detection.
+const FILLED_BODY: &str = "# PRD\n\n## Problem\n\nUsers cannot reset their password without contacting support, causing a 4 hour average delay and measurable churn during onboarding. Support tickets mentioning password reset account for 22% of all tickets this quarter.\n\n## Goals\n\nSelf-service password reset via email link. Reduce support ticket volume by at least 15% within two months of rollout.\n\n## Non-Goals\n\nMulti-factor reset flows. Admin-initiated resets. SMS-based recovery is explicitly deferred until the SMS gateway vendor is selected.\n\n## Target Users\n\nEnd users of the web application who forgot their password. Support engineers handling escalations.\n\n## Related\n\nRFC-004 Auth architecture. ADR-007 Email provider choice.\n\n## Functional Requirements\n\nFR-001: User can request a password reset email from the login screen.\nFR-002: Reset links expire after 30 minutes.\nFR-003: Successful reset invalidates all existing sessions for that user.\n";
+
+fn write_backup(path: &std::path::Path, id: &str, status: &str, body: &str) {
+    let backup = serde_json::json!({
+        "artifacts": [{
+            "id": id,
+            "kind": "prd",
+            "status": status,
+            "title": "Test PRD",
+            "body": body,
+            "depth": "standard",
+        }],
+        "relations": []
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&backup).unwrap()).unwrap();
+}
+
+#[test]
+fn test_import_downgrades_active_stub_to_draft() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let backup_path = tmp.path().join("stub-backup.json");
+    write_backup(&backup_path, "PRD-100", "active", STUB_BODY);
+
+    forgeplan()
+        .args(["import", backup_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("stub detected").and(predicate::str::contains("PRD-100")));
+
+    // Verify the imported record is draft, not active
+    forgeplan()
+        .args(["get", "PRD-100"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft"));
+}
+
+#[test]
+fn test_import_preserves_active_for_filled_artifact() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let backup_path = tmp.path().join("filled-backup.json");
+    write_backup(&backup_path, "PRD-200", "active", FILLED_BODY);
+
+    forgeplan()
+        .args(["import", backup_path.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["get", "PRD-200"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+}
+
+#[test]
+fn test_import_force_keeps_active_stub() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let backup_path = tmp.path().join("forced-backup.json");
+    write_backup(&backup_path, "PRD-300", "active", STUB_BODY);
+
+    forgeplan()
+        .args(["import", backup_path.to_str().unwrap(), "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--force bypasses gate"));
+
+    forgeplan()
+        .args(["get", "PRD-300"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("active"));
+}
+
 #[test]
 fn e2e_health_comprehensive() {
     let tmp = TempDir::new().unwrap();
@@ -2895,4 +3000,598 @@ fn e2e_empty_route_rejected() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("empty"));
+}
+
+// -----------------------------------------------------------------------
+// Sprint 13.1.6: --force is a visible alias for --allow-duplicate
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_new_accepts_force_alias() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Test Title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Test Title", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["list", "--type", "prd"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-002"));
+}
+
+// ---------------------------------------------------------------------------
+// PRD-039 Sprint 13.2 — search filter flags (--status, --depth,
+// --with-evidence/--no-evidence, --since, --no-expand)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn search_status_filter_excludes_drafts() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Two PRDs: one stays draft, the other gets force-activated.
+    forgeplan()
+        .args(["new", "prd", "Active Authentication Spec"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Draft Authentication Spec"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "PRD-001", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --status active must exclude PRD-002 (draft).
+    forgeplan()
+        .args(["search", "Authentication", "--status", "active", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-002").not());
+}
+
+#[test]
+fn search_no_evidence_finds_blind_spots() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Payment Gateway"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // No evidence linked → r_eff_score == 0 → --no-evidence must return it,
+    // --with-evidence must NOT.
+    forgeplan()
+        .args(["search", "Payment", "--no-evidence", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    forgeplan()
+        .args(["search", "Payment", "--with-evidence", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}
+
+#[test]
+fn search_no_expand_disables_neighbor_expansion() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Logging System"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "rfc", "Telemetry Pipeline"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "RFC-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // With --no-expand, querying for "Logging" must NOT pull in RFC-001 as
+    // an expanded neighbor — only the direct PRD match.
+    forgeplan()
+        .args(["search", "Logging", "--no-expand", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("RFC-001").not());
+}
+
+#[test]
+fn search_since_date_filter() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", "Caching Layer"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Created today → --since in the far past must match.
+    forgeplan()
+        .args(["search", "Caching", "--since", "2000-01-01", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    // --since in the far future must exclude everything.
+    forgeplan()
+        .args(["search", "Caching", "--since", "2999-01-01", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+
+    // Bad date format must error out.
+    forgeplan()
+        .args(["search", "Caching", "--since", "not-a-date"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid --since date"));
+}
+
+// ============================================================================
+// Tag / Untag commands (PRD-035 FR-002)
+// ============================================================================
+
+fn init_with_prd(tmp: &TempDir) {
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Tag Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_tag_adds_tags_to_artifact() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "source=code", "legacy"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added 2 tag(s) to PRD-001"))
+        .stdout(predicate::str::contains("source=code"))
+        .stdout(predicate::str::contains("legacy"));
+}
+
+#[test]
+fn test_untag_removes_tags_from_artifact() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "alpha", "beta", "gamma"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["untag", "PRD-001", "beta"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed 1 tag(s) from PRD-001"))
+        .stdout(predicate::str::contains("alpha"))
+        .stdout(predicate::str::contains("gamma"));
+}
+
+#[test]
+fn test_tag_requires_at_least_one_tag() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_tag_fails_on_missing_artifact() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-999", "foo"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("not found")
+                .or(predicate::str::contains("Artifact not found")),
+        );
+}
+
+#[test]
+fn test_tag_dedupe_same_tag_twice() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "dup"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["tag", "PRD-001", "dup", "dup"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify only one "dup" tag remains via list output
+    let output = forgeplan()
+        .args(["tag", "PRD-001", "other"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Count occurrences of "dup" in current tags line — should appear once
+    let tags_line = stdout
+        .lines()
+        .find(|l| l.contains("Current tags"))
+        .unwrap_or("");
+    let dup_count = tags_line.matches("dup").count();
+    assert_eq!(
+        dup_count, 1,
+        "expected dedupe, got tags line: {}",
+        tags_line
+    );
+}
+
+// ============================================================================
+// FR-003: `forgeplan list --tag <filter>` (Sprint 13.3 / PRD-035)
+// ============================================================================
+
+fn init_workspace(tmp: &TempDir) {
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+fn new_prd_with_tags(tmp: &TempDir, title: &str, id: &str, tags: &[&str]) {
+    forgeplan()
+        .args(["new", "prd", title])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    if !tags.is_empty() {
+        let mut args = vec!["tag", id];
+        args.extend(tags);
+        forgeplan()
+            .args(&args)
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_list_tag_filter_exact_match() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "Alpha Feature", "PRD-001", &["source=code"]);
+    new_prd_with_tags(&tmp, "Beta Feature", "PRD-002", &[]);
+
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-002").not());
+}
+
+#[test]
+fn test_list_tag_filter_key_only() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "One", "PRD-001", &["source=code"]);
+    new_prd_with_tags(&tmp, "Two", "PRD-002", &["legacy"]);
+    new_prd_with_tags(&tmp, "Three", "PRD-003", &["layer=domain"]);
+
+    forgeplan()
+        .args(["list", "--tag", "source", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"))
+        .stdout(predicate::str::contains("PRD-003").not());
+
+    forgeplan()
+        .args(["list", "--tag", "legacy", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-002"));
+}
+
+#[test]
+fn test_list_tag_filter_combined_with_kind() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "Tagged PRD", "PRD-001", &["source=code"]);
+
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--type", "prd", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--type", "rfc", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}
+
+#[test]
+fn test_list_tag_filter_empty_when_no_match() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    new_prd_with_tags(&tmp, "Only", "PRD-001", &["source=code"]);
+
+    forgeplan()
+        .args(["list", "--tag", "nothing=here", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+}
+
+/// Regression: `forgeplan tag` must write tags to the markdown frontmatter,
+/// not only to LanceDB. ADR-003 files-first — files are source of truth.
+#[test]
+fn tag_writes_to_markdown_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "source=code", "layer=domain"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Find the PRD-001 markdown file
+    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    let mut found = None;
+    for entry in std::fs::read_dir(&prds_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("PRD-001") && name.ends_with(".md") {
+            found = Some(entry.path());
+            break;
+        }
+    }
+    let path = found.expect("PRD-001 markdown file should exist");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        content.contains("tags:"),
+        "frontmatter must contain `tags:` field, got:\n{}",
+        content
+    );
+    assert!(
+        content.contains("source=code"),
+        "frontmatter must contain `source=code` tag, got:\n{}",
+        content
+    );
+    assert!(
+        content.contains("layer=domain"),
+        "frontmatter must contain `layer=domain` tag, got:\n{}",
+        content
+    );
+}
+
+/// Regression: tags written to markdown must survive a full reindex
+/// (delete LanceDB, rebuild from files).
+#[test]
+fn tag_survives_reindex_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "source=code"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Simulate fresh-clone reindex: back up the markdown files, wipe the
+    // workspace (which deletes the LanceDB index AND the prds dir), recreate
+    // an empty workspace, restore the markdown, then scan-import.
+    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    let backup_dir = tmp.path().join("prds_backup");
+    std::fs::create_dir_all(&backup_dir).unwrap();
+    for entry in std::fs::read_dir(&prds_dir).unwrap() {
+        let entry = entry.unwrap();
+        let dest = backup_dir.join(entry.file_name());
+        std::fs::copy(entry.path(), &dest).unwrap();
+    }
+
+    forgeplan()
+        .args(["init", "-y", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Restore markdown files into the freshly initialised workspace.
+    for entry in std::fs::read_dir(&backup_dir).unwrap() {
+        let entry = entry.unwrap();
+        let dest = prds_dir.join(entry.file_name());
+        std::fs::copy(entry.path(), &dest).unwrap();
+    }
+
+    forgeplan()
+        .args(["reindex"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // The tag must still be queryable after reindex.
+    forgeplan()
+        .args(["list", "--tag", "source=code", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001"));
+}
+
+/// Regression: `forgeplan untag` must also propagate to markdown frontmatter.
+#[test]
+fn untag_writes_to_markdown_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    init_with_prd(&tmp);
+
+    forgeplan()
+        .args(["tag", "PRD-001", "alpha", "beta"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["untag", "PRD-001", "beta"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    let path = std::fs::read_dir(&prds_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("PRD-001") && n.ends_with(".md")
+        })
+        .map(|e| e.path())
+        .expect("PRD-001 markdown file");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("alpha"), "alpha must remain: {}", content);
+    assert!(
+        !content.contains("beta"),
+        "beta must be removed: {}",
+        content
+    );
+}
+
+#[test]
+fn new_rejects_empty_title_no_orphan_row() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["new", "prd", ""])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be empty"));
+
+    // Ensure no artifact was created in the store.
+    forgeplan()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
+}
+
+#[test]
+fn new_rejects_too_long_title_no_orphan_row() {
+    let tmp = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let long_title: String = "X".repeat(500);
+    forgeplan()
+        .args(["new", "prd", &long_title])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("too long"));
+
+    forgeplan()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRD-001").not());
 }

@@ -7,7 +7,7 @@ links:
   relation: refines
 - target: PROB-024
   relation: based_on
-status: draft
+status: active
 title: Methodology Integrity — Duplicate Guard, Stub Detection, Semantic Search Pre-check
 ---
 
@@ -28,13 +28,21 @@ parent_epic: EPIC-003
 ## Progress
 
 ```
-FR-001  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  forgeplan new — duplicate guard
-FR-002  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  forgeplan health — duplicate detection
-FR-003  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  validation — stub detection rule
-FR-004  ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  activate — block on stub
+FR-001  ████████████████████████  1/1  forgeplan new — duplicate guard          ✓ Sprint 13.1
+FR-002  ████████████████████████  1/1  forgeplan health — duplicate detection   ✓ Sprint 13.1
+FR-003  ████████████████████████  1/1  validation — stub detection rule         ✓ Sprint 13.1
+FR-004  ████████████████████████  1/1  MCP forgeplan_new — structured warnings  ✓ Sprint 13.1
 ─────────────────────────────────────────────────
-TOTAL                              0/4  ( 0%)
+TOTAL                              4/4  (100%) — COMPLETE
 ```
+
+**Sprint 13.1 delivered** (+hardening Sprints 13.1.5 / 13.1.7): duplicate
+guard in `forgeplan new` with interactive prompt; health dashboard shows
+duplicate pairs with similarity scores; stub detection via template marker
+count blocks `activate` with 3+ markers (verified on release binary:
+`"Body appears to be unfilled template (6 markers found) → Fill MUST
+sections..."`); MCP `forgeplan_new` returns structured duplicate warnings
+to AI agents. See EVID-058 + EVID-059 (Sprint 13.1 + hardening).
 
 ---
 
@@ -208,5 +216,6 @@ Methodology Integrity layer — три механизма защиты от кл
 | PRD-018 | based_on (real case stub) | active (false-active) |
 | PRD-042 | based_on (real case duplicate) | draft |
 | PRD-039 | informs (BM25 search will improve guard accuracy) | draft |
+
 
 

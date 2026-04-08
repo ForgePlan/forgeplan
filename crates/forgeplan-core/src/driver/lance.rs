@@ -165,12 +165,24 @@ impl FpfStorage for LanceDriver {
         self.store.has_fpf()
     }
 
-    async fn insert_fpf_chunks(&self, chunks: &[FpfChunk]) -> anyhow::Result<usize> {
-        self.store.insert_fpf_chunks(chunks).await
+    async fn insert_fpf_chunks(
+        &self,
+        chunks: &[FpfChunk],
+        embeddings: Option<&[Vec<f32>]>,
+    ) -> anyhow::Result<usize> {
+        self.store.insert_fpf_chunks(chunks, embeddings).await
     }
 
     async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
         self.store.search_fpf(query, limit).await
+    }
+
+    async fn search_fpf_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> anyhow::Result<Vec<FpfChunk>> {
+        self.store.search_fpf_by_vector(query_vec, limit).await
     }
 
     async fn get_fpf_section(&self, section_id: &str) -> anyhow::Result<Option<FpfChunk>> {

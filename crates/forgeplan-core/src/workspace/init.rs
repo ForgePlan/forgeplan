@@ -56,6 +56,14 @@ const CONFIG_TEMPLATES: &str = r#"
 #   review_overhead: 0.30      # 30% added to AI time for human review
 #   safety_margin: 0.50        # warn if sprint > 50% loaded
 
+# ─── Integrity / health thresholds + MCP DoS limits ─────────────────
+# integrity:
+#   duplicate_threshold: 0.7       # Jaccard similarity threshold for duplicate detection
+#   duplicate_pairs_limit: 10      # max duplicate pairs to show in health output
+#   stub_marker_threshold: 3       # min markers to flag body as stub
+#   mcp_max_title_len: 256         # max title bytes accepted via MCP (DoS protection)
+#   mcp_max_body_len: 1048576      # max body bytes accepted via MCP (1 MB)
+
 # ─── FPF Engine (uncomment to customize trust calculus) ──────────────
 # fpf:
 #   thresholds:
@@ -118,6 +126,7 @@ pub const ARTIFACT_DIRS: &[&str] = &[
     "notes",
     "refresh",
     "memory",
+    "discovery",
 ];
 
 /// Initialize a `.forgeplan/` workspace in the given directory.
@@ -167,5 +176,9 @@ pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
         fpf.validate()
             .map_err(|e| anyhow::anyhow!("Invalid fpf config: {e}"))?;
     }
+    config
+        .integrity
+        .validate()
+        .map_err(|e| anyhow::anyhow!("Invalid integrity config: {e}"))?;
     Ok(config)
 }

@@ -42,6 +42,55 @@ pub async fn render_projection(
     .await
 }
 
+/// Render a full ArtifactRecord (includes tags) to its markdown file.
+/// Used by mutations like `tag` / `untag` that need to persist tags to
+/// frontmatter so they survive a reindex (ADR-003 files-first).
+pub async fn render_projection_record(
+    workspace: &Path,
+    record: &crate::db::store::ArtifactRecord,
+    links: &[(String, String)],
+) -> anyhow::Result<PathBuf> {
+    let artifact_kind = record
+        .kind
+        .parse::<ArtifactKind>()
+        .unwrap_or(ArtifactKind::Note);
+    let dir = workspace.join(artifact_kind.dir_name());
+    tokio::fs::create_dir_all(&dir).await?;
+
+    let slug = slugify(&record.title);
+    let filename = format!("{}-{}.md", record.id, slug);
+    let filepath = dir.join(&filename);
+
+    // Files-first: preserve existing body if file already has one.
+    let effective_body = if filepath.exists() {
+        match tokio::fs::read_to_string(&filepath).await {
+            Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
+                Ok((_fm, file_body)) if !file_body.trim().is_empty() => file_body.to_string(),
+                _ => record.body.clone(),
+            },
+            Err(_) => record.body.clone(),
+        }
+    } else {
+        record.body.clone()
+    };
+
+    let content = render_markdown_with_tags(
+        &record.id,
+        &record.kind,
+        &record.title,
+        &record.status,
+        &record.depth,
+        record.author.as_deref(),
+        record.parent_epic.as_deref(),
+        record.valid_until.as_deref(),
+        &effective_body,
+        links,
+        &record.tags,
+    )?;
+    tokio::fs::write(&filepath, &content).await?;
+    Ok(filepath)
+}
+
 /// Like render_projection, but `force_body = true` uses the passed body
 /// instead of reading from file. Used by `update --body` to ensure the
 /// CLI-provided body takes precedence over the file on disk.
@@ -206,6 +255,35 @@ fn render_markdown(
     body: &str,
     links: &[(String, String)],
 ) -> anyhow::Result<String> {
+    render_markdown_with_tags(
+        id,
+        kind,
+        title,
+        status,
+        depth,
+        author,
+        parent_epic,
+        valid_until,
+        body,
+        links,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_markdown_with_tags(
+    id: &str,
+    kind: &str,
+    title: &str,
+    status: &str,
+    depth: &str,
+    author: Option<&str>,
+    parent_epic: Option<&str>,
+    valid_until: Option<&str>,
+    body: &str,
+    links: &[(String, String)],
+    tags: &[String],
+) -> anyhow::Result<String> {
     let mut fm = BTreeMap::new();
     fm.insert("id".to_string(), serde_yaml::Value::String(id.to_string()));
     fm.insert(
@@ -242,6 +320,14 @@ fn render_markdown(
             "valid_until".to_string(),
             serde_yaml::Value::String(vu.to_string()),
         );
+    }
+
+    if !tags.is_empty() {
+        let tag_seq: Vec<serde_yaml::Value> = tags
+            .iter()
+            .map(|t| serde_yaml::Value::String(t.clone()))
+            .collect();
+        fm.insert("tags".to_string(), serde_yaml::Value::Sequence(tag_seq));
     }
 
     if !links.is_empty() {
