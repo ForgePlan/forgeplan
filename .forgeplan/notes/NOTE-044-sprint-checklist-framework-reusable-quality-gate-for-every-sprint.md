@@ -60,6 +60,13 @@ Use by copying relevant sections into sprint planning + reviewing at each phase.
 - [ ] If agent hits file outside ownership → STOP и SendMessage team-lead, **не work around**
 - [ ] Idle teammates shutdown immediately после completion, не висят hours
 - [ ] Commit messages соответствуют спеке (exact match на первую строку)
+- [ ] **Every new CLI flag / command / config option ships with ALL of these docs (no feature lands without):**
+  - clap `#[arg(help = "...")]` descriptive help text (shown in `--help`)
+  - clap `#[command(long_about = "...")]` if behavior is non-trivial
+  - `CHANGELOG.md` entry under the release's "Added" / "Changed" section
+  - `CLAUDE.md` status block / workflow section if it changes user flow
+  - `docs/methodology/FORGEPLAN-GUIDE.md` subsection if it's a user-facing command
+  - Red flag: a PR that adds a flag/command without touching clap help + CHANGELOG is incomplete — block merge
 
 ---
 
