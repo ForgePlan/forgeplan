@@ -1,25 +1,36 @@
 # TODO — Forgeplan
 
-## Current: v0.17.1 hotfix 2026-04-09 — post-dogfood fixes
+## Current: v0.17.2 quality hotfix 2026-04-09 — E2E verification sprint
 
-### v0.17.1 hotfix ✅
-- [x] PROB-028 phantom rows fixed (PRD-044): reindex parse-kind skip + orphan relation cascade
-- [x] PROB-029 health verdict fixed (PRD-045): generate_next_actions reads stubs/duplicates
-- [x] 1131 tests pass (+3 from v0.17.0)
-- [x] Clippy 1.94 strict clean (both feature configs)
-- [x] EVID-066, EVID-067 activated
-- [x] PRD-044, PRD-045 activated (progress bars reflect reality)
-- [x] CHANGELOG.md v0.17.1 entry under Fixed
-- [x] Cargo.toml version 0.17.0 → 0.17.1 (all 3 crates)
-- [x] CLAUDE.md status block updated to v0.17.1
+### v0.17.2 hotfix P0
+- [x] PROB-030 BM25 prefix fallback (smart.rs `max(bm25_norm, kw)`)
+- [x] PROB-031 score.rs imports core parser (deleted local duplicate with CL0 default)
+- [x] PROB-032 breakdown display (auto-fixed by PROB-030)
+- [x] PROB-033 `new evidence` phase-agnostic (no session warning)
+- [x] **PROB-034 CRITICAL** multi-line HTML comment state machine in extract_field
+- [x] F1 fail-closed on unclosed `<!--` (unclosed → CL0 + warn)
+- [x] F2 fail-closed on unparseable congruence_level (garbage → CL0 + warn)
+- [x] evidence template simplified (single-line comments only, no booby-trap)
+- [x] 12 new regression tests (total 1143 pass, +12 from 1131)
+- [x] Cargo.toml workspace + cross-crate refs → 0.17.2
+- [x] CHANGELOG.md v0.17.2 entry
+- [x] CLAUDE.md status block updated to v0.17.2
 - [x] TODO.md updated (this block)
-- [x] NOTE-044 Sprint Checklist gained new rule: "Every new CLI flag + CHANGELOG + docs, no feature lands without"
-- [ ] Audit reviewer report (1 agent running)
-- [ ] PR release/v0.17.1 → main
-- [ ] Tag v0.17.1 + push (cargo-dist Release workflow auto-triggers)
-- [ ] Sync main → dev via PR (dev protected)
-- [ ] Hindsight retain v0.17.1 finale
-- [ ] Dogfood housekeeping NOTE-046/047 (manual pass, separate commit, not blocker)
+- [x] 4-agent audit completed (A code, B tests, C security, D docs)
+- [x] All audit blockers addressed in-scope
+- [x] PROB-034 card + EVID-068..072 created
+- [ ] EVID-068..072 Interpretation + CL Justification filled (audit D)
+- [ ] PROB-030..034 + EVID-068..072 activated
+- [ ] PR release/v0.17.2 → main
+- [ ] Tag v0.17.2 + push (cargo-dist auto-triggers)
+- [ ] Sync main → dev via PR
+- [ ] Hindsight retain v0.17.2 finale
+- [ ] PROB-035 "extract_field hardening" filed for follow-up sprint (code-fence, token-boundary substring)
+
+### v0.17.1 hotfix ✅ (shipped)
+- [x] PROB-028 phantom rows (PRD-044)
+- [x] PROB-029 health verdict (PRD-045)
+- [x] CHANGELOG + tag + cargo-dist + sync done
 
 ---
 

@@ -2,8 +2,8 @@
 depth: tactical
 id: PROB-030
 kind: problem
-status: draft
-title: BM25 search regression — prefix queries return 0 results despite existing matches
+status: active
+title: BM25 search regression — 'auth' prefix returns 0 results despite existing 'Authentication' artifacts
 ---
 
 # PROB-030: BM25 prefix search regression
@@ -122,3 +122,4 @@ required for patch.
 | EPIC-003 | context |
 | PROB-031 | sibling (quality audit 2026-04-09 found both) |
 | NOTE-048 | sibling (EPIC-003 verification gaps list) |
+

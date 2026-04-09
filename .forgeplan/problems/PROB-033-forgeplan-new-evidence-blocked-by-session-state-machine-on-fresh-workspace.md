@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-033
 kind: problem
-status: draft
+status: active
 title: forgeplan new evidence blocked by session state machine on fresh workspace
 ---
 
@@ -87,3 +87,4 @@ HIGH — loosening a check is safe.
 | EVID-058 | informs (Sprint 13.1 implementation) |
 | EVID-065 | informs (backfill pattern worked around this) |
 | NOTE-048 | sibling |
+

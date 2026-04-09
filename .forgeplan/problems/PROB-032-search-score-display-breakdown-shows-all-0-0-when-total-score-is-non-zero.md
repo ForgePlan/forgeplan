@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-032
 kind: problem
-status: draft
+status: active
 title: Search score display breakdown shows all 0.0 when total score is non-zero
 ---
 
@@ -96,3 +96,4 @@ HIGH — pure display code fix OR removal of misleading line.
 | PRD-039 | informs (Sprint 13.2 BM25 introduced breakdown) |
 | PROB-030 | sibling (both BM25 regressions from quality audit) |
 | NOTE-048 | sibling |
+

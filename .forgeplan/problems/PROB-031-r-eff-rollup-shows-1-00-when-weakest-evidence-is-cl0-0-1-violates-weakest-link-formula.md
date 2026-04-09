@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-031
 kind: problem
-status: draft
+status: active
 title: R_eff rollup shows 1.00 when weakest evidence is CL0 = 0.1 — violates weakest-link formula
 ---
 
@@ -109,3 +109,4 @@ values can be recomputed cheaply via batch score pass.
 | EPIC-003 | context |
 | PROB-030 | sibling (quality audit 2026-04-09) |
 | NOTE-048 | sibling (verification gaps list) |
+
