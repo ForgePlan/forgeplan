@@ -2,8 +2,26 @@ use crate::commands::common;
 
 /// Rebuild LanceDB index from .md files (files-first, RFC-004).
 ///
-/// Walks all artifact directories, parses frontmatter + body from each .md file,
-/// and upserts into LanceDB. Safety net when lazy sync missed changes.
+/// Three-phase pipeline:
+///
+/// **Phase 1** — walks all artifact directories, parses frontmatter + body
+/// from each .md file, and upserts into LanceDB. Safety net when lazy sync
+/// missed changes. Also restores typed relations from frontmatter `links:`
+/// blocks (F8 fix).
+///
+/// **Phase 2** — trims LanceDB artifact rows whose `.md` file no longer
+/// exists on disk (files = source of truth per ADR-003). Two reasons for
+/// trim: `MissingFile` (kind valid but file deleted, checks for title-change
+/// rename) and `CorruptKind` (parse-kind failure — v0.17.1 fix for
+/// PROB-028 Layer 1, where corrupt rows previously escaped cleanup).
+///
+/// **Phase 3** — trims orphan relations from `relations.lance` whose source
+/// or target artifact is no longer in `artifacts.lance` (v0.17.1 fix for
+/// PROB-028 Layer 2). Before this fix, deleting an artifact did not cascade
+/// to its relations, causing `forgeplan tree` to show `?` phantom rows via
+/// relation graph traversal (NOTE-037/038/040 dogfood bug). Iterates all
+/// relations, checks both source and target against post-Phase-2 surviving
+/// artifact set, deletes orphan edges with explicit reason.
 pub async fn run() -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 

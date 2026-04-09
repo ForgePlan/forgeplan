@@ -1,6 +1,29 @@
 # TODO — Forgeplan
 
-## Current: v0.17.0-rc — EPIC-003 complete, ready to tag
+## Current: v0.17.1 hotfix 2026-04-09 — post-dogfood fixes
+
+### v0.17.1 hotfix ✅
+- [x] PROB-028 phantom rows fixed (PRD-044): reindex parse-kind skip + orphan relation cascade
+- [x] PROB-029 health verdict fixed (PRD-045): generate_next_actions reads stubs/duplicates
+- [x] 1131 tests pass (+3 from v0.17.0)
+- [x] Clippy 1.94 strict clean (both feature configs)
+- [x] EVID-066, EVID-067 activated
+- [x] PRD-044, PRD-045 activated (progress bars reflect reality)
+- [x] CHANGELOG.md v0.17.1 entry under Fixed
+- [x] Cargo.toml version 0.17.0 → 0.17.1 (all 3 crates)
+- [x] CLAUDE.md status block updated to v0.17.1
+- [x] TODO.md updated (this block)
+- [x] NOTE-044 Sprint Checklist gained new rule: "Every new CLI flag + CHANGELOG + docs, no feature lands without"
+- [ ] Audit reviewer report (1 agent running)
+- [ ] PR release/v0.17.1 → main
+- [ ] Tag v0.17.1 + push (cargo-dist Release workflow auto-triggers)
+- [ ] Sync main → dev via PR (dev protected)
+- [ ] Hindsight retain v0.17.1 finale
+- [ ] Dogfood housekeeping NOTE-046/047 (manual pass, separate commit, not blocker)
+
+---
+
+## Previous: v0.17.0-rc — EPIC-003 complete, ready to tag
 
 ### Stats (v0.17.0)
 - ~56 CLI commands, ~47 MCP tools, **1109 tests** (+280 from v0.16)

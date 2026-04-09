@@ -23,8 +23,9 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 
 ## Текущий статус
 
-- **v0.17.0** released — **EPIC-003 complete** (Search, Discovery, Intelligence)
-- **~56 CLI команд**, **~47 MCP tools**, **1109 тестов** (+280 от v0.16)
+- **v0.17.1** hotfix 2026-04-09 — PROB-028 phantom rows + PROB-029 health verdict fixed
+- **v0.17.0** released 2026-04-08 — **EPIC-003 complete** (Search, Discovery, Intelligence)
+- **~56 CLI команд**, **~47 MCP tools**, **1131 тестов** (+283 от v0.16)
 - **0 warnings** на обоих feature configs (default + `semantic-search`)
 - EPIC-001 (foundation) ✅ | EPIC-002 (v2.0 vision) ✅ | **EPIC-003 (v0.17.0)** ✅
 - **7 PRDs активированы** в v0.17.0: PRD-035 (tags + discover), PRD-039 (BM25 search),
