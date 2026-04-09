@@ -1,6 +1,31 @@
 # TODO — Forgeplan
 
-## Current: v0.17.0 RELEASED 2026-04-08 — EPIC-003 complete ✅
+## Current: v0.17.1 RELEASED 2026-04-09 — hotfix complete ✅
+
+**GitHub Release**: https://github.com/ForgePlan/forgeplan/releases/tag/v0.17.1
+
+### v0.17.1 hotfix ✅
+- [x] PROB-028 phantom rows fixed (PRD-044): reindex parse-kind skip + orphan relation cascade
+- [x] PROB-029 health verdict fixed (PRD-045): generate_next_actions reads stubs/duplicates
+- [x] 1131 tests pass (+3 from v0.17.0)
+- [x] Clippy 1.94 strict clean (both feature configs)
+- [x] EVID-066, EVID-067 activated
+- [x] PRD-044, PRD-045 activated (progress bars reflect reality)
+- [x] CHANGELOG.md v0.17.1 entry under Fixed
+- [x] Cargo.toml version 0.17.0 → 0.17.1 (all 3 crates)
+- [x] CLAUDE.md status block updated to v0.17.1
+- [x] TODO.md updated (this block)
+- [x] NOTE-044 Sprint Checklist gained new rule: "Every new CLI flag + CHANGELOG + docs, no feature lands without"
+- [x] Audit reviewer report — 0 critical, 0 high, 1 medium fixed, 8 low observations
+- [x] PR #161 release/v0.17.1 → main merged (commit 907511d)
+- [x] Tag v0.17.1 pushed, cargo-dist Release workflow auto-triggered
+- [x] PR #162 sync main → dev (this PR after conflict resolution)
+- [x] Hindsight retain v0.17.1 finale
+- [ ] Dogfood housekeeping NOTE-046/047 (manual pass, separate commit, not blocker)
+
+---
+
+## Previous: v0.17.0 RELEASED 2026-04-08 — EPIC-003 complete ✅
 
 **GitHub Release**: https://github.com/ForgePlan/forgeplan/releases/tag/v0.17.0
 **Install**: `brew install forgeplan` or `curl -LsSf .../forgeplan-installer.sh | sh`
