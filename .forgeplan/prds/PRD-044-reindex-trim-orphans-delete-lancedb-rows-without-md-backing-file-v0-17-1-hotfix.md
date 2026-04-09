@@ -133,21 +133,42 @@ is broken.
   could exist). Current code skips these via `continue`; after fix they
   must be deleted along with regular orphans.
 - **FR-002** UX Must. [User] sees improved reindex output distinguishing
-  removal reasons. Two cases: `DEL ID — file deleted` (normal case) and
-  `DEL ID — corrupt kind field` (phantom case). Total count line remains
-  `Reindex complete: N synced, M unchanged, K removed, L errors`.
-- **FR-003** Feature Must. [User] can pass `--show-orphans` flag to
-  `forgeplan reindex` to preview what would be deleted BEFORE the trim
-  runs. For each orphan: print ID, last known title from LanceDB, and
-  `git log --all -- [path]` output showing last commit SHA, date, author,
-  and message. Also print copy-paste recovery recipe using those values.
-  With this flag, trim still happens (unless combined with `--dry-run`
-  if that exists — out of scope if not).
-- **FR-004** Docs Must. [Contributor] finds up-to-date documentation for
-  the new flag and fixed behavior: clap `#[arg(help)]` string on
-  `--show-orphans`, CHANGELOG.md v0.17.1 Fixed entry for the bug and
-  Added entry for the flag, CLAUDE.md reindex workflow mention.
-  **No feature lands without help text + changelog** (NOTE-044 rule).
+  removal reasons. Three cases: `DEL ID — no .md file found` (normal
+  missing-file case), `DEL ID — corrupt kind field` (phantom case),
+  and `DEL source --relation--> target — orphan relation (reason)`
+  (Phase 3 addition). Total count line becomes `Reindex complete: N
+  synced, M unchanged, K removed, L orphan relations, E errors`.
+- **FR-003** Core Must. [System] NEW Phase 3 in `reindex` MUST trim
+  orphan relations from `relations.lance` where source or target ID
+  no longer exists in the post-Phase-2 surviving artifact set. Reason
+  labels: "source missing", "target missing", "both source and target
+  missing". This is the fix for PROB-028 Layer 2 — orphan relations
+  accumulated in `relations.lance` surfaced as `?` phantoms in
+  `forgeplan tree` via relation graph traversal.
+- **FR-004** Docs Must. [Contributor] finds up-to-date documentation
+  for the fixed behavior: rustdoc on `pub async fn run()` explaining
+  the three-phase pipeline (Phase 1 upsert, Phase 2 trim artifacts,
+  Phase 3 trim orphan relations), CHANGELOG.md v0.17.1 Fixed entry,
+  CLAUDE.md status block mention. **No feature lands without
+  rustdoc + changelog** (NOTE-044 rule).
+
+### Deferred (from original Option D spec, NOT in v0.17.1)
+
+`--show-orphans` flag that would preview phantoms before trim and
+run `git log` per orphan with copy-paste recovery recipe was in the
+original Option D scope but was removed after ADI code investigation
+revealed the real bugs. Why deferred:
+
+1. Existing behavior trims by default (discovered during ADI), so
+   "preview before trim" only makes sense if default is warn-only.
+2. Changing default from trim → warn would be a regression for users
+   relying on auto-cleanup (rejected in the design discussion).
+3. The helper is nice-to-have for inspection but not need-to-have
+   for closing PROB-028 — the trim itself is the fix.
+4. If users later request a preview/inspection mode, it can be
+   shipped as `forgeplan reindex --dry-run` or a separate
+   `forgeplan orphans inspect` command without affecting the core
+   trim logic. Tracked as future enhancement.
 
 ## Non-Functional Requirements
 
@@ -157,23 +178,41 @@ is broken.
 | NFR-002 | Safety | Trim MUST check file existence per-row; a transient I/O error on file stat MUST skip that row (do not delete), not fail the whole reindex |
 | NFR-003 | Backward compat | Default behavior of `forgeplan reindex` must not cause data loss for users who did NOT intend to trim |
 
-## Design decision — RESOLVED: Option D
+## Design decision — RESOLVED: Option E (emerged during ADI)
 
 **Decision date**: 2026-04-09
-**Decided by**: gogocat (project owner)
+**Decided by**: gogocat (project owner initially chose Option D)
+**Revised by**: team-lead after ADI code investigation revealed Option D
+was based on incomplete information. Current scope is Option E:
+minimal bug fix inside existing trim pass, not a new feature.
 
-### Chosen: Option D — Warn-only default + two helper flags
+### Chosen: Option E — Minimal bug fix, preserve default-trim behavior
 
-Reindex by default **warns** about phantom rows but does not delete.
-Two opt-in flags handle removal and inspection:
+Reindex already trims by default in Phase 2 (discovered during ADI —
+the existing code at lines 137-175 of reindex.rs iterates records and
+deletes any whose file is missing). Two narrow bugs prevented phantom
+cleanup:
 
-- `forgeplan reindex` (default) — detects phantoms, prints warning
-  block with list and recovery hints. No mutation.
-- `forgeplan reindex --trim-orphans` — performs hard-delete of
-  phantom rows from LanceDB.
-- `forgeplan reindex --show-orphans` — for each phantom, runs
-  `git log --all -- [path]` to show last commit, date, author,
-  message. Lets user review "what was in here" before trimming.
+1. **Corrupt-kind skip** — `match record.kind.parse() { Err(_) =>
+   continue }` let rows with empty/null kind field escape trim.
+2. **No relation cascade** — deleting an artifact did not remove its
+   relations from `relations.lance`, causing phantom `?` rows in
+   `forgeplan tree` via relation graph traversal.
+
+### Fixes implemented in v0.17.1
+
+- **Phase 2 fix**: replace `continue` with `OrphanReason::CorruptKind`
+  case — unparseable kind = definite orphan, trim it.
+- **Phase 3 new**: iterate `get_all_relations()`, check source+target
+  against post-Phase-2 surviving set, delete orphan edges with
+  source/target/both-missing reason reporting.
+
+### Rejected: original Option D (warn-only default + --show-orphans)
+
+Would have REVERSED the existing trim-by-default behavior which would
+be a regression for users relying on auto-cleanup. The `--show-orphans`
+helper was nice-to-have but not needed after the root cause was found
+in existing trim logic.
 
 ### Why Option D (not A/B/C)
 
