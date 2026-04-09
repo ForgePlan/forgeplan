@@ -68,9 +68,39 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         .and_then(|s| SourceTier::parse(&s))
         .map(|t| t.to_congruence_level());
 
-    let explicit_cl = extract_field(&record.body, "congruence_level")
-        .and_then(|s| s.parse::<u8>().ok())
-        .map(|v| v.min(3));
+    // PROB-034 follow-up (F2, audit C): distinguish "field absent" from
+    // "field present but garbage". Absent → trust-local CL3 default (policy
+    // for workspace-created evidence). Garbage → fail-closed to CL0 + warn
+    // (user declared something, we refuse to guess what).
+    let explicit_cl_raw = extract_field(&record.body, "congruence_level");
+    let explicit_cl: Option<u8> = match &explicit_cl_raw {
+        Some(raw) => match raw.parse::<u8>() {
+            Ok(n) if n <= 3 => Some(n),
+            _ => {
+                eprintln!(
+                    "warn: evidence {} has unparseable congruence_level='{}' — fail-closed to CL0 (penalty 0.9) to prevent silent trust inflation",
+                    record.id, raw
+                );
+                Some(0)
+            }
+        },
+        None => None,
+    };
+
+    // PROB-034 follow-up (F1, audit C): unclosed multi-line HTML comment
+    // swallows the entire remainder of the body → extract_field returns
+    // None for every field → silent CL3 default. Same trust-inflation class
+    // as PROB-034 itself. Detect and fail-closed to CL0.
+    let unclosed_comment = body_has_unclosed_html_comment(&record.body);
+    let explicit_cl = if unclosed_comment && explicit_cl.is_none() {
+        eprintln!(
+            "warn: evidence {} has an unclosed '<!--' comment block — fail-closed to CL0 (penalty 0.9) to prevent silent trust inflation",
+            record.id
+        );
+        Some(0)
+    } else {
+        explicit_cl
+    };
 
     if let (Some(tcl), Some(ecl)) = (tier_cl, explicit_cl)
         && tcl != ecl
@@ -124,16 +154,78 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
 /// Extract a simple "key: value" from body text.
 ///
 /// Skips markdown table rows (lines starting with `|`) and HTML comments
-/// to avoid matching template placeholder values like `| CL | 0 / 1 / 2 / 3 |`.
+/// (both single-line `<!-- ... -->` and MULTI-LINE blocks) to avoid matching
+/// template placeholder values like:
+///
+/// ```text
+/// <!--
+///      congruence_level: 0 | 1 | 2 | 3 (CL3=..., CL0=...)
+/// -->
+/// ```
+///
+/// PROB-034: previously only lines literally starting with `<!--` were
+/// skipped, so inner lines of multi-line comments leaked into the parser
+/// and shadowed real structured fields below (the first match wins). Every
+/// evidence created via `forgeplan new evidence` had its congruence_level
+/// silently reset to the CL3 default because the template comment's
+/// placeholder value `"0 | 1 | 2 | 3 (CL3=...)"` matched first, then
+/// `parse::<u8>()` failed, and the real `congruence_level: X` below was
+/// never inspected.
+///
 /// Only matches standalone `key: value` lines (structured fields).
-pub fn extract_field(body: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key}:");
+/// Returns true if `body` contains an unclosed multi-line HTML comment
+/// (a `<!--` opening that never sees a matching `-->` before EOF).
+///
+/// Used by `parse_evidence_from_record` to fail-closed on malformed bodies:
+/// an unclosed comment swallows every subsequent line in `extract_field`,
+/// which would silently make all structured fields default to CL3 — the
+/// same trust-inflation class as PROB-034.
+pub fn body_has_unclosed_html_comment(body: &str) -> bool {
+    let mut in_comment = false;
     for line in body.lines() {
         let trimmed = line.trim();
-        // Skip markdown table rows and HTML comments — these are template placeholders
-        if trimmed.starts_with('|') || trimmed.starts_with("<!--") {
+        if in_comment {
+            if trimmed.contains("-->") {
+                in_comment = false;
+            }
             continue;
         }
+        if trimmed.starts_with("<!--") && !trimmed.contains("-->") {
+            in_comment = true;
+        }
+    }
+    in_comment
+}
+
+pub fn extract_field(body: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    let mut in_multiline_comment = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+
+        // Multi-line HTML comment state machine. Handles blocks that span
+        // multiple lines (`<!--` on one line, `-->` several lines later).
+        // Single-line comments `<!-- ... -->` open and close on the same
+        // line, so `in_multiline_comment` stays false after processing.
+        if in_multiline_comment {
+            if trimmed.contains("-->") {
+                in_multiline_comment = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("<!--") {
+            if !trimmed.contains("-->") {
+                in_multiline_comment = true;
+            }
+            continue;
+        }
+
+        // Skip markdown table rows — template placeholders like
+        // `| CL | 0 / 1 / 2 / 3 |`.
+        if trimmed.starts_with('|') {
+            continue;
+        }
+
         if let Some(rest) = trimmed.strip_prefix(&prefix) {
             let val = rest.trim();
             if !val.is_empty() {
@@ -175,6 +267,116 @@ mod tests {
     fn extract_field_ignores_html_comments() {
         let body = "<!-- congruence_level: 0 | 1 | 2 | 3 -->\ncongruence_level: 3\n";
         assert_eq!(extract_field(body, "congruence_level"), Some("3".into()));
+    }
+
+    #[test]
+    fn extract_field_ignores_multiline_html_comments() {
+        // PROB-034: the evidence template ships with a MULTI-LINE help
+        // comment explaining valid values. Previously only lines literally
+        // starting with `<!--` were skipped, so the placeholder leaked
+        // into the parser and shadowed the real field below.
+        let body = r#"<!-- Fill in the Structured Fields section below.
+
+     evidence_type: measurement | test | benchmark | audit
+     verdict: supports | weakens | refutes
+     congruence_level: 0 | 1 | 2 | 3 (CL3=same context, CL0=opposed)
+-->
+
+## Structured Fields
+
+evidence_type: measurement
+verdict: supports
+congruence_level: 0
+"#;
+        assert_eq!(
+            extract_field(body, "congruence_level"),
+            Some("0".into()),
+            "multi-line comment must not shadow real structured field"
+        );
+        assert_eq!(extract_field(body, "verdict"), Some("supports".into()));
+        assert_eq!(
+            extract_field(body, "evidence_type"),
+            Some("measurement".into())
+        );
+    }
+
+    #[test]
+    fn body_has_unclosed_html_comment_detects_dangling_open() {
+        // PROB-034 follow-up (F1): unclosed `<!--` should be flagged so
+        // parse_evidence_from_record can fail-closed to CL0.
+        assert!(body_has_unclosed_html_comment("<!-- unclosed"));
+        assert!(body_has_unclosed_html_comment(
+            "before\n<!-- starts here\nnever closes\n"
+        ));
+        // Closed single-line should NOT flag.
+        assert!(!body_has_unclosed_html_comment("<!-- closed -->"));
+        // Closed multi-line should NOT flag.
+        assert!(!body_has_unclosed_html_comment(
+            "<!--\nstill inside\n-->\nafter"
+        ));
+        // No comments should NOT flag.
+        assert!(!body_has_unclosed_html_comment("plain text\nno html"));
+    }
+
+    #[test]
+    fn unclosed_comment_forces_cl0_fail_closed() {
+        // PROB-034 follow-up (F1, audit C MEDIUM): body with unclosed
+        // `<!--` that hides the real congruence_level below → parser
+        // must fail-closed to CL0, not silently default to CL3.
+        let body = "<!-- oops forgot to close this\ncongruence_level: 3\nverdict: supports\n";
+        let record = mk_record(body);
+        let item = parse_evidence_from_record(&record);
+        assert_eq!(
+            item.congruence_level, 0,
+            "unclosed comment must fail-closed to CL0, got CL{}",
+            item.congruence_level
+        );
+    }
+
+    #[test]
+    fn unparseable_congruence_level_forces_cl0_fail_closed() {
+        // PROB-034 follow-up (F2, audit C MEDIUM): when congruence_level
+        // field is present but cannot be parsed as u8 0..=3, fail-closed
+        // to CL0 instead of silently defaulting to CL3.
+        let body = "## Structured Fields\n\ncongruence_level: high\nverdict: supports\n";
+        let record = mk_record(body);
+        let item = parse_evidence_from_record(&record);
+        assert_eq!(
+            item.congruence_level, 0,
+            "unparseable 'high' must fail-closed to CL0, got CL{}",
+            item.congruence_level
+        );
+    }
+
+    #[test]
+    fn parse_evidence_on_verbatim_template_returns_cl3_default() {
+        // PROB-034 verbatim template guard: the shipped template has
+        // multi-line comments + default Structured Fields with CL3.
+        // When loaded AS-IS without any user edit, parser should return
+        // CL3 (trust-local default for freshly created evidence).
+        let template = include_str!("../../../../templates/evidence/_TEMPLATE.md");
+        let record = mk_record(template);
+        let item = parse_evidence_from_record(&record);
+        assert_eq!(
+            item.congruence_level, 3,
+            "verbatim template must parse to default CL3, got CL{} — parser may have regressed on multi-line comment handling",
+            item.congruence_level
+        );
+        // evidence_type should be measurement (template default).
+        matches!(item.evidence_type, EvidenceType::Measurement);
+    }
+
+    #[test]
+    fn extract_field_multiline_comment_nested_fields_all_ignored() {
+        // Guard against a variant where the comment contains multiple
+        // lines each mentioning the key — none should leak.
+        let body = r#"<!--
+congruence_level: 3
+congruence_level: 0
+-->
+congruence_level: 2
+"#;
+        assert_eq!(extract_field(body, "congruence_level"), Some("2".into()));
     }
 
     #[test]

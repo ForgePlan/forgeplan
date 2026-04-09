@@ -135,8 +135,13 @@ pub fn smart_search(
         .filter_map(|record| {
             let raw_bm25 = bm25.score(record, query);
             let bm25_norm = Bm25Index::normalize(raw_bm25);
-            // Keep substring keyword_score for diagnostics / backward compat.
+            // PROB-030 fix: BM25 is token-based — queries like "auth" don't
+            // match the "authentication" token. Users expect grep-like prefix
+            // behavior. We take max(BM25, substring) so BM25 still wins on
+            // exact-token matches (richer signal) but falls back to substring
+            // when BM25 returns 0 for partial/prefix queries.
             let kw = keyword_score(record, query);
+            let keyword_channel = bm25_norm.max(kw);
             let sem = semantic_scores
                 .and_then(|m| m.get(&record.id))
                 .copied()
@@ -145,8 +150,13 @@ pub fn smart_search(
                 .map(|g| g.degree_centrality(&record.id))
                 .unwrap_or(0.0);
             let is_active = record.status.eq_ignore_ascii_case("active");
-            // Use BM25 (richer signal) as the keyword channel for combined score.
-            let score = combined_score(bm25_norm, sem, record.r_eff_score, is_active, centrality);
+            let score = combined_score(
+                keyword_channel,
+                sem,
+                record.r_eff_score,
+                is_active,
+                centrality,
+            );
 
             if score > 0.0 {
                 Some(SmartSearchResult {
@@ -725,5 +735,81 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "PRD-001");
         assert!(results[0].expanded_from.is_none());
+    }
+
+    // ── PROB-030 regression: BM25 prefix fallback ───────────────────
+
+    #[test]
+    fn smart_search_prefix_query_falls_back_to_substring() {
+        // PROB-030: BM25 is token-based — the prefix "auth" does not match
+        // the token "authentication", so BM25 alone returns 0. Users expect
+        // grep-like prefix behavior. The fix: combined keyword channel =
+        // max(bm25_norm, substring_keyword_score), so substring match wins
+        // when BM25 is silent.
+        let records = vec![
+            make_record(
+                "PRD-001",
+                "Authentication OAuth2 system",
+                "user login flow",
+                "active",
+                0.0,
+            ),
+            make_record(
+                "PRD-002",
+                "Unrelated topic",
+                "nothing about logins",
+                "active",
+                0.0,
+            ),
+        ];
+        let results = smart_search(&records, "auth", None, None, None, 10);
+        assert_eq!(
+            results.len(),
+            1,
+            "prefix query 'auth' must find 'Authentication' via substring fallback"
+        );
+        assert_eq!(results[0].id, "PRD-001");
+        assert!(
+            results[0].score > 0.0,
+            "score must be non-zero for a matching prefix query"
+        );
+    }
+
+    #[test]
+    fn smart_search_prefix_unicode_cyrillic() {
+        // PROB-030 follow-up (audit B): substring fallback must work
+        // for non-ASCII prefixes like `"аут"` matching `"аутентификация"`.
+        let records = vec![
+            make_record(
+                "PRD-001",
+                "Система аутентификации OAuth2",
+                "логин и сессии",
+                "active",
+                0.0,
+            ),
+            make_record("PRD-002", "Платежи", "обработка карт", "active", 0.0),
+        ];
+        let results = smart_search(&records, "аут", None, None, None, 10);
+        assert!(!results.is_empty(), "cyrillic prefix must find record");
+        assert_eq!(results[0].id, "PRD-001");
+        assert!(results[0].score > 0.0);
+    }
+
+    #[test]
+    fn smart_search_exact_token_still_wins_over_prefix() {
+        // PROB-030 regression guard: substring fallback must NOT suppress
+        // BM25's richer signal for exact-token matches. Docs with more TF
+        // of the exact query term should still rank higher than docs that
+        // only match via substring.
+        let records = vec![
+            make_record("PRD-001", "Auth", "auth auth auth auth", "active", 0.0),
+            make_record("PRD-002", "Authentication", "login only", "active", 0.0),
+        ];
+        let results = smart_search(&records, "auth", None, None, None, 10);
+        assert!(results.len() >= 2);
+        assert_eq!(
+            results[0].id, "PRD-001",
+            "exact-token doc with higher TF must still beat substring-only match"
+        );
     }
 }
