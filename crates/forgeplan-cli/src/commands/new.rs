@@ -192,13 +192,19 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         println!("\n  * {}", h);
     }
 
-    // Session: advance to Shaping (for decision artifacts) or Evidence (for evidence kind)
-    let phase = if template_key == "evidence" {
-        forgeplan_core::session::Phase::Evidence
-    } else if matches!(template_key, "prd" | "rfc" | "adr" | "epic" | "spec") {
+    // Session: advance to Shaping for decision artifacts only.
+    //
+    // PROB-033 fix: `new evidence` is phase-agnostic — creating evidence is a
+    // legitimate operation in ANY session state (backfill from shipped code,
+    // audit findings, brownfield import, external benchmark). The state machine
+    // guardrail still applies at `activate` time (stub detection + validation),
+    // so loosening `new` is safe.
+    //
+    // Notes/problems/evidence never drive the state machine; they're orthogonal
+    // to the decision pipeline.
+    let phase = if matches!(template_key, "prd" | "rfc" | "adr" | "epic" | "spec") {
         forgeplan_core::session::Phase::Shaping
     } else {
-        // Notes, problems, etc. — don't change phase
         return Ok(());
     };
     common::advance_session(phase, Some(&id));

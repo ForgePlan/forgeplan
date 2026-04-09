@@ -7,6 +7,116 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.17.2] — 2026-04-09 — Quality hotfix: scoring & search integrity
+
+Fixes **five** real bugs found during a dedicated /forge E2E verification
+sprint on a fresh workspace (separate from the dogfood audit that produced
+v0.17.1). Each bug was reproduced on the v0.17.1 release binary before
+fixing, and the fix verified A/B on an identical workspace.
+
+The headline fix is **PROB-034 (CRITICAL)** — a silent trust-calculus
+regression present since v0.17.0 that inflated R_eff scores across every
+workspace using the default evidence template.
+
+### Fixed
+
+- **PROB-034 (CRITICAL) — Multi-line HTML comments shadowed real
+  structured fields in `extract_field`.**
+  `crates/forgeplan-core/src/scoring/evidence.rs::extract_field` skipped
+  only lines *literally starting* with `<!--`, not lines *inside* a
+  multi-line comment block. The evidence template ships with a help
+  comment:
+  ```markdown
+  <!--
+       verdict: supports | weakens | refutes
+       congruence_level: 0 | 1 | 2 | 3 (CL3=same context, CL0=opposed)
+  -->
+  ```
+  The placeholder line `congruence_level: 0 | 1 | 2 | 3 (CL3=...)` does
+  not start with `<!--`, so the parser matched it, `parse::<u8>()` failed
+  on the non-numeric string, `explicit_cl` became `None`, and the
+  **real** `congruence_level: X` in the Structured Fields section below
+  was never inspected. Every evidence artifact ever created via the
+  default template silently reset to CL3 (no penalty), artificially
+  inflating R_eff across every workspace since v0.17.0.
+  - Fix: `extract_field` now implements a proper multi-line comment
+    state machine — tracks an `in_multiline_comment` boolean, skipping
+    all lines between `<!--` and `-->` when they span multiple lines.
+  - Affects all fields parsed via `extract_field`: `verdict`,
+    `congruence_level`, `evidence_type`, `source_tier` — all were
+    silently defaulted. The fix is transitive.
+  - A/B verification on `/tmp/fp-prob034-repro` with identical workspace:
+    v0.17.1 binary → `r_eff=1.0000, CL=3`; v0.17.2 binary →
+    `r_eff=0.1000, CL=0` (correct for explicit CL0 evidence).
+  - Regression tests: `extract_field_ignores_multiline_html_comments`,
+    `extract_field_multiline_comment_nested_fields_all_ignored`.
+
+- **PROB-030 — BM25 prefix queries returned 0 results.**
+  `crates/forgeplan-core/src/search/smart.rs` computed `keyword_score`
+  (substring match) for diagnostics but passed only `bm25_norm` to
+  `combined_score`. BM25 is token-based, so `auth` did not match the
+  token `authentication`, and prefix queries silently returned nothing.
+  - Fix: `let keyword_channel = bm25_norm.max(kw);` — BM25 still wins
+    on exact-token matches (richer signal), but substring fallback kicks
+    in when BM25 returns 0 for prefix queries.
+  - Regression tests: `smart_search_prefix_query_falls_back_to_substring`,
+    `smart_search_exact_token_still_wins_over_prefix`.
+
+- **PROB-031 — CLI `score` command had its own divergent evidence
+  parser.** The CLI `parse_evidence_from_record` in `score.rs`
+  duplicated core's function but with a different default CL (CL0 vs
+  CL3), creating a visible contradiction: display said
+  `CL0 = 0.1` while the `r_eff_recursive` rollup computed `1.00` via
+  core's parser. The local CLI parser also did NOT implement the
+  PRD-035 Sprint 13.3 H2 security precedence
+  (`min(tier_cl, explicit_cl)`), opening a trust-amplification attack
+  surface on the display path.
+  - Fix: deleted the local duplicate and `extract_field` helper;
+    imported `forgeplan_core::scoring::evidence::parse_evidence_from_record`.
+    Display and rollup now read identical values by construction.
+  - Regression test:
+    `score_uses_core_parser_with_cl3_default_when_no_structured_fields`.
+
+- **PROB-032 — `forgeplan search` breakdown line lied about
+  components.** Display showed `kw=0.0 sem=0.0 r=0.0 g=0.0` while total
+  was 0.57. Caused by PROB-030: `kw` was computed but never flowed into
+  `combined_score`.
+  - Auto-fixed as side effect of PROB-030. Breakdown now shows real
+    component values.
+
+- **PROB-033 — `forgeplan new evidence` printed confusing session
+  warning after `forgeplan route`.** The session state machine
+  attempted a `Routing → Evidence` transition, which is disallowed.
+  The file WAS created, but stderr showed
+  `Session: Cannot go from 'routing' to 'evidence'` — blocking
+  legitimate backfill, audit, brownfield, and evidence-import flows
+  in perception if not in fact.
+  - Fix: `forgeplan new evidence` is now phase-agnostic — it never
+    drives the session state machine. Only decision artifacts
+    (prd/rfc/adr/epic/spec) advance to Shaping phase. Methodology
+    guardrail still enforces at `activate` time via PRD-043 stub
+    detection + validation gates.
+  - Regression test:
+    `new_evidence_works_in_routing_phase_without_session_warning`.
+
+### Tests
+
+- 1137 tests pass (+6 from v0.17.1 baseline 1131).
+- 6 new regression tests cover PROB-030 (2), PROB-031 (1), PROB-033 (1),
+  PROB-034 (2).
+- `cargo fmt --check` clean, `cargo clippy --workspace --all-targets --
+  -D warnings` clean on both default and `semantic-search` feature.
+
+### Impact
+
+If you are upgrading from v0.17.0 or v0.17.1 and you have evidence
+artifacts in your workspace, your R_eff scores were potentially
+inflated by the CL3 default (PROB-034). Re-run `forgeplan score` on
+critical PRDs after upgrade — any evidence that explicitly set
+`congruence_level` in Structured Fields will now be honored, and weak
+CL values may cause R_eff to drop. This is correct behavior; the
+previous values were silently wrong.
+
 ## [0.17.1] — 2026-04-09 — Post-v0.17.0 dogfood hotfix
 
 Fixes two bugs found during the v0.17.0 final dogfood audit when running
