@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: PRD-043
   relation: informs
-status: draft
+status: active
 title: Health verdict aggregator reads all warning signals (v0.17.1 hotfix)
 ---
 
@@ -16,13 +16,31 @@ title: Health verdict aggregator reads all warning signals (v0.17.1 hotfix)
 ## Progress
 
 ```
-FR-001   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Verdict aggregator includes PRD-043 signals
-FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Three-level verdict output (healthy / attention / unhealthy)
-FR-003   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Next-actions list tied to verdict level
-FR-004   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Update CHANGELOG + help text for health verdict change
+FR-001   ████████████████████████  1/1  Verdict aggregator reads PRD-043 signals (stubs+dups) ✓ v0.17.1
+FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Three-level verdict enum — deferred to v0.18
+FR-003   ████████████████████████  1/1  Next-actions include stubs/dups with concrete IDs     ✓ v0.17.1
+FR-004   ████████████████████████  1/1  CHANGELOG v0.17.1 Fixed entry                         ✓ v0.17.1
 ─────────────────────────────────────────────────
-TOTAL                               0/4  (  0%)
+TOTAL                               3/4  ( 75%) — v0.17.1 hotfix
+
+Deferred from this PRD:
+- FR-002: explicit Verdict enum (Healthy / NeedsAttention / Unhealthy).
+  v0.17.1 keeps the existing "next_actions is non-empty" implicit
+  signal — no "looks healthy" string when stubs/dups present. Making
+  it explicit via typed enum is cleaner but requires HealthReport
+  shape change which would break MCP JSON contract. Deferred to
+  v0.18 minor release. See NOTE-045 entry.
 ```
+
+**v0.17.1 delivered (commit b6f478e):**
+- `generate_next_actions` signature extended with 2 new params
+- Compute reordered: stubs/dups before next_actions
+- Stubs action includes concrete ID with supersede/deprecate recipe
+- Duplicates action includes concrete pair with deprecate recipe
+- 3 new unit tests covering stub/dup/healthy branches
+- Verified on dogfood: health now reports 3 concrete actions instead
+  of "Project looks healthy"
+- See EVID-067 for implementation evidence.
 
 ## Problem
 
@@ -199,3 +217,4 @@ real usage shows the defaults are wrong.
 | PRD-043 | informs (PRD-043 detection whose signals this aggregates) |
 | EVID-058 | informs (Sprint 13.1 PRD-043 implementation evidence) |
 | PRD-044 | sibling (paired v0.17.1 hotfix work) |
+

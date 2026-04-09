@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: ADR-003
   relation: informs
-status: draft
+status: active
 title: Reindex trim orphans — delete LanceDB rows without .md backing file (v0.17.1 hotfix)
 ---
 
@@ -16,13 +16,25 @@ title: Reindex trim orphans — delete LanceDB rows without .md backing file (v0
 ## Progress
 
 ```
-FR-001   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Fix parse-kind bug: treat corrupt kind as orphan, not skip
-FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Improve trim output message (reason: corrupt-kind vs missing-file)
-FR-003   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Add --show-orphans flag: git log + recovery recipe per orphan
-FR-004   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Update --help text, CLAUDE.md, CHANGELOG.md
+FR-001   ████████████████████████  1/1  Fix parse-kind bug: treat corrupt kind as orphan, not skip ✓ v0.17.1
+FR-002   ████████████████████████  1/1  Improve trim output (reason: corrupt-kind vs missing-file) ✓ v0.17.1
+FR-003   ████████████████████████  1/1  New Phase 3: trim orphan relations (discovered during ADI) ✓ v0.17.1
+FR-004   ████████████████████████  1/1  CHANGELOG + version bump 0.17.0 → 0.17.1                   ✓ v0.17.1
 ─────────────────────────────────────────────────
-TOTAL                               0/4  (  0%)
+TOTAL                               4/4  (100%) — v0.17.1 hotfix
+
+Deferred from this PRD:
+- --show-orphans flag (original Option D feature) — ADI revealed real
+  bugs are in parse-skip + relation cascade, not in absence of helper.
+  The helper is nice-to-have not need-to-have. Tracked in NOTE-045 as
+  future enhancement if real users request it.
 ```
+
+**v0.17.1 delivered (commit b6f478e):**
+- Fixed reindex Phase 2 parse-kind skip bug (4 LOC change)
+- Added reindex Phase 3: orphan relation trim with (source, target, both) reason reporting
+- Verified on dogfood: 3 phantom NOTE-037/038/040 relations cleaned up
+- See EVID-066 for implementation evidence.
 
 ## ADI revision note (2026-04-09)
 
@@ -273,3 +285,4 @@ of its output, so users don't need to know git spelunking.
 | ADR-003 | informs (files = source of truth, PRD restores this invariant) |
 | PROB-027 | sibling (other reindex bug — cannot rebuild from scratch) |
 | PRD-045 | sibling (health verdict fix, paired v0.17.1 hotfix work) |
+
