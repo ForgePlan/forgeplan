@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-028
 kind: problem
-status: active
+status: draft
 title: Phantom rows in LanceDB persist after .md file deletion — reindex bug
 ---
 
@@ -105,4 +105,3 @@ default-on after observation).
 | PROB-027 | sibling (related reindex bug — cannot rebuild from scratch when lance dir missing) |
 | PRD-043 | sibling (methodology integrity, this is data integrity) |
 | EPIC-003 | context (found during v0.17.0 final dogfood audit 2026-04-08) |
-

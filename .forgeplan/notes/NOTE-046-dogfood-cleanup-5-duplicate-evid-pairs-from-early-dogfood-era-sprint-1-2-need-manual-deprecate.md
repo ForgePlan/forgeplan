@@ -3,7 +3,7 @@ depth: tactical
 id: NOTE-046
 kind: note
 status: active
-title: Dogfood cleanup — 5 duplicate EVID pairs from early dogfood era (Sprint 1-2) need manual deprecate
+title: Dogfood cleanup — 5 duplicate EVID pairs from early dogfood era need manual deprecate
 ---
 
 # NOTE-046: Dogfood cleanup — 5 duplicate EVID pairs
@@ -64,4 +64,3 @@ become a PROB. Otherwise this is a 5-minute manual pass.
 | EVID-058 | sibling (Sprint 13.1 implementation) |
 | EPIC-003 | context (found in v0.17.0 final audit) |
 | NOTE-047 | sibling (other dogfood cleanup task — false-active stubs) |
-
