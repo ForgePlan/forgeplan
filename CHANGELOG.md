@@ -7,6 +7,77 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.17.1] — 2026-04-09 — Post-v0.17.0 dogfood hotfix
+
+Fixes two bugs found during the v0.17.0 final dogfood audit when running
+`forgeplan tree` and `forgeplan health` on the dogfood workspace itself.
+PRD-043 detection (Sprint 13.1) correctly flagged the issues but two
+upstream bugs prevented them from being auto-resolved.
+
+### Fixed
+
+- **PROB-028 — Phantom rows in `forgeplan tree`** (PRD-044).
+  `reindex` Phase 2 (orphan cleanup) previously skipped rows whose
+  `kind` field failed to parse via `continue`, letting corrupt/empty
+  kind rows escape trim forever. Additionally, orphan relations whose
+  source or target artifact had been deleted accumulated in the
+  relations table and surfaced as `?` phantoms in tree rendering.
+  - Fix 1: `Err(_) => continue` changed to treat unparseable kind as
+    a definite orphan (no valid kind means no valid directory means
+    no possible file). Rows with corrupt kind now get trimmed along
+    with normal orphans.
+  - Fix 2: new Phase 3 in `reindex` trims orphan relations where
+    source or target no longer exists in artifacts.
+  - Output now reports removal reason: `corrupt kind field` vs
+    `no .md file found` vs `orphan relation (source|target|both missing)`.
+  - `reindex` output gains a new counter: "K removed, N orphan relations"
+
+- **PROB-029 — `forgeplan health` verdict contradicted its own warnings**
+  (PRD-045). Sprint 13.1 added `active_stubs` and `possible_duplicates`
+  detection (PRD-043) and wired them into the warning display, but the
+  `generate_next_actions` summary function was never updated to read
+  those signals. Result: workspace with 8 stubs + 5 duplicate pairs
+  printed "Project looks healthy" at the bottom.
+  - Fix: `generate_next_actions` now takes `possible_duplicates` and
+    `active_stubs` as parameters; compute order reshuffled so signals
+    are available before the summary runs.
+  - Next actions for stubs suggest `forgeplan supersede ID --by NEW`
+    or `forgeplan deprecate ID --reason "abandoned"` with the concrete
+    offending ID.
+  - Next actions for duplicates suggest
+    `forgeplan deprecate B --reason "duplicate of A"` with the concrete
+    pair IDs.
+  - "Project looks healthy" message only appears when genuinely no
+    warnings of any category exist.
+
+### Methodology (NOTE-044 checklist addition)
+
+- Phase 1 Implementation gains new rule: "Every new CLI flag / command
+  / config option ships with ALL of these docs (no feature lands
+  without): clap `--help` text, CHANGELOG entry, CLAUDE.md workflow
+  section if user-facing, `docs/methodology/` subsection if
+  command-level." Red flag: a PR adding a flag/command without
+  touching clap help + CHANGELOG is incomplete — block merge.
+
+### Stats
+
+- 1131 tests pass (+3 from v0.17.0 — PRD-045 verdict aggregator tests)
+- 0 warnings on both default and `--features semantic-search` builds
+- Clippy strict (`-D warnings`) clean on Rust 1.94
+- Dogfood verification: `forgeplan tree` on dogfood workspace no
+  longer shows `?` phantoms; `forgeplan health` reports 3 concrete
+  next actions instead of "looks healthy"
+
+### Refs
+
+- PROB-028 (phantom rows reindex bug)
+- PROB-029 (health verdict logic bug)
+- PRD-044 (reindex trim orphans — closes PROB-028)
+- PRD-045 (health verdict aggregator — closes PROB-029)
+- NOTE-044 (sprint checklist framework, docs completeness rule added)
+- NOTE-046 (dogfood cleanup task — duplicate EVID pairs, deferred)
+- NOTE-047 (dogfood cleanup task — false-active stubs, deferred)
+
 ## [0.17.0] — 2026-04-08 — EPIC-003: Search, Discovery, Intelligence
 
 First release of EPIC-003. Adds keyword + semantic search, brownfield

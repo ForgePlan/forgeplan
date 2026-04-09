@@ -132,46 +132,112 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // Phase 2: Remove DB records whose .md file no longer exists (files-first cleanup)
+    //
+    // PRD-044 fix: previously `parse::<ArtifactKind>()` returning Err caused
+    // `continue`, which let rows with corrupt/empty kind escape trim forever
+    // (the NOTE-037/NOTE-040 phantom bug observed in v0.17.0 dogfood audit).
+    // Now we treat unparseable kind as a definite orphan: no valid kind =
+    // no valid directory = no possible file = trim it.
     let mut removed = 0usize;
     let all_records = store.list_records(None).await?;
     for record in &all_records {
-        let kind: forgeplan_core::artifact::types::ArtifactKind = match record.kind.parse() {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
-        let dir = ws.join(kind.dir_name());
-        let slug = forgeplan_core::artifact::types::slugify(&record.title);
-        let filename = format!("{}-{}.md", record.id, slug);
-        let filepath = dir.join(&filename);
+        enum OrphanReason {
+            CorruptKind,
+            MissingFile,
+        }
 
-        if !filepath.exists() {
-            // Double-check: maybe file exists with different slug (title changed)
-            let mut found = false;
-            if dir.exists()
-                && let Ok(mut rd) = tokio::fs::read_dir(&dir).await
+        let orphan_reason: Option<OrphanReason> =
+            match record
+                .kind
+                .parse::<forgeplan_core::artifact::types::ArtifactKind>()
             {
-                while let Ok(Some(entry)) = rd.next_entry().await {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let id_prefix = format!("{}-", record.id.to_uppercase());
-                    if name.to_uppercase().starts_with(&id_prefix) && name.ends_with(".md") {
-                        found = true;
-                        break;
+                Err(_) => Some(OrphanReason::CorruptKind),
+                Ok(kind) => {
+                    let dir = ws.join(kind.dir_name());
+                    let slug = forgeplan_core::artifact::types::slugify(&record.title);
+                    let filename = format!("{}-{}.md", record.id, slug);
+                    let filepath = dir.join(&filename);
+
+                    if filepath.exists() {
+                        None
+                    } else {
+                        // Double-check: maybe file exists with different slug (title changed)
+                        let mut found = false;
+                        if dir.exists()
+                            && let Ok(mut rd) = tokio::fs::read_dir(&dir).await
+                        {
+                            while let Ok(Some(entry)) = rd.next_entry().await {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let id_prefix = format!("{}-", record.id.to_uppercase());
+                                if name.to_uppercase().starts_with(&id_prefix)
+                                    && name.ends_with(".md")
+                                {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if found {
+                            None
+                        } else {
+                            Some(OrphanReason::MissingFile)
+                        }
                     }
                 }
-            }
+            };
 
-            if !found {
-                store.delete_artifact(&record.id).await?;
-                common::log_change(&store, &record.id, "delete", "reindex").await;
-                println!("  DEL  {} — no .md file found, removed from DB", record.id);
-                removed += 1;
+        if let Some(reason) = orphan_reason {
+            store.delete_artifact(&record.id).await?;
+            common::log_change(&store, &record.id, "delete", "reindex").await;
+            let reason_label = match reason {
+                OrphanReason::CorruptKind => "corrupt kind field",
+                OrphanReason::MissingFile => "no .md file found",
+            };
+            println!("  DEL  {} — {}, removed from DB", record.id, reason_label);
+            removed += 1;
+        }
+    }
+
+    // Phase 3: Trim orphan relations — edges whose source or target artifact
+    // no longer exists. Before fix, orphan relations survived forever and
+    // caused phantom rows in `forgeplan tree` rendering (NOTE-037/038/040 bug
+    // from v0.17.0 dogfood audit). PRD-044 FR-001 extended scope.
+    let mut orphan_relations = 0usize;
+    let all_relations = store.get_all_relations().await?;
+    if !all_relations.is_empty() {
+        // Re-fetch fresh artifact ID set after Phase 2 trims so cascade works
+        let surviving_ids: std::collections::HashSet<String> = store
+            .list_records(None)
+            .await?
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        for (source, target, relation) in &all_relations {
+            let source_exists = surviving_ids.contains(source);
+            let target_exists = surviving_ids.contains(target);
+            if !source_exists || !target_exists {
+                if let Err(e) = store.delete_relation(source, target, relation).await {
+                    eprintln!(
+                        "  WARN orphan relation {source} --{relation}--> {target} delete failed: {e}"
+                    );
+                    errors += 1;
+                } else {
+                    let why = match (source_exists, target_exists) {
+                        (false, false) => "both source and target missing",
+                        (false, true) => "source missing",
+                        (true, false) => "target missing",
+                        (true, true) => unreachable!(),
+                    };
+                    println!("  DEL  {source} --{relation}--> {target} — orphan relation ({why})");
+                    orphan_relations += 1;
+                }
             }
         }
     }
 
     println!(
-        "\nReindex complete: {} synced, {} unchanged, {} removed, {} errors.",
-        synced, skipped, removed, errors
+        "\nReindex complete: {} synced, {} unchanged, {} removed, {} orphan relations, {} errors.",
+        synced, skipped, removed, orphan_relations, errors
     );
     Ok(())
 }

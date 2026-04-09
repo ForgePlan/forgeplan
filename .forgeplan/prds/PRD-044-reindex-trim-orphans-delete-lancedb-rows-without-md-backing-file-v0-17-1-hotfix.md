@@ -16,14 +16,46 @@ title: Reindex trim orphans — delete LanceDB rows without .md backing file (v0
 ## Progress
 
 ```
-FR-001   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Detect phantom rows during reindex (read-only)
-FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Warn by default — print phantom list + recovery hints
-FR-003   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  --trim-orphans flag performs actual hard-delete
-FR-004   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  --show-orphans flag displays git history of each phantom
-FR-005   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Update --help text, CLAUDE.md, docs/, CHANGELOG.md
+FR-001   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Fix parse-kind bug: treat corrupt kind as orphan, not skip
+FR-002   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Improve trim output message (reason: corrupt-kind vs missing-file)
+FR-003   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Add --show-orphans flag: git log + recovery recipe per orphan
+FR-004   ░░░░░░░░░░░░░░░░░░░░░░░░  0/1  Update --help text, CLAUDE.md, CHANGELOG.md
 ─────────────────────────────────────────────────
-TOTAL                               0/5  (  0%)
+TOTAL                               0/4  (  0%)
 ```
+
+## ADI revision note (2026-04-09)
+
+Initial PRD spec was Option D (warn by default, add --trim-orphans flag).
+ADI code investigation revealed the root cause is **different** from the
+initial hypothesis: reindex **already trims by default** in Phase 2
+(reindex.rs:134-175). The real bug is at lines 138-141:
+
+```rust
+for record in &all_records {
+    let kind: ArtifactKind = match record.kind.parse() {
+        Ok(k) => k,
+        Err(_) => continue,  // ← SKIPS CORRUPT ROWS FROM TRIM
+    };
+    // ... check if file exists ...
+}
+```
+
+NOTE-037 and NOTE-040 have corrupt/empty `kind` field (observed `?` in
+`forgeplan tree` output). `extract_record` at store.rs:1390 uses
+`unwrap_or_default()` so null kind becomes `""`. `"".parse::<ArtifactKind>()`
+returns Err. `continue` skips the row. Result: rows with corrupt kind
+**escape trim forever**.
+
+**Revised scope** (H2 from ADI): minimal bug fix, not a new feature.
+Change `Err(_) => continue` to treat unparseable kind as definite orphan
+(no valid kind = no valid directory = no possible file = trim it).
+Keep existing default-trim behavior. Add --show-orphans as additive
+feature only (no change to default).
+
+**Rejected original Option D**: would have CHANGED default from trim to
+warn, which is a regression for users relying on auto-cleanup. The bug
+is in trim, not absence of trim.
 
 ## Problem
 
@@ -83,13 +115,27 @@ is broken.
 
 ## Functional Requirements
 
-| ID | Category | Priority | Requirement |
-|----|----------|----------|-------------|
-| FR-001 | Core | Must | [System] can detect LanceDB rows whose `id` has no corresponding `.md` file under the kind's directory. Read-only scan, no mutation. |
-| FR-002 | UX | Must | [User] sees a warning block in `reindex` output listing phantom IDs, with two hint lines: `forgeplan reindex --trim-orphans` (remove) and `forgeplan reindex --show-orphans` (inspect via git). Warning only — default `reindex` does NOT delete. |
-| FR-003 | Core | Must | [User] can pass `--trim-orphans` flag to `forgeplan reindex` which performs the actual hard-delete of phantom rows from LanceDB. Git history is the recovery mechanism (ADR-003 — files = source of truth, LanceDB = derived). |
-| FR-004 | UX | Must | [User] can pass `--show-orphans` flag to see git history of each phantom: `git log --all -- <path>` output per orphan, showing last commit SHA, date, author, and message. Helpful for deciding whether to restore or trim. |
-| FR-005 | Docs | Must | [Contributor] finds up-to-date documentation for the new flags: clap `#[arg(help=...)]` strings, CLAUDE.md command workflow section, `docs/methodology/FORGEPLAN-GUIDE.md` reindex subsection, `CHANGELOG.md` v0.17.1 entry. **No feature lands without help text + changelog.** |
+- **FR-001** Core Must. [System] Phase 2 cleanup in `reindex` MUST trim
+  rows whose `kind` field fails to parse, treating unparseable kind as
+  a definite orphan (no valid kind means no valid directory, so no file
+  could exist). Current code skips these via `continue`; after fix they
+  must be deleted along with regular orphans.
+- **FR-002** UX Must. [User] sees improved reindex output distinguishing
+  removal reasons. Two cases: `DEL ID — file deleted` (normal case) and
+  `DEL ID — corrupt kind field` (phantom case). Total count line remains
+  `Reindex complete: N synced, M unchanged, K removed, L errors`.
+- **FR-003** Feature Must. [User] can pass `--show-orphans` flag to
+  `forgeplan reindex` to preview what would be deleted BEFORE the trim
+  runs. For each orphan: print ID, last known title from LanceDB, and
+  `git log --all -- [path]` output showing last commit SHA, date, author,
+  and message. Also print copy-paste recovery recipe using those values.
+  With this flag, trim still happens (unless combined with `--dry-run`
+  if that exists — out of scope if not).
+- **FR-004** Docs Must. [Contributor] finds up-to-date documentation for
+  the new flag and fixed behavior: clap `#[arg(help)]` string on
+  `--show-orphans`, CHANGELOG.md v0.17.1 Fixed entry for the bug and
+  Added entry for the flag, CLAUDE.md reindex workflow mention.
+  **No feature lands without help text + changelog** (NOTE-044 rule).
 
 ## Non-Functional Requirements
 

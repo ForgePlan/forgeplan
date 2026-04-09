@@ -116,11 +116,23 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     let by_derived_status =
         compute_derived_status_breakdown(&non_evidence, &evidence_records, &outgoing);
 
-    let next_actions =
-        generate_next_actions(total, &by_status, &blind_spots, stale_count, &orphans);
-
+    // PRD-045 FR-001: compute PRD-043 signals BEFORE next_actions so the
+    // aggregator can see them. Before fix, these were computed after
+    // next_actions and the summary never knew about active stubs or
+    // duplicate pairs → verdict always said "Project looks healthy"
+    // even with 8 stubs and 5 duplicate pairs present.
     let possible_duplicates = find_duplicate_pairs(&all, DUPLICATE_SIMILARITY_THRESHOLD);
     let active_stubs = find_active_stubs(&all);
+
+    let next_actions = generate_next_actions(
+        total,
+        &by_status,
+        &blind_spots,
+        stale_count,
+        &orphans,
+        &possible_duplicates,
+        &active_stubs,
+    );
 
     Ok(HealthReport {
         total,
@@ -302,12 +314,36 @@ fn generate_next_actions(
     blind_spots: &[BlindSpot],
     stale_count: usize,
     orphans: &[String],
+    possible_duplicates: &[DuplicatePair],
+    active_stubs: &[ActiveStub],
 ) -> Vec<String> {
     let mut actions = Vec::new();
 
     let draft_count = by_status.get("draft").copied().unwrap_or(0);
     if draft_count == total && total > 0 {
         actions.push("All artifacts in Draft — review and activate ready ones".into());
+    }
+
+    // PRD-045 FR-001: PRD-043 stub detection signal
+    if !active_stubs.is_empty() {
+        let first = &active_stubs[0];
+        actions.push(format!(
+            "Fill or supersede {} active stub(s) — e.g. `forgeplan supersede {} --by <NEW>` or `forgeplan deprecate {} --reason \"abandoned\"`",
+            active_stubs.len(),
+            first.id,
+            first.id
+        ));
+    }
+
+    // PRD-045 FR-001: PRD-043 duplicate detection signal
+    if !possible_duplicates.is_empty() {
+        let first = &possible_duplicates[0];
+        actions.push(format!(
+            "Resolve {} duplicate pair(s) — e.g. `forgeplan deprecate {} --reason \"duplicate of {}\"`",
+            possible_duplicates.len(),
+            first.id_b,
+            first.id_a
+        ));
     }
 
     if !blind_spots.is_empty() {
@@ -716,8 +752,80 @@ mod tests {
         }];
         let orphans = vec!["O1".into(), "O2".into()];
 
-        let actions = generate_next_actions(5, &by_status, &blind_spots, 2, &orphans);
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let actions =
+            generate_next_actions(5, &by_status, &blind_spots, 2, &orphans, &dups, &stubs);
         assert!(actions.len() <= 3);
+    }
+
+    // PRD-045 FR-001: verdict aggregator reads stubs signal
+    #[test]
+    fn next_actions_includes_stub_remediation_when_stubs_present() {
+        let by_status = BTreeMap::new();
+        let blind_spots: Vec<BlindSpot> = Vec::new();
+        let orphans: Vec<String> = Vec::new();
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs = vec![ActiveStub {
+            id: "PRD-008".into(),
+            kind: "prd".into(),
+            title: "CLI UX".into(),
+            markers_found: 6,
+            message: "stub".into(),
+        }];
+        let actions =
+            generate_next_actions(10, &by_status, &blind_spots, 0, &orphans, &dups, &stubs);
+        assert!(
+            actions.iter().any(|a| a.contains("PRD-008")),
+            "expected PRD-008 stub mentioned, got {actions:?}"
+        );
+        assert!(
+            !actions.iter().any(|a| a.contains("looks healthy")),
+            "should NOT say healthy when stubs present"
+        );
+    }
+
+    // PRD-045 FR-001: verdict aggregator reads duplicates signal
+    #[test]
+    fn next_actions_includes_duplicate_remediation_when_dups_present() {
+        let by_status = BTreeMap::new();
+        let blind_spots: Vec<BlindSpot> = Vec::new();
+        let orphans: Vec<String> = Vec::new();
+        let dups = vec![DuplicatePair {
+            id_a: "EVID-001".into(),
+            id_b: "EVID-003".into(),
+            similarity: 1.0,
+            title_a: "Dogfood test".into(),
+            title_b: "Dogfood test".into(),
+            kind: "evidence".into(),
+        }];
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let actions =
+            generate_next_actions(10, &by_status, &blind_spots, 0, &orphans, &dups, &stubs);
+        assert!(
+            actions.iter().any(|a| a.contains("EVID-003")),
+            "expected EVID-003 duplicate mentioned, got {actions:?}"
+        );
+        assert!(
+            !actions.iter().any(|a| a.contains("looks healthy")),
+            "should NOT say healthy when duplicates present"
+        );
+    }
+
+    // PRD-045: clean workspace still says healthy
+    #[test]
+    fn next_actions_says_healthy_when_no_warnings() {
+        let by_status = BTreeMap::new();
+        let blind_spots: Vec<BlindSpot> = Vec::new();
+        let orphans: Vec<String> = Vec::new();
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let actions =
+            generate_next_actions(5, &by_status, &blind_spots, 0, &orphans, &dups, &stubs);
+        assert!(
+            actions.iter().any(|a| a.contains("looks healthy")),
+            "expected healthy message, got {actions:?}"
+        );
     }
 
     fn stub_body() -> String {
