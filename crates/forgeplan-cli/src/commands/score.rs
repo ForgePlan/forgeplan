@@ -5,8 +5,9 @@ use chrono::{NaiveDate, Utc};
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::scoring::evidence::parse_evidence_from_record;
 use forgeplan_core::scoring::fgr;
-use forgeplan_core::scoring::reff::{self, EvidenceItem, EvidenceType, Verdict};
+use forgeplan_core::scoring::reff::{self, EvidenceItem};
 
 use crate::commands::common;
 use crate::ui;
@@ -372,55 +373,19 @@ fn score_grade(v: f64) -> &'static str {
     }
 }
 
-/// Parse evidence fields from an ArtifactRecord's body.
-/// Evidence metadata is stored in the body as YAML-like fields.
-fn parse_evidence_from_record(record: &forgeplan_core::db::store::ArtifactRecord) -> EvidenceItem {
-    // Parse verdict from body (look for "verdict:" line)
-    let verdict = extract_field(&record.body, "verdict")
-        .map(|s| match s.to_lowercase().as_str() {
-            "supports" => Verdict::Supports,
-            "weakens" => Verdict::Weakens,
-            "refutes" => Verdict::Refutes,
-            _ => Verdict::Supports,
-        })
-        .unwrap_or(Verdict::Supports);
-
-    // Parse congruence_level
-    let cl = extract_field(&record.body, "congruence_level")
-        .and_then(|s| s.parse::<u8>().ok())
-        .map(|v| v.min(3))
-        .unwrap_or(0);
-
-    let valid_until = record.valid_until.as_deref().and_then(|s| {
-        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-            .ok()
-            .or_else(|| {
-                NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                    .ok()
-                    .and_then(|d| d.and_hms_opt(23, 59, 59))
-            })
-    });
-
-    EvidenceItem {
-        id: record.id.clone(),
-        evidence_type: EvidenceType::Measurement,
-        verdict,
-        congruence_level: cl,
-        valid_until,
-    }
-}
-
-/// Extract a simple "key: value" from body text.
-fn extract_field(body: &str, key: &str) -> Option<String> {
-    let prefix = format!("{}:", key);
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            let val = rest.trim();
-            if !val.is_empty() {
-                return Some(val.to_string());
-            }
-        }
-    }
-    None
-}
+// PROB-031 fix: removed local `parse_evidence_from_record` and `extract_field`
+// — they duplicated forgeplan_core::scoring::evidence::parse_evidence_from_record
+// but with a DIFFERENT default: CL0 (penalty 0.9) vs core's CL3 (no penalty,
+// trust-local default).
+//
+// This caused a visible contradiction: the per-item "breakdown" line used CLI
+// parser and showed "EVID-001 [Supports] CL0 = 0.1" while the R_eff rollup
+// used core's parser via r_eff_recursive and computed 1.00 (CL3 default).
+//
+// Also: the core parser implements the PRD-035 Sprint 13.3 H2 security
+// precedence (`min(tier_cl, explicit_cl)`) that prevents trust amplification
+// via self-signed T1 evidence. The CLI local parser did not implement this,
+// opening the same attack surface on the display path.
+//
+// Fix: import the core parser and delete the local duplicate. Both paths
+// now agree on CL and on formula.

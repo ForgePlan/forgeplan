@@ -3595,3 +3595,160 @@ fn new_rejects_too_long_title_no_orphan_row() {
         .success()
         .stdout(predicate::str::contains("PRD-001").not());
 }
+
+// ── PROB-031 regression: score uses core parser (CL3 default) ──────
+
+#[test]
+fn score_uses_core_parser_with_cl3_default_when_no_structured_fields() {
+    // PROB-031: the CLI `score` command previously had a LOCAL copy of
+    // `parse_evidence_from_record` with CL0 (penalty 0.9) as the default.
+    // The core parser defaults to CL3 (trust-local). That caused a visible
+    // lie: breakdown showed "CL0 = 0.1" while R_eff rollup computed 1.00
+    // via core parser through r_eff_recursive. Fix: import core parser in
+    // score.rs, delete local duplicate.
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Target"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "evidence", "Bare evid no fields"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["score", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let r_eff = json["r_eff"].as_f64().expect("r_eff number");
+    assert!(
+        r_eff > 0.9,
+        "R_eff must be ~1.0 (CL3 default), got {} — CLI parser may have regressed to CL0 default",
+        r_eff
+    );
+    let evidence_arr = json["evidence"].as_array().expect("evidence array");
+    assert_eq!(evidence_arr.len(), 1);
+    let cl = evidence_arr[0]["congruence_level"]
+        .as_u64()
+        .expect("cl number");
+    assert_eq!(
+        cl, 3,
+        "display path must agree with rollup path — both CL3 (not CL0)"
+    );
+}
+
+#[test]
+fn score_respects_explicit_cl0_in_body() {
+    // PROB-031 inverse guard (audit B gap): prove the parser actually
+    // reads explicit congruence_level from the body and is not silently
+    // hardcoded to CL3. This is the counterpart to the CL3-default test.
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Target"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "evidence", "Low confidence cross-domain benchmark"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Edit the template default congruence_level: 3 to 0 in-place.
+    let evid_path = tmp
+        .path()
+        .join(".forgeplan/evidence/EVID-001-low-confidence-cross-domain-benchmark.md");
+    let body = std::fs::read_to_string(&evid_path).unwrap();
+    let body = body.replace("congruence_level: 3", "congruence_level: 0");
+    std::fs::write(&evid_path, body).unwrap();
+
+    forgeplan()
+        .args(["reindex"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["link", "EVID-001", "PRD-001", "--relation", "informs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["score", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let r_eff = json["r_eff"].as_f64().expect("r_eff number");
+    assert!(
+        r_eff < 0.2,
+        "explicit CL0 must yield R_eff ~0.10, got {} — parser may be ignoring body values",
+        r_eff
+    );
+    let cl = json["evidence"][0]["congruence_level"]
+        .as_u64()
+        .expect("cl number");
+    assert_eq!(
+        cl, 0,
+        "display must show CL0 matching rollup — proves parser reads body"
+    );
+}
+
+// ── PROB-033 regression: new evidence is phase-agnostic ─────────────
+
+#[test]
+fn new_evidence_works_in_routing_phase_without_session_warning() {
+    // PROB-033: after `forgeplan route`, session was Routing. `new evidence`
+    // tried Routing → Evidence transition (not allowed) and printed a
+    // confusing warning. Fix: `new evidence` is phase-agnostic — it never
+    // drives the state machine. Methodology guardrail stays at `activate`.
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["route", "add auth feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["new", "evidence", "Backfill benchmark"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "new evidence must succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Cannot go from"),
+        "no confusing session transition warning on phase-agnostic new evidence, got stderr: {}",
+        stderr
+    );
+    assert!(
+        tmp.path()
+            .join(".forgeplan/evidence/EVID-001-backfill-benchmark.md")
+            .exists(),
+        "evidence file must be created"
+    );
+}
