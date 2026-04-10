@@ -145,6 +145,73 @@ GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
 
 **Если любой шаг fail — НЕ коммитить. Починить сначала.**
 
+### ОБЯЗАТЕЛЬНО verification checklist (после кода, до коммита/PR):
+
+> Урок из PROB-034: unit тесты с синтетическими body не ловят баги на реальных template данных.
+> 1000+ зелёных тестов ≠ "всё работает". Полный цикл ниже — **обязателен перед каждым коммитом**.
+
+**1. Unit tests — happy path + error path:**
+```bash
+cargo test --workspace                    # ВСЕ pass, 0 fail
+```
+Каждая новая `pub fn` = тест сразу (hook блокирует коммит без тестов).
+
+**2. Edge cases — негативные и граничные сценарии:**
+- Empty input (`""`, `"   "`, `None`)
+- Unicode / кириллица (`"аутентификация"`, `"系统"`)
+- Special characters (`"OAuth2 → v3"`, `"; DROP TABLE"`)
+- Very long input (500+ chars)
+- Single character (`"a"`)
+- Injection attempts (SQL, shell, HTML comment smuggling)
+- Числа и аббревиатуры (`"500ms"`, `"PRD-034"`, `"CL0"`)
+
+**3. E2E на fresh workspace — через CLI, не через file writes:**
+```bash
+cd /tmp && rm -rf fp-verify && mkdir fp-verify && cd fp-verify
+forgeplan init -y
+forgeplan new prd "Test Title"
+# ... exercise the feature through real CLI commands ...
+```
+Не `std::fs::write()` — а `forgeplan new`, `forgeplan search`, `forgeplan score`.
+Template-generated content содержит паттерны (multi-line comments, placeholders,
+table rows), которых нет в синтетических test bodies.
+
+**4. Verbatim template test — парсер на настоящем шаблоне:**
+```rust
+let template = include_str!("../../../../templates/evidence/_TEMPLATE.md");
+let item = parse_evidence_from_record(&mk_record(template));
+assert_eq!(item.congruence_level, 3); // не CL0 от comment leak!
+```
+
+**5. Dogfood workspace — stress test на реальных данных:**
+```bash
+forgeplan search "auth"                  # ranking на 193 артефактах
+forgeplan health                         # verdict честный
+forgeplan score PRD-XXX --json           # breakdown == rollup
+```
+Проверить: performance (<1 sec на 200 docs), ranking осмысленный,
+no false positives, no crashes.
+
+**6. Regression guard — A/B если фиксим баг:**
+- Тест должен FAIL на старом коде и PASS на новом
+- Для scoring: stash fix → build baseline → same workspace → compare
+- `r_eff` A/B: v0.17.1 `1.00` vs v0.17.2 `0.10` (PROB-034 proof)
+
+**7. Negative tests — что НЕ должно происходить:**
+- No crash / panic на любом input
+- No false positives (unrelated artifacts в search)
+- No silent defaults (garbage CL → fail-closed CL0, не silent CL3)
+- No data corruption (export → import round-trip preserves all fields)
+- No stderr warnings в нормальном flow
+
+**8. Cross-language — для multi-language features:**
+- English: exact, stemmed (`authenticated` → `authentication`), stop-words
+- Russian: морфология (`аутентификация` → `аутентификации`), plural
+- Mixed: English query на Russian corpus и наоборот
+- Abbreviations: `PRD`, `RFC`, `BM25`, `R_eff`
+
+**Если любой пункт показал проблему — НЕ коммитить. Починить → re-verify → тогда коммит.**
+
 ### ВАЖНО для AI агентов:
 - **`forgeplan init`** — ВСЕГДА с `-y` флагом (без interactive prompt)
 - **Config после init** — проверить `.forgeplan/config.yaml`, настроить LLM provider
