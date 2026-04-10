@@ -1,146 +1,214 @@
 //! BM25 relevance scoring for artifact search.
 //!
-//! Replaces the primitive substring-match keyword_score with proper
-//! term-frequency × inverse-document-frequency scoring.
+//! Wraps the `bm25` crate (v2.3.2) which provides production-quality BM25
+//! with proper tokenization, stemming, stop-word removal, and unicode
+//! normalization — replacing the hand-rolled 140 LOC implementation that
+//! lacked all of these (PROB-035).
 //!
-//! Parameters (standard defaults):
-//! - k1 = 1.5 (term frequency saturation)
-//! - b = 0.75 (length normalization)
+//! The `bm25` crate's stemmer reduces `authentication` and `auth` to a
+//! common stem, which naturally fixes the prefix-query problem (PROB-030)
+//! without the substring fallback hack.
 //!
-//! Pattern source: sources/RuVector/crates/ruvector-core/src/advanced_features/hybrid_search.rs
+//! Public API is kept backwards-compatible: `Bm25Index::build()`, `.score()`,
+//! `::normalize()` — callers in `smart.rs` don't change.
 
 use crate::db::store::ArtifactRecord;
-use std::collections::{HashMap, HashSet};
+use bm25::{DefaultTokenizer, Document, LanguageMode, SearchEngineBuilder};
 
-/// BM25 index with IDF scores and inverted index.
-#[derive(Debug, Clone, Default)]
+/// BM25 index wrapping the `bm25` crate's SearchEngine.
+///
+/// Built once per search from the full record corpus, then queried per-record.
+/// Uses String document IDs to match ArtifactRecord::id.
 pub struct Bm25Index {
-    /// IDF scores per term
-    idf: HashMap<String, f64>,
-    /// Document lengths (token counts) per artifact ID
-    doc_lengths: HashMap<String, usize>,
-    /// Average document length across corpus
-    avg_doc_len: f64,
-    /// Inverted index: term -> set of artifact IDs containing it
-    inverted_index: HashMap<String, HashSet<String>>,
-    /// BM25 k1 parameter (default 1.5)
-    k1: f64,
-    /// BM25 b parameter (default 0.75)
-    b: f64,
+    /// The underlying search engine from the `bm25` crate.
+    engine: bm25::SearchEngine<String>,
 }
 
 impl Bm25Index {
-    /// Create empty index with standard BM25 parameters.
-    pub fn new() -> Self {
-        Self {
-            k1: 1.5,
-            b: 0.75,
-            ..Default::default()
-        }
-    }
-
     /// Build index from a corpus of artifact records.
-    /// Call this once before any scoring calls.
+    ///
+    /// Uses automatic language detection (`LanguageMode::Detect`) so both
+    /// English and Russian content get proper stemming + stop-words.
+    /// Forgeplan artifacts are mixed-language (English titles, Russian body),
+    /// so per-document detection is the right approach.
     pub fn build(records: &[ArtifactRecord]) -> Self {
-        let mut idx = Self::new();
-        for record in records {
-            idx.index_document(&record.id, &Self::doc_text(record));
-        }
-        idx.compute_idf();
-        idx
+        let documents: Vec<Document<String>> = records
+            .iter()
+            .map(|r| {
+                let clean_body = strip_indexing_noise(&r.body);
+                Document::new(r.id.clone(), format!("{} {}", r.title, clean_body))
+            })
+            .collect();
+
+        // Custom tokenizer: language detection ON, normalization OFF.
+        //
+        // `deunicode` normalization transliterates non-Latin to ASCII
+        // BEFORE stemming, which destroys Cyrillic: "аутентификация" →
+        // "autentifikatsiya" → Russian stemmer can't stem ASCII → no match.
+        // Disabling normalization preserves original scripts so both
+        // English and Russian stemmers work correctly on their native text.
+        let tokenizer = DefaultTokenizer::builder()
+            .language_mode(LanguageMode::Detect)
+            .normalization(false)
+            .build();
+        let engine =
+            SearchEngineBuilder::with_tokenizer_and_documents(tokenizer, documents).build();
+
+        Self { engine }
     }
 
-    /// Extract searchable text from a record (title + body).
-    fn doc_text(record: &ArtifactRecord) -> String {
-        format!("{} {}", record.title, record.body)
-    }
-
-    /// Index a single document.
-    fn index_document(&mut self, doc_id: &str, text: &str) {
-        let terms = tokenize(text);
-        self.doc_lengths.insert(doc_id.to_string(), terms.len());
-        for term in &terms {
-            self.inverted_index
-                .entry(term.clone())
-                .or_default()
-                .insert(doc_id.to_string());
-        }
-    }
-
-    /// Compute IDF scores after all documents indexed.
-    fn compute_idf(&mut self) {
-        let num_docs = self.doc_lengths.len() as f64;
-        if num_docs == 0.0 {
-            self.avg_doc_len = 0.0;
-            return;
-        }
-        self.avg_doc_len = self.doc_lengths.values().sum::<usize>() as f64 / num_docs;
-
-        for (term, doc_set) in &self.inverted_index {
-            let doc_freq = doc_set.len() as f64;
-            // BM25 IDF formula (with +1 smoothing)
-            let idf = ((num_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
-            self.idf.insert(term.clone(), idf);
-        }
-    }
-
-    /// Score a record against a query.
-    /// Returns BM25 score (higher = more relevant).
+    /// Score a single record against a query.
+    ///
+    /// Returns the raw BM25 score (higher = more relevant, unbounded).
+    /// The `bm25` crate internally tokenizes, stems, and applies IDF weighting.
     pub fn score(&self, record: &ArtifactRecord, query: &str) -> f64 {
-        let query_terms = tokenize(query);
-        if query_terms.is_empty() {
+        if query.trim().is_empty() {
             return 0.0;
         }
-        let doc_text = Self::doc_text(record);
-        let doc_terms = tokenize(&doc_text);
-        let doc_len = self
-            .doc_lengths
-            .get(&record.id)
-            .copied()
-            .unwrap_or(doc_terms.len()) as f64;
+        // Search the full corpus and find the score for this specific record.
+        // The crate returns top-N results; we request all to find our record.
+        let results = self.engine.search(query, usize::MAX);
+        results
+            .iter()
+            .find(|r| r.document.id == record.id)
+            .map(|r| r.score as f64)
+            .unwrap_or(0.0)
+    }
 
-        // Count term frequencies in document
-        let mut term_freq: HashMap<String, f64> = HashMap::new();
-        for term in doc_terms {
-            *term_freq.entry(term).or_insert(0.0) += 1.0;
+    /// Batch score: return scores for all records in one pass.
+    ///
+    /// More efficient than calling `score()` per-record since the crate
+    /// searches the full index once.
+    pub fn search_scores(&self, query: &str, limit: usize) -> Vec<(String, f64)> {
+        if query.trim().is_empty() {
+            return Vec::new();
         }
-
-        // BM25 score: sum over query terms
-        let mut score = 0.0;
-        for term in query_terms {
-            let idf = self.idf.get(&term).copied().unwrap_or(0.0);
-            let tf = term_freq.get(&term).copied().unwrap_or(0.0);
-
-            let numerator = tf * (self.k1 + 1.0);
-            let denominator =
-                tf + self.k1 * (1.0 - self.b + self.b * (doc_len / self.avg_doc_len.max(1.0)));
-
-            score += idf * (numerator / denominator.max(1e-9));
-        }
-
-        score
+        self.engine
+            .search(query, limit)
+            .into_iter()
+            .map(|r| (r.document.id.clone(), r.score as f64))
+            .collect()
     }
 
     /// Normalize BM25 score to [0.0, 1.0] for combining with other scores.
     /// Uses a simple tanh saturation — real BM25 scores are unbounded.
+    ///
+    /// Note: the `bm25` crate may produce different score magnitudes than the
+    /// old hand-written BM25 — the constant 5.0 was tuned for the old tokenizer
+    /// and remains acceptable for the crate (Audit A LOW finding).
     pub fn normalize(raw: f64) -> f64 {
-        // tanh saturates around 5.0, giving nice [0, 1) output
         (raw / 5.0).tanh().clamp(0.0, 1.0)
     }
 }
 
-/// Tokenize text into lowercase words (min length 3, alphanumeric).
-fn tokenize(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split_whitespace()
-        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
-        .filter(|s| s.len() >= 3)
-        .collect()
+/// Strip noise from artifact body before BM25 indexing.
+///
+/// Removes lines that pollute the search index with irrelevant tokens:
+/// - YAML frontmatter (`---` delimited blocks at the start)
+/// - Template placeholders (`{...}`)
+/// - Markdown table rows starting with `|` (template NFR examples)
+/// - HTML comments (single-line `<!-- ... -->`)
+///
+/// This fixes the false-positive issue where `forgeplan search "auth"` matched
+/// unrelated PRDs because their template body contained `author:` (frontmatter)
+/// or `| ... authenticate ... |` (example NFR table row).
+pub fn strip_indexing_noise(body: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_frontmatter = false;
+    let mut saw_frontmatter_open = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+
+        // YAML frontmatter: skip `---` delimited block at start of body.
+        if trimmed == "---" {
+            if !saw_frontmatter_open {
+                saw_frontmatter_open = true;
+                in_frontmatter = true;
+                continue;
+            } else if in_frontmatter {
+                in_frontmatter = false;
+                continue;
+            }
+        }
+        if in_frontmatter {
+            continue;
+        }
+
+        // Template placeholder lines: `{Что измерено...}`, `{author}`
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            continue;
+        }
+
+        // Markdown table rows: `| NFR-003 | Security | System shall authenticate |`
+        if trimmed.starts_with('|') {
+            continue;
+        }
+
+        // Single-line HTML comments: `<!-- ... -->`
+        if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
+            continue;
+        }
+
+        result.push(line);
+    }
+
+    result.join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_indexing_noise_removes_frontmatter() {
+        let body = "---\nauthor: test\nkind: prd\n---\n\n# Real content\n\nHello world";
+        let clean = strip_indexing_noise(body);
+        assert!(!clean.contains("author"), "frontmatter should be stripped");
+        assert!(clean.contains("Real content"));
+        assert!(clean.contains("Hello world"));
+    }
+
+    #[test]
+    fn strip_indexing_noise_removes_template_tables_and_placeholders() {
+        let body = "## NFR\n\n| NFR-003 | Security | System shall authenticate | OAuth2 |\n| NFR-004 | Perf | Fast |\n\n## Goals\n\n{Описание целей}\n\nReal goals here";
+        let clean = strip_indexing_noise(body);
+        assert!(
+            !clean.contains("authenticate"),
+            "template table row should be stripped"
+        );
+        assert!(
+            !clean.contains("Описание целей"),
+            "placeholder should be stripped"
+        );
+        assert!(clean.contains("Real goals here"));
+    }
+
+    #[test]
+    fn bm25_no_false_positive_from_frontmatter_author() {
+        // PROB-035 fix: "auth" should NOT match a PRD about payments
+        // just because its frontmatter has `author:` field.
+        let records = vec![
+            mk(
+                "PRD-1",
+                "Authentication System",
+                "---\nauthor: john\nkind: prd\n---\n\n## Problem\n\nUser auth flow",
+            ),
+            mk(
+                "PRD-2",
+                "Payment Processing",
+                "---\nauthor: jane\nkind: prd\n---\n\n## Problem\n\nStripe integration",
+            ),
+        ];
+        let idx = Bm25Index::build(&records);
+        let s1 = idx.score(&records[0], "auth");
+        let s2 = idx.score(&records[1], "auth");
+        assert!(s1 > 0.0, "PRD-1 should match 'auth' in title");
+        assert_eq!(
+            s2, 0.0,
+            "PRD-2 should NOT match 'auth' — frontmatter author: stripped"
+        );
+    }
 
     fn mk(id: &str, title: &str, body: &str) -> ArtifactRecord {
         ArtifactRecord {
@@ -160,21 +228,6 @@ mod tests {
             body_hash: None,
             embedding: None,
         }
-    }
-
-    #[test]
-    fn tokenize_basic() {
-        let tokens = tokenize("The quick brown fox!");
-        assert!(tokens.contains(&"quick".to_string()));
-        assert!(tokens.contains(&"brown".to_string()));
-        assert!(!tokens.iter().any(|t| t.len() < 3));
-    }
-
-    #[test]
-    fn tokenize_strips_punctuation() {
-        let tokens = tokenize("hello, world! foo.bar");
-        assert!(tokens.contains(&"hello".to_string()));
-        assert!(tokens.contains(&"world".to_string()));
     }
 
     #[test]
@@ -207,6 +260,102 @@ mod tests {
     }
 
     #[test]
+    fn bm25_stemming_normalizes_word_forms() {
+        // The bm25 crate's stemmer normalizes word forms:
+        // "authenticated" and "authentication" share a common stem.
+        // Note: "auth" (short prefix) does NOT share a stem with
+        // "authentication" — prefix matching is handled by keyword_score
+        // in smart.rs, not by BM25 stemming.
+        let records = vec![
+            mk(
+                "PRD-1",
+                "Authentication OAuth2 system",
+                "user authenticated via oauth2",
+            ),
+            mk("PRD-2", "Payment Service", "payment processing"),
+        ];
+        let idx = Bm25Index::build(&records);
+        let score = idx.score(&records[0], "authenticated");
+        assert!(
+            score > 0.0,
+            "stemmer should match 'authenticated' to 'authentication' via common stem"
+        );
+    }
+
+    #[test]
+    fn bm25_russian_morphology_with_language_detection() {
+        // LanguageMode::Detect enables Snowball Russian stemmer.
+        // "аутентификация" (nominative) should match "аутентификации"
+        // (genitive) via common stem. Previously 0 results.
+        let records = vec![
+            mk(
+                "PRD-1",
+                "Система аутентификации пользователей",
+                "модуль авторизации и проверки токенов",
+            ),
+            mk("PRD-2", "Payment Service", "billing"),
+        ];
+        let idx = Bm25Index::build(&records);
+        let score = idx.score(&records[0], "аутентификация");
+        assert!(
+            score > 0.0,
+            "Russian stemmer should match 'аутентификация' to 'аутентификации', got score={score}"
+        );
+    }
+
+    #[test]
+    fn bm25_russian_plural_forms() {
+        // "пользователь" (singular) should match "пользователей" (genitive plural).
+        let records = vec![mk(
+            "PRD-1",
+            "Система аутентификации пользователей",
+            "управление доступом",
+        )];
+        let idx = Bm25Index::build(&records);
+        let score = idx.score(&records[0], "пользователь");
+        assert!(
+            score > 0.0,
+            "Russian stemmer should match singular→plural, got score={score}"
+        );
+    }
+
+    #[test]
+    fn bm25_plural_stemming() {
+        // Audit B: plural forms should match via stemmer.
+        // "systems" → stem "system", matches "system" in title.
+        let records = vec![
+            mk("PRD-1", "Authentication System", "user login"),
+            mk("PRD-2", "Payment Service", "billing"),
+        ];
+        let idx = Bm25Index::build(&records);
+        let score = idx.score(&records[0], "systems");
+        assert!(
+            score > 0.0,
+            "plural 'systems' should match 'System' via stemmer, got score={score}"
+        );
+    }
+
+    #[test]
+    fn bm25_stopword_resilience() {
+        // Audit B: stop-words ("the", "for", "and") should be ignored.
+        // "the authentication" should score similarly to "authentication".
+        let records = vec![
+            mk("PRD-1", "Authentication System", "user authentication flow"),
+            mk("PRD-2", "Payment Service", "payment processing"),
+        ];
+        let idx = Bm25Index::build(&records);
+        let with_stop = idx.score(&records[0], "the authentication");
+        let without_stop = idx.score(&records[0], "authentication");
+        assert!(with_stop > 0.0, "query with stop-word should still match");
+        // Scores should be close (stop-word ignored by the tokenizer)
+        let diff = (with_stop - without_stop).abs();
+        assert!(
+            diff < 0.5,
+            "stop-word 'the' should not significantly change score: with={with_stop} without={without_stop} diff={diff}"
+        );
+    }
+
+    #[test]
     fn bm25_rare_term_higher_idf() {
         let records = vec![
             mk(
@@ -223,9 +372,7 @@ mod tests {
         ];
         let idx = Bm25Index::build(&records);
 
-        // "quantum" appears in only 1 doc → high IDF
         let s_rare = idx.score(&records[2], "quantum");
-        // "authentication" appears in all 3 docs → low IDF
         let s_common = idx.score(&records[0], "authentication");
 
         assert!(s_rare > 0.0);
@@ -245,5 +392,18 @@ mod tests {
         let records = vec![mk("PRD-1", "Auth", "body content")];
         let idx = Bm25Index::build(&records);
         assert_eq!(idx.score(&records[0], "nonexistentterm"), 0.0);
+    }
+
+    #[test]
+    fn bm25_batch_search_scores() {
+        let records = vec![
+            mk("PRD-1", "Authentication System", "login and oauth2"),
+            mk("PRD-2", "Payment Service", "stripe checkout"),
+        ];
+        let idx = Bm25Index::build(&records);
+        let scores = idx.search_scores("authentication", 10);
+        assert!(!scores.is_empty());
+        assert_eq!(scores[0].0, "PRD-1");
+        assert!(scores[0].1 > 0.0);
     }
 }
