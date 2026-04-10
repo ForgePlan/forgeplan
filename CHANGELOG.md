@@ -7,6 +7,43 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.18.0] — 2026-04-11 — Production BM25 + Russian morphology + quality gates
+
+Feature release upgrading the search engine and codifying quality rules.
+
+### Added
+
+- **Production BM25 engine** (`bm25` crate v2.3.2). Replaces 140 LOC
+  hand-written BM25 with production-quality implementation including
+  stemming, stop-word removal, and unicode segmentation.
+- **Russian morphology support**. `LanguageMode::Detect` with `whichlang`
+  auto-selects Snowball stemmer per document/query. "аутентификация"
+  now matches "аутентификации" via shared stem. 17 languages supported.
+- **Template noise stripping**. `strip_indexing_noise()` removes YAML
+  frontmatter, template placeholder lines `{...}`, markdown table rows
+  `|...|`, and HTML comments from BM25 index. Fixes false positives
+  where `forgeplan search "auth"` matched unrelated PRDs via `author:`
+  in frontmatter.
+- **O(N) batch search**. Single-pass `search_scores()` replaces O(N²)
+  per-record `.score()` calls. 193-artifact corpus: 0.23s.
+- **8-point verification checklist** in CLAUDE.md — mandatory before
+  every commit/PR. Covers: unit tests, edge cases, E2E on fresh
+  workspace, verbatim template test, dogfood stress test, regression
+  guard (A/B), negative tests, cross-language verification.
+
+### Changed
+
+- Health debt resolved: 8 active stubs deprecated/superseded, 5
+  duplicate EVID pairs deprecated, 3 orphan NOTEs linked. Health
+  dashboard reports "Project looks healthy!" with zero warnings.
+
+### Tests
+
+- 1150 tests pass (+19 from v0.17.2 baseline 1131).
+- New regression tests: Russian morphology (2), English stemming (1),
+  plural forms (1), stop-word resilience (1), noise stripping (2),
+  frontmatter false-positive guard (1).
+
 ## [0.17.2] — 2026-04-09 — Quality hotfix: scoring & search integrity
 
 Fixes **five** real bugs found during a dedicated /forge E2E verification
