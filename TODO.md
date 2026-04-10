@@ -19,11 +19,12 @@
 - [x] 4-agent audit completed (A code, B tests, C security, D docs)
 - [x] All audit blockers addressed in-scope
 - [x] PROB-034 card + EVID-068..072 created
-- [ ] EVID-068..072 Interpretation + CL Justification filled (audit D)
-- [ ] PROB-030..034 + EVID-068..072 activated
-- [ ] PR release/v0.17.2 → main
-- [ ] Tag v0.17.2 + push (cargo-dist auto-triggers)
-- [ ] Sync main → dev via PR
+- [x] EVID-068..072 Interpretation + CL Justification filled (audit D)
+- [x] PROB-030..034 + EVID-068..072 activated
+- [x] PR release/v0.17.2 → main (#163 merged)
+- [x] Tag v0.17.2 + push (cargo-dist Release workflow success, brew formula published)
+- [x] Sync main → dev via PR (#164 merged)
+- [x] Health debt cleaned: 8 stubs deprecated/superseded, 5 dup EVIDs deprecated, 3 orphan NOTEs linked
 - [ ] Hindsight retain v0.17.2 finale
 - [ ] PROB-035 "extract_field hardening" filed for follow-up sprint (code-fence, token-boundary substring)
 

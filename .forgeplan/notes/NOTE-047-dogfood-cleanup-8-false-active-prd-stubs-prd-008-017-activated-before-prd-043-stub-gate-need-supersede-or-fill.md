@@ -2,8 +2,11 @@
 depth: tactical
 id: NOTE-047
 kind: note
+links:
+- target: PROB-034
+  relation: informs
 status: active
-title: Dogfood cleanup — 8 false-active PRD stubs activated before PRD-043 stub gate
+title: Dogfood cleanup — 8 false-active PRD stubs (PRD-008..017) activated before PRD-043 stub gate, need supersede or fill
 ---
 
 # NOTE-047: Dogfood cleanup — 8 false-active PRD stubs
@@ -94,3 +97,4 @@ backfill don't work as expected, **that** would become a PROB.
 | EVID-065 | precedent (backfill pattern used for PRD-039 in Sprint 13.7 final audit) |
 | NOTE-046 | sibling (other dogfood cleanup task — duplicate EVIDs) |
 | EPIC-003 | context (found in v0.17.0 final audit) |
+

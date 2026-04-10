@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: PROB-010
   relation: based_on
-status: active
+status: deprecated
 title: BMAD Validation v2 — 13-step quality gates
 ---
 
@@ -284,5 +284,6 @@ Then  [результат]
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
+
 
 

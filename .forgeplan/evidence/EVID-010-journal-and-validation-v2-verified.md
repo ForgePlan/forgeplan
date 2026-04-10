@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PRD-005
   relation: informs
-status: draft
+status: deprecated
 title: Journal and Validation v2 verified
 ---
 
@@ -63,4 +63,5 @@ Updated:      2026-03-24T08:59:42.138190+00:00
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

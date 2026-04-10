@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: EPIC-001
   relation: refines
-status: active
+status: deprecated
 title: Agent Hooks
 ---
 
@@ -284,5 +284,6 @@ Then  [результат]
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
+
 
 
