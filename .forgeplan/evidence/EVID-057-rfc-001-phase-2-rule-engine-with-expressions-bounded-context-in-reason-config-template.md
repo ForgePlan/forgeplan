@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: RFC-001
   relation: informs
-status: draft
+status: active
 title: RFC-001 Phase 2 — rule engine with expressions, bounded context in reason, config template
 ---
 
@@ -49,5 +49,6 @@ RFC-001 Phase 2 implemented on feat/rfc-001-phase2 branch (5 commits):
 - 0 clippy warnings
 - 0 fmt diffs
 - 2 audit agents pending
+
 
 

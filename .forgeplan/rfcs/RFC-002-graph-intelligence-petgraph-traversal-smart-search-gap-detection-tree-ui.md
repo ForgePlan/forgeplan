@@ -5,7 +5,9 @@ kind: rfc
 links:
 - target: EPIC-002
   relation: refines
-status: draft
+- target: PRD-039
+  relation: supersedes
+status: superseded
 title: Graph Intelligence — petgraph traversal, smart search, gap detection, tree UI
 ---
 
@@ -91,4 +93,6 @@ Uses graph context + F-G-R + embeddings to generate:
 - petgraph 0.8 (v0.11, ✅ done)
 - fastembed / BGE-M3 (v0.10, ✅ done, feature flag)
 - LLM provider (v0.4, ✅ done)
+
+
 

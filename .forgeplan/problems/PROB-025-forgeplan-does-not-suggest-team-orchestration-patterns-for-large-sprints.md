@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: NOTE-043
   relation: based_on
-status: draft
+status: deprecated
 title: Forgeplan does not suggest team orchestration patterns for large sprints
 ---
 
@@ -102,5 +102,7 @@ PRD-044 (TBD) implementing:
 | EPIC-003 | informs (Sprint 13 quality of life) |
 | NOTE-043 | based_on (the pattern itself) |
 | PRD-043 | based_on (real case where pattern was discovered) |
+
+
 
 

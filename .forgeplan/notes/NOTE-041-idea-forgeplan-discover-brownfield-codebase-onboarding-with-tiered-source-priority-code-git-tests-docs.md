@@ -5,7 +5,7 @@ kind: note
 links:
 - target: EPIC-002
   relation: informs
-status: draft
+status: deprecated
 title: 'Idea: forgeplan discover — brownfield codebase onboarding with tiered source priority (code > git > tests > docs)'
 ---
 
@@ -53,4 +53,6 @@ Tier 3 (Supplementary — legacy, may be outdated):
 
 ### Effort: Deep — требует code parsing, git integration, language-aware analysis
 ### Related: RFC-002 (Graph Intelligence), forgeplan scan-import, forgeplan git-sync
+
+
 

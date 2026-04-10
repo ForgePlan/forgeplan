@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: ADR-006
   relation: informs
-status: draft
+status: active
 title: 'RFC-001 Phase 1 — fpf/core module: 25 tests, configurable trust calculus, ADI tracking, code review 3H fixed'
 ---
 
@@ -53,5 +53,6 @@ CL3: same project, same codebase, internal tests running on the actual implement
 | Artifact | Relation |
 |----------|----------|
 | RFC-001 | informs |
+
 
 
