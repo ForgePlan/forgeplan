@@ -23,7 +23,14 @@ use crate::commands::common;
 /// relations, checks both source and target against post-Phase-2 surviving
 /// artifact set, deletes orphan edges with explicit reason.
 pub async fn run() -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    // PROB-027 fix: use LanceStore::init() instead of open() so that
+    // reindex can rebuild from scratch when lance/ dir is missing.
+    // init() creates lance/ + tables if they don't exist, then opens.
+    let cwd = std::env::current_dir()?;
+    let ws = forgeplan_core::workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let _config = forgeplan_core::workspace::load_config(&ws)?;
+    let store = forgeplan_core::db::store::LanceStore::init(&ws).await?;
 
     println!("Reindexing from .forgeplan/ markdown files...\n");
 
