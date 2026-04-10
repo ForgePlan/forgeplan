@@ -2,7 +2,7 @@
 depth: tactical
 id: PRD-017
 kind: prd
-status: active
+status: deprecated
 title: Decision Contracts — invariants
 ---
 
@@ -281,5 +281,6 @@ Then  [результат]
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
+
 
 

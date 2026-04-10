@@ -23,12 +23,13 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 
 ## Текущий статус
 
-- **v0.17.2** quality hotfix 2026-04-09 — PROB-030..034 fixed (BM25 prefix, R_eff
-  parser consistency, score breakdown, session state, **CRITICAL** multi-line
-  HTML comment shadow + fail-closed hardening for unclosed/unparseable fields)
-- **v0.17.1** hotfix 2026-04-09 — PROB-028 phantom rows + PROB-029 health verdict fixed
+- **v0.18.0** released 2026-04-11 — Production BM25 (`bm25` crate v2.3.2) +
+  Russian morphology (LanguageMode::Detect, Snowball stemmer) + template noise
+  stripping + O(N) batch search + 8-point verification checklist + health debt cleared
+- **v0.17.2** quality hotfix 2026-04-09 — PROB-030..034 + F1/F2 hardening
+- **v0.17.1** hotfix 2026-04-09 — PROB-028 phantom rows + PROB-029 health verdict
 - **v0.17.0** released 2026-04-08 — **EPIC-003 complete** (Search, Discovery, Intelligence)
-- **~56 CLI команд**, **~47 MCP tools**, **1143 тестов** (+12 от v0.17.0 baseline 1131)
+- **~56 CLI команд**, **~47 MCP tools**, **1150 тестов** (+19 от v0.17.0 baseline 1131)
 - **0 warnings** на обоих feature configs (default + `semantic-search`)
 - EPIC-001 (foundation) ✅ | EPIC-002 (v2.0 vision) ✅ | **EPIC-003 (v0.17.0)** ✅
 - **7 PRDs активированы** в v0.17.0: PRD-035 (tags + discover), PRD-039 (BM25 search),

@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PRD-007
   relation: informs
-status: active
+status: deprecated
 title: Dogfood lifecycle test
 ---
 
@@ -63,4 +63,5 @@ Updated:      2026-03-24T09:06:09.981531+00:00
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

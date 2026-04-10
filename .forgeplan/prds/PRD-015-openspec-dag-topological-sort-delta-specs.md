@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: RFC-002
   relation: refines
-status: active
+status: deprecated
 title: OpenSpec DAG — topological sort, delta-specs
 ---
 
@@ -286,5 +286,6 @@ Then  [результат]
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
+
 
 

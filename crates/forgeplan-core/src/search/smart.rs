@@ -12,7 +12,7 @@
 
 use crate::db::store::ArtifactRecord;
 use crate::graph::knowledge::KnowledgeGraph;
-use crate::search::bm25::Bm25Index;
+use crate::search::bm25::{Bm25Index, strip_indexing_noise};
 use crate::search::filter::ArtifactFilter;
 use std::collections::{HashMap, HashSet};
 
@@ -62,7 +62,10 @@ pub fn keyword_score(record: &ArtifactRecord, query: &str) -> f64 {
         1.0
     } else if title_lower.contains(&q) {
         0.8
-    } else if record.body.to_lowercase().contains(&q) {
+    } else if strip_indexing_noise(&record.body)
+        .to_lowercase()
+        .contains(&q)
+    {
         0.5
     } else {
         0.0
@@ -128,12 +131,18 @@ pub fn smart_search(
     // the entire record set so IDF stats reflect the real corpus, not the
     // filtered subset; filtering only excludes from the result set.
     let bm25 = Bm25Index::build(records);
+    // Batch search: single pass over the corpus → O(N), not O(N²).
+    // Audit A (PROB-035): the per-record .score() called engine.search()
+    // for each record, making smart_search O(N²). Use search_scores()
+    // to get all BM25 scores in one pass, then look up per-record in O(1).
+    let bm25_scores: std::collections::HashMap<String, f64> =
+        bm25.search_scores(query, usize::MAX).into_iter().collect();
 
     let mut results: Vec<SmartSearchResult> = records
         .iter()
         .filter(|r| filter.map(|f| f.matches(r)).unwrap_or(true))
         .filter_map(|record| {
-            let raw_bm25 = bm25.score(record, query);
+            let raw_bm25 = bm25_scores.get(&record.id).copied().unwrap_or(0.0);
             let bm25_norm = Bm25Index::normalize(raw_bm25);
             // PROB-030 fix: BM25 is token-based — queries like "auth" don't
             // match the "authentication" token. Users expect grep-like prefix
