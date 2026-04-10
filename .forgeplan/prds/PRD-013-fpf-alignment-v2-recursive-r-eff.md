@@ -7,7 +7,9 @@ links:
   relation: based_on
 - target: RFC-001
   relation: refines
-status: active
+- target: PRD-040
+  relation: supersedes
+status: superseded
 title: FPF Alignment v2 — recursive R_eff
 ---
 
@@ -286,5 +288,6 @@ Then  [результат]
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
+
 
 

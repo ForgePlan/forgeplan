@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-002
   relation: informs
-status: draft
+status: deprecated
 title: FPF Engine verified
 ---
 
@@ -61,4 +61,5 @@ Updated:      2026-03-24T08:59:35.290384+00:00
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

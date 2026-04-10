@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: EPIC-001
   relation: refines
-status: active
+status: deprecated
 title: CLI UX Redesign — consistent output, --json, error format
 ---
 
@@ -157,5 +157,6 @@ TOTAL                               0/8  (  0%)
 |----------|----------|--------|
 | EPIC-001 | Parent epic | Active |
 | PRD-012 | scan-import (shared output patterns) | Active |
+
 
 

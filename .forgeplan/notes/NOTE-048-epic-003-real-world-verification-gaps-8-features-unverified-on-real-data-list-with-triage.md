@@ -2,8 +2,11 @@
 depth: tactical
 id: NOTE-048
 kind: note
-status: active
-title: EPIC-003 real-world verification gaps — features unverified on real data, triage list
+links:
+- target: PROB-030
+  relation: informs
+status: draft
+title: EPIC-003 real-world verification gaps — 8+ features unverified on real data, list with triage
 ---
 
 # NOTE-048: EPIC-003 real-world verification gaps
@@ -171,3 +174,4 @@ Add to Phase 5 Manual UX verification:
 | NOTE-044 | refines (adds lessons to sprint checklist) |
 | EPIC-003 | context (verification debt from the entire epic) |
 | EVID-065 | precedent (backfill pattern demonstrating PROB-033 workaround) |
+
