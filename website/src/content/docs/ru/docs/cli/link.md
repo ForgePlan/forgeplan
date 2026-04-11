@@ -22,7 +22,7 @@ forgeplan link [OPTIONS] <SOURCE> <TARGET>
 
 ## Опции
 
-```
+```text
       --relation <RELATION>  Тип связи: informs, based_on, supersedes, contradicts, refines [по умолчанию: informs]
   -h, --help                 Вывести справку
   -V, --version              Вывести версию
@@ -105,7 +105,7 @@ forgeplan link EVID-001 PRD-001 --relation informs   # правильно
 - [`forgeplan graph`](/docs/cli/graph/) включает ребро в вывод Mermaid.
 - [`forgeplan blocked`](/docs/cli/blocked/) и [`forgeplan order`](/docs/cli/order/) повторно запускают топологическую сортировку по рёбрам `based_on` / `refines`.
 
-## Смотрите также
+## См. также
 
 - [Обзор CLI](/docs/cli/)
 - [`forgeplan unlink`](/docs/cli/unlink/) — удалить связь

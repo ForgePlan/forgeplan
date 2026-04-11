@@ -45,7 +45,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ActivateParam
   "ok": false,
   "error": "validation_failed",
   "must_findings": [
-    { "rule": "prd.has_problem", "message": "Отсутствует раздел ## Problem" }
+    { "rule": "prd.has_problem", "message": "Missing ## Problem section" }
   ]
 }
 ```

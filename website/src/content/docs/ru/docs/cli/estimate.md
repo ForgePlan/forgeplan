@@ -52,14 +52,14 @@ forgeplan estimate PRD-001 --my-grade
 Вывод:
 
 ```text
-PRD-001 — Система аутентификации
-  FR-001 поток входа сложность=5 senior → 6ч
-  FR-002 обновление сессии сложность=3 senior → 3ч
-  FR-003 выход из системы сложность=2 senior → 1ч
-  Подытог:    10ч
-  Ревью:      +20%   → 2ч
-  Запас:      +15%   → 1.5ч
-  Итого: 13.5ч senior  (≈ 2 дня)
+PRD-001 — Auth System
+  FR-001  login flow          complexity=5  senior  → 6h
+  FR-002  session refresh     complexity=3  senior  → 3h
+  FR-003  logout              complexity=2  senior  → 1h
+  Subtotal:    10h
+  Review:      +20%   → 2h
+  Safety:      +15%   → 1.5h
+  Total: 13.5h senior  (≈ 2 days)
 ```
 
 ### Сравнение человеческого и AI-помощного пути

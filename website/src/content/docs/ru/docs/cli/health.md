@@ -152,29 +152,21 @@ forgeplan health --compact
 
 ## Как это вписывается в рабочий процесс
 
-```mermaid
-graph LR
-    A[health] --> B(route)
-    B --> C(Shape)
-    C --> D(Validate)
-    D --> E(Reason)
-    E --> F(Code)
-    F --> G(Evidence)
-    G --> H(Activate)
-    H --> I[health]
-    A -- session start --> A
-    I -- end of sprint --> I
+```
+[health] → route → Shape → Validate → Reason → Code → Evidence → Activate → [health]
+   ^                                                                           ^
+начало сессии                                                            конец спринта
 ```
 
 - **Начало сессии**: всегда запускайте первым. Устраните задолженность перед новой работой.
 - **Перед PR**: запустите снова, чтобы убедиться, что ваша ветка чиста.
 - **Гейт релиза**: режим CI со строгими порогами `--fail-on`.
 
-## Смотрите также
+## См. также
 
-- [`forgeplan status`](/docs/cli/status/) — необработанные счётчики без анализа состояния.
-- [`forgeplan blindspots`](/docs/cli/blindspots/) — только вид слепых пятен.
-- [`forgeplan gaps`](/docs/cli/gaps/) — обнаружение отсутствующих артефактов.
-- [`forgeplan refresh`](/docs/cli/stale/) — массовый обзор просроченных артефактов.
-- [`forgeplan context`](/docs/cli/context/) — глубокий анализ каждого артефакта.
+- [`forgeplan status`](/docs/cli/status/) — необработанные счётчики без анализа состояния
+- [`forgeplan blindspots`](/docs/cli/blindspots/) — только вид слепых пятен
+- [`forgeplan gaps`](/docs/cli/gaps/) — обнаружение отсутствующих артефактов
+- [`forgeplan refresh`](/docs/cli/stale/) — массовый обзор просроченных артефактов
+- [`forgeplan context`](/docs/cli/context/) — глубокий анализ каждого артефакта
 - [Методология: гейты качества](/docs/methodology/overview/)

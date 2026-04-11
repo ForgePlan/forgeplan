@@ -35,7 +35,7 @@ forgeplan renew --reason <REASON> --until <UNTIL> <ID>
 
 ```text
       --reason <REASON>  Причина продления
-      --until <UNTIL>    Новая дата valid_until (ГГГГ-ММ-ДД)
+      --until <UNTIL>    Новая дата valid_until (YYYY-MM-DD)
   -h, --help             Вывести справку
   -V, --version          Вывести версию
 ```
@@ -77,11 +77,11 @@ forgeplan renew ADR-007 --reason "temporary extension until RFC-018 is ratified"
 | Ошибка | Причина | Исправление |
 |---|---|---|
 | `Artifact is not in stale state` | Всё ещё `активен`, срок действия ещё не истёк | Дождитесь, пока он станет просроченным, или пропустите — `renew` применяется только к просроченным |
-| `--until must be in the future` | Дата сегодня или раньше | Передайте будущую дату в формате `ГГГГ-ММ-ДД` |
+| `--until must be in the future` | Дата сегодня или раньше | Передайте будущую дату в формате `YYYY-MM-DD` |
 | `Invalid date format` | Неправильный формат (например, `10/01/2026`) | Используйте ISO: `2026-10-01` |
 | `Cannot renew terminal artifact` | Уже `отменён` или `замещён` | Конечные состояния являются окончательными — вместо этого создайте новый черновик |
 
-## Смотрите также
+## См. также
 
 - [`forgeplan stale`](/docs/cli/stale/) — список артефактов с истёкшим сроком `valid_until`
 - [`forgeplan reopen`](/docs/cli/reopen/) — если решение требует переоценки, а не просто продления

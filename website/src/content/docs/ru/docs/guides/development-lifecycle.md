@@ -179,23 +179,23 @@ memory_retain("Payment processing: implemented, 15 tests, R_eff=1.00")
 ### Greenfield (новый модуль с нуля)
 
 ```
-Исследование → PRD → Spec → RFC → ADR → Build → Audit → Evidence
+Research → PRD → Spec → RFC → ADR → Build → Audit → Evidence
 ```
 
-Всё неизвестно. Нужны все артефакты. Начните с Исследования.
+Всё неизвестно. Нужны все артефакты. Начните с Research.
 
 ### Brownfield (существующий код)
 
 ```
-Исследование → Идентификация → {
+Explore → Identify → {
   feature:   PRD → RFC → Build
   bug:       Problem → Fix
   refactor:  Audit → Problem → RFC → Build
-  migration: Исследование → ADR → RFC → Build
+  migration: Research → ADR → RFC → Build
 }
 ```
 
-Код уже существует. Начните с **Исследования** (понимание того, что есть).
+Код уже существует. Начните с **Explore** (понимание того, что есть).
 
 ### Смешанный
 

@@ -66,7 +66,7 @@ forgeplan blocked
 forgeplan blocked RFC-006
 ```
 
-## Смотрите также
+## См. также
 
 -   [`forgeplan_order`](/ru/docs/mcp/forgeplan_order/) — полная топологическая сортировка графа зависимостей.
 -   [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) — визуализация графа.
