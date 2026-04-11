@@ -1,0 +1,93 @@
+# Forgeplan RU Translation Glossary
+# Canonical term mappings — used by translate-page.mjs and human reviewers.
+# Format: en_term: ru_translation
+# Terms marked [keep] should remain in English in RU text.
+
+# Core concepts
+artifact: артефакт
+decision: решение
+evidence: доказательство
+evidence pack: EvidencePack  # [keep technical name]
+workspace: рабочее пространство
+template: шаблон
+validation: валидация
+validate: валидировать
+
+# Artifact types
+PRD: PRD  # [keep]
+RFC: RFC  # [keep]
+ADR: ADR  # [keep]
+Epic: Epic  # [keep]
+Spec: Spec  # [keep]
+ProblemCard: ProblemCard  # [keep]
+SolutionPortfolio: SolutionPortfolio  # [keep]
+Note: Note  # [keep]
+RefreshReport: RefreshReport  # [keep]
+
+# Lifecycle states
+draft: черновик
+active: активный
+superseded: замещённый
+deprecated: устаревший
+stale: просроченный
+activate: активировать
+supersede: заместить
+deprecate: отменить
+renew: продлить
+reopen: переоткрыть
+
+# Quality & scoring
+R_eff: R_eff  # [keep formula name]
+F-G-R: F-G-R  # [keep]
+Formality: формальность
+Granularity: гранулярность
+Reliability: надёжность
+congruence level: уровень конгруэнтности
+CL0/CL1/CL2/CL3: CL0/CL1/CL2/CL3  # [keep]
+weakest link: слабое звено
+blind spot: слепое пятно
+orphan: сирота (артефакт без связей)
+
+# Methodology
+depth: глубина
+Tactical: тактическая
+Standard: стандартная
+Deep: глубокая
+Critical: критическая
+routing: роутинг
+pipeline: конвейер
+quality gate: гейт качества
+adversarial review: состязательная ревью
+
+# FPF
+ADI cycle: цикл ADI  # [keep acronym]
+Abduction: абдукция
+Deduction: дедукция
+Induction: индукция
+hypothesis: гипотеза
+trust calculus: Trust Calculus  # [keep]
+bounded context: ограниченный контекст
+First Principles Framework: First Principles Framework  # [keep]
+FPF: FPF  # [keep]
+
+# Technical
+LanceDB: LanceDB  # [keep]
+BM25: BM25  # [keep]
+Snowball stemmer: Snowball stemmer  # [keep]
+semantic search: семантический поиск
+keyword search: поиск по ключевым словам
+embedding: эмбеддинг
+MCP: MCP  # [keep — Model Context Protocol]
+CLI: CLI  # [keep]
+Starlight: Starlight  # [keep]
+Astro: Astro  # [keep]
+
+# Workflow
+Shape: Shape  # [keep phase name]
+Validate: Validate  # [keep]
+Code: Code  # [keep]
+Evidence: Evidence  # [keep phase name]
+Activate: Activate  # [keep]
+sprint: спринт
+dogfood: догфудинг
+blast radius: радиус поражения

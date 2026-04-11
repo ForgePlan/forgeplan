@@ -1,0 +1,15 @@
+{
+  "search.label": "Поиск",
+  "skipLink.label": "Перейти к содержимому",
+  "tableOfContents.onThisPage": "На этой странице",
+  "aside.note": "Заметка",
+  "aside.tip": "Совет",
+  "aside.caution": "Внимание",
+  "aside.danger": "Опасность",
+  "page.editLink": "Редактировать страницу",
+  "page.lastUpdated": "Последнее обновление:",
+  "page.previousLink": "Назад",
+  "page.nextLink": "Далее",
+  "404.text": "Страница не найдена.",
+  "builtWithStarlight.label": "Создано с помощью Starlight"
+}
