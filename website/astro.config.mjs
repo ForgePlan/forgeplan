@@ -17,6 +17,7 @@ export default defineConfig({
       ru: { label: 'Русский', lang: 'ru' },
     },
     favicon: '/favicon.svg',
+    credits: false,
     logo: {
       dark: './src/assets/logo-dark.svg',
       light: './src/assets/logo-light.svg',
