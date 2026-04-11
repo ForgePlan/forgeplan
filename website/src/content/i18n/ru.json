@@ -11,5 +11,9 @@
   "page.previousLink": "Назад",
   "page.nextLink": "Далее",
   "404.text": "Страница не найдена.",
-  "builtWithStarlight.label": "Создано с помощью Starlight"
+  "builtWithStarlight.label": "Создано с помощью Starlight",
+  "themeSelect.accessibleLabel": "Тема",
+  "themeSelect.dark": "Dark",
+  "themeSelect.light": "Light",
+  "themeSelect.auto": "Auto"
 }
