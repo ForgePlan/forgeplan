@@ -11,6 +11,7 @@ Production documentation for the Forgeplan project.
 ```
 docs/
 ├── README.md          ← this file — navigation index
+├── ROADMAP.md         ← gap analysis + priority matrix (Architecture, UX, Distribution, Docs)
 ├── methodology/       ← how the Forgeplan methodology works (for humans)
 ├── operations/        ← agent hooks, enforcement, repo protection (devops)
 └── schemas/           ← formal artifact schemas (contracts for the validator)
