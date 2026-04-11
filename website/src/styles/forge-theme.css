@@ -45,6 +45,11 @@
   --sl-color-black: #F5F5F0;
 }
 
+/* === Search bar — wider to match content area === */
+header .sl-flex button[data-open-modal] {
+  width: clamp(200px, 40vw, 500px) !important;
+}
+
 /* === Theme toggle — icon only, hide text in select === */
 starlight-theme-select select {
   color: transparent !important;
