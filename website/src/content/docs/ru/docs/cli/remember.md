@@ -12,7 +12,7 @@ ADR) с помощью [`promote`](/docs/cli/promote/).
 Представьте это как рабочую память для проекта: то, что вы не хотите потерять,
 но что ещё не готово стать PRD или ADR.
 
-## Usage
+## Использование
 
 ```text
 forgeplan remember [OPTIONS] [TEXT]

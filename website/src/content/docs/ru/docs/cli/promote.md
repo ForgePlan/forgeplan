@@ -86,4 +86,4 @@ forgeplan promote mem-017 --kind adr
 - [`forgeplan generate`](/docs/cli/generate/) — артефакт, созданный LLM, на основе подсказки на естественном языке
 - [`forgeplan capture`](/docs/cli/capture/) — зафиксировать текущее решение без обратного пути через память
 - [`forgeplan validate`](/docs/cli/validate/) — требуется перед активацией артефакта с повышенным статусом
-- [Methodology: artifact model](/docs/methodology/overview/)
+- [Методология: модель артефактов](/docs/methodology/overview/)

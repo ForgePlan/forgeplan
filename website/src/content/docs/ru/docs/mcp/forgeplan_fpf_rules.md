@@ -30,12 +30,12 @@ description: "Список активных правил FPF, сгруппиро
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `action` | `string` | нет | Фильтровать по одной категории: `"EXPLORE"` / `"INVESTIGATE"` / `"EXPLOIT"`. Опустите для всех. |
-| `name` | `string` | нет | Получить одно правило по точному имени. Вызывает ошибку, если не найдено. |
-| `summary` | `bool` | нет | Если `true`, возвращает только `{name, priority, action}` для каждого правила — без деревьев условий и сообщений. По умолчанию `false`. |
-| `source` | `string` | нет | Фильтровать по источнику: `"config"` (пользовательские переопределения) или `"default"` (встроенные). Полезно для отладки загрузки конфигурации. |
+| `action` | `string` | no | Фильтровать по одной категории: `"EXPLORE"` / `"INVESTIGATE"` / `"EXPLOIT"`. Опустите для всех. |
+| `name` | `string` | no | Получить одно правило по точному имени. Вызывает ошибку, если не найдено. |
+| `summary` | `bool` | no | Если `true`, возвращает только `{name, priority, action}` для каждого правила — без деревьев условий и сообщений. По умолчанию `false`. |
+| `source` | `string` | no | Фильтровать по источнику: `"config"` (пользовательские переопределения) или `"default"` (встроенные). Полезно для отладки загрузки конфигурации. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::FpfRulesParams`_
+_Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfRulesParams`_
 
 ## Возвращает
 
@@ -112,11 +112,11 @@ forgeplan_fpf_section { id: "B.3" }  ← почему движок так счи
 
 ## Эквивалент CLI
 
-- [`forgeplan fpf rules`](/docs/cli/fpf-rules/) — тот же список в терминале.
+- [`forgeplan fpf rules`](/ru/docs/cli/fpf-rules/) — тот же список в терминале.
 
 ## См. также
 
-- [MCP overview](/docs/mcp/)
-- [`forgeplan_fpf_check`](/docs/mcp/forgeplan_fpf_check/) — оценивает правила для конкретного артефакта
-- [`forgeplan_fpf_list`](/docs/mcp/forgeplan_fpf_list/) — каталог базы знаний
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — вычисляет R_eff, с которым сопоставляются правила
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_fpf_check`](/ru/docs/mcp/forgeplan_fpf_check/) — оценивает правила для конкретного артефакта
+- [`forgeplan_fpf_list`](/ru/docs/mcp/forgeplan_fpf_list/) — каталог базы знаний
+- [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) — вычисляет R_eff, с которым сопоставляются правила

@@ -17,8 +17,8 @@ description: "Выводит список артефактов с необяза
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `kind` | `string` | нет | Фильтр по типу (`prd`, `rfc`, `adr`, ...). |
-| `status` | `string` | нет | Фильтр по статусу (`draft`, `active`, `stale`, `superseded`, `deprecated`). |
+| `kind` | `string` | no | Фильтр по типу (`prd`, `rfc`, `adr`, ...). |
+| `status` | `string` | no | Фильтр по статусу (`draft`, `active`, `stale`, `superseded`, `deprecated`). |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ListParams`_
 
@@ -59,11 +59,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ListParams`_
 
 ## Эквивалент CLI
 
-- [`forgeplan list`](/docs/cli/list/) — те же фильтры, вывод в виде удобочитаемой таблицы
+- [`forgeplan list`](/ru/docs/cli/list/) — те же фильтры, вывод в виде удобочитаемой таблицы
 
 ## См. также
 
-- [MCP overview](/docs/mcp/)
-- [`forgeplan_get`](/docs/mcp/forgeplan_get/) — читать полное содержимое одного артефакта
-- [`forgeplan_search`](/docs/mcp/forgeplan_search/) — полнотекстовое / семантическое обнаружение
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — агрегированное состояние проекта
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/) — читать полное содержимое одного артефакта
+- [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) — полнотекстовое / семантическое обнаружение
+- [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) — агрегированное состояние проекта

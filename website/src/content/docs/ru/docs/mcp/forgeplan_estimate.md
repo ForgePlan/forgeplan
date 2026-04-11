@@ -66,6 +66,6 @@ forgeplan estimate PRD-039 --grade ai
 
 ## См. также
 
--   [`forgeplan_calibrate`](/docs/mcp/forgeplan_calibrate/) — предложение глубины (используется для оценки).
--   [`forgeplan_progress`](/docs/mcp/forgeplan_progress/) — фактический процент выполнения по сравнению с оценкой.
--   [Руководство по методологии](/docs/methodology/overview/)
+-   [`forgeplan_calibrate`](/ru/docs/mcp/forgeplan_calibrate/) — предложение глубины (используется для оценки).
+-   [`forgeplan_progress`](/ru/docs/mcp/forgeplan_progress/) — фактический процент выполнения по сравнению с оценкой.
+-   [Руководство по методологии](/ru/docs/methodology/overview/)

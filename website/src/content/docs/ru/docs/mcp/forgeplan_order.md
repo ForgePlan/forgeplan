@@ -66,6 +66,6 @@ forgeplan order
 
 ## См. также
 
-- [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) — сфокусированный вид только на заблокированных артефактах.
-- [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) — рендеринг того же графа с помощью Mermaid.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_blocked`](/ru/docs/mcp/forgeplan_blocked/) — сфокусированный вид только на заблокированных артефактах.
+- [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) — рендеринг того же графа с помощью Mermaid.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

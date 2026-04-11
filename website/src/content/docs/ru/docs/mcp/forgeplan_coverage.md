@@ -65,7 +65,7 @@ forgeplan coverage
 
 ## См. также
 
-- [`forgeplan_drift`](/docs/mcp/forgeplan_drift/) — решения, чьи файлы изменились.
-- [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) — слепые пятна на уровне артефактов (нет доказательств).
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — создать новый ADR.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_drift`](/ru/docs/mcp/forgeplan_drift/) — решения, чьи файлы изменились.
+- [`forgeplan_blindspots`](/ru/docs/mcp/forgeplan_blindspots/) — слепые пятна на уровне артефактов (нет доказательств).
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — создать новый ADR.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

@@ -26,7 +26,7 @@ description: "Оценивает набор правил FPF для конкре
 
 ## Входные параметры
 
-| Name | Type | Required | Описание |
+| Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
 | `id` | `string` | yes | ID артефакта (без учёта регистра), например, `PRD-042`, `RFC-007`, `ADR-003`. |
 
@@ -86,12 +86,12 @@ forgeplan_fpf_check { id: "PRD-X" } ← какая рекомендуемая к
 
 ## Эквивалент CLI
 
-- [`forgeplan fpf check <ID>`](/docs/cli/fpf-check/) — идентичный вывод, отображаемый в терминале.
+- [`forgeplan fpf check <ID>`](/ru/docs/cli/fpf-check/) — идентичный вывод, отображаемый в терминале.
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_fpf_rules`](/docs/mcp/forgeplan_fpf_rules/) — перечень правил, оцениваемых здесь
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — вычисляет R_eff, с которым сопоставляются правила
-- [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) — рассуждения ADI, дополняющие проверки на основе правил
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — завершающее действие, как только артефакт достигает EXPLOIT
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_fpf_rules`](/ru/docs/mcp/forgeplan_fpf_rules/) — перечень правил, оцениваемых здесь
+- [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) — вычисляет R_eff, с которым сопоставляются правила
+- [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) — рассуждения ADI, дополняющие проверки на основе правил
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — завершающее действие, как только артефакт достигает EXPLOIT

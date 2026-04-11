@@ -17,9 +17,9 @@ description: "Декомпозирует PRD на задачи RFC с помощ
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | да | ID артефакта PRD для декомпозиции на задачи RFC. |
+| `id` | `string` | yes | ID артефакта PRD для декомпозиции на задачи RFC. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::DecomposeParams`_
+_Источник схемы: `crates/forgeplan-mcp/src/server.rs::DecomposeParams`_
 
 ## Возвращает
 
@@ -67,11 +67,11 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::DecomposeParams`_
 
 ## Эквивалент CLI
 
-- [`forgeplan decompose`](/docs/cli/decompose/) — та же операция
+- [`forgeplan decompose`](/ru/docs/cli/decompose/) — та же операция
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) — предыдущий шаг рассуждений
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — материализация декомпозиции
-- [`forgeplan_link`](/docs/mcp/forgeplan_link/) — связывание дочерних элементов с родительским PRD
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) — предыдущий шаг рассуждений
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — материализация декомпозиции
+- [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) — связывание дочерних элементов с родительским PRD

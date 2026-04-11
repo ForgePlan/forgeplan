@@ -68,6 +68,6 @@ forgeplan guard --target coding
 
 ## См. также
 
-- [`forgeplan_session`](/docs/mcp/forgeplan_session/) — текущая фаза.
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — разблокировать переход shaping → coding.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_session`](/ru/docs/mcp/forgeplan_session/) — текущая фаза.
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — разблокировать переход shaping → coding.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

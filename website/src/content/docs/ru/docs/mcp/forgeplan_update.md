@@ -5,7 +5,7 @@ description: "Обновляет метаданные артефакта (ста
 
 Применяет изменения к телу и/или метаданным frontmatter существующего артефакта на месте. Это путь прямого редактирования — агент использует его для заполнения только что созданной заглушки, переписывания раздела после обратной связи от пользователя или переименования артефакта. Для переходов жизненного цикла (draft → active → superseded) агент должен использовать специализированные инструменты `forgeplan_activate` / `forgeplan_supersede` / `forgeplan_deprecate` вместо этого, которые обеспечивают гейты валидации.
 
-**Category**: Редактирование артефактов
+**Категория**: Редактирование артефактов
 
 ## Когда агент вызывает это
 
@@ -63,7 +63,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::UpdateParams`
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — правильный путь для `draft → active`
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — валидировать после редактирования
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — заместить вместо редактирования
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — правильный путь для `draft → active`
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — валидировать после редактирования
+- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) — заместить вместо редактирования

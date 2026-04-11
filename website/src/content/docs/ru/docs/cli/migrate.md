@@ -26,8 +26,8 @@ forgeplan migrate
 ## Опции
 
 ```text
-  -h, --help     Print help
-  -V, --version  Print version
+  -h, --help     Вывести справку
+  -V, --version  Вывести версию
 ```
 
 ## Примеры

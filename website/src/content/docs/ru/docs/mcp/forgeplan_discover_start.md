@@ -83,11 +83,11 @@ forgeplan_discover_complete (session_id)
 
 ## Эквивалент CLI
 
-- [`forgeplan discover start`](/docs/cli/discover-start/) — тот же процесс из терминала, для оператора-человека.
+- [`forgeplan discover start`](/ru/docs/cli/discover-start/) — тот же процесс из терминала, для оператора-человека.
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_discover_finding`](/docs/mcp/forgeplan_discover_finding/) — добавить одно наблюдение
-- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) — завершить + синтезировать артефакты
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — состояние проекта после обнаружения
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_discover_finding`](/ru/docs/mcp/forgeplan_discover_finding/) — добавить одно наблюдение
+- [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) — завершить + синтезировать артефакты
+- [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) — состояние проекта после обнаружения

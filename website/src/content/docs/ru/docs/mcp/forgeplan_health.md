@@ -75,7 +75,7 @@ forgeplan health
 
 ## См. также
 
-- [`forgeplan_status`](/docs/mcp/forgeplan_status/) — более простая разбивка по типу × статусу.
-- [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) — сфокусированный список слепых пятен.
-- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) — список с истёкшими `valid_until`.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_status`](/ru/docs/mcp/forgeplan_status/) — более простая разбивка по типу × статусу.
+- [`forgeplan_blindspots`](/ru/docs/mcp/forgeplan_blindspots/) — сфокусированный список слепых пятен.
+- [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) — список с истёкшими `valid_until`.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

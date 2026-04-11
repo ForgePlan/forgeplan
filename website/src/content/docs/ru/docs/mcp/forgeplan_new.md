@@ -17,8 +17,8 @@ description: "Создаёт новый артефакт из шаблона. Г
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `kind` | `string` | да | Тип артефакта: `prd`, `epic`, `spec`, `rfc`, `adr`, `problem`, `solution`, `evidence`, `note`, `refresh`. |
-| `title` | `string` | да | Заголовок артефакта. |
+| `kind` | `string` | yes | Тип артефакта: `prd`, `epic`, `spec`, `rfc`, `adr`, `problem`, `solution`, `evidence`, `note`, `refresh`. |
+| `title` | `string` | yes | Заголовок артефакта. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::NewParams`_
 
@@ -58,11 +58,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::NewParams`_
 
 ## Эквивалент CLI
 
-- [`forgeplan new`](/docs/cli/new/) — та же операция с интерактивными подсказками
+- [`forgeplan new`](/ru/docs/cli/new/) — та же операция с интерактивными подсказками
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_generate`](/docs/mcp/forgeplan_generate/) — тело, сгенерированное LLM, вместо заглушки
-- [`forgeplan_update`](/docs/mcp/forgeplan_update/) — заполнить заглушку
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — подтвердить полноту
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_generate`](/ru/docs/mcp/forgeplan_generate/) — тело, сгенерированное LLM, вместо заглушки
+- [`forgeplan_update`](/ru/docs/mcp/forgeplan_update/) — заполнить заглушку
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — подтвердить полноту

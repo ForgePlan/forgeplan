@@ -66,6 +66,6 @@ forgeplan session
 
 ## См. также
 
--   [`forgeplan_guard`](/docs/mcp/forgeplan_guard/) — гейт для фазовых переходов.
--   [`forgeplan_route`](/docs/mcp/forgeplan_route/) — точка входа, которая открывает сессию.
--   [Руководство по методологии](/docs/methodology/overview/)
+-   [`forgeplan_guard`](/ru/docs/mcp/forgeplan_guard/) — гейт для фазовых переходов.
+-   [`forgeplan_route`](/ru/docs/mcp/forgeplan_route/) — точка входа, которая открывает сессию.
+-   [Руководство по методологии](/ru/docs/methodology/overview/)

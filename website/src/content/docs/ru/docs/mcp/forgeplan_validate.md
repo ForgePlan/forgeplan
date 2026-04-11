@@ -17,9 +17,9 @@ description: "Валидирует полноту артефакта в соот
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | нет | ID артефакта для валидации. Валидирует все артефакты, если пропущен. |
+| `id` | `string` | no | ID артефакта для валидации. Валидирует все артефакты, если пропущен. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ValidateParams`_
+_Источник схемы: `crates/forgeplan-mcp/src/server.rs::ValidateParams`_
 
 ## Возвращает
 
@@ -60,11 +60,11 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ValidateParams`_
 
 ## Эквивалент CLI
 
-- [`forgeplan validate`](/docs/cli/validate/) — те же правила, вывод в терминал
+- [`forgeplan validate`](/ru/docs/cli/validate/) — те же правила, вывод в терминал
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — гейт, соблюдение которого обеспечивает валидация
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — ортогональный сигнал качества (R_eff)
-- [`forgeplan_review`](/docs/mcp/forgeplan_review/) — удобочитаемый отчёт о готовности
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — гейт, соблюдение которого обеспечивает валидация
+- [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) — ортогональный сигнал качества (R_eff)
+- [`forgeplan_review`](/ru/docs/mcp/forgeplan_review/) — удобочитаемый отчёт о готовности

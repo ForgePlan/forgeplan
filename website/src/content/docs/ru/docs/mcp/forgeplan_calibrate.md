@@ -20,7 +20,7 @@ description: "Предлагает уровень глубины (Tactical/Stand
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | нет | ID артефакта для калибровки. Опустите, чтобы откалибровать все артефакты в рабочем пространстве. |
+| `id` | `string` | no | ID артефакта для калибровки. Опустите, чтобы откалибровать все артефакты в рабочем пространстве. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::CalibrateParams`_
 
@@ -66,6 +66,6 @@ forgeplan calibrate PRD-042
 
 ## См. также
 
-- [`forgeplan_route`](/docs/mcp/forgeplan_route/) — выбор глубины при создании задачи.
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — валидация с учётом глубины.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_route`](/ru/docs/mcp/forgeplan_route/) — выбор глубины при создании задачи.
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — валидация с учётом глубины.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

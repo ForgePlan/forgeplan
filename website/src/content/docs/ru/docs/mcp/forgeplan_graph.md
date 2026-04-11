@@ -56,7 +56,7 @@ forgeplan graph
 
 ## См. также
 
-- [`forgeplan_order`](/docs/mcp/forgeplan_order/) — топологическая сортировка графа.
-- [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) — артефакты, заблокированные зависимостями.
-- [`forgeplan_link`](/docs/mcp/forgeplan_link/) — добавить новое ребро.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_order`](/ru/docs/mcp/forgeplan_order/) — топологическая сортировка графа.
+- [`forgeplan_blocked`](/ru/docs/mcp/forgeplan_blocked/) — артефакты, заблокированные зависимостями.
+- [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) — добавить новое ребро.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

@@ -59,11 +59,11 @@ Conversation → `forgeplan_capture` → `forgeplan_validate` (для ADR) → `
 
 ## Эквивалент CLI
 
-- [`forgeplan capture`](/docs/cli/capture/) — та же операция, ввод текста через пайп
+- [`forgeplan capture`](/ru/docs/cli/capture/) — та же операция, ввод текста через пайп
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_generate`](/docs/mcp/forgeplan_generate/) — более полный черновик с нуля
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — альтернатива в виде пустого заглушки
-- [`forgeplan_link`](/docs/mcp/forgeplan_link/) — прикрепление к родительским решениям
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_generate`](/ru/docs/mcp/forgeplan_generate/) — более полный черновик с нуля
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — альтернатива в виде пустого заглушки
+- [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) — прикрепление к родительским решениям

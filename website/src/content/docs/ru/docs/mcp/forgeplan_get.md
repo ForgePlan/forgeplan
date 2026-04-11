@@ -17,7 +17,7 @@ description: "Считывает полный артефакт по ID. Возв
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | да | ID артефакта для чтения (например, `PRD-042`, без учёта регистра). |
+| `id` | `string` | yes | ID артефакта для чтения (например, `PRD-042`, без учёта регистра). |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GetParams`_
 
@@ -60,11 +60,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GetParams`_
 
 ## Эквивалент в CLI
 
-- [`forgeplan show`](/docs/cli/get/) — человекочитаемый вывод в терминале
+- [`forgeplan show`](/ru/docs/cli/get/) — человекочитаемый вывод в терминале
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_list`](/docs/mcp/forgeplan_list/) — сначала найдите ID
-- [`forgeplan_update`](/docs/mcp/forgeplan_update/) — редактирование после чтения
-- [`forgeplan_search`](/docs/mcp/forgeplan_search/) — обнаружение на уровне содержимого
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) — сначала найдите ID
+- [`forgeplan_update`](/ru/docs/mcp/forgeplan_update/) — редактирование после чтения
+- [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) — обнаружение на уровне содержимого

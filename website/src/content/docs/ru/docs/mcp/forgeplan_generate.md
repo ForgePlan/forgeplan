@@ -59,11 +59,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GenerateParam
 
 ## Эквивалент CLI
 
-- [`forgeplan generate`](/docs/cli/generate/) — та же операция
+- [`forgeplan generate`](/ru/docs/cli/generate/) — та же операция
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — альтернатива с пустой заглушкой
-- [`forgeplan_capture`](/docs/mcp/forgeplan_capture/) — захват решений из беседы
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — всегда валидировать сгенерированный вывод
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — альтернатива с пустой заглушкой
+- [`forgeplan_capture`](/ru/docs/mcp/forgeplan_capture/) — захват решений из беседы
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — всегда валидировать сгенерированный вывод

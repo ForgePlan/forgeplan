@@ -411,4 +411,140 @@ integrity:
 | `OPENAI_API_KEY` | llm | Ключ API OpenAI (по умолчанию для `provider: openai`). |
 | `ANTHROPIC_API_KEY` | llm | Ключ API Anthropic (по умолчанию для `provider: claude`). |
 | `GEMINI_API_KEY` | llm | Ключ API Gemini (по умолчанию для `provider: gemini`). |
-| `FORGEPLAN_LLM_PROVIDER` | llm | Пере
+| `FORGEPLAN_LLM_PROVIDER` | llm | Переопределяет `llm.provider`. |
+| `FORGEPLAN_LLM_MODEL` | llm | Переопределяет `llm.model`. |
+| `FORGEPLAN_LLM_BASE_URL` | llm | Переопределяет `llm.base_url`. |
+| `FORGEPLAN_LLM_MAX_TOKENS` | llm | Переопределяет `llm.max_tokens`. |
+| `FORGEPLAN_LLM_API_KEY_ENV` | llm | Переопределяет `llm.api_key_env` (имя переменной). |
+| `FORGEPLAN_EMBEDDING_MODEL` | embedding | Переопределяет `embedding.model`. |
+| `FORGEPLAN_STORAGE_DRIVER` | storage | Переопределяет `storage.driver`. |
+| `FORGEPLAN_STORAGE_PATH` | storage | Переопределяет `storage.path`. |
+| `FORGEPLAN_MEMORY_DRIVER` | memory | Переопределяет `memory.driver`. |
+
+Ключи API **никогда** не хранятся в `config.yaml` — хранится только **имя** переменной окружения в поле `api_key_env`. Это делает файл конфигурации безопасным для распространения между машинами (при условии, что `.forgeplan/config.yaml` находится в `.gitignore`).
+
+## Важные замечания и безопасность Git
+
+:::caution[.forgeplan/ частично в gitignore]
+- **Отслеживаемые**: `adrs/`, `rfcs/`, `prds/`, `epics/`, `specs/`, `problems/`, `solutions/`, `evidence/`, `notes/`, `refresh/`, `memory/` — это источник истины.
+- **Не отслеживаемые**: `config.yaml`, `lance/`, `.fastembed_cache/` — локальные, восстановимые или содержащие секреты.
+
+Это означает, что `config.yaml` **теряется при свежем клонировании**. Каждый разработчик настраивает собственного провайдера LLM и ключи через `forgeplan init -y` + ручное редактирование.
+:::
+
+### Перед любой повторной инициализацией
+
+```bash
+# 1. Экспортировать все артефакты в переносимый JSON-бандл
+forgeplan export --output backup.json
+
+# 2. Сохранить резервную копию всей директории рабочего пространства
+cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
+
+# 3. Только теперь безопасно переинициализировать
+rm -rf .forgeplan
+forgeplan init -y
+
+# 4. Восстановить артефакты
+forgeplan import backup.json
+```
+
+### Рабочий процесс после свежего клонирования
+
+```bash
+git clone <repo> && cd <repo>
+forgeplan init -y                   # создаёт .forgeplan/config.yaml + пустой lance/
+$EDITOR .forgeplan/config.yaml      # задать llm.provider, model, api_key_env
+export GEMINI_API_KEY=...           # или какой провайдер вы выбрали
+forgeplan scan-import               # пересобирает lance/ из отслеживаемых markdown
+forgeplan list                      # проверить, что артефакты на месте
+```
+
+### Режим ИИ-агента
+
+ИИ-агенты (Claude Code, Codex и другие), работающие с Forgeplan, должны всегда использовать:
+
+```bash
+forgeplan init -y      # НИКОГДА без -y — интерактивный режим зависнет в харнесе агента
+```
+
+Интерактивный режим зависнет в харнесе агента. Флаг `-y` принимает все значения по умолчанию и записывает минимальный `config.yaml`, который агент может затем отредактировать.
+
+## Устранение неполадок
+
+### "API key not found"
+
+```
+error: LLM API key not set — expected env var GEMINI_API_KEY
+```
+
+**Причина**: `llm.api_key_env` указывает на незаданную переменную, или переменная окружения по умолчанию для провайдера не задана.
+
+**Исправление**:
+```bash
+export GEMINI_API_KEY=your-key          # для текущей оболочки
+# или
+export FORGEPLAN_LLM_API_KEY_ENV=MY_CUSTOM_KEY
+export MY_CUSTOM_KEY=your-key
+```
+
+Используйте `forgeplan health`, чтобы убедиться, что подсистема LLM сообщает "ready".
+
+### Ошибки ограничения скорости LLM / 429
+
+**Причина**: ограничения скорости провайдера (бесплатный уровень Gemini особенно строг).
+
+**Исправление**:
+1. Уменьшите `llm.max_tokens` для снижения стоимости каждого запроса.
+2. Переключитесь на более дешёвую модель (`gemini-3-flash-preview`, `gpt-5-mini`, `claude-haiku-4-5-20251001`).
+3. Повторите с экспоненциальной задержкой — Forgeplan передаёт ошибку провайдера дословно, чтобы вы могли отличить 429 от 5xx.
+
+### Эмбеддинги не загружаются / семантический поиск возвращает пустой результат
+
+**Причина**: одна из:
+- Бинарный файл Forgeplan собран без функции `semantic-search` (проверьте `forgeplan --version`).
+- `embedding.model` был изменён, а `lance/` не был переиндексирован.
+- `.fastembed_cache/` повреждён.
+
+**Исправление**:
+```bash
+rm -rf .forgeplan/.fastembed_cache
+forgeplan scan-import                # повторно загружает модель + переиндексирует
+```
+
+Если семантический поиск недоступен, Forgeplan автоматически переключается на поиск по ключевым словам BM25 — данные не теряются. См. [руководство по поиску](/docs/guides/search-v2/) для подробностей о гибридном стеке.
+
+### "Invalid config: fpf.thresholds.explore_reff must be finite"
+
+**Причина**: некорректный YAML — числовое поле содержит `NaN`, `Infinity` или строку, которая не распарсилась как число.
+
+**Исправление**: откройте `.forgeplan/config.yaml` и убедитесь, что каждое числовое поле в секциях `fpf:`, `estimate:` и `integrity:` является обычным десятичным числом. Запустите `forgeplan health` для повторной проверки.
+
+### "integrity.mcp_max_body_len must be in [1024, 104857600]"
+
+**Причина**: ограничение размера тела MCP задано за пределами допустимого диапазона (от 1 КиБ до 100 МиБ).
+
+**Исправление**: выберите значение внутри диапазона. Для большинства проектов значение по умолчанию (1 МиБ) является правильным.
+
+### Миграция / дрейф схемы после обновления
+
+Некоторые обновления добавляют новые столбцы в `lance/`. Симптомом является ошибка LanceDB при запуске.
+
+**Исправление**:
+```bash
+forgeplan export --output backup.json
+rm -rf .forgeplan/lance
+forgeplan init -y                    # пересоздаёт lance/
+forgeplan scan-import                # переиндексация из markdown
+# markdown является источником истины — артефакты не теряются
+```
+
+## См. также
+
+- [`forgeplan init`](/docs/cli/init/) — команда инициализации рабочего пространства
+- [`forgeplan estimate`](/docs/cli/estimate/) — CLI движка оценки
+- [`forgeplan reason`](/docs/cli/reason/) — команда рассуждений ADI
+- [Руководство по доказательствам](/docs/methodology/evidence/) — как `congruence_level` и `valid_until` влияют на R_eff
+- [Руководство по поиску v2](/docs/guides/search-v2/) — гибридный стек BM25 + семантический поиск
+- [Руководство по жизненному циклу v2](/docs/guides/lifecycle-v2/) — конечный автомат артефактов и влияние настроек `integrity:` на health
+- [Калибровка глубины](/docs/methodology/routing/) — как `default_depth` взаимодействует с `forgeplan route`

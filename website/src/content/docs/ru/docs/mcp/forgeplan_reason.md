@@ -66,11 +66,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ReasonParams`
 
 ## Эквивалент CLI
 
-- [`forgeplan reason`](/docs/cli/reason/) — тот же конвейер, вывод в терминал
+- [`forgeplan reason`](/ru/docs/cli/reason/) — тот же конвейер, вывод в терминал
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [Методология FPF](/docs/methodology/adi/)
-- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) — прямой поиск по базе знаний
-- [`forgeplan_decompose`](/docs/mcp/forgeplan_decompose/) — рассуждения, применённые к декомпозиции
+- [Обзор MCP](/ru/docs/mcp/)
+- [Методология FPF](/ru/docs/methodology/adi/)
+- [`forgeplan_fpf_search`](/ru/docs/mcp/forgeplan_fpf_search/) — прямой поиск по базе знаний
+- [`forgeplan_decompose`](/ru/docs/mcp/forgeplan_decompose/) — рассуждения, применённые к декомпозиции

@@ -17,8 +17,8 @@ description: "Активирует артефакт (черновик → акт
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | да | ID артефакта для активации. |
-| `force` | `bool` | нет (по умолчанию: `false`) | Принудительная активация, даже если валидация содержит ошибки MUST. |
+| `id` | `string` | yes | ID артефакта для активации. |
+| `force` | `bool` | no (по умолчанию: `false`) | Принудительная активация, даже если валидация содержит ошибки MUST. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ActivateParams`_
 
@@ -70,11 +70,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ActivateParam
 
 ## Эквивалент CLI
 
-- [`forgeplan activate`](/docs/cli/activate/) — тот же переход
+- [`forgeplan activate`](/ru/docs/cli/activate/) — тот же переход
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — предварительная проверка
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — следующий этап жизненного цикла
-- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) — окончательное списание
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — предварительная проверка
+- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) — следующий этап жизненного цикла
+- [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) — окончательное списание

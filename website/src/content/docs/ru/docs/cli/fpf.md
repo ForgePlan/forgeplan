@@ -94,4 +94,4 @@ Shape → Validate → ADI (FPF KB) → Code → Evidence → Activate
 - [`forgeplan fpf rules`](/docs/cli/fpf-rules/) — активные правила по действиям
 - [`forgeplan fpf check`](/docs/cli/fpf-check/) — правила, соответствующие артефакту
 - [`forgeplan reason`](/docs/cli/reason/) — цикл ADI, управляемый FPF
-- [Methodology guide](/docs/methodology/overview/) — где FPF вписывается в полный рабочий процесс
+- [Руководство по методологии](/docs/methodology/overview/) — где FPF вписывается в полный рабочий процесс

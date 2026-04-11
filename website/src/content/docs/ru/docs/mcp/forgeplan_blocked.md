@@ -18,7 +18,7 @@ description: "Показывает заблокированные артефак
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | нет | ID артефакта для проверки. Если пропущено, выводит список всех заблокированных артефактов. |
+| `id` | `string` | no | ID артефакта для проверки. Если пропущено, выводит список всех заблокированных артефактов. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/types.rs::BlockedParams`_
 
@@ -68,7 +68,7 @@ forgeplan blocked RFC-006
 
 ## Смотрите также
 
--   [`forgeplan_order`](/docs/mcp/forgeplan_order/) — полная топологическая сортировка графа зависимостей.
--   [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) — визуализация графа.
--   [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — разблокировка нижестоящих артефактов путём активации черновика.
--   [Руководство по методологии](/docs/methodology/overview/)
+-   [`forgeplan_order`](/ru/docs/mcp/forgeplan_order/) — полная топологическая сортировка графа зависимостей.
+-   [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) — визуализация графа.
+-   [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — разблокировка нижестоящих артефактов путём активации черновика.
+-   [Руководство по методологии](/ru/docs/methodology/overview/)

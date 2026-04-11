@@ -20,11 +20,11 @@ description: "Поиск по базе знаний FPF (First Principles Framew
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `query` | `string` | да | Поисковый запрос (1-8192 символов, обрезанный непустой). |
-| `limit` | `integer` | нет (по умолчанию: `5`, макс.: `50`) | Максимальное количество возвращаемых результатов. |
-| `semantic` | `bool` | нет (по умолчанию: `false`) | Использовать векторный поиск через BGE-M3. Возвращается к поиску по ключевым словам, если функция `semantic-search` не скомпилирована. |
+| `query` | `string` | yes | Поисковый запрос (1-8192 символов, обрезанный непустой). |
+| `limit` | `integer` | no (по умолчанию: `5`, макс.: `50`) | Максимальное количество возвращаемых результатов. |
+| `semantic` | `bool` | no (по умолчанию: `false`) | Использовать векторный поиск через BGE-M3. Возвращается к поиску по ключевым словам, если функция `semantic-search` не скомпилирована. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::FpfSearchParams`_
+_Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfSearchParams`_
 
 ## Возвращает
 
@@ -82,7 +82,7 @@ forgeplan fpf search "uncertainty" --semantic
 
 ## См. также
 
-- [`forgeplan_fpf_section`](/docs/mcp/forgeplan_fpf_section/) — получить раздел по ID.
-- [`forgeplan_search`](/docs/mcp/forgeplan_search/) — поиск артефактов рабочего пространства (не базы знаний FPF).
-- [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) — рассуждения ADI с опциональным обоснованием `--fpf`.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_fpf_section`](/ru/docs/mcp/forgeplan_fpf_section/) — получить раздел по ID.
+- [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) — поиск артефактов рабочего пространства (не базы знаний FPF).
+- [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) — рассуждения ADI с опциональным обоснованием `--fpf`.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

@@ -15,7 +15,7 @@ description: "Замещает артефакт (активный → замещ
 
 ## Входные параметры
 
-| Name | Type | Required | Description |
+| Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
 | `id` | `string` | yes | Идентификатор артефакта для замещения. |
 | `by` | `string` | yes | Идентификатор артефакта-замены. |
@@ -58,11 +58,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::SupersedePara
 
 ## Эквивалент CLI
 
-- [`forgeplan supersede`](/docs/cli/supersede/) — та же операция
+- [`forgeplan supersede`](/ru/docs/cli/supersede/) — та же операция
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — предыдущий шаг
-- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) — отмена без замены
-- [`forgeplan_link`](/docs/mcp/forgeplan_link/) — создание ссылки вручную
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — предыдущий шаг
+- [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) — отмена без замены
+- [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) — создание ссылки вручную

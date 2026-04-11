@@ -67,6 +67,6 @@ forgeplan status
 
 ## Смотрите также
 
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — полный отчёт о состоянии со слепыми пятнами и следующими действиями.
-- [`forgeplan_list`](/docs/mcp/forgeplan_list/) — отфильтрованный список артефактов.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) — полный отчёт о состоянии со слепыми пятнами и следующими действиями.
+- [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) — отфильтрованный список артефактов.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

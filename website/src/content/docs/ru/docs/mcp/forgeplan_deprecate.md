@@ -58,11 +58,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DeprecatePara
 
 ## Эквивалент CLI
 
-- [`forgeplan deprecate`](/docs/cli/deprecate/) — та же операция
+- [`forgeplan deprecate`](/ru/docs/cli/deprecate/) — та же операция
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — когда существует замена
-- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) — предшествует отмене для просроченных артефактов
-- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) — необратимое удаление (избегать)
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) — когда существует замена
+- [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) — предшествует отмене для просроченных артефактов
+- [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) — необратимое удаление (избегать)

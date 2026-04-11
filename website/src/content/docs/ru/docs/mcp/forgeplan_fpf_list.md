@@ -65,11 +65,11 @@ forgeplan_fpf_search  { query: "…" }   ← поиск на уровне сод
 
 ## Эквивалент CLI
 
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) — тот же каталог, представленный в виде таблицы в терминале.
+- [`forgeplan fpf list`](/ru/docs/cli/fpf-list/) — тот же каталог, представленный в виде таблицы в терминале.
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_fpf_section`](/docs/mcp/forgeplan_fpf_section/) — получить полное содержимое одного раздела
-- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) — поиск по ключевым словам / семантический поиск
-- [`forgeplan_fpf_rules`](/docs/mcp/forgeplan_fpf_rules/) — правила, выведенные из фреймворка
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_fpf_section`](/ru/docs/mcp/forgeplan_fpf_section/) — получить полное содержимое одного раздела
+- [`forgeplan_fpf_search`](/ru/docs/mcp/forgeplan_fpf_search/) — поиск по ключевым словам / семантический поиск
+- [`forgeplan_fpf_rules`](/ru/docs/mcp/forgeplan_fpf_rules/) — правила, выведенные из фреймворка

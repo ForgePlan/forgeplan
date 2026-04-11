@@ -62,7 +62,7 @@ forgeplan decay
 
 ## См. также
 
-- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) — список просроченных артефактов.
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — пересчитать R_eff для конкретного артефакта.
-- [`forgeplan_journal`](/docs/mcp/forgeplan_journal/) — хронологический обзор с R_eff.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) — список просроченных артефактов.
+- [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) — пересчитать R_eff для конкретного артефакта.
+- [`forgeplan_journal`](/ru/docs/mcp/forgeplan_journal/) — хронологический обзор с R_eff.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

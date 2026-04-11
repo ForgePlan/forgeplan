@@ -1,6 +1,6 @@
 ---
-title: Evidence & R_eff Scoring
-description: How Forgeplan measures trust in decisions
+title: Доказательства и оценка R_eff
+description: Как Forgeplan измеряет доверие к решениям
 ---
 
 ## Почему это важно

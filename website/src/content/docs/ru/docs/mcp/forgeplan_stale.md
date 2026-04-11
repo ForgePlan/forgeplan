@@ -65,7 +65,7 @@ forgeplan stale
 
 ## Смотрите также
 
--   [`forgeplan_decay`](/docs/mcp/forgeplan_decay/) — количественная оценка потери R_eff из-за устаревших доказательств.
--   [`forgeplan_renew`](/docs/cli/renew/) — продление `valid_until`.
--   [`forgeplan_reopen`](/docs/cli/reopen/) — создание нового черновика, связанного по происхождению.
--   [Руководство по методологии](/docs/methodology/overview/)
+-   [`forgeplan_decay`](/ru/docs/mcp/forgeplan_decay/) — количественная оценка потери R_eff из-за устаревших доказательств.
+-   [`forgeplan_renew`](/ru/docs/cli/renew/) — продление `valid_until`.
+-   [`forgeplan_reopen`](/ru/docs/cli/reopen/) — создание нового черновика, связанного по происхождению.
+-   [Руководство по методологии](/ru/docs/methodology/overview/)

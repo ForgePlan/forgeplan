@@ -31,13 +31,13 @@ description: "Сообщает об одном обнаруженном факт
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `session_id` | `string` | да | Дескриптор сессии, возвращённый `forgeplan_discover_start`. |
-| `phase` | `string` | да | Одна из фаз: `detect`, `structure`, `code`, `git`, `tests`, `docs`, `synthesize`. |
-| `tier` | `integer` | да | Уровень источника `1`, `2`, `3` или `4` (см. таблицу выше). |
-| `kind` | `string` | да | Тип создаваемого артефакта: `Note` / `PRD` / `RFC` / `ProblemCard` / `Evidence`. |
-| `title` | `string` | да | Краткий, конкретный заголовок для обнаруженного факта (используется как заголовок артефакта). |
-| `body` | `string` | да | Тело в формате Markdown. Включите: что вы наблюдали, где (файл:строка) и почему это важно. |
-| `source_files` | `string[]` | нет (по умолчанию: `[]`) | Пути, которые послужили основой для обнаруженного факта. Записываются, чтобы рецензенты могли проследить. |
+| `session_id` | `string` | yes | Дескриптор сессии, возвращённый `forgeplan_discover_start`. |
+| `phase` | `string` | yes | Одна из фаз: `detect`, `structure`, `code`, `git`, `tests`, `docs`, `synthesize`. |
+| `tier` | `integer` | yes | Уровень источника `1`, `2`, `3` или `4` (см. таблицу выше). |
+| `kind` | `string` | yes | Тип создаваемого артефакта: `Note` / `PRD` / `RFC` / `ProblemCard` / `Evidence`. |
+| `title` | `string` | yes | Краткий, конкретный заголовок для обнаруженного факта (используется как заголовок артефакта). |
+| `body` | `string` | yes | Тело в формате Markdown. Включите: что вы наблюдали, где (файл:строка) и почему это важно. |
+| `source_files` | `string[]` | no (по умолчанию: `[]`) | Пути, которые послужили основой для обнаруженного факта. Записываются, чтобы рецензенты могли проследить. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DiscoverFindingParams`_
 
@@ -85,7 +85,7 @@ discover_start → (many) discover_finding → discover_complete
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) — протокол, который является источником этого инструмента
-- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) — синтезирует обнаруженные факты в предложения
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — альтернатива для создания артефактов вне сессии
+- [Обзор MCP](/ru/docs/mcp/)
+- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) — протокол, который является источником этого инструмента
+- [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) — синтезирует обнаруженные факты в предложения
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — альтернатива для создания артефактов вне сессии

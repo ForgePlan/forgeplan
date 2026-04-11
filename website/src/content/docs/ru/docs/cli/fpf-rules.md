@@ -28,10 +28,10 @@ forgeplan fpf rules [OPTIONS]
 ## Опции
 
 ```text
-      --flat     Flat priority-linear table instead of action-grouped tree
-      --json     Output full rule dump as JSON
-  -h, --help     Print help
-  -V, --version  Print version
+      --flat     Плоская таблица по приоритету вместо дерева, сгруппированного по действиям
+      --json     Вывод полного дампа правил в формате JSON
+  -h, --help     Вывести справку
+  -V, --version  Вывести версию
 ```
 
 Представление по умолчанию группирует правила по действиям (EXPLORE / INVESTIGATE / EXPLOIT). `--flat` переключает на единую таблицу, упорядоченную по приоритету, если вы хотите просмотреть правила с наивысшим приоритетом независимо от действия. `--json` выводит полный дамп правил для клиентов MCP и скриптов аудита.

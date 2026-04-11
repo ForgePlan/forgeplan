@@ -72,7 +72,7 @@ forgeplan blindspots
 
 ## См. также
 
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — полный отчёт о состоянии.
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — создать EvidencePack.
-- [`forgeplan_link`](/docs/mcp/forgeplan_link/) — прикрепить доказательство к решению.
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) — полный отчёт о состоянии.
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — создать EvidencePack.
+- [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) — прикрепить доказательство к решению.
+- [Руководство по методологии](/ru/docs/methodology/overview/)

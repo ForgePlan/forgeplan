@@ -17,7 +17,7 @@ description: "Предлагает уровень глубины (тактиче
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `description` | `string` | да | Описание задачи на естественном языке. |
+| `description` | `string` | yes | Описание задачи на естественном языке. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::RouteParams`_
 
@@ -59,11 +59,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::RouteParams`_
 
 ## Эквивалент CLI
 
-- [`forgeplan route`](/docs/cli/route/) — тот же классификатор, вывод для человека
+- [`forgeplan route`](/ru/docs/cli/route/) — тот же классификатор, вывод для человека
 
 ## См. также
 
-- [Обзор MCP](/docs/mcp/)
-- [Руководство по калибровке глубины](/docs/methodology/routing/)
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — следующий шаг после роутинга
-- [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) — ADI для глубин уровня Standard+
+- [Обзор MCP](/ru/docs/mcp/)
+- [Руководство по калибровке глубины](/ru/docs/methodology/routing/)
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — следующий шаг после роутинга
+- [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) — ADI для глубин уровня Standard+

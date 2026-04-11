@@ -63,7 +63,7 @@ forgeplan drift
 
 ## См. также
 
--   [`forgeplan_coverage`](/docs/mcp/forgeplan_coverage/) — обратный вид: какие модули не имеют решений.
--   [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) — просроченность по времени (не по файлам).
--   [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — заменить дрейфующий ADR.
--   [Руководство по методологии](/docs/methodology/overview/)
+-   [`forgeplan_coverage`](/ru/docs/mcp/forgeplan_coverage/) — обратный вид: какие модули не имеют решений.
+-   [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) — просроченность по времени (не по файлам).
+-   [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) — заменить дрейфующий ADR.
+-   [Руководство по методологии](/ru/docs/methodology/overview/)
