@@ -13,8 +13,8 @@ export default defineConfig({
     },
     defaultLocale: 'root',
     locales: {
-      root: { label: 'English', lang: 'en' },
-      ru: { label: 'Русский', lang: 'ru' },
+      root: { label: 'EN', lang: 'en' },
+      ru: { label: 'RU', lang: 'ru' },
     },
     favicon: '/favicon.svg',
     credits: false,
