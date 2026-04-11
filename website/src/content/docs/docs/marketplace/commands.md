@@ -3,7 +3,11 @@ title: Commands Reference
 description: All slash commands from ForgePlan marketplace plugins
 ---
 
-## Core Commands
+:::note[Installation required]
+Commands listed below come from external marketplace plugins. Install them with `npx skills add ForgePlan/marketplace --plugin <name>` or use the built-in `forgeplan setup-skill` for the core `/forge` skill.
+:::
+
+## Core Commands (forgeplan-workflow)
 
 ### /forge "task description"
 **Plugin**: forgeplan-workflow
@@ -39,7 +43,7 @@ Multi-expert code audit with Forgeplan methodology integration.
 
 ---
 
-## Development Commands
+## Development Commands (dev-toolkit)
 
 ### /audit
 **Plugin**: dev-toolkit
@@ -67,7 +71,7 @@ Restores session context from Hindsight memory — what you worked on, what was 
 
 ---
 
-## FPF Commands
+## FPF Commands (fpf plugin)
 
 ### /fpf "question"
 **Plugin**: fpf
@@ -97,7 +101,7 @@ Structured ADI reasoning: 3+ hypotheses → predictions → evidence check.
 
 ---
 
-## Orchestra Commands
+## Orchestra Commands (forgeplan-orchestra plugin)
 
 ### /session
 **Plugin**: forgeplan-orchestra
@@ -111,7 +115,7 @@ Bidirectional sync between Forgeplan artifacts and Orchestra tasks.
 
 ---
 
-## UX Commands
+## UX Commands (laws-of-ux plugin)
 
 ### /ux-review
 **Plugin**: laws-of-ux
@@ -123,7 +127,7 @@ Look up a specific UX law with examples, violations, and best practices.
 
 ---
 
-## Research & Build Commands
+## Research & Build Commands (dev-toolkit)
 
 ### /research "topic"
 **Plugin**: dev-toolkit

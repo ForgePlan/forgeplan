@@ -43,24 +43,15 @@ forgeplan route "add payment system"
 
 The routing decision boils down to two questions asked in sequence:
 
-```
-Task arrives
-  |
-  v
-Trivial and obvious?
-  |-- Yes -> TACTICAL (just code, maybe a Note)
-  |
-  v No
-Multiple approaches exist?
-  |-- Yes, moderate impact -> STANDARD (PRD -> RFC)
-  |
-  v Serious consequences
-Irreversible or cross-team?
-  |-- Yes, single domain -> DEEP (PRD -> Spec -> RFC -> ADR)
-  |
-  v Strategic
-Multiple PRDs needed?
-  --- Yes -> CRITICAL (Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[])
+```mermaid
+flowchart TD
+    A[Task arrives] --> B{Trivial &<br/>obvious?}
+    B -->|Yes| T[TACTICAL<br/>just code, maybe a Note]
+    B -->|No| C{Multiple approaches<br/>exist?}
+    C -->|Moderate impact| S[STANDARD<br/>PRD → RFC]
+    C -->|Serious| D{Irreversible or<br/>cross-team?}
+    D -->|Single domain| DE[DEEP<br/>PRD → Spec → RFC → ADR]
+    D -->|Strategic| CR[CRITICAL<br/>Epic → PRD[] → Spec[] → RFC[] → ADR[]]
 ```
 
 The first question ("Is this trivial?") filters out 60-70% of daily work. Most things you do are Tactical. The routing system is designed to let you skip structure for the majority of tasks and invest in it only when the stakes justify it.
@@ -92,7 +83,42 @@ For example, you might start routing "add a caching layer" as Standard (just an 
 forgeplan route "add OAuth2 authentication"
 ```
 
-The router analyzes keywords (security, API, migration) and scope indicators to suggest the right depth. If you disagree with the suggested depth, you make the judgment call -- the route is a recommendation, not an enforcement.
+Example output:
+
+```
+Task: add OAuth2 authentication
+Depth: Deep
+Pipeline: PRD → Spec → RFC → ADR
+Confidence: 88%
+Signals:
+  + security keyword (auth)
+  + affects public API (authentication flow)
+  + irreversible choice (provider lock-in)
+Recommendation:
+  1. forgeplan new prd "OAuth2 Authentication"
+  2. Fill MUST sections (Problem, Goals, FR)
+  3. forgeplan reason PRD-XXX  # ADI mandatory for Deep
+```
+
+The router analyzes keywords (security, API, migration) and scope indicators
+to suggest the right depth. If you disagree, you make the judgment call --
+the route is a recommendation, not an enforcement.
+
+### Smart Routing v2: Three Levels
+
+Forgeplan's router (PRD-020) runs up to three layers, falling back
+gracefully if later layers are unavailable:
+
+| Level | Engine | When it runs | Cost |
+|-------|--------|-------------|------|
+| **L0** | Rule-based (keywords, regex, scope detection) | Always | Free, ~1ms |
+| **L1** | LLM classifier (Gemini / Claude / local) | `.forgeplan/config.yaml` has LLM | ~1 API call |
+| **L2** | FPF-enriched reasoning (KB context + ADI) | `--fpf` flag, Deep+ only | ~1-2 API calls |
+
+L0 handles 70% of obvious cases (bug fix, typo, feature). L1 kicks in for
+ambiguous tasks where keywords do not decide. L2 brings the FPF knowledge
+base (trust calculus, bounded rationality) into play for high-stakes
+decisions. Each level can run alone -- no LLM configured means pure L0.
 
 ### What the Router Looks For
 
@@ -103,7 +129,8 @@ The router checks for specific signals that indicate complexity:
 - **Scope indicators** (multiple teams, public API, cross-service) push toward Critical
 - **Simplicity indicators** (fix, typo, rename, bump) keep it Tactical
 
-If the router says Tactical but your gut says Standard, trust your gut and go higher. Escalation is always safe; de-escalation carries risk.
+If the router says Tactical but your gut says Standard, trust your gut and
+go higher. Escalation is always safe; de-escalation carries risk.
 
 ## Gotchas
 
@@ -112,3 +139,10 @@ If the router says Tactical but your gut says Standard, trust your gut and go hi
 - **Do not route after you have already started coding.** Route first. If you skipped routing and realize mid-implementation that this is more complex than expected, stop and create the appropriate artifacts before continuing.
 - **The router does not know your codebase history.** It cannot tell that "add caching" is trivial in one project and a week-long effort in another. You provide the context it lacks.
 - **Beware the "it's just a small change" trap.** Database schema changes, public API modifications, and authentication flows are never small -- even if the code diff is. Route based on consequences, not lines of code.
+
+## Related
+
+- [CLI: forgeplan route](/docs/cli/route/)
+- [ADI Reasoning](/docs/methodology/adi/) — mandatory for Deep/Critical
+- [Artifact Lifecycle](/docs/methodology/lifecycle/) — validation gates differ by depth
+- [Quick Start](/docs/getting-started/quick-start/) — see routing in the full cycle
