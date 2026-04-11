@@ -87,7 +87,18 @@ forgeplan reason PRD-001
 forgeplan reason PRD-001 --fpf
 ```
 
-The `--fpf` flag enriches the prompt with relevant FPF framework concepts from the knowledge base. This is useful for decisions that involve trust calculus, bounded rationality, or exploration-exploitation trade-offs.
+The `--fpf` flag enriches the prompt with relevant FPF framework concepts
+from the knowledge base. This is useful for decisions that involve trust
+calculus, bounded rationality, or exploration-exploitation trade-offs.
+
+ADI maps directly onto FPF sections **B.3 (Trust Calculus)** and
+**B.5 (Abduction / Deduction / Induction)** -- the reasoning backbone of
+the First Principles Framework. You can browse these sections from the CLI:
+
+```bash
+forgeplan fpf section B.5       # Full text of the ADI cycle definition
+forgeplan fpf search "abduction hypothesis"
+```
 
 ## When to Use
 
@@ -144,3 +155,10 @@ This entire analysis took 15 minutes and saved weeks of potential rework if the 
 - **Using ADI for Tactical tasks.** If the fix is a one-line change, ADI is overhead. Reserve it for decisions where being wrong is expensive.
 - **Not recording the ADI output.** The reasoning is only valuable if it is captured. When you run `forgeplan reason`, the output is stored with the artifact. Do not do ADI in your head and skip the command.
 - **Treating ADI as a one-time event.** If new evidence emerges after your initial ADI (e.g., a benchmark shows unexpected results), re-run it. ADI is not a ceremony -- it is a thinking tool you use whenever you need clarity.
+
+## Related
+
+- [CLI: forgeplan reason](/docs/cli/reason/), [forgeplan fpf](/docs/cli/fpf/), [forgeplan fpf-search](/docs/cli/fpf-search/)
+- [FPF Knowledge Base guide](/docs/guides/fpf/) — how the B.3/B.5 context works
+- [Evidence & R_eff](/docs/methodology/evidence/) — what Induction consumes
+- [Routing & Depth](/docs/methodology/routing/) — where ADI becomes mandatory

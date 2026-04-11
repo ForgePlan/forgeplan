@@ -11,12 +11,22 @@ The lifecycle model gives every artifact a clear status so you always know: is t
 
 ## State Machine
 
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> active: activate<br/>(validation gate)
+    active --> superseded: supersede --by
+    active --> deprecated: deprecate --reason
+    active --> stale: valid_until expired
+    stale --> active: renew --until
+    stale --> deprecated: reopen (+ NEW draft)
+    superseded --> [*]
+    deprecated --> [*]
 ```
-draft -> active -> superseded (terminal)
-               -> deprecated (terminal)
-               -> stale -> active (renew)
-                        -> deprecated + NEW draft (reopen)
-```
+
+**Terminal states** (superseded, deprecated) never transition out. The only
+way "back" is to create a new artifact that supersedes the terminal one, so
+decision history is preserved.
 
 ## States
 
@@ -129,3 +139,10 @@ forgeplan reopen ADR-001 --reason "New alternatives available, needs fresh evalu
 - **Ignoring stale warnings.** When `forgeplan health` reports stale artifacts, address them. Stale evidence means your R_eff scores are silently degrading to 0.1.
 - **Treating draft as "done enough."** Draft artifacts show up as incomplete in health checks. Either finish them and activate, or delete the stub if you decided against it.
 - **Forgetting `valid_until` on ADRs.** Every architecture decision has a shelf life. Set realistic expiration dates (90-180 days) so stale detection works.
+
+## Related
+
+- [Lifecycle v2 deep-dive](/docs/guides/lifecycle-v2/) — full state machine walkthrough with four real-world flows
+- [CLI: review](/docs/cli/review/), [activate](/docs/cli/activate/), [supersede](/docs/cli/supersede/), [deprecate](/docs/cli/deprecate/), [renew](/docs/cli/renew/), [reopen](/docs/cli/reopen/), [stale](/docs/cli/stale/)
+- [Evidence & R_eff](/docs/methodology/evidence/) — why stale evidence degrades trust scores
+- [Routing & Depth](/docs/methodology/routing/) — validation gates differ by depth

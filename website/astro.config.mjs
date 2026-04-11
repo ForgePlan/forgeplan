@@ -5,8 +5,10 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
 
 export default defineConfig({
+  site: 'https://forgeplan.dev',
   integrations: [starlight({
     title: 'Forgeplan',
+    favicon: '/favicon.svg',
     logo: {
       dark: './src/assets/logo-dark.svg',
       light: './src/assets/logo-light.svg',
@@ -36,24 +38,30 @@ export default defineConfig({
         ],
       },
       {
-        label: 'CLI Reference',
-        autogenerate: { directory: 'docs/cli' },
-      },
-      {
-        label: 'MCP Reference',
-        autogenerate: { directory: 'docs/mcp' },
+        label: 'Guides',
+        autogenerate: { directory: 'docs/guides' },
       },
       {
         label: 'Marketplace',
         autogenerate: { directory: 'docs/marketplace' },
       },
       {
-        label: 'Guides',
-        autogenerate: { directory: 'docs/guides' },
-      },
-      {
         label: 'Reference',
         autogenerate: { directory: 'docs/reference' },
+      },
+      {
+        label: 'CLI Reference',
+        collapsed: true,
+        autogenerate: { directory: 'docs/cli' },
+      },
+      {
+        label: 'MCP Reference',
+        collapsed: true,
+        autogenerate: { directory: 'docs/mcp' },
+      },
+      {
+        label: 'Changelog',
+        slug: 'docs/changelog',
       },
     ],
   }), react()],
