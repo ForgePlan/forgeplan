@@ -3,10 +3,12 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
+import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
 
 export default defineConfig({
   site: 'https://forgeplan.dev',
   integrations: [starlight({
+    plugins: [starlightClientMermaid()],
     title: {
       en: 'Forgeplan',
       ru: 'Forgeplan',
