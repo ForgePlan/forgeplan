@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-036
 kind: problem
-status: active
+status: deprecated
 title: Website docs English-only — excludes RU-speaking primary audience (course students, CIS developers)
 ---
 
@@ -67,4 +67,5 @@ Course material (`forgeplan-course-brief.md`) targets Russian-speaking students 
 | PRD-046 | based_on (EN docs completed) |
 | PRD-047 | informs (solution) |
 | PRD-024 | based_on (original website) |
+
 
