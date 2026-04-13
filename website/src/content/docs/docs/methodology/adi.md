@@ -69,6 +69,16 @@ Check predictions against available evidence. Score each hypothesis:
 
 At this point, the decision is no longer gut feeling -- it is an informed comparison. You might still choose H1, but now you know the trade-offs and you have evidence to back it up. Six months from now, when someone asks "why JWT?", the ADI output answers the question.
 
+```mermaid
+flowchart TD
+  A["Abduction\n3+ hypotheses"] --> B["Deduction\nPredictions per H"]
+  B --> C["Induction\nEvidence check"]
+  C --> D{Best supported?}
+  D -->|Clear winner| E[Proceed with confidence]
+  D -->|Trade-offs| F[Document alternatives in ADR]
+  D -->|No winner| G[Build PoC / gather more evidence]
+```
+
 ### From ADI to Decision
 
 Once you have scored the hypotheses, the path forward usually becomes clear:

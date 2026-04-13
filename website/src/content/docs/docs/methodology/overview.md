@@ -21,6 +21,12 @@ Decisions are scattered across Slack threads, Google Docs, and someone's memory.
 Route -> Shape -> Validate -> Reason -> Build -> Prove -> Activate
 ```
 
+```mermaid
+flowchart LR
+  A[Route] --> B[Shape] --> C[Validate] --> D[Reason]
+  D --> E[Build] --> F[Prove] --> G[Activate]
+```
+
 Consider a real scenario: your team decides to use JWT for authentication. Six months later, a security audit asks why you chose JWT over session-based auth. With Forgeplan, the ADR explains the reasoning, the Evidence shows the benchmark results, and the PRD traces back to the original requirements. Without Forgeplan, you are digging through Slack history and hoping someone remembers.
 
 ## What Forgeplan Is NOT

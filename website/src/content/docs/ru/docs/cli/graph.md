@@ -92,6 +92,18 @@ graph TD
 С опцией `--json` оболочка имеет вид `{ nodes: [...], edges: [...] }` — готово для
 Cytoscape, D3 или любой другой библиотеки графов.
 
+### Пример отрисованной диаграммы
+
+```mermaid
+graph TD
+  EPIC_003["EPIC-003\nSearch & Discovery"] --> PRD_039["PRD-039\nSmart Search v2"]
+  EPIC_003 --> PRD_035["PRD-035\nBrownfield Discovery"]
+  PRD_039 --> RFC_006["RFC-006\nSearch Architecture"]
+  RFC_006 --> ADR_004["ADR-004\nBM25 Engine Choice"]
+  EVID_052["EVID-052"] -.informs.-> PRD_039
+  EVID_060["EVID-060"] -.informs.-> PRD_035
+```
+
 ## Как это работает
 
 `graph` представляет собой полное реляционное представление. Для разных вопросов:

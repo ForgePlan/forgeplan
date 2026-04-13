@@ -92,6 +92,18 @@ of the graph).
 With `--json`, the envelope is `{ nodes: [...], edges: [...] }` — ready for
 Cytoscape, D3, or any graph library.
 
+### Example rendered diagram
+
+```mermaid
+graph TD
+  EPIC_003["EPIC-003\nSearch & Discovery"] --> PRD_039["PRD-039\nSmart Search v2"]
+  EPIC_003 --> PRD_035["PRD-035\nBrownfield Discovery"]
+  PRD_039 --> RFC_006["RFC-006\nSearch Architecture"]
+  RFC_006 --> ADR_004["ADR-004\nBM25 Engine Choice"]
+  EVID_052["EVID-052"] -.informs.-> PRD_039
+  EVID_060["EVID-060"] -.informs.-> PRD_035
+```
+
 ## How it fits
 
 `graph` is the complete relational view. For different questions:

@@ -20,6 +20,14 @@ OBSERVE → ROUTE → SHAPE → BUILD → PROVE → SHIP
 | **Prove** | Создание доказательств, оценка | `forgeplan new evidence`, `forgeplan score` |
 | **Ship** | Активация, коммит, PR, слияние | `forgeplan activate`, `gh pr create` |
 
+```mermaid
+flowchart LR
+  OBS["Наблюдение\nhealth + recall"] --> RT["Роутинг\nвыбор глубины"]
+  RT --> SH["Формирование\nсоздание артефактов"] --> BL["Реализация\nкод + тесты"]
+  BL --> PR["Доказательство\nevidence + score"] --> SHP["Поставка\nactivate + PR"]
+  SHP -.->|следующий цикл| OBS
+```
+
 ## Фаза 0: Observe
 
 Прежде чем что-либо делать — поймите, что происходит:
