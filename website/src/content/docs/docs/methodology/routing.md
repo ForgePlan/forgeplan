@@ -51,7 +51,7 @@ flowchart TD
     C -->|Moderate impact| S[STANDARD<br/>PRD → RFC]
     C -->|Serious| D{Irreversible or<br/>cross-team?}
     D -->|Single domain| DE[DEEP<br/>PRD → Spec → RFC → ADR]
-    D -->|Strategic| CR[CRITICAL<br/>Epic → PRD[] → Spec[] → RFC[] → ADR[]]
+    D -->|Strategic| CR["CRITICAL\nEpic → PRDs → Specs → RFCs → ADRs"]
 ```
 
 The first question ("Is this trivial?") filters out 60-70% of daily work. Most things you do are Tactical. The routing system is designed to let you skip structure for the majority of tasks and invest in it only when the stakes justify it.
