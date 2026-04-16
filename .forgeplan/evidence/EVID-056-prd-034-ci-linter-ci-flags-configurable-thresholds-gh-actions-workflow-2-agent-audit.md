@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-034
   relation: informs
-status: draft
+status: active
 title: PRD-034 CI Linter — --ci flags, configurable thresholds, GH Actions workflow, 2-agent audit
 ---
 
@@ -33,4 +33,5 @@ CI Linter implemented and verified:
 ## Congruence Level Justification
 
 CL3: same project, tested on actual workspace with real artifacts.
+
 

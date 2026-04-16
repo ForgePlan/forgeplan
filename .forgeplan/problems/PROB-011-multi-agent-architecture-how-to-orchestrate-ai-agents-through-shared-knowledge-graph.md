@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: EPIC-002
   relation: informs
-status: draft
+status: deprecated
 title: Multi-Agent Architecture — how to orchestrate AI agents through shared Knowledge Graph
 ---
 
@@ -65,5 +65,7 @@ parent_epic: EPIC-011
 | Artifact | Relation |
 |----------|----------|
 | | based_on / informs |
+
+
 
 

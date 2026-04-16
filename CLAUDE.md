@@ -40,7 +40,8 @@ Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
 - **FPF KB** поддерживает semantic search через BGE-M3 (feature-gated, graceful fallback)
 - **Phase 5** (Desktop App, Tauri) — backlog
 
-Подробности: `TODO.md` (текущие приоритеты), `CHANGELOG.md` (история релизов).
+Подробности: `TODO.md` (текущие приоритеты), `CHANGELOG.md` (история релизов),
+`docs/ROADMAP.md` (gap analysis: Architecture 85%, UX 70%, Distribution 65%, Docs 60%).
 
 ## Как начать работу в новом чате
 

@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-026
   relation: informs
-status: draft
+status: active
 title: Release v0.15.1 shipped — tag pushed, GH release created, dev synced
 ---
 
@@ -64,4 +64,5 @@ Release v0.15.1 successfully shipped. All structural cleanup from PRD-026 is now
 | PRD-026 | informs |
 | EVID-052 | related |
 | NOTE-035 | informs |
+
 

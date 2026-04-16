@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-026
   relation: informs
-status: draft
+status: active
 title: PR 114 docs reorganization — 138 files tracked, CI green, ADR-003 fulfilled
 ---
 
@@ -61,4 +61,5 @@ The reorganization removes sync drift risk (there was evidence of 4 orphan files
 |----------|----------|
 | PRD-026 | informs |
 | ADR-003 | informs |
+
 

@@ -2,7 +2,10 @@
 depth: tactical
 id: PROB-023
 kind: problem
-status: draft
+links:
+- target: PRD-035
+  relation: informs
+status: deprecated
 title: forgeplan update --body shell escaping corrupts markdown — sections lost on update
 ---
 
@@ -37,3 +40,5 @@ Option A already works. The issue is that AI agents use --body with inline conte
 
 - ADR-003 (files = truth — editing files directly is preferred)
 - PROB-022 (lost PRD-035 during discover shaping)
+
+

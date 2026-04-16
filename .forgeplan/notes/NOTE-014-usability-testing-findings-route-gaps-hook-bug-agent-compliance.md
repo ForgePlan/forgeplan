@@ -5,7 +5,7 @@ kind: note
 links:
 - target: PROB-012
   relation: informs
-status: draft
+status: deprecated
 title: Usability testing findings — route gaps, hook bug, agent compliance
 ---
 
@@ -26,3 +26,5 @@ title: Usability testing findings — route gaps, hook bug, agent compliance
 
 ### Вывод
 Системой можно пользоваться. Основной цикл работает. Главный gap — enforcement на уровне phase transitions (PRD-019 Layer 3).
+
+
