@@ -63,26 +63,38 @@ forgeplan mcp install --client <name>      # claude / cursor / windsurf
 
 ## Result
 
-- **34 unit tests** pass (was 24 in pre-audit version, +10 for validation
-  + integration scenarios). Total workspace: **1184 tests pass, 0 fail**
-  (was 1150 baseline; +34).
+- **39 unit tests** in MCP module pass (was 24 pre-audit, +15 across
+  2 audit rounds for validation, security, and E2E scenarios).
+  Total workspace: **1189 tests pass, 0 fail** (was 1150 baseline; +39).
 - **0 clippy warnings** on `cargo clippy --workspace --all-targets -- -D warnings`.
 - **`cargo fmt --all -- --check`**: 0 diffs.
-- **End-to-end smoke** on macOS dev binary, all 6 scenarios pass:
-  1. Empty `--binary-path` rejected by clap (correct)
+- **End-to-end smoke** on macOS dev binary, all scenarios pass:
+  1. Empty `--binary-path` rejected by clap
   2. Relative path rejected with clear error
-  3. Nonexistent path rejected
-  4. Real install with brew binary writes correct config
-  5. Idempotent re-run says "already up to date"
-  6. Dry-run shows correct binary path detection
-- **Audit by 2 agents** (code-reviewer + rust-pro), 5 CRITICAL/HIGH
-  findings, all fixed in-scope:
-  - C1 (current_exe → versioned Cellar path): fixed via PATH-canonicalize
-  - C2 (write_atomic tmp collision): fixed with PID suffix + cleanup
-  - H1 (which_on_path ignores PATHEXT): fixed
-  - H2 (no --binary-path validation): fixed with `validate_binary_path()`
-  - H3 (UTF-8 on Windows paths): fixed via `to_str().ok_or_else(...)`
-  - M1 (idempotency uses string compare): fixed with `Value` compare
+  3. Nonexistent / non-file / non-executable path rejected
+  4. Symlink target (e.g. `.mcp.json` → `/etc/passwd`) rejected — system file untouched
+  5. Control chars / bidi-override codepoints in path rejected
+  6. Real install with brew binary writes correct config
+  7. Idempotent re-run says "already up to date"
+  8. Dry-run shows correct binary path detection
+
+**Audit Round 1** (code-reviewer + rust-pro), 5 CRITICAL/HIGH + 1 MEDIUM, all fixed:
+  - C1 (current_exe → versioned Cellar path): PATH-canonicalize compare
+  - C2 (write_atomic tmp collision): PID suffix + cleanup-on-error
+  - H1 (which_on_path ignores PATHEXT): full enumeration
+  - H2 (no --binary-path validation): comprehensive `validate_binary_path()`
+  - H3 (UTF-8 on Windows paths): `to_str().ok_or_else(...)` bail
+  - M1 (idempotency uses string compare): `Value` compare
+
+**Audit Round 2** (security-auditor + production-validator + verification),
+2 HIGH + 2 MEDIUM identified, all fixed:
+  - H1 (symlink attack on read+write — could overwrite /etc/passwd):
+    `reject_symlink()` via `symlink_metadata()` before read AND write
+  - H2 (test/prod divergence — integration tests didn't call run_install):
+    refactored to `run_install_at_path(opts, path)` for true E2E coverage
+  - M1 (control chars / bidi-override visual disguise in --binary-path):
+    reject U+202A..202E, U+2066..2069, ASCII control chars, leading/trailing whitespace
+  - M2 (Windows error hint missing): `rename_error_hint()` adds "close client and retry" on Windows
 
 ## Interpretation
 

@@ -277,6 +277,10 @@ pub fn smart_merge(mut existing: Value, binary: &str) -> Result<Value> {
 ///   error which we propagate — caller should retry or instruct the user
 ///   to close the client.
 pub fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    // Reject symlinks — would let an attacker steer writes to /etc/passwd
+    // by pre-planting `~/.claude.json -> /etc/passwd`.
+    reject_symlink(path)?;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory: {}", parent.display()))?;
@@ -298,9 +302,7 @@ pub fn write_atomic(path: &Path, content: &str) -> Result<()> {
         return Err(e);
     }
 
-    if let Err(e) = std::fs::rename(&tmp, path)
-        .with_context(|| format!("failed to rename {} → {}", tmp.display(), path.display()))
-    {
+    if let Err(e) = std::fs::rename(&tmp, path).with_context(|| rename_error_hint(&tmp, path)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -308,8 +310,44 @@ pub fn write_atomic(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Build a contextual error message for `rename` failure with platform-specific
+/// hints (e.g. "close the client and retry" on Windows where editor file locks
+/// commonly cause `MoveFileExW` to fail).
+fn rename_error_hint(tmp: &Path, target: &Path) -> String {
+    let base = format!("failed to rename {} → {}", tmp.display(), target.display());
+    if cfg!(windows) {
+        format!(
+            "{base}\nhint: if the target is open in another process (e.g. Claude Code, Cursor), close it and retry"
+        )
+    } else {
+        base
+    }
+}
+
+/// Reject symlinks at the given path. Returns Ok if path doesn't exist or
+/// is a regular file/directory; returns Err if path IS a symlink.
+///
+/// This prevents an attacker who can write to the parent directory from
+/// pre-planting a symlink at the config path that redirects our writes
+/// to a sensitive file (e.g. `~/.ssh/authorized_keys`).
+fn reject_symlink(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!(
+                "refusing to write to symlink: {} — remove the symlink and re-run install",
+                path.display()
+            );
+        }
+        Ok(_) => Ok(()), // regular file or directory, OK
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("failed to stat {}", path.display())),
+    }
+}
+
 /// Read JSON file or return empty object if missing / empty.
+/// Rejects symlinks for the same reason as [`write_atomic`].
 fn read_json_or_empty(path: &Path) -> Result<Value> {
+    reject_symlink(path)?;
     if !path.exists() {
         return Ok(json!({}));
     }
@@ -322,8 +360,9 @@ fn read_json_or_empty(path: &Path) -> Result<Value> {
 }
 
 /// Validate a binary path: must be non-empty, absolute, exist, be a regular
-/// file, and (on Unix) executable. Reject relative paths because the MCP
-/// client launches with its own CWD which is unpredictable.
+/// file, executable, and free of suspicious control / bidi-override chars.
+/// Reject relative paths because the MCP client launches with its own CWD
+/// which is unpredictable.
 fn validate_binary_path(path: &Path) -> Result<String> {
     let path_str = path
         .to_str()
@@ -331,6 +370,27 @@ fn validate_binary_path(path: &Path) -> Result<String> {
 
     if path_str.is_empty() {
         bail!("binary path must not be empty");
+    }
+    if path_str != path_str.trim() {
+        bail!(
+            "binary path has leading or trailing whitespace: {:?}",
+            path_str
+        );
+    }
+    // Reject control chars (NUL, newline, tab, etc.) and bidi-override codepoints
+    // that could visually disguise the path in console output.
+    if let Some(bad) = path_str.chars().find(|c| {
+        c.is_control()
+            || matches!(
+                *c,
+                '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            )
+    }) {
+        bail!(
+            "binary path contains disallowed character U+{:04X}: {}",
+            bad as u32,
+            path.display()
+        );
     }
     if !path.is_absolute() {
         bail!(
@@ -351,15 +411,27 @@ fn validate_binary_path(path: &Path) -> Result<String> {
 }
 
 /// Run `forgeplan mcp install` with the given options.
+///
+/// Resolves the platform-specific config path, then delegates to
+/// [`run_install_at_path`]. Split this way so tests can exercise the full
+/// pipeline (validate → read → merge → write) against a tempdir without
+/// having to mock `$HOME` or `$CWD`.
 pub async fn run_install(opts: InstallOptions) -> Result<()> {
     let path = config_path(opts.client, opts.scope)?;
+    run_install_at_path(opts, &path).await
+}
+
+/// Inner core of `run_install` — same behavior, but takes the resolved
+/// config path explicitly. This is the actual integration surface our
+/// tests target.
+pub async fn run_install_at_path(opts: InstallOptions, path: &Path) -> Result<()> {
     let binary = match opts.binary_path {
         Some(p) => p,
         None => detect_binary_path(),
     };
     let binary_str = validate_binary_path(&binary)?;
 
-    let existing = read_json_or_empty(&path)?;
+    let existing = read_json_or_empty(path)?;
     let merged = smart_merge(existing.clone(), &binary_str)?;
 
     // Idempotency check on parsed Value (insensitive to user's key reordering).
@@ -391,7 +463,7 @@ pub async fn run_install(opts: InstallOptions) -> Result<()> {
         return Ok(());
     }
 
-    write_atomic(&path, &merged_str)?;
+    write_atomic(path, &merged_str)?;
     println!(
         "✓ Installed forgeplan MCP into {} config: {}",
         opts.client.display_name(),
@@ -764,10 +836,81 @@ mod tests {
         assert!(err.contains("not executable"), "got: {err}");
     }
 
-    // ─── End-to-end run_install flow ──────────────────────────────────
+    // ─── Symlink rejection ────────────────────────────────────────────
 
-    /// Run `run_install` using a fake binary in a tempdir. Returns the
-    /// config file path so callers can inspect the resulting JSON.
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_rejects_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, "real").unwrap();
+        let symlink = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&real, &symlink).unwrap();
+
+        let err = write_atomic(&symlink, "{}").unwrap_err().to_string();
+        assert!(err.contains("symlink"), "got: {err}");
+        // Real file untouched.
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "real");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_json_rejects_symlink_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, "{}").unwrap();
+        let symlink = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&real, &symlink).unwrap();
+
+        let err = read_json_or_empty(&symlink).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "got: {err}");
+    }
+
+    // ─── Control character / bidi rejection ───────────────────────────
+
+    #[test]
+    fn validate_binary_path_rejects_leading_whitespace() {
+        let err = validate_binary_path(Path::new(" /usr/bin/forgeplan"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("whitespace"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_binary_path_rejects_newline() {
+        let err = validate_binary_path(Path::new("/usr/bin/forgeplan\nextra"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("disallowed character") || err.contains("whitespace"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_binary_path_rejects_bidi_override() {
+        // U+202E = RIGHT-TO-LEFT OVERRIDE — visual disguise for path
+        let bad = "/usr/bin/forgeplan\u{202E}exe".to_string();
+        let err = validate_binary_path(Path::new(&bad))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("disallowed character"), "got: {err}");
+    }
+
+    // ─── End-to-end run_install flow (uses real run_install_at_path) ──
+
+    /// Build options for a tempdir-scoped install test.
+    fn opts_for_test(binary: PathBuf, dry_run: bool) -> InstallOptions {
+        InstallOptions {
+            client: McpClient::Claude,
+            scope: Scope::Project,
+            binary_path: Some(binary),
+            dry_run,
+        }
+    }
+
+    /// Run the real `run_install_at_path` against a tempdir config path.
+    /// Returns the config file path so callers can inspect the resulting JSON.
     async fn run_install_in_tempdir(
         dir: &tempfile::TempDir,
         seed: Option<&str>,
@@ -779,18 +922,8 @@ mod tests {
             std::fs::write(&cfg, content).unwrap();
         }
 
-        // We can't easily inject a config_path override here without restructuring,
-        // so this helper exercises the primitives that run_install composes:
-        // validate → read → merge → write.
-        let _ = validate_binary_path(&bin).unwrap();
-        let bin_str = bin.to_str().unwrap();
-        let existing = read_json_or_empty(&cfg).unwrap();
-        let merged = smart_merge(existing.clone(), bin_str).unwrap();
-        let merged_str = serde_json::to_string_pretty(&merged).unwrap() + "\n";
-
-        if !dry_run && existing != merged {
-            write_atomic(&cfg, &merged_str).unwrap();
-        }
+        let opts = opts_for_test(bin, dry_run);
+        run_install_at_path(opts, &cfg).await.unwrap();
         cfg
     }
 
