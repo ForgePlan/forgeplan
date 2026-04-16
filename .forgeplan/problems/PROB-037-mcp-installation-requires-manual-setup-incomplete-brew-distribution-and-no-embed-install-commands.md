@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: PRD-048
   relation: informs
-status: draft
+status: active
 title: MCP installation requires manual setup — incomplete brew distribution and no embed/install commands
 ---
 
@@ -93,4 +93,5 @@ Measurable:
 | Artifact | Relation |
 |----------|----------|
 | PRD-048 | informs |
+
 

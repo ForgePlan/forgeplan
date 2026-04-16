@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: PROB-037
   relation: based_on
-status: draft
+status: active
 title: MCP distribution UX — embed server in CLI, smart-merge install command, brew formula update
 ---
 
@@ -15,14 +15,16 @@ title: MCP distribution UX — embed server in CLI, smart-merge install command,
 
 ```
 Phase 1 Embed     ████████████████████████  3/3  (100%)  ✅ already in CLI as `serve`
-Phase 2 Install   ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)
+Phase 2 Install   ████████████████████████  5/5  (100%)  ✅ command + smart-merge + tests + audit fixes
 Phase 3 Brew      ████████████████████████  2/2  (100%)  ✅ formula already correct
-Phase 4 QA        ░░░░░░░░░░░░░░░░░░░░░░░░  0/3  (  0%)
+Phase 4 QA        ████████████░░░░░░░░░░░░  2/3  ( 66%)  🔄 macOS smoke + 34 unit tests; CI matrix pending
 ─────────────────────────────────────────────────
-TOTAL                                       5/13 ( 38%)
+TOTAL                                       12/13 ( 92%)
 ```
 
 **Pivot 2026-04-16**: после re-investigation Phase 1 + 3 уже сделаны — `forgeplan serve` существует, brew binary работает как MCP server из коробки. Реальный scope сократился до Phase 2 (install command) + Phase 4 (cross-platform QA).
+
+**Phase 2 complete 2026-04-16**: `forgeplan mcp install --client claude|cursor|windsurf` shipped. 34 tests pass, 0 clippy warnings, EVID-075 verifies on macOS. Cross-platform GitHub Actions matrix for Linux + Windows is the only remaining item (Phase 4, P1 follow-up).
 
 ---
 
@@ -160,4 +162,5 @@ write_json_atomic(&mcp_json_path, merged)?;
 | PROB-037 | based_on |
 | PRD-024 | based_on |
 | EPIC-002 | belongs_to |
+
 
