@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-035
 kind: problem
-status: active
+status: deprecated
 title: Website docs stale vs v0.18.0 — CLI reference 1/58 MCP 1/47 no CHANGELOG no v0.18 features
 ---
 
@@ -74,4 +74,5 @@ Audit of `website/src/content/docs/` (2026-04-11) показал, что docs po
 |----------|----------|
 | PRD-024  | based_on (original website PRD, v0.15.0) |
 | PRD-046  | informs (solution in progress) |
+
 

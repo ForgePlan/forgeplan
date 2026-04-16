@@ -25,6 +25,13 @@ R_eff = min(evidence_scores)
 
 **Not average -- minimum.** Your decision is only as strong as your weakest evidence. Three strong proofs + one untested assumption = untested decision.
 
+```mermaid
+flowchart TD
+  V["Verdict\nsupports=1.0 | weakens=0.5 | refutes=0.0"] --> S["score = verdict - CL_penalty"]
+  CL["CL Penalty\nCL3=0.0 | CL2=0.1 | CL1=0.4 | CL0=0.9"] --> S
+  S --> R["R_eff = min(all evidence scores)\nWeakest link, never average"]
+```
+
 This design choice is deliberate. Averaging would let strong evidence mask weak spots. Imagine a bridge: if three pillars are solid but one is cracked, you do not average the pillar strength. You fix the cracked one.
 
 ## Evidence Score Calculation

@@ -18,6 +18,15 @@ new` so users can preview what would be created without writing files."**
 It is intentionally small — routing will probably say `Standard`, which
 means we hit every step except the Epic/Spec tiers. Perfect training load.
 
+```mermaid
+flowchart LR
+  S1["1. Init"] --> S2["2. Route"] --> S3["3. Shape"]
+  S3 --> S4["4. Validate"] --> S5["5. ADI"]
+  S5 --> S6["6. Build"] --> S7["7. Evidence"]
+  S7 --> S8["8. Score"] --> S9["9. Activate"]
+  S9 --> S10["10. Health ✓"]
+```
+
 ## Prerequisites
 
 - Forgeplan installed (`forgeplan --version`)

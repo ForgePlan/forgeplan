@@ -45,6 +45,21 @@
   --sl-color-black: #F5F5F0;
 }
 
+/* === Search bar — wider to match content area === */
+header .sl-flex button[data-open-modal] {
+  width: clamp(200px, 40vw, 500px) !important;
+}
+
+/* === Theme toggle — icon only, hide text in select === */
+starlight-theme-select select {
+  color: transparent !important;
+  width: 1.5rem !important;
+  min-width: unset !important;
+}
+starlight-theme-select select option {
+  color: var(--sl-color-white);
+}
+
 /* === Sharp corners — forge aesthetic === */
 .expressive-code pre {
   border: 1px solid var(--sl-color-gray-4) !important;
