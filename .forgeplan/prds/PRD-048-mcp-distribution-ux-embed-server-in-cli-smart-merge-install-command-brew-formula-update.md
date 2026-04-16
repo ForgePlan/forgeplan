@@ -14,13 +14,15 @@ title: MCP distribution UX — embed server in CLI, smart-merge install command,
 ## Progress
 
 ```
-Phase 1 Embed     ░░░░░░░░░░░░░░░░░░░░░░░░  0/3  (  0%)
-Phase 2 Install   ░░░░░░░░░░░░░░░░░░░░░░░░  0/4  (  0%)
-Phase 3 Brew      ░░░░░░░░░░░░░░░░░░░░░░░░  0/2  (  0%)
+Phase 1 Embed     ████████████████████████  3/3  (100%)  ✅ already in CLI as `serve`
+Phase 2 Install   ░░░░░░░░░░░░░░░░░░░░░░░░  0/5  (  0%)
+Phase 3 Brew      ████████████████████████  2/2  (100%)  ✅ formula already correct
 Phase 4 QA        ░░░░░░░░░░░░░░░░░░░░░░░░  0/3  (  0%)
 ─────────────────────────────────────────────────
-TOTAL                                       0/12 (  0%)
+TOTAL                                       5/13 ( 38%)
 ```
+
+**Pivot 2026-04-16**: после re-investigation Phase 1 + 3 уже сделаны — `forgeplan serve` существует, brew binary работает как MCP server из коробки. Реальный scope сократился до Phase 2 (install command) + Phase 4 (cross-platform QA).
 
 ---
 
