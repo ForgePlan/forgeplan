@@ -471,10 +471,15 @@ pub async fn run_install_at_path(opts: InstallOptions, path: &Path) -> Result<()
     );
     println!("  command: {binary_str}");
     println!("  args:    [\"serve\"]");
+    println!();
+    println!("Next steps:");
     println!(
-        "\nRestart {} to load the new config.",
+        "  1. Restart {} to load the new config",
         opts.client.display_name()
     );
+    println!("  2. In your project directory, run: forgeplan init -y");
+    println!("     (or ask the AI agent — it can call forgeplan_init via MCP)");
+    println!("  3. The 47 forgeplan_* MCP tools are now available to the agent");
     Ok(())
 }
 
