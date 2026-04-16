@@ -77,12 +77,10 @@ pub fn list_sections(body: &str) -> Vec<Section> {
                 }
                 in_heading = true;
             }
-            Event::End(TagEnd::Heading(_)) => {
-                if in_heading {
-                    current_content.push('\n');
-                    in_heading = false;
-                    nested_heading = false;
-                }
+            Event::End(TagEnd::Heading(_)) if in_heading => {
+                current_content.push('\n');
+                in_heading = false;
+                nested_heading = false;
             }
             Event::Text(text) | Event::Code(text) => {
                 if in_heading {
@@ -97,35 +95,23 @@ pub fn list_sections(body: &str) -> Vec<Section> {
                     current_content.push_str(&text);
                 }
             }
-            Event::SoftBreak | Event::HardBreak => {
-                if collecting && !in_heading {
-                    current_content.push('\n');
-                }
+            Event::SoftBreak | Event::HardBreak if collecting && !in_heading => {
+                current_content.push('\n');
             }
-            Event::End(TagEnd::Paragraph) => {
-                if collecting && !in_heading {
-                    current_content.push('\n');
-                }
+            Event::End(TagEnd::Paragraph) if collecting && !in_heading => {
+                current_content.push('\n');
             }
-            Event::Start(Tag::Item) => {
-                if collecting && !in_heading {
-                    current_content.push_str("- ");
-                }
+            Event::Start(Tag::Item) if collecting && !in_heading => {
+                current_content.push_str("- ");
             }
-            Event::End(TagEnd::Item) => {
-                if collecting && !in_heading {
-                    current_content.push('\n');
-                }
+            Event::End(TagEnd::Item) if collecting && !in_heading => {
+                current_content.push('\n');
             }
-            Event::Start(Tag::CodeBlock(_)) => {
-                if collecting && !in_heading {
-                    current_content.push_str("```\n");
-                }
+            Event::Start(Tag::CodeBlock(_)) if collecting && !in_heading => {
+                current_content.push_str("```\n");
             }
-            Event::End(TagEnd::CodeBlock) => {
-                if collecting && !in_heading {
-                    current_content.push_str("```\n");
-                }
+            Event::End(TagEnd::CodeBlock) if collecting && !in_heading => {
+                current_content.push_str("```\n");
             }
             _ => {}
         }

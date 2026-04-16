@@ -133,7 +133,7 @@ pub fn detect(records: &[ArtifactRecord], edges: &[(String, String)]) -> Vec<Bou
     }
 
     // Sort by size descending
-    contexts.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+    contexts.sort_by_key(|c| std::cmp::Reverse(c.members.len()));
 
     contexts
 }

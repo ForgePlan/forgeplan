@@ -145,7 +145,7 @@ pub fn list_sessions(workspace: &Path) -> anyhow::Result<Vec<DiscoverSession>> {
             sessions.push(s);
         }
     }
-    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at));
     Ok(sessions)
 }
 
