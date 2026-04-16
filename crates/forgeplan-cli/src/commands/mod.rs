@@ -31,6 +31,7 @@ pub mod journal;
 pub mod link;
 pub mod list;
 pub mod log_cmd;
+pub mod mcp;
 pub mod migrate;
 pub mod new;
 pub mod order;

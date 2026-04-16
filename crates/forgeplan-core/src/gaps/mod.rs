@@ -162,15 +162,13 @@ fn check_depth_compliance(
     let has_adr = kinds.iter().any(|k| k == "adr");
 
     match depth.as_str() {
-        "standard" => {
-            if !has_rfc {
-                gaps.push(Gap {
-                    artifact_id: record.id.clone(),
-                    artifact_title: record.title.clone(),
-                    severity: GapSeverity::Must,
-                    message: format!("{} Standard depth but no linked RFC", record.id),
-                });
-            }
+        "standard" if !has_rfc => {
+            gaps.push(Gap {
+                artifact_id: record.id.clone(),
+                artifact_title: record.title.clone(),
+                severity: GapSeverity::Must,
+                message: format!("{} Standard depth but no linked RFC", record.id),
+            });
         }
         "deep" => {
             if !has_rfc {
