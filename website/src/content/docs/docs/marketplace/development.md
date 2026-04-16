@@ -23,7 +23,7 @@ plugin-name/
 
 ## Agentic RAG Pattern
 
-Skills use **agentic RAG** — intelligent retrieval that loads only ~300 lines at a time, not the entire knowledge base.
+Skills use **agentic RAG** -- intelligent retrieval that loads only ~300 lines at a time, not the entire knowledge base. For a real-world example of this pattern in action, see the [Forgeplan Workflow plugin](/docs/marketplace/forgeplan-workflow/) which uses a `SKILL.md` router to serve methodology sections on demand.
 
 ### How it works:
 
@@ -73,6 +73,10 @@ cp -R my-plugin forgeplan-marketplace/plugins/
 git add -A && git commit -m "feat: add my-plugin v1.0.0"
 gh pr create --base main
 ```
+
+## Example Plugins
+
+Browse existing plugins in the [ForgePlan/marketplace](https://github.com/ForgePlan/marketplace) repository for reference implementations. The `forgeplan-workflow` and `dev-toolkit` plugins demonstrate the full structure including commands, agents, skills, and hooks.
 
 ## Contribution Guidelines
 

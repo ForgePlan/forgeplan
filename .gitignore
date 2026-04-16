@@ -62,3 +62,8 @@ plan-dist-manifest.json
 
 # Binary office files
 *.xlsx
+
+# Playwright screenshots
+*.png
+!.github/assets/*.png
+*.pen

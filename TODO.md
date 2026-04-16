@@ -1,6 +1,24 @@
 # TODO — Forgeplan
 
-## Current: v0.17.2 quality hotfix 2026-04-09 — E2E verification sprint
+> **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
+> (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
+
+## Current: v0.18.0 released 2026-04-11
+
+### Next priorities (from ROADMAP)
+- [ ] Sprint A: Public Presence — Website (PRD-024) + README + crates.io + Docker
+- [ ] Sprint B: CI/CD Integration — validate/health --ci + GH Action
+- [ ] Sprint C: Desktop App — EPIC-004 (Tauri + React)
+- [ ] Sprint D: Ecosystem — VS Code ext + GitHub Issues bridge
+
+### Open bugs
+- [ ] PROB-026: tag canonicalization (PR #169 pending merge)
+- [ ] PROB-027: reindex without lance/ (PR #169 pending merge)
+- [ ] PROB-035 remainder: code-fence awareness in extract_field
+
+---
+
+## Previous: v0.17.2 quality hotfix 2026-04-09 — E2E verification sprint
 
 ### v0.17.2 hotfix P0
 - [x] PROB-030 BM25 prefix fallback (smart.rs `max(bm25_norm, kw)`)

@@ -3,6 +3,10 @@ title: SPARC Methodology
 description: Specification → Pseudocode → Architecture → Refinement → Completion
 ---
 
+:::caution[Experimental]
+The SPARC plugin is proposed but not yet verified in the `ForgePlan/marketplace` registry. The content below is a design specification. See [Plugin Development](/docs/marketplace/development/) if you want to contribute it.
+:::
+
 ## What is SPARC?
 
 SPARC is a structured development methodology with 5 phases, each handled by a specialized agent. Available as a plugin in the ForgePlan Marketplace.

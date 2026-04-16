@@ -8,13 +8,23 @@ description: Install Forgeplan — CLI, AI Skill, or MCP Server
 Install the `/forge` skill for Claude Code, Cursor, Codex, Gemini and 40+ AI agents:
 
 ```bash
-npx skills add ForgePlan/forgeplan --skill forge
+npx skills add ForgePlan/marketplace --skill forge
 ```
 
 After installation, use in chat:
 ```
 /forge "Add OAuth2 authentication"
 ```
+
+**Alternative**: if you already have the CLI installed, use the built-in command instead -- it embeds the skill file directly, no network required:
+
+```bash
+forgeplan setup-skill
+```
+
+See [`forgeplan setup-skill`](/docs/cli/setup-skill/) for details.
+
+**Discover more plugins**: [Marketplace Overview](/docs/marketplace/overview/).
 
 ## CLI Binary
 

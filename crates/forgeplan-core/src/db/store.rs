@@ -218,6 +218,20 @@ pub struct FpfChunkSummary {
     pub line_count: i32,
 }
 
+/// Canonicalize a tag: trim → lowercase → spaces to hyphens → keep only
+/// alphanumeric, hyphens, underscores, equals, dots. Empty result filtered out.
+///
+/// Examples: `"UPPER-case"` → `"upper-case"`, `"test tag with spaces"` → `"test-tag-with-spaces"`,
+/// `"layer=auth"` → `"layer=auth"`.
+fn canonicalize_tag(raw: &str) -> String {
+    raw.trim()
+        .to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '=' || *c == '.')
+        .collect()
+}
+
 /// LanceDB-backed artifact store.
 pub struct LanceStore {
     _db: Connection,
@@ -559,9 +573,13 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Add tags to an existing artifact. Existing tags are merged and
-    /// deduplicated (case-sensitive). No-op if all tags are already present.
-    /// Returns error if the artifact does not exist.
+    /// Add tags to an existing artifact. Tags are canonicalized: trimmed,
+    /// lowercased, spaces replaced with hyphens, non-alphanumeric/hyphen/=
+    /// chars stripped. Deduplicated case-insensitively.
+    ///
+    /// PROB-026 fix: previously tags were stored as-is (case-sensitive,
+    /// spaces allowed, no validation). Now canonicalized for consistent
+    /// filtering and display.
     pub async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
         let mut record = self
             .get_record(id)
@@ -569,9 +587,14 @@ impl LanceStore {
             .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
         let before = record.tags.len();
         for t in new_tags {
-            let trimmed = t.trim();
-            if !trimmed.is_empty() && !record.tags.iter().any(|x| x == trimmed) {
-                record.tags.push(trimmed.to_string());
+            let canonical = canonicalize_tag(t);
+            if !canonical.is_empty()
+                && !record
+                    .tags
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(&canonical))
+            {
+                record.tags.push(canonical);
             }
         }
         if record.tags.len() == before {
@@ -1286,7 +1309,7 @@ impl LanceStore {
             }
         }
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
         let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
         Ok(results)
     }

@@ -8,6 +8,9 @@ links:
 - target: EPIC-003
   relation: refines
 status: active
+tags:
+- test tag with spaces
+- UPPER-case
 title: Smart Search v2 — BM25, Composable Filters, Graph Expansion
 ---
 
@@ -181,6 +184,8 @@ Smart Search v2 заменяет примитивный substring grep на по
 |----------|----------|--------|
 | PRD-040 | Sibling (Scoring Intelligence) | Draft |
 | sources/RuVector | Pattern source (BM25, Filter DSL) | External |
+
+
 
 
 

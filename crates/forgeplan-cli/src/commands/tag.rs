@@ -36,7 +36,8 @@ pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
         .await
         .with_context(|| format!("Failed to project tags to markdown for {}", id))?;
 
-    println!("  ✓ Added {} tag(s) to {}", tags.len(), id);
+    let added = updated.tags.len().saturating_sub(_existing.tags.len());
+    println!("  ✓ Added {} tag(s) to {}", added, id);
     println!(
         "  Current tags: {}",
         if updated.tags.is_empty() {

@@ -7,6 +7,56 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.19.0] — 2026-04-16 — One-command MCP install + Clippy 1.95 + website i18n RU
+
+Feature release: `forgeplan mcp install` for frictionless AI agent setup,
+website i18n with 144 Russian pages, Mermaid diagrams, and Rust 1.95 clippy compliance.
+
+### Added
+
+- **`forgeplan mcp install --client claude|cursor|windsurf`** — one-command
+  MCP server configuration. Smart-merge replaces `command`/`args`/`transport`
+  while preserving user `env` (API keys, custom paths). Idempotent, safe to
+  re-run. Cross-platform: macOS / Linux / Windows.
+- **`forgeplan mcp serve`** — alias for `forgeplan serve` (MCP convention naming).
+- **`--use-name [forgeplan|fpl]`** — write the short binary name instead of
+  absolute path. For terminal-based clients where `$PATH` is set up.
+- **`--scope user|project`** — install to user-global (`~/.claude.json`)
+  or project-local (`./.mcp.json`).
+- **`--dry-run`** — preview proposed changes without writing.
+- **`--binary-path`** — override binary path with validation (absolute, exists,
+  executable, no control chars / bidi overrides).
+- **Binary detection** prefers PATH-resolved symlink over `current_exe()`.
+  Fixes Homebrew upgrade breakage where versioned Cellar path goes stale.
+- **Symlink rejection** in atomic write — prevents `.mcp.json -> /etc/passwd`
+  type attacks via pre-planted symlinks.
+- **Website i18n** — 144 Russian pages via Starlight native i18n + Gemini 2.5
+  Flash batch translation. Language switcher EN↔RU. (PRD-047)
+- **6 Mermaid diagrams** in EN+RU docs (pipeline, ADI, R_eff, tutorial,
+  lifecycle, graph).
+- **MCP setup guide** — `docs/guides/mcp-setup` (EN + RU). Covers quick install,
+  smart-merge, troubleshooting.
+- **Website UI polish** — wider search bar, compact theme toggle + language
+  switcher, Cloudflare `/ru/` redirects.
+
+### Fixed
+
+- **Clippy 1.95 compliance** — `collapsible_match` (8 occurrences in
+  `forgeplan-core`) and `unnecessary_sort_by` (3 occurrences) converted to
+  match guards and `sort_by_key(Reverse(...))`.
+- **PROB-026** tag canonicalization + **PROB-027** reindex without `lance/`.
+- **PROB-035** + **PROB-036** deprecated (resolved by PRD-046 + PRD-047).
+
+### Stats
+
+- 1194 tests (+44 from v0.18.0 baseline 1150)
+- 294 website pages (+2 from v0.18.0 baseline 292)
+- 0 clippy warnings on Rust 1.95 (stricter than 1.91 / 1.94)
+- PRD-048 R_eff: 0.80 (Adequate), EVID-075 active
+- 2 adversarial audit rounds (4 agents), 10 CRITICAL/HIGH/MEDIUM findings, all fixed
+
+---
+
 ## [0.18.0] — 2026-04-11 — Production BM25 + Russian morphology + quality gates
 
 Feature release upgrading the search engine and codifying quality rules.

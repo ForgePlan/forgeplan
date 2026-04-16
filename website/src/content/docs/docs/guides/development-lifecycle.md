@@ -20,6 +20,14 @@ OBSERVE → ROUTE → SHAPE → BUILD → PROVE → SHIP
 | **Prove** | Create evidence, score | `forgeplan new evidence`, `forgeplan score` |
 | **Ship** | Activate, commit, PR, merge | `forgeplan activate`, `gh pr create` |
 
+```mermaid
+flowchart LR
+  OBS["Observe\nhealth + recall"] --> RT["Route\ndepth decision"]
+  RT --> SH["Shape\ncreate artifacts"] --> BL["Build\ncode + test"]
+  BL --> PR["Prove\nevidence + score"] --> SHP["Ship\nactivate + PR"]
+  SHP -.->|next cycle| OBS
+```
+
 ## Phase 0: Observe
 
 Before doing anything — understand what's happening:

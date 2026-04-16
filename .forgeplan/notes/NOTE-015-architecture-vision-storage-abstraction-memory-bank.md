@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: EPIC-002
   relation: informs
-status: draft
+status: deprecated
 title: Architecture vision — storage abstraction + memory bank
 ---
 
@@ -86,4 +86,6 @@ trait MemoryDriver: Send + Sync {
 // - HindsightDriver: sync to Hindsight MCP
 // - LanceDriver: indexed memory with vector search
 ```
+
+
 

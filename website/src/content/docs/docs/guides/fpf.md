@@ -95,6 +95,8 @@ npx skills add ForgePlan/marketplace --plugin fpf
 forgeplan fpf search "trust"
 ```
 
+See the [Marketplace Overview](/docs/marketplace/overview/) for the full plugin catalog and install instructions.
+
 :::tip
 FPF is most powerful when combined with Forgeplan's artifact system. Use `/fpf decompose` to plan, then `forgeplan new prd` to capture the result as a structured artifact.
 :::

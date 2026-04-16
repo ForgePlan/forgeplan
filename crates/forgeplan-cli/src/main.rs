@@ -532,6 +532,41 @@ enum Commands {
     },
     /// Start MCP server (stdio transport) for AI agent integration
     Serve,
+    /// MCP integration helpers (install config for AI agent clients)
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Start MCP server (alias for `forgeplan serve`)
+    Serve,
+    /// Install forgeplan MCP config into a client (Claude / Cursor / Windsurf).
+    ///
+    /// Smart-merge: replaces command/args/transport, preserves existing `env`.
+    /// Idempotent — safe to re-run.
+    Install {
+        /// Target client: claude, cursor, or windsurf
+        #[arg(long, short)]
+        client: String,
+        /// Config scope: user (global) or project (local). Default: user.
+        #[arg(long, short, default_value = "user")]
+        scope: String,
+        /// Override binary path (default: detected from current_exe)
+        #[arg(long, conflicts_with = "use_name")]
+        binary_path: Option<std::path::PathBuf>,
+        /// Use short name instead of absolute path: forgeplan or fpl.
+        /// Requires PATH to include the binary's directory at MCP launch time.
+        /// macOS GUI apps may not inherit shell PATH — use absolute path
+        /// (the default) for maximum portability.
+        #[arg(long, conflicts_with = "binary_path")]
+        use_name: Option<String>,
+        /// Print proposed change without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -859,5 +894,27 @@ async fn main() -> anyhow::Result<()> {
             let cwd = std::env::current_dir()?;
             forgeplan_mcp::run_stdio(cwd).await
         }
+        Commands::Mcp { action } => match action {
+            McpAction::Serve => {
+                let cwd = std::env::current_dir()?;
+                forgeplan_mcp::run_stdio(cwd).await
+            }
+            McpAction::Install {
+                client,
+                scope,
+                binary_path,
+                use_name,
+                dry_run,
+            } => {
+                let opts = commands::mcp::InstallOptions {
+                    client: commands::mcp::McpClient::parse(&client)?,
+                    scope: commands::mcp::Scope::parse(&scope)?,
+                    binary_path,
+                    use_name,
+                    dry_run,
+                };
+                commands::mcp::run_install(opts).await
+            }
+        },
     }
 }

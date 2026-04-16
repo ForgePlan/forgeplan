@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: EPIC-003
   relation: informs
-status: draft
+status: deprecated
 title: Duplicate artifact creation — no semantic guard, stub activation possible
 ---
 
@@ -111,4 +111,6 @@ Total: ~160 LOC, 0 new deps. Can be one PRD-043 in Sprint 13.7 (added to EPIC-00
 | PRD-018 | based_on (real case of stub activation) |
 | PRD-042 | based_on (real case of duplicate creation) |
 | PRD-039 | informs (BM25 search needed for guard accuracy) |
+
+
 

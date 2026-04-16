@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: EPIC-002
   relation: informs
-status: draft
+status: active
 title: 'EPIC-002 shaped: 5 outcomes, 3 phases, 11 children, ADI analysis (H3 Solo-first confidence 0.8), validated PASS'
 ---
 
@@ -58,5 +58,6 @@ congruence_level: 3
 | Artifact | Relation |
 |----------|----------|
 | ADR-054 | informs |
+
 
 
