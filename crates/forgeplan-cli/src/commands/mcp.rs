@@ -66,6 +66,20 @@ pub struct InstallOptions {
     /// Override binary path. If `None`, uses `current_exe()` then falls
     /// back to `"forgeplan"` (resolved by client via PATH).
     pub binary_path: Option<PathBuf>,
+    /// Write a short command name instead of the absolute path.
+    ///
+    /// Trade-off: short names are prettier but rely on `$PATH` being correct
+    /// when the MCP client launches the server. **macOS GUI applications
+    /// (Claude Code Mac app, Cursor app) do NOT inherit PATH from the user
+    /// shell** — they get only the system default `/usr/bin:/bin:...`.
+    /// `forgeplan` from Homebrew lives in `/opt/homebrew/bin` which is not
+    /// in that default — so a short name will FAIL silently in GUI clients.
+    /// Use this flag only when you know your client launches with a PATH
+    /// that includes the binary's directory (terminal-based clients, Linux,
+    /// or after configuring `launchctl setenv PATH ...` on macOS).
+    ///
+    /// Allowed values: `"forgeplan"` or `"fpl"` (the official short alias).
+    pub use_name: Option<String>,
     /// Print the proposed change without writing.
     pub dry_run: bool,
 }
@@ -410,6 +424,19 @@ fn validate_binary_path(path: &Path) -> Result<String> {
     Ok(path_str.to_string())
 }
 
+/// Validate a short command name for `--use-name`. Only the official
+/// short names are accepted to prevent users from accidentally writing
+/// arbitrary strings (like `"forgepln"` typo) that would silently fail
+/// when the MCP client launches.
+fn validate_short_name(name: &str) -> Result<String> {
+    match name {
+        "forgeplan" | "fpl" => Ok(name.to_string()),
+        other => bail!(
+            "unknown short name: '{other}' (allowed: forgeplan, fpl). Omit --use-name to use the absolute binary path instead."
+        ),
+    }
+}
+
 /// Run `forgeplan mcp install` with the given options.
 ///
 /// Resolves the platform-specific config path, then delegates to
@@ -425,11 +452,18 @@ pub async fn run_install(opts: InstallOptions) -> Result<()> {
 /// config path explicitly. This is the actual integration surface our
 /// tests target.
 pub async fn run_install_at_path(opts: InstallOptions, path: &Path) -> Result<()> {
-    let binary = match opts.binary_path {
-        Some(p) => p,
-        None => detect_binary_path(),
+    // Decide what to write into the config: short name OR validated absolute path.
+    // --use-name takes precedence (user explicitly chose short form).
+    let binary_str = match opts.use_name.as_deref() {
+        Some(name) => validate_short_name(name)?,
+        None => {
+            let binary = match opts.binary_path {
+                Some(p) => p,
+                None => detect_binary_path(),
+            };
+            validate_binary_path(&binary)?
+        }
     };
-    let binary_str = validate_binary_path(&binary)?;
 
     let existing = read_json_or_empty(path)?;
     let merged = smart_merge(existing.clone(), &binary_str)?;
@@ -902,6 +936,70 @@ mod tests {
         assert!(err.contains("disallowed character"), "got: {err}");
     }
 
+    // ─── Short name (--use-name) ──────────────────────────────────────
+
+    #[test]
+    fn validate_short_name_accepts_forgeplan() {
+        assert_eq!(validate_short_name("forgeplan").unwrap(), "forgeplan");
+    }
+
+    #[test]
+    fn validate_short_name_accepts_fpl() {
+        assert_eq!(validate_short_name("fpl").unwrap(), "fpl");
+    }
+
+    #[test]
+    fn validate_short_name_rejects_arbitrary() {
+        for bad in ["forgepln", "FPL", "forgeplan-mcp", "/usr/bin/forgeplan", ""] {
+            let err = validate_short_name(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("unknown short name") && err.contains("allowed"),
+                "expected reject for {bad:?}, got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_install_uses_short_name_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.json");
+
+        let opts = InstallOptions {
+            client: McpClient::Claude,
+            scope: Scope::Project,
+            binary_path: None,
+            use_name: Some("fpl".to_string()),
+            dry_run: false,
+        };
+        run_install_at_path(opts, &cfg).await.unwrap();
+
+        let content: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(content["mcpServers"]["forgeplan"]["command"], "fpl");
+        assert_eq!(content["mcpServers"]["forgeplan"]["args"], json!(["serve"]));
+    }
+
+    #[tokio::test]
+    async fn run_install_short_name_does_not_validate_executable() {
+        // Short name skips file-existence check — that's the whole point.
+        // Caller takes responsibility that PATH includes the binary.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.json");
+
+        let opts = InstallOptions {
+            client: McpClient::Claude,
+            scope: Scope::Project,
+            binary_path: None,
+            use_name: Some("forgeplan".to_string()),
+            dry_run: false,
+        };
+        // Even with no `forgeplan` binary discoverable in $PATH from the test,
+        // install should succeed because we trust the user's PATH at runtime.
+        run_install_at_path(opts, &cfg).await.unwrap();
+
+        let content: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(content["mcpServers"]["forgeplan"]["command"], "forgeplan");
+    }
+
     // ─── End-to-end run_install flow (uses real run_install_at_path) ──
 
     /// Build options for a tempdir-scoped install test.
@@ -910,6 +1008,7 @@ mod tests {
             client: McpClient::Claude,
             scope: Scope::Project,
             binary_path: Some(binary),
+            use_name: None,
             dry_run,
         }
     }

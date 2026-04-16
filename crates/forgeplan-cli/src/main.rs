@@ -555,8 +555,14 @@ enum McpAction {
         #[arg(long, short, default_value = "user")]
         scope: String,
         /// Override binary path (default: detected from current_exe)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "use_name")]
         binary_path: Option<std::path::PathBuf>,
+        /// Use short name instead of absolute path: forgeplan or fpl.
+        /// Requires PATH to include the binary's directory at MCP launch time.
+        /// macOS GUI apps may not inherit shell PATH — use absolute path
+        /// (the default) for maximum portability.
+        #[arg(long, conflicts_with = "binary_path")]
+        use_name: Option<String>,
         /// Print proposed change without writing
         #[arg(long)]
         dry_run: bool,
@@ -897,12 +903,14 @@ async fn main() -> anyhow::Result<()> {
                 client,
                 scope,
                 binary_path,
+                use_name,
                 dry_run,
             } => {
                 let opts = commands::mcp::InstallOptions {
                     client: commands::mcp::McpClient::parse(&client)?,
                     scope: commands::mcp::Scope::parse(&scope)?,
                     binary_path,
+                    use_name,
                     dry_run,
                 };
                 commands::mcp::run_install(opts).await
