@@ -463,7 +463,14 @@ struct DiscoverCompleteParams {
 #[tool_router]
 impl ForgeplanServer {
     #[tool(
-        description = "Initialize a new .forgeplan/ workspace. Creates LanceDB tables, config, and artifact subdirectories."
+        description = "Initialize a new .forgeplan/ workspace. Creates LanceDB tables, config, and artifact subdirectories.",
+        annotations(
+            title = "Initialize Workspace",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_init(
         &self,
@@ -506,7 +513,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Create a new artifact from template. Generates a sequential ID (e.g., PRD-001), renders the template, stores in LanceDB, and writes a markdown projection."
+        description = "Create a new artifact from template. Generates a sequential ID (e.g., PRD-001), renders the template, stores in LanceDB, and writes a markdown projection.",
+        annotations(
+            title = "Create Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_new(
         &self,
@@ -641,7 +655,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact."
+        description = "List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact.",
+        annotations(
+            title = "List Artifacts",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_list(
         &self,
@@ -676,7 +697,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show project status dashboard — total artifacts, counts by kind and status."
+        description = "Show project status dashboard — total artifacts, counts by kind and status.",
+        annotations(
+            title = "Project Status",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_status(&self) -> Result<CallToolResult, McpError> {
         let ws = match self.require_workspace().await {
@@ -719,7 +747,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD)."
+        description = "Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD).",
+        annotations(
+            title = "Validate Artifact",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_validate(
         &self,
@@ -790,7 +825,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores)."
+        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores).",
+        annotations(
+            title = "Compute R_eff Score",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_score(
         &self,
@@ -921,7 +963,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines."
+        description = "Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines.",
+        annotations(
+            title = "Link Artifacts",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_link(
         &self,
@@ -987,7 +1036,16 @@ impl ForgeplanServer {
         }))
     }
 
-    #[tool(description = "Read a full artifact by ID. Returns all metadata and body content.")]
+    #[tool(
+        description = "Read a full artifact by ID. Returns all metadata and body content.",
+        annotations(
+            title = "Read Artifact",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
     async fn forgeplan_get(
         &self,
         Parameters(p): Parameters<GetParams>,
@@ -1005,7 +1063,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update."
+        description = "Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update.",
+        annotations(
+            title = "Update Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_update(
         &self,
@@ -1135,7 +1200,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Delete an artifact from LanceDB and remove its markdown projection file."
+        description = "Delete an artifact from LanceDB and remove its markdown projection file.",
+        annotations(
+            title = "Delete Artifact",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_delete(
         &self,
@@ -1177,7 +1249,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0)."
+        description = "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0).",
+        annotations(
+            title = "Route Task Depth",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn forgeplan_route(
         &self,
@@ -1229,7 +1308,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated."
+        description = "Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated.",
+        annotations(
+            title = "Lifecycle Review",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_review(
         &self,
@@ -1252,7 +1338,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Activate an artifact (draft → active). Requires all MUST validation rules to pass."
+        description = "Activate an artifact (draft → active). Requires all MUST validation rules to pass.",
+        annotations(
+            title = "Activate Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_activate(
         &self,
@@ -1283,7 +1376,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents."
+        description = "Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents.",
+        annotations(
+            title = "Supersede Artifact",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_supersede(
         &self,
@@ -1304,7 +1404,16 @@ impl ForgeplanServer {
         }
     }
 
-    #[tool(description = "Deprecate an artifact (active → deprecated) with a reason.")]
+    #[tool(
+        description = "Deprecate an artifact (active → deprecated) with a reason.",
+        annotations(
+            title = "Deprecate Artifact",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
     async fn forgeplan_deprecate(
         &self,
         Parameters(p): Parameters<DeprecateParams>,
@@ -1324,7 +1433,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed."
+        description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed.",
+        annotations(
+            title = "Health Dashboard",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_health(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -1354,7 +1470,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status."
+        description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status.",
+        annotations(
+            title = "Decision Journal",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_journal(
         &self,
@@ -1391,7 +1514,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections."
+        description = "Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections.",
+        annotations(
+            title = "Blind Spots",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_blindspots(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -1414,7 +1544,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider."
+        description = "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider.",
+        annotations(
+            title = "Capture Decision",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn forgeplan_capture(
         &self,
@@ -1507,7 +1644,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges."
+        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges.",
+        annotations(
+            title = "Dependency Graph",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_graph(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -1549,7 +1693,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts)."
+        description = "Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts).",
+        annotations(
+            title = "Blocked Artifacts",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_blocked(
         &self,
@@ -1621,7 +1772,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only."
+        description = "Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only.",
+        annotations(
+            title = "Topological Order",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_order(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -1667,7 +1825,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle."
+        description = "Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle.",
+        annotations(
+            title = "Smart Search",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_search(
         &self,
@@ -1820,7 +1985,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry."
+        description = "Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry.",
+        annotations(
+            title = "Stale Artifacts",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_stale(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -1860,7 +2032,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages."
+        description = "Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages.",
+        annotations(
+            title = "Checkbox Progress",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_progress(
         &self,
@@ -1923,7 +2102,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison."
+        description = "Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison.",
+        annotations(
+            title = "Evidence Decay",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_decay(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -1964,7 +2150,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity."
+        description = "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity.",
+        annotations(
+            title = "Depth Calibration",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_calibrate(
         &self,
@@ -2037,7 +2230,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider."
+        description = "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider.",
+        annotations(
+            title = "ADI Reasoning",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn forgeplan_reason(
         &self,
@@ -2104,7 +2304,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider."
+        description = "Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider.",
+        annotations(
+            title = "Decompose PRD",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn forgeplan_decompose(
         &self,
@@ -2151,7 +2358,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Generate an artifact using AI from a natural language description. Requires LLM provider configured in .forgeplan/config.yaml. Supports OpenAI, Claude, Gemini, Ollama, and any OpenAI-compatible endpoint."
+        description = "Generate an artifact using AI from a natural language description. Requires LLM provider configured in .forgeplan/config.yaml. Supports OpenAI, Claude, Gemini, Ollama, and any OpenAI-compatible endpoint.",
+        annotations(
+            title = "Generate Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn forgeplan_generate(
         &self,
@@ -2249,7 +2463,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path."
+        description = "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path.",
+        annotations(
+            title = "Export Workspace",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_export(
         &self,
@@ -2328,7 +2549,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts."
+        description = "Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts.",
+        annotations(
+            title = "Import Bundle",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_import(
         &self,
@@ -2422,7 +2650,14 @@ impl ForgeplanServer {
     // ── FPF Knowledge Base tools ────────────────────────────────
 
     #[tool(
-        description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take 10–30 seconds if the BGE-M3 model needs to be downloaded (~150MB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false)."
+        description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take 10–30 seconds if the BGE-M3 model needs to be downloaded (~150MB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false).",
+        annotations(
+            title = "FPF Semantic Search",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     /// Exposed for integration test harness in tests/fpf_search_handler.rs.
     /// `#[doc(hidden)]` because this is unstable test infrastructure, not a
@@ -2538,7 +2773,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1')."
+        description = "Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1').",
+        annotations(
+            title = "Read FPF Section",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_fpf_section(
         &self,
@@ -2562,7 +2804,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "List all available FPF (First Principles Framework) sections in the knowledge base."
+        description = "List all available FPF (First Principles Framework) sections in the knowledge base.",
+        annotations(
+            title = "List FPF Sections",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_fpf_list(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -2589,7 +2838,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned."
+        description = "List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned.",
+        annotations(
+            title = "List FPF Rules",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_fpf_rules(
         &self,
@@ -2686,7 +2942,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Check which FPF rules match a given artifact, showing all matched rules, the winning rule (first in priority order, same as runtime), and rules that did not match. Use this to understand FPF engine behavior for a specific artifact before acting on it."
+        description = "Check which FPF rules match a given artifact, showing all matched rules, the winning rule (first in priority order, same as runtime), and rules that did not match. Use this to understand FPF engine behavior for a specific artifact before acting on it.",
+        annotations(
+            title = "Check FPF Match",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_fpf_check(
         &self,
@@ -2731,7 +2994,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Check for drifted decisions — affected files that changed after ADR/RFC was created."
+        description = "Check for drifted decisions — affected files that changed after ADR/RFC was created.",
+        annotations(
+            title = "Decision Drift",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_drift(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -2757,7 +3027,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show decision coverage per code module — which modules have architectural decisions and which are blind spots."
+        description = "Show decision coverage per code module — which modules have architectural decisions and which are blind spots.",
+        annotations(
+            title = "Decision Coverage",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_coverage(&self) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
@@ -2788,7 +3065,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring."
+        description = "Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring.",
+        annotations(
+            title = "Estimate Effort",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_estimate(
         &self,
@@ -2942,7 +3226,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show current methodology session state — phase (idle/routing/shaping/coding/evidence/pr), active artifact, depth, enforcement status. Use this to know where in the workflow you are."
+        description = "Show current methodology session state — phase (idle/routing/shaping/coding/evidence/pr), active artifact, depth, enforcement status. Use this to know where in the workflow you are.",
+        annotations(
+            title = "Session State",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_session(&self) -> Result<CallToolResult, McpError> {
         let ws = match self.require_workspace().await {
@@ -2964,7 +3255,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Check if a methodology phase transition is allowed. Use before performing actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason."
+        description = "Check if a methodology phase transition is allowed. Use before performing actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason.",
+        annotations(
+            title = "Phase Transition Check",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_guard(
         &self,
@@ -3006,7 +3304,14 @@ impl ForgeplanServer {
     // ── Discover tools (PRD-035 FR-004..006) ────────────────────
 
     #[tool(
-        description = "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding."
+        description = "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding.",
+        annotations(
+            title = "Start Discovery Session",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_discover_start(
         &self,
@@ -3038,7 +3343,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Report a discovery finding. The agent calls this after analyzing a file/module/git-log during a phase. ForgePlan creates an artifact (note/prd/rfc/problem/evidence) with the finding content, tags it with the source tier, and links it to the discovery session."
+        description = "Report a discovery finding. The agent calls this after analyzing a file/module/git-log during a phase. ForgePlan creates an artifact (note/prd/rfc/problem/evidence) with the finding content, tags it with the source tier, and links it to the discovery session.",
+        annotations(
+            title = "Report Discovery Finding",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_discover_finding(
         &self,
@@ -3156,7 +3468,14 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Complete a discovery session. Generates a summary report with findings per phase/tier, runs forgeplan health, and marks the session as completed."
+        description = "Complete a discovery session. Generates a summary report with findings per phase/tier, runs forgeplan health, and marks the session as completed.",
+        annotations(
+            title = "Complete Discovery",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn forgeplan_discover_complete(
         &self,
