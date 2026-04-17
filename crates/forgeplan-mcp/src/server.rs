@@ -3159,7 +3159,11 @@ impl ForgeplanServer {
 #[tool_handler]
 impl rmcp::ServerHandler for ForgeplanServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::default())
+        // CRITICAL: must declare `tools` capability so MCP clients
+        // (Claude Code, Cursor, Windsurf) know to call tools/list.
+        // `ServerCapabilities::default()` is empty `{}` → clients
+        // silently skip tool registration. Dogfood-discovered 2026-04-18.
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("forgeplan", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Forgeplan MCP server: manage structured project artifacts \

@@ -214,14 +214,19 @@ fn is_executable(_path: &Path) -> bool {
 
 /// Build the canonical `forgeplan` MCP server config section.
 ///
-/// On install, this fully replaces `command`/`args`/`transport`/`type`
-/// (so version bumps land cleanly). Existing `env` is preserved by
-/// the caller (see [`smart_merge`]).
+/// On install, this fully replaces `command` + `args` (so version bumps
+/// land cleanly). Existing `env` is preserved by the caller (see
+/// [`smart_merge`]).
+///
+/// **Intentionally omits `transport` / `type` field**: stdio is the
+/// default per MCP spec. Writing `"transport": "stdio"` was a v0.19.0
+/// bug — Claude Code MCP client ignores unknown fields silently which
+/// broke tool registration end-to-end despite JSON-RPC handshake
+/// succeeding. Only HTTP/SSE transports need explicit `"type"` field.
 fn forgeplan_section(binary: &str) -> Value {
     json!({
         "command": binary,
         "args": ["serve"],
-        "transport": "stdio",
     })
 }
 
@@ -229,10 +234,14 @@ fn forgeplan_section(binary: &str) -> Value {
 ///
 /// Behavior:
 /// - If `mcpServers.forgeplan` doesn't exist → create with defaults.
-/// - If it exists → replace `command`/`args`/`transport`/`type`,
-///   **preserve `env`** (user customization like API keys stays intact).
-/// - Other unrecognized fields under the section are also preserved
-///   (forward-compatibility with future MCP spec extensions).
+/// - If it exists → replace `command` + `args`; **preserve `env`**
+///   (user customization like API keys stays intact).
+/// - **Remove legacy `transport` field** if present — v0.19.0 wrote this
+///   by mistake and it broke Claude Code tool registration (silent failure).
+/// - Remove `type` field **only** if it equals `"stdio"` (default) — users
+///   with explicit http/sse configs keep their transport selection.
+/// - Other unrecognized fields under the section are preserved (forward
+///   compat with future MCP spec extensions).
 /// - Other servers in `mcpServers` are untouched.
 /// - Top-level fields outside `mcpServers` are untouched.
 ///
@@ -265,6 +274,14 @@ pub fn smart_merge(mut existing: Value, binary: &str) -> Result<Value> {
                 .iter()
             {
                 prev.insert(key.clone(), value.clone());
+            }
+            // Cleanup legacy fields from v0.19.0 that broke Claude Code
+            // tool registration. `transport` was never a valid MCP config
+            // field. `type: "stdio"` is the default — removing it is
+            // cosmetic but matches `claude mcp add` generator output.
+            prev.remove("transport");
+            if prev.get("type").and_then(|v| v.as_str()) == Some("stdio") {
+                prev.remove("type");
             }
         }
         _ => {
@@ -635,7 +652,66 @@ mod tests {
         let section = &merged["mcpServers"]["forgeplan"];
         assert_eq!(section["command"], "/usr/bin/forgeplan");
         assert_eq!(section["args"], json!(["serve"]));
-        assert_eq!(section["transport"], "stdio");
+        // v0.19.1: stdio is MCP default — must not write transport/type.
+        assert!(
+            section.get("transport").is_none(),
+            "transport field must not be written (Claude Code silently drops tool registration with it)"
+        );
+        assert!(
+            section.get("type").is_none(),
+            "type field must not be written for stdio default"
+        );
+    }
+
+    #[test]
+    fn smart_merge_removes_legacy_transport_field() {
+        // Simulates upgrading from v0.19.0 which wrote transport:"stdio".
+        let existing = json!({
+            "mcpServers": {
+                "forgeplan": {
+                    "command": "/opt/homebrew/bin/forgeplan",
+                    "args": ["serve"],
+                    "transport": "stdio",
+                    "env": {"KEY": "keep-me"}
+                }
+            }
+        });
+        let merged = smart_merge(existing, "/opt/homebrew/bin/forgeplan").unwrap();
+        let section = &merged["mcpServers"]["forgeplan"];
+        assert!(
+            section.get("transport").is_none(),
+            "legacy transport field must be removed on upgrade"
+        );
+        assert_eq!(section["env"]["KEY"], "keep-me");
+    }
+
+    #[test]
+    fn smart_merge_removes_legacy_type_stdio_but_keeps_type_http() {
+        let existing_stdio = json!({
+            "mcpServers": {"forgeplan": {
+                "command": "/bin/forgeplan", "args": ["serve"], "type": "stdio"
+            }}
+        });
+        let merged = smart_merge(existing_stdio, "/bin/forgeplan").unwrap();
+        assert!(
+            merged["mcpServers"]["forgeplan"].get("type").is_none(),
+            "type=stdio (default) must be removed"
+        );
+
+        // HTTP config is separate scenario — forgeplan doesn't do HTTP, but
+        // someone else's server might. We only merge into forgeplan section,
+        // so this is hypothetical — but verify we don't strip non-stdio types.
+        let existing_http = json!({
+            "mcpServers": {"forgeplan": {
+                "command": "/bin/forgeplan", "args": ["serve"], "type": "http",
+                "url": "http://example"
+            }}
+        });
+        let merged = smart_merge(existing_http, "/bin/forgeplan").unwrap();
+        assert_eq!(
+            merged["mcpServers"]["forgeplan"]["type"], "http",
+            "non-stdio type must be preserved"
+        );
     }
 
     #[test]
