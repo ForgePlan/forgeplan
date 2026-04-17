@@ -112,6 +112,20 @@ fn err_result(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.to_string())])
 }
 
+/// Build a recoverable tool error for a failed LLM-backed operation.
+/// Single source of truth for the LLM error hint — pointing at concrete,
+/// already-shipped commands (not future PRD-050 doctor). Agents receive
+/// one actionable remediation path: inspect health and config.
+fn llm_err(operation: &str, err: impl std::fmt::Display) -> CallToolResult {
+    err_result(&format!(
+        "{operation} failed: {err}\n\n\
+         Hint: ensure LLM provider is configured in `.forgeplan/config.yaml` \
+         or via env var (e.g. `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, \
+         `OPENAI_API_KEY`). Run `forgeplan health` and check \
+         `.forgeplan/config.yaml`."
+    ))
+}
+
 // ── Parameter types (inline for tools) ───────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1419,10 +1433,16 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
-        let (kind_str, body) =
-            forgeplan_core::llm::capture::capture(&llm_config, &p.decision, p.context.as_deref())
-                .await
-                .map_err(|e| McpError::internal_error(format!("Capture failed: {e}"), None))?;
+        let (kind_str, body) = match forgeplan_core::llm::capture::capture(
+            &llm_config,
+            &p.decision,
+            p.context.as_deref(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(llm_err("Capture", e)),
+        };
 
         let kind: ArtifactKind = kind_str.parse().unwrap_or(ArtifactKind::Note);
         let template_key = kind.template_key();
@@ -2059,7 +2079,7 @@ impl ForgeplanServer {
                 .unwrap_or(None),
         };
 
-        let (analysis, _adi_output) = forgeplan_core::llm::reason::reason(
+        let (analysis, _adi_output) = match forgeplan_core::llm::reason::reason(
             &llm_config,
             &record.id,
             &record.title,
@@ -2069,7 +2089,10 @@ impl ForgeplanServer {
             Some(&artifact_context),
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("ADI reasoning failed: {e}"), None))?;
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(llm_err("ADI reasoning", e)),
+        };
 
         Ok(json_result(&ReasonResponse {
             artifact_id: record.id,
@@ -2106,14 +2129,17 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
-        let tasks = forgeplan_core::llm::decompose::decompose(
+        let tasks = match forgeplan_core::llm::decompose::decompose(
             &llm_config,
             &record.id,
             &record.title,
             &record.body,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("Decompose failed: {e}"), None))?;
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(llm_err("Decompose", e)),
+        };
 
         Ok(json_result(&DecomposeResponse {
             prd_id: record.id,
@@ -2160,14 +2186,17 @@ impl ForgeplanServer {
 
         let template_key = artifact_kind.template_key();
 
-        let body = forgeplan_core::llm::generate::generate_body(
+        let body = match forgeplan_core::llm::generate::generate_body(
             &llm_config,
             template_key,
             &p.description,
             &title,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("LLM generation failed: {e}"), None))?;
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(llm_err("LLM generation", e)),
+        };
 
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
         let id = store
@@ -2310,12 +2339,24 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let data: serde_json::Value = serde_json::from_str(&p.data)
-            .map_err(|e| McpError::internal_error(format!("Invalid JSON: {e}"), None))?;
+        let data: serde_json::Value = match serde_json::from_str(&p.data) {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(err_result(&format!(
+                    "Invalid JSON in import data: {e}\n\nHint: supply a JSON string produced by \
+                 `forgeplan export` — structure: {{\"artifacts\": [...], \"relations\": [...]}}."
+                )));
+            }
+        };
 
-        let artifacts = data["artifacts"]
-            .as_array()
-            .ok_or_else(|| McpError::internal_error("Missing 'artifacts' array", None))?;
+        let Some(artifacts) = data["artifacts"].as_array() else {
+            return Ok(err_result(
+                "Missing 'artifacts' array in import bundle.\n\nHint: `forgeplan export` produces \
+                 a bundle with top-level keys `artifacts` (list of artifact objects) and \
+                 `relations` (list of {source, target, relation} objects). Pass the exported \
+                 JSON verbatim as the `data` parameter.",
+            ));
+        };
 
         let force = p.force.unwrap_or(false);
         let mut imported = 0usize;

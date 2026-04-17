@@ -279,7 +279,17 @@ pub fn smart_merge(mut existing: Value, binary: &str) -> Result<Value> {
             // tool registration. `transport` was never a valid MCP config
             // field. `type: "stdio"` is the default — removing it is
             // cosmetic but matches `claude mcp add` generator output.
-            prev.remove("transport");
+            //
+            // Narrow removal: only strip `transport` when value is exactly
+            // "stdio" (what v0.19.0 wrote). Preserves `"http"` / `"sse"`
+            // in the unlikely case a user copied them from another server.
+            if prev.get("transport").and_then(|v| v.as_str()) == Some("stdio") {
+                prev.remove("transport");
+                eprintln!(
+                    "note: removed legacy `transport: \"stdio\"` field from \
+                     forgeplan section (v0.19.0 compat — stdio is MCP default)"
+                );
+            }
             if prev.get("type").and_then(|v| v.as_str()) == Some("stdio") {
                 prev.remove("type");
             }

@@ -26,6 +26,18 @@ async fn server_advertises_tools_capability() {
          silently skip tool registration. Regression of v0.19.0 bug (PROB-039). \
          Fix: ServerCapabilities::builder().enable_tools().build() in server.rs."
     );
+
+    // Wire-format check — catches `skip_serializing_if` quirks that
+    // could drop the field at JSON serialization even when the Rust
+    // struct has Some(..). The MCP client reads the serialized
+    // `initialize` response, not the Rust struct directly.
+    let caps_json = serde_json::to_value(&info.capabilities).expect("serialize");
+    assert!(
+        caps_json.get("tools").is_some(),
+        "`capabilities.tools` must appear in serialized initialize response \
+         — the actual wire format MCP clients parse. Got: {}",
+        caps_json
+    );
 }
 
 #[tokio::test]
