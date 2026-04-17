@@ -127,6 +127,154 @@ fn llm_err(operation: &str, err: impl std::fmt::Display) -> CallToolResult {
 }
 
 // ── Parameter types (inline for tools) ───────────────────────
+//
+// Schema enum types — LLM clients constrain-sample against these, so we get
+// "informs" / "based_on" / etc. verbatim instead of paraphrases like "inform".
+// All are serde lowercase + snake_case to match our markdown schema.
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RelationKind {
+    Informs,
+    BasedOn,
+    Supersedes,
+    Contradicts,
+    Refines,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum ArtifactKindArg {
+    Prd,
+    Epic,
+    Spec,
+    Rfc,
+    Adr,
+    Problem,
+    Solution,
+    Evidence,
+    Note,
+    Refresh,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum StatusKind {
+    Draft,
+    Active,
+    Superseded,
+    Deprecated,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum JournalKind {
+    Adr,
+    Note,
+    Problem,
+    Solution,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum PhaseKind {
+    Idle,
+    Routing,
+    Shaping,
+    Coding,
+    Evidence,
+    Pr,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum GradeKind {
+    Junior,
+    Middle,
+    Senior,
+    Principal,
+    Ai,
+}
+
+impl RelationKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Informs => "informs",
+            Self::BasedOn => "based_on",
+            Self::Supersedes => "supersedes",
+            Self::Contradicts => "contradicts",
+            Self::Refines => "refines",
+        }
+    }
+}
+
+impl ArtifactKindArg {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Prd => "prd",
+            Self::Epic => "epic",
+            Self::Spec => "spec",
+            Self::Rfc => "rfc",
+            Self::Adr => "adr",
+            Self::Problem => "problem",
+            Self::Solution => "solution",
+            Self::Evidence => "evidence",
+            Self::Note => "note",
+            Self::Refresh => "refresh",
+        }
+    }
+}
+
+impl StatusKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Superseded => "superseded",
+            Self::Deprecated => "deprecated",
+        }
+    }
+}
+
+impl JournalKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Adr => "adr",
+            Self::Note => "note",
+            Self::Problem => "problem",
+            Self::Solution => "solution",
+        }
+    }
+}
+
+impl PhaseKind {
+    // Currently unused — GuardParams uses PhaseKind directly via match.
+    // Kept for API symmetry with other *Kind enums; may be needed when
+    // PhaseKind is exposed in response bodies.
+    #[allow(dead_code)]
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Routing => "routing",
+            Self::Shaping => "shaping",
+            Self::Coding => "coding",
+            Self::Evidence => "evidence",
+            Self::Pr => "pr",
+        }
+    }
+}
+
+impl GradeKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Junior => "junior",
+            Self::Middle => "middle",
+            Self::Senior => "senior",
+            Self::Principal => "principal",
+            Self::Ai => "ai",
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InitParams {
@@ -137,8 +285,8 @@ struct InitParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct NewParams {
-    /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh
-    kind: String,
+    /// Artifact kind to create
+    kind: ArtifactKindArg,
     /// Artifact title
     title: String,
 }
@@ -172,13 +320,13 @@ struct LinkParams {
     source: String,
     /// Target artifact ID
     target: String,
-    /// Relationship type: informs, based_on, supersedes, contradicts, refines (default: informs)
+    /// Relationship type (default: informs)
     #[serde(default = "default_relation")]
-    relation: String,
+    relation: RelationKind,
 }
 
-fn default_relation() -> String {
-    "informs".into()
+fn default_relation() -> RelationKind {
+    RelationKind::Informs
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -191,9 +339,9 @@ struct GetParams {
 struct UpdateParams {
     /// Artifact ID to update
     id: String,
-    /// New status (draft, active, superseded, deprecated)
+    /// New status
     #[serde(default)]
-    status: Option<String>,
+    status: Option<StatusKind>,
     /// New title
     #[serde(default)]
     title: Option<String>,
@@ -216,8 +364,8 @@ struct RouteParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GuardParams {
-    /// Target phase to check: idle, routing, shaping, coding, evidence, pr
-    target_phase: String,
+    /// Target phase to check
+    target_phase: PhaseKind,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -253,9 +401,9 @@ struct DeprecateParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct JournalParams {
-    /// Filter by kind (adr, note, problem, solution)
+    /// Filter by artifact kind (decision-kinds only)
     #[serde(default)]
-    kind: Option<String>,
+    kind: Option<JournalKind>,
     /// Show only at-risk decisions
     #[serde(default)]
     risk: Option<bool>,
@@ -291,8 +439,8 @@ struct DecomposeParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateParams {
-    /// Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
-    kind: String,
+    /// Artifact kind to generate via LLM
+    kind: ArtifactKindArg,
     /// Natural language description of what to generate
     description: String,
 }
@@ -301,9 +449,9 @@ struct GenerateParams {
 struct EstimateParams {
     /// Artifact ID to estimate
     id: String,
-    /// Override grade for all items: junior, middle, senior, principal, ai
+    /// Override grade for all items
     #[serde(default)]
-    grade: Option<String>,
+    grade: Option<GradeKind>,
     /// Auto-detect grade from config grade_profile + artifact domain inference
     #[serde(default)]
     my_grade: Option<bool>,
@@ -550,7 +698,7 @@ impl ForgeplanServer {
             ));
         }
 
-        let artifact_kind: ArtifactKind = match p.kind.parse() {
+        let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
@@ -985,7 +1133,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relation = match link::normalize_relation(&p.relation) {
+        let relation = match link::normalize_relation(p.relation.as_str()) {
             Ok(r) => r,
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
@@ -1134,8 +1282,9 @@ impl ForgeplanServer {
         let _ = projection::sync_file_to_store(&store, &ws, &pre_record).await;
 
         if p.status.is_some() || p.title.is_some() {
+            let status_str = p.status.as_ref().map(|s| s.as_str());
             store
-                .update_artifact(&p.id, p.status.as_deref(), p.title.as_deref())
+                .update_artifact(&p.id, status_str, p.title.as_deref())
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
@@ -1490,7 +1639,7 @@ impl ForgeplanServer {
 
         let entries = forgeplan_core::journal::build_journal(
             &store,
-            p.kind.as_deref(),
+            p.kind.as_ref().map(|k| k.as_str()),
             p.risk.unwrap_or(false),
         )
         .await
@@ -2380,7 +2529,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let artifact_kind: ArtifactKind = match p.kind.parse() {
+        let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
@@ -3089,15 +3238,8 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&format!("Failed to retrieve artifact: {e}"))),
         };
 
-        // Validate grade param early
-        if let Some(ref grade_str) = p.grade
-            && grade_str.parse::<Grade>().is_err()
-        {
-            return Ok(err_result(&format!(
-                "Invalid grade '{}'. Valid: junior, middle, senior, principal, ai",
-                grade_str
-            )));
-        }
+        // Schema enum GradeKind already guarantees valid value — no runtime check needed.
+        // (Previously String required runtime .parse::<Grade>() validation.)
 
         // Validate complexity param length (DoS protection)
         if let Some(ref c) = p.complexity
@@ -3208,8 +3350,8 @@ impl ForgeplanServer {
         };
 
         // Resolve highlighted grade: explicit grade > my_grade (auto-domain) > none
-        if let Some(ref grade_str) = p.grade {
-            result_json["highlighted_grade"] = serde_json::Value::String(grade_str.clone());
+        if let Some(ref grade) = p.grade {
+            result_json["highlighted_grade"] = serde_json::Value::String(grade.as_str().into());
         } else if p.my_grade.unwrap_or(false) {
             let inferred_domain = domain::infer_domain(&record.title, &record.body);
             let resolved = config.resolve_grade(&inferred_domain);
@@ -3275,19 +3417,14 @@ impl ForgeplanServer {
 
         let session = forgeplan_core::session::SessionState::load(&ws);
 
-        let target_phase = match p.target_phase.to_lowercase().as_str() {
-            "idle" => forgeplan_core::session::Phase::Idle,
-            "routing" => forgeplan_core::session::Phase::Routing,
-            "shaping" => forgeplan_core::session::Phase::Shaping,
-            "coding" => forgeplan_core::session::Phase::Coding,
-            "evidence" => forgeplan_core::session::Phase::Evidence,
-            "pr" => forgeplan_core::session::Phase::Pr,
-            other => {
-                return Ok(err_result(&format!(
-                    "Unknown phase '{}'. Valid: idle, routing, shaping, coding, evidence, pr",
-                    other
-                )));
-            }
+        // Schema enum PhaseKind already validates the value — just map to core Phase type.
+        let target_phase = match p.target_phase {
+            PhaseKind::Idle => forgeplan_core::session::Phase::Idle,
+            PhaseKind::Routing => forgeplan_core::session::Phase::Routing,
+            PhaseKind::Shaping => forgeplan_core::session::Phase::Shaping,
+            PhaseKind::Coding => forgeplan_core::session::Phase::Coding,
+            PhaseKind::Evidence => forgeplan_core::session::Phase::Evidence,
+            PhaseKind::Pr => forgeplan_core::session::Phase::Pr,
         };
 
         let result = session.can_transition(target_phase);
