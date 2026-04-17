@@ -11,7 +11,7 @@ Instructions for Claude Code when working in this repository.
 2. **DO NOT `git push`** until the user has explicitly approved the PR after review.
 3. **DO NOT commit directly to `main` or `dev`** — always `feature branch → PR → merge`.
 4. **DO NOT push to a branch after a PR is merged** — squash loses late commits.
-5. **DO NOT create a PR before `Code → Audit → Fix → Test → Fmt → Lint → Verify`**.
+5. **DO NOT create a PR before `Code → Audit → Fix → Test → Fmt → Lint → Verify`**. **Verify** означает: unit tests + **РЕАЛЬНЫЙ E2E каждой затронутой surface** (не один tool из 45 — все затронутые). Dogfood with actual user tooling (brew binary, real client). Silent failures (PROB-035, PROB-039) все от того что протестировали только happy path.
 6. **DO NOT leave PRD stubs** — `forgeplan new prd` → immediately fill in the MUST sections.
 7. **DO NOT activate an artifact without code and evidence** — R_eff must be > 0. **EvidencePack body MUST contain** `verdict:`, `congruence_level:`, `evidence_type:` — без этих structured fields parser тихо ставит CL0 (silent failure → R_eff = 0.1).
 
