@@ -42,7 +42,7 @@ TOTAL                              0/0   (  0%)
 
 1. **Visibility**: grep README для 12 ключевых команд (`estimate`, `calibrate`, `discover`, `blindspots`, `decompose`, `journal`, `drift`, `coverage`, `tag`, `remember`, `recall`, `fpf`) → с 0 до 12 упоминаний в CLI `--help` grouped output (через `help_heading`).
 2. **Enterprise doors**: `forgeplan provider list/set/test` работает для Anthropic/OpenAI/Gemini/Ollama (4 провайдера вместо 1 hard-coded Gemini).
-3. **Compliance**: `forgeplan audit-report --standard eu-ai-act --format md` генерит non-empty markdown-отчёт со всеми per-artifact metadata (author, dates, evidence chain, R_eff history, supersession lineage) — готовый EU AI Act Art.9 audit trail.
+3. **Compliance**: `forgeplan audit-report --standard eu-ai-act --format md` генерит non-empty markdown-отчёт со всеми per-artifact metadata (author, dates, evidence chain, R_eff history, supersession lineage) — покрывает **EU AI Act Art.11 (Technical Documentation) + Art.12 (Record-keeping)**. НЕ претендует на Art.9 (Risk Management System = отдельный RMS process, не artifact-based export).
 4. **Binary delta**: LLM trait refactor adds ≤ 1 MB to 43 MB baseline (measured on release build).
 5. **Test suite**: current 1194 tests + ≥ 40 new integration tests across 5 PRDs, 0 flaky, 0 warnings.
 
@@ -52,7 +52,7 @@ TOTAL                              0/0   (  0%)
 - **ROADMAP признаёт дефицит**: Docs 60%, UX 70%, Distribution 65%.
 - **5★ на GitHub при 1194 тестах** = launch не произошёл; маркет не знает про существующий functionality.
 - **LlmClient — concrete struct** с `if/else` по provider → нельзя подменить на Anthropic/Ollama для enterprise клиентов (EU fintech/health/HR ML-компании с existing contracts).
-- **Нет compliance-export** → EU AI Act Art.9 deadline 2026-08-02 приближается, exporter'а нет.
+- **Нет compliance-export** → EU AI Act 2026-08-02 effective date приближается; enterprise-buyer не может предоставить Art.11 technical documentation без ручной сборки 50+ файлов.
 
 Все пять пунктов — не отсутствие фич, а дефицит **упаковки и разблокировки**. Одна инициатива вместо пяти, потому что outcomes завязаны друг на друга (doctor валидирует provider trait; audit-report использует grouped help discoverability; demo ссылается на новые meta-commands).
 
@@ -69,7 +69,7 @@ TOTAL                              0/0   (  0%)
 - **Sprint 2 — UX + Compliance MVP (PRD-051, PRD-052)**:
   - `forgeplan discover --quickstart <path>` (scan + auto-tag + seed PRD из T1 файла);
   - `forgeplan fpf explain <rule-id>` + `forgeplan fpf examples <section>`;
-  - `forgeplan audit-report --standard eu-ai-act --format md|json` (MVP: EU AI Act Art.9 only, per-artifact metadata + evidence chain + R_eff history + supersession lineage).
+  - `forgeplan audit-report --standard eu-ai-act --format md|json` (MVP: EU AI Act **Art.11 + Art.12** mapping via Annex IV, per-artifact metadata + evidence chain + R_eff history + supersession lineage).
 - **Sprint 3 — Enterprise Unblocker (ADR-007, PRD-053)**:
   - ADR-007: выбор dispatch strategy для LLM provider (trait object / enum / generics);
   - Trait `LlmProvider` + 4 реализации (Anthropic, OpenAI-compatible, Gemini, Ollama);
@@ -97,6 +97,7 @@ TOTAL                              0/0   (  0%)
 | PRD | PRD-052 | Audit Report MVP Markdown | Draft | ForgePlan Team |
 | PRD | PRD-053 | LLM Provider Trait | Draft | ForgePlan Team |
 | ADR | ADR-007 | LLM Provider Dispatch | Draft | ForgePlan Team |
+| SPEC | SPEC-002 | LLM Provider trait contract (error taxonomy, retry, auth, mock) | Draft | ForgePlan Team |
 
 ## Dependency Graph
 
@@ -108,9 +109,12 @@ graph TD
     EPIC --> PRD052[PRD-052]
     EPIC --> PRD053[PRD-053]
     PRD053 --> ADR007[ADR-007]
+    PRD053 --> SPEC007[SPEC-007]
     PRD050 -.->|blocked by| PRD049
-    PRD053 -.->|blocked by| PRD052
+    PRD053 -.->|blocked by| PRD050
 ```
+
+Note: PRD-053 depends on PRD-050 because its FR-006 edits `doctor.rs` (introduced in PRD-050) to add legacy provider migration warning. PRD-052 is independent of PRD-053 (no code coupling).
 
 ## Phases
 
@@ -121,7 +125,7 @@ graph TD
 
 ### Phase 2: UX + Compliance MVP (Sprint 2)
 - PRD-051 + PRD-052 (parallel, разные модули — `discover`/`fpf` vs `audit_report`).
-- Outcome: quickstart onboarding для brownfield + EU AI Act Art.9 audit trail exporter.
+- Outcome: quickstart onboarding для brownfield + EU AI Act Art.11/Art.12 audit trail exporter.
 
 ### Phase 3: Enterprise Unblocker (Sprint 3)
 - ADR-007 → PRD-053 (ADI обязателен для ADR-007, решает dispatch strategy).
@@ -138,15 +142,19 @@ graph TD
 | Binary size bloat from dispatch refactor | Medium | Measured in ADR-007; reject if > 1 MB delta |
 | Parallel PRD conflicts | Low | Strict file ownership; dependent-sprint rule enforced |
 
-## Timeline
+## Timeline (rebudgeted after audit 2026-04-17)
 
-| Phase | Start | End | Status |
-|-------|-------|-----|--------|
-| Phase 1 (Sprint 1, PRD-049 + PRD-050) | Day 1 | Day 4 | Not Started |
-| Phase 2 (Sprint 2, PRD-051 + PRD-052) | Day 5 | Day 9 | Not Started |
-| Phase 3 (Sprint 3, ADR-007 + PRD-053) | Day 10 | Day 14 | Not Started |
+| Phase | Estimate | Status | Scope |
+|-------|----------|--------|-------|
+| Phase 1 (Sprint 1, PRD-049 + PRD-050) | 6-8 дней | Not Started | 60 `help_heading` + 3 new commands (`commands`, `demo`, `doctor`) + `estimate` table refactor. Doctor alone has 7 checks + `--fix` + `--ci` + JSON schema. |
+| Phase 2 (Sprint 2, PRD-051 + PRD-052) | 5-6 дней | Not Started | `discover --quickstart`, `fpf explain`, `fpf examples`, `audit-report --standard eu-ai-act` with Art.11/12 Annex IV mapping. Parallel tracks — 2 independent modules. |
+| Phase 3 (Sprint 3, ADR-007 + SPEC-002 + PRD-053) | 7-8 дней | Not Started | LLM trait refactor + 4 providers (Anthropic/OpenAI/Gemini/Ollama) + runtime switch + legacy compat + ≥12 integration tests. Spec contract now separate (SPEC-002) — frees PRD-053 from signature-design overhead. |
 
-Total: 11-14 рабочих дней, ~3 календарных недели включая audit/review. Release target: v0.20.0.
+**Total: 18-22 рабочих дня**, ~4-5 календарных недель включая audit/review/fixes. Release target: v0.20.0.
+
+**Budget flex**: if Sprint 3 over-runs (providers often slip on auth/rate-limit edge cases), Ollama provider → NOTE follow-up, v0.20.0 ships with 3 providers (Anthropic, OpenAI, Gemini). If Sprint 1 over-runs, `doctor --fix` → follow-up v0.20.1 hotfix.
+
+**Original estimate (11-14 days) was rejected by audit F3** as unrealistic. Root causes of the optimism: (1) doctor complexity underestimated, (2) 4-provider LLM integration requires separate HTTP clients + per-provider error mapping ≈ 2 days each.
 
 ## Implementation Log
 

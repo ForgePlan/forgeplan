@@ -40,30 +40,43 @@ TOTAL                               0/0  (  0%)
 
 ### Vision
 
-One-command compliance export: `forgeplan audit-report --standard eu-ai-act --format md`
+One-command technical documentation export: `forgeplan audit-report --standard eu-ai-act --format md`
 генерирует markdown-отчёт со всеми per-artifact metadata (author, activation date,
-evidence chain, R_eff history, supersession lineage), готовый к приложению в compliance
-package для EU AI Act Article 9.
+evidence chain, R_eff history, supersession lineage), покрывающий **EU AI Act Article 11
+(Technical Documentation)** и **Article 12 (Record-keeping)** — part of a full compliance
+package, not the full compliance system.
+
+### Scope clarification (post-audit 2026-04-17)
+
+**This PRD addresses Art.11 (technical documentation) and Art.12 (record-keeping).**
+
+**This PRD does NOT address Art.9 (Risk Management System)** — Art.9 requires hazard
+identification, residual-risk analysis, testing under foreseeable misuse, post-market
+monitoring feedback loop. That is a separate RMS process, not artifact-based export.
+Future PRD may add Art.9 RMS support via Problem/Solution/Evidence pipeline, but not
+this MVP.
 
 ### Problem
 
 EU AI Act вступает в силу 2026-08-02. High-risk AI-системы (fintech, health, HR)
-обязаны предоставлять audit trail каждого инженерного решения с evidence. У ForgePlan
-уже есть все необходимые данные: PRD/ADR в git, EvidencePack с CL-level, R_eff decay,
-supersession chains. Чего нет — единой команды, которая собирает это в compliance-отчёт.
+обязаны предоставлять **technical documentation** (Art.11) и вести **records** (Art.12)
+каждого инженерного решения с evidence. У ForgePlan уже есть все необходимые данные:
+PRD/ADR в git, EvidencePack с CL-level, R_eff decay, supersession chains. Чего нет —
+единой команды, которая собирает это в compliance-отчёт соответствующий Art.11 §§ 1-8.
 
-**Impact**: enterprise compliance-buyer не может показать audit regulator без ручной
-сборки 50+ markdown-файлов; CTO fintech-компании тратит 10 часов в год на аудит; ML-ops
-lead не может доказать audit trail для ML-decisions. Compliance-кейс — один из двух
-enterprise-unblockers (вместе с LLM provider swap).
+**Impact**: enterprise compliance-buyer не может показать Art.11 technical documentation
+regulator без ручной сборки 50+ markdown-файлов; CTO fintech-компании тратит 10 часов
+в год на аудит; ML-ops lead не может предоставить Art.12 records для ML-decisions.
+Technical-documentation-кейс — один из двух enterprise-unblockers (вместе с LLM provider
+swap).
 
 ### Target Users
 
 | Персона | Описание | Ключевая боль |
 |---------|----------|---------------|
-| Compliance officer | Готовит audit package для EU AI Act Art.9 | Вручную собирает PRD + Evidence + ADR из 50+ markdown файлов |
-| CTO fintech | Готовит ежегодный compliance report | 10 часов ручной сборки → ошибки и пропуски в audit trail |
-| ML ops lead | Доказывает audit trail для ML-решений | Нет structured export; risks разбросаны по ADR |
+| Compliance officer | Готовит Art.11 technical documentation для EU AI Act audit | Вручную собирает PRD + Evidence + ADR из 50+ markdown файлов |
+| CTO fintech | Готовит ежегодный compliance report (Art.11 + Art.12) | 10 часов ручной сборки → ошибки и пропуски в audit trail |
+| ML ops lead | Предоставляет Art.12 records для ML-решений | Нет structured export; evidence разбросан по ADR |
 
 ### Differentiators
 
@@ -198,7 +211,7 @@ enterprise-unblockers (вместе с LLM provider swap).
 | ID | Category | Requirement | Metric | Condition | Measurement |
 |----|----------|-------------|--------|-----------|-------------|
 | NFR-001 | Performance | Report shall generate | < 5 s wall clock | 200-artifact workspace, markdown format | Integration test timing via `time` |
-| NFR-002 | Compliance | Report shall contain mandated sections per EU AI Act Art.9 | ≥ 5 sections per activated artifact | EU AI Act Article 9 clauses | Manual review + grep assertion |
+| NFR-002 | Compliance | Report shall map to EU AI Act Art.11 (Technical Documentation) sections §§ 1-8 | Explicit § mapping table in `audit_report/standards.rs` + ≥ 5 sections per activated artifact | EU AI Act Article 11 clauses (Annex IV mapping) | Schema assertion + manual legal review |
 | NFR-003 | Reliability | Report output shall be deterministic | Identical output | Identical workspace snapshot, same CLI flags | Snapshot test сравнением двух runs |
 
 ---
@@ -244,7 +257,8 @@ And report includes all artifacts activated on or after 2026-01-01
 
 | ID | Risk | Probability | Impact | Mitigation | Owner |
 |----|------|-------------|--------|------------|-------|
-| R-1 | EU AI Act clause interpretation меняется до 2026-08-02 | Medium | High | Схема в `audit_report/standards.rs` versioned; добавление новых sections через schema bump | ForgePlan Team |
+| R-1 | EU AI Act Art.11 / Annex IV interpretation меняется до 2026-08-02 | Medium | High | Схема в `audit_report/standards.rs` versioned (v1 = Annex IV 2024-07 baseline); добавление новых sections через schema bump; output включает `standard_version` поле | ForgePlan Team |
+| R-2 | Regulator rejects because we claimed Art.9 compliance but delivered Art.11 | — | — | **Resolved 2026-04-17**: scope clarified in Vision; README + --help output explicitly mentions Art.11 + Art.12, NOT Art.9 |
 | R-2 | Performance degrades на very large workspace (>1000 artifacts) | Low | Medium | Streaming markdown output; NFR-001 измеряется только на 200 artifacts | ForgePlan Team |
 
 ---

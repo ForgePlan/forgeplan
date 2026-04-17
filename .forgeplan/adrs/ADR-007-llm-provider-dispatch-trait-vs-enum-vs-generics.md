@@ -70,7 +70,15 @@ if self.config.is_anthropic() {
 | H2. Enum dispatch `Provider::Anthropic(A) \| Provider::OpenAi(O) \| Provider::Gemini(G) \| Provider::Ollama(Ol)` | Rejected | No heap, no vtable, exhaustiveness checked at compile time, zero-cost. Но **closed set** — добавление provider = enum variant = breaking change для downstream. Boilerplate растёт с каждым match. Enum был бы competitive для 2-3 фиксированных providers, но мы хотим плагин-путь. |
 | H3. Generics `LlmClient<P: LlmProvider>` | Rejected | Zero-cost, monomorphized, inlining possible. Но runtime switching через config-string исключает generics (monomorphization requires compile-time decision — `forgeplan provider set anthropic` невозможен). Binary size blow-up при multiple provider instantiations. Generic API infects all call sites. |
 
-**Decision criterion** (из плана EPIC-004): binary size delta + ergonomics для `forgeplan provider set`. H1 выигрывает по обоим: delta ≤ 200 KB (vs потенциальный blow-up у H3), runtime switch — native поведение trait object.
+**Decision criterion** (из плана EPIC-004): binary size delta + ergonomics для `forgeplan provider set`. H1 выигрывает по обоим: delta ≤ 1 MB (baseline 43 MB → max 44 MB; vs потенциальный blow-up у H3 через monomorphization), runtime switch — native поведение trait object.
+
+### H4. Enum-of-concrete + runtime dispatch (rejected after Round 2 audit consideration)
+
+`enum Provider { Anthropic(AnthropicClient), OpenAI(OpenAiClient), ... }` + `impl Provider { async fn generate(...) { match self { ... } } }`.
+
+**Why considered**: avoids `#[async_trait]` per-call `Box<Pin<dyn Future>>` allocation (which H1 incurs), while preserving runtime switching via enum variant chosen at config parse time.
+
+**Why rejected**: closed set — adding community plugin provider requires adding enum variant = breaking change for downstream. Same extensibility block as H2. If async-trait allocation becomes measured bottleneck (see Evidence Requirements), revisit via `trait-variant` / native AFIT in future Rust — not by closing the enum.
 
 ## Consequences
 
@@ -84,8 +92,9 @@ if self.config.is_anthropic() {
 
 ### Negative (trade-offs)
 
-- Heap allocation для `Box<dyn LlmProvider>` (один раз per process, не критично для CLI/MCP).
-- Vtable overhead на call (< 0.1% от LLM network latency → negligible).
+- Heap allocation для `Box<dyn LlmProvider>` конструкции (один раз per process, не критично для CLI/MCP).
+- Vtable overhead на каждый call (< 0.1% от LLM network latency → negligible).
+- **`#[async_trait]` allocates `Pin<Box<dyn Future>>` per-call** (not once per process — corrected from earlier draft). Measured in PRD-053 evidence; if per-call allocation > 1% LLM latency → evaluate `trait-variant` / native AFIT migration (Rust 1.75+ stabilized `async fn` in trait, but `dyn` compat still evolving as of 2026-04).
 - Minor complexity: `Box<dyn LlmProvider>` vs concrete struct (pay once в refactor PRD-053).
 
 ### Risks

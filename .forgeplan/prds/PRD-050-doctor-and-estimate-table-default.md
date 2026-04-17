@@ -201,7 +201,7 @@ Forgeplan поверх обычного estimation-тикета.
 |----|----------|----------|-------------|---------|
 | FR-001 | Core | Must | User can invoke `forgeplan doctor` to run at least 7 diagnostic checks (config, index, LLM provider, embed cache, directory structure, orphans, stale artifacts) | Journey 1 |
 | FR-002 | Core | Must | User can pass `--ci` flag to `forgeplan doctor` for structured JSON output and a non-zero exit code on critical failures | Journey 3 |
-| FR-003 | Core | Should | User can pass `--fix` flag to `forgeplan doctor` to auto-repair recoverable issues (rebuild embed cache, reindex) without destructive side effects | Journey 1 |
+| FR-003 | Core | Should | User can pass `--fix` flag to `forgeplan doctor` to auto-repair recoverable issues. Auto-repair operations are **explicitly enumerated** and touch only derived state: (a) rebuild `.fastembed_cache/`, (b) `scan-import` missing markdown rows into LanceDB, (c) clear stale lock files. Operations that could lose data (drop LanceDB tables, wipe markdown, modify `config.yaml`, re-run migrations) are NEVER performed by `--fix`. Non-interactive invocation requires `--fix --yes` (ditto for CI). | Journey 1 |
 | FR-004 | Core | Must | User can pass `--no-llm` flag to `forgeplan doctor` to skip the LLM provider reachability probe for offline or CI scenarios | Journey 3 |
 | FR-005 | Core | Must | Doctor must not mutate storage by default (read-only behavior when `--fix` is absent) | Journey 3 |
 | FR-006 | Core | Must | User can invoke `forgeplan estimate <id>` and receive a compact multi-grade table (Jun, Mid, Sen, PS, AI hours) as the default output | Journey 2 |
