@@ -879,10 +879,32 @@ impl ForgeplanServer {
             *by_status.entry(a.status.clone()).or_default() += 1;
         }
 
-        Ok(json_result(&StatusResponse {
+        let total = artifacts.len();
+        let draft_count = artifacts.iter().filter(|r| r.status == "draft").count();
+        let active_count = artifacts.iter().filter(|r| r.status == "active").count();
+
+        let next_action = if total == 0 {
+            "Empty workspace. Start with `forgeplan_route \"<task>\"` to determine depth, \
+             then `forgeplan_new` to create first artifact."
+                .to_string()
+        } else if draft_count > active_count {
+            format!(
+                "{} drafts pending (vs {} active). Use `forgeplan_list --status draft` \
+                 to pick next, then validate/activate.",
+                draft_count, active_count
+            )
+        } else {
+            format!(
+                "Workspace has {} artifacts. Use `forgeplan_health` for blind spots, \
+                 or `forgeplan_list --status draft` for pending work.",
+                total
+            )
+        };
+
+        let status_resp = StatusResponse {
             project: config.project_name,
             workspace: ws.display().to_string(),
-            total: artifacts.len(),
+            total,
             by_kind: by_kind
                 .into_iter()
                 .map(|(kind, count)| KindCount { kind, count })
@@ -891,7 +913,15 @@ impl ForgeplanServer {
                 .into_iter()
                 .map(|(status, count)| StatusCount { status, count })
                 .collect(),
-        }))
+        };
+        let mut v = serde_json::to_value(&status_resp).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "_next_action".into(),
+                serde_json::Value::String(next_action),
+            );
+        }
+        Ok(json_result(&v))
     }
 
     #[tool(
@@ -1094,7 +1124,35 @@ impl ForgeplanServer {
             fpf_weights.as_ref(),
         );
 
-        Ok(json_result(&ScoreResponse {
+        let next_action = if report.r_eff < 0.01 {
+            format!(
+                "R_eff = 0 (no valid evidence). Add EvidencePack: \
+                 `forgeplan_new kind=evidence` → fill structured fields \
+                 (verdict/congruence_level/evidence_type) → \
+                 `forgeplan_link EVID-XXX {} relation=informs`.",
+                target.id
+            )
+        } else if report.r_eff < 0.5 {
+            format!(
+                "R_eff = {:.2} (weak). Weakest link: {}. Strengthen weakest \
+                 evidence or address the weak link artifact first.",
+                report.r_eff,
+                report.weakest_link.as_deref().unwrap_or("self-score")
+            )
+        } else if report.r_eff < 0.8 {
+            format!(
+                "R_eff = {:.2} (adequate). Can activate via `forgeplan_review` + \
+                 `forgeplan_activate {}`. A second independent evidence would strengthen.",
+                report.r_eff, target.id
+            )
+        } else {
+            format!(
+                "R_eff = {:.2} (strong). Ready: `forgeplan_activate {}`.",
+                report.r_eff, target.id
+            )
+        };
+
+        let score_resp = ScoreResponse {
             id: target.id,
             title: target.title,
             r_eff: report.r_eff,
@@ -1107,7 +1165,16 @@ impl ForgeplanServer {
             weakest_link: report.weakest_link,
             factors: report.factors,
             decay_penalty: report.decay_penalty,
-        }))
+        };
+
+        let mut v = serde_json::to_value(&score_resp).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "_next_action".into(),
+                serde_json::Value::String(next_action),
+            );
+        }
+        Ok(json_result(&v))
     }
 
     #[tool(
@@ -1601,6 +1668,39 @@ impl ForgeplanServer {
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
+        // Workflow chaining hint — research Priority 5.
+        let next_action = if !report.blind_spots.is_empty() {
+            format!(
+                "Fix {} blind spot(s) first — active artifacts without evidence. \
+                 Use `forgeplan_score <id>` to inspect, then create EvidencePack \
+                 with structured fields (verdict/congruence_level/evidence_type) \
+                 and link via `forgeplan_link EVID-XXX <id>`.",
+                report.blind_spots.len()
+            )
+        } else if !report.orphans.is_empty() {
+            format!(
+                "Address {} orphan artifact(s) — active without any links. \
+                 Use `forgeplan_link` to connect, or `forgeplan_deprecate` if obsolete.",
+                report.orphans.len()
+            )
+        } else if !report.at_risk.is_empty() {
+            format!(
+                "Review {} at-risk decision(s) with low R_eff. Use `forgeplan_score <id>` \
+                 to see weakest links.",
+                report.at_risk.len()
+            )
+        } else if report.stale_count > 0 {
+            format!(
+                "Refresh {} stale artifact(s) — evidence past valid_until. \
+                 Use `forgeplan_renew <id>` or `forgeplan_reopen <id>`.",
+                report.stale_count
+            )
+        } else {
+            "Project healthy. Continue with `forgeplan_list --status draft` to review \
+             pending work, or `forgeplan_route \"<task>\"` to start new feature."
+                .to_string()
+        };
+
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
@@ -1615,6 +1715,7 @@ impl ForgeplanServer {
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
             "next_actions": report.next_actions,
+            "_next_action": next_action,
         })))
     }
 
@@ -1882,41 +1983,60 @@ impl ForgeplanServer {
         if let Some(artifact_id) = &p.id {
             let blocked_by = topological::get_blocked_by(artifact_id, &relations, &resolved_ids);
             let is_blocked = !blocked_by.is_empty();
-            let resp = BlockedResponse {
-                blocked: if is_blocked {
-                    vec![BlockedEntry {
-                        id: artifact_id.clone(),
-                        blocked_by,
-                    }]
-                } else {
-                    vec![]
-                },
-                ready_count: if is_blocked { 0 } else { 1 },
-                blocked_count: if is_blocked { 1 } else { 0 },
-                cycles: vec![],
+            let next_action = if is_blocked {
+                format!(
+                    "`{artifact_id}` blocked by {} dependency/dependencies. Resolve them \
+                     first: activate if ready (`forgeplan_activate <dep>`), or supersede/\
+                     deprecate if obsolete.",
+                    blocked_by.len()
+                )
+            } else {
+                format!(
+                    "`{artifact_id}` has no blockers — ready for next phase. \
+                     If in draft, proceed with `forgeplan_review <id>` + `forgeplan_activate <id>`."
+                )
             };
-            Ok(json_result(&resp))
+            Ok(json_result(&serde_json::json!({
+                "blocked": if is_blocked {
+                    vec![serde_json::json!({"id": artifact_id, "blocked_by": blocked_by})]
+                } else { vec![] },
+                "ready_count": if is_blocked { 0 } else { 1 },
+                "blocked_count": if is_blocked { 1 } else { 0 },
+                "cycles": Vec::<String>::new(),
+                "_next_action": next_action,
+            })))
         } else {
             let result = topological::kahn_sort(&relations, &resolved_ids);
-            let resp = BlockedResponse {
-                blocked: result
-                    .blocked
-                    .into_iter()
-                    .map(|(id, deps)| BlockedEntry {
-                        id,
-                        blocked_by: deps,
-                    })
-                    .collect(),
-                ready_count: result.ready.len(),
-                blocked_count: result.cycles.len(), // overwritten below
-                cycles: result.cycles,
+            let blocked: Vec<_> = result
+                .blocked
+                .into_iter()
+                .map(|(id, deps)| serde_json::json!({"id": id, "blocked_by": deps}))
+                .collect();
+            let next_action = if !result.cycles.is_empty() {
+                format!(
+                    "⚠ {} cycle(s) detected — circular dependencies must be broken before \
+                     any blocked artifact can proceed. Use `forgeplan_graph` to visualize.",
+                    result.cycles.len()
+                )
+            } else if !blocked.is_empty() {
+                format!(
+                    "{} blocked + {} ready. Work ready artifacts first, or resolve blockers \
+                     in topological order (`forgeplan_order`).",
+                    blocked.len(),
+                    result.ready.len()
+                )
+            } else {
+                "All active artifacts ready — no blockers. Continue with implementation \
+                 or `forgeplan_list --status draft` to see pending work."
+                    .to_string()
             };
-            let blocked_count = resp.blocked.len();
-            let resp = BlockedResponse {
-                blocked_count,
-                ..resp
-            };
-            Ok(json_result(&resp))
+            Ok(json_result(&serde_json::json!({
+                "blocked": blocked,
+                "ready_count": result.ready.len(),
+                "blocked_count": result.cycles.len(),
+                "cycles": result.cycles,
+                "_next_action": next_action,
+            })))
         }
     }
 
