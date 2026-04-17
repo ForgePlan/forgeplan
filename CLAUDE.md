@@ -13,7 +13,7 @@ Instructions for Claude Code when working in this repository.
 4. **DO NOT push to a branch after a PR is merged** — squash loses late commits.
 5. **DO NOT create a PR before `Code → Audit → Fix → Test → Fmt → Lint → Verify`**.
 6. **DO NOT leave PRD stubs** — `forgeplan new prd` → immediately fill in the MUST sections.
-7. **DO NOT activate an artifact without code and evidence** (R_eff must be > 0).
+7. **DO NOT activate an artifact without code and evidence** — R_eff must be > 0. **EvidencePack body MUST contain** `verdict:`, `congruence_level:`, `evidence_type:` — без этих structured fields parser тихо ставит CL0 (silent failure → R_eff = 0.1).
 
 Everything else in this file is guidelines, not red lines.
 
@@ -219,19 +219,55 @@ Hook: `.claude/hooks/forge-safety-hook.sh`. Whitelist: `settings.local.json`.
 ## Rust coding rules
 
 1. **Complex patterns** → activate skills: `rust-expert`, `m01-ownership`, `m06-error-handling`, `m07-concurrency`
-2. **Every new `pub fn` = test immediately** — do not move to the next function without a test. Hook `commit-test-check.sh` blocks the commit
-3. **Before commit**: `cargo fmt` (hook `pre-commit-fmt.sh` blocks) + `cargo check`
-4. After significant changes: `/audit` with at least 2 agents
-5. `/fpf` for architectural decisions and trade-offs; `/forge` for structured workflow
+2. **Every new `pub fn` = test immediately** — не переходить к следующей функции без теста. Pattern:
+   ```
+   write pub fn → write test → cargo test → next pub fn
+   ```
+   НЕ собирать «пачку функций без тестов и потом тесты всем сразу» — теряется изоляция багов.
+3. **Before commit** (mandatory order):
+   - `cargo fmt` — форматирование
+   - `cargo fmt -- --check` — 0 diffs
+   - `cargo check` — 0 warnings
+   - `cargo test` — все PASS
+   - `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings (строже с Rust 1.95)
+4. **After significant changes** — `/audit` с 2+ агентами (адверсариально: reviewer ДОЛЖЕН найти issues; 0 findings → re-review)
+5. **Tools**: `/fpf` для архитектурных решений; `/forge` для structured workflow; `/forge-cycle` для полного FPF-aligned цикла
+
+---
+
+## Hooks enforcement (safety net)
+
+Hooks в `.claude/hooks/` блокируют нарушения методологии на уровне shell:
+
+| Hook | Блокирует | Когда |
+|------|-----------|-------|
+| `forge-safety-hook.sh` | 🔴 команды (rm -rf /, cargo publish, DROP, force-push) | pre-tool-use |
+| `pre-commit-fmt.sh` | коммит если `cargo fmt --check` dirty | git commit |
+| `commit-test-check.sh` | коммит если новая `pub fn` без теста | git commit |
+| `pr-todo-check.sh` | PR с незакрытыми P0 | pre-push |
+
+**Hooks — safety net, НЕ замена дисциплины**. LLM должен помнить правила во время работы, а не полагаться что hook остановит.
 
 ---
 
 ## AI-agents (non-interactive hygiene)
 
 - `forgeplan init` — **always** with `-y` (no interactive prompt)
-- Config `.forgeplan/config.yaml` — in gitignore, lost on reinit → configure LLM provider after init
-- LanceDB migration: new columns → `forgeplan export` → backup → reinit → `forgeplan import`
-- **Dependent sprints**: if a new sprint depends on code from another (not yet merged) — verify the base branch before starting: `git log <base> --oneline | grep <PR-id>`. If missing — wait for merge or branch from feature branch. Details: `docs/methodology/LESSONS.ru.md`
+- Config `.forgeplan/config.yaml` — в gitignore, теряется на reinit → настроить LLM provider после init
+- **Backup перед reinit** (4-step для LanceDB migration или corruption):
+  1. `forgeplan export --output backup-$(date +%Y%m%d).json`
+  2. `cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)`
+  3. `rm -rf .forgeplan && forgeplan init -y`
+  4. `forgeplan import backup-ДАТА.json`
+- **Dependent sprints**: если новый sprint зависит от кода другого (ещё не merged) — `git log <base> --oneline | grep <PR-id>` перед началом. Если нет — wait for merge или branch from feature branch. Details: `docs/methodology/LESSONS.ru.md`
+- **Smoke test после каждого спринта** перед commit:
+  ```bash
+  cargo fmt && cargo fmt --check && cargo check && cargo test       # Rust pipeline
+  forgeplan init -y && forgeplan new prd "Smoke" && forgeplan validate PRD-XXX
+  forgeplan score PRD-XXX && forgeplan blocked && forgeplan order   # Methodology
+  forgeplan fpf ingest && forgeplan fpf search "trust"              # FPF KB
+  ```
+  Any fail → **НЕ коммитить**, fix first.
 
 ---
 
