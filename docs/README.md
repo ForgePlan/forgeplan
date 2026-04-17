@@ -35,6 +35,7 @@ Full methodology reference. Canonical source for humans learning to use Forgepla
 | [USAGE-BY-ROLE.md](methodology/USAGE-BY-ROLE.md) | How to use Forgeplan based on your role |
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Full learning path (course format) |
 | [GLOSSARY.md](methodology/GLOSSARY.md) | 31 terms + lifecycle reference table |
+| [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint base verification, audit incidents, process improvements |
 
 ## Operations
 
@@ -45,6 +46,8 @@ Setup, hooks, and repository protection.
 | [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Rules and guardrails for AI agents working in this project |
 | [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | PreToolUse / PostToolUse hooks (safety, formatting, tests) |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Branch protection, PR rules, destructive-action prevention |
+| [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Full Git rules — branching lifecycle, PR pipeline, release process, worktrees |
+| [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — what was ported from `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` to our crates |
 
 ## Schemas
 

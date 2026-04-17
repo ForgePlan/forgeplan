@@ -1,816 +1,373 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Instructions for Claude Code when working in this repository.
+**Documentation language**: Russian. **Code**: Rust with English identifiers.
 
-## Что это за проект
+---
 
-**Forgeplan** — универсальная Rust-платформа (CLI + Desktop App) для ведения любого проекта от идеи до реализации через структурированные артефакты с quality scoring, semantic search и evidence tracking.
+## 🔴 RED LINES (never do)
 
-**Формула**:
+1. **DO NOT `rm -rf .forgeplan`** — first `forgeplan export --output backup.json` + `cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)`.
+2. **DO NOT `git push`** until the user has explicitly approved the PR after review.
+3. **DO NOT commit directly to `main` or `dev`** — always `feature branch → PR → merge`.
+4. **DO NOT push to a branch after a PR is merged** — squash loses late commits.
+5. **DO NOT create a PR before `Code → Audit → Fix → Test → Fmt → Lint → Verify`**.
+6. **DO NOT leave PRD stubs** — `forgeplan new prd` → immediately fill in the MUST sections.
+7. **DO NOT activate an artifact without code and evidence** — R_eff must be > 0. **EvidencePack body MUST contain** `verdict:`, `congruence_level:`, `evidence_type:` — без этих structured fields parser тихо ставит CL0 (silent failure → R_eff = 0.1).
+
+Everything else in this file is guidelines, not red lines.
+
+---
+
+## 🎯 Terminology precision (reasoning rule)
+
+**Не использовать специализированные термины** (hexagonal, monadic, idempotent,
+bounded context, SOLID, и т.д.) если не можешь точно обосновать как техническое
+значение термина маппится на текущий контекст. Buzzword-matching звучит умно, но
+вводит в заблуждение.
+
+**Правильный порядок**: сначала назвать суть паттерна своими словами, потом
+(если уверен) упомянуть official term как cross-reference — не наоборот.
+
+**Пример неправильно**: «это hexagonal principle применённый к памяти» (hexagonal
+про изоляцию domain от I/O — не про гранулярность storage).
+**Правильно**: «разбиение на фокусированные записи с чёткими границами — это
+bounded contexts из DDD, или просто separation of concerns».
+
+---
+
+## What is this project
+
+**Forgeplan** — Rust CLI + MCP server (+ planned Tauri desktop) for running
+a project from idea to implementation through structured artifacts: PRD, RFC, ADR,
+Epic, Spec + Evidence, Problem, Note. Quality scoring via R_eff (weakest-link),
+semantic search via BGE-M3, typed links, lifecycle with validation gates.
+
+**Formula**: `Quint-code (R_eff, evidence) + BMAD (13-step PRD) + OpenSpec (DAG, delta-specs) + FPF (ADI, trust calculus) + git-adr (clap CLI) + LanceDB + Tauri`.
+
+Маппинг "что откуда портировано" (reference repos в `sources/` → наши crates):
+[`docs/operations/SOURCE-PORTING.ru.md`](docs/operations/SOURCE-PORTING.ru.md).
+
+**CLI**: `forgeplan` (alias: `fpl`).
+
+**Полный индекс документации**: [`docs/README.md`](docs/README.md) — map всех
+гайдов (methodology, operations, schemas) и артефактов в `.forgeplan/`.
+
+## Current status
+
+- **v0.19.0** (2026-04-16) — `forgeplan mcp install`, website i18n RU (144 pages),
+  Rust 1.95 clippy compliance, PRD-048/PROB-037 closed
+- **~58 CLI commands**, **~47 MCP tools**, **1194 tests**, **0 warnings** on both feature configs
+- **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
+- FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
+
+Details: `TODO.md` (priorities), `CHANGELOG.md` (history), `docs/ROADMAP.md` (gap analysis).
+
+---
+
+## Session Start — context priming
+
+Three sources loaded in parallel. `MEMORY.md` is auto-loaded every turn — no command needed.
+Call `memory_recall` only for records beyond the index.
+
+| Source | Command | What it gives |
+|---|---|---|
+| Memory (long-term) | `memory_recall("Forgeplan")` | Prev sessions, lessons (only beyond auto-index) |
+| Workspace (current) | `forgeplan health` | Blind spots, orphans, stale artifacts |
+| Tasks (ongoing) | `mcp__orch__query_entities(status: "in_progress")` | Who does what now |
+
+**Rules:**
+- If a source is unavailable — continue without it, note it in the response.
+- **Do NOT read at start**: `TODO.md`, `CHANGELOG.md`, `docs/ROADMAP.md` — only when directly relevant.
+- **Re-warm mid-session** when switching area: `forgeplan list <kind>` or read the specific artifact.
+- **"Enough context"** = can name current sprint, active PRD/RFC, any blind spots.
+- If health shows blind spots (active without evidence) or orphans — **fix them before new work**.
+
+---
+
+## Full cycle (single source, not duplicated)
+
 ```
-Forgeplan = Quint-code (decision engine, R_eff scoring, evidence decay)
-          + BMAD (PRD workflow, 13-step validation, adversarial review)
-          + OpenSpec (artifact DAG, delta-specs, custom schemas)
-          + FPF (reasoning framework, ADI cycle, trust calculus)
-          + git-adr (Rust CLI patterns, clap, templates)
-          + LanceDB (embedded DB: tables + vectors в одном)
-          + Tauri (desktop app: React UI + shared Rust core)
-```
-
-**CLI**: `forgeplan` (alias: `fpl`)
-**Desktop**: Tauri 2.0 + React (shared Rust core)
-**Язык документации**: русский. Код: Rust с английскими идентификаторами.
-
-## Текущий статус
-
-- **v0.19.0** released 2026-04-16 — `forgeplan mcp install` (one-command MCP setup
-  for Claude Code/Cursor/Windsurf) + website i18n RU (144 pages) + Mermaid diagrams +
-  Rust 1.95 clippy compliance + PRD-048 + PROB-037 closed
-- **v0.18.0** released 2026-04-11 — Production BM25 (`bm25` crate v2.3.2) +
-  Russian morphology (LanguageMode::Detect, Snowball stemmer) + template noise
-  stripping + O(N) batch search + 8-point verification checklist + health debt cleared
-- **v0.17.2** quality hotfix 2026-04-09 — PROB-030..034 + F1/F2 hardening
-- **v0.17.1** hotfix 2026-04-09 — PROB-028 phantom rows + PROB-029 health verdict
-- **v0.17.0** released 2026-04-08 — **EPIC-003 complete** (Search, Discovery, Intelligence)
-- **~58 CLI команд**, **~47 MCP tools**, **1194 тестов** (+44 от v0.18.0 baseline 1150)
-- **0 warnings** на обоих feature configs (default + `semantic-search`)
-- EPIC-001 (foundation) ✅ | EPIC-002 (v2.0 vision) ✅ | **EPIC-003 (v0.17.0)** ✅
-- **7 PRDs активированы** в v0.17.0: PRD-035 (tags + discover), PRD-039 (BM25 search),
-  PRD-040 (scoring intelligence), PRD-041 (FPF rules), PRD-042 (FPF KB vector search,
-  supersedes PRD-018), PRD-043 (methodology integrity), PRD-044 (не используется)
-- **NOTE-044** (Sprint Checklist Framework) + **NOTE-045** (deferred debts) как
-  reusable quality gates для будущих спринтов
-- **FPF KB** поддерживает semantic search через BGE-M3 (feature-gated, graceful fallback)
-- **Phase 5** (Desktop App, Tauri) — backlog
-
-Подробности: `TODO.md` (текущие приоритеты), `CHANGELOG.md` (история релизов),
-`docs/ROADMAP.md` (gap analysis: Architecture 85%, UX 70%, Distribution 65%, Docs 60%).
-
-## Как начать работу в новом чате
-
-1. **Прочитай этот файл** — CLAUDE.md содержит CLI workflow, методологию, git-конвенции
-2. **`forgeplan health`** — понять текущее состояние проекта (artifacts, blind spots, next actions)
-3. **Для текущих задач** — `TODO.md`
-4. **Полный гайд по CLI и методологии** — `docs/methodology/FORGEPLAN-GUIDE.md`
-5. **Для reference code** — `sources/` (read-only repos, см. таблицу ниже)
-6. **Используй Hindsight** — `memory_recall("Forgeplan")` для быстрого восстановления контекста
-
-### ОБЯЗАТЕЛЬНО перед работой над задачей:
-
-```bash
-forgeplan route "описание задачи"   # определи depth и pipeline
-```
-
-Если route говорит Standard+ → создай артефакт ПЕРЕД кодингом. Если Tactical → просто делай.
-
-### ОБЯЗАТЕЛЬНО при создании артефакта (Shape → Validate → ADI → Code):
-
-1. **`forgeplan new prd "Title"`** — создаёт stub из шаблона
-2. **СРАЗУ заполни ВСЕ MUST секции** — Problem, Goals, Non-Goals, Target Users, Related, FR
-3. **`forgeplan validate PRD-XXX`** — убедись что PASS (0 MUST errors)
-4. **ADI reasoning** (для Standard+ depth):
-   ```bash
-   forgeplan reason PRD-XXX           # 3+ гипотезы, justified confidence
-   ```
-   - Прочитай hypotheses — есть ли лучший подход чем первая мысль?
-   - Если все гипотезы сходятся → уверенно кодь
-   - Если есть конкурирующие подходы → обсуди с пользователем перед кодом
-   - Для Deep/Critical: ADI **ОБЯЗАТЕЛЕН**, нельзя пропускать
-   - Для Tactical: пропускай ADI
-5. **Только ПОСЛЕ validate PASS + ADI** — начинай писать код
-
-**НЕ оставляй PRD-заглушки.** Stub PRD без Problem/Goals = "решение без обоснования".
-
-### ОБЯЗАТЕЛЬНО после реализации (Code → Evidence → Activate):
-
-1. **Создай EvidencePack** с фактами (тесты, LOC, dogfood результаты):
-   ```bash
-   forgeplan new evidence "Описание что подтверждено"
-   # Добавь в body: verdict: supports, congruence_level: 3, evidence_type: test
-   forgeplan link EVID-XXX PRD-XXX --relation informs
-   ```
-2. **Проверь R_eff** — `forgeplan score PRD-XXX` → должен быть > 0
-3. **Review и activate** — `forgeplan review PRD-XXX` → `forgeplan activate PRD-XXX`
-4. **Обнови прогресс** — чекбоксы FR `[x]` в PRD/RFC
-
-**Работа не закончена, пока: PRD заполнен + validate PASS + ADI (для Standard+) + evidence создан + R_eff > 0 + activated.**
-
-> **ПОЛНЫЙ ЦИКЛ (Standard+ depth) — не пропускай шаги:**
-> ```
-> 1. Session Start: memory_recall → forgeplan health → orch query
-> 2. Route: forgeplan route "задача" → определить depth
-> 3. Shape: forgeplan new prd → заполнить MUST секции
-> 4. Validate: forgeplan validate → PASS
-> 5. ADI: forgeplan reason → 3+ гипотезы (Deep/Critical: ОБЯЗАТЕЛЕН)
-> 6. Branch: git checkout -b feat/xxx
-> 7. Code: реализация + тест на каждую pub fn
-> 8. Test: cargo test → 0 failures
-> 9. Fmt: cargo fmt → cargo fmt --check = 0 diffs
-> 10. Lint: cargo check → 0 warnings
-> 11. Audit: /audit (2+ агента) → Fix all HIGH/CRITICAL
-> 12. Evidence: forgeplan new evidence → link → score (R_eff > 0)
-> 13. Activate: forgeplan activate
-> 14. PR: git push → gh pr create --base dev
-> 15. Merge: gh pr merge (merge commit, НЕ squash)
-> 16. Sync: orch task → Done + memory_retain в Hindsight
-> 17. Progress: TODO.md + RFC/PRD чекбоксы
-> ```
-> **Tactical depth**: Route → Branch → Code → Test → Fmt → Lint → Commit. Без артефакта, ADI, evidence, PR.
-
-### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
-
-```bash
-# 0. Format + Lint
-cargo fmt                               # Форматирование
-cargo fmt -- --check                    # Проверка: 0 diffs
-cargo check                             # Компиляция: 0 warnings, 0 errors
-
-# 1. Unit tests
-cargo test                              # ВСЕ должны PASS
-
-# 2. Workspace init (AI всегда использует -y!)
-forgeplan init -y                       # НИКОГДА без -y в AI контексте
-
-# 3. Core operations
-forgeplan new prd "Smoke Test"          # Создание артефакта
-forgeplan validate PRD-XXX              # Валидация работает
-forgeplan score PRD-XXX                 # F-G-R scoring работает
-
-# 4. Новые фичи (PRD-016+)
-forgeplan blocked                       # Граф зависимостей
-forgeplan order                         # Topological sort
-
-# 5. FPF Knowledge Base (PRD-021)
-forgeplan fpf ingest                    # 204 секции загружены
-forgeplan fpf search "trust"            # Поиск находит B.3
-
-# 6. LLM integration
-GEMINI_API_KEY=<key> forgeplan reason PRD-XXX --fpf  # ADI + FPF context
+1. Route:    forgeplan route "task"          → determine depth
+2. Shape:    forgeplan new prd "Title"       → immediately fill MUST sections
+3. Validate: forgeplan validate PRD-XXX      → PASS (0 MUST errors)
+4. ADI:      forgeplan reason PRD-XXX        → 3+ hypotheses (Deep/Critical: REQUIRED)
+5. Branch:   git checkout dev && git pull && git checkout -b feat/xxx
+6. Code:     implementation + test for every pub fn
+7. Test:     cargo test                      → 0 failures
+8. Fmt:      cargo fmt && cargo fmt --check  → 0 diffs
+9. Lint:     cargo check                     → 0 warnings
+10. Audit:   /audit (at least 2 agents)      → Fix all HIGH/CRITICAL
+11. Evidence: forgeplan new evidence + link  → score > 0
+12. Activate: forgeplan activate PRD-XXX
+13. PR:      git push && gh pr create --base dev
+14. Merge:   gh pr merge (merge commit — feat → dev; release → main)
+15. Sync:    Orchestra task → Done + memory_retain
+16. Progress: update FR checkboxes in PRD/RFC + TODO.md
 ```
 
-**Если любой шаг fail — НЕ коммитить. Починить сначала.**
+**Tactical depth** (trivial, reversible, 1 file): Route → Branch → Code → Test → Fmt → Lint → Commit. No artifact, ADI, evidence, PR.
 
-### ВАЖНО для AI агентов:
-- **`forgeplan init`** — ВСЕГДА с `-y` флагом (без interactive prompt)
-- **Config после init** — проверить `.forgeplan/config.yaml`, настроить LLM provider
-- **`.forgeplan/` в gitignore** — workspace данные НЕ трекаются, config теряется при reinit
-- **LanceDB migration** — новые columns требуют reinit workspace (`rm -rf .forgeplan && forgeplan init -y`)
+**Work is not done** until: PRD filled + validate PASS + ADI (Standard+) + evidence + R_eff > 0 + activated.
 
-### ОБЯЗАТЕЛЬНО при написании Rust кода:
+---
 
-1. **Перед сложными паттернами** — активируй Rust skills:
-   - `Skill("rust-expert")` — ownership, lifetimes, async, error handling
-   - `Skill("m01-ownership")` — borrow checker issues
-   - `Skill("m06-error-handling")` — Result, Option, anyhow patterns
-   - `Skill("m07-concurrency")` — async/Send/Sync issues
-2. **Каждая новая `pub fn` = тест сразу** — НЕ переходи к следующей функции без теста. Hook `commit-test-check.sh` блокирует коммит без тестов.
-3. **После написания кода** — `cargo fmt` + `cargo test` обязательны. Не коммить если тесты fail или fmt dirty
-4. **Перед коммитом** — `cargo fmt` (форматирование) + `cargo check` (линтинг). Hook `pre-commit-fmt.sh` блокирует коммит без форматирования
-5. **После значительных изменений** — `/audit` с Rust skills (минимум 2 агента)
-5. **Используй `/fpf-simple`** для архитектурных решений и trade-off анализа
-6. **Используй `/forge`** для structured workflow (route → create → validate → code)
+## Routing — one question determines depth
 
-### ОБЯЗАТЕЛЬНО ��а session start (Unified Workflow Protocol):
+| Complexity | Depth | Artifacts | ADI |
+|---|---|---|:---:|
+| Trivial, reversible within a day | Tactical | nothing or Note | — |
+| Feature 1–3 days, has a choice | Standard | PRD → RFC | recommended |
+| Irreversible, 1–2 weeks | Deep | PRD → Spec → RFC → ADR | **required** |
+| Cross-team, strategy | Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] | **required + review** |
 
-```bash
-# 1. Память — восстановить контекст
-memory_recall("Forgeplan")              # Hindsight: что было в прошлых сессиях
+**5 artifacts = 5 questions:**
 
-# 2. Методология — состояние проекта
-forgeplan health                        # Blind spots, orphans, stale
+| Question | Artifact | NOT needed if |
+|---|---|---|
+| WHAT and why? | PRD / Brief | bug-fix, refactor |
+| HOW EXACTLY does it work? | Spec | no API / data model changes |
+| HOW DO WE BUILD IT? | RFC | architecture is obvious, <1 day |
+| WHY exactly this? | ADR | decision is trivial and reversible |
+| GROUPING? | Epic | task = single PRD |
 
-# 3. Задачи — что в работе (если Orchestra доступна)
-# mcp__orch__query_entities(type: "task", status: "in_progress")
+Pipeline = guideline, not bureaucracy. Don't create all 10 types for every task.
 
-# 4. Синтез — определить следующее действие
-```
+---
 
-Если health показывает **blind spots** (active без evidence) или **orphans** (без связей) — **FIX ИХ ПЕРВЫМИ**, до начала новой работы. Не копи долг.
+## EvidencePack — structured fields (critical for R_eff)
 
-### ОБЯЗАТЕЛЬНО: Unified Workflow (Forgeplan × Orchestra × Hindsight)
-
-Три системы работают как одна:
-- **Forgeplan** = ЧТО делать и ПОЧЕМУ (артефакты, quality, evidence)
-- **Orchestra** = КТО делает и КОГДА (задачи, сроки, назначения)
-- **Hindsight** = ПАМЯТЬ (контекст между сессиями)
-
-**Правила синхронизации:**
-1. Новый артефакт (PRD/RFC/PROB) → создать task в Orchestra (если доступна)
-2. `forgeplan activate` → mark task Done в Orchestra
-3. PR merged → обновить Orchestra task + `memory_retain` в Hindsight
-4. Конец спринта → `memory_retain` с итогами в Hindsight
-5. Если Orchestra недоступна — записать в TODO.md что нужно синхронизи��овать
-6. **Brownfield**: если много артефактов завершено до подключения Orchestra — создать одну milestone задачу `[EPIC-XXX] Title — N artifacts completed (pre-Orchestra)` вместо N отдельных Done-задач. Установить Phase=Done, Status=Done, Sprint="Sprint 1-N"
-
-**Правила создания задач в Orchestra:**
-
-Naming:
-- С артефактом: `[ARTIFACT-ID] описание` — `[PRD-019] MCP session state machine`
-- Bug без артефакта: описание + Tags: Bug — `Embed feature fix — fastembed API v5`
-- Feature без артефакта: описание + Tags: Feature — `Distribution — brew, GH Actions`
-
-Fields (обязательные):
-- **Status** — Backlog / To Do / Doing / Review / Done
-- **Phase** — Shape / Validate / Code / Evidence / Done (маппинг: Backlog=Shape, Doing=Code, Done=Done)
-- **Depth** — Tactical / Standard / Deep / Critical (из `forgeplan route`)
-- **Artifact** — ID артефакта (только если есть: `PRD-019`, `PROB-021`)
-- **Type** — тип артефакта (только если есть Artifact: PRD / RFC / ADR / Problem / Evidence)
-- **Sprint** — текущий спринт (проставлять при взятии в работу)
-- **Branch** — git branch (проставлять при создании ветки)
-- **Tags** — Bug / Feature / Docs / Update (для задач без артефакта)
-
-**Полный гайд**: `docs/methodology/UNIFIED-WORKFLOW.md`
-
-## Как пользоваться Forgeplan CLI (MCP-first)
-
-> Forgeplan — MCP-first tool. Основной потребитель = AI агент через MCP server.
-> CLI = secondary interface для human inspection.
-
-### Core workflow (6 шагов):
-
-```bash
-# 1. Session start — понять состояние проекта
-forgeplan health
-
-# 2. Перед работой — определить depth и pipeline
-forgeplan route "описание задачи"
-# → Depth: Standard, Pipeline: PRD → RFC, Confidence: 85%
-
-# 3. Создать артефакт
-forgeplan new prd "Auth System"
-
-# 4. Проверить качество
-forgeplan validate PRD-001
-# → MUST: Missing Problem section
-# → SHOULD: density < 50 words
-
-# 5. Когда готов — review и activate
-forgeplan review PRD-001
-# → Review PASSED — ready to activate
-forgeplan activate PRD-001
-# → draft → active
-
-# 6. Подтвердить решение evidence
-forgeplan new evidence "Benchmark results for auth approach"
-forgeplan link EVID-001 PRD-001 --relation informs
-forgeplan score PRD-001
-# → R_eff = 1.00 (was 0.00)
-```
-
-### EvidencePack — как создавать (ВАЖНО):
-
-EvidencePack ОБЯЗАТЕЛЬНО должен содержать structured fields в body для корректного R_eff scoring:
+Without these fields the R_eff parser sets CL0 (penalty 0.9) and score = 0.
 
 ```markdown
 ## Structured Fields
 
-verdict: supports
-congruence_level: 3
-evidence_type: measurement
+verdict: supports            # supports / weakens / refutes
+congruence_level: 3          # CL3 = same context (best) … CL0 = opposed (worst)
+evidence_type: measurement   # measurement / test / benchmark / audit
 ```
 
-| Field | Значения | Описание |
-|-------|----------|----------|
-| `verdict` | supports / weakens / refutes | Подтверждает, ослабляет или опровергает решение |
-| `congruence_level` | 0-3 | CL3=same context (best), CL0=opposed context (worst) |
-| `evidence_type` | measurement / test / benchmark / audit | Тип доказательства |
+---
 
-Без structured fields R_eff parser не найдёт данные и выставит CL0 (penalty 0.9).
-
-### Lifecycle commands (ADR-005 v2):
+## Lifecycle commands
 
 ```bash
-forgeplan review <id>              # проверить готовность
-forgeplan activate <id>            # draft → active (validation gate)
-forgeplan supersede <id> --by <new> # active → superseded (TERMINAL)
-forgeplan deprecate <id> --reason "..." # active/stale → deprecated (TERMINAL)
-forgeplan renew <id> --reason --until  # stale → active (extend validity)
-forgeplan reopen <id> --reason         # stale/active → deprecated + NEW draft (lineage)
+forgeplan review <id>                   # check readiness
+forgeplan activate <id>                 # draft → active (validation gate)
+forgeplan supersede <id> --by <new>     # active → superseded (TERMINAL)
+forgeplan deprecate <id> --reason "..." # → deprecated (TERMINAL)
+forgeplan renew <id> --reason --until   # stale → active (extend)
+forgeplan reopen <id> --reason          # stale/active → deprecated + NEW draft
 ```
 
-State machine:
-```
-draft → active → superseded (terminal)
-               → deprecated (terminal)
-               → stale → active (renew)
-                       → deprecated + NEW draft (reopen)
-```
+**State machine**: `draft → active → {superseded|deprecated|stale}` ; `stale → {active via renew | deprecated + new draft via reopen}`. `superseded`/`deprecated` are terminal.
 
-**Terminal**: deprecated и superseded — никогда не переходят в другие статусы.
-**Stale**: артефакт устарел (valid_until expired). `renew` продлевает, `reopen` создаёт новый.
+---
 
-Notes и Problems не требуют validation gate для activation.
-PRD, RFC, ADR, Epic, Spec — MUST rules должны пройти.
+## Validator aliases
 
-### Validator aliases:
-
-Validator принимает синонимы для секций:
+The validator accepts section synonyms:
 - `## Problem` = `## Motivation` = `## Problem Statement` = `## Background`
 - `## Goals` = `## Success Criteria` = `## Objectives`
 - `## Non-Goals` = `## Out of Scope` = `## Product Scope`
 - `## Related` = `## Related Artifacts` = `## Dependencies`
 - `## Target Users` = `## Target Audience` = `## Users`
 
-### Dogfood insights (из реального использования):
+---
 
-1. **Shape → Validate → ADI → Code → Evidence → Activate** — полный цикл, не пропускай шаги. ADI обязателен для Standard+ depth
-2. **Создавай артефакт → СРАЗУ заполняй MUST секции** — stub PRD = долг, который копится
-3. **Evidence делает R_eff живым** — без evidence все scores = 0.0, health кричит "blind spot"
-4. **Не активируй без кода** — active PRD без реализации = ложное обещание
-5. **Не создавай все 10 типов** — реально используются 6: PRD, RFC, ADR, Note, Problem, Epic
-6. **route перед работой** — определяет depth и pipeline, экономит время
-7. **health на session start** — показывает orphans, blind spots; **fix их первыми**
-8. **Работа не закончена пока**: PRD заполнен + validate PASS + ADI (Standard+) + evidence создан + R_eff > 0 + activated
+## Git — brief rules
 
-## Как пользоваться методологией (quick reference)
+**Branching (dev-based)**: `main` ← `release/v0.x.0` ← `dev` ← `feat/*`, `fix/*`, `docs/*`.
 
-> Полный гайд: `docs/methodology/HOW-TO-USE.md`
-
-### Routing — один вопрос определяет depth:
-```
-Тривиально, обратимо за день?  → Tactical: ничего или Note (без ADI)
-Фича 1-3 дня, есть выбор?      → Standard: Brief/PRD → RFC (ADI рекомендуется)
-Необратимо, 1-2 недели?        → Deep: PRD → Spec → RFC → ADR (ADI ОБЯЗАТЕЛЕН)
-Кросс-команда, стратегия?       → Critical: Epic → PRD[] → Spec[] → RFC[] → ADR[] (ADI + review)
-```
-
-### 5 артефактов = 5 вопросов:
-| Вопрос | Артефакт | Когда НЕ нужен |
-|--------|----------|----------------|
-| ЧТО и зачем? | PRD / Brief | Баг-фикс, рефакторинг |
-| КАК ТОЧНО работает? | Spec | Нет API / data model changes |
-| КАК СТРОИМ? | RFC | Архитектура очевидна, <1 дня |
-| ПОЧЕМУ именно это? | ADR | Решение тривиально и обратимо |
-| ГРУППИРОВКА? | Epic | Задача = один PRD |
-
-### Правила:
-- **Pipeline = guideline, НЕ бюрократия** — не создавай все 10 типов на каждую задачу
-- **[Actor] can [capability]** — формат FR, без технологий в требованиях
-- **Ребёнок ссылается на родителя** — PRD→Epic, RFC→PRD, ADR→RFC
-- **Supersede, не удаляй** — старый артефакт получает status: Superseded
-- **Quality gates по depth** — tactical: ничего, standard: Verification Gate, deep+: Adversarial Review
-
-### Progress Tracking (ОБЯЗАТЕЛЬНО):
-После завершения блока работ (реализация FR, закрытие фазы, создание артефакта) — **предложи пользователю обновить прогресс** в следующих местах:
-1. **RFC** — чекбоксы Implementation Phases (`- [ ]` → `- [x]`) + progress bar
-2. **PRD** — progress bar по FR (сколько FR реализовано)
-3. **Epic** — Children таблица (progress %), aggregated progress bar
-4. **PLAN.md** — Phase progress bar + чекбоксы задач
-5. **TODO.md** — переместить завершённые задачи в Done ✅, обновить P0
-
-Формула: **работа не закончена, пока прогресс не отражён в артефактах.**
-
-### Forge Mode (permission model)
-
-**Три зоны доверия** (FPF B.3 Trust Calculus applied to CLI permissions):
-
-| Зона | Что | Режим | Примеры |
-|------|-----|-------|---------|
-| **Green** | Read-only + build + test + forgeplan | Авто-разрешено | `cargo test`, `forgeplan health`, `git status` |
-| **Yellow** | Файлы + git add/commit | Авто-разрешено (acceptEdits) | Write, Edit, `git add`, `git commit` |
-| **Red** | Необратимые действия | **BLOCKED hook** | `git push --force`, `rm -rf /`, `cargo publish` |
-
-**Настройка:**
-- `settings.local.json` — whitelist permissions (wildcard patterns: `Bash(cargo:*)`, `Bash(git:*)`)
-- `.claude/hooks/forge-safety-hook.sh` — PreToolUse blacklist (blocked patterns)
-- Режим Claude Code: `acceptEdits` (файлы авто, bash через whitelist)
-
-**Blacklisted commands** (blocked даже в yolo mode):
-- `git push --force` / `git push -f`
-- `git reset --hard`
-- `git clean -fd`
-- `rm -rf /` / `rm -rf ~`
-- `cargo publish` (explicit manual action)
-- `DROP TABLE`
-
-**Команда `/forge-cycle`** — полный FPF-aligned цикл: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate.
-
-### Git-конвенции
-
-#### Формат коммита (Conventional Commits + Forgeplan):
+**Commit format** (Conventional Commits + Forgeplan refs):
 ```
 <type>(<scope>): <description>
 
-[body — что и почему, на русском]
+[body in Russian]
 
 Refs: RFC-001, FR-001..004
 ```
+Types: `feat`, `docs`, `fix`, `refactor`, `test`, `chore`, `progress`.
+Scope: module (`cli`, `core`, `store`) or artifact (`rfc`, `prd`, `adr`).
 
-#### Types:
-| Type | Когда | Пример |
-|------|-------|--------|
-| `feat` | Новая функциональность (FR-*) | `feat(cli): implement forgeplan init` |
-| `docs` | Артефакты методологии (RFC, PRD, ADR) | `docs(rfc): add RFC-001 CLI architecture` |
-| `fix` | Баг-фикс | `fix(frontmatter): handle missing closing ---` |
-| `refactor` | Рефакторинг без изменения поведения | `refactor(store): extract slugify` |
-| `test` | Тесты | `test(workspace): add init roundtrip tests` |
-| `chore` | Build, deps, CI | `chore(deps): add tempfile dev-dependency` |
-| `progress` | Обновление прогресса артефактов | `progress: update Phase 3A tracking` |
+**PR rules (minimal)**:
+- Title: `[ARTIFACT-ID] description`
+- feat/* → dev: **merge commit (NOT squash)** — squash loses late commits
+- release/* → main: merge commit
+- Before merge: `git log origin/dev..HEAD` — all commits pushed
+- After merge: `git checkout dev && git pull`, **do not delete branches** (history)
+- Tags: `v{major}.{minor}.{patch}` on main after release PR is merged
 
-#### Scope = модуль или артефакт:
-- Код: `cli`, `core`, `store`, `template`, `scoring`, `workspace`, `config`
-- Артефакты: `rfc`, `prd`, `adr`, `epic`
+**Worktrees**: `git worktree add ../forgeplan-fix fix/xxx` for parallel tasks, delete after merge.
 
-#### Branching Strategy (dev-based):
-```
-main                              ← production (tagged releases: v0.8.0, v0.9.0)
-  │
-dev                               ← integration branch (all features merge here)
-  ├── feat/prd-018-openspec-dag   ← feature branch (from dev)
-  ├── fix/search-ranking          ← bugfix branch (from dev)
-  └── docs/rfc-002-lancedb       ← docs-only branch (from dev)
-  │
-release/v0.9.0                    ← release candidate (from dev → main)
-```
+**Full rules + edge cases + lessons learned**: `docs/operations/GIT-WORKFLOW.ru.md`.
 
-| Ветка | Создаётся из | Мерджится в | Стратегия |
-|-------|-------------|-------------|-----------|
-| `feat/*`, `fix/*`, `docs/*` | **dev** | **dev** | Squash merge via PR |
-| `release/v0.x.0` | **dev** | **main** + **dev** | Merge commit (сохраняет историю) |
-| `hotfix/*` | **main** | **main** + **dev** | Cherry-pick |
+---
 
-Формат имени: `{type}/{slug}` — `feat/prd-018-openspec-dag`, `fix/search-ranking`
+## Forge Mode — permission zones
 
-#### ОБЯЗАТЕЛЬНО перед созданием ветки:
-```bash
-git checkout dev && git pull origin dev   # ВСЕГДА вытягивать перед новой веткой
-git checkout -b feat/my-feature
-```
-**НЕ создавать ветки из stale dev.** Всегда `git pull` первым.
+| Zone | What | Mode | Examples |
+|---|---|---|---|
+| 🟢 Green | read-only, build, test, `forgeplan` | auto-allow | `cargo test`, `forgeplan health`, `git status` |
+| 🟡 Yellow | files, `git add/commit` | acceptEdits | `Write`, `Edit`, `git commit` |
+| 🔴 Red | irreversible | **BLOCKED hook** | `git push --force`, `rm -rf /`, `cargo publish`, `DROP TABLE` |
 
-#### КРИТИЧНО: Dependent sprint branch base verification
+Hook: `.claude/hooks/forge-safety-hook.sh`. Whitelist: `settings.local.json`.
 
-**Урок из Sprint 13.1.5 (2026-04-07):** если новый sprint зависит от кода другого sprint'а (ещё не merged), ОБЯЗАТЕЛЬНО проверить что base branch содержит нужные коммиты ПЕРЕД стартом. Иначе teammates упрутся в "код не существует" и придётся rebase + re-spawn.
+---
 
-**Проверка перед стартом dependent sprint'а:**
-```bash
-# Убедиться что нужный PR/commit уже в base branch
-git log release/v0.17.0 --oneline | grep "PRD-043\|feat(integrity)"
-# Если нет — либо ждать merge, либо branched FROM dependent feature branch, либо rebase после merge
-```
+## Rust coding rules
 
-**Правильная цепочка:**
-```
-PR-A (foundation) → merge → release/v0.17.0 ← base для dependent PR-B
-```
+1. **Complex patterns** → activate skills: `rust-expert`, `m01-ownership`, `m06-error-handling`, `m07-concurrency`
+2. **Every new `pub fn` = test immediately** — не переходить к следующей функции без теста. Pattern:
+   ```
+   write pub fn → write test → cargo test → next pub fn
+   ```
+   НЕ собирать «пачку функций без тестов и потом тесты всем сразу» — теряется изоляция багов.
+3. **Before commit** (mandatory order):
+   - `cargo fmt` — форматирование
+   - `cargo fmt -- --check` — 0 diffs
+   - `cargo check` — 0 warnings
+   - `cargo test` — все PASS
+   - `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings (строже с Rust 1.95)
+4. **After significant changes** — `/audit` с 2+ агентами (адверсариально: reviewer ДОЛЖЕН найти issues; 0 findings → re-review)
+5. **Tools**: `/fpf` для архитектурных решений; `/forge` для structured workflow; `/forge-cycle` для полного FPF-aligned цикла
 
-**Неправильная цепочка (то что было в Sprint 13.1.5):**
-```
-release/v0.17.0 (без PRD-043) ← base для hardening sprint, который фиксит PRD-043 код
-   ↓
-   hardening branch не содержит check_stub — fixers корректно отказались работать
-```
+---
 
-**Починка:** `git rebase release/v0.17.0` ПОСЛЕ merge зависимости, resolve конфликтов, re-spawn заблокированных fixers.
+## Hooks enforcement (safety net)
 
-**Positive observation:** teammates правильно сообщили "BLOCKER — target code не существует" вместо false-green отчётов. Это показывает что strict file ownership + "run cargo test before reporting done" работают — teammates не делают фейковую работу.
+Hooks в `.claude/hooks/` блокируют нарушения методологии на уровне shell:
 
-#### Lifecycle ветки:
-```
-1. git checkout dev && git pull origin dev        # обязательно pull!
-2. git checkout -b feat/my-feature
-3. ... работа, коммиты ...
-4. git push origin feat/my-feature
-5. gh pr create --base dev → squash merge в dev (НЕ удалять ветку)
-6. git checkout dev && git pull
-```
+| Hook | Блокирует | Когда |
+|------|-----------|-------|
+| `forge-safety-hook.sh` | 🔴 команды (rm -rf /, cargo publish, DROP, force-push) | pre-tool-use |
+| `pre-commit-fmt.sh` | коммит если `cargo fmt --check` dirty | git commit |
+| `commit-test-check.sh` | коммит если новая `pub fn` без теста | git commit |
+| `pr-todo-check.sh` | PR с незакрытыми P0 | pre-push |
 
-#### Lifecycle релиза:
-```
-1. git checkout dev && git pull
-2. git checkout -b release/v0.x.0
-3. cargo test, финальные фиксы на ветке
-4. gh pr create --base main → merge commit в main
-5. git checkout main && git pull
-6. git tag -a v0.x.0 -m "Release v0.x.0" && git push origin v0.x.0
-7. git checkout dev && git merge main          # sync tag back to dev
-8. git push origin dev
-```
+**Hooks — safety net, НЕ замена дисциплины**. LLM должен помнить правила во время работы, а не полагаться что hook остановит.
 
-#### Правила коммитов:
-- **Refs обязательны** — каждый коммит ссылается на артефакт (RFC, FR, ADR)
-- **Один коммит = одна логическая единица** — не мешать feat + docs + refactor
-- **Description на английском** (для совместимости), body на русском (для контекста)
-- **Не коммить напрямую в main или dev** — всегда через feature branch + PR
+---
 
-#### PR pipeline (ОБЯЗАТЕЛЬНО — PR создаётся ТОЛЬКО после всех шагов):
+## AI-agents (non-interactive hygiene)
 
-```
-Code → Audit → Fix → Test → Fmt → Lint → PR
-```
+- `forgeplan init` — **always** with `-y` (no interactive prompt)
+- Config `.forgeplan/config.yaml` — в gitignore, теряется на reinit → настроить LLM provider после init
+- **Backup перед reinit** (4-step для LanceDB migration или corruption):
+  1. `forgeplan export --output backup-$(date +%Y%m%d).json`
+  2. `cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)`
+  3. `rm -rf .forgeplan && forgeplan init -y`
+  4. `forgeplan import backup-ДАТА.json`
+- **Dependent sprints**: если новый sprint зависит от кода другого (ещё не merged) — `git log <base> --oneline | grep <PR-id>` перед началом. Если нет — wait for merge или branch from feature branch. Details: `docs/methodology/LESSONS.ru.md`
+- **Smoke test после каждого спринта** перед commit:
+  ```bash
+  cargo fmt && cargo fmt --check && cargo check && cargo test       # Rust pipeline
+  forgeplan init -y && forgeplan new prd "Smoke" && forgeplan validate PRD-XXX
+  forgeplan score PRD-XXX && forgeplan blocked && forgeplan order   # Methodology
+  forgeplan fpf ingest && forgeplan fpf search "trust"              # FPF KB
+  ```
+  Any fail → **НЕ коммитить**, fix first.
 
-1. **Code** — реализация фичи/фикса на feature branch
-2. **Audit** — минимум 2 агента (code review + test coverage), `/audit` со skills
-3. **Fix** — исправить все HIGH/CRITICAL findings из аудита
-4. **Test** — `cargo test` ВСЕ pass (кроме known preexisting failures)
-5. **Fmt** — `cargo fmt` (форматирование) → `cargo fmt -- --check` = 0 diffs. Hook `pre-commit-fmt.sh` блокирует коммит без форматирования
-6. **Lint** — `cargo check` = 0 warnings, 0 errors. Git pre-commit hook блокирует если не компилируется
-7. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно!)
-8. **PR** — только после шагов 1-7
+---
 
-**НЕ создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, отформатировал, всё работает".
+## Unified Workflow (Forgeplan × Orchestra × Hindsight)
 
-#### PR formatting:
-- **ОБЯЗАТЕЛЬНО перед PR**: проверить TODO.md — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0.
-- **PR title** = `[ARTIFACT-ID] description` — `[PRD-018] OpenSpec DAG integration`
-- **PR body** = Summary (bullets) + Refs (артефакты) + Test plan + Audit results
-- **feat/* → dev**: Merge commit (НЕ squash!) — squash теряет поздние коммиты
-- **НИКОГДА не пушить в ветку после merge PR** — коммиты будут потеряны
-- **Перед merge**: убедиться что ВСЕ коммиты pushed: `git log origin/dev..HEAD`
-- **После merge**: сразу `git checkout dev && git pull` и проверить что изменения на месте
-- **release/* → main**: Merge commit (сохраняет историю RC) — `gh pr create --base main`
-- **НЕ удалять ветки после merge** — feature и release branches сохраняются как история
-- **После merge в main**: tag + sync dev from main (`git checkout dev && git merge main`)
-- **НЕ коммить напрямую в main** — только через release branch
-- **НЕ коммить напрямую в dev** — только через feature branch + PR
+- **Forgeplan** = WHAT to do and WHY (artifacts, quality, evidence)
+- **Orchestra** = WHO does it and WHEN (tasks, deadlines, assignments)
+- **Hindsight** = MEMORY (context between sessions)
 
-#### Релизы и тегирование:
-- **Формат тега**: `v{major}.{minor}.{patch}` — `v0.8.0`, `v0.9.0`, `v1.0.0`
-- **Когда тегировать**: после merge release/* в main
-- **ОБЯЗАТЕЛЬНО тегировать каждый релиз** — без тега релиз не считается выпущенным
-- **Процесс**:
-  1. `dev` → `release/v0.x.0` (RC branch)
-  2. Тесты + финальные фиксы на release branch
-  3. PR в main → merge commit
-  4. `git tag -a v0.x.0 -m "Release v0.x.0: описание"` на main
-  5. `git push origin v0.x.0`
-  6. Sync: `git checkout dev && git merge main && git push origin dev`
-- **Release notes**: автогенерация из conventional commits (`gh release create`)
-- **Binary**: `cargo build --release`
+**Synchronization:**
+1. New artifact → task in Orchestra (if available)
+2. `forgeplan activate` → mark Orchestra task Done
+3. PR merged → update Orchestra + `memory_retain` in Hindsight
+4. Orchestra unavailable → record in TODO.md what to sync
 
-#### Worktrees (параллельная работа):
-```bash
-# Создать worktree для параллельной задачи (hotfix во время фичи)
-git worktree add ../forgeplan-fix fix/frontmatter-parser
+**Task naming in Orchestra:**
+- With artifact: `[ARTIFACT-ID] description` (`[PRD-019] MCP session state machine`)
+- Without artifact (bug/feature): description + Tags
 
-# Вернуться и удалить после merge
-git worktree remove ../forgeplan-fix
-```
-- **Когда**: hotfix во время долгой фичи; параллельная работа агентов (isolation: "worktree")
-- **Правило**: worktree = временный, удалять после merge
+**Fields**: Status (Backlog/To Do/Doing/Review/Done), Phase (Shape/Validate/Code/Evidence/Done), Depth, Artifact, Type, Sprint, Branch, Tags.
 
-### ЗАПРЕЩЁННЫЕ действия (CRITICAL):
+Full guide: `docs/methodology/UNIFIED-WORKFLOW.ru.md`.
 
-**НИКОГДА не удалять `.forgeplan/` без backup:**
-```bash
-# ПРАВИЛЬНО:
-forgeplan export --output backup.json   # ОБЯЗАТЕЛЬНО перед любым reinit
-cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)  # backup copy
-# потом уже можно reinit
+---
 
-# ЗАПРЕЩЕНО:
-rm -rf .forgeplan   # ← ПОТЕРЯ ВСЕХ АРТЕФАКТОВ, EVIDENCE, LINKS!
-```
+## Artifacts (10 types, 6 actively used)
 
-**ОБЯЗАТЕЛЬНО при reinit:**
-1. `forgeplan export` → сохранить JSON
-2. `cp -r .forgeplan .forgeplan-backup-ДАТА`
-3. Только потом `rm -rf .forgeplan && forgeplan init -y`
-4. `forgeplan import backup.json` → восстановить
+| Kind | Prefix | Description |
+|---|---|---|
+| **PRD** | `prd-` | Product Requirements Document |
+| **Epic** | `epic-` | Groups PRD[]/RFC[]/ADR[] |
+| **Spec** | `spec-` | API contracts, data models |
+| **RFC** | `rfc-` | Architectural proposal with phases |
+| **ADR** | `adr-` | Architecture Decision Record (deep+: DDR fields) |
+| **Note** | `note-` | Micro-decision (auto-expires in 90 days) |
+| Problem | `prob-` | Problem with context |
+| Solution | `sol-` | 2–3 options (weakest-link) |
+| Evidence | `evid-` | Tests, benchmarks, measurements |
+| Refresh | `ref-` | Re-evaluation of stale decisions |
 
-**AI агенты:**
-- `forgeplan init` → ВСЕГДА с `-y` (non-interactive mode)
-- НИКОГДА `rm -rf .forgeplan` без `forgeplan export` первым
-- После init → настроить `.forgeplan/config.yaml` (LLM provider)
+**Hierarchy**: Epic → PRD[] → Spec[] + RFC[] + ADR[]. Child references parent.
+**Rule**: supersede, do not delete.
 
-### ОБЯЗАТЕЛЬНО smoke test после каждого спринта:
+---
 
-```bash
-cargo test                              # ВСЕ должны PASS
-forgeplan init -y                       # Workspace создаётся
-forgeplan new prd "Smoke Test"          # Артефакт создаётся
-forgeplan validate PRD-XXX              # Валидация работает
-forgeplan score PRD-XXX                 # F-G-R scoring работает
-forgeplan blocked                       # Граф зависимостей
-forgeplan order                         # Topological sort
-forgeplan fpf ingest                    # FPF KB загружается
-forgeplan fpf search "trust"            # Поиск работает
-```
+## Key formulas
 
-**Если любой шаг fail — НЕ коммитить. Починить сначала.**
-
-## Структура проекта
-
-```
-ForgePlan/
-├── CONTEXT.md              ← НАЧНИ ЗДЕСЬ — полный контекст для нового чата
-├── VISION.md               ← Архитектура: data model, tech stack, screens, phases
-├── PLAN.md                 ← 49 задач, 5 фаз с progress bars
-├── TODO.md                 ← Текущие приоритеты P0/P1/P2
-├── COMPLETENESS-CHECK.md   ← Gap analysis: 52 компонента, 10 слоёв
-├── SOURCES.md              ← Карта всех источников
-│
-├── docs/                   ← Production documentation (см. docs/README.md — индекс)
-│   ├── README.md           ← **ИНДЕКС** — карта всей документации
-│   ├── methodology/        ← Методология (10 файлов)
-│   │   ├── FORGEPLAN-GUIDE.md   ← **ПОЛНЫЙ ГАЙД** — методология + CLI + evidence + lifecycle
-│   │   ├── HOW-TO-USE.md        ← 10 правил методологии с примерами
-│   │   ├── ARTIFACT-MODEL.md    ← Иерархия: Epic→PRD→Spec→RFC→ADR + lifecycle
-│   │   ├── PRD-RFC-ADR-FLOW.md  ← Decision tree: какой документ создать
-│   │   ├── DEPTH-CALIBRATION.md ← Tactical→Standard→Deep→Critical + auto-escalation
-│   │   ├── QUALITY-GATES.md     ← Verification Gate + Adversarial Review + R_eff
-│   │   ├── UNIFIED-WORKFLOW.md  ← Forgeplan × Orchestra × Hindsight
-│   │   ├── USAGE-BY-ROLE.md     ← Как использовать по ролям
-│   │   ├── METHODOLOGY-COURSE.md ← Полный курс
-│   │   └── GLOSSARY.md          ← 31 термин + lifecycle таблица
-│   ├── operations/         ← Setup + hooks + devops
-│   │   ├── AGENT-ENFORCEMENT.md ← Правила для AI агентов
-│   │   ├── AGENT-HOOKS.md       ← PreToolUse/PostToolUse hooks
-│   │   └── REPO-PROTECTION-GUIDE.md ← Branch protection, safety
-│   └── schemas/            ← Формальные правила артефактов (PRD, EPIC, SPEC)
-│
-├── .forgeplan/             ← **Forgeplan workspace** (markdown tracked, lance/cache/config — local)
-│   ├── adrs/               ← ADR-001..005 (source of truth, ADR-003)
-│   ├── rfcs/               ← RFC-001..006
-│   ├── prds/               ← PRD-002..025 (и новые — только через `forgeplan new prd`)
-│   ├── epics/              ← EPIC-001, EPIC-002
-│   ├── specs/              ← SPEC-*
-│   ├── evidence/           ← EvidencePacks (138+ файлов)
-│   ├── problems/           ← ProblemCards
-│   ├── solutions/          ← SolutionPortfolios
-│   ├── notes/              ← Notes
-│   ├── refresh/            ← RefreshReports
-│   ├── memory/             ← Decision memory
-│   ├── lance/              ← ⚠️ gitignored — derived LanceDB index (пересобирается: forgeplan scan-import)
-│   ├── .fastembed_cache/   ← ⚠️ gitignored — embedding cache
-│   └── config.yaml         ← ⚠️ gitignored — local LLM API keys
-│
-├── .local/                 ← **gitignored** — локальные заметки
-│   ├── research/           ← Raw source materials (BMAD, FPF, Quint-code .docx)
-│   ├── planning/           ← Website v1 концепты, sprint plans, аналитика
-│   └── sessions/           ← Session briefings, E2E test plans
-│
-├── templates/              ← Markdown шаблоны (_TEMPLATE.md) — все с YAML frontmatter
-│   ├── prd/                ← PRD (обогащён BMAD 13-step validation)
-│   ├── brief/              ← Product Brief (lightweight tactical PRD)
-│   ├── epic/               ← Epic
-│   ├── spec/               ← Specification
-│   ├── rfc/                ← RFC (с Implementation Phases)
-│   ├── adr/                ← ADR (на deep+ включает DDR: invariants, rollback)
-│   ├── problem/            ← ProblemCard (signal, Anti-Goodhart indicators)
-│   ├── solution/           ← SolutionPortfolio (variants, weakest link)
-│   ├── note/               ← Note (auto-expires 90 days)
-│   ├── evidence/           ← EvidencePack (verdict, CL, valid_until → R_eff)
-│   └── refresh/            ← RefreshReport (re-evaluation of stale artifacts)
-│
-├── sources/                ← Reference implementations (READ-ONLY, не редактировать!)
-│   ├── quint-code/         ← Go — data model, R_eff scoring, SQLite schema
-│   ├── git-adr/            ← Rust — CLI patterns (clap), templates
-│   ├── OpenSpec/           ← TypeScript — artifact DAG, delta-specs
-│   ├── BMAD-METHOD/        ← Markdown — PRD workflow, 13 validation steps
-│   ├── adr-tools/          ← Bash — original ADR CLI
-│   └── ccpm/               ← Markdown — Claude Code project management
-│
-├── crates/                 ← Rust workspace (core + cli + mcp)
-├── website/                ← **Official website** (Astro + Starlight + React + GSAP)
-│   └── README.md           ← Архитектура, pin strategy, gotchas, design system
-└── research/               ← Исследования методологий
-```
-
-### Website (PRD-024)
-
-Официальный лендинг + docs portal. **Подробности**: `website/README.md`
-
-Критическое знание:
-- **ОДИН GSAP ScrollTrigger pin** на страницу. Для остальных — CSS `position: sticky`
-- **Astro scoped CSS** ломает parent→child селекторы — выносить в `global.css`
-- **prefers-reduced-motion**: если добавлять — показывать начальное состояние, не финальное
-- **Tokens**: цвета в `website/src/tokens.ts` (единый источник для JS), CSS vars в `global.css`
-
-## Артефакты (10 типов)
-
-### Из Quint-code (5):
-| Kind | Prefix | Описание |
-|------|--------|----------|
-| Note | `note-` | Микро-решение |
-| ProblemCard | `prob-` | Проблема с контекстом |
-| SolutionPortfolio | `sol-` | 2-3+ варианта (weakest link scoring) |
-| EvidencePack | `evid-` | Тесты, benchmarks, measurements |
-| RefreshReport | `ref-` | Переоценка stale решений |
-
-### Новые для Forgeplan (5):
-| Kind | Prefix | Описание |
-|------|--------|----------|
-| PRD | `prd-` | Product Requirements Document |
-| Epic | `epic-` | Группирует PRD[], RFC[], ADR[] |
-| Spec | `spec-` | API contracts, data models |
-| RFC | `rfc-` | Архитектурное предложение с фазами |
-| ADR | `adr-` | Architecture Decision Record (на deep+ включает DDR-поля: invariants, rollback, valid_until) |
-
-### Иерархия
-```
-Epic (стратегия) → PRD[] (что и зачем) → Spec[] (контракты) + RFC[] (как строим) + ADR[] (почему так)
-```
-
-### Lifecycle flow
-```
-Small task  → RFC only
-Medium task → PRD → RFC → Sprint
-Large task  → Epic → PRD[] → Spec[] → RFC[] → ADR[] → Sprint[]
-```
-
-## Ключевые формулы и паттерны
-
-### R_eff scoring (из Quint-code)
-```
-R_eff = min(evidence_scores) — trust = weakest link, НИКОГДА average
-```
-- Evidence Decay: `valid_until` TTL, expired evidence = 0.1 (stale, not absent)
+### R_eff (scoring)
+- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**
+- Evidence Decay: `valid_until` TTL, expired = 0.1
 - CL penalty: CL3=0.0, CL2=0.1, CL1=0.4, CL0=0.9
 - DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
 
-### Depth Calibration
-| Complexity | Depth | Создаём | ADI |
-|-----------|-------|---------|:---:|
-| Quick fix, 1 файл | Tactical | Note или ничего | — |
-| Фича 1-3 дня | Standard | PRD (tactical) → RFC | рекомендуется |
-| Новый модуль, 1-2 нед | Deep | PRD → Spec → RFC → ADR | **обязателен** |
-| Подсистема, кросс-команда | Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] | **обязателен + review** |
+### Smoke test (every sprint)
+```bash
+cargo fmt && cargo fmt --check && cargo check && cargo test  # 0 diffs, 0 warnings, all PASS
+forgeplan init -y && forgeplan new prd "Smoke" && forgeplan validate PRD-XXX && forgeplan score PRD-XXX
+forgeplan blocked && forgeplan order
+forgeplan fpf ingest && forgeplan fpf search "trust"
+```
+Any fail → do not commit, fix.
 
-### Workflow паттерны
-- **Adversarial Review** (BMAD) — reviewer MUST find problems; 0 issues = re-review
-- **Delta-specs** (OpenSpec) — describe ONLY changes: ADDED/MODIFIED/REMOVED
-- **ADI cycle** (FPF) — Abduction (3+ hypotheses) → Deduction → Induction
-- **Pipeline = guideline**, NOT rigid sequence (подтверждено FPF автором)
-- **Contextual chain** — output каждой фазы = input следующей
+---
 
-## Storage: Markdown primary, LanceDB derived (ADR-003)
-
-- **Markdown files** в `.forgeplan/{adrs,rfcs,prds,epics,specs,evidence,problems,solutions,notes,refresh,memory}/` = **source of truth** (git-tracked)
-- **LanceDB** в `.forgeplan/lance/` = derived index layer — rebuildable через `forgeplan scan-import`, **gitignored**
-- **Config** `.forgeplan/config.yaml` = local LLM keys, **gitignored**
-- **Cache** `.forgeplan/.fastembed_cache/` = embedding cache, **gitignored**
+## Storage (ADR-003): Markdown primary, LanceDB derived
 
 ```
 .forgeplan/
-├── adrs/               ← tracked (source of truth)
-├── rfcs/, prds/, epics/, specs/
-├── evidence/, problems/, solutions/
-├── notes/, refresh/, memory/
-│
-├── lance/              ← ⚠️ gitignored (derived index)
-├── .fastembed_cache/   ← ⚠️ gitignored (cache)
-└── config.yaml         ← ⚠️ gitignored (local)
+├── adrs/ rfcs/ prds/ epics/ specs/   ← tracked, source of truth
+├── evidence/ problems/ solutions/
+├── notes/ refresh/ memory/
+├── lance/              ← ⚠️ gitignored (derived index — forgeplan scan-import)
+├── .fastembed_cache/   ← ⚠️ gitignored
+└── config.yaml         ← ⚠️ gitignored (LLM keys)
 ```
 
-**Fresh clone workflow:**
-```bash
-git clone <repo> && cd forgeplan
-forgeplan init -y                # creates empty .forgeplan/lance/ locally
-forgeplan scan-import            # rebuilds index from tracked markdown
-forgeplan list                   # verify
-```
+**Fresh clone**: `git clone → forgeplan init -y → forgeplan scan-import → forgeplan list`.
 
-**Rules:**
-- **Always edit via `forgeplan` CLI** — `forgeplan new`, `forgeplan update`, etc. Direct markdown edits work but require `forgeplan scan-import` to rebuild LanceDB.
-- **Never commit `.forgeplan/lance/`** — it's derived, rebuildable, and can drift between devs.
-- **Never commit `.forgeplan/config.yaml`** — contains LLM API key env refs.
+**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan scan-import`; DO NOT commit `lance/` or `config.yaml`.
 
-## Rust Architecture (реализовано)
+---
+
+## Rust Architecture
 
 ```
 crates/
-├── forgeplan-core/               ← SHARED LIBRARY (12.8K LOC, 194 теста)
-│   ├── artifact/                 ← types, frontmatter parser
-│   ├── config/                   ← .forgeplan/config.yaml
-│   ├── db/                       ← LanceDB store (CRUD, relations, search)
-│   ├── depth/                    ← depth calibration heuristics
-│   ├── embed/                    ← fastembed (BGE-M3, behind feature flag)
-│   ├── fpf/                      ← FPF engine: bounded contexts, explore-exploit
-│   ├── graph/                    ← mermaid dependency graph
-│   ├── health/                   ← project health dashboard
-│   ├── journal/                  ← decision journal with R_eff
-│   ├── lifecycle/                ← review → activate → supersede/deprecate/stale/renew/reopen (ADR-005)
-│   ├── link/                     ← typed artifact relationships
-│   ├── llm/                      ← LLM integration (generate, reason, route, capture)
-│   ├── progress/                 ← checkbox parser + ASCII progress bars
-│   ├── projection/               ← markdown projection (LanceDB → .md)
-│   ├── routing/                  ← rule-based Smart Routing v2 (no LLM)
-│   ├── scoring/                  ← R_eff + F-G-R quality scoring
-│   ├── search/                   ← keyword + semantic search
-│   ├── stale/                    ← expired valid_until detection
-│   ├── template/                 ← tera template engine
-│   ├── validation/               ← depth-aware rules (30+ per kind)
-│   └── workspace/                ← .forgeplan/ directory management
-├── forgeplan-cli/                ← CLI binary (33 commands, clap derive)
-└── forgeplan-mcp/                ← MCP server (26 tools, rmcp, stdio transport)
+├── forgeplan-core/    ← shared library (12.8K LOC, 194 tests)
+│   ├── artifact/ config/ db/ depth/ embed/ fpf/ graph/ health/
+│   ├── journal/ lifecycle/ link/ llm/ progress/ projection/
+│   ├── routing/ scoring/ search/ stale/ template/ validation/ workspace/
+├── forgeplan-cli/     ← clap derive, 33 commands
+└── forgeplan-mcp/     ← rmcp stdio, 26 tools
 ```
 
-## Reference Code — что откуда портировать
+**Project structure**: `docs/README.md` — map of all documentation. Reference repositories in `sources/` (read-only).
 
-| Что портируем | Откуда | Куда (Rust) |
-|--------------|--------|-------------|
-| Data model (ArtifactKind, Meta, Link) | `sources/quint-code/src/mcp/internal/artifact/types.go` | `crates/forgeplan-core/src/artifact/types.rs` |
-| R_eff scoring (52 LOC) | `sources/quint-code/src/mcp/internal/reff/reff.go` | `crates/forgeplan-core/src/scoring/reff.rs` |
-| SQLite schema (9 tables) | `sources/quint-code/src/mcp/schema.sql` | Адаптация под LanceDB tables |
-| CLI patterns (clap) | `sources/git-adr/src/cli/` | `crates/forgeplan-cli/src/commands/` |
-| Template engine | `sources/git-adr/src/core/templates.rs` | `crates/forgeplan-core/src/template/` |
-| PRD validation (13 steps) | `sources/BMAD-METHOD/src/bmm-skills/2-plan-workflows/create-prd/` | `crates/forgeplan-core/src/validation/` |
-| Artifact DAG, delta-specs | `sources/OpenSpec/src/core/` | `crates/forgeplan-core/src/artifact/` |
-| Slash commands UX | `sources/quint-code/src/mcp/cmd/commands/*.md` | CLI UX design |
+---
 
 ## Non-Goals
 
-- НЕ project management (не Jira/Linear)
-- НЕ CI/CD, НЕ SaaS, НЕ code generator
-- Local-first, single binary, git для sync
+- NOT project management (not Jira/Linear)
+- NOT CI/CD, NOT SaaS, NOT a code generator
+- Local-first, single binary, git for sync
