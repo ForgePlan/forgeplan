@@ -149,16 +149,21 @@ pub fn trashed_projection_path(workspace: &Path, receipt_id: &str) -> PathBuf {
     trash_dir(workspace).join(format!("body-{receipt_id}.md"))
 }
 
-/// Generate a fresh receipt ID. Format: `<kind>-<id>-<utc_ms>-<rand4>`.
-/// Collision-free for >50k receipts per second per workspace.
+/// Generate a fresh receipt ID. Format: `<kind>-<id>-<utc_ms>-<rand8>`.
+///
+/// Uses 32-bit non-crypto PRNG (`rand::random::<u32>()`) for the suffix
+/// rather than a 16-bit-masked slice of nanoseconds. Audit R2 H-1 showed
+/// that the nanos-mask gives a 1-in-65_536 collision on two concurrent
+/// deletes in the same millisecond — plenty under multi-agent usage
+/// where `write_receipt` uses `create_new(true)` and would fail the
+/// second caller. 32 bits gives ~1-in-4_294_967_296 at the same rate,
+/// i.e. effectively never for realistic workloads.
 pub fn generate_receipt_id(kind: &str, artifact_id: &str) -> String {
     let now = Utc::now();
     let ms = now.timestamp_millis();
-    // Cheap non-crypto random suffix from nanoseconds. Adequate for a
-    // single-writer-per-workspace service.
-    let rand = now.timestamp_subsec_nanos() & 0xFFFF;
+    let rand: u32 = rand::random();
     format!(
-        "{}-{}-{}-{:04x}",
+        "{}-{}-{}-{:08x}",
         safe_segment(kind),
         safe_segment(artifact_id),
         ms,
@@ -187,20 +192,45 @@ fn safe_segment(s: &str) -> String {
 /// called BEFORE the corresponding store mutation. We fsync the
 /// receipt file before returning so partial writes don't leave an
 /// ambiguous state.
+///
+/// Refuses to write if the trash directory is a symlink (H-2 security
+/// from Round 3 audit) — an attacker who can point `.forgeplan/trash/`
+/// at a location outside the workspace could redirect the projection
+/// move into arbitrary filesystem paths.
 pub async fn write_receipt(workspace: &Path, receipt: &Receipt) -> anyhow::Result<PathBuf> {
     let dir = trash_dir(workspace);
+    // If the directory exists but is a symlink, refuse. If it does not
+    // exist yet we create it fresh (and subsequent calls will pass the
+    // symlink check).
+    if dir.exists() {
+        let meta = tokio::fs::symlink_metadata(&dir).await?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!(
+                "trash directory {} is a symlink — refusing to write receipt",
+                dir.display()
+            );
+        }
+    }
     tokio::fs::create_dir_all(&dir).await?;
 
     let path = receipt_path(workspace, &receipt.receipt_id);
     let json = serde_json::to_vec_pretty(receipt)?;
 
     let mut file = tokio::fs::OpenOptions::new()
-        .create_new(true) // fail if collision — should never happen given ID format
+        .create_new(true) // fail if collision — should never happen with 32-bit PRNG suffix
         .write(true)
         .open(&path)
         .await?;
     file.write_all(&json).await?;
     file.sync_data().await?;
+    drop(file);
+
+    // Fsync the parent directory too — on ext4/xfs a hard crash can
+    // lose the create() entry even if the file's data was synced.
+    // Best-effort on Windows (where directory fsync has no-op semantics).
+    if let Ok(dir_handle) = std::fs::File::open(&dir) {
+        let _ = tokio::task::spawn_blocking(move || dir_handle.sync_all()).await;
+    }
     Ok(path)
 }
 
@@ -214,11 +244,25 @@ pub async fn read_receipt(path: &Path) -> anyhow::Result<Receipt> {
 /// Move markdown projection into trash alongside the receipt. Uses
 /// `rename` which is atomic on the same filesystem. If the projection
 /// is on a different mount, falls back to copy+remove.
+///
+/// Refuses if the source path is a symlink — prevents an attacker who
+/// placed a symlink where the artifact's markdown was expected from
+/// causing us to "move" system files into the trash directory.
 pub async fn trash_projection(
     workspace: &Path,
     receipt_id: &str,
     original_path: &Path,
 ) -> anyhow::Result<PathBuf> {
+    // Symlink guard on source (H-2 security from Round 3 audit).
+    if let Ok(meta) = tokio::fs::symlink_metadata(original_path).await
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "source projection {} is a symlink — refusing to move",
+            original_path.display()
+        );
+    }
+
     let dir = trash_dir(workspace);
     tokio::fs::create_dir_all(&dir).await?;
     let target = trashed_projection_path(workspace, receipt_id);
@@ -242,9 +286,20 @@ pub async fn trash_projection(
 }
 
 fn is_cross_device(e: &std::io::Error) -> bool {
-    // libc::EXDEV = 18 on Linux/macOS. Windows uses ERROR_NOT_SAME_DEVICE.
+    // libc::EXDEV = 18 on Linux/macOS. Windows ERROR_NOT_SAME_DEVICE = 17.
     // raw_os_error() returns the platform-specific code.
-    matches!(e.raw_os_error(), Some(18))
+    #[cfg(unix)]
+    {
+        matches!(e.raw_os_error(), Some(18))
+    }
+    #[cfg(windows)]
+    {
+        matches!(e.raw_os_error(), Some(17))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
 }
 
 /// List all non-consumed receipts in the workspace trash, newest first.
@@ -572,5 +627,86 @@ mod tests {
         write_receipt(&ws, &good).await.unwrap();
         let listed = list_receipts(&ws).await.unwrap();
         assert_eq!(listed.len(), 1, "good receipt survives corrupt neighbour");
+    }
+
+    // ── Audit Round 3 regression tests ────────────────────────
+
+    #[test]
+    fn receipt_id_uses_32bit_prng_suffix() {
+        // Audit H-1 logic: collision protection. Previous 16-bit
+        // nanos-masked suffix collided at ~1/65_536. Now 32-bit PRNG.
+        // Probabilistic — generate N receipts, assert all unique.
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let id = generate_receipt_id("prd", "PRD-001");
+            assert!(ids.insert(id.clone()), "duplicate receipt_id: {id}");
+        }
+        // Verify format: the last segment is 8 hex chars.
+        let sample = generate_receipt_id("prd", "PRD-001");
+        let last_segment = sample.rsplit('-').next().unwrap();
+        assert_eq!(
+            last_segment.len(),
+            8,
+            "suffix should be 8 hex chars (32-bit)"
+        );
+        assert!(
+            last_segment.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix must be hex"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_receipt_refuses_symlinked_trash_dir() {
+        // Audit H-2 security: if .forgeplan/trash/ is a symlink to
+        // somewhere outside the workspace, write_receipt must refuse
+        // (otherwise the subsequent projection move redirects to the
+        // symlink target).
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+
+        // Create a symlink from .forgeplan/trash -> outside.
+        let outside = tmp.path().join("outside");
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join("trash")).unwrap();
+
+        let receipt = sample_receipt("PRD-001");
+        let err = write_receipt(&ws, &receipt).await.unwrap_err();
+        assert!(
+            err.to_string().contains("symlink"),
+            "symlinked trash dir must be refused: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trash_projection_refuses_symlinked_source() {
+        // Audit H-2 security: source projection being a symlink must
+        // be refused — otherwise destructive op moves the symlink
+        // target (could be user config files).
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+
+        // Target the symlink would point at.
+        let sensitive = tmp.path().join("sensitive.txt");
+        tokio::fs::write(&sensitive, b"secrets").await.unwrap();
+
+        // Plant a symlink where the projection would be.
+        let src_dir = ws.join("prds");
+        tokio::fs::create_dir_all(&src_dir).await.unwrap();
+        let src = src_dir.join("PRD-001-evil.md");
+        std::os::unix::fs::symlink(&sensitive, &src).unwrap();
+
+        let err = trash_projection(&ws, "prd-PRD-001-1-deadbeef", &src)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("symlink"),
+            "symlinked source must be refused: {err}"
+        );
+        // Sensitive file must not have moved.
+        assert!(sensitive.exists(), "sensitive file must not be moved");
     }
 }
