@@ -148,12 +148,11 @@ fn llm_err(operation: &str, _err: impl std::fmt::Display) -> CallToolResult {
     // portions of auth headers in error bodies. Full error still logged via
     // `tracing` for server operator debugging.
     tracing::warn!("{}: {}", operation, _err);
-    err_result(&format!(
-        "{operation} failed. LLM provider unavailable or not configured.\n\n\
-         Hint: configure an LLM provider in `.forgeplan/config.yaml` (see \
-         `forgeplan health`). If running `forgeplan` for the first time, \
-         run `forgeplan init -y` first."
-    ))
+    err_hinted(
+        &format!("{operation} failed. LLM provider unavailable or not configured."),
+        "Configure an LLM provider in `.forgeplan/config.yaml` (see `forgeplan_health` for \
+         workspace config path). If first-run, execute `forgeplan init -y` in shell first.",
+    )
 }
 
 /// Sanitize a dynamic string value (artifact IDs, titles, user input)
@@ -1403,22 +1402,36 @@ impl ForgeplanServer {
 
         let relation = match link::normalize_relation(p.relation.as_str()) {
             Ok(r) => r,
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("{e}"),
+                    "Valid relations: informs, based_on, supersedes, contradicts, refines. \
+                     Pick one and retry.",
+                ));
+            }
         };
 
         match store.get_artifact(&p.source).await {
-            Ok(None) => {
-                return Ok(err_result(&format!(
-                    "Source artifact '{}' not found",
-                    p.source
-                )));
+            Ok(None) => return Ok(artifact_not_found(&p.source)),
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("{e}"),
+                    "Re-run with a valid source ID.",
+                ));
             }
-            Err(e) => return Ok(err_result(&format!("{e}"))),
             _ => {}
         }
 
         if let Err(e) = store.add_relation(&p.source, &p.target, &relation).await {
-            return Ok(err_result(&format!("{e}")));
+            let safe_src = sanitize_for_hint(&p.source);
+            let safe_tgt = sanitize_for_hint(&p.target);
+            return Ok(err_hinted(
+                &format!("{e}"),
+                format!(
+                    "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
+                     source != target. Self-links and dangling targets are rejected."
+                ),
+            ));
         }
 
         // Sync file→LanceDB (preserve user edits), then re-render projection
@@ -1970,7 +1983,18 @@ impl ForgeplanServer {
                     next_action,
                 )
             }
-            Err(e) => Ok(err_result(&e.to_string())),
+            Err(e) => {
+                let safe_from = sanitize_for_hint(&p.id);
+                let safe_by = sanitize_for_hint(&p.by);
+                Ok(err_hinted(
+                    &e.to_string(),
+                    format!(
+                        "Verify both exist: `forgeplan_get {safe_from}` and `forgeplan_get \
+                         {safe_by}`. If replacement `{safe_by}` is missing, create it first: \
+                         `forgeplan_new kind=<same-kind> title=\"...\"`."
+                    ),
+                ))
+            }
         }
     }
 
@@ -3786,8 +3810,19 @@ impl ForgeplanServer {
                     next_action,
                 )
             }
-            Ok(None) => Ok(err_result(&format!("FPF section '{}' not found", p.id))),
-            Err(e) => Ok(err_result(&format!("Failed to get section: {e}"))),
+            Ok(None) => {
+                let safe = sanitize_for_hint(&p.id);
+                Ok(err_hinted(
+                    &format!("FPF section '{safe}' not found."),
+                    "List available sections: `forgeplan_fpf_list`. Section IDs look like \
+                     `A.1.1` (kernel), `B.3` (reasoning), `C.2.2` (specifications). If the FPF \
+                     KB is empty, run `forgeplan fpf ingest` from CLI.",
+                ))
+            }
+            Err(e) => Ok(err_hinted(
+                &format!("Failed to get section: {e}"),
+                "Check FPF KB state via `forgeplan_fpf_list`. If empty, `forgeplan fpf ingest`.",
+            )),
         }
     }
 
