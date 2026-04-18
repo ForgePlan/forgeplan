@@ -108,6 +108,33 @@ fn err_result(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.to_string())])
 }
 
+/// Build a recoverable tool error with an explicit `_next_action` remediation.
+///
+/// **Why**: `_next_action` is the workflow-chaining contract for the success
+/// path. On failure, agents currently receive bare text — which drops them
+/// off the methodology rails (architect audit finding #5, Round 3). This
+/// helper gives error paths the same structured hint so agents can recover
+/// (e.g. "artifact not found → try `forgeplan_list`"). The payload is still
+/// wrapped in `CallToolResult::error` so MCP clients mark it as an error.
+fn err_hinted(msg: &str, next_action: impl Into<String>) -> CallToolResult {
+    let body = format!("{msg}\n\n_next_action: {}", next_action.into());
+    CallToolResult::error(vec![Content::text(body)])
+}
+
+/// Standardised "artifact not found" error with recovery hint.
+///
+/// Sanitizes the user-supplied id to block prompt-injection via crafted
+/// IDs in the error text (same C-2 concern as `_next_action`).
+fn artifact_not_found(id: &str) -> CallToolResult {
+    let safe = sanitize_for_hint(id);
+    err_hinted(
+        &format!("Artifact '{safe}' not found."),
+        "List existing artifacts: `forgeplan_list`. Search by keyword: \
+         `forgeplan_search \"<term>\"`. If you meant to create it: \
+         `forgeplan_new kind=<prd|rfc|adr|...> title=\"...\"`.",
+    )
+}
+
 /// Build a recoverable tool error for a failed LLM-backed operation.
 /// Single source of truth for the LLM error hint — pointing at concrete,
 /// already-shipped commands (not future PRD-050 doctor). Agents receive
@@ -1081,7 +1108,7 @@ impl ForgeplanServer {
                 .filter(|r| r.id.to_uppercase() == upper)
                 .collect();
             if filtered.is_empty() {
-                return Ok(err_result(&format!("Artifact '{target_id}' not found")));
+                return Ok(artifact_not_found(target_id));
             }
             filtered
         } else {
@@ -1164,7 +1191,7 @@ impl ForgeplanServer {
 
         let target = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
@@ -1372,12 +1399,19 @@ impl ForgeplanServer {
         // Sync file→LanceDB (preserve user edits), then re-render projection
         if let Ok(Some(record)) = store.get_record(&p.source).await {
             let _ = projection::sync_file_to_store(&store, &ws, &record).await;
-            // Re-read after sync
+            // Re-read after sync. Possible states:
+            //   Ok(Some(r)) — use the refreshed record
+            //   Ok(None)    — artifact deleted concurrently (race) — fall
+            //                 back to the original record so we don't panic
+            //   Err(_)      — store error — same fallback
+            // Previous code used `.unwrap_or(Some(record)).unwrap()` which
+            // panics on Ok(None). Fixed per Round 3 deep QA.
             let record = store
                 .get_record(&p.source)
                 .await
-                .unwrap_or(Some(record))
-                .unwrap();
+                .ok()
+                .flatten()
+                .unwrap_or(record);
             let links = store.get_relations(&p.source).await.unwrap_or_default();
             let _ = projection::render_projection(
                 &ws,
@@ -1472,7 +1506,7 @@ impl ForgeplanServer {
                 };
                 hinted_result(&ArtifactRecordDto::from(r), next_action)
             }
-            Ok(None) => Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Ok(None) => Ok(artifact_not_found(&p.id)),
             Err(e) => Ok(err_result(&format!("{e}"))),
         }
     }
@@ -1507,7 +1541,7 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         let pre_record = match pre_record {
             Some(r) => r,
-            None => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            None => return Ok(artifact_not_found(&p.id)),
         };
 
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
@@ -1657,7 +1691,7 @@ impl ForgeplanServer {
 
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
@@ -2807,7 +2841,7 @@ impl ForgeplanServer {
                 .filter(|r| r.id.to_uppercase() == upper)
                 .collect();
             if filtered.is_empty() {
-                return Ok(err_result(&format!("Artifact '{target_id}' not found")));
+                return Ok(artifact_not_found(target_id));
             }
             filtered
         } else {
@@ -2982,7 +3016,7 @@ impl ForgeplanServer {
                 .filter(|r| r.id.to_uppercase() == upper)
                 .collect();
             if filtered.is_empty() {
-                return Ok(err_result(&format!("Artifact '{target_id}' not found")));
+                return Ok(artifact_not_found(target_id));
             }
             filtered
         } else {
@@ -3081,7 +3115,7 @@ impl ForgeplanServer {
 
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
@@ -3165,7 +3199,7 @@ impl ForgeplanServer {
 
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
@@ -4131,7 +4165,7 @@ impl ForgeplanServer {
 
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Ok(err_result(&format!("Artifact '{}' not found", p.id))),
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("Failed to retrieve artifact: {e}"))),
         };
 
@@ -4988,6 +5022,15 @@ mod sanitize_for_hint_tests {
         assert_eq!(sanitize_for_hint("PRD-001"), "PRD-001");
         assert_eq!(sanitize_for_hint("EPIC-042_foo"), "EPIC-042_foo");
         assert_eq!(sanitize_for_hint("evid-123"), "evid-123");
+    }
+
+    #[test]
+    fn not_alphanumeric_only_is_fine() {
+        // Sanitize is a block-list, not an allow-list — legitimate
+        // punctuation like `:` `;` `(` `)` `.` must pass through.
+        let s = "PRD-001: see the RFC (v2).";
+        let clean = sanitize_for_hint(s);
+        assert_eq!(clean, s);
     }
 
     #[test]
