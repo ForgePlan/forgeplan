@@ -965,6 +965,22 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // PRD-057: serialize the next_id → create_artifact critical
+        // section against concurrent sub-agents sharing this workspace.
+        // Without the lock, two agents invoking forgeplan_new in the
+        // same millisecond could both get e.g. PRD-057 and then collide
+        // on the projection file. Held for the whole handler.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Check `.forgeplan/` is writable. Lock is held by \
+                         another agent — retry in a few seconds.",
+                ));
+            }
+        };
+
         // DoS protection: enforce configurable input limits.
         let integrity_config = workspace::load_config(&ws)
             .map(|c| c.integrity)

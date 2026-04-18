@@ -80,3 +80,10 @@ W1-L2-CLAUDE-additional-sources.zip
 # Phase state (PRD-058) — per-artifact current_phase markers,
 # workspace-local runtime state.
 .forgeplan/state/
+
+# Claim / lease files (PRD-057) — per-artifact agent claim markers,
+# workspace-local runtime state, auto-expire by TTL.
+.forgeplan/claims/
+
+# Workspace advisory lock file (PRD-057) — fs2 flock on .forgeplan/.lock
+.forgeplan/.lock
