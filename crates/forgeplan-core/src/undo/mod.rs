@@ -32,6 +32,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
+pub mod restore;
+
 /// Default TTL in days if `undo.ttl_days` is not configured.
 pub const DEFAULT_TTL_DAYS: u32 = 30;
 
