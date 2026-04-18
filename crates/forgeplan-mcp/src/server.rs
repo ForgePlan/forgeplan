@@ -433,6 +433,20 @@ struct ActivityStatsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct RestoreParams {
+    /// Artifact ID to recover from the most recent non-consumed receipt.
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UndoLastParams {
+    /// Time window (hours) to search for the last destructive op.
+    /// Default 24, max 720 (30 days).
+    #[serde(default)]
+    within_hours: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct NewParams {
     /// Artifact kind to create
     kind: ArtifactKindArg,
@@ -1733,28 +1747,51 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
+        // PRD-055 soft-delete: write receipt + move projection to trash
+        // BEFORE store mutation (crash invariant).
+        let receipt_id = match soft_delete_capture(
+            &ws,
+            &store,
+            &record,
+            forgeplan_core::undo::DestructiveOp::Delete,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Failed to capture soft-delete receipt: {e}"),
+                    "Delete aborted to prevent data loss. Check .forgeplan/trash/ is \
+                     writable and disk has space. The artifact is untouched.",
+                ));
+            }
+        };
+
+        // Safe to mutate store — receipt is on disk.
         store
             .delete_artifact(&p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
-        // Remove projection file
-        if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-            let slug = forgeplan_core::artifact::types::slugify(&record.title);
-            let filename = format!("{}-{}.md", record.id, slug);
-            let filepath = ws.join(kind.dir_name()).join(&filename);
-            let _ = tokio::fs::remove_file(&filepath).await;
-        }
+        // Projection was already moved into trash by soft_delete_capture.
 
+        let safe_id = sanitize_for_hint(&p.id);
         hinted_result(
             &serde_json::json!({
                 "id": p.id,
                 "title": record.title,
-                "message": "Deleted successfully",
+                "message": "Soft-deleted — recoverable via forgeplan_undo_last",
+                "receipt_id": receipt_id,
             }),
-            "Deleted. ⚠ Irreversible. If you need to keep history, prefer \
-             `forgeplan_supersede <id> --by <new-id>` or `forgeplan_deprecate <id>` next time. \
-             Verify workspace: `forgeplan_health` to spot orphan links.",
+            format!(
+                "Soft-deleted `{safe_id}`. Reversible within 30 days via \
+                 `forgeplan_undo_last` or `forgeplan_restore {safe_id}`. Projection and \
+                 metadata live in `.forgeplan/trash/`. Prefer \
+                 `forgeplan_supersede` or `forgeplan_deprecate` for non-terminal \
+                 lifecycle transitions."
+            ),
         )
     }
 
@@ -1952,24 +1989,58 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<SupersedeParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
+
+        // PRD-055: capture the original state BEFORE lifecycle transition
+        // so undo can restore status=active (or prior) and drop the
+        // supersede link. Projection stays on disk — only status changes.
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(e) => return Ok(err_result(&format!("{e}"))),
+        };
+        let receipt_id = match soft_delete_capture(
+            &ws,
+            &store,
+            &record,
+            forgeplan_core::undo::DestructiveOp::Supersede,
+            None,
+            Some(&p.by),
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Failed to capture supersede receipt: {e}"),
+                    "Supersede aborted to prevent losing the ability to undo. Check \
+                     `.forgeplan/trash/` is writable. Artifact is untouched.",
+                ));
+            }
+        };
+
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
             Ok(result) => {
+                let safe_id = sanitize_for_hint(&p.id);
                 let safe_new = sanitize_for_hint(&p.by);
                 let next_action = if result.dependents.is_empty() {
                     format!(
-                        "`{}` superseded by `{safe_new}`. No dependents. Ensure `{safe_new}` has \
-                         evidence: `forgeplan_score {safe_new}`.",
-                        sanitize_for_hint(&p.id)
+                        "`{safe_id}` superseded by `{safe_new}`. No dependents. Reversible via \
+                         `forgeplan_undo_last` or `forgeplan_restore {safe_id}`. Ensure \
+                         `{safe_new}` has evidence: `forgeplan_score {safe_new}`."
                     )
                 } else {
                     format!(
-                        "Superseded with {} dependent(s). Review each dependent via \
-                         `forgeplan_get <id>` — may need to update their links to point to \
-                         `{safe_new}`.",
+                        "Superseded with {} dependent(s). Review each via `forgeplan_get <id>` — \
+                         may need to update their links to point to `{safe_new}`. Reversible \
+                         via `forgeplan_undo_last`.",
                         result.dependents.len()
                     )
                 };
@@ -1979,6 +2050,7 @@ impl ForgeplanServer {
                         "replacement": p.by,
                         "dependents_affected": result.dependents,
                         "warnings": result.warnings,
+                        "receipt_id": receipt_id,
                     }),
                     next_action,
                 )
@@ -1991,7 +2063,8 @@ impl ForgeplanServer {
                     format!(
                         "Verify both exist: `forgeplan_get {safe_from}` and `forgeplan_get \
                          {safe_by}`. If replacement `{safe_by}` is missing, create it first: \
-                         `forgeplan_new kind=<same-kind> title=\"...\"`."
+                         `forgeplan_new kind=<same-kind> title=\"...\"`. Note: a soft-delete \
+                         receipt was pre-written and is orphaned until TTL purge; harmless."
                     ),
                 ))
             }
@@ -2012,22 +2085,55 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DeprecateParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
+
+        // PRD-055: capture original state before lifecycle transition.
+        let record = match store.get_record(&p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(e) => return Ok(err_result(&format!("{e}"))),
+        };
+        let receipt_id = match soft_delete_capture(
+            &ws,
+            &store,
+            &record,
+            forgeplan_core::undo::DestructiveOp::Deprecate,
+            Some(&p.reason),
+            None,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Failed to capture deprecate receipt: {e}"),
+                    "Deprecate aborted to preserve undo capability. Check \
+                     `.forgeplan/trash/` is writable. Artifact is untouched.",
+                ));
+            }
+        };
+
         match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
             Ok(dependents) => {
+                let safe_id = sanitize_for_hint(&p.id);
                 let next_action = if dependents.is_empty() {
                     format!(
-                        "`{}` deprecated. No dependents — clean state.",
-                        sanitize_for_hint(&p.id)
+                        "`{safe_id}` deprecated. No dependents — clean state. Reversible via \
+                         `forgeplan_undo_last` or `forgeplan_restore {safe_id}`."
                     )
                 } else {
                     format!(
                         "Deprecated. {} dependent(s) still reference this artifact. Review each \
                          via `forgeplan_get <id>` — consider `forgeplan_supersede <id> --by \
-                         <replacement>` if there is a successor.",
+                         <replacement>` if there is a successor. Reversible via \
+                         `forgeplan_undo_last`.",
                         dependents.len()
                     )
                 };
@@ -2036,11 +2142,16 @@ impl ForgeplanServer {
                         "deprecated": p.id,
                         "reason": p.reason,
                         "dependents_affected": dependents,
+                        "receipt_id": receipt_id,
                     }),
                     next_action,
                 )
             }
-            Err(e) => Ok(err_result(&e.to_string())),
+            Err(e) => Ok(err_hinted(
+                &e.to_string(),
+                "Deprecate failed. A soft-delete receipt was pre-written and is orphaned \
+                 until TTL purge; harmless. Artifact untouched.",
+            )),
         }
     }
 
@@ -4841,6 +4952,218 @@ impl ForgeplanServer {
             next_action,
         )
     }
+
+    // ── Undo / Restore tools (PRD-055 increment 3) ───────────────────
+
+    #[tool(
+        description = "Restore a soft-deleted artifact from the most recent non-consumed \
+                       receipt in `.forgeplan/trash/`. Works for delete (recreates row + \
+                       moves projection back), supersede (resets status + drops link), and \
+                       deprecate (resets status). Refuses if a different artifact with the \
+                       same ID currently exists (manual resolution required). TTL default: \
+                       30 days from the destructive op.",
+        annotations(
+            title = "Restore Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_restore(
+        &self,
+        Parameters(p): Parameters<RestoreParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Lazy TTL purge (ADR #5) so aging receipts don't pile up.
+        let ws_clone = ws.clone();
+        tokio::spawn(async move {
+            if let Err(e) = forgeplan_core::undo::purge_expired(
+                &ws_clone,
+                forgeplan_core::undo::DEFAULT_TTL_DAYS,
+            )
+            .await
+            {
+                tracing::warn!("TTL purge on restore entry failed: {}", e);
+            }
+        });
+
+        let receipt = match forgeplan_core::undo::find_latest_for(&ws, &p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                let safe_id = sanitize_for_hint(&p.id);
+                return Ok(err_hinted(
+                    &format!("No non-consumed receipt found for `{safe_id}`."),
+                    "Check `.forgeplan/trash/` contents or use `forgeplan_activity --tool \
+                     forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h` \
+                     to see recent destructive ops. Receipts older than 30 days are purged.",
+                ));
+            }
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Failed to read trash: {e}"),
+                    "Check `.forgeplan/trash/` is readable and contains well-formed receipt \
+                     files.",
+                ));
+            }
+        };
+
+        match forgeplan_core::undo::restore::apply_restore(&ws, &store, &receipt).await {
+            Ok(report) => {
+                let safe_id = sanitize_for_hint(&report.artifact_id);
+                let op_str = match report.op {
+                    forgeplan_core::undo::DestructiveOp::Delete => "delete",
+                    forgeplan_core::undo::DestructiveOp::Supersede => "supersede",
+                    forgeplan_core::undo::DestructiveOp::Deprecate => "deprecate",
+                };
+                let next_action = if !report.relations_skipped.is_empty() {
+                    format!(
+                        "Restored `{safe_id}` (reversed {op_str}). {} relation(s) restored, {} \
+                         skipped because targets no longer exist. Review with \
+                         `forgeplan_get {safe_id}` and re-link manually if needed.",
+                        report.relations_restored,
+                        report.relations_skipped.len()
+                    )
+                } else {
+                    format!(
+                        "Restored `{safe_id}` (reversed {op_str}). {} relation(s) restored. \
+                         Verify with `forgeplan_get {safe_id}`.",
+                        report.relations_restored
+                    )
+                };
+                hinted_result(
+                    &serde_json::json!({
+                        "restored": report.artifact_id,
+                        "op_reversed": op_str,
+                        "relations_restored": report.relations_restored,
+                        "relations_skipped": report.relations_skipped,
+                        "projection_restored": report.projection_restored,
+                        "warnings": report.warnings,
+                    }),
+                    next_action,
+                )
+            }
+            Err(e) => {
+                let safe_id = sanitize_for_hint(&p.id);
+                Ok(err_hinted(
+                    &e.to_string(),
+                    format!(
+                        "Restore of `{safe_id}` failed. If the error mentions a collision, an \
+                         artifact with that ID was re-created after the delete — resolve by \
+                         deleting the current `{safe_id}` or renaming one, then retry."
+                    ),
+                ))
+            }
+        }
+    }
+
+    #[tool(
+        description = "Reverse the most recent destructive operation (delete, supersede, or \
+                       deprecate) by reading the soft-delete trash and applying \
+                       forgeplan_restore to the most recently written non-consumed receipt. \
+                       Params: within_hours (default 24, max 720). If no matching receipt is \
+                       found, returns an error with guidance; the tool never guesses.",
+        annotations(
+            title = "Undo Last Destructive Op",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_undo_last(
+        &self,
+        Parameters(p): Parameters<UndoLastParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let within = p.within_hours.unwrap_or(24).clamp(1, 720);
+
+        // Find the newest non-consumed receipt overall, within the
+        // window. `list_receipts` returns newest-first.
+        let receipts = match forgeplan_core::undo::list_receipts(&ws).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Could not list trash: {e}"),
+                    "Check `.forgeplan/trash/` is readable. If the directory is missing, \
+                     nothing has been soft-deleted yet.",
+                ));
+            }
+        };
+
+        let threshold = chrono::Utc::now() - chrono::Duration::hours(within as i64);
+        let receipt = receipts.into_iter().find(|r| {
+            if r.consumed {
+                return false;
+            }
+            match chrono::DateTime::parse_from_rfc3339(&r.ts) {
+                Ok(ts) => ts.with_timezone(&chrono::Utc) >= threshold,
+                Err(_) => false,
+            }
+        });
+
+        let receipt = match receipt {
+            Some(r) => r,
+            None => {
+                return Ok(err_hinted(
+                    &format!("No non-consumed destructive op in the last {within} hour(s)."),
+                    "Expand the window: `forgeplan_undo_last within_hours=720`. Or inspect \
+                     the log: `forgeplan_activity --tool forgeplan_delete,forgeplan_supersede,\
+                     forgeplan_deprecate --since 720h`.",
+                ));
+            }
+        };
+
+        match forgeplan_core::undo::restore::apply_restore(&ws, &store, &receipt).await {
+            Ok(report) => {
+                let safe_id = sanitize_for_hint(&report.artifact_id);
+                let op_str = match report.op {
+                    forgeplan_core::undo::DestructiveOp::Delete => "delete",
+                    forgeplan_core::undo::DestructiveOp::Supersede => "supersede",
+                    forgeplan_core::undo::DestructiveOp::Deprecate => "deprecate",
+                };
+                let next_action = format!(
+                    "Reversed most recent {op_str} of `{safe_id}`. To undo another, call \
+                     `forgeplan_undo_last` again (finds the next newest non-consumed \
+                     receipt). Or restore a specific ID: `forgeplan_restore <id>`."
+                );
+                hinted_result(
+                    &serde_json::json!({
+                        "restored": report.artifact_id,
+                        "op_reversed": op_str,
+                        "receipt_id": receipt.receipt_id,
+                        "relations_restored": report.relations_restored,
+                        "relations_skipped": report.relations_skipped,
+                        "projection_restored": report.projection_restored,
+                        "warnings": report.warnings,
+                    }),
+                    next_action,
+                )
+            }
+            Err(e) => Ok(err_hinted(
+                &format!("Undo-last failed: {e}"),
+                "Inspect the receipt manually in `.forgeplan/trash/`. If a collision, the \
+                 target artifact was re-created — resolve manually then retry \
+                 `forgeplan_restore <id>`.",
+            )),
+        }
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────
@@ -4931,6 +5254,150 @@ impl rmcp::ServerHandler for ForgeplanServer {
 
 // Evidence parsing delegated to forgeplan_core::scoring::evidence
 use forgeplan_core::scoring::evidence::parse_evidence_from_record;
+
+// ── Soft-delete (PRD-055 increment 2) ────────────────────────
+
+/// Capture an artifact's full state + relations and write a soft-delete
+/// receipt BEFORE the caller mutates the store. Also moves the markdown
+/// projection into trash. Returns the receipt_id so the caller can
+/// include it in the tool response (agents surface it for quick undo).
+///
+/// # Crash invariant (PRD-055 ADR #4)
+///
+/// This function must be called BEFORE the store mutation. On a crash
+/// after this returns Ok but before the store mutation lands, the
+/// worst case is an orphan receipt — purged by TTL, harmless. The
+/// reverse order would risk data loss if the crash happened between
+/// store mutation and receipt write.
+///
+/// # Error handling
+///
+/// If this helper errors, the caller MUST NOT proceed with the
+/// destructive operation. Returning the error up lets the tool
+/// respond with a clear failure instead of wiping data silently.
+///
+/// # TTL purge
+///
+/// We also trigger `purge_expired` lazily on each destructive op so
+/// the trash directory stays bounded without a background daemon
+/// (ADR #5). Purge errors are logged but do not block the operation.
+async fn soft_delete_capture(
+    workspace: &std::path::Path,
+    store: &forgeplan_core::db::store::LanceStore,
+    record: &ArtifactRecord,
+    op: forgeplan_core::undo::DestructiveOp,
+    reason: Option<&str>,
+    replacement: Option<&str>,
+) -> anyhow::Result<String> {
+    use forgeplan_core::undo::{
+        ArtifactSnapshot, CapturedRelation, DEFAULT_TTL_DAYS, Receipt, RelationDirection,
+        generate_receipt_id, purge_expired, trash_projection, trashed_projection_path,
+        write_receipt,
+    };
+
+    // Gather outgoing + incoming relations so restore can replay both
+    // directions (PRD-055 ADR #6).
+    let mut relations = Vec::new();
+    if let Ok(outgoing) = store.get_relations(&record.id).await {
+        for (to, relation) in outgoing {
+            relations.push(CapturedRelation {
+                from: record.id.clone(),
+                to,
+                relation,
+                direction: RelationDirection::Outgoing,
+            });
+        }
+    }
+    if let Ok(incoming) = store.get_incoming_relations(&record.id).await {
+        for (from, relation) in incoming {
+            relations.push(CapturedRelation {
+                from,
+                to: record.id.clone(),
+                relation,
+                direction: RelationDirection::Incoming,
+            });
+        }
+    }
+
+    // Resolve original projection path BEFORE move (we still need it
+    // in the snapshot so restore knows where to write the body back).
+    let projection_path = record
+        .kind
+        .parse::<ArtifactKind>()
+        .map(|kind| {
+            let slug = forgeplan_core::artifact::types::slugify(&record.title);
+            let filename = format!("{}-{}.md", record.id, slug);
+            workspace
+                .join(kind.dir_name())
+                .join(&filename)
+                .display()
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let receipt_id = generate_receipt_id(&record.kind, &record.id);
+    let trashed = trashed_projection_path(workspace, &receipt_id)
+        .display()
+        .to_string();
+
+    let snapshot = ArtifactSnapshot {
+        id: record.id.clone(),
+        kind: record.kind.clone(),
+        status: record.status.clone(),
+        title: record.title.clone(),
+        depth: record.depth.clone(),
+        body: record.body.clone(),
+        author: record.author.clone(),
+        parent_epic: record.parent_epic.clone(),
+        valid_until: record.valid_until.clone(),
+        relations,
+        projection_path: projection_path.clone(),
+    };
+
+    let receipt = Receipt {
+        receipt_id: receipt_id.clone(),
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        op,
+        snapshot,
+        reason: reason.map(String::from),
+        replacement: replacement.map(String::from),
+        trashed_projection: trashed,
+        activity_log_hash: None, // future: correlate with activity log entry
+        consumed: false,
+    };
+
+    // Write receipt first (crash invariant).
+    write_receipt(workspace, &receipt).await?;
+
+    // Move projection file into trash ONLY for Delete — supersede and
+    // deprecate leave the markdown in place (status change is reflected
+    // in frontmatter, projection stays). If restore is called later for
+    // a supersede/deprecate receipt, the projection is already on disk;
+    // restore just reverts status and removes the supersede/deprecate
+    // artifacts (new supersede link, reason fields).
+    let projection_pathbuf = std::path::PathBuf::from(&projection_path);
+    if matches!(op, forgeplan_core::undo::DestructiveOp::Delete)
+        && projection_pathbuf.exists()
+        && let Err(e) = trash_projection(workspace, &receipt_id, &projection_pathbuf).await
+    {
+        tracing::warn!(
+            "soft_delete: failed to move projection {}: {}. Receipt written, artifact \
+             will still be recoverable via store snapshot.",
+            projection_pathbuf.display(),
+            e
+        );
+    }
+
+    // Fire-and-forget TTL purge so trash stays bounded (ADR #5).
+    let ws_clone = workspace.to_path_buf();
+    tokio::spawn(async move {
+        if let Err(e) = purge_expired(&ws_clone, DEFAULT_TTL_DAYS).await {
+            tracing::warn!("TTL purge failed: {}", e);
+        }
+    });
+
+    Ok(receipt_id)
+}
 
 // ── Methodology hints ──────────────────────────────────────────
 
