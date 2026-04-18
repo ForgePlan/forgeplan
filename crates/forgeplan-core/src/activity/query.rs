@@ -171,7 +171,8 @@ pub fn compute_stats(entries: &[ActivityEntry]) -> Vec<ToolStats> {
         });
     }
     // Sort by total time descending — puts costliest tools first.
-    out.sort_by(|a, b| b.total_ms.cmp(&a.total_ms));
+    // Use `sort_by_key` with `Reverse` per clippy 1.95 `unnecessary_sort_by`.
+    out.sort_by_key(|s| std::cmp::Reverse(s.total_ms));
     out
 }
 
