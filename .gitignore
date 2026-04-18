@@ -67,3 +67,4 @@ plan-dist-manifest.json
 *.png
 !.github/assets/*.png
 *.pen
+W1-L2-CLAUDE-additional-sources.zip

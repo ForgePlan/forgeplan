@@ -7,7 +7,7 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars;
-use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
+use rmcp::{ErrorData as McpError, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
@@ -406,6 +406,31 @@ struct InitParams {
     /// Force reinitialize even if workspace exists
     #[serde(default)]
     force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ActivityQueryParams {
+    /// Time window in hours back from now (e.g. 1 = last hour, 24 = last day).
+    /// Omit for today-only scope. Values 1..=720 (30 days).
+    #[serde(default)]
+    since_hours: Option<u32>,
+    /// Filter by tool name. Repeat with comma to match multiple:
+    /// `"forgeplan_score,forgeplan_activate"`.
+    #[serde(default)]
+    tool: Option<String>,
+    /// Filter by status: `ok`, `tool_err`, or `rpc_err`. Omit for all.
+    #[serde(default)]
+    status: Option<String>,
+    /// Cap result set (most recent N). Default 500, max 5000.
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ActivityStatsParams {
+    /// Time window in hours. Default 24.
+    #[serde(default)]
+    since_hours: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -4630,11 +4655,161 @@ impl ForgeplanServer {
             "_next_action": "Run forgeplan health to validate discovery, then forgeplan validate each new artifact",
         })))
     }
+
+    // ── Activity log query tools (PRD-054) ───────────────────────────
+
+    #[tool(
+        description = "Query the activity log — append-only JSONL record of every MCP tool \
+                       invocation at .forgeplan/logs/tools-YYYY-MM-DD.jsonl. Use this to \
+                       reconstruct what the agent did over a time window, attribute LLM-token \
+                       spend, or audit destructive operations. Params: since_hours (default 24, \
+                       max 720), tool (comma-separated names to filter), status (ok/tool_err/\
+                       rpc_err), limit (default 500, max 5000 — keeps most recent).",
+        annotations(
+            title = "Activity Log Query",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_activity(
+        &self,
+        Parameters(p): Parameters<ActivityQueryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let since = p.since_hours.unwrap_or(24).clamp(1, 720);
+        let limit = p.limit.unwrap_or(500).clamp(1, 5000) as usize;
+
+        let tools: Vec<String> = p
+            .tool
+            .as_deref()
+            .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
+            .unwrap_or_default();
+
+        let statuses: Vec<String> = p
+            .status
+            .as_deref()
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default();
+
+        let filter = forgeplan_core::activity::query::QueryFilter {
+            since: Some(chrono::Duration::hours(since as i64)),
+            tools,
+            statuses,
+            limit: Some(limit),
+        };
+
+        let result = forgeplan_core::activity::query::query(&ws, &filter)
+            .await
+            .map_err(|e| McpError::internal_error(format!("activity query failed: {e}"), None))?;
+
+        let next_action = if result.entries.is_empty() {
+            format!(
+                "No tool calls in the last {since} hour(s). Log file may not exist yet (run a \
+                 tool first) or the window is too narrow — try `since_hours=720` for the last \
+                 month."
+            )
+        } else {
+            let top_tool = {
+                let stats = forgeplan_core::activity::query::compute_stats(&result.entries);
+                stats.first().map(|s| s.tool.clone())
+            };
+            match top_tool {
+                Some(t) => format!(
+                    "{} entries in window. Busiest tool: `{t}`. Use \
+                     `forgeplan_activity_stats` to see per-tool breakdown, or filter: \
+                     `forgeplan_activity tool={t}`.",
+                    result.entries.len()
+                ),
+                None => format!("{} entries in window.", result.entries.len()),
+            }
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "entries": result.entries,
+                "total_scanned": result.total_scanned,
+                "returned": result.entries.len(),
+                "warnings": result.warnings,
+                "since_hours": since,
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Aggregate statistics from the activity log grouped by tool name: count, \
+                       error count, p50/p95 duration, total time. Use to attribute LLM-token \
+                       spend and identify slow tools. Params: since_hours (default 24, max 720).",
+        annotations(
+            title = "Activity Stats",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_activity_stats(
+        &self,
+        Parameters(p): Parameters<ActivityStatsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let since = p.since_hours.unwrap_or(24).clamp(1, 720);
+        let filter = forgeplan_core::activity::query::QueryFilter {
+            since: Some(chrono::Duration::hours(since as i64)),
+            tools: vec![],
+            statuses: vec![],
+            limit: None,
+        };
+
+        let result = forgeplan_core::activity::query::query(&ws, &filter)
+            .await
+            .map_err(|e| McpError::internal_error(format!("activity query failed: {e}"), None))?;
+
+        let stats = forgeplan_core::activity::query::compute_stats(&result.entries);
+        let total_calls: usize = stats.iter().map(|s| s.count).sum();
+        let total_errors: usize = stats.iter().map(|s| s.err_count).sum();
+        let total_ms: u64 = stats.iter().map(|s| s.total_ms).sum();
+
+        let next_action = if stats.is_empty() {
+            format!(
+                "No activity in the last {since} hour(s). Try `since_hours=720` for a longer \
+                 window."
+            )
+        } else {
+            let top = &stats[0];
+            format!(
+                "{total_calls} total call(s), {total_errors} error(s), {total_ms} ms total. Top \
+                 by time: `{}` ({} call(s), p95 {}ms). Drill down: \
+                 `forgeplan_activity tool={}`.",
+                top.tool, top.count, top.p95_ms, top.tool
+            )
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "stats": stats,
+                "total_calls": total_calls,
+                "total_errors": total_errors,
+                "total_ms": total_ms,
+                "since_hours": since,
+            }),
+            next_action,
+        )
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────
 
-#[tool_handler]
 impl rmcp::ServerHandler for ForgeplanServer {
     fn get_info(&self) -> ServerInfo {
         // CRITICAL: must declare `tools` capability so MCP clients
@@ -4651,6 +4826,71 @@ impl rmcp::ServerHandler for ForgeplanServer {
                  When present, follow this hint — it guides the correct methodology workflow: \
                  Shape → Validate → Code → Evidence → Activate.",
             )
+    }
+
+    async fn list_tools(
+        &self,
+        _params: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, McpError> {
+        Ok(rmcp::model::ListToolsResult {
+            next_cursor: None,
+            tools: self.tool_router.list_all(),
+            meta: Default::default(),
+        })
+    }
+
+    // Auto-generated dispatch by rmcp's ToolRouter, WRAPPED with activity
+    // logging (PRD-054). Replaces what `#[tool_handler]` would generate:
+    // we call the same ToolRouter but capture start time / tool name /
+    // args / status and append one JSONL entry per call, best-effort.
+    //
+    // Logging is observer-only: a log-write failure must never fail the
+    // tool call. We use `append_best_effort` which swallows errors.
+    async fn call_tool(
+        &self,
+        params: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let start = std::time::Instant::now();
+        let tool_name = params.name.to_string();
+        // params.arguments is Option<JsonObject>; convert to Value for hashing.
+        let args_val = params
+            .arguments
+            .as_ref()
+            .map(|obj| serde_json::Value::Object(obj.clone()))
+            .unwrap_or(serde_json::Value::Null);
+
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, params, context);
+        let result = self.tool_router.call(tcc).await;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let status = match &result {
+            Ok(r) if r.is_error.unwrap_or(false) => forgeplan_core::activity::status::TOOL_ERR,
+            Ok(_) => forgeplan_core::activity::status::OK,
+            Err(_) => forgeplan_core::activity::status::RPC_ERR,
+        };
+
+        // Snapshot workspace path if available. Skip logging when
+        // workspace not initialized (first-run `forgeplan_init`).
+        if let Some(ws) = self.workspace_path.read().await.as_ref() {
+            let ws = ws.clone();
+            let entry = forgeplan_core::activity::make_entry(
+                tool_name,
+                &args_val,
+                duration_ms,
+                status,
+                &ws,
+                None,  // client_info not exposed by rmcp 1.2 API — future work
+                false, // include_args: off by default (PRD-054 FR-004)
+            );
+            // Fire-and-forget: spawn so we don't block the response.
+            tokio::spawn(async move {
+                forgeplan_core::activity::append_best_effort(&ws, &entry).await;
+            });
+        }
+
+        result
     }
 }
 
