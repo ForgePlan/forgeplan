@@ -16,6 +16,7 @@
 
 use chrono::Utc;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 
 use super::{
@@ -28,6 +29,17 @@ use super::{
 /// of MB for parsing. Round 1 audit M1. ~1 MiB is ample — history is
 /// capped at 1024 entries (see MAX_HISTORY_ENTRIES).
 const MAX_STATE_FILE_BYTES: u64 = 1_048_576;
+
+/// Current schema version. `read_phase` refuses files with
+/// `schema_version` greater than this — protects forward-compat
+/// from a newer writer silently losing fields when read by this
+/// binary. Round 2 audit M-logic.
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Monotonic counter for tmp filenames. Combined with pid + nanos
+/// eliminates Round 2 H-sec #3 collision window (two advances in
+/// the same nanosecond within one process getting identical tmp).
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Read phase state for an artifact. Returns `Ok(None)` if the file does
 /// not exist (FR-012 — missing state is not an error). Corrupt files
@@ -77,14 +89,46 @@ pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<O
         Err(e) => return Err(e.into()),
     };
     match serde_yaml::from_slice::<PhaseState>(&bytes) {
-        Ok(s) => Ok(Some(s)),
+        Ok(s) => {
+            // Round 2 audit M-logic: fail-safe on unknown future schema
+            // rather than silently mis-deserializing a newer writer's
+            // output (which serde-default would paper over).
+            if s.schema_version > CURRENT_SCHEMA_VERSION {
+                tracing::warn!(
+                    artifact = %artifact_id,
+                    schema_version = s.schema_version,
+                    max_known = CURRENT_SCHEMA_VERSION,
+                    "phase state from newer schema — treating as unknown to avoid data loss"
+                );
+                return Ok(None);
+            }
+            Ok(Some(s))
+        }
         Err(e) => {
-            tracing::warn!(
-                artifact = %artifact_id,
-                path = %path.display(),
-                error = %e,
-                "phase state file corrupted — treating as unknown"
-            );
+            // Round 2 audit M-sec #3: preserve forensics. If YAML is
+            // corrupt we'd previously let the next advance_phase clobber
+            // it via initial_state(), silently wiping history. Quarantine
+            // the corrupt file by renaming with a timestamp suffix so an
+            // operator can recover / investigate.
+            let ts = Utc::now().timestamp();
+            let quarantine = path.with_extension(format!("yaml.corrupt.{ts}"));
+            if let Err(e2) = tokio::fs::rename(&path, &quarantine).await {
+                tracing::warn!(
+                    artifact = %artifact_id,
+                    path = %path.display(),
+                    parse_error = %e,
+                    rename_error = %e2,
+                    "phase state corrupted AND quarantine failed — treating as unknown"
+                );
+            } else {
+                tracing::warn!(
+                    artifact = %artifact_id,
+                    path = %path.display(),
+                    quarantine = %quarantine.display(),
+                    error = %e,
+                    "phase state corrupted — quarantined, treating as unknown"
+                );
+            }
             Ok(None)
         }
     }
@@ -129,13 +173,20 @@ pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result
 
     let yaml = serde_yaml::to_string(state)?;
 
-    // Per-process + nanos tmp name so concurrent `advance_phase` calls
-    // on the same artifact never collide on the tmp path (Round 1
-    // audit C-logic #1). rename() is still atomic on POSIX — last
-    // rename wins, but neither writer is partially visible.
+    // Per-process + nanos + monotonic-counter tmp name so concurrent
+    // `advance_phase` calls on the same artifact never collide on the
+    // tmp path. Round 2 audit H-sec #3 / H-logic — nanos alone can
+    // collide on clocks with sub-nanosecond equality in the same tokio
+    // scheduler tick; AtomicU64 closes the window. rename() remains
+    // atomic on POSIX — last rename wins, but neither writer is
+    // partially visible.
     let pid = std::process::id();
     let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-    let tmp = dir.join(format!(".{}.yaml.{}.{}.tmp", state.artifact_id, pid, nanos));
+    let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(
+        ".{}.yaml.{}.{}.{}.tmp",
+        state.artifact_id, pid, nanos, counter
+    ));
 
     // `create_new(true)` on the (near-unique) tmp name means a hostile
     // symlink placed at that exact path would cause EEXIST rather than
@@ -152,24 +203,29 @@ pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result
     tokio::fs::rename(&tmp, &target).await?;
 
     // Parent dir fsync so the directory entry for the new file is
-    // durable on ext4/xfs. Propagate failures via tracing::warn rather
-    // than swallowing them silently (audit Round 1 H4).
-    if let Ok(dir_handle) = std::fs::File::open(&dir) {
-        let dir_display = dir.display().to_string();
-        let join = tokio::task::spawn_blocking(move || dir_handle.sync_all()).await;
-        match join {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(
-                dir = %dir_display,
-                error = %e,
-                "parent-dir fsync failed — state write is durable in page cache but not on disk"
-            ),
-            Err(e) => tracing::warn!(
-                dir = %dir_display,
-                error = %e,
-                "parent-dir fsync task panicked"
-            ),
-        }
+    // durable on ext4/xfs. Round 2 audit H-logic / H-rust — move the
+    // blocking `std::fs::File::open` inside the spawn_blocking closure
+    // so the async worker thread is never blocked by filesystem IO,
+    // not even for directory open which can stall on NFS/contended
+    // inodes. Propagate failures via tracing::warn (Round 1 H4).
+    let dir_for_task = dir.clone();
+    let dir_for_log = dir.clone();
+    let join = tokio::task::spawn_blocking(move || {
+        std::fs::File::open(&dir_for_task).and_then(|h| h.sync_all())
+    })
+    .await;
+    match join {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(
+            dir = %dir_for_log.display(),
+            error = %e,
+            "parent-dir fsync failed — state write is durable in page cache but not on disk"
+        ),
+        Err(e) => tracing::warn!(
+            dir = %dir_for_log.display(),
+            error = %e,
+            "parent-dir fsync task panicked"
+        ),
     }
     Ok(())
 }
@@ -208,14 +264,24 @@ pub async fn advance_phase(
 ) -> anyhow::Result<PhaseState> {
     validate_artifact_id(artifact_id)?;
 
-    let mut state = match read_phase(workspace, artifact_id).await? {
-        Some(s) => s,
-        None => initial_state(artifact_id, None),
+    // Track whether state existed on disk — if no, we synthesized the
+    // initial Shape in-memory; even when `to == Shape` we must persist
+    // so subsequent reads see the materialized state (Round 2 audit
+    // H-logic #2: the silent no-persist bug previously left disk empty
+    // after "advance from missing" and confused callers).
+    let (mut state, was_missing) = match read_phase(workspace, artifact_id).await? {
+        Some(s) => (s, false),
+        None => (initial_state(artifact_id, None), true),
     };
 
     let from = state.current_phase;
     // Skip recording a no-op transition (e.g. double-call of auto-advance).
     if from == to {
+        if was_missing {
+            // First-time materialization — persist even though the
+            // logical transition is a no-op.
+            write_phase(workspace, &state).await?;
+        }
         return Ok(state);
     }
 
@@ -468,17 +534,133 @@ mod tests {
     async fn reason_is_truncated_on_write() {
         // Audit Round 1 H3 / related to H-sec #2: reason stored on disk
         // is bounded; runaway agent cannot dump MB into a single entry.
+        use super::super::MAX_REASON_LEN;
+
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
         initialize_phase(&ws, "PRD-R", None).await.unwrap();
 
-        let huge = "x".repeat(super::super::MAX_REASON_LEN * 10);
+        let huge = "x".repeat(MAX_REASON_LEN * 10);
         advance_phase(&ws, "PRD-R", Phase::Validate, Some(huge))
             .await
             .unwrap();
 
         let s = read_phase(&ws, "PRD-R").await.unwrap().unwrap();
         let stored = s.history.last().unwrap().reason.as_ref().unwrap();
-        assert!(stored.len() <= super::super::MAX_REASON_LEN);
+        assert!(stored.len() <= MAX_REASON_LEN);
+    }
+
+    // ── Audit Round 2 regression tests ──────────────────────────
+
+    #[tokio::test]
+    async fn advance_from_missing_with_target_shape_persists() {
+        // Audit Round 2 H-logic #2: previously `advance_phase` on a
+        // missing state with `to=Shape` hit the `from==to` early return
+        // and never wrote to disk. Next read saw None. Bug.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let s = advance_phase(&ws, "PRD-MS", Phase::Shape, Some("manual".into()))
+            .await
+            .unwrap();
+        assert_eq!(s.current_phase, Phase::Shape);
+
+        // Disk state must now be persisted — next read returns Some, not None.
+        let back = read_phase(&ws, "PRD-MS").await.unwrap();
+        assert!(
+            back.is_some(),
+            "advance from missing + to=Shape must persist state"
+        );
+        assert_eq!(back.unwrap().current_phase, Phase::Shape);
+    }
+
+    #[tokio::test]
+    async fn concurrent_advances_all_succeed() {
+        // Audit Round 2 H-sec #3: tmp filename uniqueness under
+        // concurrent calls in the same tokio runtime tick. The
+        // AtomicU64 counter (vs just nanos) should guarantee no two
+        // tmp paths ever collide.
+        use futures::future::join_all;
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-CC", None).await.unwrap();
+
+        let mut tasks = Vec::new();
+        for i in 0..16 {
+            let ws = ws.clone();
+            let phase = if i % 2 == 0 { Phase::Code } else { Phase::Test };
+            tasks.push(tokio::spawn(async move {
+                advance_phase(&ws, "PRD-CC", phase, Some(format!("concurrent-{i}"))).await
+            }));
+        }
+        let results = join_all(tasks).await;
+        for r in results {
+            r.expect("task panicked").expect("advance_phase failed");
+        }
+        // State exists and is one of the expected phases.
+        let s = read_phase(&ws, "PRD-CC").await.unwrap().unwrap();
+        assert!(matches!(s.current_phase, Phase::Code | Phase::Test));
+    }
+
+    #[tokio::test]
+    async fn corrupt_yaml_is_quarantined_not_clobbered() {
+        // Audit Round 2 M-sec #3: corrupt state file should be renamed
+        // to a quarantine path (not silently clobbered), preserving
+        // forensic trail. Next advance rebuilds from initial_state.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PRD-Q.yaml"), b"{ not valid :::").unwrap();
+
+        // Read triggers quarantine.
+        let _ = read_phase(&ws, "PRD-Q").await.unwrap();
+
+        // Original file should be gone (or quarantined).
+        let orig = std::fs::exists(dir.join("PRD-Q.yaml")).unwrap_or(false);
+        // List dir; at least one .yaml.corrupt.* file must exist.
+        let mut found_quarantine = false;
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".yaml.corrupt.")
+            {
+                found_quarantine = true;
+                break;
+            }
+        }
+        assert!(
+            !orig,
+            "corrupt yaml must be renamed away from the canonical path"
+        );
+        assert!(
+            found_quarantine,
+            "corrupt yaml must be renamed to quarantine path"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_version_greater_than_current_returns_none() {
+        // Audit Round 2 M-logic: fail-safe on newer-schema files —
+        // do not silently deserialize with defaults.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Synthesize a valid YAML with future schema_version.
+        let future_yaml = r#"artifact_id: PRD-FV
+workflow_type: greenfield
+current_phase: shape
+advanced_at: 2026-04-18T00:00:00Z
+history: []
+schema_version: 9999
+"#;
+        std::fs::write(dir.join("PRD-FV.yaml"), future_yaml).unwrap();
+
+        let got = read_phase(&ws, "PRD-FV").await.unwrap();
+        assert!(
+            got.is_none(),
+            "future-schema file must be refused, not silently accepted"
+        );
     }
 }

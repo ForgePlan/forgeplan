@@ -5258,6 +5258,20 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // Round 2 audit M-sec #2: boundary-layer reason cap. Rejects
+        // the request outright before serde_json / sanitize_for_hint
+        // touch the buffer. Core layer still truncates on write as
+        // defense-in-depth, but this short-circuits a DoS via
+        // multi-MB payload on `reason`.
+        if let Some(ref r) = p.reason
+            && r.len() > 4096
+        {
+            return Err(McpError::invalid_params(
+                format!("reason too long: {} bytes (max: 4096)", r.len()),
+                None,
+            ));
+        }
+
         let target: forgeplan_core::phase::Phase = p.to.into();
         let safe_id = sanitize_for_hint(&p.id);
         let safe_reason = p.reason.as_deref().map(sanitize_for_hint);
