@@ -3964,11 +3964,14 @@ impl ForgeplanServer {
 
         let result = match fpf::check_artifact_against_rules(&store, &p.id, fpf_cfg).await {
             Ok(Some(r)) => r,
-            Ok(None) => {
-                return Ok(err_result(&format!("Artifact not found: {}", p.id)));
-            }
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(_) => {
-                return Ok(err_result(&format!("Failed to check artifact: {}", p.id)));
+                let safe = sanitize_for_hint(&p.id);
+                return Ok(err_hinted(
+                    &format!("Failed to check artifact '{safe}' against FPF rules."),
+                    "Verify the artifact exists (`forgeplan_get <id>`). If it does, the FPF \
+                     store may need re-ingest: run `forgeplan fpf ingest` from CLI.",
+                ));
             }
         };
 
