@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod artifact;
 pub mod changelog;
 pub mod config;

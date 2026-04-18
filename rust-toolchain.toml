@@ -1,0 +1,9 @@
+# Pin the Rust toolchain used for local development to match CI.
+# This is how we avoid drift between "clippy passes locally" and
+# "CI lint job fails" — the exact situation that broke PR #178
+# on first push.
+#
+# Keep in sync with .github/workflows/ci.yml `rust_version`.
+[toolchain]
+channel = "1.95"
+components = ["rustfmt", "clippy"]

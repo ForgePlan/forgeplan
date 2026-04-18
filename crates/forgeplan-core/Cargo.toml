@@ -28,6 +28,8 @@ pulldown-cmark = "0.13"
 petgraph.workspace = true
 fastembed = { version = "5", optional = true }
 bm25 = { version = "2.3.2", features = ["language_detection"] }
+sha2 = "0.10"
+tracing = "0.1"
 
 [features]
 default = []
