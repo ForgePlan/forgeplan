@@ -72,3 +72,11 @@ W1-L2-CLAUDE-additional-sources.zip
 # Soft-delete trash directory (PRD-055) — receipts are ephemeral
 # per-workspace runtime state, not version-controlled.
 .forgeplan/trash/
+
+# Activity log (PRD-054) — append-only JSONL of MCP tool calls,
+# per-workspace local data, not version-controlled.
+.forgeplan/logs/
+
+# Phase state (PRD-058) — per-artifact current_phase markers,
+# workspace-local runtime state.
+.forgeplan/state/
