@@ -7,6 +7,94 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.20.0] — 2026-04-18 — MCP silent-failure hotfix + tool quality (3-round audit)
+
+Originally a v0.19.1 hotfix for two independent silent failures that blocked
+MCP adoption in v0.19.0. Grew via three full audit rounds into a feature
+release: every tool now carries workflow guidance and is hardened against
+invisible prompt-injection.
+
+### Fixed — the hotfix reason
+
+- **`ServerCapabilities::default()` returned empty `{}`** — per MCP spec,
+  clients skip `tools/list` when `tools` capability is absent. All 45 tools
+  invisible to Claude Code / Cursor / Windsurf after `forgeplan mcp install`.
+  Fix: `ServerCapabilities::builder().enable_tools().build()`.
+- **`.mcp.json` carried `transport: "stdio"` field** — not MCP spec; Claude
+  Code silently ignores unknown fields, compounding the capability miss.
+  Fix: drop `transport`; `smart_merge` narrowly removes legacy `transport:
+  "stdio"` and `type: "stdio"` while preserving `type: "http"` configs.
+
+### Added — tool discoverability (agents work better)
+
+- **ToolAnnotations on all 45 tools** — `title`, `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`. Claude Code
+  auto-approves safe reads and warns before destructive ops.
+- **Schema enums × 6** — `relation`, `kind`, `status`, `journal.kind`,
+  `phase`, `grade` switched from prose-listed strings to typed JSON-Schema
+  enums. LLMs constrain-sample against these so `"informs"` is verbatim,
+  not paraphrased as `"inform"`.
+- **`_next_action` on 42/42 tools** — 34 as structured JSON field on
+  success, 8 as `_next_action:` prose in error text via `err_hinted` /
+  `artifact_not_found` / `llm_err`. Every response — success or error —
+  tells the agent what to do next.
+
+### Security — invisible prompt-injection hardening (audit Rounds 2-3)
+
+- **`sanitize_for_hint()`** strips structural punctuation (`` ` ``, `{`,
+  `}`, quotes, backslashes, control chars) **and** invisible Unicode
+  classes: zero-width joiners (U+200B..U+200F), bidi overrides/isolates
+  (U+202A..U+202E, U+2066..U+2069), BOM (U+FEFF), soft-hyphen, Arabic
+  letter mark, Mongolian separators, variation selectors (U+FE00..U+FE0F,
+  U+E0100..U+E01EF), tag characters (U+E0000..U+E007F). Truncation to
+  80 chars happens AFTER filtering so hidden chars can't consume budget.
+  Applied at every `format!` splice of user-controlled values in
+  `_next_action` and error messages. +15 unit tests covering each class.
+- **`llm_err` no longer echoes upstream error bodies** — Anthropic /
+  OpenAI / Gemini sometimes include request IDs and header fragments in
+  errors. Now logged via `tracing::warn` only; user-visible text is
+  generic remediation.
+
+### Fixed — silent-failure class (audit R2 H-1)
+
+- **`unwrap_or(Value::Null)` replaced with `hinted_result<T>()`** —
+  serialization failure now surfaces as `McpError::internal_error`
+  instead of a `Null` response (same bug class as the v0.19.0
+  capability regression).
+- **`forgeplan_blocked.blocked_count` fixed** — was reporting
+  `cycles.len()` instead of `blocked.len()` (audit R2 H-3). Shipping
+  tool with wrong numbers.
+- **`forgeplan_fpf_check` dead match arms** — referenced `"deny"` /
+  `"block"` / `"warn"` but core only emits `EXPLORE` / `INVESTIGATE` /
+  `EXPLOIT`. All agents fell through to generic default. Rewritten
+  against the actual `ActionType::Display` taxonomy.
+- **Race-condition panic in `forgeplan_link`** —
+  `.unwrap_or(Some(record)).unwrap()` panicked on `Ok(None)` when
+  another MCP client deleted the artifact concurrently. Fixed to
+  `.ok().flatten().unwrap_or(record)` (R3 deep-QA finding).
+
+### Added — integration test for the regression
+
+- **`tests/server_capabilities.rs`** — asserts `get_info()` declares
+  `tools` capability both in the Rust struct and in the serialized
+  JSON (wire-format). Would have caught v0.19.0 bug pre-release.
+
+### Verification
+
+- 1214 tests pass / 0 fail (+63 since v0.19.0, of which 15 are new
+  `sanitize_for_hint` tests covering every Unicode injection class).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- Full E2E smoke on fresh tempdir + real workspace (212 artifacts):
+  42/42 tools return workflow hints (34 success + 8 graceful error).
+- Real Claude Code dogfood: all 45 tools visible after session restart;
+  `_next_action` populated; injection payload via crafted artifact ID
+  stripped and hint surfaced.
+
+Refs: PROB-039, PRD-048, audit rounds 1-3 evidence.
+
+---
+
 ## [0.19.0] — 2026-04-16 — One-command MCP install + Clippy 1.95 + website i18n RU
 
 Feature release: `forgeplan mcp install` for frictionless AI agent setup,
