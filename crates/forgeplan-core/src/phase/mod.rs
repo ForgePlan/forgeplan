@@ -24,6 +24,70 @@ use std::path::{Path, PathBuf};
 
 pub mod store;
 
+/// Hard cap on per-artifact history entries. When exceeded, the oldest
+/// half is dropped on the next write (FIFO). Protects against an
+/// agent-driven loop turning state.yaml into a multi-MB file that every
+/// read parses in full. Audit Round 1 H1 (DoS).
+pub const MAX_HISTORY_ENTRIES: usize = 1024;
+
+/// Maximum length (bytes) of the free-form `reason` string in a phase
+/// transition. Truncated on write. Prevents unbounded growth via a
+/// pathological agent call. Audit Round 1 H3.
+pub const MAX_REASON_LEN: usize = 512;
+
+/// Maximum length (bytes) of an `artifact_id` accepted by the phase
+/// module. Filesystem NAME_MAX on ext4 is 255; we leave headroom for
+/// the `.` prefix + `.yaml.tmp` suffix that tmp files add. Audit H3.
+pub const MAX_ARTIFACT_ID_LEN: usize = 128;
+
+/// Validate that `artifact_id` is safe to use as a filesystem path
+/// component. Rejects empty string, path traversal sequences, OS
+/// separators, null bytes, non-ASCII, and anything outside
+/// `A-Za-z0-9-_`. Required at every public entry point in this module
+/// because `state_path` would otherwise let an attacker-controlled
+/// id escape the workspace directory (audit Round 1 C-sec #1).
+pub fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("artifact_id cannot be empty");
+    }
+    if id.len() > MAX_ARTIFACT_ID_LEN {
+        anyhow::bail!(
+            "artifact_id too long: {} bytes (max: {})",
+            id.len(),
+            MAX_ARTIFACT_ID_LEN
+        );
+    }
+    if !id.chars().next().unwrap_or(' ').is_ascii_alphabetic() {
+        anyhow::bail!("artifact_id must start with an ASCII letter: {id:?}");
+    }
+    for c in id.chars() {
+        let ok = c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        if !ok {
+            anyhow::bail!(
+                "artifact_id contains invalid character {c:?} \
+                 (allowed: A-Z, a-z, 0-9, -, _): {id:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Truncate a reason to `MAX_REASON_LEN` bytes on a valid UTF-8
+/// boundary. Used on write so stored data is bounded.
+pub fn truncate_reason(reason: Option<String>) -> Option<String> {
+    reason.map(|mut s| {
+        if s.len() > MAX_REASON_LEN {
+            // Truncate on a char boundary to avoid panics.
+            let mut end = MAX_REASON_LEN;
+            while end > 0 && !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            s.truncate(end);
+        }
+        s
+    })
+}
+
 /// Methodology phase for the greenfield workflow.
 ///
 /// Order: Shape → Validate → Adi → Code → Test → Audit → Evidence → Done.
@@ -236,5 +300,69 @@ mod tests {
         // Missing optional phase: block → default behavior is enabled.
         let cfg = crate::config::Config::default();
         assert!(is_enabled(&cfg));
+    }
+
+    // ── Audit Round 1 regression tests (hotfix) ──────────────
+
+    #[test]
+    fn validate_artifact_id_accepts_canonical_prefixes() {
+        for id in [
+            "PRD-001",
+            "EPIC-005",
+            "NOTE-049",
+            "mem-decision-X",
+            "SPEC-042_v2",
+        ] {
+            assert!(validate_artifact_id(id).is_ok(), "should accept {id}");
+        }
+    }
+
+    #[test]
+    fn validate_artifact_id_rejects_path_traversal() {
+        // Audit C-sec #1: an id like "../../etc/passwd" must be
+        // refused by the phase module so state_path can't escape
+        // the workspace.
+        for evil in [
+            "",
+            "../evil",
+            "../../etc/passwd",
+            "state/PRD-1",
+            "foo/../bar",
+            "foo\\bar",
+            "PRD-\0",
+            "with space",
+            "1-leading-digit",
+            "-leading-dash",
+            "UTF8-кириллица",
+            "path/slash",
+        ] {
+            assert!(
+                validate_artifact_id(evil).is_err(),
+                "should reject {evil:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_artifact_id_rejects_overlong() {
+        let long = "A".to_string() + &"b".repeat(MAX_ARTIFACT_ID_LEN);
+        assert!(validate_artifact_id(&long).is_err());
+    }
+
+    #[test]
+    fn truncate_reason_caps_length_on_char_boundary() {
+        // Unicode-safe truncation: do not produce invalid UTF-8.
+        let huge: String = "Ж".repeat(1000);
+        let r = truncate_reason(Some(huge)).unwrap();
+        assert!(r.len() <= MAX_REASON_LEN);
+        // Resulting bytes are still valid UTF-8.
+        assert!(String::from_utf8(r.into_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_reason_passes_through_when_short() {
+        let r = truncate_reason(Some("short".into())).unwrap();
+        assert_eq!(r, "short");
+        assert!(truncate_reason(None).is_none());
     }
 }

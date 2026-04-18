@@ -18,16 +18,59 @@ use chrono::Utc;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
-use super::{Phase, PhaseState, PhaseTransition, initial_state, state_dir, state_path};
+use super::{
+    MAX_HISTORY_ENTRIES, Phase, PhaseState, PhaseTransition, initial_state, state_dir, state_path,
+    truncate_reason, validate_artifact_id,
+};
+
+/// Maximum bytes read from a state file before parsing. Prevents an
+/// attacker or corrupted writer from forcing us to allocate hundreds
+/// of MB for parsing. Round 1 audit M1. ~1 MiB is ample — history is
+/// capped at 1024 entries (see MAX_HISTORY_ENTRIES).
+const MAX_STATE_FILE_BYTES: u64 = 1_048_576;
 
 /// Read phase state for an artifact. Returns `Ok(None)` if the file does
 /// not exist (FR-012 — missing state is not an error). Corrupt files
 /// are logged and also yield `None` to avoid breaking tool flow.
+///
+/// Rejects invalid `artifact_id` (path traversal, non-ASCII, …) up-front
+/// because `state_path` would otherwise let a tampered id escape the
+/// workspace (audit Round 1 C-sec #1).
 pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<Option<PhaseState>> {
+    validate_artifact_id(artifact_id)?;
+
     let path = state_path(workspace, artifact_id);
     if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Ok(None);
     }
+
+    // Symlink guard on the target file — if the state file was replaced
+    // by a symlink to `/etc/shadow`, refuse to read. Advisory parity
+    // with write-side (audit Round 1 C-sec #2).
+    if let Ok(meta) = tokio::fs::symlink_metadata(&path).await
+        && meta.file_type().is_symlink()
+    {
+        tracing::warn!(
+            artifact = %artifact_id,
+            path = %path.display(),
+            "phase state file is a symlink — refusing to read, treating as unknown"
+        );
+        return Ok(None);
+    }
+
+    // Size cap to bound memory on a pathological/corrupted file.
+    if let Ok(meta) = tokio::fs::metadata(&path).await
+        && meta.len() > MAX_STATE_FILE_BYTES
+    {
+        tracing::warn!(
+            artifact = %artifact_id,
+            size = meta.len(),
+            max = MAX_STATE_FILE_BYTES,
+            "phase state file exceeds size cap — treating as unknown"
+        );
+        return Ok(None);
+    }
+
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -48,12 +91,15 @@ pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<O
 }
 
 /// Atomically write phase state to disk. Creates the state directory
-/// if needed, refuses to write through a symlinked state dir, writes to
-/// tmp + rename, fsync's both file and parent.
+/// if needed, refuses to write through a symlinked state dir or target,
+/// writes to a per-process-unique tmp, renames, and fsync's file +
+/// parent directory.
 pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result<()> {
+    validate_artifact_id(&state.artifact_id)?;
+
     let dir = state_dir(workspace);
 
-    // Symlink guard (audit H-2 pattern from PRD-055 hotfix).
+    // Symlink guard on dir (audit H-2 pattern from PRD-055 hotfix).
     if dir.exists() {
         let meta = tokio::fs::symlink_metadata(&dir).await?;
         if meta.file_type().is_symlink() {
@@ -66,13 +112,36 @@ pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result
     tokio::fs::create_dir_all(&dir).await?;
 
     let target = state_path(workspace, &state.artifact_id);
+
+    // Symlink guard on the target file too: an attacker with write
+    // access to `.forgeplan/state/` could have pre-planted a symlink
+    // to `/etc/passwd`. rename-over-symlink behavior is platform-
+    // dependent; refuse up-front. Round 1 audit C-sec #2.
+    if tokio::fs::try_exists(&target).await.unwrap_or(false)
+        && let Ok(meta) = tokio::fs::symlink_metadata(&target).await
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "phase state target {} is a symlink — refusing to overwrite",
+            target.display()
+        );
+    }
+
     let yaml = serde_yaml::to_string(state)?;
 
-    // tmp + rename for atomic replacement.
-    let tmp = dir.join(format!(".{}.yaml.tmp", state.artifact_id));
+    // Per-process + nanos tmp name so concurrent `advance_phase` calls
+    // on the same artifact never collide on the tmp path (Round 1
+    // audit C-logic #1). rename() is still atomic on POSIX — last
+    // rename wins, but neither writer is partially visible.
+    let pid = std::process::id();
+    let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let tmp = dir.join(format!(".{}.yaml.{}.{}.tmp", state.artifact_id, pid, nanos));
+
+    // `create_new(true)` on the (near-unique) tmp name means a hostile
+    // symlink placed at that exact path would cause EEXIST rather than
+    // being silently followed.
     let mut f = tokio::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .open(&tmp)
         .await?;
@@ -82,9 +151,25 @@ pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result
 
     tokio::fs::rename(&tmp, &target).await?;
 
-    // Parent dir fsync so the directory entry for the new file is durable.
+    // Parent dir fsync so the directory entry for the new file is
+    // durable on ext4/xfs. Propagate failures via tracing::warn rather
+    // than swallowing them silently (audit Round 1 H4).
     if let Ok(dir_handle) = std::fs::File::open(&dir) {
-        let _ = tokio::task::spawn_blocking(move || dir_handle.sync_all()).await;
+        let dir_display = dir.display().to_string();
+        let join = tokio::task::spawn_blocking(move || dir_handle.sync_all()).await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                dir = %dir_display,
+                error = %e,
+                "parent-dir fsync failed — state write is durable in page cache but not on disk"
+            ),
+            Err(e) => tracing::warn!(
+                dir = %dir_display,
+                error = %e,
+                "parent-dir fsync task panicked"
+            ),
+        }
     }
     Ok(())
 }
@@ -98,10 +183,11 @@ pub async fn initialize_phase(
     artifact_id: &str,
     reason: Option<String>,
 ) -> anyhow::Result<PhaseState> {
+    validate_artifact_id(artifact_id)?;
     if let Some(existing) = read_phase(workspace, artifact_id).await? {
         return Ok(existing);
     }
-    let fresh = initial_state(artifact_id, reason);
+    let fresh = initial_state(artifact_id, truncate_reason(reason));
     write_phase(workspace, &fresh).await?;
     Ok(fresh)
 }
@@ -120,6 +206,8 @@ pub async fn advance_phase(
     to: Phase,
     reason: Option<String>,
 ) -> anyhow::Result<PhaseState> {
+    validate_artifact_id(artifact_id)?;
+
     let mut state = match read_phase(workspace, artifact_id).await? {
         Some(s) => s,
         None => initial_state(artifact_id, None),
@@ -136,8 +224,17 @@ pub async fn advance_phase(
         from: Some(from),
         to,
         at: now,
-        reason,
+        reason: truncate_reason(reason),
     });
+
+    // Cap history to prevent unbounded disk growth from a
+    // runaway-agent loop (audit Round 1 H1). FIFO drop — keep the
+    // initial entries (likely auto-init) and the most recent ones.
+    if state.history.len() > MAX_HISTORY_ENTRIES {
+        let excess = state.history.len() - MAX_HISTORY_ENTRIES;
+        state.history.drain(1..=excess);
+    }
+
     state.current_phase = to;
     state.advanced_at = now;
 
@@ -284,5 +381,104 @@ mod tests {
         let s = read_phase(&ws, "PRD-H").await.unwrap().unwrap();
         assert_eq!(s.current_phase, Phase::Done);
         assert_eq!(s.history.len(), 8, "init + 7 advances = 8 entries");
+    }
+
+    // ── Audit Round 1 regression tests (hotfix) ──────────────────
+
+    #[tokio::test]
+    async fn read_rejects_path_traversal_id() {
+        // Audit C-sec #1: an attacker-controlled id with path traversal
+        // must be refused up-front — state_path must not escape the
+        // workspace even if such an id somehow reached the module.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let err = read_phase(&ws, "../../etc/passwd").await.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid character") || err.to_string().contains("must start"),
+            "traversal id must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_rejects_path_traversal_id() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let err = advance_phase(&ws, "../evil", Phase::Done, None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must start with an ASCII letter") || msg.contains("invalid character"),
+            "id must be rejected by the validator: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_refuses_symlinked_target_file() {
+        // Audit C-sec #2: if an attacker with write access to
+        // `.forgeplan/state/` pre-plants a symlink at the target path,
+        // a subsequent write must refuse — do not allow clobbering
+        // arbitrary files via symlink.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Plant a symlink at state/PRD-SL.yaml pointing somewhere else.
+        let outside = tmp.path().join("victim.txt");
+        std::fs::write(&outside, b"sensitive").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("PRD-SL.yaml")).unwrap();
+
+        let s = initial_state("PRD-SL", None);
+        let err = write_phase(&ws, &s).await.unwrap_err();
+        assert!(
+            err.to_string().contains("symlink"),
+            "symlinked target must be refused: {err}"
+        );
+        // Victim file untouched.
+        let still = std::fs::read_to_string(&outside).unwrap();
+        assert_eq!(still, "sensitive");
+    }
+
+    #[tokio::test]
+    async fn history_is_capped_fifo() {
+        // Audit Round 1 H1: runaway loop must not balloon history.
+        // Advance back-and-forth many times; assert cap respected.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-CAP", None).await.unwrap();
+
+        for i in 0..(MAX_HISTORY_ENTRIES + 100) {
+            let p = if i % 2 == 0 { Phase::Code } else { Phase::Test };
+            advance_phase(&ws, "PRD-CAP", p, None).await.unwrap();
+        }
+        let s = read_phase(&ws, "PRD-CAP").await.unwrap().unwrap();
+        assert!(
+            s.history.len() <= MAX_HISTORY_ENTRIES,
+            "history should be capped at {MAX_HISTORY_ENTRIES}, got {}",
+            s.history.len()
+        );
+        // First entry should still be the Shape init (FIFO drops 1..=excess,
+        // not index 0 — preserves provenance of initial state).
+        assert_eq!(s.history[0].to, Phase::Shape);
+    }
+
+    #[tokio::test]
+    async fn reason_is_truncated_on_write() {
+        // Audit Round 1 H3 / related to H-sec #2: reason stored on disk
+        // is bounded; runaway agent cannot dump MB into a single entry.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-R", None).await.unwrap();
+
+        let huge = "x".repeat(super::super::MAX_REASON_LEN * 10);
+        advance_phase(&ws, "PRD-R", Phase::Validate, Some(huge))
+            .await
+            .unwrap();
+
+        let s = read_phase(&ws, "PRD-R").await.unwrap().unwrap();
+        let stored = s.history.last().unwrap().reason.as_ref().unwrap();
+        assert!(stored.len() <= super::super::MAX_REASON_LEN);
     }
 }

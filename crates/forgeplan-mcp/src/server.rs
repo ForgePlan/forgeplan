@@ -5188,7 +5188,17 @@ impl ForgeplanServer {
         let safe_id = sanitize_for_hint(&p.id);
 
         match forgeplan_core::phase::store::read_phase(&ws, &p.id).await {
-            Ok(Some(state)) => {
+            Ok(Some(mut state)) => {
+                // Audit Round 1 H-sec #2: `reason` is user-controlled and
+                // was stored verbatim at write time. Sanitize before the
+                // agent sees it — invisible Unicode / prompt-injection
+                // planted via an earlier advance_phase call must not
+                // reach the response.
+                for entry in state.history.iter_mut() {
+                    if let Some(ref r) = entry.reason {
+                        entry.reason = Some(sanitize_for_hint(r));
+                    }
+                }
                 let current = state.current_phase.as_str();
                 let hint = match state.current_phase.suggested_next() {
                     Some(next) => format!(
