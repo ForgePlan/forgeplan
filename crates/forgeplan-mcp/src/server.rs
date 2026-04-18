@@ -433,6 +433,20 @@ struct ActivityStatsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct RestoreParams {
+    /// Artifact ID to recover from the most recent non-consumed receipt.
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UndoLastParams {
+    /// Time window (hours) to search for the last destructive op.
+    /// Default 24, max 720 (30 days).
+    #[serde(default)]
+    within_hours: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct NewParams {
     /// Artifact kind to create
     kind: ArtifactKindArg,
@@ -4937,6 +4951,218 @@ impl ForgeplanServer {
             }),
             next_action,
         )
+    }
+
+    // ── Undo / Restore tools (PRD-055 increment 3) ───────────────────
+
+    #[tool(
+        description = "Restore a soft-deleted artifact from the most recent non-consumed \
+                       receipt in `.forgeplan/trash/`. Works for delete (recreates row + \
+                       moves projection back), supersede (resets status + drops link), and \
+                       deprecate (resets status). Refuses if a different artifact with the \
+                       same ID currently exists (manual resolution required). TTL default: \
+                       30 days from the destructive op.",
+        annotations(
+            title = "Restore Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_restore(
+        &self,
+        Parameters(p): Parameters<RestoreParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Lazy TTL purge (ADR #5) so aging receipts don't pile up.
+        let ws_clone = ws.clone();
+        tokio::spawn(async move {
+            if let Err(e) = forgeplan_core::undo::purge_expired(
+                &ws_clone,
+                forgeplan_core::undo::DEFAULT_TTL_DAYS,
+            )
+            .await
+            {
+                tracing::warn!("TTL purge on restore entry failed: {}", e);
+            }
+        });
+
+        let receipt = match forgeplan_core::undo::find_latest_for(&ws, &p.id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                let safe_id = sanitize_for_hint(&p.id);
+                return Ok(err_hinted(
+                    &format!("No non-consumed receipt found for `{safe_id}`."),
+                    "Check `.forgeplan/trash/` contents or use `forgeplan_activity --tool \
+                     forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h` \
+                     to see recent destructive ops. Receipts older than 30 days are purged.",
+                ));
+            }
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Failed to read trash: {e}"),
+                    "Check `.forgeplan/trash/` is readable and contains well-formed receipt \
+                     files.",
+                ));
+            }
+        };
+
+        match forgeplan_core::undo::restore::apply_restore(&ws, &store, &receipt).await {
+            Ok(report) => {
+                let safe_id = sanitize_for_hint(&report.artifact_id);
+                let op_str = match report.op {
+                    forgeplan_core::undo::DestructiveOp::Delete => "delete",
+                    forgeplan_core::undo::DestructiveOp::Supersede => "supersede",
+                    forgeplan_core::undo::DestructiveOp::Deprecate => "deprecate",
+                };
+                let next_action = if !report.relations_skipped.is_empty() {
+                    format!(
+                        "Restored `{safe_id}` (reversed {op_str}). {} relation(s) restored, {} \
+                         skipped because targets no longer exist. Review with \
+                         `forgeplan_get {safe_id}` and re-link manually if needed.",
+                        report.relations_restored,
+                        report.relations_skipped.len()
+                    )
+                } else {
+                    format!(
+                        "Restored `{safe_id}` (reversed {op_str}). {} relation(s) restored. \
+                         Verify with `forgeplan_get {safe_id}`.",
+                        report.relations_restored
+                    )
+                };
+                hinted_result(
+                    &serde_json::json!({
+                        "restored": report.artifact_id,
+                        "op_reversed": op_str,
+                        "relations_restored": report.relations_restored,
+                        "relations_skipped": report.relations_skipped,
+                        "projection_restored": report.projection_restored,
+                        "warnings": report.warnings,
+                    }),
+                    next_action,
+                )
+            }
+            Err(e) => {
+                let safe_id = sanitize_for_hint(&p.id);
+                Ok(err_hinted(
+                    &e.to_string(),
+                    format!(
+                        "Restore of `{safe_id}` failed. If the error mentions a collision, an \
+                         artifact with that ID was re-created after the delete — resolve by \
+                         deleting the current `{safe_id}` or renaming one, then retry."
+                    ),
+                ))
+            }
+        }
+    }
+
+    #[tool(
+        description = "Reverse the most recent destructive operation (delete, supersede, or \
+                       deprecate) by reading the soft-delete trash and applying \
+                       forgeplan_restore to the most recently written non-consumed receipt. \
+                       Params: within_hours (default 24, max 720). If no matching receipt is \
+                       found, returns an error with guidance; the tool never guesses.",
+        annotations(
+            title = "Undo Last Destructive Op",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_undo_last(
+        &self,
+        Parameters(p): Parameters<UndoLastParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let within = p.within_hours.unwrap_or(24).clamp(1, 720);
+
+        // Find the newest non-consumed receipt overall, within the
+        // window. `list_receipts` returns newest-first.
+        let receipts = match forgeplan_core::undo::list_receipts(&ws).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Could not list trash: {e}"),
+                    "Check `.forgeplan/trash/` is readable. If the directory is missing, \
+                     nothing has been soft-deleted yet.",
+                ));
+            }
+        };
+
+        let threshold = chrono::Utc::now() - chrono::Duration::hours(within as i64);
+        let receipt = receipts.into_iter().find(|r| {
+            if r.consumed {
+                return false;
+            }
+            match chrono::DateTime::parse_from_rfc3339(&r.ts) {
+                Ok(ts) => ts.with_timezone(&chrono::Utc) >= threshold,
+                Err(_) => false,
+            }
+        });
+
+        let receipt = match receipt {
+            Some(r) => r,
+            None => {
+                return Ok(err_hinted(
+                    &format!("No non-consumed destructive op in the last {within} hour(s)."),
+                    "Expand the window: `forgeplan_undo_last within_hours=720`. Or inspect \
+                     the log: `forgeplan_activity --tool forgeplan_delete,forgeplan_supersede,\
+                     forgeplan_deprecate --since 720h`.",
+                ));
+            }
+        };
+
+        match forgeplan_core::undo::restore::apply_restore(&ws, &store, &receipt).await {
+            Ok(report) => {
+                let safe_id = sanitize_for_hint(&report.artifact_id);
+                let op_str = match report.op {
+                    forgeplan_core::undo::DestructiveOp::Delete => "delete",
+                    forgeplan_core::undo::DestructiveOp::Supersede => "supersede",
+                    forgeplan_core::undo::DestructiveOp::Deprecate => "deprecate",
+                };
+                let next_action = format!(
+                    "Reversed most recent {op_str} of `{safe_id}`. To undo another, call \
+                     `forgeplan_undo_last` again (finds the next newest non-consumed \
+                     receipt). Or restore a specific ID: `forgeplan_restore <id>`."
+                );
+                hinted_result(
+                    &serde_json::json!({
+                        "restored": report.artifact_id,
+                        "op_reversed": op_str,
+                        "receipt_id": receipt.receipt_id,
+                        "relations_restored": report.relations_restored,
+                        "relations_skipped": report.relations_skipped,
+                        "projection_restored": report.projection_restored,
+                        "warnings": report.warnings,
+                    }),
+                    next_action,
+                )
+            }
+            Err(e) => Ok(err_hinted(
+                &format!("Undo-last failed: {e}"),
+                "Inspect the receipt manually in `.forgeplan/trash/`. If a collision, the \
+                 target artifact was re-created — resolve manually then retry \
+                 `forgeplan_restore <id>`.",
+            )),
+        }
     }
 }
 
