@@ -250,6 +250,67 @@ fn hinted_result<T: serde::Serialize>(
     Ok(json_result(&v))
 }
 
+// ── Phase tracking hooks (PRD-056) ────────────────────────────
+//
+// Advisory phase markers. Never break an existing tool — if phase tracking
+// is disabled in config OR the state write fails, we log and continue.
+// Callers pass the workspace path already resolved.
+
+fn phase_tracking_enabled(workspace: &std::path::Path) -> bool {
+    forgeplan_core::workspace::load_config(workspace)
+        .map(|c| forgeplan_core::phase::is_enabled(&c))
+        .unwrap_or(true)
+}
+
+/// Initialize phase state to `shape` for a newly created artifact.
+/// Fire-and-forget semantics: errors are logged, never returned.
+async fn maybe_init_phase(workspace: &std::path::Path, artifact_id: &str, trigger: &str) {
+    if !phase_tracking_enabled(workspace) {
+        return;
+    }
+    if let Err(e) = forgeplan_core::phase::store::initialize_phase(
+        workspace,
+        artifact_id,
+        Some(format!("auto: {trigger}")),
+    )
+    .await
+    {
+        tracing::warn!(
+            artifact = %artifact_id,
+            error = %e,
+            "phase init failed (non-fatal, phase tracking is advisory)"
+        );
+    }
+}
+
+/// Advance phase marker on a successful lifecycle transition.
+/// Fire-and-forget semantics.
+async fn maybe_advance_phase(
+    workspace: &std::path::Path,
+    artifact_id: &str,
+    to: forgeplan_core::phase::Phase,
+    trigger: &str,
+) {
+    if !phase_tracking_enabled(workspace) {
+        return;
+    }
+    if let Err(e) = forgeplan_core::phase::store::advance_phase(
+        workspace,
+        artifact_id,
+        to,
+        Some(format!("auto: {trigger}")),
+    )
+    .await
+    {
+        tracing::warn!(
+            artifact = %artifact_id,
+            target_phase = %to.as_str(),
+            error = %e,
+            "phase advance failed (non-fatal, phase tracking is advisory)"
+        );
+    }
+}
+
 // ── Parameter types (inline for tools) ───────────────────────
 //
 // Schema enum types — LLM clients constrain-sample against these, so we get
@@ -962,6 +1023,10 @@ impl ForgeplanServer {
         .await
         .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
+        // PRD-056: initialize advisory phase state to `shape`. Advisory
+        // only — a failure here is logged and does not break creation.
+        maybe_init_phase(&ws, &id, "forgeplan_new").await;
+
         let hint = methodology_hint_after_new(template_key, &id);
 
         Ok(json_result(&NewArtifactResponse {
@@ -1129,6 +1194,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ValidateParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -1171,6 +1240,14 @@ impl ForgeplanServer {
             total_warnings += result.warning_count();
             if result.passed() {
                 total_passed += 1;
+                // PRD-056: auto-advance phase on PASS (shape → validate).
+                maybe_advance_phase(
+                    &ws,
+                    &record.id,
+                    forgeplan_core::phase::Phase::Validate,
+                    "forgeplan_validate PASS",
+                )
+                .await;
             }
             results.push(ValidationResultDto::from(result));
         }
@@ -1936,6 +2013,16 @@ impl ForgeplanServer {
         };
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
+                // PRD-056: activation is terminal — advance phase to Done.
+                if let Ok(ws) = self.require_workspace().await {
+                    maybe_advance_phase(
+                        &ws,
+                        &p.id,
+                        forgeplan_core::phase::Phase::Done,
+                        "forgeplan_activate",
+                    )
+                    .await;
+                }
                 let safe_id = sanitize_for_hint(&p.id);
                 let mut msg = format!("Activated {} (draft → active)", p.id);
                 if result.forced {
@@ -2028,6 +2115,14 @@ impl ForgeplanServer {
 
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
             Ok(result) => {
+                // PRD-056: supersede is terminal — advance phase to Done.
+                maybe_advance_phase(
+                    &ws,
+                    &p.id,
+                    forgeplan_core::phase::Phase::Done,
+                    "forgeplan_supersede",
+                )
+                .await;
                 let safe_id = sanitize_for_hint(&p.id);
                 let safe_new = sanitize_for_hint(&p.by);
                 let next_action = if result.dependents.is_empty() {
@@ -2122,6 +2217,14 @@ impl ForgeplanServer {
 
         match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
             Ok(dependents) => {
+                // PRD-056: deprecation is terminal — advance phase to Done.
+                maybe_advance_phase(
+                    &ws,
+                    &p.id,
+                    forgeplan_core::phase::Phase::Done,
+                    "forgeplan_deprecate",
+                )
+                .await;
                 let safe_id = sanitize_for_hint(&p.id);
                 let next_action = if dependents.is_empty() {
                     format!(

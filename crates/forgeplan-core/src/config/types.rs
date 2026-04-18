@@ -27,6 +27,31 @@ pub struct Config {
     /// Integrity/health thresholds and MCP DoS protection limits.
     #[serde(default)]
     pub integrity: IntegrityConfig,
+    /// PRD-056 — advisory phase state tracking (per-artifact current_phase
+    /// in `.forgeplan/state/<ID>.yaml`). Feature-flagged so users can
+    /// roll back to pre-v0.23.0 behavior without recompiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<PhaseConfig>,
+}
+
+/// Phase tracking feature-flag block. Missing block = default behavior
+/// (enabled). Only knob currently is `enabled`; more settings (per-kind
+/// phase sets, auto-advancement toggles) come with later child PRDs
+/// under EPIC-005.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseConfig {
+    #[serde(default = "default_phase_enabled")]
+    pub enabled: bool,
+}
+
+fn default_phase_enabled() -> bool {
+    true
+}
+
+impl Default for PhaseConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Integrity/health thresholds and MCP input limits (DoS protection).
@@ -137,6 +162,7 @@ impl Default for Config {
             estimate: None,
             fpf: None,
             integrity: IntegrityConfig::default(),
+            phase: None,
         }
     }
 }
