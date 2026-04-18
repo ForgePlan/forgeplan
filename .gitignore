@@ -68,3 +68,7 @@ plan-dist-manifest.json
 !.github/assets/*.png
 *.pen
 W1-L2-CLAUDE-additional-sources.zip
+
+# Soft-delete trash directory (PRD-055) — receipts are ephemeral
+# per-workspace runtime state, not version-controlled.
+.forgeplan/trash/
