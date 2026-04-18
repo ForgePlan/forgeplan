@@ -7,6 +7,72 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.22.1] — 2026-04-18 — Undo hardening (post-ship audit Round 3)
+
+Security + correctness hotfix for the undo subsystem shipped in v0.22.0.
+A 4-agent multi-lens audit of the PRD-055 code found 2 CRITICAL + 5 HIGH
+real issues. All fixed here with regression tests.
+
+### Fixed — Security
+
+- **Path traversal via tampered `projection_path`** (C-1 sec). Restore no
+  longer trusts `receipt.snapshot.projection_path` verbatim. Destination
+  is recomputed from `workspace + kind + id + slug(title)` and verified
+  with `canonicalize().starts_with(workspace)`. An attacker-crafted
+  receipt pointing at `/etc/passwd` is refused.
+- **Unsanitized strings from receipts reached the agent** (H-1 sec).
+  `report.warnings`, `relations_skipped`, and `receipt_id` in
+  `forgeplan_restore` / `forgeplan_undo_last` responses now go through
+  the same `sanitize_for_hint()` pipeline used elsewhere. Prompt-injection
+  content planted in a receipt can no longer ride into agent context.
+- **Symlinked trash directory or source projection** (H-2 sec). Both
+  `write_receipt` and `trash_projection` now `symlink_metadata`-check
+  their inputs and refuse if either is a symlink — prevents an attacker
+  who can write the `.forgeplan/` tree from redirecting rename targets
+  outside the workspace.
+
+### Fixed — Correctness
+
+- **`mark_consumed` failure silently left receipt unconsumed** (C-1
+  logic, FR-011). A subsequent `undo_last` re-applied the same receipt
+  (harmless for delete, misleading `Ok` for supersede/deprecate).
+  `apply_restore` now propagates the error with clear manual-recovery
+  instructions.
+- **Receipt ID collision at 1/65 536 under concurrent deletes** (H-1
+  logic). Replaced the 16-bit nanos-mask suffix with a 32-bit PRNG
+  (`rand::random::<u32>()`) → effective collision probability
+  ~1/4 294 967 296.
+- **Title edits after creation broke projection resolution** (H-2
+  logic). `soft_delete_capture` now scans `<kind>/<ID>-*.md` on the
+  filesystem and uses the real filename, falling back to current-title
+  slugify only if scan fails. Delete no longer silently leaves an
+  orphan markdown that `scan-import` would resurrect.
+- **Supersede/deprecate restore on collision branch overwrote a
+  different artifact** (H-4 logic). Now refuses if `existing.kind !=
+  snapshot.kind` with an explicit error suggesting manual resolution.
+
+### Hardened
+
+- Parent-directory fsync after `write_receipt` file sync (ext4/xfs
+  durability — `fsync(file)` alone can lose the directory entry on a
+  hard crash).
+- `is_cross_device` now handles Windows `ERROR_NOT_SAME_DEVICE` (17) in
+  addition to Unix `EXDEV` (18).
+
+### Verification
+
+- **1261 tests pass / 0 fail** (+6 new regression tests covering each
+  finding: traversal-projection refusal, `mark_consumed` propagation,
+  kind-mismatch refusal, 32-bit PRNG uniqueness, symlinked-trash
+  refusal, symlinked-source refusal).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+
+Refs: PRD-055 post-ship audit (4-agent panel: code-reviewer,
+security-auditor, rust-pro, architect-reviewer).
+
+---
+
 ## [0.22.0] — 2026-04-18 — Reversible destructive ops (PRD-055 complete)
 
 Completes the undo story started in v0.21.0. Every destructive operation —
