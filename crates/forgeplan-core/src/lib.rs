@@ -23,6 +23,7 @@ pub mod journal;
 pub mod lifecycle;
 pub mod link;
 pub mod llm;
+pub mod phase;
 pub mod progress;
 pub mod projection;
 pub mod routing;

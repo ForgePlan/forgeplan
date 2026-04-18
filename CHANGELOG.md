@@ -7,6 +7,102 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.23.0] — 2026-04-18 — Advisory phase state machine (PRD-056, EPIC-005)
+
+First shipped child of **EPIC-005 "Phase state machine & workflow-aware
+methodology umbrella"**. Every artifact in the greenfield workflow now
+has a visible `current_phase` that auto-advances through the methodology
+cycle (`shape → validate → adi → code → test → audit → evidence → done`)
+with full transition history on disk.
+
+**Advisory-only** — no existing tool is blocked. Full enforcement lands
+in a later PRD under EPIC-005.
+
+### Added — phase state module (`forgeplan-core::phase`)
+
+- Per-artifact state file at `.forgeplan/state/<ID>.yaml` (gitignored)
+  with `current_phase`, `workflow_type`, `advanced_at`, append-only
+  `history: Vec<PhaseTransition>`, `schema_version`.
+- `Phase` enum (Unknown/Shape/Validate/Adi/Code/Test/Audit/Evidence/Done)
+  with `as_str()` and `suggested_next()` helpers.
+- `WorkflowType` enum (currently Greenfield — brownfield/hotfix/research/
+  review-fix/refactor are follow-up child PRDs under EPIC-005).
+- Atomic writes: tmp+rename with pid+nanos+AtomicU64-counter filename,
+  `create_new(true)` against symlink planting, fsync(file) + fsync(dir).
+- Symlink guards on both state directory AND target file, read + write.
+- Path traversal defense via `validate_artifact_id` at every entry point.
+- Size caps: `MAX_HISTORY_ENTRIES=1024` (FIFO drop preserving index 0),
+  `MAX_REASON_LEN=512`, `MAX_STATE_FILE_BYTES=1 MiB`, `MAX_ARTIFACT_ID_LEN=128`.
+- Forward-compat: `schema_version > CURRENT` → refused (no silent data loss).
+- Corrupt YAML quarantined to `<id>.yaml.corrupt.<timestamp>` rather
+  than clobbered — preserves audit-trail forensics.
+
+### Added — auto-advancement hooks (MCP server)
+
+- `forgeplan_new` → `phase=shape` on successful artifact creation.
+- `forgeplan_validate` PASS → `phase=validate`.
+- `forgeplan_activate` / `_supersede` / `_deprecate` → `phase=done`.
+- All hooks fire-and-forget: failures logged via `tracing::warn`,
+  never break the calling tool (advisory invariant).
+
+### Added — MCP tools
+
+- **`forgeplan_phase <id>`** — read current phase + workflow_type +
+  timestamps + full append-only history. Missing state returns
+  `{current_phase: "unknown"}`, never an error.
+- **`forgeplan_phase_advance <id> --to <phase> [--reason]`** — manual
+  override, appends to history, does NOT validate ordering (advisory
+  layer allows out-of-order jumps). `reason` capped at 4096 bytes at
+  MCP boundary + 512 bytes on persist.
+- `PhaseArg` JSON-Schema enum so LLM clients constrain-sample exact
+  values — no paraphrases.
+
+### Added — integration
+
+- `forgeplan_get` response now appends current phase to `_next_action`
+  (`"… Phase: \`shape\` → next \`validate\`."`) when tracking is active.
+- `forgeplan_health` response includes `advisory_phase_mismatches[]` —
+  artifacts with `status=active` but `current_phase` still early-cycle
+  (shape/validate/adi). Strictly advisory — no health failure.
+
+### Added — config
+
+- New optional `phase.enabled: bool` block in `.forgeplan/config.yaml`
+  (default `true`). Flip to `false` for exact pre-v0.23.0 semantics
+  without recompile.
+
+### Fixed — hygiene
+
+- `.gitignore`: added `.forgeplan/logs/` (forgotten in v0.21.0 — activity
+  log was leaking into git) and `.forgeplan/state/` (new in this release).
+
+### Verification
+
+- **1291 tests pass / 0 fail** (+30 new vs v0.22.1 baseline):
+  - 12 phase module unit tests
+  - 14 regression tests (10 from Round 1 + 4 from Round 2 audits)
+  - 4 incidental matches
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- **2 audit rounds** by multi-agent panel (security + logic + rust +
+  architect): 2 CRITICAL + 7 HIGH + 3 MEDIUM findings, **all fixed**
+  before ship. R_eff(PRD-056) = 1.00, Grade A.
+
+### Not included — deferred to follow-up PRDs
+
+- `forgeplan_phase_backfill` command (FR-009, COULD) — populate
+  phase state for existing ~100 artifacts.
+- Full phase enforcement ("замки") — tools refuse to work not in their
+  phase. Separate PRD under EPIC-005.
+- Brownfield, audit-hotfix, research, review-fix, refactor workflow
+  phase enums — each own child PRD under EPIC-005.
+- Read-side `O_NOFOLLOW` TOCTOU closure (platform module needed).
+- `thiserror`-typed `PhaseError` (advisory module, anyhow is fine here).
+
+Refs: EPIC-005, PRD-056, EVID-076.
+
+---
+
 ## [0.22.1] — 2026-04-18 — Undo hardening (post-ship audit Round 3)
 
 Security + correctness hotfix for the undo subsystem shipped in v0.22.0.
