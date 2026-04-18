@@ -7,6 +7,148 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.21.0] — 2026-04-18 — Activity log + soft-delete receipt infrastructure
+
+Builds on the v0.20.0 tool-quality work. Adds two pieces of observability
+and recovery infrastructure that make agent-driven use of forgeplan
+materially safer.
+
+### Added — Activity log (PRD-054)
+
+Every MCP tool invocation is now recorded in an append-only JSONL file at
+`.forgeplan/logs/tools-YYYY-MM-DD.jsonl`. One file per UTC day, daily
+rotation happens automatically on first write. Each entry captures
+timestamp, tool name, SHA-256-prefix hash of args (args content is
+NOT logged by default — prevents secrets in titles / descriptions from
+leaking into the log), duration, status (`ok` / `tool_err` / `rpc_err`),
+workspace path, and optional client info.
+
+Two new MCP tools surface the log:
+
+- `forgeplan_activity` — query with `since_hours` (default 24, max 720),
+  `tool` (comma-separated filter), `status`, `limit` (max 5000). Returns
+  entries, warnings about corrupted lines, and a `_next_action` hint.
+- `forgeplan_activity_stats` — per-tool aggregates (count, err_count,
+  p50/p95/total ms), sorted by total time descending.
+
+Dispatch wrapper sits on top of rmcp's `ToolRouter.call` — any existing
+or future tool is logged automatically without per-handler changes. Log
+writes fire-and-forget via `tokio::spawn` so the tool response path adds
+zero latency. Log-write failures are observed via `tracing::warn` and
+never fail the parent tool call.
+
+CLI parity is planned for a future release.
+
+### Added — Soft-delete receipt infrastructure (PRD-055, increment 1 of 3)
+
+Foundation for reversible destructive operations. New module
+`forgeplan-core::undo` provides the receipt data model, JSON
+serialization, trash directory layout, TTL-based lazy purge, and
+cross-platform filesystem rename with fallback to copy+remove for
+cross-device moves.
+
+Does NOT yet wire into `forgeplan_delete` / `forgeplan_supersede` /
+`forgeplan_deprecate` — those still do hard-delete. Wiring is
+planned for v0.22.0. This release ships the underlying primitives so
+integration tests and tooling can exercise the receipt format now.
+
+Key design decisions documented inline in [PRD-055](.forgeplan/prds/PRD-055-undo-and-soft-delete-reversible-destructive-operations-with-forgeplan-restore-and-forgeplan-undo-last.md):
+1. Move-to-trash plus receipt, not store tombstone column
+2. JSON format, not binary
+3. One receipt per operation (inspectable history)
+4. Write receipt BEFORE mutation (crash invariant — orphan receipts are
+   harmless, but the reverse order would cause data loss)
+5. Lazy TTL purge on invocation, no background daemon
+6. Relations captured in receipt, not re-derived on restore
+
+Default TTL: 30 days. Configurable per-workspace once the wiring lands
+in v0.22.0.
+
+### Changed — Developer experience
+
+- Pinned Rust toolchain to 1.95 via `rust-toolchain.toml` — prevents
+  the class of bug where `cargo clippy` passes locally but fails on CI
+  due to a version skew between developer and runner (hit PR #178 on
+  first push with `clippy::unnecessary_sort_by`).
+
+### Verification
+
+- **1245 tests pass / 0 fail** (+31 new across activity + undo modules,
+  of which 18 in activity and 13 in undo).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- E2E smoke on fresh tempdir: activity log writes 3 JSONL lines across
+  3 tool calls, no secret content leaks into log body.
+
+### Scope trade-offs
+
+`forgeplan_restore` and `forgeplan_undo_last` MCP tools are deferred to
+v0.22.0 along with the wrapping of destructive ops. Shipping the
+primitives now exercises the receipt format under real CI and lets the
+wiring increment land as a cleaner, smaller PR.
+
+Refs: PRD-054, PRD-055.
+
+---
+
+## [0.20.0] — 2026-04-18 — MCP silent-failure hotfix + tool quality (3-round audit)
+
+Originally a v0.19.1 hotfix for two independent silent failures blocking
+MCP adoption in v0.19.0 — users who ran `brew install forgeplan &&
+forgeplan mcp install --client claude && restart Claude Code` got
+**zero tools visible**. Grew via three full audit rounds into a feature
+release: every tool now carries workflow guidance and is hardened
+against invisible prompt-injection.
+
+### Fixed — the original hotfix
+
+- **`ServerCapabilities::default()` returned empty `{}`** — per MCP spec,
+  clients skip `tools/list` when `tools` capability is absent. All 45
+  tools invisible after `forgeplan mcp install`. Fix:
+  `ServerCapabilities::builder().enable_tools().build()`.
+- **`.mcp.json` carried `transport: "stdio"` field** — not MCP spec,
+  silently ignored by Claude Code, compounded the capability miss. Fix:
+  drop `transport`; `smart_merge` narrowly removes legacy entries.
+
+### Added — tool discoverability
+
+- **ToolAnnotations on all 45 tools** — `title`, `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`. Claude Code now
+  auto-approves safe reads and warns before destructive ops.
+- **Schema enums × 6** — `relation`, `kind`, `status`, `journal.kind`,
+  `phase`, `grade` switched from prose strings to JSON-Schema enums.
+  LLMs constrain-sample against these so `"informs"` is verbatim, not
+  paraphrased as `"inform"`.
+- **`_next_action` on 42/42 tools** — 34 as structured JSON field on
+  success, 8 as `_next_action:` prose in error text (via `err_hinted` /
+  `artifact_not_found` / `llm_err`). Every response — success or
+  error — tells the agent what to do next.
+
+### Security — invisible prompt-injection hardening
+
+- **`sanitize_for_hint()`** strips structural punctuation plus invisible
+  Unicode classes: zero-width joiners, bidi overrides/isolates, BOM,
+  soft-hyphen, variation selectors, tag characters. Applied at every
+  `format!` splice of user-controlled values. 15 new unit tests.
+- **`llm_err` no longer echoes upstream error bodies** — provider errors
+  sometimes include request IDs and header fragments; now logged only.
+
+### Fixed — silent-failure class
+
+- `unwrap_or(Value::Null)` replaced with `hinted_result<T>()` helper —
+  serialization failure surfaces as `McpError::internal_error` instead
+  of a `Null` response.
+- `forgeplan_blocked.blocked_count` was reporting `cycles.len()` instead
+  of `blocked.len()`; fixed.
+- `forgeplan_fpf_check` dead match arms (`"deny"/"block"/"warn"`) —
+  core emits `EXPLORE`/`INVESTIGATE`/`EXPLOIT`; match rewritten.
+- Race-condition panic in `forgeplan_link` when artifact deleted
+  concurrently — fixed.
+
+Refs: PROB-039, PRD-048, three audit rounds evidence.
+
+---
+
 ## [0.19.0] — 2026-04-16 — One-command MCP install + Clippy 1.95 + website i18n RU
 
 Feature release: `forgeplan mcp install` for frictionless AI agent setup,
