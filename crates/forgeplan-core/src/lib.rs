@@ -33,5 +33,6 @@ pub mod session;
 pub mod stale;
 pub mod status;
 pub mod template;
+pub mod undo;
 pub mod validation;
 pub mod workspace;
