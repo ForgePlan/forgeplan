@@ -7,6 +7,73 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.22.0] — 2026-04-18 — Reversible destructive ops (PRD-055 complete)
+
+Completes the undo story started in v0.21.0. Every destructive operation —
+`delete`, `supersede`, `deprecate` — is now recoverable via a single tool
+call within a 30-day TTL window.
+
+### Added — wrapping of destructive ops (PRD-055 increment 2)
+
+All three destructive tool handlers now go through `soft_delete_capture`
+before mutating the store:
+
+- `forgeplan_delete`: writes a receipt with full snapshot (body, metadata,
+  outgoing + incoming relations), moves the markdown projection into
+  `.forgeplan/trash/`, then removes the store row.
+- `forgeplan_supersede`: writes a receipt capturing the original status,
+  then applies the lifecycle transition. Projection stays in place.
+- `forgeplan_deprecate`: same pattern.
+
+Crash invariant (PRD-055 ADR #4): receipt is written BEFORE the store
+mutation. A crash in between leaves a harmless orphan receipt which TTL
+purge later collects.
+
+Every destructive-op response now includes a `receipt_id` field and a
+`_next_action` hint pointing at `forgeplan_undo_last` or
+`forgeplan_restore <id>`.
+
+### Added — restore and undo-last tools (PRD-055 increment 3)
+
+- **`forgeplan_restore id=<ID>`** — finds the newest non-consumed receipt
+  for that ID, applies restore. For delete: recreates the store row,
+  moves the projection back, re-links all captured relations. For
+  supersede/deprecate: resets status to pre-op value and drops the new
+  link. Orphaned relation targets are tracked in `relations_skipped`.
+- **`forgeplan_undo_last within_hours=<N>`** — finds the newest
+  non-consumed receipt across all artifacts within the window (default
+  24h, max 720h), applies the same restore logic. Never guesses: returns
+  an explicit error if the window is empty.
+
+Transactional semantics (FR-011): receipt is marked consumed LAST.
+Collision handling (R-3): restore refuses if an artifact with the same
+ID already exists in the store.
+
+### Verification
+
+- **1255 tests pass / 0 fail** (+19 undo tests across receipt and restore
+  modules, +4 integration tests).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+
+### User-visible workflow
+
+Before: `forgeplan_delete PRD-048` → artifact permanently gone.
+
+After:
+```
+forgeplan_delete PRD-048
+  → receipt written, projection moved to trash, store row removed
+  → response: receipt_id + hint "reversible via forgeplan_undo_last"
+
+forgeplan_undo_last
+  → PRD-048 restored with identical body, metadata, relations
+```
+
+Refs: PRD-055 (now functionally complete), PRD-054.
+
+---
+
 ## [0.21.0] — 2026-04-18 — Activity log + soft-delete receipt infrastructure
 
 Builds on the v0.20.0 tool-quality work. Adds two pieces of observability
