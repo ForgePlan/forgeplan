@@ -623,6 +623,55 @@ struct DeprecateParams {
     reason: String,
 }
 
+/// JSON-Schema enum mirroring `forgeplan_core::phase::Phase`.
+/// LLM clients constrain-sample against this so `advance` tools
+/// get exact values ("shape", "validate", etc.) rather than paraphrases.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum PhaseArg {
+    Shape,
+    Validate,
+    Adi,
+    Code,
+    Test,
+    Audit,
+    Evidence,
+    Done,
+}
+
+impl From<PhaseArg> for forgeplan_core::phase::Phase {
+    fn from(a: PhaseArg) -> Self {
+        use forgeplan_core::phase::Phase;
+        match a {
+            PhaseArg::Shape => Phase::Shape,
+            PhaseArg::Validate => Phase::Validate,
+            PhaseArg::Adi => Phase::Adi,
+            PhaseArg::Code => Phase::Code,
+            PhaseArg::Test => Phase::Test,
+            PhaseArg::Audit => Phase::Audit,
+            PhaseArg::Evidence => Phase::Evidence,
+            PhaseArg::Done => Phase::Done,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PhaseReadParams {
+    /// Artifact ID whose phase state to read
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PhaseAdvanceParams {
+    /// Artifact ID to advance
+    id: String,
+    /// Target phase to advance to
+    to: PhaseArg,
+    /// Optional reason / justification (recorded in history)
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct JournalParams {
     /// Filter by artifact kind (decision-kinds only)
@@ -1603,6 +1652,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<GetParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -1611,7 +1664,7 @@ impl ForgeplanServer {
         match store.get_record(&p.id).await {
             Ok(Some(r)) => {
                 let safe_id = sanitize_for_hint(&r.id);
-                let next_action = match r.status.as_str() {
+                let mut next_action = match r.status.as_str() {
                     "draft" => format!(
                         "Draft. Inspect fit: `forgeplan_validate {safe_id}` → fix MUST findings → \
                          `forgeplan_review {safe_id}` → `forgeplan_activate {safe_id}`."
@@ -1633,6 +1686,22 @@ impl ForgeplanServer {
                         "Status: {other}. Use `forgeplan_review {safe_id}` to inspect lifecycle."
                     ),
                 };
+
+                // PRD-056 FR-007: surface current phase in _next_action when
+                // tracking is active. Advisory — silent if missing.
+                if let Ok(Some(phase_state)) =
+                    forgeplan_core::phase::store::read_phase(&ws, &r.id).await
+                {
+                    let phase_label = phase_state.current_phase.as_str();
+                    let phase_hint = match phase_state.current_phase.suggested_next() {
+                        Some(next) => {
+                            format!(" Phase: `{phase_label}` → next `{}`.", next.as_str())
+                        }
+                        None => format!(" Phase: `{phase_label}` (terminal)."),
+                    };
+                    next_action.push_str(&phase_hint);
+                }
+
                 hinted_result(&ArtifactRecordDto::from(r), next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
@@ -2269,6 +2338,10 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_health(&self) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -2277,6 +2350,36 @@ impl ForgeplanServer {
         let report = forgeplan_core::health::health_report(&store)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+        // PRD-056 FR-008: advisory phase-status mismatch surface.
+        // Active artifacts whose recorded phase is still in the early cycle
+        // (shape/validate/adi) likely skipped code/evidence — worth looking
+        // at, but strictly advisory. Never fails the health call.
+        let mut phase_mismatches: Vec<serde_json::Value> = Vec::new();
+        if phase_tracking_enabled(&ws)
+            && let Ok(all_records) = store.list_records(None).await
+        {
+            use forgeplan_core::phase::Phase;
+            for r in &all_records {
+                if r.status != "active" {
+                    continue;
+                }
+                if let Ok(Some(s)) = forgeplan_core::phase::store::read_phase(&ws, &r.id).await {
+                    let early =
+                        matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
+                    if early {
+                        phase_mismatches.push(serde_json::json!({
+                            "id": r.id,
+                            "title": sanitize_for_hint(&r.title),
+                            "status": r.status,
+                            "current_phase": s.current_phase.as_str(),
+                            "advisory": "status=active but phase is early-cycle — \
+                                         Code/Evidence likely skipped",
+                        }));
+                    }
+                }
+            }
+        }
 
         // Workflow chaining hint — research Priority 5.
         let next_action = if !report.blind_spots.is_empty() {
@@ -2324,6 +2427,7 @@ impl ForgeplanServer {
             "stale_count": report.stale_count,
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
+            "advisory_phase_mismatches": phase_mismatches,
             "next_actions": report.next_actions,
             "_next_action": next_action,
         })))
@@ -5054,6 +5158,133 @@ impl ForgeplanServer {
             }),
             next_action,
         )
+    }
+
+    // ── Phase state tools (PRD-056 Mini-X, EPIC-005) ─────────────────
+
+    #[tool(
+        description = "Read advisory phase state for an artifact. Returns current_phase, \
+                       workflow_type, timestamps, and the full append-only transition history \
+                       from `.forgeplan/state/<id>.yaml`. If no state file exists yet \
+                       (pre-PRD-056 artifact or phase tracking was disabled), returns \
+                       `current_phase: unknown` — never an error. Phase tracking is advisory \
+                       and never blocks other tools.",
+        annotations(
+            title = "Read Phase State",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_phase(
+        &self,
+        Parameters(p): Parameters<PhaseReadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let safe_id = sanitize_for_hint(&p.id);
+
+        match forgeplan_core::phase::store::read_phase(&ws, &p.id).await {
+            Ok(Some(state)) => {
+                let current = state.current_phase.as_str();
+                let hint = match state.current_phase.suggested_next() {
+                    Some(next) => format!(
+                        "`{safe_id}` is on phase `{current}`. Suggested next: `{}`. Manual \
+                         override: `forgeplan_phase_advance {safe_id} --to <phase>`.",
+                        next.as_str()
+                    ),
+                    None => format!(
+                        "`{safe_id}` is on phase `{current}` (terminal). No further advancement \
+                         recommended. History available in the response for audit."
+                    ),
+                };
+                hinted_result(&state, hint)
+            }
+            Ok(None) => hinted_result(
+                &serde_json::json!({
+                    "artifact_id": p.id,
+                    "current_phase": "unknown",
+                    "workflow_type": "greenfield",
+                    "history": Vec::<serde_json::Value>::new(),
+                    "message": "No phase state file on disk — advisory only, never an error",
+                }),
+                format!(
+                    "`{safe_id}` has no phase state yet. Typical for artifacts created before \
+                     PRD-056 shipped, or when `phase.enabled: false` in config. To start \
+                     tracking: `forgeplan_phase_advance {safe_id} --to shape` (or re-create via \
+                     `forgeplan_new`).",
+                ),
+            ),
+            Err(e) => Ok(err_hinted(
+                &format!("Failed to read phase state: {e}"),
+                "Check `.forgeplan/state/` directory is readable and not a symlink.",
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Manually advance (or set) the advisory phase marker for an artifact. \
+                       Appends a transition to the history. Does NOT validate phase ordering — \
+                       advisory layer allows out-of-order jumps (e.g. direct `done` override). \
+                       Full phase enforcement lands in a later PRD under EPIC-005. Use when \
+                       auto-advancement missed a transition or when reclassifying workflow state.",
+        annotations(
+            title = "Advance Phase",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_phase_advance(
+        &self,
+        Parameters(p): Parameters<PhaseAdvanceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let target: forgeplan_core::phase::Phase = p.to.into();
+        let safe_id = sanitize_for_hint(&p.id);
+        let safe_reason = p.reason.as_deref().map(sanitize_for_hint);
+
+        match forgeplan_core::phase::store::advance_phase(&ws, &p.id, target, p.reason.clone())
+            .await
+        {
+            Ok(state) => {
+                let current = state.current_phase.as_str();
+                let hint = match state.current_phase.suggested_next() {
+                    Some(next) => format!(
+                        "`{safe_id}` advanced to `{current}`. Suggested next: `{}`.",
+                        next.as_str()
+                    ),
+                    None => format!(
+                        "`{safe_id}` advanced to `{current}` (terminal). No further advancement \
+                         recommended."
+                    ),
+                };
+                hinted_result(
+                    &serde_json::json!({
+                        "artifact_id": state.artifact_id,
+                        "current_phase": current,
+                        "workflow_type": state.workflow_type,
+                        "advanced_at": state.advanced_at,
+                        "history_entries": state.history.len(),
+                        "reason": safe_reason,
+                    }),
+                    hint,
+                )
+            }
+            Err(e) => Ok(err_hinted(
+                &format!("Failed to advance phase: {e}"),
+                "Check `.forgeplan/state/` is writable; verify phase tracking is enabled in \
+                 config.yaml (`phase.enabled: true`).",
+            )),
+        }
     }
 
     // ── Undo / Restore tools (PRD-055 increment 3) ───────────────────
