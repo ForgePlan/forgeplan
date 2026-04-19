@@ -271,6 +271,16 @@ pub struct DispatchResponse {
     pub overlap_threshold: f64,
     pub candidate_count: usize,
     pub claimed_count: usize,
+    /// R3 audit M-4: number of candidate artifact markdown files that
+    /// couldn't be read/parsed and were dropped from the plan (not the
+    /// same as "no affected_files declared"). Non-zero → check logs.
+    #[serde(default)]
+    pub skipped_parse_errors: usize,
+    /// R3 audit task-completion MED (FR-003): number of candidates that
+    /// were dropped because a structural dependency hasn't resolved yet.
+    /// Orchestrator unblocks them by activating/superseding the deps.
+    #[serde(default)]
+    pub blocked_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

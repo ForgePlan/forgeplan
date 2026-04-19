@@ -156,25 +156,51 @@ fn err_hinted(msg: &str, next_action: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(body)])
 }
 
+/// Outcome of `read_dispatch_fm_fields`, distinguishing real "no data"
+/// from "read/parse failure" so the caller can count skipped candidates
+/// (R3 audit M-4 — silent parse failures masquerading as "no files").
+#[derive(Debug, Default)]
+struct DispatchFmFields {
+    files: Vec<String>,
+    domain: Option<String>,
+    parent_epic: Option<String>,
+    /// True when the artifact file couldn't be read or parsed; caller
+    /// reports this as `skipped` rather than pretending the artifact has
+    /// no affected files (which would then serialize it via R-2 bias).
+    parse_failed: bool,
+}
+
+const AFFECTED_FILE_MAX_PATH: usize = forgeplan_core::dispatch::MAX_AFFECTED_FILE_LEN;
+const AFFECTED_FILES_MAX_LEN: usize = forgeplan_core::dispatch::MAX_AFFECTED_FILES;
+
 /// Read the dispatcher-relevant frontmatter fields from an artifact's
-/// markdown projection: `affected_files` (list of strings), `domain`
-/// (string), and `parent_epic` (string). The first two are agent-owned
-/// extras preserved by Inc 2's `KNOWN_FM_KEYS` + `filter_preserved`
-/// machinery; `parent_epic` is a regenerated field we also surface here
-/// so the dispatch handler avoids a second DB round-trip per candidate.
-/// Missing / malformed fields fall back to empty list / None — safer
-/// than erroring the whole dispatch request over one stale artifact.
-/// PRD-057 FR-002, FR-010.
+/// markdown projection: `affected_files` (list of strings or scalar),
+/// `domain` (ASCII-normalized), and `parent_epic`. Falls back to the
+/// body's `## Affected Files` section when the frontmatter key is
+/// absent (R3 audit arch HIGH — a PRD with only the markdown section
+/// would otherwise be silently serialized).
+///
+/// R3 audit LOW: id/title validated up-front even though all callers
+/// currently pass values from LanceDB — defense-in-depth against a
+/// future code path injecting unvalidated user input.
 async fn read_dispatch_fm_fields(
     ws: &std::path::Path,
     kind: &str,
     id: &str,
     title: &str,
-) -> (Vec<String>, Option<String>, Option<String>) {
+) -> DispatchFmFields {
     let artifact_kind = match kind.parse::<ArtifactKind>() {
         Ok(k) => k,
-        Err(_) => return (Vec::new(), None, None),
+        Err(_) => return DispatchFmFields::default(),
     };
+    // Defense-in-depth: refuse obvious traversal segments even though the
+    // id originated from LanceDB (R3 audit security LOW, CWE-20).
+    if id.contains('/') || id.contains('\\') || id.contains("..") {
+        return DispatchFmFields {
+            parse_failed: true,
+            ..Default::default()
+        };
+    }
     let dir = ws.join(artifact_kind.dir_name());
     let filename = format!(
         "{}-{}.md",
@@ -184,30 +210,57 @@ async fn read_dispatch_fm_fields(
     let path = dir.join(filename);
     let content = match tokio::fs::read_to_string(&path).await {
         Ok(s) => s,
-        Err(_) => return (Vec::new(), None, None),
+        Err(_) => {
+            return DispatchFmFields {
+                parse_failed: true,
+                ..Default::default()
+            };
+        }
     };
-    let fm = match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
-        Ok((fm, _)) => fm,
-        Err(_) => return (Vec::new(), None, None),
+    let (fm, body) = match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
+        Ok((fm, body)) => (fm, body),
+        Err(_) => {
+            return DispatchFmFields {
+                parse_failed: true,
+                ..Default::default()
+            };
+        }
     };
-    let files = fm
+
+    // Primary path: the `affected_files:` frontmatter key (canonical for
+    // new artifacts).
+    let mut files = fm
         .get("affected_files")
-        .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>()
-        })
+        .map(forgeplan_core::dispatch::parse_affected_files_from_fm)
         .unwrap_or_default();
+    // Fallback: `## Affected Files` markdown section for legacy artifacts
+    // (R3 audit architect HIGH — same concept, two encodings). Existing
+    // `validation::checks::extract_affected_files` already handles the
+    // markdown extraction; reuse it to avoid divergence.
+    if files.is_empty() {
+        let from_section = forgeplan_core::validation::checks::extract_affected_files(&body);
+        files = from_section
+            .into_iter()
+            .filter(|s| s.len() <= AFFECTED_FILE_MAX_PATH)
+            .take(AFFECTED_FILES_MAX_LEN)
+            .collect();
+    }
+
     let domain = fm
         .get("domain")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(forgeplan_core::dispatch::normalize_dispatch_domain);
     let parent_epic = fm
         .get("parent_epic")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    (files, domain, parent_epic)
+
+    DispatchFmFields {
+        files,
+        domain,
+        parent_epic,
+        parse_failed: false,
+    }
 }
 
 /// Standardised "artifact not found" error with recovery hint.
@@ -1812,6 +1865,20 @@ impl ForgeplanServer {
                     next_action.push_str(&phase_hint);
                 }
 
+                // PRD-057 FR-013: surface live claim info — orchestrators
+                // routing `forgeplan_get` for decision-making need to know
+                // if an agent already owns this work.
+                let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
+                if let Ok(Some(claim)) = claim_store.get(&r.id).await {
+                    let safe_holder = sanitize_for_hint(&claim.agent_id);
+                    let claim_hint = format!(
+                        " Claim: held by `{safe_holder}` until {} — route new work elsewhere \
+                         or ask for force-release.",
+                        claim.expires_at.to_rfc3339(),
+                    );
+                    next_action.push_str(&claim_hint);
+                }
+
                 hinted_result(&ArtifactRecordDto::from(r), next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
@@ -2577,6 +2644,30 @@ impl ForgeplanServer {
                 .to_string()
         };
 
+        // PRD-057 FR-012: advisory surface of active claims so health
+        // consumers (CLI dashboard, orchestrator) see who owns what
+        // without a separate `forgeplan_claims` call. Returns parsed
+        // count + list; malformed files surface via `skipped` so
+        // orchestrators notice data-integrity issues.
+        let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
+        let (active_claims, skipped_claims) = claim_store
+            .list_active_with_stats()
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("health: list_active_with_stats failed: {e}");
+                (Vec::new(), 0)
+            });
+        let claims_json: Vec<serde_json::Value> = active_claims
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "agent_id": c.agent_id,
+                    "expires_at": c.expires_at.to_rfc3339(),
+                })
+            })
+            .collect();
+
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
@@ -2591,6 +2682,9 @@ impl ForgeplanServer {
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
             "advisory_phase_mismatches": phase_mismatches,
+            "active_claims": claims_json,
+            "active_claim_count": active_claims.len(),
+            "skipped_claim_files": skipped_claims,
             "next_actions": report.next_actions,
             "_next_action": next_action,
         })))
@@ -5696,8 +5790,8 @@ impl ForgeplanServer {
                     )
                 } else {
                     format!(
-                        "{count} active claim{}. Use `forgeplan_dispatch` (when implemented) \
-                         to plan non-overlapping work.",
+                        "{count} active claim{}. Use `forgeplan_dispatch --agents N` to plan \
+                         non-overlapping work around them.",
                         if count == 1 { "" } else { "s" }
                     )
                 };
@@ -5737,12 +5831,39 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // R3 audit HIGH (security) + MED: clamp unbounded user input
+        // BEFORE allocating — agents & per-agent skill lists otherwise
+        // could OOM the server with e.g. `agents: 4_000_000_000`.
         if p.agents == 0 {
             return Ok(err_result("agents must be >= 1"));
+        }
+        if p.agents > forgeplan_core::dispatch::MAX_AGENTS {
+            return Ok(err_result(&format!(
+                "agents must be <= {} — PRD-057 targets 2–5 concurrent sub-agents",
+                forgeplan_core::dispatch::MAX_AGENTS
+            )));
+        }
+        if p.agent_skills.len() > p.agents {
+            return Ok(err_result(&format!(
+                "agent_skills has {} entries but only {} agents requested",
+                p.agent_skills.len(),
+                p.agents
+            )));
+        }
+        for (i, skills) in p.agent_skills.iter().enumerate() {
+            if skills.len() > forgeplan_core::dispatch::MAX_SKILLS_PER_AGENT {
+                return Ok(err_result(&format!(
+                    "agent_skills[{}] has {} entries — max {}",
+                    i,
+                    skills.len(),
+                    forgeplan_core::dispatch::MAX_SKILLS_PER_AGENT
+                )));
+            }
         }
         let threshold = p
             .overlap_threshold
             .unwrap_or(forgeplan_core::dispatch::DEFAULT_OVERLAP_THRESHOLD);
+        // `contains` on NaN returns false — catches non-finite inputs too.
         if !(0.0..=1.0).contains(&threshold) {
             return Ok(err_result("overlap_threshold must be in [0.0, 1.0]"));
         }
@@ -5764,6 +5885,30 @@ impl ForgeplanServer {
             .await
             .map_err(|e| McpError::internal_error(format!("list_artifacts: {e}"), None))?;
 
+        // R3 audit task-completion MED: FR-003 requires the dispatcher to
+        // respect the artifact dependency graph — blocked artifacts must
+        // not land in a parallel bucket. Compute the blocked set by the
+        // same rules `forgeplan_blocked` uses: structural edges + records
+        // with status ∈ {active, deprecated, superseded} = resolved.
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| McpError::internal_error(format!("get_all_relations: {e}"), None))?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| McpError::internal_error(format!("list_records: {e}"), None))?;
+        let resolved_ids: std::collections::HashSet<String> = records
+            .iter()
+            .filter(|r| {
+                r.status == "active" || r.status == "deprecated" || r.status == "superseded"
+            })
+            .map(|r| r.id.clone())
+            .collect();
+        let topo = forgeplan_core::graph::topological::kahn_sort(&relations, &resolved_ids);
+        let blocked_ids: std::collections::HashSet<String> =
+            topo.blocked.iter().map(|(id, _)| id.clone()).collect();
+
         // Hydrate the dispatch-relevant fields. `ArtifactSummary` lacks
         // `parent_epic`; that plus `affected_files` + `domain` all live in
         // the markdown frontmatter (files are source of truth per ADR-003,
@@ -5771,20 +5916,38 @@ impl ForgeplanServer {
         // extras across LanceDB re-renders).
         let epic_filter = p.epic.as_deref();
         let mut candidates = Vec::with_capacity(summaries.len());
+        let mut skipped_parse_errors = 0usize;
+        let mut skipped_blocked = Vec::<String>::new();
         for summary in &summaries {
-            let (affected_files, domain, parent_epic) =
+            let fields =
                 read_dispatch_fm_fields(&ws, &summary.kind, &summary.id, &summary.title).await;
+            // R3 audit M-4: surface parse failures explicitly instead of
+            // letting them masquerade as "no affected_files declared".
+            if fields.parse_failed {
+                skipped_parse_errors += 1;
+                tracing::warn!(
+                    id = %summary.id,
+                    "dispatch: skipped candidate — frontmatter unreadable"
+                );
+                continue;
+            }
             // Apply epic filter post-hydration — this is a small workspace
             // (2-5 agents, O(50) candidates) so a pass is cheap.
             if let Some(wanted) = epic_filter
-                && parent_epic.as_deref() != Some(wanted)
+                && fields.parent_epic.as_deref() != Some(wanted)
             {
+                continue;
+            }
+            // FR-003: drop blocked artifacts; dispatcher shouldn't give an
+            // agent work that can't proceed until a dependency resolves.
+            if blocked_ids.contains(&summary.id) {
+                skipped_blocked.push(summary.id.clone());
                 continue;
             }
             candidates.push(forgeplan_core::dispatch::ArtifactCandidate {
                 id: summary.id.clone(),
-                affected_files,
-                domain,
+                affected_files: fields.files,
+                domain: fields.domain,
             });
         }
         let candidate_count = candidates.len();
@@ -5797,13 +5960,21 @@ impl ForgeplanServer {
         let claimed_count = claimed_map.len();
         let claimed_set: std::collections::HashSet<String> = claimed_map.into_keys().collect();
 
-        let plan = forgeplan_core::dispatch::compute_dispatch_plan(
+        let mut plan = forgeplan_core::dispatch::compute_dispatch_plan(
             &candidates,
             p.agents,
             &p.agent_skills,
             &claimed_set,
             threshold,
         );
+        // Prepend blocked-artifact reasoning so orchestrators see WHY
+        // something didn't appear in the plan at all.
+        for id in &skipped_blocked {
+            plan.reasoning.insert(
+                0,
+                format!("{id}: skipped (blocked by unresolved structural dependency)"),
+            );
+        }
 
         let dto = DispatchResponse {
             buckets: plan.buckets,
@@ -5814,14 +5985,22 @@ impl ForgeplanServer {
             overlap_threshold: plan.overlap_threshold,
             candidate_count,
             claimed_count,
+            skipped_parse_errors,
+            blocked_count: skipped_blocked.len(),
         };
 
         let parallel = dto.buckets.iter().filter(|b| !b.is_empty()).count();
+        let skip_note = if skipped_parse_errors > 0 {
+            format!(", {skipped_parse_errors} skipped (parse errors — see logs)")
+        } else {
+            String::new()
+        };
         let hint = format!(
             "Plan ready: {candidate_count} candidate(s), {parallel} parallel bucket(s), \
-             {} serial, {claimed_count} already-claimed skipped. Hand buckets[i] to sub-agent \
-             i; re-dispatch when a sub-agent calls `forgeplan_release`.",
-            dto.serial_queue.len(),
+             {serial} serial, {claimed_count} already-claimed skipped{skip_note}. Hand \
+             buckets[i] to sub-agent i; re-dispatch when the claim set or candidate set \
+             changes (e.g. after `forgeplan_release`, `forgeplan_new`, or a claim's TTL expiry).",
+            serial = dto.serial_queue.len(),
         );
         hinted_result(&dto, hint)
     }
@@ -7090,6 +7269,83 @@ mod claim_mcp_tests {
             .await
             .unwrap();
         assert_eq!(r.is_error, Some(true), "threshold > 1.0 must error");
+    }
+
+    // ── PRD-057 AC-4: concurrent forgeplan_new → unique IDs ──────────
+
+    #[tokio::test]
+    async fn concurrent_forgeplan_new_emits_unique_ids() {
+        // R3 audit task-completion PARTIAL: Inc 1 lock test is a proxy;
+        // this asserts the full MCP path produces distinct IDs + distinct
+        // projection files when called concurrently from three sub-agents
+        // sharing one workspace.
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = forgeplan_core::workspace::init_workspace(&root, "ac4").unwrap();
+        // Force LanceDB init so the test server has a store.
+        let _ = forgeplan_core::db::store::LanceStore::init(&ws)
+            .await
+            .unwrap();
+
+        let server = Arc::new(ForgeplanServer::new(root).await);
+
+        // Spawn 3 concurrent forgeplan_new calls — mirrors the scenario in
+        // the PRD-057 AC-4 Gherkin. Each call holds the workspace lock
+        // for its critical section (next_id + create_artifact + projection
+        // render); with the lock working correctly, all three complete
+        // serially with distinct IDs and distinct files on disk.
+        let mut handles = Vec::new();
+        for i in 0..3 {
+            let srv = Arc::clone(&server);
+            handles.push(tokio::spawn(async move {
+                srv.forgeplan_new(Parameters(NewParams {
+                    kind: ArtifactKindArg::Prd,
+                    title: format!("Concurrent PRD {i}"),
+                }))
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            let r = h.await.unwrap().unwrap();
+            assert_ne!(r.is_error, Some(true), "forgeplan_new must not error");
+            results.push(r);
+        }
+
+        // The JSON body carries the assigned id under "id". Pull them
+        // out — cheap and avoids a full Response deserialization path.
+        let mut seen = std::collections::HashSet::new();
+        for r in &results {
+            assert!(!r.content.is_empty(), "content must be non-empty");
+            let text = match &r.content[0].raw {
+                rmcp::model::RawContent::Text(t) => t.text.clone(),
+                _ => panic!("expected text content"),
+            };
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON body");
+            let id = v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .expect("response should include id");
+            assert!(
+                seen.insert(id.to_string()),
+                "AC-4 violation: duplicate id {id} across concurrent forgeplan_new calls"
+            );
+        }
+
+        // Also verify three distinct projection files landed on disk.
+        let prds_dir = ws.join("prds");
+        let mut rd = tokio::fs::read_dir(&prds_dir).await.unwrap();
+        let mut md_files = 0;
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            let n = entry.file_name().to_string_lossy().to_string();
+            if n.ends_with(".md") {
+                md_files += 1;
+            }
+        }
+        assert_eq!(md_files, 3, "expected 3 markdown files, got {md_files}");
     }
 
     #[tokio::test]

@@ -29,12 +29,14 @@ stepsCompleted: []
 ## Progress
 
 ```
-Inc 1 (lock)          ████████████████████████  3/3   (100%)  ✅ v0.23.1 merged
-Inc 2 (identity)      ████████████████████████  3/3   (100%)  ✅ FR-009 + AC-5
-Inc 3 (claims)        ████████████████████████  4/4   (100%)  ✅ FR-004..006,014 + AC-2,3
-Inc 4 (dispatch)      ████████████████████████  4/4   (100%)  ✅ FR-001..003, FR-010, FR-011, AC-1
+Inc 1 (lock)          ████████████████████████  FR-007, FR-008 + AC-4 coverage
+Inc 2 (identity)      ████████████████████████  FR-009 + AC-5
+Inc 3 (claims)        ████████████████████████  FR-004..006, FR-014 + AC-2, AC-3
+Inc 4 (dispatch)      ████████████████████████  FR-001, FR-002, FR-003, FR-010, FR-011 + AC-1
+R3 hotfix             ████████████████████████  FR-012, FR-013 closed; HIGH/MED regressions fixed
 ─────────────────────────────────────────────────────────
-TOTAL                                           14/14  (100%)
+FR coverage           14/14 functional requirements
+AC coverage            5/5 acceptance criteria (AC-4 via concurrent E2E test)
 ```
 
 **Inc 2 delivered (2026-04-19)**:
@@ -74,6 +76,30 @@ TOTAL                                           14/14  (100%)
 - Read-only — no workspace lock, never mutates state, safe for 1 Hz polling
 - Hydrates `affected_files` + `domain` + `parent_epic` from preserved frontmatter (Inc 2 infrastructure)
 - +15 new tests (13 Core dispatch + 1 MCP validation + 1 MCP wiring), 1366 total
+
+**R3 final-audit hotfix (2026-04-19, 4 agents: rust-pro + security + architect + production-validator):**
+- HIGH×2: unbounded `agents` OOM → clamped `MAX_AGENTS=64`; `affected_files` fragmented (FM key vs `## Affected Files` section) → dispatcher falls back to `validation::checks::extract_affected_files(body)` for legacy artifacts
+- MED (FR-003): blocked artifacts now filtered out of dispatch via `graph::topological::kahn_sort` — PRD promise now enforced end-to-end
+- MED (FR-012): `forgeplan_health` surfaces `active_claims` + `skipped_claim_files` counts
+- MED (FR-013): `forgeplan_get` `_next_action` includes claim info (holder + expiry)
+- MED (rust-pro M-1): Jaccard boundary changed from `>` to `>=` — MCP tool docstring now matches behaviour
+- MED (rust-pro M-2): `affected_files` accepts scalar `"a.rs"` + CSV string forms — silent drop on common user typo eliminated
+- MED (rust-pro M-4): dispatch response surfaces `skipped_parse_errors` + `blocked_count` — parse failures no longer masquerade as "no files declared"
+- MED (security CWE-176): `normalize_dispatch_domain` rejects non-ASCII characters (Cyrillic `е` homograph attack); `MAX_SKILLS_PER_AGENT=32`
+- LOW: claim-set ID casing normalized to uppercase (lowercase-imported IDs still match); `MAX_AFFECTED_FILES=512` + per-path length cap; defensive id traversal guard in `read_dispatch_fm_fields`
+- LOW: stale `"forgeplan_dispatch (when implemented)"` hint updated
+- AC-4 E2E: `concurrent_forgeplan_new_emits_unique_ids` — 3 parallel MCP calls → 3 distinct IDs + 3 markdown files (previously only the Inc 1 lock-level proxy existed)
+- +11 regression tests (5 Core dispatch hardening + 5 parse/normalize + 1 AC-4 E2E), 1377 total
+
+**Deferred to v0.25+ (tracked):**
+- Shared `kv_yaml` abstraction — `phase::store` + `claim` + future dispatch-cache share pattern
+- Per-request identity capture for HTTP/SSE transport (stdio covers today's scope)
+- `load_frontmatter_full` primitive in `artifact::store` — ~10 call sites reimplement read→parse pattern
+- `ListFilter::parent_epic` push-down so epic filter stays in LanceDB instead of O(n) post-hydration
+- `DispatchDecision` enum for `reasoning` (currently free-form, blocks i18n)
+- `ClaimStore::list_active_map` → `HashMap<String, Claim>` preserving agent_id for PRD R-5 holder-based routing
+- ADR for claim (ephemeral) vs phase state (durable) separation
+- Agent profiles (`.forgeplan/agents/<agent_id>.yaml`) — reserved path, v0.27 Growth Vision item
 
 ---
 

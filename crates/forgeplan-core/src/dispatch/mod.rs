@@ -27,10 +27,73 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 
-/// Default Jaccard threshold above which two artifacts are considered
-/// conflicting. 0.3 = "touch a third of the same files" — empirically
-/// tuned on Forgeplan's own monorepo churn. Orchestrators can override.
+/// Default Jaccard threshold at-or-above which two artifacts are
+/// considered conflicting. 0.3 = "touch a third of the same files" —
+/// empirically tuned on Forgeplan's own monorepo churn. Orchestrators can
+/// override.
 pub const DEFAULT_OVERLAP_THRESHOLD: f64 = 0.3;
+
+/// Ceiling on number of dispatch buckets. PRD-057 targets 2–5 agents;
+/// this clamp prevents a malformed / hostile MCP payload with e.g.
+/// `agents: 4_000_000_000` from allocating a giant `Vec<Vec<String>>`
+/// and OOMing the server (R3 audit HIGH — CWE-770).
+pub const MAX_AGENTS: usize = 64;
+
+/// Per-agent skill-list length cap. Bounds the `skills.iter().any(...)`
+/// string compare per candidate in the bucket loop (R3 audit MED — CWE-770).
+pub const MAX_SKILLS_PER_AGENT: usize = 32;
+
+/// Per-artifact affected_files length cap — matches the 64 KB frontmatter
+/// size limit downstream and keeps Jaccard's O(N²) set intersection
+/// bounded on pathological workspaces (R3 audit LOW — CWE-400).
+pub const MAX_AFFECTED_FILES: usize = 512;
+/// Max length of a single file path inside `affected_files`.
+pub const MAX_AFFECTED_FILE_LEN: usize = 512;
+
+/// Parse the `affected_files:` frontmatter value, accepting either:
+/// - YAML sequence: `affected_files: [a.rs, b.rs]` (canonical)
+/// - Scalar string: `affected_files: "a.rs, b.rs"` (tolerated; R3 audit
+///   rust-pro M-2 — silently emitting "no files declared" on scalar form
+///   was a contract bug).
+///
+/// Each entry is bounded to `MAX_AFFECTED_FILE_LEN` bytes; overall list
+/// to `MAX_AFFECTED_FILES` entries (R3 audit security LOW, CWE-400).
+pub fn parse_affected_files_from_fm(v: &serde_yaml::Value) -> Vec<String> {
+    let mut raw: Vec<String> = match v {
+        serde_yaml::Value::Sequence(seq) => seq
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect(),
+        serde_yaml::Value::String(s) => s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
+    raw.retain(|s| s.len() <= MAX_AFFECTED_FILE_LEN);
+    raw.truncate(MAX_AFFECTED_FILES);
+    raw
+}
+
+/// Normalize dispatcher domain values to ASCII `[a-z0-9_-]`. R3 audit
+/// security MED (CWE-176): a tampered frontmatter like
+/// `domain: "backеnd"` (Cyrillic `е`) must not silently mismatch ASCII
+/// agent skills. Returns `None` on invalid charset.
+pub fn normalize_dispatch_domain(raw: &str) -> Option<String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    if !lower
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(lower)
+}
 
 /// One artifact the dispatcher may assign to an agent. The caller
 /// (typically the MCP layer) hydrates this from LanceDB + frontmatter.
@@ -94,17 +157,21 @@ pub fn jaccard(a: &BTreeSet<&str>, b: &BTreeSet<&str>) -> f64 {
     }
 }
 
-/// True when either set is empty OR their overlap exceeds the threshold.
-/// The empty-set branch is the R-2 mitigation: if an artifact declares no
-/// affected files, we assume it touches shared ground and refuse to
-/// parallelize it — safer than optimistically assuming no conflict.
+/// True when either set is empty OR their overlap is at or above the
+/// threshold. The empty-set branch is the R-2 mitigation: if an artifact
+/// declares no affected files, we assume it touches shared ground and
+/// refuse to parallelize it — safer than optimistically assuming no
+/// conflict.
+///
+/// Boundary is inclusive (`>=`) so the MCP tool description "overlap >=
+/// threshold" matches behaviour (R3 audit rust-pro M-1 — contract bug).
 fn conflicts(a: &ArtifactCandidate, b: &ArtifactCandidate, threshold: f64) -> bool {
     let sa = a.file_set();
     let sb = b.file_set();
     if sa.is_empty() || sb.is_empty() {
         return true;
     }
-    jaccard(&sa, &sb) > threshold
+    jaccard(&sa, &sb) >= threshold
 }
 
 /// True when `agent_skills` intersects `artifact_domain`. Empty agent
@@ -146,12 +213,20 @@ pub fn compute_dispatch_plan(
     overlap_threshold: f64,
 ) -> DispatchPlan {
     let mut reasoning = Vec::new();
-    let agent_count = agent_count.max(1);
+    // Clamp agent_count to [1, MAX_AGENTS] — R3 audit HIGH (security):
+    // unbounded caller input would otherwise allocate proportional Vec.
+    let agent_count = agent_count.clamp(1, MAX_AGENTS);
     let mut buckets: Vec<Vec<ArtifactCandidate>> = vec![Vec::new(); agent_count];
     let mut serial_queue_full: Vec<ArtifactCandidate> = Vec::new();
 
+    // R3 audit L-2 (rust-pro): normalize claimed IDs to uppercase so a
+    // lowercase-imported artifact ID still matches the claim key (claims
+    // uppercase on disk; `claimed_ids` may have been built from mixed
+    // sources).
+    let claimed_upper: HashSet<String> = claimed_ids.iter().map(|s| s.to_uppercase()).collect();
+
     'outer: for cand in candidates {
-        if claimed_ids.contains(&cand.id) {
+        if claimed_upper.contains(&cand.id.to_uppercase()) {
             reasoning.push(format!(
                 "{}: skipped (already claimed by another agent)",
                 cand.id
@@ -420,6 +495,108 @@ mod tests {
         assert_eq!(plan.agent_count, 1);
         assert_eq!(plan.buckets.len(), 1);
         assert_eq!(plan.buckets[0], vec!["PRD-A"]);
+    }
+
+    #[test]
+    fn agent_count_clamped_to_max_agents() {
+        // R3 audit HIGH (security): unbounded agent_count would OOM.
+        let candidates = vec![cand("PRD-A", &["x.rs"])];
+        let plan = compute_dispatch_plan(
+            &candidates,
+            usize::MAX,
+            &[],
+            &HashSet::new(),
+            DEFAULT_OVERLAP_THRESHOLD,
+        );
+        assert_eq!(plan.agent_count, MAX_AGENTS);
+        assert_eq!(plan.buckets.len(), MAX_AGENTS);
+    }
+
+    #[test]
+    fn claimed_id_case_insensitive_match() {
+        // R3 audit L-2 (rust-pro): ID casing coupling — a lowercase
+        // imported id must still match an uppercase claim key.
+        let candidates = vec![cand("prd-010", &["x.rs"])];
+        let mut claimed = HashSet::new();
+        claimed.insert("PRD-010".to_string());
+        let plan = compute_dispatch_plan(&candidates, 2, &[], &claimed, DEFAULT_OVERLAP_THRESHOLD);
+        assert_eq!(plan.total_assigned(), 0);
+    }
+
+    #[test]
+    fn parse_affected_files_from_fm_accepts_sequence() {
+        let v: serde_yaml::Value = serde_yaml::from_str("[a.rs, b.rs]").unwrap();
+        assert_eq!(parse_affected_files_from_fm(&v), vec!["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn parse_affected_files_from_fm_accepts_scalar_csv() {
+        // R3 audit M-2 (rust-pro): scalar form must not silently drop.
+        let v: serde_yaml::Value = serde_yaml::from_str("\"a.rs, b.rs\"").unwrap();
+        assert_eq!(parse_affected_files_from_fm(&v), vec!["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn parse_affected_files_from_fm_accepts_single_scalar() {
+        let v: serde_yaml::Value = serde_yaml::from_str("\"crates/core/src/lib.rs\"").unwrap();
+        assert_eq!(
+            parse_affected_files_from_fm(&v),
+            vec!["crates/core/src/lib.rs"]
+        );
+    }
+
+    #[test]
+    fn parse_affected_files_from_fm_caps_length() {
+        let long = "x".repeat(MAX_AFFECTED_FILE_LEN + 1);
+        let v = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(long)]);
+        assert!(parse_affected_files_from_fm(&v).is_empty());
+    }
+
+    #[test]
+    fn parse_affected_files_from_fm_caps_count() {
+        let items: Vec<serde_yaml::Value> = (0..MAX_AFFECTED_FILES + 5)
+            .map(|i| serde_yaml::Value::String(format!("f{i}.rs")))
+            .collect();
+        let v = serde_yaml::Value::Sequence(items);
+        assert_eq!(parse_affected_files_from_fm(&v).len(), MAX_AFFECTED_FILES);
+    }
+
+    #[test]
+    fn normalize_dispatch_domain_accepts_ascii() {
+        assert_eq!(normalize_dispatch_domain("backend"), Some("backend".into()));
+        assert_eq!(
+            normalize_dispatch_domain(" Backend "),
+            Some("backend".into())
+        );
+        assert_eq!(normalize_dispatch_domain("api-v2"), Some("api-v2".into()));
+        assert_eq!(
+            normalize_dispatch_domain("cli_tool"),
+            Some("cli_tool".into())
+        );
+    }
+
+    #[test]
+    fn normalize_dispatch_domain_rejects_unicode_homograph() {
+        // R3 audit security MED (CWE-176): Cyrillic 'е' (U+0435) looks
+        // identical to ASCII 'e' but never matches.
+        assert!(normalize_dispatch_domain("back\u{0435}nd").is_none());
+        assert!(normalize_dispatch_domain("front-\u{202E}end").is_none());
+        assert!(normalize_dispatch_domain("").is_none());
+        assert!(normalize_dispatch_domain("   ").is_none());
+    }
+
+    #[test]
+    fn jaccard_boundary_at_threshold_is_conflict() {
+        // R3 audit M-1 (rust-pro): `>= threshold` per MCP docstring.
+        // Two artifacts with exactly 0.5 overlap must conflict at
+        // threshold=0.5 (was > so parallelized before).
+        let a = cand("PRD-A", &["x.rs", "y.rs"]);
+        let b = cand("PRD-B", &["x.rs", "z.rs"]);
+        // Jaccard({x,y}, {x,z}) = 1/3 ≈ 0.333
+        let plan = compute_dispatch_plan(&[a, b], 1, &[], &HashSet::new(), 1.0 / 3.0);
+        // Only first fits; second must serialize because overlap >= threshold.
+        assert_eq!(plan.buckets[0], vec!["PRD-A"]);
+        assert_eq!(plan.serial_queue, vec!["PRD-B"]);
     }
 
     #[test]
