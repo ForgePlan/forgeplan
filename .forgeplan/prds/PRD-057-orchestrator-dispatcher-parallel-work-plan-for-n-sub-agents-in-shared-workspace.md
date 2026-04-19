@@ -32,9 +32,9 @@ stepsCompleted: []
 Inc 1 (lock)          ████████████████████████  3/3   (100%)  ✅ v0.23.1 merged
 Inc 2 (identity)      ████████████████████████  3/3   (100%)  ✅ FR-009 + AC-5
 Inc 3 (claims)        ████████████████████████  4/4   (100%)  ✅ FR-004..006,014 + AC-2,3
-Inc 4 (dispatch)      ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)
+Inc 4 (dispatch)      ████████████████████████  4/4   (100%)  ✅ FR-001..003, FR-010, FR-011, AC-1
 ─────────────────────────────────────────────────────────
-TOTAL                                           10/14  ( 71%)
+TOTAL                                           14/14  (100%)
 ```
 
 **Inc 2 delivered (2026-04-19)**:
@@ -62,6 +62,18 @@ TOTAL                                           10/14  ( 71%)
 - LOW×1: TTL clamp at MCP boundary matches advertised schema
 - +14 new regression tests (9 claim hardening + 5 identity hardening), 1352 total
 - Defer to v0.25+: shared `kv_yaml` abstraction extraction, HTTP/SSE identity refactor, ADR for claim/phase separation
+
+**Inc 4 delivered (2026-04-19)**:
+- `forgeplan-core::dispatch` module: `ArtifactCandidate`, `DispatchPlan`, `compute_dispatch_plan`
+- `jaccard()` + `conflicts()` + `skill_match()` primitives
+- Least-loaded-first greedy bucket packing (distributes work, not dumps to agent 0)
+- Empty `affected_files` biases to serial (R-2 mitigation — no declared files = shared-ground)
+- Claim-aware: skips artifacts in `ClaimStore::list_active_map` (Inc 3 forward-compat)
+- Deterministic output — same input produces identical plan (important for orchestrator cache)
+- `forgeplan_dispatch --agents N [--kind --epic --status --agent_skills --overlap_threshold]` MCP tool
+- Read-only — no workspace lock, never mutates state, safe for 1 Hz polling
+- Hydrates `affected_files` + `domain` + `parent_epic` from preserved frontmatter (Inc 2 infrastructure)
+- +15 new tests (13 Core dispatch + 1 MCP validation + 1 MCP wiring), 1366 total
 
 ---
 

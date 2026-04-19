@@ -156,6 +156,60 @@ fn err_hinted(msg: &str, next_action: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(body)])
 }
 
+/// Read the dispatcher-relevant frontmatter fields from an artifact's
+/// markdown projection: `affected_files` (list of strings), `domain`
+/// (string), and `parent_epic` (string). The first two are agent-owned
+/// extras preserved by Inc 2's `KNOWN_FM_KEYS` + `filter_preserved`
+/// machinery; `parent_epic` is a regenerated field we also surface here
+/// so the dispatch handler avoids a second DB round-trip per candidate.
+/// Missing / malformed fields fall back to empty list / None — safer
+/// than erroring the whole dispatch request over one stale artifact.
+/// PRD-057 FR-002, FR-010.
+async fn read_dispatch_fm_fields(
+    ws: &std::path::Path,
+    kind: &str,
+    id: &str,
+    title: &str,
+) -> (Vec<String>, Option<String>, Option<String>) {
+    let artifact_kind = match kind.parse::<ArtifactKind>() {
+        Ok(k) => k,
+        Err(_) => return (Vec::new(), None, None),
+    };
+    let dir = ws.join(artifact_kind.dir_name());
+    let filename = format!(
+        "{}-{}.md",
+        id,
+        forgeplan_core::artifact::types::slugify(title)
+    );
+    let path = dir.join(filename);
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(_) => return (Vec::new(), None, None),
+    };
+    let fm = match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
+        Ok((fm, _)) => fm,
+        Err(_) => return (Vec::new(), None, None),
+    };
+    let files = fm
+        .get("affected_files")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let domain = fm
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let parent_epic = fm
+        .get("parent_epic")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (files, domain, parent_epic)
+}
+
 /// Standardised "artifact not found" error with recovery hint.
 ///
 /// Sanitizes the user-supplied id to block prompt-injection via crafted
@@ -5653,6 +5707,125 @@ impl ForgeplanServer {
         }
     }
 
+    // ── PRD-057 Inc 4: orchestrator dispatcher ───────────────────────
+
+    #[tool(
+        description = "Compute a parallel-safe work plan for N sub-agents. Returns buckets \
+                       (one per agent), a serial queue for leftover work, and human-readable \
+                       reasoning for every placement decision. Skips artifacts already claimed, \
+                       defers artifacts with file-overlap >= threshold (default Jaccard 0.3), \
+                       and when agent_skills is provided routes by domain match. \
+                       Read-only — does not mutate workspace state.",
+        annotations(
+            title = "Dispatch Work Plan",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_dispatch(
+        &self,
+        Parameters(p): Parameters<DispatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        if p.agents == 0 {
+            return Ok(err_result("agents must be >= 1"));
+        }
+        let threshold = p
+            .overlap_threshold
+            .unwrap_or(forgeplan_core::dispatch::DEFAULT_OVERLAP_THRESHOLD);
+        if !(0.0..=1.0).contains(&threshold) {
+            return Ok(err_result("overlap_threshold must be in [0.0, 1.0]"));
+        }
+
+        // Default status filter is `draft` — those are the artifacts most
+        // likely to be dispatch-able work. Callers can pass `"any"` to
+        // override.
+        let status_filter = p.status.as_deref().unwrap_or("draft");
+        let filter = ArtifactFilter {
+            kind: p.kind.clone(),
+            status: if status_filter == "any" {
+                None
+            } else {
+                Some(status_filter.to_string())
+            },
+        };
+        let summaries = store
+            .list_artifacts(Some(&filter))
+            .await
+            .map_err(|e| McpError::internal_error(format!("list_artifacts: {e}"), None))?;
+
+        // Hydrate the dispatch-relevant fields. `ArtifactSummary` lacks
+        // `parent_epic`; that plus `affected_files` + `domain` all live in
+        // the markdown frontmatter (files are source of truth per ADR-003,
+        // and Inc 2's KNOWN_FM_KEYS logic preserves the agent-owned
+        // extras across LanceDB re-renders).
+        let epic_filter = p.epic.as_deref();
+        let mut candidates = Vec::with_capacity(summaries.len());
+        for summary in &summaries {
+            let (affected_files, domain, parent_epic) =
+                read_dispatch_fm_fields(&ws, &summary.kind, &summary.id, &summary.title).await;
+            // Apply epic filter post-hydration — this is a small workspace
+            // (2-5 agents, O(50) candidates) so a pass is cheap.
+            if let Some(wanted) = epic_filter
+                && parent_epic.as_deref() != Some(wanted)
+            {
+                continue;
+            }
+            candidates.push(forgeplan_core::dispatch::ArtifactCandidate {
+                id: summary.id.clone(),
+                affected_files,
+                domain,
+            });
+        }
+        let candidate_count = candidates.len();
+
+        let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
+        let claimed_map = claim_store
+            .list_active_map()
+            .await
+            .map_err(|e| McpError::internal_error(format!("list_active_map: {e}"), None))?;
+        let claimed_count = claimed_map.len();
+        let claimed_set: std::collections::HashSet<String> = claimed_map.into_keys().collect();
+
+        let plan = forgeplan_core::dispatch::compute_dispatch_plan(
+            &candidates,
+            p.agents,
+            &p.agent_skills,
+            &claimed_set,
+            threshold,
+        );
+
+        let dto = DispatchResponse {
+            buckets: plan.buckets,
+            serial_queue: plan.serial_queue,
+            reasoning: plan.reasoning,
+            generated_at: plan.generated_at,
+            agent_count: plan.agent_count,
+            overlap_threshold: plan.overlap_threshold,
+            candidate_count,
+            claimed_count,
+        };
+
+        let parallel = dto.buckets.iter().filter(|b| !b.is_empty()).count();
+        let hint = format!(
+            "Plan ready: {candidate_count} candidate(s), {parallel} parallel bucket(s), \
+             {} serial, {claimed_count} already-claimed skipped. Hand buckets[i] to sub-agent \
+             i; re-dispatch when a sub-agent calls `forgeplan_release`.",
+            dto.serial_queue.len(),
+        );
+        hinted_result(&dto, hint)
+    }
+
     // ── Undo / Restore tools (PRD-055 increment 3) ───────────────────
 
     #[tool(
@@ -6883,6 +7056,40 @@ mod claim_mcp_tests {
             .unwrap();
 
         assert!(store.get("PRD-105").await.unwrap().is_none());
+    }
+
+    // ── PRD-057 Inc 4: dispatch MCP wiring smoke test ────────────────
+
+    #[tokio::test]
+    async fn dispatch_validates_agent_count_and_threshold() {
+        let (server, _tmp) = initialized_server().await;
+        // agents=0 → error
+        let r = server
+            .forgeplan_dispatch(Parameters(DispatchParams {
+                agents: 0,
+                kind: None,
+                epic: None,
+                status: None,
+                agent_skills: vec![],
+                overlap_threshold: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true), "agents=0 must error");
+
+        // threshold outside [0, 1] → error
+        let r = server
+            .forgeplan_dispatch(Parameters(DispatchParams {
+                agents: 2,
+                kind: None,
+                epic: None,
+                status: None,
+                agent_skills: vec![],
+                overlap_threshold: Some(1.5),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true), "threshold > 1.0 must error");
     }
 
     #[tokio::test]

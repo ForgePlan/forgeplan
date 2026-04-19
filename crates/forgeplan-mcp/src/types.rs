@@ -232,6 +232,47 @@ pub struct ClaimsListResponse {
     pub claims: Vec<ClaimDto>,
 }
 
+// ── PRD-057 Inc 4: dispatcher tool DTOs ──────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DispatchParams {
+    /// Number of sub-agents the orchestrator can hand work to. Required;
+    /// clamped to `>= 1` downstream.
+    pub agents: usize,
+    /// Optional filter: only consider artifacts of this kind
+    /// (`prd`/`rfc`/`spec`/etc.). When omitted, all kinds are considered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Optional filter: only artifacts with this parent Epic ID. Matches
+    /// the `parent_epic` frontmatter field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epic: Option<String>,
+    /// Optional filter: consider only artifacts in this status (default
+    /// `draft`). Set to `"any"` to include every lifecycle state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Per-agent skill lists in index order. Empty entries default to
+    /// "any skill"; omit to disable skill matching entirely.
+    #[serde(default)]
+    pub agent_skills: Vec<Vec<String>>,
+    /// Jaccard threshold above which two artifacts are considered
+    /// file-conflicting. Default 0.3. Clamp 0.0..=1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlap_threshold: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DispatchResponse {
+    pub buckets: Vec<Vec<String>>,
+    pub serial_queue: Vec<String>,
+    pub reasoning: Vec<String>,
+    pub generated_at: String,
+    pub agent_count: usize,
+    pub overlap_threshold: f64,
+    pub candidate_count: usize,
+    pub claimed_count: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BlockedParams {
     /// Optional artifact ID to check. If omitted, shows all blocked artifacts.
