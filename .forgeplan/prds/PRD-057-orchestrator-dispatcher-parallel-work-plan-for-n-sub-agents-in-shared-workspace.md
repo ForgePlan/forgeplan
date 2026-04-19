@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: EPIC-005
   relation: based_on
-status: draft
+status: active
 title: Orchestrator dispatcher — parallel work plan for N sub-agents in shared workspace
 ---
 
@@ -419,4 +419,5 @@ And `last_modified_at` is set to current RFC3339 timestamp
 ---
 
 > **Next step**: validate PRD-057 → ADI (3 hypotheses) → Code (increment 1: file lock + agent identity).
+
 
