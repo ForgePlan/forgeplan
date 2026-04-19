@@ -7719,6 +7719,195 @@ mod claim_mcp_tests {
         );
     }
 
+    // ── PRD-057 workflow variations: filter combinations + threshold ──
+
+    #[tokio::test]
+    async fn dispatch_workflow_kind_filter_narrows_candidates() {
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-A01", "Prd one", &["a.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-A02", "Prd two", &["b.rs"], None).await;
+        // Seed a non-PRD artifact through the store directly.
+        {
+            let store = server.store.read().await.clone().unwrap();
+            let artifact = forgeplan_core::db::store::NewArtifact {
+                id: "RFC-A01".into(),
+                kind: "rfc".into(),
+                status: "draft".into(),
+                title: "An RFC".into(),
+                body: "# RFC\n".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            };
+            store.create_artifact(&artifact).await.unwrap();
+        }
+
+        let mut params = dp(2);
+        params.kind = Some("prd".into());
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+
+        let all_ids = extract_ids_flat(&body["buckets"]);
+        let serial: Vec<String> = body["serial_queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let visible: std::collections::HashSet<&String> =
+            all_ids.iter().chain(serial.iter()).collect();
+        assert!(
+            !visible.contains(&"RFC-A01".to_string()),
+            "kind=prd filter must exclude RFC-A01"
+        );
+        assert!(visible.contains(&"PRD-A01".to_string()));
+        assert!(visible.contains(&"PRD-A02".to_string()));
+    }
+
+    #[tokio::test]
+    async fn dispatch_workflow_threshold_zero_serializes_all_sharing_any_file() {
+        // threshold=0.0 is the conservative extreme — any shared file at
+        // all makes the pair conflict. With 3 artifacts all sharing one
+        // file and only 2 agents, the third must serialize.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-T01", "A", &["a.rs", "shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-T02", "B", &["b.rs", "shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-T03", "C", &["c.rs", "shared.rs"], None).await;
+
+        let mut params = dp(2);
+        params.overlap_threshold = Some(0.0);
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+        let bucket_count: usize = body["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_array().unwrap().len())
+            .sum();
+        // Two agents, each takes one that shares with the other's resident
+        // — wait, any non-empty intersection conflicts at threshold=0, so
+        // the SECOND one on each bucket conflicts too. Only 2 fit total.
+        assert!(
+            bucket_count <= 2,
+            "threshold=0 bucket count should be at most agents"
+        );
+        assert!(
+            !body["serial_queue"].as_array().unwrap().is_empty(),
+            "at least one must serialize when all share a file"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_workflow_threshold_one_allows_maximum_parallelism() {
+        // threshold=1.0: only identical file sets conflict. Non-identical
+        // partial overlap → parallelized.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-T10", "A", &["a.rs", "shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-T11", "B", &["b.rs", "shared.rs"], None).await;
+
+        let mut params = dp(2);
+        params.overlap_threshold = Some(1.0);
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+        let bucket_count: usize = body["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_array().unwrap().len())
+            .sum();
+        assert_eq!(
+            bucket_count, 2,
+            "threshold=1.0 allows non-identical sets to parallelize"
+        );
+        assert!(body["serial_queue"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_workflow_full_cycle_new_claim_update_release_redispatch() {
+        // End-to-end: seed via forgeplan_new → claim → verify identity
+        // stamp → release → re-dispatch. Validates Inc 2 (stamp) + Inc 3
+        // (claims) + Inc 4 (dispatch) compose cleanly across real MCP
+        // handler calls.
+        let (server, _tmp) = initialized_server_with_store().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("claude-code", "1.0").unwrap());
+
+        let r_new = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Full cycle".to_string(),
+            }))
+            .await
+            .unwrap();
+        let new_body = response_json(&r_new);
+        let created_id = new_body["id"].as_str().unwrap().to_string();
+
+        let r_claim = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: created_id.clone(),
+                agent: Some("worker-1".into()),
+                ttl_minutes: Some(15),
+                note: Some("building".into()),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(r_claim.is_error, Some(true));
+
+        // Inc 2 identity stamp: forgeplan_new should have stamped.
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        let slug = forgeplan_core::artifact::types::slugify("Full cycle");
+        let path = ws.join(format!("prds/{created_id}-{slug}.md"));
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            content.contains("last_modified_by: claude-code/1.0"),
+            "Inc 2: forgeplan_new should stamp identity"
+        );
+
+        // Dispatch — the claimed artifact must be skipped.
+        let r_disp = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let d_body = response_json(&r_disp);
+        let ids = extract_ids_flat(&d_body["buckets"]);
+        assert!(
+            !ids.contains(&created_id),
+            "claimed artifact {created_id} must not appear in plan"
+        );
+
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: created_id.clone(),
+                agent: Some("worker-1".into()),
+                force: false,
+            }))
+            .await
+            .unwrap();
+
+        let r_final = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let final_body = response_json(&r_final);
+        assert_eq!(
+            final_body["claimed_count"].as_u64().unwrap(),
+            0,
+            "post-release: claim count resets to 0"
+        );
+        // Template-seeded artifact may include a `## Affected Files`
+        // section (extracted via Inc 2 fallback) or be empty — either way
+        // it must reappear somewhere once released.
+        let in_buckets = extract_ids_flat(&final_body["buckets"]).contains(&created_id);
+        let in_serial = final_body["serial_queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(created_id.as_str()));
+        assert!(
+            in_buckets || in_serial,
+            "released artifact {created_id} must reappear in plan"
+        );
+    }
+
     // ── PRD-057 AC-4: concurrent forgeplan_new → unique IDs ──────────
 
     #[tokio::test]
