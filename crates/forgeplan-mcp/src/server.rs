@@ -965,6 +965,22 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // PRD-057: serialize the next_id → create_artifact critical
+        // section against concurrent sub-agents sharing this workspace.
+        // Without the lock, two agents invoking forgeplan_new in the
+        // same millisecond could both get e.g. PRD-057 and then collide
+        // on the projection file. Held for the whole handler.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Check `.forgeplan/` is writable. Lock is held by \
+                         another agent — retry in a few seconds.",
+                ));
+            }
+        };
+
         // DoS protection: enforce configurable input limits.
         let integrity_config = workspace::load_config(&ws)
             .map(|c| c.integrity)
@@ -1732,6 +1748,20 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // PRD-057 Round 1 audit H-2: FR-007 requires serialization of
+        // ALL LanceDB writes, not just forgeplan_new. Hold the lock for
+        // the full handler so concurrent update + delete + supersede
+        // from different sub-agents cannot corrupt LanceDB state.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry in a few seconds — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
         // Verify exists
         let pre_record = store
             .get_record(&p.id)
@@ -1885,6 +1915,17 @@ impl ForgeplanServer {
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
+        };
+
+        // PRD-057 FR-007 — serialize write critical section.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
         };
 
         let record = match store.get_record(&p.id).await {
@@ -2154,6 +2195,17 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // PRD-057 FR-007 — serialize write critical section.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
         // PRD-055: capture the original state BEFORE lifecycle transition
         // so undo can restore status=active (or prior) and drop the
         // supersede link. Projection stays on disk — only status changes.
@@ -2256,6 +2308,17 @@ impl ForgeplanServer {
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
+        };
+
+        // PRD-057 FR-007 — serialize write critical section.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
         };
 
         // PRD-055: capture original state before lifecycle transition.

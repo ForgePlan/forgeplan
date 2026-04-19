@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.23.0"
+version = "0.23.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ForgePlan/forgeplan"
@@ -32,6 +32,7 @@ petgraph = "0.8"
 notify = "7"
 notify-debouncer-mini = "0.5"
 dotenvy = "0.15"
+fs2 = "0.4"
 
 [profile.release]
 strip = true          # strip debug symbols (-16%)
