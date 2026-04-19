@@ -1,11 +1,13 @@
 pub mod activity;
 pub mod artifact;
 pub mod changelog;
+pub mod claim;
 pub mod config;
 pub mod coverage;
 pub mod db;
 pub mod depth;
 pub mod discover;
+pub mod dispatch;
 pub mod drift;
 pub mod driver;
 pub mod duplicate;

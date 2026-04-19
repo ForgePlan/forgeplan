@@ -162,6 +162,127 @@ pub struct GraphResponse {
     pub mermaid: String,
 }
 
+// ── PRD-057 Inc 3: claim protocol DTOs ───────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimParams {
+    /// Artifact ID to claim (e.g. `PRD-057`). Normalized to uppercase on disk.
+    pub id: String,
+    /// Agent identity ("name/version" or free-form). Optional — defaults to
+    /// the MCP caller's clientInfo when omitted. Providing this explicitly
+    /// lets an orchestrator claim on behalf of a sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Time-to-live in minutes. Default 30, max 1440 (24h), min 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_minutes: Option<u32>,
+    /// Optional free-form note surfaced by `forgeplan_claims --active`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseParams {
+    pub id: String,
+    /// Required unless `force=true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Force-release regardless of holder (orchestrator escape hatch).
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimsListParams {
+    /// Reserved for future filters; currently always returns only live claims.
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimDto {
+    pub id: String,
+    pub agent_id: String,
+    pub claimed_at: String,
+    pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl From<forgeplan_core::claim::Claim> for ClaimDto {
+    fn from(c: forgeplan_core::claim::Claim) -> Self {
+        Self {
+            id: c.id,
+            agent_id: c.agent_id,
+            claimed_at: c.claimed_at.to_rfc3339(),
+            expires_at: c.expires_at.to_rfc3339(),
+            note: c.note,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimsListResponse {
+    pub count: usize,
+    /// R2 audit MED: number of claim files skipped because they failed to
+    /// parse or exceeded the size cap. Orchestrators should investigate
+    /// any non-zero value — silent dropping of these was an Inc 3 bug.
+    #[serde(default)]
+    pub skipped: usize,
+    pub claims: Vec<ClaimDto>,
+}
+
+// ── PRD-057 Inc 4: dispatcher tool DTOs ──────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DispatchParams {
+    /// Number of sub-agents the orchestrator can hand work to. Required;
+    /// clamped to `>= 1` downstream.
+    pub agents: usize,
+    /// Optional filter: only consider artifacts of this kind
+    /// (`prd`/`rfc`/`spec`/etc.). When omitted, all kinds are considered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Optional filter: only artifacts with this parent Epic ID. Matches
+    /// the `parent_epic` frontmatter field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epic: Option<String>,
+    /// Optional filter: consider only artifacts in this status (default
+    /// `draft`). Set to `"any"` to include every lifecycle state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Per-agent skill lists in index order. Empty entries default to
+    /// "any skill"; omit to disable skill matching entirely.
+    #[serde(default)]
+    pub agent_skills: Vec<Vec<String>>,
+    /// Jaccard threshold above which two artifacts are considered
+    /// file-conflicting. Default 0.3. Clamp 0.0..=1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlap_threshold: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DispatchResponse {
+    pub buckets: Vec<Vec<String>>,
+    pub serial_queue: Vec<String>,
+    pub reasoning: Vec<String>,
+    pub generated_at: String,
+    pub agent_count: usize,
+    pub overlap_threshold: f64,
+    pub candidate_count: usize,
+    pub claimed_count: usize,
+    /// R3 audit M-4: number of candidate artifact markdown files that
+    /// couldn't be read/parsed and were dropped from the plan (not the
+    /// same as "no affected_files declared"). Non-zero → check logs.
+    #[serde(default)]
+    pub skipped_parse_errors: usize,
+    /// R3 audit task-completion MED (FR-003): number of candidates that
+    /// were dropped because a structural dependency hasn't resolved yet.
+    /// Orchestrator unblocks them by activating/superseding the deps.
+    #[serde(default)]
+    pub blocked_count: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BlockedParams {
     /// Optional artifact ID to check. If omitted, shows all blocked artifacts.

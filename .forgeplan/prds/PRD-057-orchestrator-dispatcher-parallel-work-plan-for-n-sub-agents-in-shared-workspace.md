@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: EPIC-005
   relation: based_on
-status: draft
+status: active
 title: Orchestrator dispatcher — parallel work plan for N sub-agents in shared workspace
 ---
 
@@ -29,10 +29,77 @@ stepsCompleted: []
 ## Progress
 
 ```
-Phase 0  ░░░░░░░░░░░░░░░░░░░░░░░░  0/14  (  0%)
-─────────────────────────────────────────────────
-TOTAL                               0/14  (  0%)
+Inc 1 (lock)          ████████████████████████  FR-007, FR-008 + AC-4 coverage
+Inc 2 (identity)      ████████████████████████  FR-009 + AC-5
+Inc 3 (claims)        ████████████████████████  FR-004..006, FR-014 + AC-2, AC-3
+Inc 4 (dispatch)      ████████████████████████  FR-001, FR-002, FR-003, FR-010, FR-011 + AC-1
+R3 hotfix             ████████████████████████  FR-012, FR-013 closed; HIGH/MED regressions fixed
+─────────────────────────────────────────────────────────
+FR coverage           14/14 functional requirements
+AC coverage            5/5 acceptance criteria (AC-4 via concurrent E2E test)
 ```
+
+**Inc 2 delivered (2026-04-19)**:
+- `AgentIdentity` struct in `forgeplan-core::artifact::identity`
+- Unknown-frontmatter preservation via `KNOWN_FM_KEYS` + `filter_preserved` in `projection`
+- `projection::stamp_agent_identity` helper
+- `ForgeplanServer::stamp_identity_best_effort` wired into `forgeplan_new` + `forgeplan_update`
+- `call_tool` wrapper captures `peer.peer_info()` → cached in server + logged to activity JSONL
+- 13 new tests (6 identity + 4 projection preservation + 4 MCP stamp wiring), 1314 total
+
+**Inc 3 delivered (2026-04-19)**:
+- `forgeplan-core::claim` module: `Claim` struct, `ClaimStore`, `ClaimError`
+- TTL bounds: 1 min ≤ `ttl` ≤ 24 h, default 30 min
+- Same-agent calls renew; expired claims transparently taken over (AC-3)
+- `forgeplan_claim`, `forgeplan_release`, `forgeplan_release --force`, `forgeplan_claims` MCP tools
+- Agent resolution: explicit `agent` param > cached MCP `clientInfo` > hinted error
+- All writes serialized via `workspace_lock` (Inc 1 pattern extended)
+- 24 new tests (17 Core ClaimStore + 7 MCP wiring), 1338 total
+
+**R2 mid-sprint audit hotfix (2026-04-19, 3 agents):**
+- HIGH×1: path traversal in `ClaimStore::path_for` → `validate_id` guard at every entry point
+- HIGH×2: `release` empty-agent bypass + `forgeplan_release` fragile force path → agent check before FS, deterministic resolution order
+- MED×4: atomic `tempfile+rename` writes (`claim::atomic_write` + `projection::atomic_markdown_write`), Unicode/control-char rejection in `AgentIdentity::new`, `list_active_with_stats` surfaces malformed-file count, `forgeplan_claims` no longer holds workspace lock (read-only)
+- MED×1: `list_active_map` for O(1) dispatcher lookups (Inc 4 forward-compat)
+- LOW×1: TTL clamp at MCP boundary matches advertised schema
+- +14 new regression tests (9 claim hardening + 5 identity hardening), 1352 total
+- Defer to v0.25+: shared `kv_yaml` abstraction extraction, HTTP/SSE identity refactor, ADR for claim/phase separation
+
+**Inc 4 delivered (2026-04-19)**:
+- `forgeplan-core::dispatch` module: `ArtifactCandidate`, `DispatchPlan`, `compute_dispatch_plan`
+- `jaccard()` + `conflicts()` + `skill_match()` primitives
+- Least-loaded-first greedy bucket packing (distributes work, not dumps to agent 0)
+- Empty `affected_files` biases to serial (R-2 mitigation — no declared files = shared-ground)
+- Claim-aware: skips artifacts in `ClaimStore::list_active_map` (Inc 3 forward-compat)
+- Deterministic output — same input produces identical plan (important for orchestrator cache)
+- `forgeplan_dispatch --agents N [--kind --epic --status --agent_skills --overlap_threshold]` MCP tool
+- Read-only — no workspace lock, never mutates state, safe for 1 Hz polling
+- Hydrates `affected_files` + `domain` + `parent_epic` from preserved frontmatter (Inc 2 infrastructure)
+- +15 new tests (13 Core dispatch + 1 MCP validation + 1 MCP wiring), 1366 total
+
+**R3 final-audit hotfix (2026-04-19, 4 agents: rust-pro + security + architect + production-validator):**
+- HIGH×2: unbounded `agents` OOM → clamped `MAX_AGENTS=64`; `affected_files` fragmented (FM key vs `## Affected Files` section) → dispatcher falls back to `validation::checks::extract_affected_files(body)` for legacy artifacts
+- MED (FR-003): blocked artifacts now filtered out of dispatch via `graph::topological::kahn_sort` — PRD promise now enforced end-to-end
+- MED (FR-012): `forgeplan_health` surfaces `active_claims` + `skipped_claim_files` counts
+- MED (FR-013): `forgeplan_get` `_next_action` includes claim info (holder + expiry)
+- MED (rust-pro M-1): Jaccard boundary changed from `>` to `>=` — MCP tool docstring now matches behaviour
+- MED (rust-pro M-2): `affected_files` accepts scalar `"a.rs"` + CSV string forms — silent drop on common user typo eliminated
+- MED (rust-pro M-4): dispatch response surfaces `skipped_parse_errors` + `blocked_count` — parse failures no longer masquerade as "no files declared"
+- MED (security CWE-176): `normalize_dispatch_domain` rejects non-ASCII characters (Cyrillic `е` homograph attack); `MAX_SKILLS_PER_AGENT=32`
+- LOW: claim-set ID casing normalized to uppercase (lowercase-imported IDs still match); `MAX_AFFECTED_FILES=512` + per-path length cap; defensive id traversal guard in `read_dispatch_fm_fields`
+- LOW: stale `"forgeplan_dispatch (when implemented)"` hint updated
+- AC-4 E2E: `concurrent_forgeplan_new_emits_unique_ids` — 3 parallel MCP calls → 3 distinct IDs + 3 markdown files (previously only the Inc 1 lock-level proxy existed)
+- +11 regression tests (5 Core dispatch hardening + 5 parse/normalize + 1 AC-4 E2E), 1377 total
+
+**Deferred to v0.25+ (tracked):**
+- Shared `kv_yaml` abstraction — `phase::store` + `claim` + future dispatch-cache share pattern
+- Per-request identity capture for HTTP/SSE transport (stdio covers today's scope)
+- `load_frontmatter_full` primitive in `artifact::store` — ~10 call sites reimplement read→parse pattern
+- `ListFilter::parent_epic` push-down so epic filter stays in LanceDB instead of O(n) post-hydration
+- `DispatchDecision` enum for `reasoning` (currently free-form, blocks i18n)
+- `ClaimStore::list_active_map` → `HashMap<String, Claim>` preserving agent_id for PRD R-5 holder-based routing
+- ADR for claim (ephemeral) vs phase state (durable) separation
+- Agent profiles (`.forgeplan/agents/<agent_id>.yaml`) — reserved path, v0.27 Growth Vision item
 
 ---
 
@@ -352,4 +419,5 @@ And `last_modified_at` is set to current RFC3339 timestamp
 ---
 
 > **Next step**: validate PRD-057 → ADI (3 hypotheses) → Code (increment 1: file lock + agent identity).
+
 

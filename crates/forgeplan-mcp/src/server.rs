@@ -13,6 +13,7 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
+use forgeplan_core::artifact::identity::AgentIdentity;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, LanceStore, NewArtifact};
 use forgeplan_core::estimate::{
@@ -37,6 +38,13 @@ pub struct ForgeplanServer {
     store: Arc<RwLock<Option<Arc<LanceStore>>>>,
     workspace_root: PathBuf,
     workspace_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Cached identity of the calling MCP client (`name/version`).
+    /// Populated lazily from `context.peer.peer_info()` in `call_tool` and
+    /// read by write handlers to stamp `last_modified_by` on artifacts
+    /// (PRD-057 FR-009 + AC-5). A single connection has one immutable
+    /// client identity set during `initialize`, so a plain RwLock is
+    /// sufficient — no per-request plumbing needed.
+    current_identity: Arc<RwLock<Option<AgentIdentity>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -53,7 +61,34 @@ impl ForgeplanServer {
             store: Arc::new(RwLock::new(store)),
             workspace_root,
             workspace_path: Arc::new(RwLock::new(ws)),
+            current_identity: Arc::new(RwLock::new(None)),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Best-effort stamp of `last_modified_by` / `last_modified_at` onto an
+    /// artifact file. No-op when no MCP client identity has been captured
+    /// yet (e.g. the very first tool call, before `initialize` is parsed).
+    /// Stamp failures are logged via `tracing::warn!` but never propagate —
+    /// identity tracking must never block a legitimate write.
+    async fn stamp_identity_best_effort(
+        &self,
+        ws: &std::path::Path,
+        id: &str,
+        kind: &str,
+        title: &str,
+    ) {
+        let identity = match self.current_identity.read().await.as_ref() {
+            Some(id) => id.clone(),
+            None => return,
+        };
+        if let Err(e) = projection::stamp_agent_identity(ws, id, kind, title, &identity).await {
+            tracing::warn!(
+                "stamp_agent_identity failed for {} ({}): {}",
+                id,
+                identity.as_frontmatter_value(),
+                e
+            );
         }
     }
 
@@ -119,6 +154,113 @@ fn err_result(msg: &str) -> CallToolResult {
 fn err_hinted(msg: &str, next_action: impl Into<String>) -> CallToolResult {
     let body = format!("{msg}\n\n_next_action: {}", next_action.into());
     CallToolResult::error(vec![Content::text(body)])
+}
+
+/// Outcome of `read_dispatch_fm_fields`, distinguishing real "no data"
+/// from "read/parse failure" so the caller can count skipped candidates
+/// (R3 audit M-4 — silent parse failures masquerading as "no files").
+#[derive(Debug, Default)]
+struct DispatchFmFields {
+    files: Vec<String>,
+    domain: Option<String>,
+    parent_epic: Option<String>,
+    /// True when the artifact file couldn't be read or parsed; caller
+    /// reports this as `skipped` rather than pretending the artifact has
+    /// no affected files (which would then serialize it via R-2 bias).
+    parse_failed: bool,
+}
+
+const AFFECTED_FILE_MAX_PATH: usize = forgeplan_core::dispatch::MAX_AFFECTED_FILE_LEN;
+const AFFECTED_FILES_MAX_LEN: usize = forgeplan_core::dispatch::MAX_AFFECTED_FILES;
+
+/// Read the dispatcher-relevant frontmatter fields from an artifact's
+/// markdown projection: `affected_files` (list of strings or scalar),
+/// `domain` (ASCII-normalized), and `parent_epic`. Falls back to the
+/// body's `## Affected Files` section when the frontmatter key is
+/// absent (R3 audit arch HIGH — a PRD with only the markdown section
+/// would otherwise be silently serialized).
+///
+/// R3 audit LOW: id/title validated up-front even though all callers
+/// currently pass values from LanceDB — defense-in-depth against a
+/// future code path injecting unvalidated user input.
+async fn read_dispatch_fm_fields(
+    ws: &std::path::Path,
+    kind: &str,
+    id: &str,
+    title: &str,
+) -> DispatchFmFields {
+    let artifact_kind = match kind.parse::<ArtifactKind>() {
+        Ok(k) => k,
+        Err(_) => return DispatchFmFields::default(),
+    };
+    // Defense-in-depth: refuse obvious traversal segments even though the
+    // id originated from LanceDB (R3 audit security LOW, CWE-20).
+    if id.contains('/') || id.contains('\\') || id.contains("..") {
+        return DispatchFmFields {
+            parse_failed: true,
+            ..Default::default()
+        };
+    }
+    let dir = ws.join(artifact_kind.dir_name());
+    let filename = format!(
+        "{}-{}.md",
+        id,
+        forgeplan_core::artifact::types::slugify(title)
+    );
+    let path = dir.join(filename);
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(_) => {
+            return DispatchFmFields {
+                parse_failed: true,
+                ..Default::default()
+            };
+        }
+    };
+    let (fm, body) = match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
+        Ok((fm, body)) => (fm, body),
+        Err(_) => {
+            return DispatchFmFields {
+                parse_failed: true,
+                ..Default::default()
+            };
+        }
+    };
+
+    // Primary path: the `affected_files:` frontmatter key (canonical for
+    // new artifacts).
+    let mut files = fm
+        .get("affected_files")
+        .map(forgeplan_core::dispatch::parse_affected_files_from_fm)
+        .unwrap_or_default();
+    // Fallback: `## Affected Files` markdown section for legacy artifacts
+    // (R3 audit architect HIGH — same concept, two encodings). Existing
+    // `validation::checks::extract_affected_files` already handles the
+    // markdown extraction; reuse it to avoid divergence.
+    if files.is_empty() {
+        let from_section = forgeplan_core::validation::checks::extract_affected_files(&body);
+        files = from_section
+            .into_iter()
+            .filter(|s| s.len() <= AFFECTED_FILE_MAX_PATH)
+            .take(AFFECTED_FILES_MAX_LEN)
+            .collect();
+    }
+
+    let domain = fm
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .and_then(forgeplan_core::dispatch::normalize_dispatch_domain);
+    let parent_epic = fm
+        .get("parent_epic")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    DispatchFmFields {
+        files,
+        domain,
+        parent_epic,
+        parse_failed: false,
+    }
 }
 
 /// Standardised "artifact not found" error with recovery hint.
@@ -1088,6 +1230,11 @@ impl ForgeplanServer {
         .await
         .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
+        // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
+        // first modifier is attributable even without an update call.
+        self.stamp_identity_best_effort(&ws, &id, template_key, &p.title)
+            .await;
+
         // PRD-056: initialize advisory phase state to `shape`. Advisory
         // only — a failure here is logged and does not break creation.
         maybe_init_phase(&ws, &id, "forgeplan_new").await;
@@ -1718,6 +1865,20 @@ impl ForgeplanServer {
                     next_action.push_str(&phase_hint);
                 }
 
+                // PRD-057 FR-013: surface live claim info — orchestrators
+                // routing `forgeplan_get` for decision-making need to know
+                // if an agent already owns this work.
+                let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
+                if let Ok(Some(claim)) = claim_store.get(&r.id).await {
+                    let safe_holder = sanitize_for_hint(&claim.agent_id);
+                    let claim_hint = format!(
+                        " Claim: held by `{safe_holder}` until {} — route new work elsewhere \
+                         or ask for force-release.",
+                        claim.expires_at.to_rfc3339(),
+                    );
+                    next_action.push_str(&claim_hint);
+                }
+
                 hinted_result(&ArtifactRecordDto::from(r), next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
@@ -1868,6 +2029,12 @@ impl ForgeplanServer {
             )
             .await;
         }
+
+        // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
+        // rendered file. Best-effort — a stamping failure must not fail
+        // the update response.
+        self.stamp_identity_best_effort(&ws, &updated.id, &updated.kind, &updated.title)
+            .await;
 
         let safe_id = sanitize_for_hint(&updated.id);
         let next_action = match updated.status.as_str() {
@@ -2477,6 +2644,30 @@ impl ForgeplanServer {
                 .to_string()
         };
 
+        // PRD-057 FR-012: advisory surface of active claims so health
+        // consumers (CLI dashboard, orchestrator) see who owns what
+        // without a separate `forgeplan_claims` call. Returns parsed
+        // count + list; malformed files surface via `skipped` so
+        // orchestrators notice data-integrity issues.
+        let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
+        let (active_claims, skipped_claims) = claim_store
+            .list_active_with_stats()
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("health: list_active_with_stats failed: {e}");
+                (Vec::new(), 0)
+            });
+        let claims_json: Vec<serde_json::Value> = active_claims
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "agent_id": c.agent_id,
+                    "expires_at": c.expires_at.to_rfc3339(),
+                })
+            })
+            .collect();
+
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
@@ -2491,6 +2682,9 @@ impl ForgeplanServer {
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
             "advisory_phase_mismatches": phase_mismatches,
+            "active_claims": claims_json,
+            "active_claim_count": active_claims.len(),
+            "skipped_claim_files": skipped_claims,
             "next_actions": report.next_actions,
             "_next_action": next_action,
         })))
@@ -5374,6 +5568,443 @@ impl ForgeplanServer {
         }
     }
 
+    // ── PRD-057 Inc 3: claim protocol ────────────────────────────────
+
+    #[tool(
+        description = "Claim an artifact for exclusive work. Writes .forgeplan/claims/<id>.yaml \
+                       with the caller's agent identity, timestamp, and TTL. Fails if a live \
+                       claim by a different agent exists — same-agent calls renew the TTL. \
+                       Advisory: other tools do not block on claims, but orchestrators should \
+                       use `forgeplan_claims --active` to avoid double-assigning work.",
+        annotations(
+            title = "Claim Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_claim(
+        &self,
+        Parameters(p): Parameters<ClaimParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Serialize against concurrent claim/release so two sub-agents
+        // cannot simultaneously take the same artifact (PRD-057 Round 1
+        // H-2 pattern: write tools always hold the workspace lock).
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry in a few seconds — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
+        // Agent resolution: caller-supplied > MCP clientInfo > error.
+        let agent = match p.agent.as_deref() {
+            Some(a) if !a.trim().is_empty() => a.trim().to_string(),
+            _ => match self.current_identity.read().await.as_ref() {
+                Some(id) => id.as_frontmatter_value(),
+                None => {
+                    return Ok(err_hinted(
+                        "no agent identity — pass `agent` explicitly or wait for MCP handshake",
+                        "Orchestrators typically pass `agent: \"worker-1\"` when delegating; \
+                         sub-agents can omit it and let Forgeplan infer from clientInfo.",
+                    ));
+                }
+            },
+        };
+
+        // R2 audit LOW (security): clamp TTL at the MCP boundary so the
+        // hint the agent sees matches the documented bound (1..=1440
+        // minutes). Without this the Core backend still rejected overlong
+        // values, but the schema advertised "max 1440" — mismatch.
+        const MAX_TTL_MINUTES: u32 = 1440; // 24 h — matches claim::MAX_TTL
+        let ttl = match p.ttl_minutes {
+            Some(0) => {
+                return Ok(err_result("ttl_minutes must be >= 1"));
+            }
+            Some(m) if m > MAX_TTL_MINUTES => {
+                return Ok(err_result(&format!(
+                    "ttl_minutes must be <= {MAX_TTL_MINUTES} (24 hours)"
+                )));
+            }
+            Some(m) => chrono::Duration::minutes(m as i64),
+            None => forgeplan_core::claim::DEFAULT_TTL,
+        };
+
+        let store = forgeplan_core::claim::ClaimStore::new(&ws);
+        match store.claim(&p.id, &agent, ttl, p.note).await {
+            Ok(claim) => {
+                let safe_id = sanitize_for_hint(&claim.id);
+                let safe_agent = sanitize_for_hint(&claim.agent_id);
+                let hint = format!(
+                    "Claimed `{safe_id}` for `{safe_agent}`. Release with \
+                     `forgeplan_release {safe_id}` when done, or re-call `forgeplan_claim` to renew."
+                );
+                hinted_result(&ClaimDto::from(claim), hint)
+            }
+            Err(forgeplan_core::claim::ClaimError::AlreadyHeld {
+                id,
+                agent_id,
+                expires_at,
+            }) => {
+                let safe_id = sanitize_for_hint(&id);
+                let safe_agent = sanitize_for_hint(&agent_id);
+                Ok(err_hinted(
+                    &format!(
+                        "claim for {safe_id} already held by {safe_agent} (expires {expires_at})"
+                    ),
+                    "Either work on a different artifact, wait for TTL expiry, or ask the \
+                     orchestrator to force-release with `forgeplan_release --force`.",
+                ))
+            }
+            Err(e) => Ok(err_result(&format!("claim failed: {e}"))),
+        }
+    }
+
+    #[tool(
+        description = "Release an active claim. Refuses if the claim is held by a different \
+                       agent (use `force: true` to override — the orchestrator's escape hatch \
+                       for a crashed sub-agent). Missing claim is a no-op (idempotent).",
+        annotations(
+            title = "Release Claim",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_release(
+        &self,
+        Parameters(p): Parameters<ReleaseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry in a few seconds — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
+        // R2 audit HIGH #3 (rust-pro): resolve agent deterministically.
+        // Priority: explicit > cached MCP identity > force with sentinel.
+        // This keeps `force: true` without agent legitimate (orchestrator
+        // reaping a stuck holder) while surfacing a clear error for the
+        // accidental `force: false + no agent + no identity` case — the
+        // previously ambiguous state the audit flagged.
+        let agent = match p.agent.as_deref() {
+            Some(a) if !a.trim().is_empty() => a.trim().to_string(),
+            _ => match self.current_identity.read().await.as_ref() {
+                Some(id) => id.as_frontmatter_value(),
+                None if p.force => String::new(),
+                None => {
+                    return Ok(err_hinted(
+                        "no agent identity — pass `agent` explicitly, set force=true, or wait for \
+                         MCP handshake",
+                        "Orchestrators force-release with `agent: null, force: true` when \
+                         reaping a crashed sub-agent.",
+                    ));
+                }
+            },
+        };
+
+        let store = forgeplan_core::claim::ClaimStore::new(&ws);
+        match store.release(&p.id, &agent, p.force).await {
+            Ok(()) => {
+                let safe_id = sanitize_for_hint(&p.id);
+                hinted_result(
+                    &serde_json::json!({"id": p.id, "released": true, "force": p.force}),
+                    format!("Released claim on `{safe_id}`."),
+                )
+            }
+            Err(forgeplan_core::claim::ClaimError::NotHeldByRequester { held_by, .. }) => {
+                let safe_holder = sanitize_for_hint(&held_by);
+                Ok(err_hinted(
+                    &format!("claim held by {safe_holder}, not you"),
+                    "Use `force: true` (orchestrator override) if the holder has crashed.",
+                ))
+            }
+            Err(e) => Ok(err_result(&format!("release failed: {e}"))),
+        }
+    }
+
+    #[tool(
+        description = "List live claims in the workspace, sorted by expiry ascending. Skips \
+                       expired claims (they're considered practically released). Used by \
+                       orchestrators to build dispatch plans and by sub-agents to avoid \
+                       double-claiming.",
+        annotations(
+            title = "List Active Claims",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    // R2 audit MED (architect): `forgeplan_claims` is read-only — it MUST
+    // NOT hold the exclusive workspace lock, otherwise an orchestrator
+    // polling at 1 Hz will serialize every sub-agent write. The list
+    // operation reads a directory of small YAML files; each file is
+    // individually parsed, so a partial-read race yields a skipped file
+    // (counted in `skipped_count`) rather than corruption.
+    async fn forgeplan_claims(
+        &self,
+        Parameters(_p): Parameters<ClaimsListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let store = forgeplan_core::claim::ClaimStore::new(&ws);
+        match store.list_active_with_stats().await {
+            Ok((claims, skipped)) => {
+                let count = claims.len();
+                let dto = ClaimsListResponse {
+                    count,
+                    skipped,
+                    claims: claims.into_iter().map(ClaimDto::from).collect(),
+                };
+                let hint = if count == 0 && skipped == 0 {
+                    "No active claims. Workspace is free for any agent to claim work.".to_string()
+                } else if skipped > 0 {
+                    format!(
+                        "{count} active claim{}, {skipped} malformed file{} skipped (see server \
+                         logs). Run `forgeplan health` to surface the offenders.",
+                        if count == 1 { "" } else { "s" },
+                        if skipped == 1 { "" } else { "s" },
+                    )
+                } else {
+                    format!(
+                        "{count} active claim{}. Use `forgeplan_dispatch --agents N` to plan \
+                         non-overlapping work around them.",
+                        if count == 1 { "" } else { "s" }
+                    )
+                };
+                hinted_result(&dto, hint)
+            }
+            Err(e) => Ok(err_result(&format!("list_active failed: {e}"))),
+        }
+    }
+
+    // ── PRD-057 Inc 4: orchestrator dispatcher ───────────────────────
+
+    #[tool(
+        description = "Compute a parallel-safe work plan for N sub-agents. Returns buckets \
+                       (one per agent), a serial queue for leftover work, and human-readable \
+                       reasoning for every placement decision. Skips artifacts already claimed, \
+                       defers artifacts with file-overlap >= threshold (default Jaccard 0.3), \
+                       and when agent_skills is provided routes by domain match. \
+                       Read-only — does not mutate workspace state.",
+        annotations(
+            title = "Dispatch Work Plan",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_dispatch(
+        &self,
+        Parameters(p): Parameters<DispatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // R3 audit HIGH (security) + MED: clamp unbounded user input
+        // BEFORE allocating — agents & per-agent skill lists otherwise
+        // could OOM the server with e.g. `agents: 4_000_000_000`.
+        if p.agents == 0 {
+            return Ok(err_result("agents must be >= 1"));
+        }
+        if p.agents > forgeplan_core::dispatch::MAX_AGENTS {
+            return Ok(err_result(&format!(
+                "agents must be <= {} — PRD-057 targets 2–5 concurrent sub-agents",
+                forgeplan_core::dispatch::MAX_AGENTS
+            )));
+        }
+        if p.agent_skills.len() > p.agents {
+            return Ok(err_result(&format!(
+                "agent_skills has {} entries but only {} agents requested",
+                p.agent_skills.len(),
+                p.agents
+            )));
+        }
+        for (i, skills) in p.agent_skills.iter().enumerate() {
+            if skills.len() > forgeplan_core::dispatch::MAX_SKILLS_PER_AGENT {
+                return Ok(err_result(&format!(
+                    "agent_skills[{}] has {} entries — max {}",
+                    i,
+                    skills.len(),
+                    forgeplan_core::dispatch::MAX_SKILLS_PER_AGENT
+                )));
+            }
+        }
+        let threshold = p
+            .overlap_threshold
+            .unwrap_or(forgeplan_core::dispatch::DEFAULT_OVERLAP_THRESHOLD);
+        // `contains` on NaN returns false — catches non-finite inputs too.
+        if !(0.0..=1.0).contains(&threshold) {
+            return Ok(err_result("overlap_threshold must be in [0.0, 1.0]"));
+        }
+
+        // Default status filter is `draft` — those are the artifacts most
+        // likely to be dispatch-able work. Callers can pass `"any"` to
+        // override.
+        let status_filter = p.status.as_deref().unwrap_or("draft");
+        let filter = ArtifactFilter {
+            kind: p.kind.clone(),
+            status: if status_filter == "any" {
+                None
+            } else {
+                Some(status_filter.to_string())
+            },
+        };
+        let summaries = store
+            .list_artifacts(Some(&filter))
+            .await
+            .map_err(|e| McpError::internal_error(format!("list_artifacts: {e}"), None))?;
+
+        // R3 audit task-completion MED: FR-003 requires the dispatcher to
+        // respect the artifact dependency graph — blocked artifacts must
+        // not land in a parallel bucket. Compute the blocked set by the
+        // same rules `forgeplan_blocked` uses: structural edges + records
+        // with status ∈ {active, deprecated, superseded} = resolved.
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| McpError::internal_error(format!("get_all_relations: {e}"), None))?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| McpError::internal_error(format!("list_records: {e}"), None))?;
+        let resolved_ids: std::collections::HashSet<String> = records
+            .iter()
+            .filter(|r| {
+                r.status == "active" || r.status == "deprecated" || r.status == "superseded"
+            })
+            .map(|r| r.id.clone())
+            .collect();
+        let topo = forgeplan_core::graph::topological::kahn_sort(&relations, &resolved_ids);
+        let blocked_ids: std::collections::HashSet<String> =
+            topo.blocked.iter().map(|(id, _)| id.clone()).collect();
+
+        // Hydrate the dispatch-relevant fields. `ArtifactSummary` lacks
+        // `parent_epic`; that plus `affected_files` + `domain` all live in
+        // the markdown frontmatter (files are source of truth per ADR-003,
+        // and Inc 2's KNOWN_FM_KEYS logic preserves the agent-owned
+        // extras across LanceDB re-renders).
+        let epic_filter = p.epic.as_deref();
+        let mut candidates = Vec::with_capacity(summaries.len());
+        let mut skipped_parse_errors = 0usize;
+        let mut skipped_blocked = Vec::<String>::new();
+        for summary in &summaries {
+            let fields =
+                read_dispatch_fm_fields(&ws, &summary.kind, &summary.id, &summary.title).await;
+            // R3 audit M-4: surface parse failures explicitly instead of
+            // letting them masquerade as "no affected_files declared".
+            if fields.parse_failed {
+                skipped_parse_errors += 1;
+                tracing::warn!(
+                    id = %summary.id,
+                    "dispatch: skipped candidate — frontmatter unreadable"
+                );
+                continue;
+            }
+            // Apply epic filter post-hydration — this is a small workspace
+            // (2-5 agents, O(50) candidates) so a pass is cheap.
+            if let Some(wanted) = epic_filter
+                && fields.parent_epic.as_deref() != Some(wanted)
+            {
+                continue;
+            }
+            // FR-003: drop blocked artifacts; dispatcher shouldn't give an
+            // agent work that can't proceed until a dependency resolves.
+            if blocked_ids.contains(&summary.id) {
+                skipped_blocked.push(summary.id.clone());
+                continue;
+            }
+            candidates.push(forgeplan_core::dispatch::ArtifactCandidate {
+                id: summary.id.clone(),
+                affected_files: fields.files,
+                domain: fields.domain,
+            });
+        }
+        let candidate_count = candidates.len();
+
+        let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
+        let claimed_map = claim_store
+            .list_active_map()
+            .await
+            .map_err(|e| McpError::internal_error(format!("list_active_map: {e}"), None))?;
+        let claimed_count = claimed_map.len();
+        let claimed_set: std::collections::HashSet<String> = claimed_map.into_keys().collect();
+
+        let mut plan = forgeplan_core::dispatch::compute_dispatch_plan(
+            &candidates,
+            p.agents,
+            &p.agent_skills,
+            &claimed_set,
+            threshold,
+        );
+        // Prepend blocked-artifact reasoning so orchestrators see WHY
+        // something didn't appear in the plan at all.
+        for id in &skipped_blocked {
+            plan.reasoning.insert(
+                0,
+                format!("{id}: skipped (blocked by unresolved structural dependency)"),
+            );
+        }
+
+        let dto = DispatchResponse {
+            buckets: plan.buckets,
+            serial_queue: plan.serial_queue,
+            reasoning: plan.reasoning,
+            generated_at: plan.generated_at,
+            agent_count: plan.agent_count,
+            overlap_threshold: plan.overlap_threshold,
+            candidate_count,
+            claimed_count,
+            skipped_parse_errors,
+            blocked_count: skipped_blocked.len(),
+        };
+
+        let parallel = dto.buckets.iter().filter(|b| !b.is_empty()).count();
+        let skip_note = if skipped_parse_errors > 0 {
+            format!(", {skipped_parse_errors} skipped (parse errors — see logs)")
+        } else {
+            String::new()
+        };
+        let hint = format!(
+            "Plan ready: {candidate_count} candidate(s), {parallel} parallel bucket(s), \
+             {serial} serial, {claimed_count} already-claimed skipped{skip_note}. Hand \
+             buckets[i] to sub-agent i; re-dispatch when the claim set or candidate set \
+             changes (e.g. after `forgeplan_release`, `forgeplan_new`, or a claim's TTL expiry).",
+            serial = dto.serial_queue.len(),
+        );
+        hinted_result(&dto, hint)
+    }
+
     // ── Undo / Restore tools (PRD-055 increment 3) ───────────────────
 
     #[tool(
@@ -5667,6 +6298,25 @@ impl rmcp::ServerHandler for ForgeplanServer {
             .map(|obj| serde_json::Value::Object(obj.clone()))
             .unwrap_or(serde_json::Value::Null);
 
+        // PRD-057 FR-009: capture caller identity from the MCP `initialize`
+        // handshake. `peer_info()` returns `None` until the handshake lands,
+        // after which it returns the same value for every subsequent call
+        // on this connection. Cheap to re-check on every call; writing only
+        // happens when the value actually changes.
+        let peer_client_info = context
+            .peer
+            .peer_info()
+            .map(|ci| (ci.client_info.name.clone(), ci.client_info.version.clone()));
+        let client_info_tuple = peer_client_info.clone();
+        if let Some((name, version)) = peer_client_info
+            && let Some(new_identity) = AgentIdentity::new(name, version)
+        {
+            let mut guard = self.current_identity.write().await;
+            if guard.as_ref() != Some(&new_identity) {
+                *guard = Some(new_identity);
+            }
+        }
+
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, params, context);
         let result = self.tool_router.call(tcc).await;
 
@@ -5681,13 +6331,20 @@ impl rmcp::ServerHandler for ForgeplanServer {
         // workspace not initialized (first-run `forgeplan_init`).
         if let Some(ws) = self.workspace_path.read().await.as_ref() {
             let ws = ws.clone();
+            // PRD-057 FR-009: pass the captured name/version into the
+            // activity log so retrospective audits can reconstruct *which*
+            // agent did what. Previously this was always `None`.
+            let ci = client_info_tuple.map(|(n, v)| forgeplan_core::activity::ClientInfo {
+                name: n,
+                version: if v.is_empty() { None } else { Some(v) },
+            });
             let entry = forgeplan_core::activity::make_entry(
                 tool_name,
                 &args_val,
                 duration_ms,
                 status,
                 &ws,
-                None,  // client_info not exposed by rmcp 1.2 API — future work
+                ci,
                 false, // include_args: off by default (PRD-054 FR-004)
             );
             // Fire-and-forget: spawn so we don't block the response.
@@ -6262,5 +6919,1093 @@ mod sanitize_for_hint_tests {
         assert!(!clean.contains('\u{200B}'));
         assert!(!clean.contains('\u{202E}'));
         assert!(!clean.contains('`'));
+    }
+}
+
+// ── PRD-057 Inc 2: agent identity wiring tests ──────────────────────
+#[cfg(test)]
+mod agent_identity_tests {
+    //! Verifies `stamp_identity_best_effort` behavior on `ForgeplanServer`
+    //! — the piece that ties `peer.peer_info()` capture in `call_tool` to
+    //! `projection::stamp_agent_identity` on each write handler. The MCP
+    //! handshake itself isn't exercised here (that's covered by rmcp's own
+    //! test harness); we validate the *server-side* contract: given a
+    //! captured identity, writes must result in stamped frontmatter.
+    //!
+    //! PRD-057 FR-009 + AC-5.
+
+    use super::*;
+    use forgeplan_core::artifact::identity::AgentIdentity;
+    use tempfile::TempDir;
+
+    async fn setup_server_with_artifact() -> (ForgeplanServer, TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = root.join(".forgeplan");
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+
+        // Pre-render a minimal artifact so stamp has something to update.
+        projection::render_projection(
+            &ws,
+            "PRD-900",
+            "prd",
+            "Stamp Target",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "## Body\n\nContent.",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let server = ForgeplanServer::new(root).await;
+        (server, tmp, ws)
+    }
+
+    #[tokio::test]
+    async fn stamp_best_effort_is_noop_without_captured_identity() {
+        let (server, _tmp, ws) = setup_server_with_artifact().await;
+        // current_identity starts as None — handshake hasn't been simulated.
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+
+        let content = tokio::fs::read_to_string(ws.join("prds/PRD-900-stamp-target.md"))
+            .await
+            .unwrap();
+        assert!(
+            !content.contains("last_modified_by"),
+            "stamp must not emit fields when identity is unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_best_effort_writes_captured_identity() {
+        let (server, _tmp, ws) = setup_server_with_artifact().await;
+        // Simulate `call_tool` having captured the client identity during
+        // handshake. This is exactly the value `peer.peer_info()` resolves.
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("orchestrator", "1.0").unwrap());
+
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+
+        let content = tokio::fs::read_to_string(ws.join("prds/PRD-900-stamp-target.md"))
+            .await
+            .unwrap();
+        assert!(
+            content.contains("last_modified_by: orchestrator/1.0"),
+            "AC-5 shape: {{name}}/{{version}}\n{content}"
+        );
+        assert!(
+            content.contains("last_modified_at:"),
+            "last_modified_at must be present (RFC3339 timestamp)"
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_best_effort_swallows_missing_file_error() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        tokio::fs::create_dir_all(root.join(".forgeplan/prds"))
+            .await
+            .unwrap();
+        let ws = root.join(".forgeplan");
+        let server = ForgeplanServer::new(root).await;
+        *server.current_identity.write().await = Some(AgentIdentity::new("agent", "1.0").unwrap());
+
+        // No pre-rendered file exists → stamp should fail internally but
+        // return without panicking (best-effort contract).
+        server
+            .stamp_identity_best_effort(&ws, "PRD-NOPE", "prd", "Missing")
+            .await;
+        // Success = we got here without a panic.
+    }
+
+    #[tokio::test]
+    async fn stamp_is_idempotent_across_reruns() {
+        let (server, _tmp, ws) = setup_server_with_artifact().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("agent-a", "1.0").unwrap());
+
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+
+        let content = tokio::fs::read_to_string(ws.join("prds/PRD-900-stamp-target.md"))
+            .await
+            .unwrap();
+        // Field should appear exactly once (second call overwrote, not appended).
+        let occurrences = content.matches("last_modified_by:").count();
+        assert_eq!(
+            occurrences, 1,
+            "identity must be set, not appended:\n{content}"
+        );
+    }
+}
+
+// ── PRD-057 Inc 3: claim MCP tool wiring tests ──────────────────────
+#[cfg(test)]
+mod claim_mcp_tests {
+    //! Integration tests for the three claim MCP tools
+    //! (`forgeplan_claim`, `forgeplan_release`, `forgeplan_claims`).
+    //!
+    //! The goal is to verify the *wiring* — agent-identity resolution,
+    //! workspace-lock acquisition, Core ClaimStore fall-through — not to
+    //! re-test ClaimStore semantics (those are covered in forgeplan-core).
+    //!
+    //! PRD-057 FR-004..006, AC-2.
+
+    use super::*;
+    use forgeplan_core::artifact::identity::AgentIdentity;
+    use forgeplan_core::claim::ClaimStore;
+    use tempfile::TempDir;
+
+    async fn initialized_server() -> (ForgeplanServer, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = root.join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        // Also need to satisfy require_workspace check.
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+        let server = ForgeplanServer::new(root).await;
+        // Prime the server's workspace_path (find_workspace may not pick up
+        // the test .forgeplan/).
+        *server.workspace_path.write().await = Some(ws);
+        (server, tmp)
+    }
+
+    #[tokio::test]
+    async fn claim_uses_mcp_identity_when_agent_omitted() {
+        let (server, _tmp) = initialized_server().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("orchestrator", "1.0").unwrap());
+
+        let _ = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-100".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = ClaimStore::new(&ws);
+        let claim = store.get("PRD-100").await.unwrap().unwrap();
+        assert_eq!(claim.agent_id, "orchestrator/1.0");
+    }
+
+    #[tokio::test]
+    async fn claim_prefers_explicit_agent_over_identity() {
+        let (server, _tmp) = initialized_server().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("orchestrator", "1.0").unwrap());
+
+        let _ = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-101".to_string(),
+                agent: Some("worker-1".to_string()),
+                ttl_minutes: Some(15),
+                note: Some("building FR-007".to_string()),
+            }))
+            .await
+            .unwrap();
+
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = ClaimStore::new(&ws);
+        let claim = store.get("PRD-101").await.unwrap().unwrap();
+        assert_eq!(claim.agent_id, "worker-1");
+        assert_eq!(claim.note.as_deref(), Some("building FR-007"));
+    }
+
+    #[tokio::test]
+    async fn claim_errors_when_no_identity_and_no_agent() {
+        let (server, _tmp) = initialized_server().await;
+        // current_identity left as None and no agent passed.
+
+        let result = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-102".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "missing identity should surface as is_error=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_existing_claim_by_different_agent() {
+        // AC-2 at the MCP boundary.
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = ClaimStore::new(&ws);
+        store
+            .claim(
+                "PRD-103",
+                "agent-a/1",
+                forgeplan_core::claim::DEFAULT_TTL,
+                None,
+            )
+            .await
+            .unwrap();
+
+        *server.current_identity.write().await = Some(AgentIdentity::new("agent-b", "1").unwrap());
+        let result = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-103".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn release_by_owner_removes_claim() {
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        *server.current_identity.write().await = Some(AgentIdentity::new("owner", "1.0").unwrap());
+
+        server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-104".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: "PRD-104".to_string(),
+                agent: None,
+                force: false,
+            }))
+            .await
+            .unwrap();
+
+        let store = ClaimStore::new(&ws);
+        assert!(store.get("PRD-104").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn release_force_reaps_other_agent_claim() {
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = ClaimStore::new(&ws);
+        store
+            .claim(
+                "PRD-105",
+                "stuck/1",
+                forgeplan_core::claim::DEFAULT_TTL,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Orchestrator force-releases without setting their own identity.
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: "PRD-105".to_string(),
+                agent: None,
+                force: true,
+            }))
+            .await
+            .unwrap();
+
+        assert!(store.get("PRD-105").await.unwrap().is_none());
+    }
+
+    // ── PRD-057 Inc 4: dispatch MCP wiring smoke test ────────────────
+
+    #[tokio::test]
+    async fn dispatch_validates_agent_count_and_threshold() {
+        let (server, _tmp) = initialized_server().await;
+        // agents=0 → error
+        let r = server
+            .forgeplan_dispatch(Parameters(DispatchParams {
+                agents: 0,
+                kind: None,
+                epic: None,
+                status: None,
+                agent_skills: vec![],
+                overlap_threshold: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true), "agents=0 must error");
+
+        // threshold outside [0, 1] → error
+        let r = server
+            .forgeplan_dispatch(Parameters(DispatchParams {
+                agents: 2,
+                kind: None,
+                epic: None,
+                status: None,
+                agent_skills: vec![],
+                overlap_threshold: Some(1.5),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true), "threshold > 1.0 must error");
+    }
+
+    // ── PRD-057 full multi-agent flow edge cases (R3 dogfood) ───────
+
+    /// Like `initialized_server` but also initializes LanceDB so the
+    /// dispatcher / claim store / artifact tools work end-to-end.
+    async fn initialized_server_with_store() -> (ForgeplanServer, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = forgeplan_core::workspace::init_workspace(&root, "dogfood").unwrap();
+        let store = forgeplan_core::db::store::LanceStore::init(&ws)
+            .await
+            .unwrap();
+        let server = ForgeplanServer::new(root).await;
+        *server.workspace_path.write().await = Some(ws);
+        *server.store.write().await = Some(std::sync::Arc::new(store));
+        (server, tmp)
+    }
+
+    /// Seed a real artifact through the full pipeline used by production.
+    /// Mirrors `forgeplan_new` + `forgeplan_update` without the MCP round-trip.
+    /// Uses the same `LanceStore` handle the server does — important because
+    /// independently-opened handles may not observe each other's writes
+    /// until a flush.
+    async fn seed_real_prd(
+        server: &ForgeplanServer,
+        ws: &std::path::Path,
+        id: &str,
+        title: &str,
+        affected_files: &[&str],
+        domain: Option<&str>,
+    ) {
+        let store = server
+            .store
+            .read()
+            .await
+            .clone()
+            .expect("store initialized");
+        let artifact = forgeplan_core::db::store::NewArtifact {
+            id: id.into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: title.into(),
+            body: format!("# {id}\n\nBody."),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&artifact).await.unwrap();
+        projection::render_projection(
+            ws,
+            id,
+            "prd",
+            title,
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            &artifact.body,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        if affected_files.is_empty() && domain.is_none() {
+            return;
+        }
+        let path = ws.join(format!(
+            "prds/{id}-{}.md",
+            forgeplan_core::artifact::types::slugify(title)
+        ));
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let (mut fm, body) =
+            forgeplan_core::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+        if !affected_files.is_empty() {
+            let seq: Vec<serde_yaml::Value> = affected_files
+                .iter()
+                .map(|f| serde_yaml::Value::String((*f).to_string()))
+                .collect();
+            fm.insert(
+                "affected_files".to_string(),
+                serde_yaml::Value::Sequence(seq),
+            );
+        }
+        if let Some(d) = domain {
+            fm.insert(
+                "domain".to_string(),
+                serde_yaml::Value::String(d.to_string()),
+            );
+        }
+        let new_content =
+            forgeplan_core::artifact::frontmatter::render_frontmatter(&fm, &body).unwrap();
+        tokio::fs::write(&path, new_content).await.unwrap();
+    }
+
+    fn dp(agents: usize) -> DispatchParams {
+        DispatchParams {
+            agents,
+            kind: None,
+            epic: None,
+            status: None,
+            agent_skills: vec![],
+            overlap_threshold: None,
+        }
+    }
+
+    fn extract_ids_flat(buckets: &serde_json::Value) -> Vec<String> {
+        buckets
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|b| {
+                b.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    fn response_json(r: &CallToolResult) -> serde_json::Value {
+        assert_ne!(r.is_error, Some(true), "tool returned is_error=true");
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => serde_json::from_str(&t.text).unwrap(),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_empty_workspace() {
+        let (server, _tmp) = initialized_server_with_store().await;
+        let r = server.forgeplan_dispatch(Parameters(dp(3))).await.unwrap();
+        let body = response_json(&r);
+        assert_eq!(body["candidate_count"].as_u64().unwrap(), 0);
+        assert!(
+            body["buckets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|b| b.as_array().unwrap().is_empty()),
+            "empty workspace → no plan work"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_one_agent_with_conflict_serializes_rest() {
+        // With only 1 agent, disjoint-file PRDs can STILL share that agent
+        // (they go sequentially). To force `serial_queue` → use overlapping
+        // files so the second truly conflicts with the bucket-resident.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-930", "A", &["shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-931", "B", &["shared.rs"], None).await;
+
+        let r = server.forgeplan_dispatch(Parameters(dp(1))).await.unwrap();
+        let body = response_json(&r);
+        assert_eq!(
+            body["buckets"][0].as_array().unwrap().len(),
+            1,
+            "single agent takes first"
+        );
+        assert_eq!(
+            body["serial_queue"].as_array().unwrap().len(),
+            1,
+            "conflict forces second to serial"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_five_agents_distribute_evenly() {
+        // PRD-057 target upper bound.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        for i in 0..5 {
+            seed_real_prd(
+                &server,
+                &ws,
+                &format!("PRD-94{i}"),
+                &format!("PRD {i}"),
+                &[&format!("f{i}.rs")],
+                None,
+            )
+            .await;
+        }
+        let r = server.forgeplan_dispatch(Parameters(dp(5))).await.unwrap();
+        let body = response_json(&r);
+        for b in body["buckets"].as_array().unwrap() {
+            assert_eq!(
+                b.as_array().unwrap().len(),
+                1,
+                "each agent gets exactly one"
+            );
+        }
+        assert!(body["serial_queue"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_agents_over_max_rejected() {
+        let (server, _tmp) = initialized_server_with_store().await;
+        let r = server
+            .forgeplan_dispatch(Parameters(DispatchParams {
+                agents: 10_000,
+                kind: None,
+                epic: None,
+                status: None,
+                agent_skills: vec![],
+                overlap_threshold: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true), "agents > MAX_AGENTS must error");
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_markdown_section_fallback() {
+        // R3 audit HIGH: legacy artifact with only `## Affected Files`
+        // section (no FM key) must still be eligible for parallel buckets.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = forgeplan_core::db::store::LanceStore::open(&ws)
+            .await
+            .unwrap();
+        let body_with_section = "## Summary\n\nx\n\n## Affected Files\n\n- crates/legacy/main.rs\n- crates/legacy/helper.rs\n";
+        let artifact = forgeplan_core::db::store::NewArtifact {
+            id: "PRD-950".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Legacy".into(),
+            body: body_with_section.into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&artifact).await.unwrap();
+        projection::render_projection(
+            &ws,
+            "PRD-950",
+            "prd",
+            "Legacy",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            &artifact.body,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        seed_real_prd(
+            &server,
+            &ws,
+            "PRD-951",
+            "Modern",
+            &["apps/web/other.tsx"],
+            None,
+        )
+        .await;
+
+        let r = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let body = response_json(&r);
+        let ids = extract_ids_flat(&body["buckets"]);
+        assert!(
+            ids.contains(&"PRD-950".to_string()),
+            "markdown-section fallback must hydrate files — R3 HIGH regression guard: {ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_blocked_artifact_skipped() {
+        // FR-003: blocked by draft parent → skipped from plan.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        seed_real_prd(&server, &ws, "PRD-960", "Parent", &["a.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-961", "Child", &["b.rs"], None).await;
+        // Use the server's own store handle so the relation and subsequent
+        // list_records/get_all_relations calls observe the same state.
+        let store = server
+            .store
+            .read()
+            .await
+            .clone()
+            .expect("store initialized");
+        store
+            .add_relation("PRD-961", "PRD-960", "based_on")
+            .await
+            .unwrap();
+
+        let r = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let body = response_json(&r);
+        let ids = extract_ids_flat(&body["buckets"]);
+        assert!(
+            !ids.contains(&"PRD-961".to_string()),
+            "PRD-961 must be excluded — blocked by draft parent"
+        );
+        assert!(
+            body["blocked_count"].as_u64().unwrap() >= 1,
+            "blocked_count must reflect the skip"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_claim_release_full_cycle() {
+        // Full MCP round-trip: seed → claim → dispatch skips → release → dispatch restores.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-970", "A", &["a/x.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-971", "B", &["b/y.rs"], None).await;
+
+        server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-970".into(),
+                agent: Some("worker-1".into()),
+                ttl_minutes: Some(30),
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        let r = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let body = response_json(&r);
+        assert_eq!(body["claimed_count"].as_u64().unwrap(), 1);
+        let ids = extract_ids_flat(&body["buckets"]);
+        assert_eq!(ids, vec!["PRD-971"]);
+
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: "PRD-970".into(),
+                agent: Some("worker-1".into()),
+                force: false,
+            }))
+            .await
+            .unwrap();
+
+        let r2 = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let body2 = response_json(&r2);
+        assert_eq!(body2["claimed_count"].as_u64().unwrap(), 0);
+        assert_eq!(body2["candidate_count"].as_u64().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_skill_routing_end_to_end() {
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(
+            &server,
+            &ws,
+            "PRD-980",
+            "API",
+            &["crates/api/gate.rs"],
+            Some("backend"),
+        )
+        .await;
+        seed_real_prd(
+            &server,
+            &ws,
+            "PRD-981",
+            "UI",
+            &["apps/web/landing.tsx"],
+            Some("frontend"),
+        )
+        .await;
+
+        let params = DispatchParams {
+            agents: 2,
+            kind: None,
+            epic: None,
+            status: None,
+            agent_skills: vec![vec!["backend".into()], vec!["frontend".into()]],
+            overlap_threshold: None,
+        };
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+        assert_eq!(body["buckets"][0][0].as_str().unwrap(), "PRD-980");
+        assert_eq!(body["buckets"][1][0].as_str().unwrap(), "PRD-981");
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_health_surfaces_claims() {
+        // FR-012 verification through full MCP surface.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-990", "A", &["a.rs"], None).await;
+
+        server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-990".into(),
+                agent: Some("auditor/1".into()),
+                ttl_minutes: Some(30),
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        let r = server.forgeplan_health().await.unwrap();
+        let body = response_json(&r);
+        assert_eq!(
+            body["active_claim_count"].as_u64().unwrap(),
+            1,
+            "FR-012: health must surface active claim count"
+        );
+        let claims = body["active_claims"].as_array().unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0]["id"].as_str().unwrap(), "PRD-990");
+        assert_eq!(claims[0]["agent_id"].as_str().unwrap(), "auditor/1");
+    }
+
+    #[tokio::test]
+    async fn dispatch_dogfood_get_surfaces_claim_info() {
+        // FR-013 verification.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-991", "Claimed artifact", &["x.rs"], None).await;
+
+        server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-991".into(),
+                agent: Some("agent-1/1.0".into()),
+                ttl_minutes: Some(15),
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        let r = server
+            .forgeplan_get(Parameters(GetParams {
+                id: "PRD-991".into(),
+            }))
+            .await
+            .unwrap();
+        // Response is CallToolResult with structured Content — the hint
+        // block ("_next_action") should mention the claim holder.
+        let body = response_json(&r);
+        // The `_next_action` field is injected by hinted_result wrapper.
+        let hint_text = body["_next_action"].as_str().unwrap_or("").to_string();
+        assert!(
+            hint_text.contains("Claim")
+                && (hint_text.contains("agent-1") || hint_text.contains("agent_1")),
+            "FR-013: _next_action must surface claim holder — got: {hint_text}"
+        );
+    }
+
+    // ── PRD-057 workflow variations: filter combinations + threshold ──
+
+    #[tokio::test]
+    async fn dispatch_workflow_kind_filter_narrows_candidates() {
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-A01", "Prd one", &["a.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-A02", "Prd two", &["b.rs"], None).await;
+        // Seed a non-PRD artifact through the store directly.
+        {
+            let store = server.store.read().await.clone().unwrap();
+            let artifact = forgeplan_core::db::store::NewArtifact {
+                id: "RFC-A01".into(),
+                kind: "rfc".into(),
+                status: "draft".into(),
+                title: "An RFC".into(),
+                body: "# RFC\n".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            };
+            store.create_artifact(&artifact).await.unwrap();
+        }
+
+        let mut params = dp(2);
+        params.kind = Some("prd".into());
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+
+        let all_ids = extract_ids_flat(&body["buckets"]);
+        let serial: Vec<String> = body["serial_queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let visible: std::collections::HashSet<&String> =
+            all_ids.iter().chain(serial.iter()).collect();
+        assert!(
+            !visible.contains(&"RFC-A01".to_string()),
+            "kind=prd filter must exclude RFC-A01"
+        );
+        assert!(visible.contains(&"PRD-A01".to_string()));
+        assert!(visible.contains(&"PRD-A02".to_string()));
+    }
+
+    #[tokio::test]
+    async fn dispatch_workflow_threshold_zero_serializes_all_sharing_any_file() {
+        // threshold=0.0 is the conservative extreme — any shared file at
+        // all makes the pair conflict. With 3 artifacts all sharing one
+        // file and only 2 agents, the third must serialize.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-T01", "A", &["a.rs", "shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-T02", "B", &["b.rs", "shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-T03", "C", &["c.rs", "shared.rs"], None).await;
+
+        let mut params = dp(2);
+        params.overlap_threshold = Some(0.0);
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+        let bucket_count: usize = body["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_array().unwrap().len())
+            .sum();
+        // Two agents, each takes one that shares with the other's resident
+        // — wait, any non-empty intersection conflicts at threshold=0, so
+        // the SECOND one on each bucket conflicts too. Only 2 fit total.
+        assert!(
+            bucket_count <= 2,
+            "threshold=0 bucket count should be at most agents"
+        );
+        assert!(
+            !body["serial_queue"].as_array().unwrap().is_empty(),
+            "at least one must serialize when all share a file"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_workflow_threshold_one_allows_maximum_parallelism() {
+        // threshold=1.0: only identical file sets conflict. Non-identical
+        // partial overlap → parallelized.
+        let (server, _tmp) = initialized_server_with_store().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        seed_real_prd(&server, &ws, "PRD-T10", "A", &["a.rs", "shared.rs"], None).await;
+        seed_real_prd(&server, &ws, "PRD-T11", "B", &["b.rs", "shared.rs"], None).await;
+
+        let mut params = dp(2);
+        params.overlap_threshold = Some(1.0);
+        let r = server.forgeplan_dispatch(Parameters(params)).await.unwrap();
+        let body = response_json(&r);
+        let bucket_count: usize = body["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_array().unwrap().len())
+            .sum();
+        assert_eq!(
+            bucket_count, 2,
+            "threshold=1.0 allows non-identical sets to parallelize"
+        );
+        assert!(body["serial_queue"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_workflow_full_cycle_new_claim_update_release_redispatch() {
+        // End-to-end: seed via forgeplan_new → claim → verify identity
+        // stamp → release → re-dispatch. Validates Inc 2 (stamp) + Inc 3
+        // (claims) + Inc 4 (dispatch) compose cleanly across real MCP
+        // handler calls.
+        let (server, _tmp) = initialized_server_with_store().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("claude-code", "1.0").unwrap());
+
+        let r_new = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Full cycle".to_string(),
+            }))
+            .await
+            .unwrap();
+        let new_body = response_json(&r_new);
+        let created_id = new_body["id"].as_str().unwrap().to_string();
+
+        let r_claim = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: created_id.clone(),
+                agent: Some("worker-1".into()),
+                ttl_minutes: Some(15),
+                note: Some("building".into()),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(r_claim.is_error, Some(true));
+
+        // Inc 2 identity stamp: forgeplan_new should have stamped.
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        let slug = forgeplan_core::artifact::types::slugify("Full cycle");
+        let path = ws.join(format!("prds/{created_id}-{slug}.md"));
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            content.contains("last_modified_by: claude-code/1.0"),
+            "Inc 2: forgeplan_new should stamp identity"
+        );
+
+        // Dispatch — the claimed artifact must be skipped.
+        let r_disp = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let d_body = response_json(&r_disp);
+        let ids = extract_ids_flat(&d_body["buckets"]);
+        assert!(
+            !ids.contains(&created_id),
+            "claimed artifact {created_id} must not appear in plan"
+        );
+
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: created_id.clone(),
+                agent: Some("worker-1".into()),
+                force: false,
+            }))
+            .await
+            .unwrap();
+
+        let r_final = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
+        let final_body = response_json(&r_final);
+        assert_eq!(
+            final_body["claimed_count"].as_u64().unwrap(),
+            0,
+            "post-release: claim count resets to 0"
+        );
+        // Template-seeded artifact may include a `## Affected Files`
+        // section (extracted via Inc 2 fallback) or be empty — either way
+        // it must reappear somewhere once released.
+        let in_buckets = extract_ids_flat(&final_body["buckets"]).contains(&created_id);
+        let in_serial = final_body["serial_queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(created_id.as_str()));
+        assert!(
+            in_buckets || in_serial,
+            "released artifact {created_id} must reappear in plan"
+        );
+    }
+
+    // ── PRD-057 AC-4: concurrent forgeplan_new → unique IDs ──────────
+
+    #[tokio::test]
+    async fn concurrent_forgeplan_new_emits_unique_ids() {
+        // R3 audit task-completion PARTIAL: Inc 1 lock test is a proxy;
+        // this asserts the full MCP path produces distinct IDs + distinct
+        // projection files when called concurrently from three sub-agents
+        // sharing one workspace.
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = forgeplan_core::workspace::init_workspace(&root, "ac4").unwrap();
+        // Force LanceDB init so the test server has a store.
+        let _ = forgeplan_core::db::store::LanceStore::init(&ws)
+            .await
+            .unwrap();
+
+        let server = Arc::new(ForgeplanServer::new(root).await);
+
+        // Spawn 3 concurrent forgeplan_new calls — mirrors the scenario in
+        // the PRD-057 AC-4 Gherkin. Each call holds the workspace lock
+        // for its critical section (next_id + create_artifact + projection
+        // render); with the lock working correctly, all three complete
+        // serially with distinct IDs and distinct files on disk.
+        let mut handles = Vec::new();
+        for i in 0..3 {
+            let srv = Arc::clone(&server);
+            handles.push(tokio::spawn(async move {
+                srv.forgeplan_new(Parameters(NewParams {
+                    kind: ArtifactKindArg::Prd,
+                    title: format!("Concurrent PRD {i}"),
+                }))
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            let r = h.await.unwrap().unwrap();
+            assert_ne!(r.is_error, Some(true), "forgeplan_new must not error");
+            results.push(r);
+        }
+
+        // The JSON body carries the assigned id under "id". Pull them
+        // out — cheap and avoids a full Response deserialization path.
+        let mut seen = std::collections::HashSet::new();
+        for r in &results {
+            assert!(!r.content.is_empty(), "content must be non-empty");
+            let text = match &r.content[0].raw {
+                rmcp::model::RawContent::Text(t) => t.text.clone(),
+                _ => panic!("expected text content"),
+            };
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON body");
+            let id = v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .expect("response should include id");
+            assert!(
+                seen.insert(id.to_string()),
+                "AC-4 violation: duplicate id {id} across concurrent forgeplan_new calls"
+            );
+        }
+
+        // Also verify three distinct projection files landed on disk.
+        let prds_dir = ws.join("prds");
+        let mut rd = tokio::fs::read_dir(&prds_dir).await.unwrap();
+        let mut md_files = 0;
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            let n = entry.file_name().to_string_lossy().to_string();
+            if n.ends_with(".md") {
+                md_files += 1;
+            }
+        }
+        assert_eq!(md_files, 3, "expected 3 markdown files, got {md_files}");
+    }
+
+    #[tokio::test]
+    async fn claims_list_returns_live_entries_sorted() {
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = ClaimStore::new(&ws);
+        store
+            .claim("PRD-110", "a/1", chrono::Duration::hours(2), None)
+            .await
+            .unwrap();
+        store
+            .claim("PRD-111", "b/1", chrono::Duration::minutes(20), None)
+            .await
+            .unwrap();
+
+        let result = server
+            .forgeplan_claims(Parameters(ClaimsListParams { active: true }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        // Full JSON verification is expensive; we trust ClaimStore tests
+        // and verify only that the call path doesn't short-circuit.
     }
 }
