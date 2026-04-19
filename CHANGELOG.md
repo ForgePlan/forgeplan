@@ -7,6 +7,75 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.23.1] — 2026-04-19 — Multi-agent workspace lock foundation (PRD-057 Inc 1)
+
+First safety primitive for multi-agent workflow — workspace-level file
+lock that serializes LanceDB write operations across 2-5 concurrent
+sub-agents sharing a `.forgeplan/` directory. Patch bump, no breaking
+changes, no new user-facing tools.
+
+### Added
+
+- **`forgeplan-core::workspace::lock`** module with `WorkspaceLock`
+  RAII guard and `acquire_workspace_lock` async helper. Uses `fs2`
+  flock primitive (Unix) / LockFileEx (Windows). Released automatically
+  on drop including process crash.
+- **30-second timeout** with exponential backoff (10ms → 1000ms) —
+  no indefinite hang if a sibling agent is stuck.
+- **Symlink guards** on both workspace directory and lock file
+  (parity with PRD-055 R3 + PRD-056 hardening).
+- **`#[must_use]`** on guard — compiler catches accidental immediate
+  drop via `let _ =`.
+
+### Wrapped with lock (all MCP write entry points)
+
+- `forgeplan_new` — prevents duplicate ID collision under concurrent
+  `next_id` allocation.
+- `forgeplan_update`
+- `forgeplan_delete`
+- `forgeplan_supersede`
+- `forgeplan_deprecate`
+
+### Hygiene
+
+- `.gitignore`: `.forgeplan/.lock` and `.forgeplan/claims/` (prep for
+  PRD-057 Inc 2-4).
+
+### Verification
+
+- **1297 tests pass / 0 fail** (+6 new regression tests:
+  - `acquire_creates_lock_file`
+  - `lock_releases_on_drop`
+  - `concurrent_acquirers_serialize_and_total_time` (strengthened
+    with wall-time lower bound)
+  - `timeout_surfaces_when_lock_held`
+  - `symlinked_workspace_dir_is_refused` (unix)
+  - `symlinked_lock_file_is_refused` (unix)
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- Rust 1.95 toolchain pinned via `rust-toolchain.toml`.
+
+### Audit
+
+5-agent audit Round 1 (security + logic + arch + rust + task-completion)
+found 1 CRITICAL + 2 HIGH + 4 MEDIUM — **all fixed** in the same PR
+before merge. Net verdict: APPROVE_WITH_FIXES from all 5 agents post-
+hotfix.
+
+### Not included — planned for v0.24.0
+
+- `Claim` module + `forgeplan_claim` / `_release` / `_claims` MCP
+  tools (PRD-057 Inc 3).
+- Agent identity capture (`client_info` → `last_modified_by`
+  frontmatter field) (PRD-057 Inc 2).
+- `forgeplan_dispatch --agents N` tool (PRD-057 Inc 4) — the dispatcher
+  that suggests parallel-safe buckets based on dep graph, file-overlap
+  Jaccard, and domain-skill matching.
+
+Refs: EPIC-005, PRD-057 Inc 1, PR #192.
+
+---
+
 ## [0.23.0] — 2026-04-18 — Advisory phase state machine (PRD-056, EPIC-005)
 
 First shipped child of **EPIC-005 "Phase state machine & workflow-aware
