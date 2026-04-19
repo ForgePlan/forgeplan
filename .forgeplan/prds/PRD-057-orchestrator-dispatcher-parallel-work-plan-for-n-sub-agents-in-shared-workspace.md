@@ -54,6 +54,15 @@ TOTAL                                           10/14  ( 71%)
 - All writes serialized via `workspace_lock` (Inc 1 pattern extended)
 - 24 new tests (17 Core ClaimStore + 7 MCP wiring), 1338 total
 
+**R2 mid-sprint audit hotfix (2026-04-19, 3 agents):**
+- HIGH×1: path traversal in `ClaimStore::path_for` → `validate_id` guard at every entry point
+- HIGH×2: `release` empty-agent bypass + `forgeplan_release` fragile force path → agent check before FS, deterministic resolution order
+- MED×4: atomic `tempfile+rename` writes (`claim::atomic_write` + `projection::atomic_markdown_write`), Unicode/control-char rejection in `AgentIdentity::new`, `list_active_with_stats` surfaces malformed-file count, `forgeplan_claims` no longer holds workspace lock (read-only)
+- MED×1: `list_active_map` for O(1) dispatcher lookups (Inc 4 forward-compat)
+- LOW×1: TTL clamp at MCP boundary matches advertised schema
+- +14 new regression tests (9 claim hardening + 5 identity hardening), 1352 total
+- Defer to v0.25+: shared `kv_yaml` abstraction extraction, HTTP/SSE identity refactor, ADR for claim/phase separation
+
 ---
 
 ## Executive Summary

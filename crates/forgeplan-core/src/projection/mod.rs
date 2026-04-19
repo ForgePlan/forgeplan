@@ -440,8 +440,39 @@ pub async fn stamp_agent_identity(
     );
 
     let new_content = frontmatter::render_frontmatter(&fm, &body)?;
-    tokio::fs::write(&filepath, new_content).await?;
+    // R2 audit MED (rust-pro + architect): use atomic tempfile+rename so
+    // a kill -9 between truncate and write cannot corrupt the markdown.
+    // `tokio::fs::write` was non-atomic on POSIX.
+    atomic_markdown_write(&filepath, new_content.as_bytes()).await?;
     Ok(())
+}
+
+/// Atomic markdown write via tempfile + rename. Mirrors the pattern used
+/// in `claim::atomic_write` but kept local to avoid cross-module coupling
+/// until the shared `kv_yaml` abstraction (arch audit MED) is extracted.
+async fn atomic_markdown_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "atomic_markdown_write: path has no parent",
+        )
+    })?;
+    tokio::fs::create_dir_all(parent).await?;
+    let tmp = parent.join(format!(
+        ".{}.tmp.{}",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "anon".to_string()),
+        std::process::id(),
+    ));
+    tokio::fs::write(&tmp, bytes).await?;
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(e)
+        }
+    }
 }
 
 /// Remove a projection file for a deleted artifact.

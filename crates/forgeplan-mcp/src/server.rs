@@ -5473,11 +5473,21 @@ impl ForgeplanServer {
             },
         };
 
+        // R2 audit LOW (security): clamp TTL at the MCP boundary so the
+        // hint the agent sees matches the documented bound (1..=1440
+        // minutes). Without this the Core backend still rejected overlong
+        // values, but the schema advertised "max 1440" — mismatch.
+        const MAX_TTL_MINUTES: u32 = 1440; // 24 h — matches claim::MAX_TTL
         let ttl = match p.ttl_minutes {
-            Some(m) if m > 0 => chrono::Duration::minutes(m as i64),
-            Some(_) => {
-                return Ok(err_result("ttl_minutes must be > 0"));
+            Some(0) => {
+                return Ok(err_result("ttl_minutes must be >= 1"));
             }
+            Some(m) if m > MAX_TTL_MINUTES => {
+                return Ok(err_result(&format!(
+                    "ttl_minutes must be <= {MAX_TTL_MINUTES} (24 hours)"
+                )));
+            }
+            Some(m) => chrono::Duration::minutes(m as i64),
             None => forgeplan_core::claim::DEFAULT_TTL,
         };
 
@@ -5542,11 +5552,17 @@ impl ForgeplanServer {
             }
         };
 
+        // R2 audit HIGH #3 (rust-pro): resolve agent deterministically.
+        // Priority: explicit > cached MCP identity > force with sentinel.
+        // This keeps `force: true` without agent legitimate (orchestrator
+        // reaping a stuck holder) while surfacing a clear error for the
+        // accidental `force: false + no agent + no identity` case — the
+        // previously ambiguous state the audit flagged.
         let agent = match p.agent.as_deref() {
             Some(a) if !a.trim().is_empty() => a.trim().to_string(),
-            _ if p.force => String::new(), // force=true allows empty agent
             _ => match self.current_identity.read().await.as_ref() {
                 Some(id) => id.as_frontmatter_value(),
+                None if p.force => String::new(),
                 None => {
                     return Ok(err_hinted(
                         "no agent identity — pass `agent` explicitly, set force=true, or wait for \
@@ -5591,6 +5607,12 @@ impl ForgeplanServer {
             open_world_hint = false,
         )
     )]
+    // R2 audit MED (architect): `forgeplan_claims` is read-only — it MUST
+    // NOT hold the exclusive workspace lock, otherwise an orchestrator
+    // polling at 1 Hz will serialize every sub-agent write. The list
+    // operation reads a directory of small YAML files; each file is
+    // individually parsed, so a partial-read race yields a skipped file
+    // (counted in `skipped_count`) rather than corruption.
     async fn forgeplan_claims(
         &self,
         Parameters(_p): Parameters<ClaimsListParams>,
@@ -5601,15 +5623,23 @@ impl ForgeplanServer {
         };
 
         let store = forgeplan_core::claim::ClaimStore::new(&ws);
-        match store.list_active().await {
-            Ok(claims) => {
+        match store.list_active_with_stats().await {
+            Ok((claims, skipped)) => {
                 let count = claims.len();
                 let dto = ClaimsListResponse {
                     count,
+                    skipped,
                     claims: claims.into_iter().map(ClaimDto::from).collect(),
                 };
-                let hint = if count == 0 {
+                let hint = if count == 0 && skipped == 0 {
                     "No active claims. Workspace is free for any agent to claim work.".to_string()
+                } else if skipped > 0 {
+                    format!(
+                        "{count} active claim{}, {skipped} malformed file{} skipped (see server \
+                         logs). Run `forgeplan health` to surface the offenders.",
+                        if count == 1 { "" } else { "s" },
+                        if skipped == 1 { "" } else { "s" },
+                    )
                 } else {
                     format!(
                         "{count} active claim{}. Use `forgeplan_dispatch` (when implemented) \

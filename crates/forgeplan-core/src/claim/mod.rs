@@ -13,7 +13,14 @@
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// Upper bound on a single claim YAML file. Matches the 64 KB cap in
+/// `artifact::frontmatter::parse_frontmatter` — defense against a
+/// pathological claim file (billion-laughs attempt, oversized note) on
+/// `get` / `list_active` deserialization. R1-audit security finding.
+const MAX_CLAIM_FILE_BYTES: u64 = 65_536;
 
 /// Minimum permitted TTL — claims shorter than this would churn more than
 /// they coordinate. Orchestrators can still force-release earlier.
@@ -74,20 +81,94 @@ pub enum ClaimError {
         held_by: String,
         requester: String,
     },
-    #[error("ttl {0:?} outside permitted range ({MIN_TTL:?}..={MAX_TTL:?})")]
+    #[error("ttl out of permitted range (1 minute..=24 hours)")]
     TtlOutOfRange(Duration),
     #[error("artifact id must be non-empty")]
     EmptyId,
+    #[error(
+        "artifact id contains invalid characters (allowed: A-Z, a-z, 0-9, '-', '_'; must start with a letter): {0:?}"
+    )]
+    InvalidId(String),
     #[error("agent id must be non-empty")]
     EmptyAgent,
+    #[error("claim file exceeds {MAX_CLAIM_FILE_BYTES} bytes — refusing to parse")]
+    FileTooLarge,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("yaml error: {0}")]
     Yaml(#[from] serde_yaml::Error),
 }
 
+/// Validate an artifact ID is safe for filesystem use.
+///
+/// Refuses path-traversal segments (`..`, `/`, `\\`, null bytes, leading
+/// `.`) and any character outside `[A-Za-z0-9_-]`. Parallels
+/// `db::store::validate_id_for_filter` but returns a typed ClaimError so
+/// MCP error hints remain structured.
+///
+/// Security (R2 audit HIGH #1): without this, `id="../../etc/passwd"`
+/// would escape `.forgeplan/claims/` via `Path::join`; `release` would
+/// then `remove_file` arbitrary paths the process can write.
+fn validate_id(id: &str) -> Result<(), ClaimError> {
+    if id.is_empty() {
+        return Err(ClaimError::EmptyId);
+    }
+    let first = id.chars().next().unwrap_or(' ');
+    if !first.is_ascii_alphabetic() {
+        return Err(ClaimError::InvalidId(id.to_string()));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ClaimError::InvalidId(id.to_string()));
+    }
+    // Belt-and-suspenders — should be unreachable after the charset check
+    // but explicit rejection of traversal sequences is cheap insurance.
+    if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
+        return Err(ClaimError::InvalidId(id.to_string()));
+    }
+    Ok(())
+}
+
+/// Atomic file write via `write to tempfile → rename` so a crash mid-write
+/// never produces a truncated target. R2 audit MED (rust-pro + architect):
+/// `tokio::fs::write` was a single non-atomic syscall; a SIGKILL between
+/// truncate and write left a zero-byte YAML that blocked every subsequent
+/// `get`.
+async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "atomic_write: path has no parent",
+        )
+    })?;
+    tokio::fs::create_dir_all(parent).await?;
+    let tmp = parent.join(format!(
+        ".{}.tmp.{}",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "anon".to_string()),
+        std::process::id(),
+    ));
+    tokio::fs::write(&tmp, bytes).await?;
+    // `tokio::fs::rename` is atomic on POSIX and "atomic on same volume" on
+    // Windows (MoveFileEx with MOVEFILE_REPLACE_EXISTING). Good enough for
+    // workspace-local writes.
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Clean up tempfile on failure — otherwise repeated writes
+            // would accumulate orphans.
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(e)
+        }
+    }
+}
+
 /// On-disk claim store rooted at `<workspace>/claims/`.
 #[derive(Debug, Clone)]
+#[must_use = "ClaimStore is a lightweight handle — bind it before calling methods"]
 pub struct ClaimStore {
     dir: PathBuf,
 }
@@ -115,14 +196,11 @@ impl ClaimStore {
     /// as absent so downstream logic can acquire without a separate purge
     /// step (AC-3).
     pub async fn get(&self, id: &str) -> Result<Option<Claim>, ClaimError> {
-        if id.is_empty() {
-            return Err(ClaimError::EmptyId);
-        }
+        validate_id(id)?;
         let path = self.path_for(id);
-        let raw = match tokio::fs::read_to_string(&path).await {
-            Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(ClaimError::Io(e)),
+        let raw = match read_bounded(&path).await? {
+            Some(s) => s,
+            None => return Ok(None),
         };
         let claim: Claim = serde_yaml::from_str(&raw)?;
         if claim.is_expired() {
@@ -134,17 +212,14 @@ impl ClaimStore {
 
     /// Raw get without TTL filtering. Exposed for diagnostics (`--include-expired`).
     pub async fn get_including_expired(&self, id: &str) -> Result<Option<Claim>, ClaimError> {
-        if id.is_empty() {
-            return Err(ClaimError::EmptyId);
-        }
+        validate_id(id)?;
         let path = self.path_for(id);
-        match tokio::fs::read_to_string(&path).await {
-            Ok(raw) => {
+        match read_bounded(&path).await? {
+            Some(raw) => {
                 let claim: Claim = serde_yaml::from_str(&raw)?;
                 Ok(Some(claim))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(ClaimError::Io(e)),
+            None => Ok(None),
         }
     }
 
@@ -165,9 +240,7 @@ impl ClaimStore {
         ttl: Duration,
         note: Option<String>,
     ) -> Result<Claim, ClaimError> {
-        if id.is_empty() {
-            return Err(ClaimError::EmptyId);
-        }
+        validate_id(id)?;
         if agent.is_empty() {
             return Err(ClaimError::EmptyAgent);
         }
@@ -198,7 +271,7 @@ impl ClaimStore {
         };
 
         let yaml = serde_yaml::to_string(&claim)?;
-        tokio::fs::write(self.path_for(id), yaml).await?;
+        atomic_write(&self.path_for(id), yaml.as_bytes()).await?;
         Ok(claim)
     }
 
@@ -211,9 +284,12 @@ impl ClaimStore {
     ///
     /// Missing claim is a no-op (not an error) to make release idempotent.
     pub async fn release(&self, id: &str, agent: &str, force: bool) -> Result<(), ClaimError> {
-        if id.is_empty() {
-            return Err(ClaimError::EmptyId);
-        }
+        validate_id(id)?;
+        // R2 audit HIGH #2 (rust-pro): the empty-agent guard must run BEFORE
+        // the filesystem read so that a bogus `release("X", "", false)` call
+        // on a missing claim doesn't silently succeed. Only `force = true`
+        // legitimately waives the agent requirement (orchestrator reaping
+        // a dead holder without knowing whose it is).
         if !force && agent.is_empty() {
             return Err(ClaimError::EmptyAgent);
         }
@@ -242,28 +318,86 @@ impl ClaimStore {
     /// ascending (earliest-expiring first). Expired claims are skipped
     /// (not returned, not removed — purging is a separate concern).
     pub async fn list_active(&self) -> Result<Vec<Claim>, ClaimError> {
+        Ok(self.list_active_with_stats().await?.0)
+    }
+
+    /// Map view of `list_active` — keyed by claim ID uppercased. O(1)
+    /// lookups when joining against a large artifact graph (Inc 4
+    /// dispatcher needs `claims.get(id)` per artifact; iterating a Vec
+    /// would be `O(artifacts × claims)`).
+    pub async fn list_active_map(&self) -> Result<BTreeMap<String, Claim>, ClaimError> {
+        let mut out = BTreeMap::new();
+        for c in self.list_active().await? {
+            out.insert(c.id.clone(), c);
+        }
+        Ok(out)
+    }
+
+    /// Like `list_active` but also returns the count of YAML files that
+    /// were skipped because they failed to parse or exceeded the size cap.
+    /// R2 audit MED (rust-pro + security): previous behaviour silently
+    /// dropped malformed files — an attacker could plant a truncated file
+    /// at `claims/<id>.yaml` to make an artifact appear unclaimed to the
+    /// dispatcher while still holding live-ish state. Callers can surface
+    /// the skip count so audit listings don't lie by omission.
+    pub async fn list_active_with_stats(&self) -> Result<(Vec<Claim>, usize), ClaimError> {
         if !self.dir.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         let mut rd = tokio::fs::read_dir(&self.dir).await?;
         while let Some(entry) = rd.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
                 continue;
             }
-            let raw = match tokio::fs::read_to_string(&path).await {
-                Ok(s) => s,
-                Err(_) => continue, // skip unreadable files rather than fail the whole list
-            };
-            if let Ok(claim) = serde_yaml::from_str::<Claim>(&raw)
-                && !claim.is_expired()
-            {
-                out.push(claim);
+            match read_bounded(&path).await {
+                Ok(Some(raw)) => match serde_yaml::from_str::<Claim>(&raw) {
+                    Ok(claim) if !claim.is_expired() => out.push(claim),
+                    Ok(_) => { /* expired — drop silently; expected */ }
+                    Err(e) => {
+                        skipped += 1;
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "claim file failed to parse — skipped from list_active"
+                        );
+                    }
+                },
+                Ok(None) => { /* disappeared mid-scan — ignore */ }
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "claim file read failed — skipped from list_active"
+                    );
+                }
             }
         }
         out.sort_by_key(|c| c.expires_at);
-        Ok(out)
+        Ok((out, skipped))
+    }
+}
+
+/// Read a file with the MAX_CLAIM_FILE_BYTES cap enforced. Returns
+/// `Ok(None)` for missing file; otherwise errors on size-violation or I/O
+/// failure. Centralized so every read path (`get`, `list_active`) applies
+/// the same protection.
+async fn read_bounded(path: &Path) -> Result<Option<String>, ClaimError> {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(ClaimError::Io(e)),
+    };
+    if meta.len() > MAX_CLAIM_FILE_BYTES {
+        return Err(ClaimError::FileTooLarge);
+    }
+    match tokio::fs::read_to_string(path).await {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ClaimError::Io(e)),
     }
 }
 
@@ -595,5 +729,155 @@ mod tests {
         let store = ClaimStore::new(ws(&tmp));
         // Directory never created — must not error.
         assert!(store.list_active().await.unwrap().is_empty());
+    }
+
+    // ── R2 audit hardening ────────────────────────────────────────────
+
+    #[test]
+    fn validate_id_rejects_path_traversal() {
+        // R2 audit HIGH #1 (security): before this guard, id="../../etc/passwd"
+        // would escape the claims dir via Path::join.
+        for bad in [
+            "..",
+            "../foo",
+            "../../etc/passwd",
+            "foo/bar",
+            "foo\\bar",
+            "foo\0bar",
+            ".hidden",
+            "",
+            "123-leading-digit",
+        ] {
+            assert!(validate_id(bad).is_err(), "expected rejection of {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_id_accepts_forgeplan_shapes() {
+        for good in ["PRD-001", "EPIC-042", "note-slug", "PROB-036", "mem-abc"] {
+            assert!(validate_id(good).is_ok(), "expected accept of {good:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_traversal_id_before_write() {
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let err = store
+            .claim("../../etc/passwd", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClaimError::InvalidId(_)));
+        // No file must have been written anywhere under workspace.
+        let tmp_abs = tmp.path().to_path_buf();
+        let root_entries: Vec<_> = std::fs::read_dir(&tmp_abs)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        // The claims subdir might not even exist yet, and definitely no
+        // "etc/passwd" artifact should appear at root.
+        for e in root_entries {
+            let name = e.file_name().to_string_lossy().to_string();
+            assert!(
+                !name.contains("passwd") && !name.contains("etc"),
+                "traversal attempt leaked: {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn release_rejects_traversal_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let err = store
+            .release("../sensitive-file", "a/1", false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClaimError::InvalidId(_)));
+    }
+
+    #[tokio::test]
+    async fn release_checks_empty_agent_before_filesystem() {
+        // R2 audit HIGH #2 (rust-pro): empty agent + missing claim must
+        // surface EmptyAgent, not a silent Ok.
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let err = store.release("PRD-099", "", false).await.unwrap_err();
+        assert!(matches!(err, ClaimError::EmptyAgent));
+    }
+
+    #[tokio::test]
+    async fn get_rejects_oversized_file() {
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        store.ensure_dir().await.unwrap();
+        let path = ws(&tmp).join("claims/PRD-999.yaml");
+        // 1 MB of YAML-parseable junk — far above MAX_CLAIM_FILE_BYTES (64 KB).
+        tokio::fs::write(&path, "# ".repeat(600_000)).await.unwrap();
+        let err = store.get("PRD-999").await.unwrap_err();
+        assert!(matches!(err, ClaimError::FileTooLarge));
+    }
+
+    #[tokio::test]
+    async fn list_active_with_stats_counts_malformed() {
+        // R2 audit MED (rust-pro + security): malformed files must not be
+        // invisible — surface a count so orchestrators see the omission.
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        store
+            .claim("PRD-200", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        tokio::fs::write(ws(&tmp).join("claims/PRD-201.yaml"), "{{{ not yaml")
+            .await
+            .unwrap();
+
+        let (active, skipped) = store.list_active_with_stats().await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn list_active_map_keys_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        store
+            .claim("PRD-300", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        store
+            .claim("PRD-301", "b/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        let map = store.list_active_map().await.unwrap();
+        assert!(map.contains_key("PRD-300"));
+        assert!(map.contains_key("PRD-301"));
+        assert_eq!(map["PRD-300"].agent_id, "a/1");
+    }
+
+    #[tokio::test]
+    async fn atomic_write_leaves_no_temp_files_on_success() {
+        // R2 audit MED: atomic rename pattern must not accumulate orphans.
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        for i in 0..5 {
+            store
+                .claim(&format!("PRD-40{i}"), "agent/1", DEFAULT_TTL, None)
+                .await
+                .unwrap();
+        }
+
+        let claims_dir = ws(&tmp).join("claims");
+        let mut rd = tokio::fs::read_dir(&claims_dir).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            assert!(
+                !s.starts_with('.') || s.ends_with(".yaml"),
+                "tempfile leaked: {s}"
+            );
+            assert!(!s.contains(".tmp."), "tempfile leaked: {s}");
+        }
     }
 }

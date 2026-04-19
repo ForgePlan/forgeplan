@@ -224,6 +224,11 @@ impl From<forgeplan_core::claim::Claim> for ClaimDto {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimsListResponse {
     pub count: usize,
+    /// R2 audit MED: number of claim files skipped because they failed to
+    /// parse or exceeded the size cap. Orchestrators should investigate
+    /// any non-zero value — silent dropping of these was an Inc 3 bug.
+    #[serde(default)]
+    pub skipped: usize,
     pub claims: Vec<ClaimDto>,
 }
 
