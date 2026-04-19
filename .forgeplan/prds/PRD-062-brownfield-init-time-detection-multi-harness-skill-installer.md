@@ -1,4 +1,5 @@
 ---
+created: 2026-04-19
 depth: standard
 id: PRD-062
 kind: prd
@@ -9,6 +10,7 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — init-time detection + multi-harness skill installer
+updated: 2026-04-19
 ---
 
 # PRD-062: Brownfield — init-time detection + multi-harness skill installer
@@ -30,6 +32,7 @@ title: Brownfield — init-time detection + multi-harness skill installer
 - NOT автоматическая установка без user consent (кроме CI flag `FORGEPLAN_AUTO_YES=true`)
 - NOT overwrite user-created skills без `--force` confirm
 - NOT добавляет NEW detection форматов за пределами документированных 7 harnesses + Obsidian/MADR/ADR-tools/log4brains/ad-hoc requirements/
+- NOT переопределяет discover logic (PRD-059): BrownfieldScanner — UI-wizard layer, вызывает PRD-059 `discover` как library function. MigrationPlan создаётся PRD-059, не PRD-062.
 
 ## Target Users
 
@@ -41,12 +44,13 @@ title: Brownfield — init-time detection + multi-harness skill installer
 ## Success Criteria / Acceptance
 
 - **AC-1**: `forgeplan init --from-brownfield` на проекте с `requirements/` + `.obsidian/` детектит 44 файлов, создаёт `migration-plan.json`, запускает `discover` автоматически.
+- **AC-1b**: Detection scan ≤ 2s на repo с 10k файлами (perf budget).
 - **AC-2**: На testbed с маркерами `.claude/` + `.cursor/` + `.windsurf/` `forgeplan skill install brownfield-pack` создаёт корректные файлы в 3/3 локациях (dry-run показывает preview).
 - **AC-3**: `forgeplan skill doctor` возвращает green при консистентных skills, с diagnosis если есть stale/missing.
 - **AC-4**: `forgeplan skill uninstall brownfield-pack` удаляет только created installer'ом файлы, user-modified файлы сохраняются (hash check).
 - **AC-5**: Idempotent install: повторный install = skip или update based on version.
 - **AC-6**: Backward compat: `forgeplan init -y` без `--from-brownfield` работает как раньше.
-- **AC-7**: Новый crate `forgeplan-skill-installer` изолирован — forgeplan-core не depends на nego в runtime path (только для CLI commands).
+- **AC-7**: Новый crate `forgeplan-skill-installer` изолирован — forgeplan-core не depends на него в runtime path (только для CLI commands).
 
 ## Functional Requirements
 
@@ -93,6 +97,7 @@ title: Brownfield — init-time detection + multi-harness skill installer
 | PRD-061 | PRD | consumes (installs brownfield-pack skill) |
 | PRD-059 | PRD | informs (init --from-brownfield runs discover) |
 | RFC-003 | RFC | informs (crate встраивается через trait pattern) |
+
 
 
 

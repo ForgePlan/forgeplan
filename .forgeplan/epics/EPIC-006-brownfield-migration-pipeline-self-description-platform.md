@@ -6,8 +6,6 @@ kind: epic
 links:
 - target: ADR-008
   relation: based_on
-- target: PROB-022
-  relation: supersedes
 status: active
 title: Brownfield Migration Pipeline + Self-description Platform
 updated: 2026-04-19
@@ -33,10 +31,10 @@ Telegram bug report 2026-04-19 с 33-ADR Obsidian vault'ом — reference scena
 ## Goals
 
 1. **Brownfield onboarding < 5 минут**: `forgeplan init --from-brownfield` на реальном Obsidian vault → все документы в forge, без data loss, с правильными kinds, статусами, links.
-2. **Cross-harness skill distribution**: `forgeplan skill install brownfield-pack` → skill доступен в detected harnesses (Claude Code / Cursor / Windsurf / Cline / Roo / Copilot / agentskills.io).
-3. **Self-describing output**: каждая forgeplan-команда и MCP-tool эмитит next-step hint + required skill reference. Агент знает что делать, не читая CLAUDE.md.
-4. **Context injection**: project conventions автоматически видны агенту через MCP tool descriptions — reliability over "hope agent remembers".
-5. **Full semantic coverage**: KB, runbook, postmortem, retrospective, meeting — как первоклассные kinds с graph/vector leverage. State machine с `completed`/`archived` для brownfield-legacy.
+2. **Cross-harness skill distribution**: `forgeplan skill install brownfield-pack` → ≤3s per harness, idempotent на 5 reruns (no drift), doctor confirms 100% detected в 7 harness-matrix.
+3. **Self-describing output**: каждая forgeplan-команда и MCP-tool эмитит next-step hint + required skill reference. Hint rendering overhead ≤5ms. ≥80% tool-calls в MCP matrix имеют valid next-step hint.
+4. **Context injection**: project conventions автоматически видны агенту через MCP tool descriptions. Total injected size ≤4KB per tool description (hard cap). Reliability measured: ≥2x reduction в rule-violation rate vs baseline.
+5. **Full semantic coverage**: 5 new kinds validated, 4 new link types registered. Graph traversal queries (e.g., `caused_by`) ≤100ms на workspace 500+ artifacts. Semantic search top-3 relevance ≥0.7 для KB query fixtures.
 6. **Bidirectional links**: supersede/deprecate atomically меняют обе стороны.
 
 ## Non-Goals
@@ -72,13 +70,13 @@ Telegram bug report 2026-04-19 с 33-ADR Obsidian vault'ом — reference scena
 ### Phase 0 — Shape (текущий)
 Создать ADR-008, EPIC-006, 6 PRDs (A-F), все validate PASS, ADI для ADR, activate.
 
-### Phase 1 — Core commands (PRD-A + PRD-B)
+### Phase 1 — Core commands (PRD-059 + PRD-060)
 `forgeplan discover` + `migrate --plan --dry-run --apply --resolve-links`. Self-describing output convention. `agent-manifest` command. Context injection через `.forgeplan/config.yaml` → MCP tool descriptions.
 
-### Phase 2 — Cross-harness distribution (PRD-C + PRD-D)
+### Phase 2 — Cross-harness distribution (PRD-061 + PRD-062)
 New crate `forgeplan-skill-installer` с 7 adapters. Canonical SKILL.md в `marketplace/brownfield-pack/`. Commands `forgeplan skill {list|doctor|install|uninstall|update}`. `forgeplan init --from-brownfield` detection wizard.
 
-### Phase 3 — Semantic coverage (PRD-E + PRD-F)
+### Phase 3 — Semantic coverage (PRD-063 + PRD-064)
 State machine extension: `completed`/`archived` terminal states. Bidirectional `supersede`/`deprecate`. New kinds: `kb`/`runbook`/`postmortem`/`retrospective`/`meeting`. New link types: `references`/`responds_to`/`caused_by`/`discusses`.
 
 ### Phase 4 — Validation + rollout
@@ -88,12 +86,12 @@ E2E test 44-файлового Obsidian vault. Cross-harness CI matrix. `scan-im
 
 | Artifact | Kind | Scope |
 |----------|------|-------|
-| PRD-A | PRD | `forgeplan discover` + `migrate --plan --dry-run --apply --resolve-links` — core commands |
-| PRD-B | PRD | Self-description: stderr hints, `agent-manifest` command, `project.context` injection через MCP |
-| PRD-C | PRD | Marketplace `brownfield-pack`: canonical SKILL.md, forge-classify skill, forge-dialogue skill, forge-migrator agent |
-| PRD-D | PRD | `forgeplan init --from-brownfield` + new crate `forgeplan-skill-installer` с 7 harness adapters |
-| PRD-E | PRD | State machine: `completed`/`archived` states, bidirectional `supersede`/`deprecate`, `forgeplan complete`/`archive` commands |
-| PRD-F | PRD | New kinds: `kb`/`runbook`/`postmortem`/`retrospective`/`meeting`. New links: `references`/`responds_to`/`caused_by`/`discusses` |
+| PRD-059 | PRD | `forgeplan discover` + `migrate --plan --dry-run --apply --resolve-links` — core commands |
+| PRD-060 | PRD | Self-description: stderr hints, `agent-manifest` command, `project.context` injection через MCP |
+| PRD-061 | PRD | Marketplace `brownfield-pack`: canonical SKILL.md, forge-classify skill, forge-dialogue skill, forge-migrator agent |
+| PRD-062 | PRD | `forgeplan init --from-brownfield` + new crate `forgeplan-skill-installer` с 7 harness adapters |
+| PRD-063 | PRD | State machine: `completed`/`archived` states, bidirectional `supersede`/`deprecate`, `forgeplan complete`/`archive` commands |
+| PRD-064 | PRD | New kinds: `kb`/`runbook`/`postmortem`/`retrospective`/`meeting`. New links: `references`/`responds_to`/`caused_by`/`discusses` |
 
 IDs будут присвоены при создании (auto-increment).
 
@@ -103,14 +101,15 @@ IDs будут присвоены при создании (auto-increment).
 - ADR-003 (active): Markdown = source of truth — MUST hold во всех child PRD
 - ADR-008 (active): self-describing tools decision — драйвит B/C/D
 - RFC-003 (active): Layered Architecture (traits) — `forgeplan-skill-installer` crate встраивается через trait pattern
+- EVID-079 (draft, CL2): sources research validation (ccpm/OpenSpec/adr-tools/BMAD) informs Unified Approach decision
 
 ## Progress
 
 ```
 Phase 0 (Shape)     ░░░░░░░░░░░░░░░░░░░░░░░░  0/7  (  0%)
-Phase 1 (PRD-A/B)   ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
-Phase 2 (PRD-C/D)   ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
-Phase 3 (PRD-E/F)   ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
+Phase 1 (PRD-059/B)   ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
+Phase 2 (PRD-061/D)   ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
+Phase 3 (PRD-063/F)   ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
 Phase 4 (Validate)  ░░░░░░░░░░░░░░░░░░░░░░░░  0/?  (  0%)
 ─────────────────────────────────────────────────────
 TOTAL                                          0/?  (  0%)
@@ -119,7 +118,7 @@ TOTAL                                          0/?  (  0%)
 ## Risks
 
 - **Scope creep**: Epic охватывает 6 PRDs, реально может разрастись. Mitigation: strict per-PRD scope boundaries, no cross-PRD feature leakage.
-- **agentskills.io standard instability**: adapter rewrite risk. Mitigation: изолировать в одном crate (PRD-D).
+- **agentskills.io standard instability**: adapter rewrite risk. Mitigation: изолировать в одном crate (PRD-062).
 - **Backward compat breakage**: опасность для существующих пользователей. Mitigation: все новые behaviors opt-in (flag или detection + confirm).
 - **Rollout sequencing**: неправильный порядок PRD может блокировать cascade. Mitigation: явный order (см. Implementation Plan в ADR-008).
 
@@ -131,6 +130,8 @@ TOTAL                                          0/?  (  0%)
 | PRD-058 | PRD | based_on (closed scan-import core bugs) |
 | ADR-003 | ADR | informs (markdown = source of truth invariant) |
 | RFC-003 | RFC | informs (layered architecture — new crate через trait pattern) |
+
+
 
 
 

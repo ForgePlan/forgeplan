@@ -35,7 +35,7 @@ Forge lifecycle сейчас: `draft → active → {superseded|deprecated|stale
 
 ## Target Users
 
-- **Brownfield adopter** — impotrted done-work → sets `completed` не `active`
+- **Brownfield adopter** — imported done-work → sets `completed` не `active`
 - **Existing user** — ongoing work stays `active`, completed work gets proper state
 - **Auditor** — clearly distinguishes «done but live» (completed) от «done and historical» (archived)
 

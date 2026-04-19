@@ -7,6 +7,18 @@ links:
   relation: supports
 - target: EPIC-006
   relation: supports
+- target: PRD-059
+  relation: supports
+- target: PRD-060
+  relation: supports
+- target: PRD-061
+  relation: supports
+- target: PRD-062
+  relation: supports
+- target: PRD-063
+  relation: supports
+- target: PRD-064
+  relation: supports
 status: draft
 title: Brownfield pipeline — sources research (ccpm OpenSpec adr-tools BMAD) supports unified approach
 ---
@@ -24,7 +36,7 @@ evidence_type: research
 Исследование 4 adjacent проектов в `sources/` на предмет паттернов brownfield миграции, agent-skills distribution, self-describing tool design — чтобы зафиксировать ADR-008 решение на проверенных паттернах, а не изобретать с нуля.
 
 **Method**:
-1. `sources/ccpm/skill/ccpm/SKILL.md` — прочитан полностью, zazmечены паттерны frontmatter (`name`+`description`), 5-phase workflow, script-first rule, references/conventions.md — централизованные конвенции.
+1. `sources/ccpm/skill/ccpm/SKILL.md` — прочитан полностью, замечены паттерны frontmatter (`name`+`description`), 5-phase workflow, script-first rule, references/conventions.md — централизованные конвенции.
 2. `sources/OpenSpec/README.md`, `docs/migration-guide.md`, `docs/opsx.md`, `openspec/config.yaml` — прочитаны. Зафиксированы: прямая цитата «built for brownfield not just greenfield», auto-install skills в `.claude/skills/` (и эквиваленты), context injection через `config.yaml`, init-time detection legacy files с per-file cleanup proposal, action-based (не phased) workflow, schema.yaml + templates hackability.
 3. `sources/adr-tools/src/adr-new`, `README.md` — прочитаны. Зафиксированы: `-s SUPERSEDED` bidirectional update (меняет status обеих сторон), `-l TARGET:LINK:REVERSE-LINK` typed bidirectional links, self-bootstrap (первая ADR создаётся automagically).
 4. `sources/BMAD-METHOD/AGENTS.md`, `tools/skill-validator.md` — прочитаны. Зафиксированы: 14 deterministic skill validation rules (SKILL-01..07, WF-01/02, PATH-02, STEP-01/06/07, SEQ-02), name format constraint `^bmad-[a-z0-9]+(-[a-z0-9]+)*$`, description must include «Use when» clause (SKILL-06).
@@ -40,7 +52,7 @@ evidence_type: research
 | Context injection через config (inject в каждый request) | — | ✅ | — | — | Adopt (PRD-060) |
 | Init-time detection legacy + cleanup wizard | — | ✅ | — | — | Adopt (PRD-062) |
 | Script-first rule (deterministic → bash, reasoning → LLM) | ✅ | — | — | — | Adopt (core CLI vs skill LLM) |
-| Self-bootstrap (init creates first artifact) | — | — | ✅ | — | Consider (out of PRD-F scope, future) |
+| Self-bootstrap (init creates first artifact) | — | — | ✅ | — | Consider (out of PRD-064 scope, future) |
 | Bidirectional supersede (atomically update both sides) | — | — | ✅ | — | Adopt (PRD-063) |
 | Skill validator with deterministic rules | — | — | — | ✅ | Adopt (for brownfield-pack skills PRD-061 validation) |
 | Action-based workflow (не phased) | — | ✅ | — | — | Reject (сохраняем shape→code phases — unique forge value) |
@@ -78,6 +90,13 @@ Penalty CL2 = 0.1, acceptable for Shape-phase decision-support evidence.
 |----------|------|----------|
 | ADR-008 | ADR | supports |
 | EPIC-006 | Epic | supports |
+
+
+
+
+
+
+
 
 
 

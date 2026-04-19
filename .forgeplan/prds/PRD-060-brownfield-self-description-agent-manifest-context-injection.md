@@ -1,4 +1,5 @@
 ---
+created: 2026-04-19
 depth: standard
 id: PRD-060
 kind: prd
@@ -9,6 +10,7 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — self-description + agent-manifest + context injection
+updated: 2026-04-19
 ---
 
 # PRD-060: Brownfield — self-description + agent-manifest + context injection
@@ -51,7 +53,7 @@ Forgeplan CLI и MCP-tools не говорят агенту что делать 
 - **FR-1** Hint convention module в forgeplan-core: `Hint { next, required_skill, install, docs_ref }` — struct + serializer.
 - **FR-2** Per-command hint registry — каждая CLI-команда привязана к Hint через declarative mapping.
 - **FR-3** stderr hint renderer — respects `FORGEPLAN_HINTS`, `isatty`, локализация (EN/RU optional).
-- **FR-4** MCP tool response enrichment — добавляет `_hints` поле в каждый response. Не ломает существующие schemas.
+- **FR-4** MCP tool response enrichment — добавляет `x-forgeplan-hints` поле в каждый response. Не ломает существующие schemas.
 - **FR-5** `forgeplan agent-manifest` command — читает config + registry, возвращает JSON.
 - **FR-6** agent-manifest schema (`docs/schemas/agent-manifest.schema.json`) — formal JSON schema с versioning.
 - **FR-7** Config поля: `project.context: string (max 8 KB)`, `project.rules_per_kind: map<kind, string[]>`. Optional.
@@ -66,7 +68,7 @@ Forgeplan CLI и MCP-tools не говорят агенту что делать 
 - [ ] **1.3** Подключение к 5 key commands (new, validate, activate, migrate, discover)
 
 ### Phase 2: MCP enrichment
-- [ ] **2.1** Tool response `_hints` поле
+- [ ] **2.1** Tool response `x-forgeplan-hints` поле
 - [ ] **2.2** Context injection в tool descriptions at MCP server start
 - [ ] **2.3** Config schema для `project.context` + `project.rules_per_kind`
 
@@ -87,6 +89,7 @@ Forgeplan CLI и MCP-tools не говорят агенту что делать 
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
 | PRD-059 | PRD | informs (hints эмитятся из discover/migrate commands) |
+
 
 
 

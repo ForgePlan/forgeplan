@@ -1,4 +1,5 @@
 ---
+created: 2026-04-19
 depth: standard
 id: PRD-064
 kind: prd
@@ -9,6 +10,7 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — new kinds kb runbook postmortem retrospective meeting + new links
+updated: 2026-04-19
 ---
 
 # PRD-064: Brownfield — new kinds kb runbook postmortem retrospective meeting + new links
@@ -53,11 +55,11 @@ Forge имеет 10 типов артефактов, но brownfield-vaults со
 - **FR-2** Templates per kind: `templates/{kb,runbook,postmortem,retrospective,meeting}/template.md` + `README.md`.
 - **FR-3** Per-kind validation rules: MUST sections + recommended depth.
 - **FR-4** 4 новых link types в enum `LinkRelation::{References, RespondsTo, CausedBy, Discusses}`.
-- **FR-5** Link type semantics: references — bi-dir (both sides get link record), responds_to — runbook → problem (directional), caused_by — postmortem → problem (directional), discusses — meeting → any (directional).
+- **FR-5** Link type semantics: все link types в storage — directional (consistent с existing LinkType enum). Для `references` semantic — mirroring convention: при создании A→B автоматически emit B→A в lifecycle write-path. responds_to/caused_by/discusses остаются directional без mirroring.
 - **FR-6** CLI: `forgeplan new kb|runbook|postmortem|retrospective|meeting <title>` работает как для существующих.
 - **FR-7** Vector search + graph extensions: LanceDB embeddings per new kind, petgraph traversal covers new links.
 - **FR-8** Brownfield integration: PRD-059 migration может map Obsidian `type: kb` или heuristic «KB-like» content → `kind: kb`.
-- **FR-9** Meeting auto-expire 180d default (configurable), KB/runbook/postmortem/retrospective — persistent по-умолчанию.
+- **FR-9** Per-kind expiry configurable в `.forgeplan/config.yaml` (`expiry_per_kind: {meeting: 180d, note: 90d, …}`). Defaults: meeting=180d, note=90d, kb/runbook/postmortem/retrospective=persistent. Unified с существующим note TTL semantics (informs ADR-005 lifecycle).
 
 ## Implementation Plan
 
@@ -88,6 +90,7 @@ Forge имеет 10 типов артефактов, но brownfield-vaults со
 | EPIC-006 | Epic | refines |
 | PRD-059 | PRD | informs (migration maps new kinds) |
 | PRD-063 | PRD | informs (state machine applies to new kinds) |
+
 
 
 
