@@ -6,6 +6,8 @@ kind: epic
 links:
 - target: ADR-008
   relation: based_on
+- target: PROB-022
+  relation: supersedes
 status: active
 title: Brownfield Migration Pipeline + Self-description Platform
 updated: 2026-04-19
@@ -129,6 +131,7 @@ TOTAL                                          0/?  (  0%)
 | PRD-058 | PRD | based_on (closed scan-import core bugs) |
 | ADR-003 | ADR | informs (markdown = source of truth invariant) |
 | RFC-003 | RFC | informs (layered architecture — new crate через trait pattern) |
+
 
 
 

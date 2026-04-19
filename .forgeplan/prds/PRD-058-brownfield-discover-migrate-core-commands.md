@@ -8,6 +8,12 @@ links:
   relation: refines
 - target: ADR-008
   relation: based_on
+- target: PROB-028
+  relation: informs
+- target: PROB-027
+  relation: informs
+- target: PROB-022
+  relation: supersedes
 status: draft
 title: Brownfield — discover + migrate core commands
 updated: 2026-04-19
@@ -88,6 +94,9 @@ updated: 2026-04-19
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
 | ADR-003 | ADR | informs (markdown = source of truth) |
+
+
+
 
 
 
