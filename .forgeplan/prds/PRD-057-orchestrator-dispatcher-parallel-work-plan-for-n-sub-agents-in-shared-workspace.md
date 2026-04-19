@@ -29,10 +29,21 @@ stepsCompleted: []
 ## Progress
 
 ```
-Phase 0  ░░░░░░░░░░░░░░░░░░░░░░░░  0/14  (  0%)
-─────────────────────────────────────────────────
-TOTAL                               0/14  (  0%)
+Inc 1 (lock)          ████████████████████████  3/3   (100%)  ✅ v0.23.1 merged
+Inc 2 (identity)      ████████████████████████  3/3   (100%)  ✅ FR-009 + AC-5
+Inc 3 (claims)        ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)
+Inc 4 (dispatch)      ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)
+─────────────────────────────────────────────────────────
+TOTAL                                            6/14  ( 43%)
 ```
+
+**Inc 2 delivered (2026-04-19)**:
+- `AgentIdentity` struct in `forgeplan-core::artifact::identity`
+- Unknown-frontmatter preservation via `KNOWN_FM_KEYS` + `filter_preserved` in `projection`
+- `projection::stamp_agent_identity` helper
+- `ForgeplanServer::stamp_identity_best_effort` wired into `forgeplan_new` + `forgeplan_update`
+- `call_tool` wrapper captures `peer.peer_info()` → cached in server + logged to activity JSONL
+- 13 new tests (6 identity + 4 projection preservation + 4 MCP stamp wiring), 1314 total
 
 ---
 

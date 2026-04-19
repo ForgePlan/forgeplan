@@ -1,8 +1,27 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::artifact::frontmatter;
+use crate::artifact::frontmatter::{self, Frontmatter};
 use crate::artifact::types::{ArtifactKind, slugify};
+
+/// Frontmatter keys that `render_markdown_with_tags` writes from LanceDB
+/// record data. Any key **not** in this set is preserved from the file on
+/// disk across renders — this is how agent-owned fields such as
+/// `last_modified_by` / `last_modified_at` (PRD-057 FR-009) and future
+/// `domain` / `affected_files` survive re-renders triggered by unrelated
+/// tool calls (e.g. `forgeplan_link`).
+const KNOWN_FM_KEYS: &[&str] = &[
+    "id",
+    "title",
+    "kind",
+    "status",
+    "depth",
+    "author",
+    "parent_epic",
+    "valid_until",
+    "tags",
+    "links",
+];
 
 /// Render an artifact record as a markdown file in the workspace.
 /// Returns the path where the file was written.
@@ -61,20 +80,27 @@ pub async fn render_projection_record(
     let filename = format!("{}-{}.md", record.id, slug);
     let filepath = dir.join(&filename);
 
-    // Files-first: preserve existing body if file already has one.
-    let effective_body = if filepath.exists() {
+    // Files-first: preserve existing body + agent-owned fm keys (PRD-057 FR-009).
+    let (effective_body, preserved_fm) = if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
-                Ok((_fm, file_body)) if !file_body.trim().is_empty() => file_body.to_string(),
-                _ => record.body.clone(),
+                Ok((fm, file_body)) => {
+                    let preserved = filter_preserved(&fm);
+                    if !file_body.trim().is_empty() {
+                        (file_body.to_string(), preserved)
+                    } else {
+                        (record.body.clone(), preserved)
+                    }
+                }
+                Err(_) => (record.body.clone(), None),
             },
-            Err(_) => record.body.clone(),
+            Err(_) => (record.body.clone(), None),
         }
     } else {
-        record.body.clone()
+        (record.body.clone(), None)
     };
 
-    let content = render_markdown_with_tags(
+    let content = render_markdown_with_extras(
         &record.id,
         &record.kind,
         &record.title,
@@ -86,6 +112,7 @@ pub async fn render_projection_record(
         &effective_body,
         links,
         &record.tags,
+        preserved_fm.as_ref(),
     )?;
     tokio::fs::write(&filepath, &content).await?;
     Ok(filepath)
@@ -151,28 +178,32 @@ async fn render_projection_inner(
     // Files-first (RFC-004): preserve file body if file exists and has content.
     // Only frontmatter is updated from LanceDB. Body comes from the file on disk.
     // Exception: force_body=true (from `update --body`) uses the passed body.
-    let effective_body = if force_body {
-        body.to_string()
+    //
+    // PRD-057 FR-009: also preserve unknown frontmatter keys (anything not in
+    // KNOWN_FM_KEYS) so agent-owned fields such as `last_modified_by` /
+    // `last_modified_at` survive re-renders.
+    let (effective_body, preserved_fm) = if force_body {
+        (body.to_string(), read_preserved_fm(&filepath).await)
     } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
-            Ok(file_content) => {
-                if let Ok((_fm, file_body)) = frontmatter::parse_frontmatter(&file_content) {
+            Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
+                Ok((fm, file_body)) => {
+                    let preserved = filter_preserved(&fm);
                     if !file_body.trim().is_empty() {
-                        file_body.to_string()
+                        (file_body.to_string(), preserved)
                     } else {
-                        body.to_string()
+                        (body.to_string(), preserved)
                     }
-                } else {
-                    body.to_string()
                 }
-            }
-            Err(_) => body.to_string(),
+                Err(_) => (body.to_string(), None),
+            },
+            Err(_) => (body.to_string(), None),
         }
     } else {
-        body.to_string()
+        (body.to_string(), None)
     };
 
-    let content = render_markdown(
+    let content = render_markdown_with_extras(
         id,
         kind,
         title,
@@ -183,10 +214,37 @@ async fn render_projection_inner(
         valid_until,
         &effective_body,
         links,
+        &[],
+        preserved_fm.as_ref(),
     )?;
     tokio::fs::write(&filepath, &content).await?;
 
     Ok(filepath)
+}
+
+/// Read the file at `path`, parse its frontmatter, and return the subset of
+/// keys that aren't regenerated from LanceDB (see `KNOWN_FM_KEYS`).
+/// Returns `None` if the file is missing or malformed — callers should treat
+/// that as "nothing to preserve".
+async fn read_preserved_fm(path: &Path) -> Option<Frontmatter> {
+    if !path.exists() {
+        return None;
+    }
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    let (fm, _body) = frontmatter::parse_frontmatter(&content).ok()?;
+    filter_preserved(&fm)
+}
+
+/// Retain only keys outside `KNOWN_FM_KEYS`. Returns `None` when nothing is
+/// left so call sites can cheaply check `Option` instead of empty-map sentinels.
+fn filter_preserved(fm: &Frontmatter) -> Option<Frontmatter> {
+    let mut out = BTreeMap::new();
+    for (k, v) in fm {
+        if !KNOWN_FM_KEYS.contains(&k.as_str()) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Sync file body to LanceDB store if file was edited by user.
@@ -242,36 +300,14 @@ pub async fn read_file_body_if_newer(
 }
 
 /// Render markdown content with YAML frontmatter + body.
+///
+/// Regenerates the known frontmatter keys from args and merges
+/// `preserved_fm` entries on top. `preserved_fm` MUST contain only keys
+/// outside `KNOWN_FM_KEYS` (caller uses `filter_preserved`). This is how
+/// `last_modified_by` / `last_modified_at` (PRD-057 FR-009) survive
+/// re-renders triggered by unrelated tool calls.
 #[allow(clippy::too_many_arguments)]
-fn render_markdown(
-    id: &str,
-    kind: &str,
-    title: &str,
-    status: &str,
-    depth: &str,
-    author: Option<&str>,
-    parent_epic: Option<&str>,
-    valid_until: Option<&str>,
-    body: &str,
-    links: &[(String, String)],
-) -> anyhow::Result<String> {
-    render_markdown_with_tags(
-        id,
-        kind,
-        title,
-        status,
-        depth,
-        author,
-        parent_epic,
-        valid_until,
-        body,
-        links,
-        &[],
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_markdown_with_tags(
+fn render_markdown_with_extras(
     id: &str,
     kind: &str,
     title: &str,
@@ -283,6 +319,7 @@ fn render_markdown_with_tags(
     body: &str,
     links: &[(String, String)],
     tags: &[String],
+    preserved_fm: Option<&Frontmatter>,
 ) -> anyhow::Result<String> {
     let mut fm = BTreeMap::new();
     fm.insert("id".to_string(), serde_yaml::Value::String(id.to_string()));
@@ -349,8 +386,62 @@ fn render_markdown_with_tags(
         fm.insert("links".to_string(), serde_yaml::Value::Sequence(links_seq));
     }
 
+    // Merge preserved (agent-owned / user-custom) fields last — guaranteed
+    // to be outside KNOWN_FM_KEYS by construction (filter_preserved), so
+    // they cannot override id/status/links/etc.
+    if let Some(extras) = preserved_fm {
+        for (k, v) in extras {
+            // Double-guard: if caller violates the contract and passes a
+            // known key, drop it rather than corrupt the regenerated field.
+            if !KNOWN_FM_KEYS.contains(&k.as_str()) {
+                fm.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
     let yaml = serde_yaml::to_string(&fm)?;
     Ok(format!("---\n{}---\n\n{}\n", yaml, body))
+}
+
+/// Stamp `last_modified_by` / `last_modified_at` onto an already-rendered
+/// projection file (PRD-057 FR-009 + AC-5). Reads the markdown, merges the
+/// two keys into the YAML frontmatter, and writes back.
+///
+/// Designed to run **after** `render_projection*` so the merge survives the
+/// regenerate-from-LanceDB step. Since `KNOWN_FM_KEYS` excludes these keys,
+/// subsequent renders preserve them via `filter_preserved`.
+///
+/// Failures are returned as errors — callers may choose to treat them as
+/// best-effort (log + continue) so that identity tracking never blocks a
+/// legitimate artifact write.
+pub async fn stamp_agent_identity(
+    workspace: &Path,
+    id: &str,
+    kind: &str,
+    title: &str,
+    identity: &crate::artifact::identity::AgentIdentity,
+) -> anyhow::Result<()> {
+    let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
+    let dir = workspace.join(artifact_kind.dir_name());
+    let slug = slugify(title);
+    let filename = format!("{}-{}.md", id, slug);
+    let filepath = dir.join(&filename);
+
+    let content = tokio::fs::read_to_string(&filepath).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+
+    fm.insert(
+        "last_modified_by".to_string(),
+        serde_yaml::Value::String(identity.as_frontmatter_value()),
+    );
+    fm.insert(
+        "last_modified_at".to_string(),
+        serde_yaml::Value::String(crate::artifact::identity::now_rfc3339()),
+    );
+
+    let new_content = frontmatter::render_frontmatter(&fm, &body)?;
+    tokio::fs::write(&filepath, new_content).await?;
+    Ok(())
 }
 
 /// Remove a projection file for a deleted artifact.
@@ -377,7 +468,7 @@ mod tests {
 
     #[test]
     fn render_markdown_basic() {
-        let content = render_markdown(
+        let content = render_markdown_with_extras(
             "PRD-001",
             "prd",
             "Auth System",
@@ -388,6 +479,8 @@ mod tests {
             None,
             "## Summary\n\nThis is the body.",
             &[],
+            &[],
+            None,
         )
         .unwrap();
         assert!(content.starts_with("---\n"));
@@ -402,8 +495,19 @@ mod tests {
             ("RFC-001".to_string(), "informs".to_string()),
             ("ADR-001".to_string(), "based_on".to_string()),
         ];
-        let content = render_markdown(
-            "PRD-001", "prd", "Auth", "draft", "standard", None, None, None, "Body.", &links,
+        let content = render_markdown_with_extras(
+            "PRD-001",
+            "prd",
+            "Auth",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "Body.",
+            &links,
+            &[],
+            None,
         )
         .unwrap();
         assert!(content.contains("links:"));
@@ -413,7 +517,7 @@ mod tests {
 
     #[test]
     fn render_markdown_optional_fields_omitted() {
-        let content = render_markdown(
+        let content = render_markdown_with_extras(
             "NOTE-001",
             "note",
             "Quick Note",
@@ -424,6 +528,8 @@ mod tests {
             None,
             "Content.",
             &[],
+            &[],
+            None,
         )
         .unwrap();
         assert!(!content.contains("author:"));
@@ -766,5 +872,202 @@ mod tests {
             !result.contains("{placeholder}"),
             "old file body must not survive"
         );
+    }
+
+    // ── PRD-057 Inc 2: agent identity + unknown-fm preservation ─────────
+
+    #[test]
+    fn filter_preserved_drops_known_keys() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "id: PRD-001\ntitle: Test\nkind: prd\nstatus: draft\ndepth: standard\nauthor: alice",
+        )
+        .unwrap();
+        assert!(filter_preserved(&fm).is_none(), "all keys are known");
+    }
+
+    #[test]
+    fn filter_preserved_keeps_unknown_keys() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "id: PRD-001\ntitle: Test\nkind: prd\nstatus: draft\ndepth: standard\nlast_modified_by: orchestrator/1.0\ndomain: backend",
+        )
+        .unwrap();
+        let preserved = filter_preserved(&fm).expect("should preserve custom keys");
+        assert_eq!(preserved.len(), 2);
+        assert!(preserved.contains_key("last_modified_by"));
+        assert!(preserved.contains_key("domain"));
+        assert!(!preserved.contains_key("id"));
+    }
+
+    #[test]
+    fn render_extras_merges_preserved_fm() {
+        let mut extras = Frontmatter::new();
+        extras.insert(
+            "last_modified_by".to_string(),
+            serde_yaml::Value::String("orchestrator/1.0".to_string()),
+        );
+        extras.insert(
+            "domain".to_string(),
+            serde_yaml::Value::String("backend".to_string()),
+        );
+        let content = render_markdown_with_extras(
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "Body.",
+            &[],
+            &[],
+            Some(&extras),
+        )
+        .unwrap();
+        assert!(content.contains("last_modified_by: orchestrator/1.0"));
+        assert!(content.contains("domain: backend"));
+    }
+
+    #[test]
+    fn render_extras_ignores_known_keys_in_preserved() {
+        // Contract violation: caller passes a known key in preserved_fm.
+        // The render MUST use the arg-derived value, not the extras one.
+        let mut bad_extras = Frontmatter::new();
+        bad_extras.insert(
+            "status".to_string(),
+            serde_yaml::Value::String("active".to_string()),
+        );
+        bad_extras.insert(
+            "id".to_string(),
+            serde_yaml::Value::String("PRD-999".to_string()),
+        );
+        let content = render_markdown_with_extras(
+            "PRD-001",
+            "prd",
+            "Test",
+            "draft", // <- truth for status
+            "standard",
+            None,
+            None,
+            None,
+            "Body.",
+            &[],
+            &[],
+            Some(&bad_extras),
+        )
+        .unwrap();
+        assert!(content.contains("id: PRD-001"));
+        assert!(!content.contains("id: PRD-999"));
+        assert!(content.contains("status: draft"));
+        assert!(!content.contains("status: active"));
+    }
+
+    #[tokio::test]
+    async fn render_projection_preserves_unknown_fm_across_rerender() {
+        // Simulates: agent A stamps last_modified_by, then agent B calls
+        // a tool that triggers render_projection for an unrelated reason
+        // (e.g. forgeplan_link). The stamp must survive.
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        // Step 1: render initial projection
+        let path = render_projection(
+            &ws,
+            "PRD-010",
+            "prd",
+            "Multi Agent",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "## Summary\n\nBody.",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // Step 2: stamp it with agent identity
+        let identity =
+            crate::artifact::identity::AgentIdentity::new("orchestrator", "1.0").unwrap();
+        stamp_agent_identity(&ws, "PRD-010", "prd", "Multi Agent", &identity)
+            .await
+            .unwrap();
+
+        let stamped = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(stamped.contains("last_modified_by: orchestrator/1.0"));
+        assert!(stamped.contains("last_modified_at:"));
+
+        // Step 3: call render_projection again (simulating unrelated tool)
+        let path2 = render_projection(
+            &ws,
+            "PRD-010",
+            "prd",
+            "Multi Agent",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "## Summary\n\nBody.",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let after = tokio::fs::read_to_string(&path2).await.unwrap();
+        assert!(
+            after.contains("last_modified_by: orchestrator/1.0"),
+            "identity stamp must survive re-render"
+        );
+        assert!(after.contains("last_modified_at:"));
+    }
+
+    #[tokio::test]
+    async fn stamp_overwrites_previous_identity() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        render_projection(
+            &ws,
+            "PRD-011",
+            "prd",
+            "Overwrite",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "body",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let id1 = crate::artifact::identity::AgentIdentity::new("agent-a", "1.0").unwrap();
+        stamp_agent_identity(&ws, "PRD-011", "prd", "Overwrite", &id1)
+            .await
+            .unwrap();
+
+        let id2 = crate::artifact::identity::AgentIdentity::new("agent-b", "2.0").unwrap();
+        stamp_agent_identity(&ws, "PRD-011", "prd", "Overwrite", &id2)
+            .await
+            .unwrap();
+
+        let path = ws.join("prds").join("PRD-011-overwrite.md");
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("last_modified_by: agent-b/2.0"));
+        assert!(!content.contains("agent-a/1.0"));
+    }
+
+    #[tokio::test]
+    async fn stamp_fails_cleanly_on_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+
+        let id = crate::artifact::identity::AgentIdentity::unknown();
+        let result = stamp_agent_identity(&ws, "PRD-404", "prd", "Missing", &id).await;
+        assert!(result.is_err(), "should propagate the read error");
     }
 }

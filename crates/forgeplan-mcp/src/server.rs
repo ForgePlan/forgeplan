@@ -13,6 +13,7 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
+use forgeplan_core::artifact::identity::AgentIdentity;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, LanceStore, NewArtifact};
 use forgeplan_core::estimate::{
@@ -37,6 +38,13 @@ pub struct ForgeplanServer {
     store: Arc<RwLock<Option<Arc<LanceStore>>>>,
     workspace_root: PathBuf,
     workspace_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Cached identity of the calling MCP client (`name/version`).
+    /// Populated lazily from `context.peer.peer_info()` in `call_tool` and
+    /// read by write handlers to stamp `last_modified_by` on artifacts
+    /// (PRD-057 FR-009 + AC-5). A single connection has one immutable
+    /// client identity set during `initialize`, so a plain RwLock is
+    /// sufficient — no per-request plumbing needed.
+    current_identity: Arc<RwLock<Option<AgentIdentity>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -53,7 +61,34 @@ impl ForgeplanServer {
             store: Arc::new(RwLock::new(store)),
             workspace_root,
             workspace_path: Arc::new(RwLock::new(ws)),
+            current_identity: Arc::new(RwLock::new(None)),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Best-effort stamp of `last_modified_by` / `last_modified_at` onto an
+    /// artifact file. No-op when no MCP client identity has been captured
+    /// yet (e.g. the very first tool call, before `initialize` is parsed).
+    /// Stamp failures are logged via `tracing::warn!` but never propagate —
+    /// identity tracking must never block a legitimate write.
+    async fn stamp_identity_best_effort(
+        &self,
+        ws: &std::path::Path,
+        id: &str,
+        kind: &str,
+        title: &str,
+    ) {
+        let identity = match self.current_identity.read().await.as_ref() {
+            Some(id) => id.clone(),
+            None => return,
+        };
+        if let Err(e) = projection::stamp_agent_identity(ws, id, kind, title, &identity).await {
+            tracing::warn!(
+                "stamp_agent_identity failed for {} ({}): {}",
+                id,
+                identity.as_frontmatter_value(),
+                e
+            );
         }
     }
 
@@ -1088,6 +1123,11 @@ impl ForgeplanServer {
         .await
         .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
+        // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
+        // first modifier is attributable even without an update call.
+        self.stamp_identity_best_effort(&ws, &id, template_key, &p.title)
+            .await;
+
         // PRD-056: initialize advisory phase state to `shape`. Advisory
         // only — a failure here is logged and does not break creation.
         maybe_init_phase(&ws, &id, "forgeplan_new").await;
@@ -1868,6 +1908,12 @@ impl ForgeplanServer {
             )
             .await;
         }
+
+        // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
+        // rendered file. Best-effort — a stamping failure must not fail
+        // the update response.
+        self.stamp_identity_best_effort(&ws, &updated.id, &updated.kind, &updated.title)
+            .await;
 
         let safe_id = sanitize_for_hint(&updated.id);
         let next_action = match updated.status.as_str() {
@@ -5667,6 +5713,25 @@ impl rmcp::ServerHandler for ForgeplanServer {
             .map(|obj| serde_json::Value::Object(obj.clone()))
             .unwrap_or(serde_json::Value::Null);
 
+        // PRD-057 FR-009: capture caller identity from the MCP `initialize`
+        // handshake. `peer_info()` returns `None` until the handshake lands,
+        // after which it returns the same value for every subsequent call
+        // on this connection. Cheap to re-check on every call; writing only
+        // happens when the value actually changes.
+        let peer_client_info = context
+            .peer
+            .peer_info()
+            .map(|ci| (ci.client_info.name.clone(), ci.client_info.version.clone()));
+        let client_info_tuple = peer_client_info.clone();
+        if let Some((name, version)) = peer_client_info
+            && let Some(new_identity) = AgentIdentity::new(name, version)
+        {
+            let mut guard = self.current_identity.write().await;
+            if guard.as_ref() != Some(&new_identity) {
+                *guard = Some(new_identity);
+            }
+        }
+
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, params, context);
         let result = self.tool_router.call(tcc).await;
 
@@ -5681,13 +5746,20 @@ impl rmcp::ServerHandler for ForgeplanServer {
         // workspace not initialized (first-run `forgeplan_init`).
         if let Some(ws) = self.workspace_path.read().await.as_ref() {
             let ws = ws.clone();
+            // PRD-057 FR-009: pass the captured name/version into the
+            // activity log so retrospective audits can reconstruct *which*
+            // agent did what. Previously this was always `None`.
+            let ci = client_info_tuple.map(|(n, v)| forgeplan_core::activity::ClientInfo {
+                name: n,
+                version: if v.is_empty() { None } else { Some(v) },
+            });
             let entry = forgeplan_core::activity::make_entry(
                 tool_name,
                 &args_val,
                 duration_ms,
                 status,
                 &ws,
-                None,  // client_info not exposed by rmcp 1.2 API — future work
+                ci,
                 false, // include_args: off by default (PRD-054 FR-004)
             );
             // Fire-and-forget: spawn so we don't block the response.
@@ -6262,5 +6334,134 @@ mod sanitize_for_hint_tests {
         assert!(!clean.contains('\u{200B}'));
         assert!(!clean.contains('\u{202E}'));
         assert!(!clean.contains('`'));
+    }
+}
+
+// ── PRD-057 Inc 2: agent identity wiring tests ──────────────────────
+#[cfg(test)]
+mod agent_identity_tests {
+    //! Verifies `stamp_identity_best_effort` behavior on `ForgeplanServer`
+    //! — the piece that ties `peer.peer_info()` capture in `call_tool` to
+    //! `projection::stamp_agent_identity` on each write handler. The MCP
+    //! handshake itself isn't exercised here (that's covered by rmcp's own
+    //! test harness); we validate the *server-side* contract: given a
+    //! captured identity, writes must result in stamped frontmatter.
+    //!
+    //! PRD-057 FR-009 + AC-5.
+
+    use super::*;
+    use forgeplan_core::artifact::identity::AgentIdentity;
+    use tempfile::TempDir;
+
+    async fn setup_server_with_artifact() -> (ForgeplanServer, TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = root.join(".forgeplan");
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+
+        // Pre-render a minimal artifact so stamp has something to update.
+        projection::render_projection(
+            &ws,
+            "PRD-900",
+            "prd",
+            "Stamp Target",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "## Body\n\nContent.",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let server = ForgeplanServer::new(root).await;
+        (server, tmp, ws)
+    }
+
+    #[tokio::test]
+    async fn stamp_best_effort_is_noop_without_captured_identity() {
+        let (server, _tmp, ws) = setup_server_with_artifact().await;
+        // current_identity starts as None — handshake hasn't been simulated.
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+
+        let content = tokio::fs::read_to_string(ws.join("prds/PRD-900-stamp-target.md"))
+            .await
+            .unwrap();
+        assert!(
+            !content.contains("last_modified_by"),
+            "stamp must not emit fields when identity is unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_best_effort_writes_captured_identity() {
+        let (server, _tmp, ws) = setup_server_with_artifact().await;
+        // Simulate `call_tool` having captured the client identity during
+        // handshake. This is exactly the value `peer.peer_info()` resolves.
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("orchestrator", "1.0").unwrap());
+
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+
+        let content = tokio::fs::read_to_string(ws.join("prds/PRD-900-stamp-target.md"))
+            .await
+            .unwrap();
+        assert!(
+            content.contains("last_modified_by: orchestrator/1.0"),
+            "AC-5 shape: {{name}}/{{version}}\n{content}"
+        );
+        assert!(
+            content.contains("last_modified_at:"),
+            "last_modified_at must be present (RFC3339 timestamp)"
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_best_effort_swallows_missing_file_error() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        tokio::fs::create_dir_all(root.join(".forgeplan/prds"))
+            .await
+            .unwrap();
+        let ws = root.join(".forgeplan");
+        let server = ForgeplanServer::new(root).await;
+        *server.current_identity.write().await = Some(AgentIdentity::new("agent", "1.0").unwrap());
+
+        // No pre-rendered file exists → stamp should fail internally but
+        // return without panicking (best-effort contract).
+        server
+            .stamp_identity_best_effort(&ws, "PRD-NOPE", "prd", "Missing")
+            .await;
+        // Success = we got here without a panic.
+    }
+
+    #[tokio::test]
+    async fn stamp_is_idempotent_across_reruns() {
+        let (server, _tmp, ws) = setup_server_with_artifact().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("agent-a", "1.0").unwrap());
+
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+        server
+            .stamp_identity_best_effort(&ws, "PRD-900", "prd", "Stamp Target")
+            .await;
+
+        let content = tokio::fs::read_to_string(ws.join("prds/PRD-900-stamp-target.md"))
+            .await
+            .unwrap();
+        // Field should appear exactly once (second call overwrote, not appended).
+        let occurrences = content.matches("last_modified_by:").count();
+        assert_eq!(
+            occurrences, 1,
+            "identity must be set, not appended:\n{content}"
+        );
     }
 }
