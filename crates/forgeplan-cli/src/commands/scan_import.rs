@@ -2,7 +2,7 @@ use anyhow::Result;
 use console::style;
 
 use forgeplan_core::scan::detect::DetectionTier;
-use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
+use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
 
 use crate::commands::common;
 
@@ -25,7 +25,11 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
         );
     }
 
-    let result = scan_and_import(project_root, &store, &options).await?;
+    // PRD-058 FR-001: pass `ws` (the .forgeplan/ directory) so each
+    // imported artifact gets a markdown projection written, making the
+    // scan-import pipeline ADR-003-compliant. Without this, reindex
+    // considers imported artifacts orphans and purges them.
+    let result = scan_and_import_to_workspace(project_root, &ws, &store, &options).await?;
 
     // Print results
     if result.entries.is_empty() {
@@ -79,11 +83,21 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
             entry.relative_path,
             style(status_note).dim()
         );
+
+        // R2 audit rust-pro HIGH: surface per-entry warnings (unknown
+        // status mapping, projection write failure). PRD-058 R-2
+        // fail-loud: the core emits; CLI must display.
+        for w in &entry.warnings {
+            println!("    {} {}", style("⚠").yellow(), style(w).yellow().dim());
+        }
     }
+
+    // Aggregate warning count for the summary line.
+    let warnings_total: usize = result.entries.iter().map(|e| e.warnings.len()).sum();
 
     println!();
     println!(
-        "  Summary: {} imported, {} skipped, {} unknown, {} failed",
+        "  Summary: {} imported, {} skipped, {} unknown, {} failed{}",
         style(result.imported).green().bold(),
         style(result.skipped).yellow(),
         style(result.unknown).dim(),
@@ -91,6 +105,11 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
             style(result.failed).red().bold().to_string()
         } else {
             style(result.failed).dim().to_string()
+        },
+        if warnings_total > 0 {
+            format!(", {} warning(s)", style(warnings_total).yellow().bold())
+        } else {
+            String::new()
         }
     );
 
