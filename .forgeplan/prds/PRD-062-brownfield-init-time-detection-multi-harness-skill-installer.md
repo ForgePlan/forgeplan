@@ -1,7 +1,6 @@
 ---
-created: 2026-04-19
 depth: standard
-id: PRD-061
+id: PRD-062
 kind: prd
 links:
 - target: EPIC-006
@@ -10,10 +9,9 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — init-time detection + multi-harness skill installer
-updated: 2026-04-19
 ---
 
-# PRD-061: Brownfield — init-time detection + multi-harness skill installer
+# PRD-062: Brownfield — init-time detection + multi-harness skill installer
 
 ## Problem
 
@@ -35,7 +33,7 @@ updated: 2026-04-19
 
 ## Target Users
 
-- **Brownfield adopter** — `forgeplan init --from-brownfield` → detected legacy → wizard с confirm'ами → migration-plan готов для PRD-058 migrate
+- **Brownfield adopter** — `forgeplan init --from-brownfield` → detected legacy → wizard с confirm'ами → migration-plan готов для PRD-059 migrate
 - **Multi-harness user** — Cursor/Windsurf/etc. detected → skill installed в правильное место без ручной работы
 - **Solo maintainer** — greenfield init behavior не меняется (no false-positives detection)
 - **CI** — `--yes` + env flags → non-interactive reproducible setup
@@ -92,9 +90,10 @@ updated: 2026-04-19
 |----------|------|----------|
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
-| PRD-060 | PRD | consumes (installs brownfield-pack skill) |
-| PRD-058 | PRD | informs (init --from-brownfield runs discover) |
+| PRD-061 | PRD | consumes (installs brownfield-pack skill) |
+| PRD-059 | PRD | informs (init --from-brownfield runs discover) |
 | RFC-003 | RFC | informs (crate встраивается через trait pattern) |
+
 
 
 

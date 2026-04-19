@@ -1,7 +1,6 @@
 ---
-created: 2026-04-19
 depth: standard
-id: PRD-063
+id: PRD-064
 kind: prd
 links:
 - target: EPIC-006
@@ -10,10 +9,9 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — new kinds kb runbook postmortem retrospective meeting + new links
-updated: 2026-04-19
 ---
 
-# PRD-063: Brownfield — new kinds kb runbook postmortem retrospective meeting + new links
+# PRD-064: Brownfield — new kinds kb runbook postmortem retrospective meeting + new links
 
 ## Problem
 
@@ -47,7 +45,7 @@ Forge имеет 10 типов артефактов, но brownfield-vaults со
 - **AC-5**: `forgeplan search "sybil warmup"` с KB entries возвращает relevant KB через vector search.
 - **AC-6**: Graph traversal через `forgeplan graph --from POSTMORTEM-001 --follow caused_by` работает.
 - **AC-7**: Backward compat: existing types без изменений.
-- **AC-8**: E2E brownfield: 27 KB из Obsidian vault мигрируются как `kind: kb` через PRD-058 migrate.
+- **AC-8**: E2E brownfield: 27 KB из Obsidian vault мигрируются как `kind: kb` через PRD-059 migrate.
 
 ## Functional Requirements
 
@@ -58,7 +56,7 @@ Forge имеет 10 типов артефактов, но brownfield-vaults со
 - **FR-5** Link type semantics: references — bi-dir (both sides get link record), responds_to — runbook → problem (directional), caused_by — postmortem → problem (directional), discusses — meeting → any (directional).
 - **FR-6** CLI: `forgeplan new kb|runbook|postmortem|retrospective|meeting <title>` работает как для существующих.
 - **FR-7** Vector search + graph extensions: LanceDB embeddings per new kind, petgraph traversal covers new links.
-- **FR-8** Brownfield integration: PRD-058 migration может map Obsidian `type: kb` или heuristic «KB-like» content → `kind: kb`.
+- **FR-8** Brownfield integration: PRD-059 migration может map Obsidian `type: kb` или heuristic «KB-like» content → `kind: kb`.
 - **FR-9** Meeting auto-expire 180d default (configurable), KB/runbook/postmortem/retrospective — persistent по-умолчанию.
 
 ## Implementation Plan
@@ -78,7 +76,7 @@ Forge имеет 10 типов артефактов, но brownfield-vaults со
 - [ ] **3.2** Semantic search AC verification
 
 ### Phase 4: Brownfield integration + tests
-- [ ] **4.1** status-map + kind-detection heuristics в PRD-058 migrate
+- [ ] **4.1** status-map + kind-detection heuristics в PRD-059 migrate
 - [ ] **4.2** E2E test: 27 KB fixtures мигрируют как kb
 - [ ] **4.3** Docs: `docs/methodology/ARTIFACT-MODEL.ru.md` update
 
@@ -88,8 +86,9 @@ Forge имеет 10 типов артефактов, но brownfield-vaults со
 |----------|------|----------|
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
-| PRD-058 | PRD | informs (migration maps new kinds) |
-| PRD-062 | PRD | informs (state machine applies to new kinds) |
+| PRD-059 | PRD | informs (migration maps new kinds) |
+| PRD-063 | PRD | informs (state machine applies to new kinds) |
+
 
 
 

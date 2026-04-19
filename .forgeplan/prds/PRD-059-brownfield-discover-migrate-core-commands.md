@@ -1,7 +1,7 @@
 ---
 created: 2026-04-19
 depth: standard
-id: PRD-058
+id: PRD-059
 kind: prd
 links:
 - target: EPIC-006
@@ -19,7 +19,7 @@ title: Brownfield — discover + migrate core commands
 updated: 2026-04-19
 ---
 
-# PRD-058: Brownfield — discover + migrate core commands
+# PRD-059: Brownfield — discover + migrate core commands
 
 ## Problem
 
@@ -94,6 +94,7 @@ updated: 2026-04-19
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
 | ADR-003 | ADR | informs (markdown = source of truth) |
+
 
 
 

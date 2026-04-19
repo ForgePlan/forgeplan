@@ -1,5 +1,4 @@
 ---
-created: 2026-04-19
 depth: standard
 id: PRD-062
 kind: prd
@@ -10,76 +9,80 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — state machine completed archived + bidirectional supersede
-updated: 2026-04-19
 ---
 
-# PRD-062: Brownfield — state machine completed archived + bidirectional supersede
+# PRD-062: Brownfield — init-time detection + multi-harness skill installer
 
 ## Problem
 
-Forge lifecycle сейчас: `draft → active → {superseded|deprecated|stale}`. Для brownfield-legacy («эту PRD сделали 2 года назад») нет адекватного terminal state — `active` не говорит «done», `superseded` требует by-target, `deprecated` = «don't use» (неверно). Добавить отсутствующие `completed`/`archived` как терминальные. Одновременно — `forgeplan supersede --by` не bidirectional: новый артефакт получает linked но статус старого не меняется на `superseded` автоматически. При brownfield миграции wikilinks типа `[[ADR-005]]` (superseded by ADR-012) должны корректно создать двусторонние отношения.
+`forgeplan init -y` создаёт пустую структуру. Не детектит legacy-артефакты (requirements/, docs/adr/, Obsidian vault markers) — brownfield adopter не знает что делать дальше. Skills живут только в `.claude/skills/` — пользователи Cursor/Windsurf/Cline/Roo/Copilot/generic agentskills.io harness'ов не получают автоматический skill setup. Результат: zero-friction onboarding невозможен ни для brownfield, ни для non-Claude-Code users.
 
 ## Goals
 
-1. Добавить `completed` и `archived` states как terminal post-active.
-2. `forgeplan complete <id>` переводит `active → completed` (freeze R_eff, no decay).
-3. `forgeplan archive <id>` переводит `completed → archived` (ещё дальше terminal).
-4. Bidirectional `supersede`/`deprecate`: atomically обновляют обе стороны, сохраняют links history.
-5. Migration path существующих `active` → `completed` руками (опциональная операция).
+1. `forgeplan init --from-brownfield` детектит legacy-артефакты, предлагает migration plan pre-filled.
+2. `forgeplan init` также детектит coding-agent harness markers (7 типов) и предлагает auto-install skills.
+3. Новый crate `forgeplan-skill-installer` с pluggable harness adapters.
+4. Commands `forgeplan skill {list|doctor|install|uninstall|update}` для lifecycle.
+5. Opt-in install (interactive confirm или `--yes` flag), conflict detection.
 
 ## Non-Goals
 
-- NOT автоматический promote `active → completed` по критериям (ручной trigger)
-- NOT revert `completed → active` без explicit `forgeplan reopen` (уже существует)
-- NOT меняет semantics существующих `superseded`/`deprecated`/`stale` — только расширяет
+- NOT автоматическая установка без user consent (кроме CI flag `FORGEPLAN_AUTO_YES=true`)
+- NOT overwrite user-created skills без `--force` confirm
+- NOT добавляет NEW detection форматов за пределами документированных 7 harnesses + Obsidian/MADR/ADR-tools/log4brains/ad-hoc requirements/
 
 ## Target Users
 
-- **Brownfield adopter** — impotrted done-work → sets `completed` не `active`
-- **Existing user** — ongoing work stays `active`, completed work gets proper state
-- **Auditor** — clearly distinguishes «done but live» (completed) от «done and historical» (archived)
+- **Brownfield adopter** — `forgeplan init --from-brownfield` → detected legacy → wizard с confirm'ами → migration-plan готов для PRD-059 migrate
+- **Multi-harness user** — Cursor/Windsurf/etc. detected → skill installed в правильное место без ручной работы
+- **Solo maintainer** — greenfield init behavior не меняется (no false-positives detection)
+- **CI** — `--yes` + env flags → non-interactive reproducible setup
 
 ## Success Criteria / Acceptance
 
-- **AC-1**: Состояние `completed` добавлено в enum, validator принимает в status frontmatter.
-- **AC-2**: `forgeplan complete ADR-007` → status меняется с `active` на `completed`, R_eff замораживается (не уменьшается по TTL).
-- **AC-3**: `forgeplan archive ADR-007` → status меняется с `completed` на `archived`. Terminal.
-- **AC-4**: `forgeplan supersede ADR-005 --by ADR-012` atomically: ADR-005 → superseded, ADR-012 получает link `supersedes: ADR-005`. Both projection + DB updated in one transaction.
-- **AC-5**: Rollback on failure: если ADR-012 update fails, ADR-005 не остаётся superseded.
-- **AC-6**: State transitions matrix documented в `docs/methodology/LIFECYCLE.ru.md`.
-- **AC-7**: Backward compat: существующие `active` artifacts без изменений, tests PASS.
-- **AC-8**: Brownfield migration (PRD-058 migrate --apply) может ставить `completed`/`archived` напрямую из source `status: done`/`status: archived`.
+- **AC-1**: `forgeplan init --from-brownfield` на проекте с `requirements/` + `.obsidian/` детектит 44 файлов, создаёт `migration-plan.json`, запускает `discover` автоматически.
+- **AC-2**: На testbed с маркерами `.claude/` + `.cursor/` + `.windsurf/` `forgeplan skill install brownfield-pack` создаёт корректные файлы в 3/3 локациях (dry-run показывает preview).
+- **AC-3**: `forgeplan skill doctor` возвращает green при консистентных skills, с diagnosis если есть stale/missing.
+- **AC-4**: `forgeplan skill uninstall brownfield-pack` удаляет только created installer'ом файлы, user-modified файлы сохраняются (hash check).
+- **AC-5**: Idempotent install: повторный install = skip или update based on version.
+- **AC-6**: Backward compat: `forgeplan init -y` без `--from-brownfield` работает как раньше.
+- **AC-7**: Новый crate `forgeplan-skill-installer` изолирован — forgeplan-core не depends на nego в runtime path (только для CLI commands).
 
 ## Functional Requirements
 
-- **FR-1** Enum `Status::Completed` + `Status::Archived` в forgeplan-core.
-- **FR-2** State machine transitions: `active → completed → archived`. `completed` terminal для decay (freeze R_eff). `archived` terminal.
-- **FR-3** Commands `forgeplan complete <id>` + `forgeplan archive <id>`.
-- **FR-4** Bidirectional supersede: `lifecycle::supersede()` обновляет обе стороны atomically (transactional).
-- **FR-5** Bidirectional deprecate: если A deprecated и B имеет `based_on: A` link — warning при deprecate + optional cleanup.
-- **FR-6** R_eff freeze для completed/archived: не применяется evidence TTL decay.
-- **FR-7** Status-map extension (PRD-058 brownfield migration): `status: done` → `completed`, `status: archived` → `archived`.
-- **FR-8** Validator принимает completed/archived как valid statuses.
+- **FR-1** New crate `forgeplan-skill-installer` в workspace.
+- **FR-2** Trait `HarnessAdapter` с methods `detect() -> bool`, `skill_path(name) -> PathBuf`, `write(canonical_skill, path) -> Result`, `uninstall(path) -> Result`.
+- **FR-3** 7 adapter implementations: ClaudeCode, Cursor, Windsurf, Cline, Roo, GitHubCopilot, AgentskillsGeneric.
+- **FR-4** Brownfield detector: `BrownfieldScanner` модуль — ищет `requirements/`, `docs/adr/`, `.obsidian/`, frontmatter patterns (type:adr, layout: etc.), epic-folder conventions.
+- **FR-5** `forgeplan init --from-brownfield` CLI: detect → interactive confirm → pre-fill migration-plan → optionally run `discover` immediately.
+- **FR-6** Commands `forgeplan skill list|doctor|install|uninstall|update`: full lifecycle.
+- **FR-7** Hash-tracking: installer пишет `.forgeplan/.skill-installs.json` — records которые файлы создал (чтобы uninstall знал что удалять без user content).
+- **FR-8** Conflict detection: перед write — если файл существует и hash не совпадает с installer record → prompt `--force` или abort.
+- **FR-9** MCP exposed: `forgeplan_skill_list`, `forgeplan_skill_install` MCP tools.
 
 ## Implementation Plan
 
-### Phase 1: Core
-- [ ] **1.1** Enum extension + transitions matrix
-- [ ] **1.2** `forgeplan complete` / `archive` commands
-- [ ] **1.3** R_eff freeze logic
+### Phase 1: Crate + trait
+- [ ] **1.1** `forgeplan-skill-installer` crate scaffold
+- [ ] **1.2** `HarnessAdapter` trait + canonical skill type
 
-### Phase 2: Bidirectional
-- [ ] **2.1** Transactional supersede (both sides atomic)
-- [ ] **2.2** Deprecate with symmetric warnings
+### Phase 2: 7 adapters
+- [ ] **2.1** ClaudeCode, Cursor, Windsurf (priority 1)
+- [ ] **2.2** Cline, Roo, GitHubCopilot, AgentskillsGeneric (priority 2)
 
-### Phase 3: Brownfield integration
-- [ ] **3.1** status-map extension (done/archived vocabularies)
-- [ ] **3.2** Docs update LIFECYCLE.ru.md
+### Phase 3: Brownfield detector + init
+- [ ] **3.1** BrownfieldScanner с Obsidian/MADR/ADR-tools/log4brains detection
+- [ ] **3.2** `forgeplan init --from-brownfield` CLI
+- [ ] **3.3** Interactive wizard UI
 
-### Phase 4: Tests
-- [ ] **4.1** State transition tests (all valid paths)
-- [ ] **4.2** Atomic rollback test при failure
-- [ ] **4.3** Backward compat test
+### Phase 4: Skill lifecycle commands + MCP
+- [ ] **4.1** `skill {list|doctor|install|uninstall|update}` CLI
+- [ ] **4.2** MCP tool exposure
+- [ ] **4.3** Hash-tracking + conflict detection
+
+### Phase 5: Tests + docs
+- [ ] **5.1** Per-adapter unit tests + integration test на testbed
+- [ ] **5.2** Docs: `docs/operations/SKILL-INSTALLATION.ru.md`
 
 ## Related Artifacts
 
@@ -87,7 +90,10 @@ Forge lifecycle сейчас: `draft → active → {superseded|deprecated|stale
 |----------|------|----------|
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
-| PRD-058 | PRD | informs (migration ставит completed/archived напрямую) |
+| PRD-061 | PRD | consumes (installs brownfield-pack skill) |
+| PRD-059 | PRD | informs (init --from-brownfield runs discover) |
+| RFC-003 | RFC | informs (crate встраивается через trait pattern) |
+
 
 
 

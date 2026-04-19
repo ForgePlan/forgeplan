@@ -1,7 +1,6 @@
 ---
-created: 2026-04-19
 depth: standard
-id: PRD-059
+id: PRD-060
 kind: prd
 links:
 - target: EPIC-006
@@ -10,10 +9,9 @@ links:
   relation: based_on
 status: draft
 title: Brownfield — self-description + agent-manifest + context injection
-updated: 2026-04-19
 ---
 
-# PRD-059: Brownfield — self-description + agent-manifest + context injection
+# PRD-060: Brownfield — self-description + agent-manifest + context injection
 
 ## Problem
 
@@ -88,7 +86,8 @@ Forgeplan CLI и MCP-tools не говорят агенту что делать 
 |----------|------|----------|
 | ADR-008 | ADR | based_on |
 | EPIC-006 | Epic | refines |
-| PRD-058 | PRD | informs (hints эмитятся из discover/migrate commands) |
+| PRD-059 | PRD | informs (hints эмитятся из discover/migrate commands) |
+
 
 
 

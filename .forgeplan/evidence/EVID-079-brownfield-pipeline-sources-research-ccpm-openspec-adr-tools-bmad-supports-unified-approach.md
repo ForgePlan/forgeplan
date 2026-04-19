@@ -1,7 +1,6 @@
 ---
-created: 2026-04-19
 depth: tactical
-id: EVID-078
+id: EVID-079
 kind: evidence
 links:
 - target: ADR-008
@@ -10,10 +9,9 @@ links:
   relation: supports
 status: draft
 title: Brownfield pipeline — sources research (ccpm OpenSpec adr-tools BMAD) supports unified approach
-updated: 2026-04-19
 ---
 
-# EVID-078: Brownfield pipeline — sources research (ccpm OpenSpec adr-tools BMAD) supports unified approach
+# EVID-079: Brownfield pipeline — sources research (ccpm OpenSpec adr-tools BMAD) supports unified approach
 
 ## Structured Fields
 
@@ -38,13 +36,13 @@ evidence_type: research
 | Pattern | ccpm | OpenSpec | adr-tools | BMAD | Для нас |
 |---|---|---|---|---|---|
 | Agent-skills standard (SKILL.md + name+description frontmatter) | ✅ | ✅ | — | ✅ | Adopt |
-| Multi-harness auto-install (`.claude/`, `.cursor/`, `.windsurf/`, etc.) | — | ✅ | — | ✅ | Adopt (PRD-061) |
-| Context injection через config (inject в каждый request) | — | ✅ | — | — | Adopt (PRD-059) |
-| Init-time detection legacy + cleanup wizard | — | ✅ | — | — | Adopt (PRD-061) |
+| Multi-harness auto-install (`.claude/`, `.cursor/`, `.windsurf/`, etc.) | — | ✅ | — | ✅ | Adopt (PRD-062) |
+| Context injection через config (inject в каждый request) | — | ✅ | — | — | Adopt (PRD-060) |
+| Init-time detection legacy + cleanup wizard | — | ✅ | — | — | Adopt (PRD-062) |
 | Script-first rule (deterministic → bash, reasoning → LLM) | ✅ | — | — | — | Adopt (core CLI vs skill LLM) |
 | Self-bootstrap (init creates first artifact) | — | — | ✅ | — | Consider (out of PRD-F scope, future) |
-| Bidirectional supersede (atomically update both sides) | — | — | ✅ | — | Adopt (PRD-062) |
-| Skill validator with deterministic rules | — | — | — | ✅ | Adopt (for brownfield-pack skills PRD-060 validation) |
+| Bidirectional supersede (atomically update both sides) | — | — | ✅ | — | Adopt (PRD-063) |
+| Skill validator with deterministic rules | — | — | — | ✅ | Adopt (for brownfield-pack skills PRD-061 validation) |
 | Action-based workflow (не phased) | — | ✅ | — | — | Reject (сохраняем shape→code phases — unique forge value) |
 | All-phases in one big command | — | — | — | — | Reject (splitting discover/migrate) |
 
@@ -64,13 +62,13 @@ Options rejected в ADR-008 тоже подкреплены research:
 - **C (docs-only)**: ни один из 4 проектов не полагается только на docs — у всех runtime integration (skill install). Evidence против.
 - **D (full OPSX port)**: ценность forge (R_eff, FPF, phased workflow) не существует в OpenSpec — теряем unique при полном port. Evidence против.
 
-**Weakest link** (согласно ADR-008) — agentskills.io standard maturity. Research confirm: стандарт emerging, формальной spec нет, но 4 проекта уже используют одни и те же conventions (name+description+use-when). Adoption risk приемлем при изоляции harness-adapters в одном crate (PRD-061 design).
+**Weakest link** (согласно ADR-008) — agentskills.io standard maturity. Research confirm: стандарт emerging, формальной spec нет, но 4 проекта уже используют одни и те же conventions (name+description+use-when). Adoption risk приемлем при изоляции harness-adapters в одном crate (PRD-062 design).
 
-**Recommendation**: Adopt Unified Approach (ADR-008 Decision) с высокой уверенностью. Design patterns документированы в PRD-058..063. Weakest Link addressed через modular adapter crate.
+**Recommendation**: Adopt Unified Approach (ADR-008 Decision) с высокой уверенностью. Design patterns документированы в PRD-059..063. Weakest Link addressed через modular adapter crate.
 
 ## Congruence Level Justification
 
-CL2 (related context): evidence — research паттернов в adjacent проектах, не прямое measurement на нашем коде. Это proper research evidence, не measurement. Unified Approach не тестировался на нашем vault — это будет E1 evidence в code phase (PRD-058 E2E test). Поэтому CL2 correctly, не CL3.
+CL2 (related context): evidence — research паттернов в adjacent проектах, не прямое measurement на нашем коде. Это proper research evidence, не measurement. Unified Approach не тестировался на нашем vault — это будет E1 evidence в code phase (PRD-059 E2E test). Поэтому CL2 correctly, не CL3.
 
 Penalty CL2 = 0.1, acceptable for Shape-phase decision-support evidence.
 
@@ -80,6 +78,7 @@ Penalty CL2 = 0.1, acceptable for Shape-phase decision-support evidence.
 |----------|------|----------|
 | ADR-008 | ADR | supports |
 | EPIC-006 | Epic | supports |
+
 
 
 
