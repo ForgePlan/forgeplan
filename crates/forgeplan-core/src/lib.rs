@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod artifact;
 pub mod changelog;
+pub mod claim;
 pub mod config;
 pub mod coverage;
 pub mod db;

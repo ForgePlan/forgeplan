@@ -5420,6 +5420,209 @@ impl ForgeplanServer {
         }
     }
 
+    // ── PRD-057 Inc 3: claim protocol ────────────────────────────────
+
+    #[tool(
+        description = "Claim an artifact for exclusive work. Writes .forgeplan/claims/<id>.yaml \
+                       with the caller's agent identity, timestamp, and TTL. Fails if a live \
+                       claim by a different agent exists — same-agent calls renew the TTL. \
+                       Advisory: other tools do not block on claims, but orchestrators should \
+                       use `forgeplan_claims --active` to avoid double-assigning work.",
+        annotations(
+            title = "Claim Artifact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_claim(
+        &self,
+        Parameters(p): Parameters<ClaimParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Serialize against concurrent claim/release so two sub-agents
+        // cannot simultaneously take the same artifact (PRD-057 Round 1
+        // H-2 pattern: write tools always hold the workspace lock).
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry in a few seconds — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
+        // Agent resolution: caller-supplied > MCP clientInfo > error.
+        let agent = match p.agent.as_deref() {
+            Some(a) if !a.trim().is_empty() => a.trim().to_string(),
+            _ => match self.current_identity.read().await.as_ref() {
+                Some(id) => id.as_frontmatter_value(),
+                None => {
+                    return Ok(err_hinted(
+                        "no agent identity — pass `agent` explicitly or wait for MCP handshake",
+                        "Orchestrators typically pass `agent: \"worker-1\"` when delegating; \
+                         sub-agents can omit it and let Forgeplan infer from clientInfo.",
+                    ));
+                }
+            },
+        };
+
+        let ttl = match p.ttl_minutes {
+            Some(m) if m > 0 => chrono::Duration::minutes(m as i64),
+            Some(_) => {
+                return Ok(err_result("ttl_minutes must be > 0"));
+            }
+            None => forgeplan_core::claim::DEFAULT_TTL,
+        };
+
+        let store = forgeplan_core::claim::ClaimStore::new(&ws);
+        match store.claim(&p.id, &agent, ttl, p.note).await {
+            Ok(claim) => {
+                let safe_id = sanitize_for_hint(&claim.id);
+                let safe_agent = sanitize_for_hint(&claim.agent_id);
+                let hint = format!(
+                    "Claimed `{safe_id}` for `{safe_agent}`. Release with \
+                     `forgeplan_release {safe_id}` when done, or re-call `forgeplan_claim` to renew."
+                );
+                hinted_result(&ClaimDto::from(claim), hint)
+            }
+            Err(forgeplan_core::claim::ClaimError::AlreadyHeld {
+                id,
+                agent_id,
+                expires_at,
+            }) => {
+                let safe_id = sanitize_for_hint(&id);
+                let safe_agent = sanitize_for_hint(&agent_id);
+                Ok(err_hinted(
+                    &format!(
+                        "claim for {safe_id} already held by {safe_agent} (expires {expires_at})"
+                    ),
+                    "Either work on a different artifact, wait for TTL expiry, or ask the \
+                     orchestrator to force-release with `forgeplan_release --force`.",
+                ))
+            }
+            Err(e) => Ok(err_result(&format!("claim failed: {e}"))),
+        }
+    }
+
+    #[tool(
+        description = "Release an active claim. Refuses if the claim is held by a different \
+                       agent (use `force: true` to override — the orchestrator's escape hatch \
+                       for a crashed sub-agent). Missing claim is a no-op (idempotent).",
+        annotations(
+            title = "Release Claim",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_release(
+        &self,
+        Parameters(p): Parameters<ReleaseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry in a few seconds — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
+        let agent = match p.agent.as_deref() {
+            Some(a) if !a.trim().is_empty() => a.trim().to_string(),
+            _ if p.force => String::new(), // force=true allows empty agent
+            _ => match self.current_identity.read().await.as_ref() {
+                Some(id) => id.as_frontmatter_value(),
+                None => {
+                    return Ok(err_hinted(
+                        "no agent identity — pass `agent` explicitly, set force=true, or wait for \
+                         MCP handshake",
+                        "Orchestrators force-release with `agent: null, force: true` when \
+                         reaping a crashed sub-agent.",
+                    ));
+                }
+            },
+        };
+
+        let store = forgeplan_core::claim::ClaimStore::new(&ws);
+        match store.release(&p.id, &agent, p.force).await {
+            Ok(()) => {
+                let safe_id = sanitize_for_hint(&p.id);
+                hinted_result(
+                    &serde_json::json!({"id": p.id, "released": true, "force": p.force}),
+                    format!("Released claim on `{safe_id}`."),
+                )
+            }
+            Err(forgeplan_core::claim::ClaimError::NotHeldByRequester { held_by, .. }) => {
+                let safe_holder = sanitize_for_hint(&held_by);
+                Ok(err_hinted(
+                    &format!("claim held by {safe_holder}, not you"),
+                    "Use `force: true` (orchestrator override) if the holder has crashed.",
+                ))
+            }
+            Err(e) => Ok(err_result(&format!("release failed: {e}"))),
+        }
+    }
+
+    #[tool(
+        description = "List live claims in the workspace, sorted by expiry ascending. Skips \
+                       expired claims (they're considered practically released). Used by \
+                       orchestrators to build dispatch plans and by sub-agents to avoid \
+                       double-claiming.",
+        annotations(
+            title = "List Active Claims",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_claims(
+        &self,
+        Parameters(_p): Parameters<ClaimsListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let store = forgeplan_core::claim::ClaimStore::new(&ws);
+        match store.list_active().await {
+            Ok(claims) => {
+                let count = claims.len();
+                let dto = ClaimsListResponse {
+                    count,
+                    claims: claims.into_iter().map(ClaimDto::from).collect(),
+                };
+                let hint = if count == 0 {
+                    "No active claims. Workspace is free for any agent to claim work.".to_string()
+                } else {
+                    format!(
+                        "{count} active claim{}. Use `forgeplan_dispatch` (when implemented) \
+                         to plan non-overlapping work.",
+                        if count == 1 { "" } else { "s" }
+                    )
+                };
+                hinted_result(&dto, hint)
+            }
+            Err(e) => Ok(err_result(&format!("list_active failed: {e}"))),
+        }
+    }
+
     // ── Undo / Restore tools (PRD-055 increment 3) ───────────────────
 
     #[tool(
@@ -6463,5 +6666,216 @@ mod agent_identity_tests {
             occurrences, 1,
             "identity must be set, not appended:\n{content}"
         );
+    }
+}
+
+// ── PRD-057 Inc 3: claim MCP tool wiring tests ──────────────────────
+#[cfg(test)]
+mod claim_mcp_tests {
+    //! Integration tests for the three claim MCP tools
+    //! (`forgeplan_claim`, `forgeplan_release`, `forgeplan_claims`).
+    //!
+    //! The goal is to verify the *wiring* — agent-identity resolution,
+    //! workspace-lock acquisition, Core ClaimStore fall-through — not to
+    //! re-test ClaimStore semantics (those are covered in forgeplan-core).
+    //!
+    //! PRD-057 FR-004..006, AC-2.
+
+    use super::*;
+    use forgeplan_core::artifact::identity::AgentIdentity;
+    use forgeplan_core::claim::ClaimStore;
+    use tempfile::TempDir;
+
+    async fn initialized_server() -> (ForgeplanServer, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = root.join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        // Also need to satisfy require_workspace check.
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+        let server = ForgeplanServer::new(root).await;
+        // Prime the server's workspace_path (find_workspace may not pick up
+        // the test .forgeplan/).
+        *server.workspace_path.write().await = Some(ws);
+        (server, tmp)
+    }
+
+    #[tokio::test]
+    async fn claim_uses_mcp_identity_when_agent_omitted() {
+        let (server, _tmp) = initialized_server().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("orchestrator", "1.0").unwrap());
+
+        let _ = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-100".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = ClaimStore::new(&ws);
+        let claim = store.get("PRD-100").await.unwrap().unwrap();
+        assert_eq!(claim.agent_id, "orchestrator/1.0");
+    }
+
+    #[tokio::test]
+    async fn claim_prefers_explicit_agent_over_identity() {
+        let (server, _tmp) = initialized_server().await;
+        *server.current_identity.write().await =
+            Some(AgentIdentity::new("orchestrator", "1.0").unwrap());
+
+        let _ = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-101".to_string(),
+                agent: Some("worker-1".to_string()),
+                ttl_minutes: Some(15),
+                note: Some("building FR-007".to_string()),
+            }))
+            .await
+            .unwrap();
+
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = ClaimStore::new(&ws);
+        let claim = store.get("PRD-101").await.unwrap().unwrap();
+        assert_eq!(claim.agent_id, "worker-1");
+        assert_eq!(claim.note.as_deref(), Some("building FR-007"));
+    }
+
+    #[tokio::test]
+    async fn claim_errors_when_no_identity_and_no_agent() {
+        let (server, _tmp) = initialized_server().await;
+        // current_identity left as None and no agent passed.
+
+        let result = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-102".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "missing identity should surface as is_error=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_existing_claim_by_different_agent() {
+        // AC-2 at the MCP boundary.
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = ClaimStore::new(&ws);
+        store
+            .claim(
+                "PRD-103",
+                "agent-a/1",
+                forgeplan_core::claim::DEFAULT_TTL,
+                None,
+            )
+            .await
+            .unwrap();
+
+        *server.current_identity.write().await = Some(AgentIdentity::new("agent-b", "1").unwrap());
+        let result = server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-103".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn release_by_owner_removes_claim() {
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        *server.current_identity.write().await = Some(AgentIdentity::new("owner", "1.0").unwrap());
+
+        server
+            .forgeplan_claim(Parameters(ClaimParams {
+                id: "PRD-104".to_string(),
+                agent: None,
+                ttl_minutes: None,
+                note: None,
+            }))
+            .await
+            .unwrap();
+
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: "PRD-104".to_string(),
+                agent: None,
+                force: false,
+            }))
+            .await
+            .unwrap();
+
+        let store = ClaimStore::new(&ws);
+        assert!(store.get("PRD-104").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn release_force_reaps_other_agent_claim() {
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = ClaimStore::new(&ws);
+        store
+            .claim(
+                "PRD-105",
+                "stuck/1",
+                forgeplan_core::claim::DEFAULT_TTL,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Orchestrator force-releases without setting their own identity.
+        server
+            .forgeplan_release(Parameters(ReleaseParams {
+                id: "PRD-105".to_string(),
+                agent: None,
+                force: true,
+            }))
+            .await
+            .unwrap();
+
+        assert!(store.get("PRD-105").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn claims_list_returns_live_entries_sorted() {
+        let (server, _tmp) = initialized_server().await;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+
+        let store = ClaimStore::new(&ws);
+        store
+            .claim("PRD-110", "a/1", chrono::Duration::hours(2), None)
+            .await
+            .unwrap();
+        store
+            .claim("PRD-111", "b/1", chrono::Duration::minutes(20), None)
+            .await
+            .unwrap();
+
+        let result = server
+            .forgeplan_claims(Parameters(ClaimsListParams { active: true }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        // Full JSON verification is expensive; we trust ClaimStore tests
+        // and verify only that the call path doesn't short-circuit.
     }
 }

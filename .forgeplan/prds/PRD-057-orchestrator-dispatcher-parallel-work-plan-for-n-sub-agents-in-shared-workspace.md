@@ -31,10 +31,10 @@ stepsCompleted: []
 ```
 Inc 1 (lock)          ████████████████████████  3/3   (100%)  ✅ v0.23.1 merged
 Inc 2 (identity)      ████████████████████████  3/3   (100%)  ✅ FR-009 + AC-5
-Inc 3 (claims)        ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)
+Inc 3 (claims)        ████████████████████████  4/4   (100%)  ✅ FR-004..006,014 + AC-2,3
 Inc 4 (dispatch)      ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)
 ─────────────────────────────────────────────────────────
-TOTAL                                            6/14  ( 43%)
+TOTAL                                           10/14  ( 71%)
 ```
 
 **Inc 2 delivered (2026-04-19)**:
@@ -44,6 +44,15 @@ TOTAL                                            6/14  ( 43%)
 - `ForgeplanServer::stamp_identity_best_effort` wired into `forgeplan_new` + `forgeplan_update`
 - `call_tool` wrapper captures `peer.peer_info()` → cached in server + logged to activity JSONL
 - 13 new tests (6 identity + 4 projection preservation + 4 MCP stamp wiring), 1314 total
+
+**Inc 3 delivered (2026-04-19)**:
+- `forgeplan-core::claim` module: `Claim` struct, `ClaimStore`, `ClaimError`
+- TTL bounds: 1 min ≤ `ttl` ≤ 24 h, default 30 min
+- Same-agent calls renew; expired claims transparently taken over (AC-3)
+- `forgeplan_claim`, `forgeplan_release`, `forgeplan_release --force`, `forgeplan_claims` MCP tools
+- Agent resolution: explicit `agent` param > cached MCP `clientInfo` > hinted error
+- All writes serialized via `workspace_lock` (Inc 1 pattern extended)
+- 24 new tests (17 Core ClaimStore + 7 MCP wiring), 1338 total
 
 ---
 

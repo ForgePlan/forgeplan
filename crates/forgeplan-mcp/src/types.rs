@@ -162,6 +162,71 @@ pub struct GraphResponse {
     pub mermaid: String,
 }
 
+// ── PRD-057 Inc 3: claim protocol DTOs ───────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimParams {
+    /// Artifact ID to claim (e.g. `PRD-057`). Normalized to uppercase on disk.
+    pub id: String,
+    /// Agent identity ("name/version" or free-form). Optional — defaults to
+    /// the MCP caller's clientInfo when omitted. Providing this explicitly
+    /// lets an orchestrator claim on behalf of a sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Time-to-live in minutes. Default 30, max 1440 (24h), min 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_minutes: Option<u32>,
+    /// Optional free-form note surfaced by `forgeplan_claims --active`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseParams {
+    pub id: String,
+    /// Required unless `force=true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Force-release regardless of holder (orchestrator escape hatch).
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimsListParams {
+    /// Reserved for future filters; currently always returns only live claims.
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimDto {
+    pub id: String,
+    pub agent_id: String,
+    pub claimed_at: String,
+    pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl From<forgeplan_core::claim::Claim> for ClaimDto {
+    fn from(c: forgeplan_core::claim::Claim) -> Self {
+        Self {
+            id: c.id,
+            agent_id: c.agent_id,
+            claimed_at: c.claimed_at.to_rfc3339(),
+            expires_at: c.expires_at.to_rfc3339(),
+            note: c.note,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimsListResponse {
+    pub count: usize,
+    pub claims: Vec<ClaimDto>,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BlockedParams {
     /// Optional artifact ID to check. If omitted, shows all blocked artifacts.
