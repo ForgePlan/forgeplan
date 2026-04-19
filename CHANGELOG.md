@@ -7,6 +7,106 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.24.0] — 2026-04-19 — Orchestrator dispatcher for 2-5 sub-agents (PRD-057 complete)
+
+Forgeplan now dispatches work. One MCP call — `forgeplan_dispatch
+--agents N` — hands the orchestrator a parallel-safe plan: which
+artifacts each sub-agent should work on, which defer to a serial queue,
+and human-readable reasoning for every decision. Ends the manual
+"read graph + blocked + list + mental overlap calc" loop that was the
+original PRD-057 problem statement.
+
+Four increments (Inc 2, 3, 4) + two adversarial audit rounds (R2 3-agent
+mid-sprint, R3 4-agent final) + 94 net new tests (1391 total). Builds
+on the Inc 1 workspace lock shipped in v0.23.1.
+
+### Added — Agent identity (Inc 2, FR-009 + AC-5)
+
+- **`AgentIdentity`** captures which MCP client last mutated an artifact
+  via `clientInfo` and stamps `last_modified_by: name/version` into
+  frontmatter on every write.
+- **Unknown-frontmatter preservation** — `projection` now keeps
+  agent-owned fm fields (`last_modified_by`, `domain`,
+  `affected_files`) across re-renders triggered by unrelated tools.
+- **Unicode / control-char rejection** in `AgentIdentity::new` — blocks
+  bidi override, ZWJ, RTL, newlines, path separators.
+- **Activity log** carries the captured `clientInfo` — previous `None`
+  TODO closed.
+
+### Added — Claim protocol (Inc 3, FR-004..006, FR-014, AC-2..3)
+
+- **`ClaimStore`** — soft-coordination signal "agent X works on ID
+  until T". YAML files at `.forgeplan/claims/<ID>.yaml` (gitignored).
+  TTL 1 min..24 h, default 30 min. Same-agent calls renew; expired
+  claims transparently overwritten.
+- **Three new MCP tools**: `forgeplan_claim`, `forgeplan_release`
+  (`force: true` orchestrator escape hatch), `forgeplan_claims`.
+- **Atomic writes** via tempfile + rename.
+- **64 KB YAML cap** + path-traversal guard (R2 security HIGH fix).
+
+### Added — Orchestrator dispatcher (Inc 4, FR-001..003, FR-010..011, AC-1)
+
+- **`forgeplan_dispatch`** returns `{buckets, serial_queue, reasoning,
+  candidate_count, claimed_count, blocked_count, skipped_parse_errors}`.
+- **Jaccard file-overlap detection** (0.3 default threshold).
+  Empty `affected_files` biases to serial (R-2 safety).
+- **Least-loaded-first greedy packing** — distributes, deterministic.
+- **Graph-aware** — blocked artifacts excluded via `kahn_sort`.
+- **Claim-aware** — claimed artifacts skipped with reasoning.
+- **Skill matching** via `agent_skills` vs artifact `domain`.
+- **Markdown-section fallback** — legacy artifacts with only
+  `## Affected Files` body section are hydrated via
+  `extract_affected_files(body)`.
+- **Input clamps**: `MAX_AGENTS=64`, `MAX_SKILLS_PER_AGENT=32`,
+  `MAX_AFFECTED_FILES=512`, 512-byte path cap (R3 CWE-770 fix).
+
+### Added — Integration surface (FR-012, FR-013)
+
+- **`forgeplan_health`** body includes `active_claims`,
+  `active_claim_count`, `skipped_claim_files`.
+- **`forgeplan_get`** `_next_action` appends claim holder + expiry
+  when a live claim exists.
+
+### Security
+
+- Path traversal refusal in `ClaimStore` (CWE-22).
+- Unicode homograph rejection in `domain` (CWE-176).
+- Resource caps on `agents`, skills, file lists, YAML size (CWE-400/770).
+- Control chars rejected in agent identity.
+
+### Performance
+
+- Read-only tools (`dispatch`, `claims`, `health`, `get`) don't acquire
+  the workspace lock — orchestrator 1 Hz polling doesn't serialize
+  writers (R2 architect MED).
+- `ClaimStore::list_active_map` for O(1) dispatcher joins.
+
+### Testing
+
+- **+94 tests** (1297 → 1391). 13 dispatch algorithm, 26 claim store
+  (inc. hardening), 14 MCP wiring + validation, 10 dogfood E2E, 4
+  workflow variations, 1 AC-4 concurrent-forgeplan_new unique-ID E2E.
+- **Two adversarial audit rounds** (R2 3-agent, R3 4-agent with
+  production-validator for FR/AC task-completion) — 30 findings
+  closed with regression tests.
+
+### Deferred to v0.25+
+
+- Shared `kv_yaml` abstraction across `phase::store` + `claim` + future
+  dispatch-cache.
+- Per-request identity for HTTP/SSE transports.
+- `load_frontmatter_full` primitive to dedupe 10 read→parse sites.
+- `ListFilter::parent_epic` push-down.
+- `DispatchDecision` structured enum for `reasoning` (i18n).
+- `list_active_map → HashMap<String, Claim>` for holder-based routing.
+- ADR separating claim (ephemeral) from phase (durable) state.
+- Agent profiles at `.forgeplan/agents/<agent_id>.yaml` (v0.27 roadmap).
+
+### References
+
+- PRD-057 `.forgeplan/prds/PRD-057-*.md`
+- EVID-077 `.forgeplan/evidence/EVID-077-*.md` — R_eff=1.00, CL3
+
 ## [0.23.1] — 2026-04-19 — Multi-agent workspace lock foundation (PRD-057 Inc 1)
 
 First safety primitive for multi-agent workflow — workspace-level file
