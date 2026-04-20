@@ -13,6 +13,30 @@ title: Brownfield Migration Pipeline + Self-description Platform
 
 # EPIC-006: Brownfield Migration Pipeline + Self-description Platform
 
+## ⚠ Scope Narrowed 2026-04-20 (ADR-009 orchestrator pivot)
+
+После spike-1 C4 measurement (EVID-081 CL3) и ADR-009 «Forgeplan as orchestrator» — scope этого Epic **существенно сужен**. Ранее планировалось 6 child PRDs (PRD-059..064), из них:
+
+- **Superseded by EPIC-007** (orchestrator runtime делает это лучше):
+  - PRD-059 (discover + migrate core) → EPIC-007 PRD-065 (playbook runtime) + PRD-066 (ingest engine)
+  - PRD-060 (self-description + agent-manifest) → EPIC-007 PRD-067 (plugin detection + hints)
+  - PRD-062 (init + skill installer) → EPIC-007 PRD-067 + PRD-069 (orchestrator agents)
+
+- **Retained, narrowed to brownfield-docs-pack**:
+  - PRD-061 — становится `marketplace/brownfield-docs-pack/` (playbook + madr-to-forge mapping + forge-classify skill). Consumer of EPIC-007 runtime.
+
+- **Retained, forge-core work independent from orchestration**:
+  - PRD-063 (state machine `completed`/`archived` + bidirectional supersede) — intrinsic forge lifecycle feature, orthogonal к orchestration
+  - PRD-064 (new kinds kb/runbook/postmortem/retrospective/meeting + new links) — forge kind system extension, orthogonal
+
+**Result**: EPIC-006 Phase 1 scope reduced from ~6 PRDs (~3000 LOC estimated) to ~3 PRDs (~1000 LOC estimated). ~60% effort released to EPIC-007 foundation.
+
+Всё нижеследующее — **original shape** iter 1 (для исторического контекста). Actual execution следует narrowed scope выше.
+
+---
+
+
+
 ## Vision
 
 Сделать Forgeplan first-class инструментом для brownfield-проектов любого масштаба — из Obsidian, MADR, ADR-tools, log4brains, ad-hoc `requirements/` и смешанных структур в структурированный forge-граф без потерь данных и без ручной работы. Одновременно перевернуть модель: **инструмент сам ведёт агента**, не наоборот. Поддержка не только Claude Code, но и 6+ других harness'ов (Cursor, Windsurf, Cline, Roo, Copilot, agentskills.io generic).
@@ -130,6 +154,7 @@ TOTAL                                          0/?  (  0%)
 | PRD-058 | PRD | based_on (closed scan-import core bugs) |
 | ADR-003 | ADR | informs (markdown = source of truth invariant) |
 | RFC-003 | RFC | informs (layered architecture — new crate через trait pattern) |
+
 
 
 
