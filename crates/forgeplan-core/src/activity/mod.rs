@@ -134,10 +134,15 @@ pub async fn append(workspace: &Path, entry: &ActivityEntry) -> anyhow::Result<(
         .open(&path)
         .await?;
     file.write_all(line.as_bytes()).await?;
-    // We do NOT fsync every write — would dominate latency. The OS
-    // will flush on close or after a short interval; worst case on
-    // SIGKILL we lose <1 sec of entries. For durability-critical
-    // deployments, a future `activity.fsync: per_entry` flag can opt in.
+    // Explicit flush to buffer boundary. `tokio::fs::File::drop` does
+    // NOT perform an async flush; without this, CI filesystems (Linux
+    // overlayfs in GitHub Actions) intermittently show an empty file
+    // when a test reads right after `append` returns. We do NOT fsync
+    // to disk — would dominate latency. The OS still buffers; worst
+    // case on SIGKILL we lose <1 sec of entries. For durability-
+    // critical deployments, a future `activity.fsync: per_entry` flag
+    // can opt in.
+    file.flush().await?;
     Ok(())
 }
 
