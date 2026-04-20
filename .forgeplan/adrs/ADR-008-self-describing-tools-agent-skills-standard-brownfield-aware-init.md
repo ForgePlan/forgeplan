@@ -114,7 +114,7 @@ Telegram bug report 2026-04-19 (см. PRD-058) выявил системный �
 ## Pre-conditions (DoR)
 
 - [x] PRD-058 merged (scan-import ADR-003 compliance foundation)
-- [ ] Decision confirmed: depth=critical, pipeline PRD→Spec→RFC→ADR (подтверждено `forgeplan route`)
+- [x] Decision confirmed: **depth=deep** (frontmatter authoritative). Per PROB-040 C4 (2026-04-21) — initial routing suggested `critical` но formal Spec/RFC не создаём: data contracts (migration-plan.schema.json, agent-manifest.schema.json, forgeplan-skill-installer trait) embedded в PRD-066/PRD-067/PRD-069 bodies. Justification: single-doc spec + embedded schemas faster iteration than 3-artifact split; scope is contained.
 - [ ] 6 ответов на open questions (Q1-Q6) зафиксированы (done — см. план brownfield сессии)
 - [ ] Sprint slot v0.25 reserved
 
@@ -238,6 +238,7 @@ Baseline hashes заполняются при Code-phase первого PR.
 | PRD-062 | PRD | drives (init-time detection + skill installer) |
 | PRD-063 | PRD | drives (state machine extension) |
 | PRD-064 | PRD | drives (new kinds + links) |
+
 
 
 
