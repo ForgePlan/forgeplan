@@ -1,0 +1,137 @@
+# c4-to-forge.yaml — mapping rules для c4-architecture plugin output
+# Empirically derived from spike-1 (2026-04-20) на Forgeplan repo.
+# Input: C4-Documentation/*.md produced by /c4-architecture workflow.
+# Output: forge artifacts (Epic, PRD, Note) via `forgeplan ingest`.
+
+schema_version: "1.0"
+mapping_name: c4-to-forge
+source_plugin: c4-architecture
+source_spec_version: ">=1.0.0 <2.0.0"  # compat range с upstream plugin
+
+# Source documents: C4 has 4 levels (Context, Container, Component, Code)
+# Output: forge artifacts с `## Sources` section для traceability.
+
+sources:
+  - path_pattern: "C4-Documentation/c4-context.md"
+    mapping: context_to_epic
+  - path_pattern: "C4-Documentation/c4-container-*.md"
+    mapping: container_to_prd
+  - path_pattern: "C4-Documentation/c4-component-*.md"
+    mapping: component_to_prd
+  - path_pattern: "C4-Documentation/c4-code-*.md"
+    mapping: code_to_note  # reference only — too detailed for PRD
+
+mappings:
+
+  # ─── Level 1: Context → Epic + structural metadata
+  context_to_epic:
+    target_kind: epic
+    extract:
+      title: "$.headers[1]  # first H1 or System Overview title"
+      body_sections:
+        # direct map sections from C4 output to Epic body
+        - from: "## System Overview > ### Short Description"
+          to: "## Vision (summary)"
+        - from: "## System Overview > ### Long Description"
+          to: "## Vision"
+        - from: "## System Overview > ### System Scope"
+          to: "## Non-Goals (inverse: outside system boundary)"
+        - from: "## Personas"
+          to: "## Target Users"
+        - from: "## User Journeys"
+          to: "## Success Criteria (per-journey AC)"
+        - from: "## External Systems and Dependencies"
+          to: "## Dependencies"
+      mermaid_diagram:
+        from: "```mermaid (first C4Context block)"
+        to: "## Architecture (embedded)"
+    extract_children:
+      # Each H3 в "## System Features" → candidate PRD
+      - selector: "## System Features > ### *"
+        produces: prd
+        mapping: feature_to_prd
+    source_ref:
+      format: "c4-context.md:{start_line}-{end_line}"
+    defaults:
+      status: draft
+      depth: deep
+      author: c4-ingest
+
+  # ─── Level 2: Container → PRD (1 per container)
+  container_to_prd:
+    target_kind: prd
+    extract:
+      title: "## Container: $name"
+      body_sections:
+        - from: "## Purpose"
+          to: "## Problem"  # invert: what problem does this container solve
+        - from: "## Technology Choices"
+          to: "## Implementation Plan (summary)"
+        - from: "## APIs and Interfaces"
+          to: "## Functional Requirements"
+        - from: "## Dependencies"
+          to: "## Related Artifacts (as informs)"
+    links:
+      # Parent Epic = context-level output
+      - relation: refines
+        target: "{parent_epic_id}"
+    source_ref:
+      format: "c4-container-{slug}.md:{start_line}-{end_line}"
+
+  # ─── Level 3: Component → sub-PRD (finer granularity)
+  component_to_prd:
+    target_kind: prd
+    extract:
+      title: "## Component: $name"
+      body_sections:
+        - from: "## Responsibility"
+          to: "## Problem (what this component addresses)"
+        - from: "## Interface"
+          to: "## Functional Requirements"
+        - from: "## Internal Dependencies"
+          to: "## Related Artifacts"
+    links:
+      - relation: refines
+        target: "{parent_container_prd_id}"
+    source_ref:
+      format: "c4-component-{slug}.md:{start_line}-{end_line}"
+
+  # ─── Level 4: Code → Note (reference, не first-class artifact)
+  code_to_note:
+    target_kind: note
+    extract:
+      title: "Code reference: $directory"
+      body: full_content  # raw markdown preserved as reference
+    source_ref:
+      format: "c4-code-{slug}.md"
+    defaults:
+      expires_in_days: null  # keep forever (reference material)
+
+  # ─── Feature extraction (from Context-level): 1 feature → 1 child PRD
+  feature_to_prd:
+    target_kind: prd
+    extract:
+      title: "$h3_text"  # e.g. "Task Routing and Depth Calibration"
+      body_sections:
+        # Each feature entry in C4 Context has:
+        # description + personas using it + capabilities
+        - from: "paragraph after H3"
+          to: "## Problem + ## Goals"
+        - from: "Personas line"
+          to: "## Target Users"
+      synthesized:
+        # If C4 doesn't have explicit AC/FR, generate stubs for user review
+        acceptance_criteria: "[AC-1: TBD — review C4 feature description and write measurable criteria]"
+        functional_requirements: "[FR-1: TBD — decompose feature capabilities into explicit FRs]"
+    links:
+      - relation: refines
+        target: "{parent_epic_id}"
+    source_ref:
+      format: "c4-context.md:{start_line}-{end_line}  # feature section"
+
+# Rules applied to all ingested artifacts
+universal_rules:
+  - always_add_sources_section: true  # `## Sources` with file:line refs
+  - always_draft_status: true  # ingested artifacts = draft, user reviews + activates
+  - hash_for_idempotency: true  # source_hash field for update detection
+  - on_source_removal: "mark artifact as stale"  # if source .md removed → artifact stale
