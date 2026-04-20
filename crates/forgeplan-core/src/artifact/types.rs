@@ -126,6 +126,17 @@ pub fn slugify(title: &str) -> String {
         .join("-")
 }
 
+/// Artifact lifecycle status.
+///
+/// State machine (see CLAUDE.md + docs/methodology/):
+/// `draft → active → {superseded | deprecated | stale}`
+/// `stale → {active via renew | deprecated + new draft via reopen}`
+///
+/// PROB-040 C1 fix (2026-04-21): renamed `RefreshDue` → `Stale` to match
+/// documented state machine + existing string-based lifecycle checks
+/// (see `lifecycle::mod.rs` — compares against `"stale"` literal).
+/// Serialization is now `stale` (was: `refresh_due`). No artifacts
+/// in workspace serialized with the old value (verified via grep).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -133,7 +144,7 @@ pub enum Status {
     Active,
     Superseded,
     Deprecated,
-    RefreshDue,
+    Stale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
