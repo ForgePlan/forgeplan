@@ -3,6 +3,21 @@ mod ui;
 
 use clap::{Parser, Subcommand};
 
+/// Load `.env` from the nearest `.forgeplan/` workspace (walk-up from cwd).
+///
+/// dotenvy's default `dotenv()` only reads `.env` from the current directory,
+/// which misses `.forgeplan/.env` — the canonical location for forgeplan
+/// API keys (PROB-041). This walks up from cwd to find a workspace and
+/// loads its `.env` first. Does not override already-set env vars, so
+/// precedence is: shell env > workspace .env > cwd .env.
+fn load_workspace_env() {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
+    {
+        dotenvy::from_path(ws.join(".env")).ok();
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "forgeplan",
@@ -647,7 +662,10 @@ enum FpfCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env file (if exists) for API keys and config overrides
+    // Load .env from workspace first (.forgeplan/.env via walk-up from cwd),
+    // then fall back to cwd .env. Neither call overrides shell env vars —
+    // precedence: shell env > workspace .env > cwd .env.
+    load_workspace_env();
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
