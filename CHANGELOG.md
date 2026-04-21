@@ -7,6 +7,110 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [Unreleased] — 2026-04-21 — Brownfield orchestrator pivot stream (ADR-009 + EPIC-007/008 shape)
+
+Major strategic pivot: Forgeplan moves from an "implementer" role (writing
+its own extraction logic) to an **orchestrator** role (driving existing
+marketplace plugins via playbooks, mappings, and agents). Captured in
+ADR-009 and backed by two CL3 measurements on the Forgeplan repo itself.
+
+Four days, 10 PRs (9 merged), 2 ADRs, 3 Epics, 11 PRD shape artifacts,
+4 Problems, 3 Evidence records, 2 strategic spikes. No runtime behavior
+change yet — this entire stream is the **shape phase**. Code phase
+(EPIC-007 Wave 1 runtime + EPIC-008 Wave 1 kinds) kicks off post-stream.
+
+### Added — Architecture & Methodology
+
+- **ADR-008** — Self-describing tools + agent-skills standard +
+  brownfield-aware init. Specifies how forgeplan output should include
+  next-step hints, how skills are installed and tracked, and how init
+  detects legacy brownfield structures. Amendment: derived-skill-file
+  policy (canonical-in-peer-repo, installed-copies-are-derived,
+  hash-tracking, `skill eject` command).
+- **ADR-009** — Forgeplan as Orchestrator (4 primitives + Pack
+  marketplace). Forgeplan does NOT reimplement extraction. Instead ships
+  Playbook (YAML recipe) + Skill (promptable unit) + Agent (autonomous
+  subagent) + Mapping (format→forge rules). Packs are peer-repo
+  versioned bundles. Validated by Spike-1 (c4-architecture → 20
+  artifacts) and Spike-3 (ddd-domain-expert → 84 artifacts), both CL3.
+- **EPIC-006 Brownfield Migration** — narrowed to consumer of EPIC-007
+  runtime. PRD-064 scope (kb/runbook/postmortem kinds) moved to
+  EPIC-008. ~75% effort redistributed.
+- **EPIC-007 Playbook Runtime + Pack Marketplace** — new, active. 5
+  child PRDs (65-69): playbook executor, ingest engine, plugin
+  detection, forge-history-miner skill, orchestrator agents.
+- **EPIC-008 Business Logic Extraction (Factum/Intent)** — new, active.
+  Integrates user-authored design package `docs/brownfield-extraction-
+  package/` (25 files, 12 bounded contexts, 12 skills). 5 waves, 6
+  child PRDs (70-75) to shape: 6 new artifact kinds (glossary,
+  use-case, invariant, scenario, hypothesis, domain-model), 10 MCP
+  tools, confidence-per-assertion HTML wrappers, `/extract-business-
+  logic` orchestrator command.
+
+### Added — Peer marketplace
+
+- **`forgeplan-brownfield-pack`** (new plugin in `ForgePlan/marketplace`)
+  — playbooks/skills/agents/mappings scaffold for brownfield workflows.
+  Initial mappings:
+  - `c4-to-forge.yaml` — C4 context/container/component → Epic/PRD/Note
+  - `ddd-to-forge.yaml` — DDD report → Epic/PRD/Note/Problem with
+    compat-shim for pre-EPIC-008 kinds
+
+### Fixed
+
+- **PROB-040 C1** — `Status::RefreshDue` renamed to `Status::Stale` to
+  align enum with string-based lifecycle checks (was silent drift).
+- **PROB-040 C2** — ADR-008 amendment adds derived-skill-file policy.
+- **PROB-040 C4** — ADR-008 depth claim aligned with frontmatter
+  (deep, not critical — embedded schemas in child PRD bodies).
+- **PROB-041** — CLI now loads `.forgeplan/.env` via workspace walk-up
+  (was only reading cwd).
+- **PROB-043** — Activity log explicit `file.flush().await?` prevents
+  CI-flaky race where Linux overlayfs saw empty file immediately
+  after append returned (`tokio::fs::File::drop` does not flush).
+
+### Changed — Repo hygiene
+
+- `C4-Documentation/` → `docs/architecture/` (Spike-1 output moved
+  under docs tree).
+- `marketplace/` removed from forgeplan repo — relocated to peer
+  `ForgePlan/marketplace`.
+- `skills/` removed from forgeplan repo — SKILL.md merged into peer
+  `plugins/forgeplan-workflow/skills/forgeplan-methodology/SKILL.md`.
+  `setup-skill` CLI command now `include_str!`s a local
+  `crates/forgeplan-cli/src/commands/forge-skill.md` (synced copy;
+  peer is authoritative upstream).
+- Root now contains only first-class dirs: `crates/ docs/ sources/
+  templates/ tests/ todo/ website/ Formula/`.
+
+### Added — Documentation
+
+- `docs/operations/BROWNFIELD-ORCHESTRATOR-HANDOFF-2026-04-21.ru.md`
+  — 1500+ line self-contained handoff guide covering the whole
+  stream (ADR-009 pivot, EPIC-006/007/008, PROB-040/044 findings,
+  gotchas, master sequence).
+- `docs/architecture/c4-context.md` (Spike-1, 336 lines) +
+  `docs/architecture/ddd-analysis-spike-3.md` (Spike-3, 650+ lines)
+  — full agent outputs, reference material.
+- `docs/brownfield-extraction-package/` (25 files, user-authored
+  design package) — tracked in git as source for EPIC-008 Wave 1.
+
+### Deferred to Code-phase PRDs
+
+- PROB-040 C3 (journaled-replay for atomic supersede) → PRD-063
+- PROB-040 C5 (MigrationPlan aggregate ownership) → PRD-066
+- PROB-040 C6 (BrownfieldStatusTranslator ACL) → PRD-066
+- PROB-040 H1, H3, H4, H6-H11 → per-PRD Code-phase
+- 44-file Obsidian fixture (H12) → brownfield-docs-pack Code-phase
+- Cross-harness install CL3 (H5) → PRD-069 orchestrator agents
+
+### Tests
+
+1405 tests pass, 0 clippy warnings on Rust 1.95. No Rust code changes
+in this stream (shape-only); code path verified clean at session start.
+
+---
+
 ## [0.24.0] — 2026-04-19 — Orchestrator dispatcher for 2-5 sub-agents (PRD-057 complete)
 
 Forgeplan now dispatches work. One MCP call — `forgeplan_dispatch

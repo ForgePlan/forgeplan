@@ -1458,15 +1458,95 @@ crates/forgeplan-cli/src/main.rs                 (load_workspace_env for .env fi
 
 ---
 
+## 19a. Follow-up Session 2026-04-21 — Stream Closure (Steps 1-7)
+
+После initial session создан master plan закрытия stream'а в 7 шагов:
+
+| Step | Result | Commit / PR |
+|---|---|---|
+| 1. EPIC-008 shape (Factum/Intent methodology) | depth=deep, validate PASS | fa28f60 / PR #208 |
+| 2. EPIC-006 narrowing + PRD-064 → EPIC-008 | 75% effort redistributed | 56ed067 / PR #208 |
+| 3. PROB-044 resolution record | 41 findings triaged, 0 blocking | 79c2d77 / PR #208 |
+| 4. Spike-3 (ddd-domain-expert on Forgeplan repo) | 84 artifacts derivable, CL3 | c9224f0 / PR #209 + peer #23 |
+| 5. EPIC-008 activate | R_eff 0.73 (B), active | этот PR |
+| 6. Handoff doc update | этот раздел | этот PR |
+| 7. CHANGELOG v0.25 planning | см. CHANGELOG.md | этот PR |
+
+### Ключевые deliverables этой сессии
+
+**EPIC-008** (business-logic extraction) создан как **consumer** EPIC-007 runtime, не replacement. Integrates design package `docs/brownfield-extraction-package/` (25 файлов, Factum/Intent two-tier methodology, 12 bounded contexts, 12 skills) как first-class forge Epic. 5 waves, 14 deliverables, 6 child PRDs (70-75) to be shaped.
+
+**Spike-3 (EVID-082)** — запустили `agents-pro:ddd-domain-expert` subagent на Forgeplan Rust workspace:
+- 8 bounded contexts + Interface context (all code-anchored)
+- 23 aggregate roots (real struct names + file:line refs)
+- 23 glossary terms
+- 12 domain events
+- 10 integration patterns
+- 6 category errors (E1-E6), включая **новый E5** — «bounded context» term collision (FPF `ArtifactCluster` vs DDD strategic concept), не замеченный 4-agent audit ранее
+
+Результат: **84 forge-artifacts деривируемы из одного DDD run без ручной работы** — второе CL3 measurement после Spike-1 (20 artifacts c4-to-forge). Orchestrator-model double-confirmed.
+
+**PROB-044** — dev-tracked resolution record для 41 finding из 2026-04-19 audit:
+- 6 CRITICAL: 3 closed (C1 PR #205, C2 PR #207, C4 PR #206), 3 deferred to Code-phase (C3→PRD-063, C5/C6→PRD-066)
+- 12 HIGH: 1 resolved, 1 partial (H5 после Spike-3 mostly resolved), 9 deferred, 1 pending (H12 44-file fixture)
+- 15 MEDIUM + 8 LOW: deferred to Code-phase
+- **0 findings actively blocking** — all deferred have explicit owners
+
+### Peer repo state (`ForgePlan/marketplace`)
+
+Plugin `forgeplan-brownfield-pack` теперь содержит 2 mappings:
+- `c4-to-forge.yaml` — from Spike-1
+- `ddd-to-forge.yaml` — from Spike-3 (NEW, peer PR #23 merged)
+
+Compat-shim для pre-EPIC-008 kinds: glossary→note, invariant→spec, hypothesis→problem, domain-model→spec (с `x-forgeplan-hints.intended_kind` для re-materialization).
+
+### Updated master sequence post-closure
+
+ЭТАП 1 (~ 1 week, mostly done):
+- ✅ ADR-008, ADR-009 active
+- ✅ EPIC-006 narrowed, EPIC-007 active, EPIC-008 active
+- ✅ PROB-040/041/042/043/044 resolved или tracked
+- ✅ Spike-1 + Spike-3 CL3 measurements
+- 🟡 Remaining: 44-file Obsidian fixture (H12), cross-harness CL3 (H5)
+
+ЭТАП 2 (5-8 days) — **Build Runtime**:
+- PRD-065 `forgeplan-playbook` crate
+- PRD-066 `forgeplan-ingest` crate
+- PRD-067 plugin detection
+- PRD-068 forge-history-miner skill
+- PRD-069 orchestrator agents
+
+ЭТАП 2.5 (EPIC-008 Wave 1, 3-5 days) — **Extraction Kinds**:
+- PRD-070 6 new kinds (glossary, use-case, invariant, scenario, hypothesis, domain-model)
+- PRD-071 confidence scoring HTML-wrapper + aggregation
+- PRD-072 10 new MCP tools (hypothesis_*, coverage_business, interview_*, etc.)
+
+ЭТАП 3 (3-5 days) — **Packs**:
+- `forgeplan-brownfield-docs-pack` (MADR/Obsidian consumer)
+- `forgeplan-brownfield-pack` (code extraction consumer, already scaffolded в peer)
+- `forgeplan-greenfield-shape-pack`
+
+ЭТАП 4 (2-3 days) — **Validation + E2E**:
+- 44-file Obsidian vault fixture commit
+- Cross-harness install CL3 measurement
+- Dogfood extraction на Forgeplan itself
+
+ЭТАП 5 (1 day) — **Release v0.25**:
+- CHANGELOG finalize
+- Release PR, tag, back-merge main→dev
+
+---
+
 ## 20. Конец документа
 
 Этот гайд покрывает:
-- 3 дня работы
-- ~15 часов active engineering
-- 8 PRs (7 merged, 1 closed)
-- 2 ADRs, 2 Epics, 5 PRDs shape
-- 3 PROBs, 3 EVIDs
-- 1 spike CL3 measurement
+- 4 дня работы
+- ~18 часов active engineering
+- 10 PRs (9 merged, 1 closed)
+- 2 ADRs (008, 009), 3 Epics (006 narrowed, 007 active, 008 new active)
+- 11 PRDs shape (61, 63, 65-69 + 70-75 planned for EPIC-008)
+- 4 PROBs (041/042/043/044), 3 EVIDs (080/081/082)
+- 2 spike CL3 measurements (c4-to-forge + ddd-to-forge)
 - 1 strategic architectural pivot (ADR-009)
 
 Если что-то непонятно или нужно углубиться — читай:

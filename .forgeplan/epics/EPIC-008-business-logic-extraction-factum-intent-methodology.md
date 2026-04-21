@@ -9,7 +9,7 @@ links:
   relation: based_on
 - target: ADR-008
   relation: informs
-status: draft
+status: active
 title: Business Logic Extraction — Factum Intent Methodology
 ---
 
@@ -168,6 +168,7 @@ TOTAL                                                0/14 (  0%)
 - [ ] Docs published: forgeplan extensions guide, extraction-pack SKILL.md, orchestrator command docs
 - [ ] Design spec `docs/brownfield-extraction-package/` archived (replaced by canonical forge artifacts)
 - [ ] Hindsight memory entry про EPIC-008 completion
+
 
 
 
