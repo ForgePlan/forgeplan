@@ -27,9 +27,11 @@ title: Brownfield Migration Pipeline + Self-description Platform
 
 - **Retained, forge-core work independent from orchestration**:
   - PRD-063 (state machine `completed`/`archived` + bidirectional supersede) — intrinsic forge lifecycle feature, orthogonal к orchestration
-  - PRD-064 (new kinds kb/runbook/postmortem/retrospective/meeting + new links) — forge kind system extension, orthogonal
 
-**Result**: EPIC-006 Phase 1 scope reduced from ~6 PRDs (~3000 LOC estimated) to ~3 PRDs (~1000 LOC estimated). ~60% effort released to EPIC-007 foundation.
+- **Further narrowing 2026-04-21 (EPIC-008 factum/intent methodology)**:
+  - PRD-064 scope (new kinds `kb/runbook/postmortem/retrospective/meeting` + new links) — **moved to EPIC-008**. Formal Factum/Intent kinds (`glossary`, `use-case`, `invariant`, `scenario`, `hypothesis`, `domain-model`) subsumed documentational categories: `kb` → `glossary`+`domain-model`; `postmortem` → `use-case`+`invariant`+`hypothesis`; остальное (runbook/retrospective/meeting) — optional follow-up. PRD-064 draft existed only on closed feat-branch (PR #200); reindex 2026-04-21 removed stale DB entry.
+
+**Result**: EPIC-006 Phase 1 scope reduced from ~6 PRDs (~3000 LOC estimated) to ~2 PRDs (~700 LOC estimated). ~75% effort released to EPIC-007 foundation + EPIC-008 business-logic extraction.
 
 Всё нижеследующее — **original shape** iter 1 (для исторического контекста). Actual execution следует narrowed scope выше.
 
@@ -115,7 +117,7 @@ E2E test 44-файлового Obsidian vault. Cross-harness CI matrix. `scan-im
 | PRD-061 | PRD | Marketplace `brownfield-pack`: canonical SKILL.md, forge-classify skill, forge-dialogue skill, forge-migrator agent |
 | PRD-062 | PRD | `forgeplan init --from-brownfield` + new crate `forgeplan-skill-installer` с 7 harness adapters |
 | PRD-063 | PRD | State machine: `completed`/`archived` states, bidirectional `supersede`/`deprecate`, `forgeplan complete`/`archive` commands |
-| PRD-064 | PRD | New kinds: `kb`/`runbook`/`postmortem`/`retrospective`/`meeting`. New links: `references`/`responds_to`/`caused_by`/`discusses` |
+| ~~PRD-064~~ | ~~PRD~~ | ~~New kinds~~ — **moved to EPIC-008** (subsumed by formal Factum/Intent kinds) |
 
 IDs будут присвоены при создании (auto-increment).
 
