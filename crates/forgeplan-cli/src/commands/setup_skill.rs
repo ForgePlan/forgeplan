@@ -9,7 +9,11 @@ pub async fn run() -> Result<()> {
     let skill_dir = home.join(".claude").join("skills").join("forge");
     fs::create_dir_all(&skill_dir)?;
 
-    let skill_content = include_str!("../../../../skills/forge/SKILL.md");
+    // Bundled copy. Authoritative upstream lives in the peer
+    // `forgeplan-marketplace` repo at
+    // `plugins/forgeplan-workflow/skills/forgeplan-methodology/SKILL.md`.
+    // Keep this file in sync with that upstream on release.
+    let skill_content = include_str!("forge-skill.md");
 
     let skill_path = skill_dir.join("SKILL.md");
     fs::write(&skill_path, skill_content)?;
