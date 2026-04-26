@@ -14,7 +14,11 @@ const DEST = resolve(__dirname, '../src/content/docs/docs/changelog.md');
 const raw = readFileSync(SRC, 'utf8');
 
 // Strip the leading "# Changelog" H1 since Starlight adds its own title from frontmatter.
-const stripped = raw.replace(/^# Changelog\s*\n+/, '');
+let stripped = raw.replace(/^# Changelog\s*\n+/, '');
+
+// Strip relative links to .forgeplan/* artifacts — they don't resolve on the website.
+// Keep the artifact ID as plain text. Pattern: [TEXT](.forgeplan/path/...)
+stripped = stripped.replace(/\[([^\]]+)\]\(\.forgeplan\/[^)]+\)/g, '$1');
 
 const body = `---
 title: Changelog
