@@ -48,6 +48,7 @@ export default defineConfig({
           { label: 'Artifact Lifecycle', slug: 'docs/methodology/lifecycle', translations: { ru: 'Жизненный цикл' } },
           { label: 'Evidence & Scoring', slug: 'docs/methodology/evidence', translations: { ru: 'Доказательства и скоринг' } },
           { label: 'ADI Reasoning', slug: 'docs/methodology/adi', translations: { ru: 'ADI рассуждения' } },
+          { label: 'Hint Contract', slug: 'docs/methodology/agent-protocol', translations: { ru: 'Hint Contract' } },
         ],
       },
       {
