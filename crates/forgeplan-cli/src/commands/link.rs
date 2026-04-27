@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::link;
 
 use crate::commands::common;
@@ -61,6 +62,14 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
     .await;
 
     println!("Linked: {} --{}--> {}", source_id, relation, target_id);
+
+    // PRD-071 contract: after linking evidence/refines/based_on, the natural
+    // next step is to re-score the source so R_eff updates.
+    let hints_vec = vec![
+        Hint::info("Recompute R_eff after linking")
+            .with_action(format!("forgeplan score {}", source_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 
@@ -121,5 +130,12 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
     .await;
 
     println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
+
+    // PRD-071 contract: rescoring is the right follow-up after unlinking too.
+    let hints_vec = vec![
+        Hint::info("Recompute R_eff after unlink")
+            .with_action(format!("forgeplan score {}", source_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }

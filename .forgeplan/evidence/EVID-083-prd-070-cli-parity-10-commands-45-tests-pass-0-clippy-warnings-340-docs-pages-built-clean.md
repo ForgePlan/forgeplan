@@ -5,7 +5,9 @@ kind: evidence
 links:
 - target: PRD-070
   relation: informs
-status: draft
+- target: PROB-045
+  relation: informs
+status: active
 title: PRD-070 CLI parity — 10 commands, 45 tests pass, 0 clippy warnings, 340 docs pages built clean
 ---
 
@@ -72,4 +74,5 @@ CL3: same context — measurements taken on the actual `feat/prd-070-cli-parity`
 | PRD-055 | based_on (provided activity/undo/restore core) |
 | PRD-056 | based_on (provided phase core) |
 | PRD-057 | based_on (provided dispatch/claim core, also dogfood-tested) |
+
 

@@ -6,6 +6,7 @@
 // Mirrors `forgeplan_phase` semantics from the MCP server (PRD-056 FR-012).
 
 use console::style;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase;
 use forgeplan_core::workspace;
 
@@ -28,6 +29,20 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
 }
 
 fn print_state(state: &phase::PhaseState, json: bool) {
+    // PRD-071 contract: derive a single Next: action from the state. If a
+    // suggested next phase exists, point at the full advance command. Else
+    // (terminal phase) emit no action — handled as Done. terminal status.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if let Some(next) = state.current_phase.suggested_next() {
+        hints_vec.push(
+            Hint::suggestion(format!("Advance to {}", next.as_str())).with_action(format!(
+                "forgeplan phase-advance {} --to {}",
+                state.artifact_id,
+                next.as_str()
+            )),
+        );
+    }
+
     if json {
         // Full state -- history included.
         let payload = serde_json::json!({
@@ -42,6 +57,7 @@ fn print_state(state: &phase::PhaseState, json: bool) {
                 "at": t.at,
                 "reason": t.reason,
             })).collect::<Vec<_>>(),
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!(
             "{}",
@@ -98,9 +114,21 @@ fn print_state(state: &phase::PhaseState, json: bool) {
         ),
         None => println!("  terminal phase -- no further advancement recommended"),
     }
+
+    // PRD-071 contract: terminal Next:/Done line for the CLI text surface.
+    match hints::primary_action(&hints_vec) {
+        Some(cmd) => println!("\nNext: {}", cmd),
+        None => println!("\nDone."),
+    }
 }
 
 fn print_unknown(id: &str, json: bool) {
+    // PRD-071 contract: bootstrap the phase tracking by suggesting a `shape` advance.
+    let hints_vec = vec![
+        Hint::suggestion("Start phase tracking")
+            .with_action(format!("forgeplan phase-advance {} --to shape", id)),
+    ];
+
     if json {
         let payload = serde_json::json!({
             "artifact_id": id,
@@ -108,6 +136,7 @@ fn print_unknown(id: &str, json: bool) {
             "workflow_type": "greenfield",
             "history": Vec::<serde_json::Value>::new(),
             "message": "No phase state file on disk -- advisory only, never an error",
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!(
             "{}",
@@ -124,8 +153,5 @@ fn print_unknown(id: &str, json: bool) {
         "  Typical for artifacts created before PRD-056 shipped, or when \
          `phase.enabled: false` in config."
     );
-    println!(
-        "  To start tracking: `forgeplan phase-advance {} --to shape`",
-        id
-    );
+    print!("{}", hints::render_next_action_line(&hints_vec));
 }

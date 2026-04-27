@@ -2,6 +2,7 @@
 
 use crate::commands::common;
 use anyhow::{Context, Result};
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
 /// Add tags to an artifact.
@@ -47,6 +48,18 @@ pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
         }
     );
 
+    // PRD-071: tags applied — surface filtered list as the verifying action.
+    let primary_tag = tags
+        .iter()
+        .find(|t| !t.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "<tag>".to_string());
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Tag added — list filtered artifacts")
+            .with_action(format!("forgeplan list --tag {}", primary_tag)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
+
     Ok(())
 }
 
@@ -88,6 +101,12 @@ pub async fn run_remove(id: &str, tags: &[String]) -> Result<()> {
             updated.tags.join(", ")
         }
     );
+
+    // PRD-071: verify state after un-tagging.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Tags removed — verify artifact").with_action(format!("forgeplan get {}", id)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

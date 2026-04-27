@@ -1,3 +1,5 @@
+use forgeplan_core::hints::{self, Hint};
+
 use crate::commands::common;
 
 pub async fn run(
@@ -9,13 +11,35 @@ pub async fn run(
     let store = common::store().await?;
     let entries = store.get_change_log(artifact_id, source, limit).await?;
 
+    // PRD-071 contract: pick the most recently changed artifact and suggest
+    // viewing it. log entries are reverse-chronological (most recent first).
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if let Some(first) = entries.first() {
+        hints_vec.push(
+            Hint::info(format!(
+                "Inspect most recent change on {}",
+                first.artifact_id
+            ))
+            .with_action(format!("forgeplan get {}", first.artifact_id)),
+        );
+    }
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        let payload = serde_json::json!({
+            "entries": entries,
+            "_next_action": hints::primary_action(&hints_vec),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
     if entries.is_empty() {
         println!("No change log entries found.");
+        let bootstrap = vec![
+            Hint::suggestion("No change history yet — create or edit an artifact")
+                .with_action("forgeplan list".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&bootstrap));
         return Ok(());
     }
 
@@ -58,6 +82,7 @@ pub async fn run(
 
     println!();
     println!("{} entries shown", entries.len());
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 

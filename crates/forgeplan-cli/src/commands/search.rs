@@ -1,3 +1,5 @@
+use forgeplan_core::hints::{self, Hint};
+
 use crate::commands::common;
 use crate::ui;
 
@@ -93,15 +95,26 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
     let hits = store.search_body(query, kind).await?;
 
     if hits.is_empty() {
+        // PRD-071: empty-result hints from search_hints are advisory; pick
+        // primary action and surface it as Next:/_next_action.
+        let advisory = forgeplan_core::hints::search_hints(query, 0);
         if json {
-            println!("[]");
+            let payload = serde_json::json!({
+                "results": [],
+                "_next_action": hints::primary_action(&advisory),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             ui::info(&format!("No results for \"{}\"", query));
-            let hints = forgeplan_core::hints::search_hints(query, 0);
-            print!("{}", forgeplan_core::hints::format_hints(&hints));
+            print!("{}", forgeplan_core::hints::format_hints(&advisory));
+            print!("{}", hints::render_next_action_line(&advisory));
         }
         return Ok(());
     }
+
+    let top_id = hits[0].id.clone();
+    let next_hints: Vec<Hint> =
+        vec![Hint::info("Top result").with_action(format!("forgeplan get {}", top_id))];
 
     if json {
         let json_data: Vec<_> = hits
@@ -116,7 +129,11 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json_data)?);
+        let payload = serde_json::json!({
+            "results": json_data,
+            "_next_action": hints::primary_action(&next_hints),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
@@ -153,6 +170,8 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
         println!();
     }
 
+    print!("{}", hints::render_next_action_line(&next_hints));
+
     Ok(())
 }
 
@@ -178,14 +197,28 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
         };
 
         if hits.is_empty() {
+            // PRD-071: surface a primary fix-action.
+            let next_hints: Vec<Hint> = vec![
+                Hint::warning(format!("No semantic results for \"{}\"", query))
+                    .with_action("forgeplan embed".to_string()),
+            ];
             if json {
-                println!("[]");
+                let payload = serde_json::json!({
+                    "results": [],
+                    "_next_action": hints::primary_action(&next_hints),
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
                 ui::info(&format!("No semantic results for \"{}\"", query));
-                println!("  Hint: run `forgeplan embed` to generate embeddings.");
+                print!("{}", hints::render_next_action_line(&next_hints));
             }
             return Ok(());
         }
+
+        let top_id = hits[0].record.id.clone();
+        let next_hints: Vec<Hint> = vec![
+            Hint::info("Top semantic result").with_action(format!("forgeplan get {}", top_id)),
+        ];
 
         if json {
             let json_data: Vec<_> = hits
@@ -202,7 +235,11 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json_data)?);
+            let payload = serde_json::json!({
+                "results": json_data,
+                "_next_action": hints::primary_action(&next_hints),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
             return Ok(());
         }
 
@@ -220,6 +257,8 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
                 h.record.title
             );
         }
+
+        print!("{}", hints::render_next_action_line(&next_hints));
 
         Ok(())
     }
@@ -251,12 +290,22 @@ async fn run_smart(
     // Load all records — filter pushed down into smart_search.
     let records = store.list_records(None).await?;
     if records.is_empty() {
+        // PRD-071: empty workspace — primary action is to create something.
+        let next_hints: Vec<Hint> = vec![
+            Hint::info("No artifacts in workspace")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
         if json {
-            println!("[]");
+            let payload = serde_json::json!({
+                "results": [],
+                "_next_action": hints::primary_action(&next_hints),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             ui::info("No artifacts found.");
-            let hints = forgeplan_core::hints::search_hints(query, 0);
-            print!("{}", forgeplan_core::hints::format_hints(&hints));
+            let advisory = forgeplan_core::hints::search_hints(query, 0);
+            print!("{}", forgeplan_core::hints::format_hints(&advisory));
+            print!("{}", hints::render_next_action_line(&next_hints));
         }
         return Ok(());
     }
@@ -284,15 +333,30 @@ async fn run_smart(
     );
 
     if results.is_empty() {
+        let advisory = forgeplan_core::hints::search_hints(query, 0);
         if json {
-            println!("[]");
+            let payload = serde_json::json!({
+                "results": [],
+                "_next_action": hints::primary_action(&advisory),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             ui::info(&format!("No results for \"{}\"", query));
-            let hints = forgeplan_core::hints::search_hints(query, 0);
-            print!("{}", forgeplan_core::hints::format_hints(&hints));
+            print!("{}", forgeplan_core::hints::format_hints(&advisory));
+            print!("{}", hints::render_next_action_line(&advisory));
         }
         return Ok(());
     }
+
+    let top_id = results[0].id.clone();
+    let next_hints: Vec<Hint> = if !has_embeddings {
+        vec![
+            Hint::info("Smart search ran without embeddings")
+                .with_action("forgeplan embed".to_string()),
+        ]
+    } else {
+        vec![Hint::info("Top result").with_action(format!("forgeplan get {}", top_id))]
+    };
 
     if json {
         let json_data: Vec<_> = results
@@ -314,7 +378,11 @@ async fn run_smart(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json_data)?);
+        let payload = serde_json::json!({
+            "results": json_data,
+            "_next_action": hints::primary_action(&next_hints),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         println!(
             "Found {} result(s) for \"{}\" (smart search):\n",
@@ -340,6 +408,7 @@ async fn run_smart(
             println!();
             println!("  Tip: run `forgeplan embed` to enable semantic search for better results.");
         }
+        print!("{}", hints::render_next_action_line(&next_hints));
     }
 
     Ok(())

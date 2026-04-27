@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use console::style;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::undo;
 
 use crate::commands::common;
@@ -33,12 +34,22 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
     let receipt = match receipt {
         Some(r) => r,
         None => {
+            // PRD-071: error path — primary fix is to widen the window to
+            // the maximum (720h). Determinstic and copy-pasteable.
+            let fix_hints: Vec<Hint> = vec![
+                Hint::warning(format!(
+                    "No non-consumed destructive op in the last {} hour(s)",
+                    within
+                ))
+                .with_action("forgeplan undo-last --within-hours 720".to_string()),
+            ];
             if json {
                 let payload = serde_json::json!({
                     "ok": false,
                     "error": format!(
                         "No non-consumed destructive op in the last {within} hour(s)"
                     ),
+                    "_next_action": hints::primary_action(&fix_hints),
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
@@ -47,11 +58,9 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
                     style("Error:").red().bold(),
                     within
                 );
-                eprintln!(
-                    "  Hint: expand the window with `--within-hours 720`, or inspect \
-                     `forgeplan activity --tool forgeplan_delete,forgeplan_supersede,\
-                     forgeplan_deprecate --since-hours 720`."
-                );
+                if let Some(fix) = hints::primary_action(&fix_hints) {
+                    eprintln!("Fix: {}", fix);
+                }
             }
             std::process::exit(1);
         }
@@ -64,6 +73,12 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
         undo::DestructiveOp::Deprecate => "deprecate",
     };
 
+    // PRD-071: post-undo, verify the restored artifact's state.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Reversed — verify state")
+            .with_action(format!("forgeplan get {}", report.artifact_id)),
+    ];
+
     if json {
         let payload = serde_json::json!({
             "ok": true,
@@ -74,6 +89,7 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             "relations_skipped": report.relations_skipped,
             "projection_restored": report.projection_restored,
             "warnings": report.warnings,
+            "_next_action": hints::primary_action(&next_hints),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -103,11 +119,7 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             println!("  - {w}");
         }
     }
-    println!();
-    println!(
-        "  Hint: call `forgeplan undo-last` again to reverse the next non-consumed receipt, \
-         or restore a specific ID with `forgeplan restore <id>`."
-    );
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

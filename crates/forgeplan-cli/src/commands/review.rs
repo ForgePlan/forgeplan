@@ -1,4 +1,5 @@
 use console::style;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::lifecycle;
 
 use crate::commands::common;
@@ -77,10 +78,30 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
         })
         .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
     let review_hints =
-        forgeplan_core::hints::review_hints(has_evidence, is_stub, has_must_errors, &kind);
+        forgeplan_core::hints::review_hints(id, has_evidence, is_stub, has_must_errors, &kind);
     if !review_hints.is_empty() {
         print!("{}", forgeplan_core::hints::format_hints(&review_hints));
     }
+
+    // PRD-071 contract: emit single primary next-action.
+    // - MUST errors → Fix path (validate to see specifics)
+    // - clean review → Next path (activate)
+    // - intermediate (warnings only) → Next path (advisory hints already covered above)
+    let next_hints: Vec<Hint> = if has_must_errors {
+        vec![
+            Hint::warning("Validation has MUST errors")
+                .with_action(format!("forgeplan validate {}", id)),
+        ]
+    } else if result.can_activate {
+        vec![Hint::info("Review passed").with_action(format!("forgeplan activate {}", id))]
+    } else {
+        // Pull primary action from the advisory review_hints (e.g. add evidence).
+        match hints::primary_action(&review_hints) {
+            Some(action) => vec![Hint::info("Methodology gate not met").with_action(action)],
+            None => Vec::new(),
+        }
+    };
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

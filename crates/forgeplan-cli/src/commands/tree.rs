@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use console::style;
 
 use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 use crate::ui;
@@ -19,10 +20,18 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
 
     if let Some(root_id) = id {
         if !all_records.contains_key(root_id) {
+            // PRD-071: error path — direct user to listing for valid IDs.
+            let fix_hints: Vec<Hint> = vec![
+                Hint::warning(format!("Artifact '{}' not found", root_id))
+                    .with_action("forgeplan list".to_string()),
+            ];
             ui::error_hint(
                 &format!("Artifact '{}' not found", root_id),
                 "Run `forgeplan list` to see available artifacts",
             );
+            if let Some(fix) = hints::primary_action(&fix_hints) {
+                eprintln!("Fix: {}", fix);
+            }
             anyhow::bail!("Artifact '{}' not found", root_id);
         }
         println!();
@@ -41,7 +50,13 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
         roots.sort();
 
         if roots.is_empty() {
+            // PRD-071: empty workspace — primary action is to create.
+            let next_hints: Vec<Hint> = vec![
+                Hint::info("Empty workspace")
+                    .with_action("forgeplan new prd \"<title>\"".to_string()),
+            ];
             ui::info("No artifacts found. Run `forgeplan new` to create one.");
+            print!("{}", hints::render_next_action_line(&next_hints));
             return Ok(());
         }
 
@@ -83,6 +98,14 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
             style(deprecated).red(),
         );
     }
+
+    // PRD-071: tree is exploratory — drop user into health to surface
+    // any structural issues (orphans, blind spots).
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Tree rendered — check workspace health")
+            .with_action("forgeplan health".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }
@@ -292,12 +315,28 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 /// Render JSON output.
+///
+/// **Backward-compat (PRD-071)**: stdout MUST be a bare JSON shape
+/// (array of root nodes when no `id`, single node when `id` is given) so
+/// existing `forgeplan tree --json | jq '.[]'` consumers keep working.
+/// The `Next:` hint is additive and emitted to stderr — agents and
+/// tooling that look for hints across stdout+stderr still see it; raw
+/// JSON parsers see only the array/object on stdout.
 fn render_json(
     id: Option<&str>,
     depth: usize,
     children_map: &BTreeMap<String, Vec<String>>,
     records: &BTreeMap<String, DisplayRecord>,
 ) -> anyhow::Result<()> {
+    // PRD-071: emit primary next-action so JSON consumers (agents) get the
+    // same `forgeplan health` deterministic hint as text mode — but on
+    // stderr so the stdout JSON shape stays bw-compatible.
+    let next_action = if records.is_empty() {
+        Some("forgeplan new prd \"<title>\"".to_string())
+    } else {
+        Some("forgeplan health".to_string())
+    };
+
     if let Some(root_id) = id {
         let tree = build_json_node(root_id, children_map, records, 0, depth);
         println!("{}", serde_json::to_string_pretty(&tree)?);
@@ -320,6 +359,10 @@ fn render_json(
             .collect();
 
         println!("{}", serde_json::to_string_pretty(&trees)?);
+    }
+
+    if let Some(next) = next_action {
+        eprintln!("Next: {}", next);
     }
     Ok(())
 }

@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
 use crate::commands::common;
@@ -18,16 +19,23 @@ pub async fn run(
         .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
     if status.is_none() && title.is_none() && depth.is_none() && body.is_none() {
-        anyhow::bail!("Nothing to update. Use --status, --title, --depth, or --body.");
+        // PRD-071: Error pairs with concrete Fix: command (use --status as the
+        // most-common operation; agent picks the right flag from the example).
+        anyhow::bail!(
+            "Nothing to update. Use --status, --title, --depth, or --body.\nFix: forgeplan update {} --status draft",
+            id
+        );
     }
 
-    // Block direct status change to "active" — must go through lifecycle gates
+    // Block direct status change to "active" — must go through lifecycle gates.
+    // PRD-071 contract: pair `Error:` with a structured `Fix:` line that the
+    // agent can copy verbatim. anyhow renders the bail message after a literal
+    // "Error: " prefix, so the embedded `\nFix: ...` appears on its own line.
     if let Some(s) = status
         && s.eq_ignore_ascii_case("active")
     {
         anyhow::bail!(
-            "Direct status change to 'active' is not allowed.\n\
-             Use `forgeplan activate {}` to activate artifacts (enforces validation gates).",
+            "Direct status change to 'active' is not allowed.\nFix: forgeplan activate {}",
             id
         );
     }
@@ -35,9 +43,12 @@ pub async fn run(
     // Depth update
     if let Some(d) = depth {
         let _: forgeplan_core::artifact::types::Mode = d.parse().map_err(|_| {
+            // PRD-071: pair Error with a concrete Fix command (default to
+            // `standard` — the most-common reset value).
             anyhow::anyhow!(
-                "Invalid depth '{}'. Valid: tactical, standard, deep, critical",
-                d
+                "Invalid depth '{}'. Valid: tactical, standard, deep, critical\nFix: forgeplan update {} --depth standard",
+                d,
+                id,
             )
         })?;
         store.update_depth(id, d).await?;
@@ -180,6 +191,13 @@ pub async fn run(
     if body.is_some() {
         println!("  Body:    updated");
     }
+
+    // PRD-071: any update — re-validate to make sure the artifact still
+    // satisfies its kind+depth rules.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Updated — re-run validator").with_action(format!("forgeplan validate {}", id)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

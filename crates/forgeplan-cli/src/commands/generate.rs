@@ -2,17 +2,33 @@ use anyhow::Context;
 
 use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::generate::generate_body;
 use forgeplan_core::projection;
 
 use crate::commands::common;
 
 pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
-    let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let kind: ArtifactKind = kind_str.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "{}\n\
+             Fix: forgeplan generate prd \"<description>\"",
+            e
+        )
+    })?;
 
     let (workspace, store) = common::open_store().await?;
 
-    let llm_config = common::require_llm_config()?;
+    // PRD-071 contract: emit `Fix:` when LLM unavailable so the agent has a
+    // deterministic remediation step.
+    let llm_config = match common::require_llm_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Fix: forgeplan setup-skill");
+            anyhow::bail!("LLM not configured");
+        }
+    };
 
     // Generate title from first line of description (truncated)
     let title = description
@@ -30,10 +46,18 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         template_key, llm_config.provider, llm_config.model
     );
 
-    // Generate body via LLM
-    let body = generate_body(&llm_config, template_key, description, &title)
+    // Generate body via LLM. PRD-071 contract: emit `Fix:` on failure.
+    let body = match generate_body(&llm_config, template_key, description, &title)
         .await
-        .with_context(|| format!("LLM generation failed (provider: {})", llm_config.provider))?;
+        .with_context(|| format!("LLM generation failed (provider: {})", llm_config.provider))
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Fix: forgeplan setup-skill");
+            anyhow::bail!("LLM call failed");
+        }
+    };
 
     // Create artifact with generated body
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
@@ -82,6 +106,15 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         "  Source:  AI-generated ({}/{})",
         llm_config.provider, llm_config.model
     );
+
+    // PRD-071 contract: the AI draft still needs a human pass before validate
+    // — but the canonical Next: action is validate, since validation surfaces
+    // any MUST gaps the LLM left.
+    let hints_vec = vec![
+        Hint::suggestion(format!("Review AI draft, then validate {}", id))
+            .with_action(format!("forgeplan validate {}", id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

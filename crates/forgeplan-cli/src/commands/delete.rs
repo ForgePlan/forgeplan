@@ -1,4 +1,5 @@
 use forgeplan_core::artifact::types::ArtifactKind;
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -65,6 +66,12 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
     }
 
     println!("  Deleted: {} \"{}\"", record.id, record.title);
+
+    // Terminal action: deletion can't be undone, but the operator usually
+    // wants to verify the workspace is consistent next.
+    let hint_list =
+        vec![Hint::info("Verify workspace integrity").with_action("forgeplan health".to_string())];
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

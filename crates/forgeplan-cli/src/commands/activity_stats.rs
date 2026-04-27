@@ -8,6 +8,7 @@
 use chrono::Duration;
 use console::style;
 use forgeplan_core::activity::query::{QueryFilter, compute_stats, query};
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 /// Run the stats query. Mirrors `ActivityStatsParams`:
@@ -31,6 +32,19 @@ pub async fn run(since_hours: u32, json: bool) -> anyhow::Result<()> {
     let total_errors: usize = stats.iter().map(|s| s.err_count).sum();
     let total_ms: u64 = stats.iter().map(|s| s.total_ms).sum();
 
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if stats.is_empty() {
+        hint_list.push(
+            Hint::info("Try a longer window")
+                .with_action("forgeplan activity-stats --since-hours 720".to_string()),
+        );
+    } else {
+        hint_list.push(
+            Hint::info("See raw entries")
+                .with_action(format!("forgeplan activity --since-hours {since}")),
+        );
+    }
+
     if json {
         let payload = serde_json::json!({
             "stats": stats,
@@ -38,6 +52,8 @@ pub async fn run(since_hours: u32, json: bool) -> anyhow::Result<()> {
             "total_errors": total_errors,
             "total_ms": total_ms,
             "since_hours": since,
+            "_next_action": hints::primary_action(&hint_list),
+            "hints": hint_list,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -48,6 +64,7 @@ pub async fn run(since_hours: u32, json: bool) -> anyhow::Result<()> {
             "No activity in the last {since} hour(s). Try a longer window: \
              `--since-hours 720` for 30 days."
         );
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -80,6 +97,8 @@ pub async fn run(since_hours: u32, json: bool) -> anyhow::Result<()> {
             s.tool, s.count, err_styled, s.p50_ms, s.p95_ms, s.total_ms
         );
     }
+
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

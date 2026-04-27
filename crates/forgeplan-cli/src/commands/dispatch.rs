@@ -17,6 +17,7 @@ use forgeplan_core::dispatch::{
     MAX_AGENTS, MAX_SKILLS_PER_AGENT,
 };
 use forgeplan_core::graph::topological;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 use crate::commands::common;
@@ -129,6 +130,25 @@ pub async fn run(
         );
     }
 
+    // Hint: pick the first non-empty bucket's first artifact to show
+    // exactly what the agent should claim next; if every bucket is empty
+    // (no candidates), nudge toward listing draft artifacts to seed work.
+    let first_bucket_id = plan.buckets.iter().find_map(|b| b.first().cloned());
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if let Some(first_id) = first_bucket_id.as_ref() {
+        // Concrete claim command — agent identity uses the CLI default,
+        // matching the run-time fallback in `claim::run`.
+        hint_list.push(
+            Hint::info(format!("Claim first parallel-safe artifact {}", first_id))
+                .with_action(format!("forgeplan claim {} --agent agent-0", first_id)),
+        );
+    } else {
+        hint_list.push(
+            Hint::info("No parallel-safe candidates — list drafts")
+                .with_action("forgeplan list --status draft".to_string()),
+        );
+    }
+
     if json {
         let body = serde_json::json!({
             "buckets": plan.buckets,
@@ -141,6 +161,8 @@ pub async fn run(
             "claimed_count": claimed_count,
             "skipped_parse_errors": skipped_parse_errors,
             "blocked_count": skipped_blocked.len(),
+            "_next_action": hints::primary_action(&hint_list),
+            "hints": hint_list,
         });
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
@@ -185,6 +207,8 @@ pub async fn run(
             println!("  - {line}");
         }
     }
+
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

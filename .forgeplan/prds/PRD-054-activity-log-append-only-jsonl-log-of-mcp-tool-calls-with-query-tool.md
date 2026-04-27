@@ -2,6 +2,9 @@
 depth: standard
 id: PRD-054
 kind: prd
+links:
+- target: PROB-043
+  relation: informs
 status: draft
 title: Activity log — append-only JSONL log of MCP tool calls with query tool
 ---
@@ -294,4 +297,5 @@ And the tool does not panic or return RPC_ERROR
 ---
 
 > **Next step**: После approve → создать RFC (архитектура: single writer task, tokio channel, dispatch wrapper).
+
 

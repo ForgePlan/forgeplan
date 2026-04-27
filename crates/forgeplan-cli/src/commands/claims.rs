@@ -7,6 +7,7 @@
 
 use chrono::Utc;
 use forgeplan_core::claim::ClaimStore;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
@@ -20,6 +21,22 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("list_active failed: {e}"))?;
     let count = claims.len();
+
+    // Hint: when there are no claims, suggest dispatch (pick something to
+    // claim); otherwise point at the soonest-expiring claim so the operator
+    // can renew or release before TTL.
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if count == 0 {
+        hint_list.push(
+            Hint::info("Workspace is idle — plan parallel work")
+                .with_action("forgeplan dispatch --agents 2".to_string()),
+        );
+    } else if let Some(first) = claims.first() {
+        hint_list.push(
+            Hint::info(format!("Soonest-expiring claim: {}", first.id))
+                .with_action(format!("forgeplan release {}", first.id)),
+        );
+    }
 
     if json {
         let claims_json: Vec<_> = claims
@@ -38,6 +55,8 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
             "count": count,
             "skipped": skipped,
             "claims": claims_json,
+            "_next_action": hints::primary_action(&hint_list),
+            "hints": hint_list,
         });
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
@@ -45,6 +64,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     if count == 0 && skipped == 0 {
         println!("No active claims. Workspace is free for any agent to claim work.");
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -77,6 +97,8 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
             if skipped == 1 { "" } else { "s" }
         );
     }
+
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

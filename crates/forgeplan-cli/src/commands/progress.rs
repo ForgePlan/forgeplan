@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::progress::{self, ArtifactProgress, CheckboxCount};
 
 use crate::commands::common;
@@ -9,10 +10,19 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let records = store.list_records(None).await?;
 
     if records.is_empty() {
+        let hints_vec = vec![
+            Hint::suggestion("Workspace is empty — create your first PRD")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
         if json {
-            println!("[]");
+            let payload = serde_json::json!({
+                "progress": [],
+                "_next_action": hints::primary_action(&hints_vec),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             println!("No artifacts found.");
+            print!("{}", hints::render_next_action_line(&hints_vec));
         }
         return Ok(());
     }
@@ -31,11 +41,34 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         })
         .collect();
 
+    // PRD-071 contract: pick the artifact with the lowest percent (most work
+    // remaining) and suggest viewing it. Skip artifacts with no checkboxes
+    // and those that are 100% done.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    let candidate = all_progress
+        .iter()
+        .filter(|p| p.count.total > 0 && p.count.completed < p.count.total)
+        .min_by_key(|p| p.percent());
+    if let Some(p) = candidate {
+        hints_vec.push(
+            Hint::info(format!(
+                "{} is {}% complete — focus there",
+                p.id,
+                p.percent()
+            ))
+            .with_action(format!("forgeplan get {}", p.id)),
+        );
+    }
+
     if json {
         let data: Vec<_> = all_progress.iter().filter(|p| p.count.total > 0).map(|p| {
             serde_json::json!({"id": p.id, "title": p.title, "kind": p.kind, "completed": p.count.completed, "total": p.count.total, "percent": p.percent()})
         }).collect();
-        println!("{}", serde_json::to_string_pretty(&data)?);
+        let payload = serde_json::json!({
+            "progress": data,
+            "_next_action": hints::primary_action(&hints_vec),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
@@ -78,6 +111,20 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             }
         }
         println!();
+        // PRD-071 contract: focused view — suggest activating when 100%, else
+        // jump to the artifact body.
+        let single_hints = if p.count.total > 0 && p.count.completed == p.count.total {
+            vec![
+                Hint::suggestion(format!("All checkboxes complete — activate {}", p.id))
+                    .with_action(format!("forgeplan activate {}", p.id)),
+            ]
+        } else {
+            vec![
+                Hint::info(format!("Open {} to mark next checkbox", p.id))
+                    .with_action(format!("forgeplan get {}", p.id)),
+            ]
+        };
+        print!("{}", hints::render_next_action_line(&single_hints));
         return Ok(());
     }
 
@@ -87,6 +134,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
 
     if with_checkboxes.is_empty() {
         println!("No artifacts with checkboxes found.");
+        let bootstrap = vec![
+            Hint::suggestion("Add FR checkboxes to a PRD or RFC")
+                .with_action("forgeplan list --kind prd".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&bootstrap));
         return Ok(());
     }
 
@@ -138,6 +190,8 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     );
     println!("  {} artifact(s) with checkboxes", with_checkboxes.len());
     println!();
+
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

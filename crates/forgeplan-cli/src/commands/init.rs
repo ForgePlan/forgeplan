@@ -6,6 +6,7 @@ use anyhow::Result;
 use console::style;
 
 use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
 use forgeplan_core::workspace::{FORGEPLAN_DIR, find_workspace, init_workspace};
 
@@ -32,6 +33,12 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             if scan {
                 run_scan_import(&cwd, &existing).await?;
             }
+            // PRD-071 contract: hint to start shaping (or to force reinit).
+            let hints_vec = vec![
+                Hint::suggestion("Start shaping a PRD")
+                    .with_action("forgeplan new prd \"<title>\"".to_string()),
+            ];
+            print!("{}", hints::render_next_action_line(&hints_vec));
             return Ok(());
         }
 
@@ -75,6 +82,12 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             run_scan_import(&cwd, &workspace).await?;
         }
 
+        // PRD-071 contract: hint at the next step in the workflow.
+        let hints_vec = vec![
+            Hint::suggestion("Shape your first PRD")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hints_vec));
         return Ok(());
     }
 
@@ -278,6 +291,13 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
         let workspace = cwd.join(FORGEPLAN_DIR);
         run_scan_import(&cwd, &workspace).await?;
     }
+
+    // PRD-071 contract: deterministic Next: line for agents (CLI text contract).
+    let hints_vec = vec![
+        Hint::suggestion("Shape your first PRD")
+            .with_action("forgeplan new prd \"<title>\"".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

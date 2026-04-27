@@ -5,6 +5,7 @@ use chrono::{NaiveDate, Utc};
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::hints;
 use forgeplan_core::scoring::evidence::parse_evidence_from_record;
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem};
@@ -203,6 +204,27 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             })
             .collect();
 
+        // PRD-071 contract: surface deterministic primary next-action.
+        // Reuse score_hints (already exposed in text mode). When all hints
+        // are silent, fall back to "activate" (R_eff is healthy).
+        let cl0_count_json = evidence_items
+            .iter()
+            .filter(|e| e.congruence_level == 0)
+            .count();
+        let score_hints_json = hints::score_hints(
+            &target.id,
+            report.r_eff,
+            !evidence_items.is_empty(),
+            cl0_count_json,
+        );
+        let next_action_json = hints::primary_action(&score_hints_json).or_else(|| {
+            if report.r_eff >= 0.5 && target.status == "draft" {
+                Some(format!("forgeplan activate {}", target.id))
+            } else {
+                None
+            }
+        });
+
         let json_data = serde_json::json!({
             "id": target.id,
             "title": target.title,
@@ -226,6 +248,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 "overall": fgr_score.overall(),
                 "grade": fgr_score.grade(),
             },
+            "_next_action": next_action_json,
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
@@ -240,7 +263,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         ui::error_hint(
             "No evidence found",
             &format!(
-                "forgeplan new evidence \"Benchmark for {}\" && forgeplan link EVID-XXX {} --relation informs",
+                "forgeplan new evidence \"Benchmark for {}\" && forgeplan link EVID-NNN {} --relation informs",
                 target.id, target.id
             ),
         );
@@ -348,10 +371,29 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         .iter()
         .filter(|e| e.congruence_level == 0)
         .count();
-    let score_hints = forgeplan_core::hints::score_hints(report.r_eff, has_evidence, cl0_count);
+    let score_hints =
+        forgeplan_core::hints::score_hints(&target.id, report.r_eff, has_evidence, cl0_count);
     if !score_hints.is_empty() {
         print!("{}", forgeplan_core::hints::format_hints(&score_hints));
     }
+
+    // PRD-071 contract: surface single primary next-action via Next: line.
+    // Falls back to activate when score is healthy and artifact is still draft.
+    let next_hints: Vec<forgeplan_core::hints::Hint> =
+        if let Some(action) = hints::primary_action(&score_hints) {
+            vec![forgeplan_core::hints::Hint::info("score advisory").with_action(action)]
+        } else if report.r_eff >= 0.5 && target.status == "draft" {
+            vec![
+                forgeplan_core::hints::Hint::info("R_eff healthy — ready to activate")
+                    .with_action(format!("forgeplan activate {}", target.id)),
+            ]
+        } else {
+            Vec::new()
+        };
+    print!(
+        "{}",
+        forgeplan_core::hints::render_next_action_line(&next_hints)
+    );
 
     println!();
 

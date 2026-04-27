@@ -1,5 +1,6 @@
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::db::store::NewArtifact;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::validation::rules::check_stub_detailed;
 
 use crate::commands::common;
@@ -37,25 +38,45 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         cwd.join(path)
     };
 
-    // Check file size before reading (max 100 MB)
+    // PRD-071 contract: I/O and parse errors emit `Fix:` markers so agents
+    // have a deterministic next action (re-run with a valid path / file).
     let file_size = std::fs::metadata(&full_path)
-        .map_err(|e| anyhow::anyhow!("Failed to stat '{}': {}", full_path.display(), e))?
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to stat '{}': {}\nFix: forgeplan import <valid-path>",
+                full_path.display(),
+                e
+            )
+        })?
         .len();
     if file_size > 100 * 1024 * 1024 {
         anyhow::bail!(
-            "Import file too large ({} MB). Max 100 MB.",
+            "Import file too large ({} MB). Max 100 MB.\n\
+             Fix: forgeplan export --output <smaller-file>",
             file_size / 1024 / 1024
         );
     }
 
-    let json = std::fs::read_to_string(&full_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read '{}': {}", full_path.display(), e))?;
-    let data: serde_json::Value =
-        serde_json::from_str(&json).map_err(|e| anyhow::anyhow!("Invalid export JSON: {}", e))?;
+    let json = std::fs::read_to_string(&full_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to read '{}': {}\nFix: forgeplan import <valid-path>",
+            full_path.display(),
+            e
+        )
+    })?;
+    let data: serde_json::Value = serde_json::from_str(&json).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid export JSON: {}\nFix: forgeplan export --output backup.json",
+            e
+        )
+    })?;
 
-    let artifacts = data["artifacts"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'artifacts' array in export file"))?;
+    let artifacts = data["artifacts"].as_array().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Missing 'artifacts' array in export file\n\
+             Fix: forgeplan export --output backup.json"
+        )
+    })?;
 
     let mut imported = 0usize;
     let mut skipped = 0usize;
@@ -176,6 +197,13 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} relations",
         imported, skipped, downgraded, relations_imported
     );
+
+    // PRD-071 contract: after import, run a health check to surface drafts /
+    // stubs / blind spots that came in.
+    let hints_vec = vec![
+        Hint::suggestion("Audit imported artifacts").with_action("forgeplan health".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

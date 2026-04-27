@@ -264,5 +264,27 @@ pub async fn run() -> anyhow::Result<()> {
         "\nReindex complete: {} synced, {} unchanged, {} removed, {} orphan relations, {} errors.",
         synced, skipped, removed, orphan_relations, errors
     );
+
+    // PRD-071 hint contract: reindex is a maintenance op — point user to
+    // health for next-action surfacing (or to scan-import for new docs).
+    let mut next_hints: Vec<forgeplan_core::hints::Hint> = Vec::new();
+    if errors > 0 {
+        next_hints.push(
+            forgeplan_core::hints::Hint::warning(format!(
+                "{} parse/sync errors during reindex",
+                errors
+            ))
+            .with_action("forgeplan health"),
+        );
+    } else {
+        next_hints.push(
+            forgeplan_core::hints::Hint::info("Reindex finished").with_action("forgeplan health"),
+        );
+    }
+    print!(
+        "{}",
+        forgeplan_core::hints::render_next_action_line(&next_hints)
+    );
+
     Ok(())
 }

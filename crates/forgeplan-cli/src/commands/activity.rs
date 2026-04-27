@@ -8,6 +8,7 @@
 use chrono::Duration;
 use console::style;
 use forgeplan_core::activity::query::{QueryFilter, query};
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 /// Run the activity query. Mirrors `ActivityQueryParams` in the MCP server:
@@ -52,6 +53,20 @@ pub async fn run(
 
     let result = query(&ws, &filter).await?;
 
+    // Build hints — actionable next step depending on whether results are present.
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if result.entries.is_empty() {
+        hint_list.push(
+            Hint::info("Try a wider window")
+                .with_action("forgeplan activity --since-hours 720".to_string()),
+        );
+    } else {
+        hint_list.push(
+            Hint::info("See aggregated stats")
+                .with_action(format!("forgeplan activity-stats --since-hours {since}")),
+        );
+    }
+
     if json {
         let payload = serde_json::json!({
             "entries": result.entries,
@@ -59,6 +74,8 @@ pub async fn run(
             "returned": result.entries.len(),
             "warnings": result.warnings,
             "since_hours": since,
+            "_next_action": hints::primary_action(&hint_list),
+            "hints": hint_list,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -77,6 +94,7 @@ pub async fn run(
                 println!("  - {w}");
             }
         }
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -118,6 +136,8 @@ pub async fn run(
             println!("  - {w}");
         }
     }
+
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

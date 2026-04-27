@@ -1289,24 +1289,33 @@ impl ForgeplanServer {
         let active_count = artifacts.iter().filter(|a| a.status == "active").count();
         let dtos: Vec<ArtifactSummaryDto> = artifacts.into_iter().map(Into::into).collect();
 
+        // PRD-071: hints follow the 5-rule contract — single primary action,
+        // real IDs (not <id> placeholders), no multi-choice paralysis.
         let next_action = if total == 0 {
-            "Empty result. Try `forgeplan_list` without filters, or `forgeplan_route \"<task>\"` \
-             to start new work."
-                .to_string()
+            "Empty result. Run `forgeplan_list` without filters to see all artifacts.".to_string()
         } else if draft_count > 0 {
-            format!(
-                "{draft_count} draft(s) of {total}. Pick one: `forgeplan_get <id>` to inspect, \
-                 `forgeplan_review <id>` to validate before activation."
-            )
+            // Surface the first draft so the agent has a concrete target.
+            let first_draft = dtos
+                .iter()
+                .find(|a| a.status == "draft")
+                .map(|a| sanitize_for_hint(&a.id));
+            match first_draft {
+                Some(id) => format!(
+                    "{draft_count} draft(s) of {total}. Validate the first: \
+                     `forgeplan_validate {id}`."
+                ),
+                None => format!(
+                    "{draft_count} draft(s) of {total}. Inspect one with `forgeplan_list \
+                     status=draft`."
+                ),
+            }
         } else if active_count == total {
-            format!(
-                "{total} active artifacts. Use `forgeplan_score <id>` to check R_eff, \
-                 `forgeplan_health` for blind spots."
-            )
+            format!("{total} active artifact(s). Check trust: `forgeplan_health`.")
         } else {
+            // Mixed status — point at health as the unified entry.
             format!(
-                "{total} artifacts ({draft_count} draft, {active_count} active). \
-                 Use `forgeplan_get <id>` to inspect a specific one."
+                "{total} artifact(s) ({draft_count} draft, {active_count} active). \
+                 Inspect overall trust: `forgeplan_health`."
             )
         };
 
@@ -1358,22 +1367,14 @@ impl ForgeplanServer {
         let draft_count = artifacts.iter().filter(|r| r.status == "draft").count();
         let active_count = artifacts.iter().filter(|r| r.status == "active").count();
 
+        // PRD-071: pick a single deterministic primary action per state.
         let next_action = if total == 0 {
-            "Empty workspace. Start with `forgeplan_route \"<task>\"` to determine depth, \
-             then `forgeplan_new` to create first artifact."
+            "Empty workspace. Determine artifact depth: `forgeplan_route description=\"...\"`."
                 .to_string()
         } else if draft_count > active_count {
-            format!(
-                "{} drafts pending (vs {} active). Use `forgeplan_list --status draft` \
-                 to pick next, then validate/activate.",
-                draft_count, active_count
-            )
+            format!("{draft_count} drafts pending. List them: `forgeplan_list status=draft`.")
         } else {
-            format!(
-                "Workspace has {} artifacts. Use `forgeplan_health` for blind spots, \
-                 or `forgeplan_list --status draft` for pending work.",
-                total
-            )
+            format!("Workspace has {total} artifact(s). Inspect trust: `forgeplan_health`.")
         };
 
         let status_resp = StatusResponse {
@@ -1654,9 +1655,10 @@ impl ForgeplanServer {
                  evidence or address the weak link artifact first."
             )
         } else if r_eff < 0.8 {
+            // PRD-071: pick ONE primary action — review before activate.
             format!(
-                "R_eff = {r_eff:.2} (adequate). Can activate via `forgeplan_review` + \
-                 `forgeplan_activate {safe_id}`. A second independent evidence would strengthen."
+                "R_eff = {r_eff:.2} (adequate). Run lifecycle review: \
+                 `forgeplan_review {safe_id}`."
             )
         } else {
             format!("R_eff = {r_eff:.2} (strong). Ready: `forgeplan_activate {safe_id}`.")
@@ -1790,7 +1792,9 @@ impl ForgeplanServer {
                  `forgeplan_get {safe_tgt}`. Supersede the older one when resolved."
             ),
             _ => {
-                format!("Linked. Verify with `forgeplan_graph` or `forgeplan_blocked {safe_src}`.")
+                // PRD-071: single primary — graph visualization is the
+                // deterministic verification path.
+                "Linked. Verify graph: `forgeplan_graph`.".to_string()
             }
         };
         hinted_result(
@@ -1827,27 +1831,26 @@ impl ForgeplanServer {
         match store.get_record(&p.id).await {
             Ok(Some(r)) => {
                 let safe_id = sanitize_for_hint(&r.id);
+                // PRD-071: single primary action per status. No multi-step
+                // chains; downstream steps surface as the agent re-calls
+                // each tool and reads its own hint.
                 let mut next_action = match r.status.as_str() {
-                    "draft" => format!(
-                        "Draft. Inspect fit: `forgeplan_validate {safe_id}` → fix MUST findings → \
-                         `forgeplan_review {safe_id}` → `forgeplan_activate {safe_id}`."
-                    ),
-                    "active" => format!(
-                        "Active. Check trust: `forgeplan_score {safe_id}`. Weak R_eff → add \
-                         EvidencePack and link with `forgeplan_link EVID-XXX {safe_id}`."
-                    ),
+                    "draft" => format!("Draft. Validate: `forgeplan_validate {safe_id}`."),
+                    "active" => {
+                        format!("Active. Verify trust: `forgeplan_score {safe_id}`.")
+                    }
                     "superseded" | "deprecated" => format!(
-                        "Terminal state ({}). Read-only. Use `forgeplan_search` to find the \
-                         successor or replacement artifact.",
+                        "Terminal state ({}). Read-only — find successor: \
+                         `forgeplan_search query=\"{safe_id}\"`.",
                         r.status
                     ),
                     "stale" => format!(
-                        "Stale (evidence decayed). `forgeplan_renew {safe_id}` to extend, or \
-                         `forgeplan_reopen {safe_id}` to restart with new draft."
+                        "Stale (evidence decayed). Extend valid_until: \
+                         `forgeplan_renew {safe_id}`."
                     ),
-                    other => format!(
-                        "Status: {other}. Use `forgeplan_review {safe_id}` to inspect lifecycle."
-                    ),
+                    other => {
+                        format!("Status: {other}. Inspect lifecycle: `forgeplan_review {safe_id}`.")
+                    }
                 };
 
                 // PRD-056 FR-007: surface current phase in _next_action when
@@ -1871,9 +1874,11 @@ impl ForgeplanServer {
                 let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
                 if let Ok(Some(claim)) = claim_store.get(&r.id).await {
                     let safe_holder = sanitize_for_hint(&claim.agent_id);
+                    // PRD-071: single primary action — route new work
+                    // elsewhere via dispatch.
                     let claim_hint = format!(
-                        " Claim: held by `{safe_holder}` until {} — route new work elsewhere \
-                         or ask for force-release.",
+                        " Claim: held by `{safe_holder}` until {}. Route new work: \
+                         `forgeplan_dispatch agents=3`.",
                         claim.expires_at.to_rfc3339(),
                     );
                     next_action.push_str(&claim_hint);
@@ -2037,18 +2042,11 @@ impl ForgeplanServer {
             .await;
 
         let safe_id = sanitize_for_hint(&updated.id);
+        // PRD-071: single primary action per status.
         let next_action = match updated.status.as_str() {
-            "draft" => format!(
-                "Updated (draft). Re-validate: `forgeplan_validate {safe_id}`. When ready, \
-                 `forgeplan_review {safe_id}` → `forgeplan_activate {safe_id}`."
-            ),
-            "active" => format!(
-                "Updated active artifact. Re-score: `forgeplan_score {safe_id}`. Major changes \
-                 may warrant superseding with a new draft instead of in-place edit."
-            ),
-            other => {
-                format!("Updated ({other}). Consider lifecycle: `forgeplan_review {safe_id}`.")
-            }
+            "draft" => format!("Updated (draft). Re-validate: `forgeplan_validate {safe_id}`."),
+            "active" => format!("Updated active artifact. Re-score: `forgeplan_score {safe_id}`."),
+            other => format!("Updated ({other}). Inspect lifecycle: `forgeplan_review {safe_id}`."),
         };
         hinted_result(
             &serde_json::json!({
@@ -2197,13 +2195,13 @@ impl ForgeplanServer {
             .first()
             .map(|k| k.template_key())
             .unwrap_or("prd");
+        // PRD-071: deterministic single primary action per depth tier.
         let next_action = match format!("{:?}", result.depth).to_lowercase().as_str() {
-            "tactical" => "Tactical work — no artifact needed. Branch, code, test, commit. \
-                          Document unusual decisions as `forgeplan_new kind=note`."
-                .to_string(),
+            "tactical" => {
+                "Tactical work — no artifact needed. Proceed with code + commit.".to_string()
+            }
             _ => format!(
-                "Start the pipeline: `forgeplan_new kind={first_kind} title=\"...\"` → fill MUST \
-                 sections → `forgeplan_validate <id>`. See _alternatives if depth seems wrong."
+                "Create the first artifact: `forgeplan_new kind={first_kind} title=\"...\"`."
             ),
         };
         Ok(json_result(&serde_json::json!({
@@ -2244,17 +2242,16 @@ impl ForgeplanServer {
         match forgeplan_core::lifecycle::review(&store, &p.id).await {
             Ok(result) => {
                 let safe_id = sanitize_for_hint(&result.artifact_id);
+                // PRD-071: single deterministic primary — activate when ready,
+                // re-validate when blocked. R_eff strength is reported by
+                // forgeplan_score, not forced into the review hint.
                 let next_action = if result.can_activate {
-                    format!(
-                        "Ready to activate: `forgeplan_activate {safe_id}`. If evidence \
-                         exists but R_eff low, add stronger evidence first (`forgeplan_score {safe_id}`)."
-                    )
+                    format!("Ready. Activate: `forgeplan_activate {safe_id}`.")
                 } else {
                     format!(
-                        "Cannot activate: {} MUST finding(s), {} SHOULD finding(s). \
-                         Fix MUST findings first (see must_findings list), then re-run review.",
-                        result.must_findings.len(),
-                        result.should_findings.len()
+                        "Cannot activate: {} MUST finding(s). Fix them, then re-validate: \
+                         `forgeplan_validate {safe_id}`.",
+                        result.must_findings.len()
                     )
                 };
                 Ok(json_result(&serde_json::json!({
@@ -2313,17 +2310,17 @@ impl ForgeplanServer {
                         }
                     ));
                 }
+                // PRD-071: single primary — verify trust on activation.
+                // Removed the "If X then Y" conditional and the multi-step
+                // commit narrative; both broke determinism.
                 let next_action = if result.forced {
                     format!(
-                        "Activated with {} MUST error(s) (forced). Backfill evidence later — \
-                         `forgeplan_new kind=evidence` + `forgeplan_link EVID-XXX {safe_id}`.",
+                        "Activated with {} MUST error(s) (forced). Backfill evidence: \
+                         `forgeplan_new kind=evidence`.",
                         result.must_errors.len()
                     )
                 } else {
-                    format!(
-                        "Active. Score: `forgeplan_score {safe_id}`. If R_eff low, add evidence. \
-                         Commit work: write code → create EvidencePack → link."
-                    )
+                    format!("Verify trust: `forgeplan_score {safe_id}`.")
                 };
                 hinted_result(
                     &serde_json::json!({
@@ -2413,19 +2410,24 @@ impl ForgeplanServer {
                 .await;
                 let safe_id = sanitize_for_hint(&p.id);
                 let safe_new = sanitize_for_hint(&p.by);
+                // PRD-071: single primary, real ID for first dependent.
                 let next_action = if result.dependents.is_empty() {
                     format!(
-                        "`{safe_id}` superseded by `{safe_new}`. No dependents. Reversible via \
-                         `forgeplan_undo_last` or `forgeplan_restore {safe_id}`. Ensure \
-                         `{safe_new}` has evidence: `forgeplan_score {safe_new}`."
+                        "`{safe_id}` superseded by `{safe_new}`. Verify replacement trust: \
+                         `forgeplan_score {safe_new}`."
                     )
                 } else {
-                    format!(
-                        "Superseded with {} dependent(s). Review each via `forgeplan_get <id>` — \
-                         may need to update their links to point to `{safe_new}`. Reversible \
-                         via `forgeplan_undo_last`.",
-                        result.dependents.len()
-                    )
+                    let first_dep = result.dependents.first().map(|d| sanitize_for_hint(d));
+                    match first_dep {
+                        Some(dep) => format!(
+                            "Superseded with {} dependent(s). Review first: \
+                             `forgeplan_get {dep}`.",
+                            result.dependents.len()
+                        ),
+                        None => {
+                            format!("Superseded with {} dependent(s).", result.dependents.len())
+                        }
+                    }
                 };
                 hinted_result(
                     &serde_json::json!({
@@ -2441,13 +2443,12 @@ impl ForgeplanServer {
             Err(e) => {
                 let safe_from = sanitize_for_hint(&p.id);
                 let safe_by = sanitize_for_hint(&p.by);
+                // PRD-071: single primary — verify the replacement first.
                 Ok(err_hinted(
                     &e.to_string(),
                     format!(
-                        "Verify both exist: `forgeplan_get {safe_from}` and `forgeplan_get \
-                         {safe_by}`. If replacement `{safe_by}` is missing, create it first: \
-                         `forgeplan_new kind=<same-kind> title=\"...\"`. Note: a soft-delete \
-                         receipt was pre-written and is orphaned until TTL purge; harmless."
+                        "Verify replacement `{safe_by}` exists: `forgeplan_get {safe_by}` \
+                         (source `{safe_from}` already inspected)."
                     ),
                 ))
             }
@@ -2525,19 +2526,19 @@ impl ForgeplanServer {
                 )
                 .await;
                 let safe_id = sanitize_for_hint(&p.id);
+                // PRD-071: single primary action; surface first dependent.
                 let next_action = if dependents.is_empty() {
-                    format!(
-                        "`{safe_id}` deprecated. No dependents — clean state. Reversible via \
-                         `forgeplan_undo_last` or `forgeplan_restore {safe_id}`."
-                    )
+                    format!("`{safe_id}` deprecated. No dependents — clean state.")
                 } else {
-                    format!(
-                        "Deprecated. {} dependent(s) still reference this artifact. Review each \
-                         via `forgeplan_get <id>` — consider `forgeplan_supersede <id> --by \
-                         <replacement>` if there is a successor. Reversible via \
-                         `forgeplan_undo_last`.",
-                        dependents.len()
-                    )
+                    let first_dep = dependents.first().map(|d| sanitize_for_hint(d));
+                    match first_dep {
+                        Some(dep) => format!(
+                            "Deprecated. {} dependent(s) still reference this artifact. Review \
+                             first: `forgeplan_get {dep}`.",
+                            dependents.len()
+                        ),
+                        None => format!("Deprecated. {} dependent(s).", dependents.len()),
+                    }
                 };
                 hinted_result(
                     &serde_json::json!({
@@ -2611,37 +2612,34 @@ impl ForgeplanServer {
             }
         }
 
-        // Workflow chaining hint — research Priority 5.
-        let next_action = if !report.blind_spots.is_empty() {
+        // PRD-071: deterministic single primary, real IDs (not <id>).
+        // The first blind-spot/orphan/at-risk/stale gives the agent a
+        // concrete starting target.
+        let next_action = if let Some(b) = report.blind_spots.first() {
+            let id = sanitize_for_hint(&b.id);
             format!(
-                "Fix {} blind spot(s) first — active artifacts without evidence. \
-                 Use `forgeplan_score <id>` to inspect, then create EvidencePack \
-                 with structured fields (verdict/congruence_level/evidence_type) \
-                 and link via `forgeplan_link EVID-XXX <id>`.",
+                "{} blind spot(s). Inspect first: `forgeplan_score {id}`.",
                 report.blind_spots.len()
             )
-        } else if !report.orphans.is_empty() {
+        } else if let Some(o) = report.orphans.first() {
+            let id = sanitize_for_hint(o);
             format!(
-                "Address {} orphan artifact(s) — active without any links. \
-                 Use `forgeplan_link` to connect, or `forgeplan_deprecate` if obsolete.",
+                "{} orphan(s). Inspect first: `forgeplan_get {id}`.",
                 report.orphans.len()
             )
-        } else if !report.at_risk.is_empty() {
+        } else if let Some(a) = report.at_risk.first() {
+            let id = sanitize_for_hint(&a.id);
             format!(
-                "Review {} at-risk decision(s) with low R_eff. Use `forgeplan_score <id>` \
-                 to see weakest links.",
+                "{} at-risk decision(s). Inspect first: `forgeplan_score {id}`.",
                 report.at_risk.len()
             )
         } else if report.stale_count > 0 {
             format!(
-                "Refresh {} stale artifact(s) — evidence past valid_until. \
-                 Use `forgeplan_renew <id>` or `forgeplan_reopen <id>`.",
+                "{} stale artifact(s). List them: `forgeplan_stale`.",
                 report.stale_count
             )
         } else {
-            "Project healthy. Continue with `forgeplan_list --status draft` to review \
-             pending work, or `forgeplan_route \"<task>\"` to start new feature."
-                .to_string()
+            "Project healthy. List pending drafts: `forgeplan_list status=draft`.".to_string()
         };
 
         // PRD-057 FR-012: advisory surface of active claims so health
@@ -2735,9 +2733,10 @@ impl ForgeplanServer {
             })
             .collect();
 
+        // PRD-071: single primary action, real IDs.
         let next_action = if total == 0 {
-            "No decision-kind artifacts yet (adr, note, problem, solution). Use \
-             `forgeplan_capture` to capture a decision, or `forgeplan_new kind=adr` directly."
+            "No decision-kind artifacts yet (adr, note, problem, solution). Create one: \
+             `forgeplan_new kind=adr title=\"...\"`."
                 .to_string()
         } else if at_risk_count > 0 {
             let first_risky = entries
@@ -2746,19 +2745,14 @@ impl ForgeplanServer {
                 .map(|e| sanitize_for_hint(&e.id));
             match first_risky {
                 Some(id) => format!(
-                    "{at_risk_count} at-risk of {total} entries (low R_eff or stale evidence). \
-                     Start with `{id}`: `forgeplan_score {id}` → strengthen evidence or \
-                     `forgeplan_reason {id}` to re-evaluate."
+                    "{at_risk_count} at-risk of {total} entries. Score the worst: \
+                     `forgeplan_score {id}`."
                 ),
-                None => {
-                    format!("{at_risk_count} at-risk decision(s). Review low-R_eff entries first.")
-                }
+                None => format!("{at_risk_count} at-risk decision(s). Run `forgeplan_health`."),
             }
         } else {
-            format!(
-                "{total} decisions documented, all healthy. Continue work or use \
-                 `forgeplan_reason <id>` to apply ADI cycle to any specific decision."
-            )
+            // Healthy + populated — no actionable next step. Surface that.
+            format!("{total} decision(s) documented, all healthy.")
         };
 
         hinted_result(
@@ -2791,26 +2785,20 @@ impl ForgeplanServer {
 
         let blind_count = report.blind_spots.len();
         let orphan_count = report.orphans.len();
+        // PRD-071: real IDs — pick the first blind-spot/orphan as concrete
+        // target. Single primary action, no <id> placeholders.
         let next_action = if blind_count == 0 && orphan_count == 0 {
-            "No blind spots or orphans — every active artifact has evidence and links. Continue \
-             with `forgeplan_health` for full dashboard."
-                .to_string()
-        } else if blind_count > 0 {
-            let first = report
-                .blind_spots
-                .first()
-                .map(|b| sanitize_for_hint(&b.id))
-                .unwrap_or_else(|| "<id>".into());
+            "No blind spots or orphans. Workflow healthy.".to_string()
+        } else if let Some(b) = report.blind_spots.first() {
+            let first = sanitize_for_hint(&b.id);
             format!(
-                "{blind_count} blind spot(s): active artifacts without evidence. Fix `{first}` \
-                 first: `forgeplan_new kind=evidence` → structured fields \
-                 (verdict/congruence_level/evidence_type) → `forgeplan_link EVID-XXX {first}`."
+                "{blind_count} blind spot(s). Score `{first}` first: `forgeplan_score {first}`."
             )
+        } else if let Some(o) = report.orphans.first() {
+            let first = sanitize_for_hint(o);
+            format!("{orphan_count} orphan(s). Inspect `{first}`: `forgeplan_get {first}`.")
         } else {
-            format!(
-                "{orphan_count} orphan(s): active but not linked. Use `forgeplan_link <id> \
-                 <parent>` to connect, or `forgeplan_deprecate <id>` if obsolete."
-            )
+            "No actionable items.".to_string()
         };
         hinted_result(
             &serde_json::json!({
@@ -2915,11 +2903,10 @@ impl ForgeplanServer {
         .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
+        // PRD-071: single primary — review the captured draft. Lifecycle
+        // (delete-if-wrong-kind, review, activate) follows from there.
         let next_action = format!(
-            "Captured as {template_key} `{safe_id}` (draft). Review auto-detected fit: \
-             `forgeplan_get {safe_id}`. If wrong kind, `forgeplan_delete {safe_id}` and retry \
-             with `forgeplan_new kind=<correct>`. When ready, `forgeplan_review {safe_id}` → \
-             `forgeplan_activate {safe_id}`."
+            "Captured as {template_key} `{safe_id}` (draft). Review: `forgeplan_get {safe_id}`."
         );
         hinted_result(
             &serde_json::json!({
@@ -2982,15 +2969,14 @@ impl ForgeplanServer {
         let edge_count = edges.len();
         let mermaid = graph::render_mermaid(&edges);
 
+        // PRD-071: single primary action per state.
         let next_action = if edge_count == 0 {
-            "No links yet — isolated artifacts. Use `forgeplan_link <src> <tgt>` to connect, or \
-             `forgeplan_new` with parent_epic to establish hierarchy."
+            "No links yet — isolated artifacts. Inspect orphans: `forgeplan_blindspots`."
                 .to_string()
         } else {
-            format!(
-                "{edge_count} edge(s). Render the Mermaid block in a markdown viewer. Cycles? → \
-                 `forgeplan_blocked` to see them. Orphans? → `forgeplan_blindspots`."
-            )
+            // Edges present — direct the agent to dependency-order analysis,
+            // which is the structural follow-up to a graph render.
+            format!("{edge_count} edge(s). Check for cycles: `forgeplan_blocked`.")
         };
         hinted_result(&GraphResponse { mermaid }, next_action)
     }
@@ -3039,18 +3025,19 @@ impl ForgeplanServer {
             let safe_id = sanitize_for_hint(&normalized_id);
             let blocked_by = topological::get_blocked_by(&normalized_id, &relations, &resolved_ids);
             let is_blocked = !blocked_by.is_empty();
+            // PRD-071: real IDs (use the first blocker), single primary.
             let next_action = if is_blocked {
-                format!(
-                    "`{safe_id}` blocked by {} dependency/dependencies. Resolve them \
-                     first: activate if ready (`forgeplan_activate <dep>`), or supersede/\
-                     deprecate if obsolete.",
-                    blocked_by.len()
-                )
+                let first_dep = blocked_by.first().map(|d| sanitize_for_hint(d));
+                match first_dep {
+                    Some(dep) => format!(
+                        "`{safe_id}` blocked by {} dependency/dependencies. Resolve `{dep}` \
+                         first: `forgeplan_get {dep}`.",
+                        blocked_by.len()
+                    ),
+                    None => format!("`{safe_id}` blocked. Inspect: `forgeplan_get {safe_id}`."),
+                }
             } else {
-                format!(
-                    "`{safe_id}` has no blockers — ready for next phase. \
-                     If in draft, proceed with `forgeplan_review` + `forgeplan_activate`."
-                )
+                format!("`{safe_id}` has no blockers. Review: `forgeplan_review {safe_id}`.")
             };
             Ok(json_result(&serde_json::json!({
                 "blocked": if is_blocked {
@@ -3072,21 +3059,19 @@ impl ForgeplanServer {
             // Previous code said `result.cycles.len()` which reported wrong numbers.
             let blocked_count = blocked.len();
             let cycles_count = result.cycles.len();
+            // PRD-071: deterministic single primary per branch.
             let next_action = if cycles_count > 0 {
                 format!(
-                    "⚠ {cycles_count} cycle(s) detected — circular dependencies must be broken \
-                     before any blocked artifact can proceed. Use `forgeplan_graph` to visualize."
+                    "⚠ {cycles_count} cycle(s) detected. Visualize and break the loop: \
+                     `forgeplan_graph`."
                 )
             } else if blocked_count > 0 {
                 format!(
-                    "{blocked_count} blocked + {} ready. Work ready artifacts first, or \
-                     resolve blockers in topological order (`forgeplan_order`).",
+                    "{blocked_count} blocked + {} ready. Work ready first: `forgeplan_order`.",
                     result.ready.len()
                 )
             } else {
-                "All active artifacts ready — no blockers. Continue with implementation \
-                 or `forgeplan_list --status draft` to see pending work."
-                    .to_string()
+                "All active artifacts ready — no blockers.".to_string()
             };
             Ok(json_result(&serde_json::json!({
                 "blocked": blocked,
@@ -3138,25 +3123,16 @@ impl ForgeplanServer {
         let cycles_count = result.cycles.len();
         let first_ready = result.ready.first().map(|s| sanitize_for_hint(s));
 
+        // PRD-071: single primary action per branch — no multi-step
+        // narratives, real IDs.
         let next_action = if cycles_count > 0 {
-            format!(
-                "⚠ {cycles_count} cycle(s). Circular deps must be broken first. Use \
-                 `forgeplan_graph` to visualize, then `forgeplan_supersede` to break the loop."
-            )
+            format!("⚠ {cycles_count} cycle(s). Visualize: `forgeplan_graph`.")
         } else if let Some(id) = first_ready {
-            format!(
-                "Work `{id}` first (top of topological order). \
-                 `forgeplan_get {id}` → `forgeplan_review {id}` → implement → evidence → activate."
-            )
+            format!("Work `{id}` first: `forgeplan_get {id}`.")
         } else if blocked_count > 0 {
-            format!(
-                "All {blocked_count} artifacts blocked — resolve dependencies (\
-                 `forgeplan_blocked` for details)."
-            )
+            format!("All {blocked_count} artifact(s) blocked. List details: `forgeplan_blocked`.")
         } else {
-            "Nothing pending — all done or empty workspace. Use `forgeplan_health` or \
-             `forgeplan_list --status draft` to confirm."
-                .to_string()
+            "Nothing pending. Run `forgeplan_health` to confirm.".to_string()
         };
 
         let resp = OrderResponse {
@@ -3289,20 +3265,19 @@ impl ForgeplanServer {
                 })
                 .collect();
             let total = results.len();
+            // PRD-071: single primary action.
             let next_action = if total == 0 {
                 format!(
-                    "No keyword hits for `{}`. Try `mode=smart` (default) or broader terms. \
-                     Fallback: `forgeplan_list` without filters.",
+                    "No keyword hits for `{}`. Try smart mode: \
+                     `forgeplan_search query=\"{}\" mode=\"smart\"`.",
+                    sanitize_for_hint(&p.query),
                     sanitize_for_hint(&p.query)
                 )
             } else {
                 let first = results.first().map(|r| sanitize_for_hint(&r.id));
                 match first {
-                    Some(id) => format!(
-                        "{total} hit(s). Start: `forgeplan_get {id}` to read content, \
-                         `forgeplan_score {id}` for R_eff."
-                    ),
-                    None => format!("{total} hit(s). `forgeplan_get <id>` to inspect."),
+                    Some(id) => format!("{total} hit(s). Read top result: `forgeplan_get {id}`."),
+                    None => format!("{total} hit(s)."),
                 }
             };
             return hinted_result(&SearchResponse { results, total }, next_action);
@@ -3347,18 +3322,16 @@ impl ForgeplanServer {
 
         let total = dtos.len();
         let safe_query = sanitize_for_hint(&p.query);
+        // PRD-071: single primary action, real ID for the top hit.
         let next_action = if total == 0 {
             format!(
-                "No hits for `{safe_query}`. Try different terms or `mode=keyword` for literal \
-                 substring match. `forgeplan_list` shows all artifacts."
+                "No hits for `{safe_query}`. Try keyword mode: \
+                 `forgeplan_search query=\"{safe_query}\" mode=\"keyword\"`."
             )
         } else {
             match dtos.first().map(|r| sanitize_for_hint(&r.id)) {
-                Some(id) => format!(
-                    "{total} hit(s). Top: `forgeplan_get {id}` to read, \
-                     `forgeplan_score {id}` for R_eff."
-                ),
-                None => format!("{total} hit(s). `forgeplan_get <id>` to inspect."),
+                Some(id) => format!("{total} hit(s). Read top: `forgeplan_get {id}`."),
+                None => format!("{total} hit(s)."),
             }
         };
 
@@ -3415,20 +3388,18 @@ impl ForgeplanServer {
             .collect();
 
         let total = stale.len();
+        // PRD-071: single primary action. Renew is the canonical "extend"
+        // path; reopen/deprecate are user-driven alternatives, not the
+        // recommended next step.
         let next_action = if total == 0 {
-            "No stale artifacts — all `valid_until` dates are in the future. Continue with \
-             `forgeplan_health` or `forgeplan_order`."
-                .to_string()
+            "No stale artifacts — all `valid_until` dates are in the future.".to_string()
         } else {
             let first = stale.first().map(|s| sanitize_for_hint(&s.id));
             match first {
-                Some(id) => format!(
-                    "{total} stale artifact(s). Start with `{id}`: `forgeplan_renew {id} \
-                     --reason \"...\" --until YYYY-MM-DD` to extend, or `forgeplan_reopen {id} \
-                     --reason \"...\"` to replace with new draft, or `forgeplan_deprecate {id}` \
-                     if obsolete."
-                ),
-                None => format!("{total} stale — use `forgeplan_renew` / `forgeplan_deprecate`."),
+                Some(id) => {
+                    format!("{total} stale artifact(s). Inspect first: `forgeplan_get {id}`.")
+                }
+                None => format!("{total} stale artifact(s)."),
             }
         };
         hinted_result(&StaleResponse { stale, total }, next_action)
@@ -3502,29 +3473,36 @@ impl ForgeplanServer {
         } else {
             0
         };
+        // PRD-071: single primary per state, real IDs (first reported
+        // artifact). No multi-step "→ X → Y" chains.
+        let first_id = dtos.first().map(|d| sanitize_for_hint(&d.id));
         let next_action = if total_checkboxes == 0 {
-            "No checkboxes found. Add `- [ ]` items to artifact bodies to track progress."
-                .to_string()
+            "No checkboxes found. Add `- [ ]` items to track progress.".to_string()
         } else if total_completed == total_checkboxes {
-            format!(
-                "All {total_checkboxes} items done. If an artifact is now complete, \
-                 `forgeplan_score <id>` → `forgeplan_activate <id>`."
-            )
+            match first_id.as_deref() {
+                Some(id) => format!(
+                    "All {total_checkboxes} item(s) done. Activate: `forgeplan_activate {id}`."
+                ),
+                None => format!("All {total_checkboxes} item(s) done."),
+            }
         } else if percent < 30 {
-            format!(
-                "{total_completed}/{total_checkboxes} ({percent}%). Early stage — keep coding. \
-                 Re-run to track progress."
-            )
+            format!("{total_completed}/{total_checkboxes} ({percent}%). Continue implementation.")
         } else if percent < 80 {
-            format!(
-                "{total_completed}/{total_checkboxes} ({percent}%). Good progress. Consider \
-                 `forgeplan_validate` and `forgeplan_score` soon."
-            )
+            match first_id.as_deref() {
+                Some(id) => format!(
+                    "{total_completed}/{total_checkboxes} ({percent}%). Validate progress: \
+                     `forgeplan_validate {id}`."
+                ),
+                None => format!("{total_completed}/{total_checkboxes} ({percent}%)."),
+            }
         } else {
-            format!(
-                "{total_completed}/{total_checkboxes} ({percent}%). Nearly done — finish \
-                 remaining items, then `forgeplan_validate` → `forgeplan_activate`."
-            )
+            match first_id.as_deref() {
+                Some(id) => format!(
+                    "{total_completed}/{total_checkboxes} ({percent}%). Validate before \
+                     activation: `forgeplan_validate {id}`."
+                ),
+                None => format!("{total_completed}/{total_checkboxes} ({percent}%)."),
+            }
         };
         hinted_result(
             &ProgressResponse {
@@ -3578,10 +3556,9 @@ impl ForgeplanServer {
             })
             .collect();
 
+        // PRD-071: single primary, real ID for the worst-decayed artifact.
         let next_action = if total == 0 {
-            "No decayed evidence detected — all evidence within valid_until window. R_eff scores \
-             current. Continue with `forgeplan_health` or `forgeplan_score <id>`."
-                .to_string()
+            "No decayed evidence — all evidence within valid_until window.".to_string()
         } else {
             let worst = dtos
                 .iter()
@@ -3593,11 +3570,10 @@ impl ForgeplanServer {
                 .map(|d| (sanitize_for_hint(&d.artifact_id), d.r_eff_drop));
             match worst {
                 Some((id, drop)) => format!(
-                    "{total} artifact(s) with decayed evidence. Worst: `{id}` (R_eff drop {:.2}). \
-                     `forgeplan_renew <evidence-id>` to extend, or attach fresh EvidencePack.",
-                    drop
+                    "{total} artifact(s) with decayed evidence. Worst: `{id}` (R_eff drop \
+                     {drop:.2}). Inspect: `forgeplan_get {id}`."
                 ),
-                None => format!("{total} decayed. Renew evidence via `forgeplan_renew`."),
+                None => format!("{total} artifact(s) decayed."),
             }
         };
         hinted_result(
@@ -3683,12 +3659,9 @@ impl ForgeplanServer {
             });
         }
 
+        // PRD-071: single primary, real ID for the first escalation.
         let next_action = if total_escalations == 0 {
-            format!(
-                "All {} artifact(s) at appropriate depth. No escalation needed. Continue work at \
-                 current depth.",
-                results.len()
-            )
+            format!("All {} artifact(s) at appropriate depth.", results.len())
         } else {
             let first = results
                 .iter()
@@ -3696,13 +3669,10 @@ impl ForgeplanServer {
                 .map(|r| (sanitize_for_hint(&r.artifact_id), r.suggested_depth.clone()));
             match first {
                 Some((id, depth)) => format!(
-                    "{total_escalations} artifact(s) under-depth. `{id}` needs {depth}. Update: \
-                     `forgeplan_update {id}` (edit depth field in body), re-run `forgeplan_validate`."
+                    "{total_escalations} artifact(s) under-depth. `{id}` needs {depth}. \
+                     Update depth: `forgeplan_update {id}`."
                 ),
-                None => format!(
-                    "{total_escalations} escalation(s) suggested. Review `signals` field and \
-                     update depth via `forgeplan_update`."
-                ),
+                None => format!("{total_escalations} escalation(s) suggested."),
             }
         };
         hinted_result(
@@ -3780,11 +3750,12 @@ impl ForgeplanServer {
         };
 
         let safe_id = sanitize_for_hint(&record.id);
+        // PRD-071: single primary action — read the analysis. Downstream
+        // moves (new evidence, body update) are conditional on the read,
+        // not part of a deterministic next-step.
         let next_action = format!(
-            "ADI analysis done. Read `analysis` field for hypotheses, evaluation, and \
-             synthesis. If it reveals new evidence → `forgeplan_new kind=evidence` + \
-             `forgeplan_link EVID-XXX {safe_id}`. If it changes approach → `forgeplan_update \
-             {safe_id}` with new body."
+            "ADI analysis done. Read the `analysis` field, then re-validate: \
+             `forgeplan_validate {safe_id}`."
         );
         hinted_result(
             &ReasonResponse {
@@ -4078,9 +4049,10 @@ impl ForgeplanServer {
             );
         }
 
+        // PRD-071: single primary — persist by re-calling with `output`.
         let next_action = format!(
-            "Exported {} artifacts + {} relations in memory. Save to disk by re-calling with \
-             `output` param, or pass the JSON to `forgeplan_import` on another workspace.",
+            "Exported {} artifacts + {} relations in memory. Save to disk: re-call with \
+             `output=\"backup.json\"`.",
             artifacts.len(),
             relations.len()
         );
@@ -4179,21 +4151,20 @@ impl ForgeplanServer {
             }
         }
 
+        // PRD-071: single primary action per state.
         let next_action = if imported == 0 && skipped == 0 {
             "Empty bundle — no artifacts. Check bundle structure: needs top-level `artifacts` \
              array of objects with `id`/`kind`/`title`/`body`."
                 .to_string()
         } else if skipped > 0 && !force {
             format!(
-                "Imported {imported}, skipped {skipped} (existed). Re-run with `force=true` to \
-                 overwrite, or `forgeplan_delete <id>` conflicts manually. \
-                 {relations_imported} relation(s) imported."
+                "Imported {imported}, skipped {skipped} (already existed). Re-run with \
+                 `force=true` to overwrite. {relations_imported} relation(s) imported."
             )
         } else {
             format!(
                 "Imported {imported} artifact(s), {relations_imported} relation(s). Verify: \
-                 `forgeplan_health` + `forgeplan_list`. Re-render markdown via \
-                 `forgeplan_update` on each if files are out of sync."
+                 `forgeplan_health`."
             )
         };
         hinted_result(
@@ -4423,15 +4394,18 @@ impl ForgeplanServer {
         });
 
         let total = sections.len();
+        // PRD-071: single primary action with a real section id when any
+        // sections exist. Empty state remains the only branch with a CLI
+        // fallback (CLI-only ingest is still the right answer here).
+        let first_section = sections.first().map(|s| sanitize_for_hint(&s.section_id));
         let next_action = if total == 0 {
-            "FPF knowledge base empty. Run `forgeplan fpf ingest` from CLI to load chapters \
-             (requires ~150MB download of BGE-M3 model if using semantic search)."
-                .to_string()
-        } else {
+            "FPF knowledge base empty. Run `forgeplan fpf ingest` from CLI.".to_string()
+        } else if let Some(sid) = first_section {
             format!(
-                "{total} FPF section(s) loaded. Read specific: `forgeplan_fpf_section <id>`. \
-                 Search: `forgeplan_fpf_search <query>`. Check rules: `forgeplan_fpf_rules`."
+                "{total} FPF section(s) loaded. Read first: `forgeplan_fpf_section id=\"{sid}\"`."
             )
+        } else {
+            format!("{total} FPF section(s) loaded.")
         };
         hinted_result(
             &FpfListResponse {
@@ -4699,21 +4673,25 @@ impl ForgeplanServer {
 
         let total = reports.len();
         let stale_count = reports.iter().filter(|r| r.is_stale).count();
+        // PRD-071: single primary action — surface first drifted artifact.
         let next_action = if total == 0 {
-            "No decisions with affected_files tracked — drift detection needs `affected_files` in \
-             ADR/RFC frontmatter. Add `affected_files: [path/to/file]` to track drift."
+            "No decisions with affected_files tracked. Add `affected_files: [path/to/file]` to \
+             ADR/RFC frontmatter."
                 .to_string()
         } else if stale_count == 0 {
-            format!(
-                "{total} decision(s) checked, 0 drifted. All ADRs/RFCs in sync with affected \
-                 files. Re-run after code changes."
-            )
+            format!("{total} decision(s) checked, 0 drifted.")
         } else {
-            format!(
-                "{stale_count} of {total} decision(s) drifted (affected files changed after ADR). \
-                 Review reports, then `forgeplan_supersede <id>` with new ADR, or update \
-                 rationale via `forgeplan_update <id>`."
-            )
+            let first_drifted = reports
+                .iter()
+                .find(|r| r.is_stale)
+                .map(|r| sanitize_for_hint(&r.artifact_id));
+            match first_drifted {
+                Some(id) => format!(
+                    "{stale_count} of {total} decision(s) drifted. Inspect first: \
+                     `forgeplan_get {id}`."
+                ),
+                None => format!("{stale_count} of {total} decision(s) drifted."),
+            }
         };
         hinted_result(
             &serde_json::json!({
@@ -4760,23 +4738,19 @@ impl ForgeplanServer {
                 modules: vec![],
             });
 
+        // PRD-071: single primary action.
         let next_action = if report.total_modules == 0 {
-            "No code modules detected. Check project layout — coverage scans known languages \
-             (Rust/TS/Python) for top-level modules."
-                .to_string()
+            "No code modules detected. Coverage scans known languages (Rust/TS/Python).".to_string()
         } else if report.uncovered_modules == 0 {
             format!(
-                "All {} module(s) covered by decisions ({:.0}%). Strong architectural trace.",
+                "All {} module(s) covered ({:.0}%). Strong architectural trace.",
                 report.total_modules, report.coverage_percent
             )
         } else {
             format!(
-                "{}/{} modules covered ({:.0}%). {} uncovered module(s) — create ADR/RFC for \
-                 each: `forgeplan_new kind=adr`, then `forgeplan_link ADR-XXX <module-path>`.",
-                report.covered_modules,
-                report.total_modules,
-                report.coverage_percent,
-                report.uncovered_modules
+                "{}/{} module(s) covered ({:.0}%). Create ADR for the next blind spot: \
+                 `forgeplan_new kind=adr title=\"...\"`.",
+                report.covered_modules, report.total_modules, report.coverage_percent
             )
         };
         hinted_result(&report, next_action)
@@ -4936,18 +4910,17 @@ impl ForgeplanServer {
         }
 
         let safe_id = sanitize_for_hint(&record.id);
+        // PRD-071: single primary action.
         let next_action = if conf < 0.3 {
             format!(
-                "Low confidence ({:.0}%). Add Spec + Evidence to strengthen — `forgeplan_new \
-                 kind=spec` + `forgeplan_new kind=evidence` then `forgeplan_link ... {safe_id}`. \
-                 Re-run with `llm_score=true` for nuanced scoring.",
+                "Low confidence ({:.0}%). Re-run with LLM scoring: \
+                 `forgeplan_estimate id=\"{safe_id}\" llm_score=true`.",
                 conf * 100.0
             )
         } else {
             format!(
-                "Estimate ready. Use `totals` field to plan. If grade mismatch, override: \
-                 `forgeplan_estimate {safe_id} grade=senior` or `my_grade=true`. Update PRD \
-                 with accepted estimate via `forgeplan_update {safe_id}`."
+                "Estimate ready. Read `totals` field, then update PRD: \
+                 `forgeplan_update id=\"{safe_id}\"`."
             )
         };
 
@@ -5216,7 +5189,14 @@ impl ForgeplanServer {
             "tier": p.tier,
             "total_findings": session.findings.len(),
             "status": session.status,
-            "_next_action": "Continue to next finding or call forgeplan_discover_complete when done with all phases",
+            // PRD-071: single primary action — finalize the session. If
+            // more findings exist the agent simply re-calls _finding; the
+            // hint reflects the canonical path forward.
+            "_next_action": format!(
+                "Finding recorded. Complete session when phases done: \
+                 `forgeplan_discover_complete session_id=\"{}\"`.",
+                session.id
+            ),
         })))
     }
 
@@ -5262,7 +5242,9 @@ impl ForgeplanServer {
             "tier_counts": tier_counts,
             "artifacts_created": session.findings.iter().filter_map(|f| f.artifact_id.clone()).collect::<Vec<_>>(),
             "completed_at": session.completed_at,
-            "_next_action": "Run forgeplan health to validate discovery, then forgeplan validate each new artifact",
+            // PRD-071: single primary action — health check is the
+            // canonical post-discovery step.
+            "_next_action": "Validate the discovery output: `forgeplan_health`.",
         })))
     }
 
@@ -5318,11 +5300,12 @@ impl ForgeplanServer {
             .await
             .map_err(|e| McpError::internal_error(format!("activity query failed: {e}"), None))?;
 
+        // PRD-071: single primary action — a copy-pasteable command, never
+        // a fragment like `since_hours=720`.
         let next_action = if result.entries.is_empty() {
             format!(
-                "No tool calls in the last {since} hour(s). Log file may not exist yet (run a \
-                 tool first) or the window is too narrow — try `since_hours=720` for the last \
-                 month."
+                "No tool calls in the last {since} hour(s). Widen window: \
+                 `forgeplan_activity since_hours=720`."
             )
         } else {
             let top_tool = {
@@ -5331,9 +5314,8 @@ impl ForgeplanServer {
             };
             match top_tool {
                 Some(t) => format!(
-                    "{} entries in window. Busiest tool: `{t}`. Use \
-                     `forgeplan_activity_stats` to see per-tool breakdown, or filter: \
-                     `forgeplan_activity tool={t}`.",
+                    "{} entries in window. Busiest: `{t}`. Per-tool breakdown: \
+                     `forgeplan_activity_stats`.",
                     result.entries.len()
                 ),
                 None => format!("{} entries in window.", result.entries.len()),
@@ -5390,18 +5372,18 @@ impl ForgeplanServer {
         let total_errors: usize = stats.iter().map(|s| s.err_count).sum();
         let total_ms: u64 = stats.iter().map(|s| s.total_ms).sum();
 
+        // PRD-071: copy-pasteable command, no fragments like `since_hours=720`.
         let next_action = if stats.is_empty() {
             format!(
-                "No activity in the last {since} hour(s). Try `since_hours=720` for a longer \
-                 window."
+                "No activity in the last {since} hour(s). Widen window: \
+                 `forgeplan_activity_stats since_hours=720`."
             )
         } else {
             let top = &stats[0];
             format!(
-                "{total_calls} total call(s), {total_errors} error(s), {total_ms} ms total. Top \
-                 by time: `{}` ({} call(s), p95 {}ms). Drill down: \
-                 `forgeplan_activity tool={}`.",
-                top.tool, top.count, top.p95_ms, top.tool
+                "{total_calls} call(s), {total_errors} error(s), {total_ms} ms total. Drill into \
+                 busiest: `forgeplan_activity tool=\"{}\"`.",
+                top.tool
             )
         };
 
@@ -5657,12 +5639,14 @@ impl ForgeplanServer {
             }) => {
                 let safe_id = sanitize_for_hint(&id);
                 let safe_agent = sanitize_for_hint(&agent_id);
+                // PRD-071: pick ONE primary action — claim a different
+                // artifact via dispatch. Force-release and TTL-wait are
+                // orchestrator-only fallbacks, not the recommended path.
                 Ok(err_hinted(
                     &format!(
                         "claim for {safe_id} already held by {safe_agent} (expires {expires_at})"
                     ),
-                    "Either work on a different artifact, wait for TTL expiry, or ask the \
-                     orchestrator to force-release with `forgeplan_release --force`.",
+                    "Try claiming a different artifact: `forgeplan_dispatch agents=3`.",
                 ))
             }
             Err(e) => Ok(err_result(&format!("claim failed: {e}"))),
@@ -5779,20 +5763,22 @@ impl ForgeplanServer {
                     skipped,
                     claims: claims.into_iter().map(ClaimDto::from).collect(),
                 };
+                // PRD-071: terminal "no claims" state — no fake-positive
+                // "Workspace is free" hint. Drive the agent to dispatch
+                // when claims exist; surface dispatcher even on empty so
+                // it has a deterministic primary action.
                 let hint = if count == 0 && skipped == 0 {
-                    "No active claims. Workspace is free for any agent to claim work.".to_string()
+                    "No active claims. Plan parallel work: `forgeplan_dispatch agents=3`."
+                        .to_string()
                 } else if skipped > 0 {
                     format!(
-                        "{count} active claim{}, {skipped} malformed file{} skipped (see server \
-                         logs). Run `forgeplan health` to surface the offenders.",
-                        if count == 1 { "" } else { "s" },
-                        if skipped == 1 { "" } else { "s" },
+                        "{count} active claim(s), {skipped} malformed file(s) skipped. \
+                         Inspect health: `forgeplan_health`."
                     )
                 } else {
                     format!(
-                        "{count} active claim{}. Use `forgeplan_dispatch --agents N` to plan \
-                         non-overlapping work around them.",
-                        if count == 1 { "" } else { "s" }
+                        "{count} active claim(s). Plan around them: \
+                         `forgeplan_dispatch agents=3`."
                     )
                 };
                 hinted_result(&dto, hint)

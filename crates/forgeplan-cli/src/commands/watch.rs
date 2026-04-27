@@ -34,6 +34,10 @@ pub async fn run() -> anyhow::Result<()> {
         watched
     );
 
+    // PRD-071: long-running surface — emit Wait: line so agents know this
+    // is a foreground process that mutates state on file changes.
+    println!("Wait: changes will sync to LanceDB as files change (Ctrl-C to stop)");
+
     // Graceful shutdown on Ctrl+C
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
     ctrlc::set_handler(move || {

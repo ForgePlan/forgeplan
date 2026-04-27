@@ -6,6 +6,7 @@
 // later PRD under EPIC-005.
 
 use console::style;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase::{self, Phase};
 use forgeplan_core::workspace;
 
@@ -63,6 +64,19 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     let target: Phase = to.into();
     let state = phase::store::advance_phase(&ws, id, target, reason.map(|s| s.to_string())).await?;
 
+    // PRD-071 contract: produce a single Next: action — the next suggested phase
+    // advance. No suggestion when at terminal phase (Done.).
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if let Some(next) = state.current_phase.suggested_next() {
+        hints_vec.push(
+            Hint::suggestion(format!("Advance to {}", next.as_str())).with_action(format!(
+                "forgeplan phase-advance {} --to {}",
+                state.artifact_id,
+                next.as_str()
+            )),
+        );
+    }
+
     if json {
         let payload = serde_json::json!({
             "artifact_id": state.artifact_id,
@@ -72,6 +86,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
             "history_entries": state.history.len(),
             "reason": reason,
             "suggested_next": state.current_phase.suggested_next().map(|p| p.as_str()),
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!(
             "{}",
@@ -93,6 +108,12 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     match state.current_phase.suggested_next() {
         Some(next) => println!("  suggested next: {}", style(next.as_str()).yellow()),
         None => println!("  terminal phase -- no further advancement recommended"),
+    }
+
+    // PRD-071 contract: terminal Next:/Done. line for CLI text consumers.
+    match hints::primary_action(&hints_vec) {
+        Some(cmd) => println!("\nNext: {}", cmd),
+        None => println!("\nDone."),
     }
     Ok(())
 }

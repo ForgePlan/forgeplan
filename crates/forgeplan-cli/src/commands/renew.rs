@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::lifecycle;
 use forgeplan_core::projection;
 
@@ -49,6 +50,14 @@ pub async fn run(id: &str, reason: &str, until: &str) -> anyhow::Result<()> {
     } else {
         println!("  Valid until: {}", result.new_valid_until);
     }
+
+    // PRD-071: post-renew, score the artifact to confirm R_eff still holds
+    // with refreshed evidence dating.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Renewed — re-score to confirm trust")
+            .with_action(format!("forgeplan score {}", id)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }
