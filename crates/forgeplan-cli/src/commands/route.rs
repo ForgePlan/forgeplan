@@ -1,4 +1,5 @@
 use console::style;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::routing;
 use forgeplan_core::workspace;
 
@@ -172,6 +173,22 @@ pub async fn run(description: &str, explain: bool, level: Option<u8>) -> anyhow:
         session.phase = forgeplan_core::session::Phase::Routing;
         session.phase_started_at = Some(chrono::Utc::now().to_rfc3339());
         crate::commands::common::save_session(&session);
+    }
+
+    // PRD-071 contract: emit deterministic Next: line with the top-of-pipeline
+    // command. Tactical depth has an empty pipeline (no artifact to create) —
+    // emit `Done.` per CONDITIONALITY rule (terminal: "just do it" is the work
+    // itself, no further forgeplan command needed).
+    if result.pipeline.is_empty() {
+        println!();
+        println!("Done.");
+    } else {
+        let first = kind_display(&result.pipeline[0]).to_lowercase();
+        let next_hints: Vec<Hint> = vec![
+            Hint::info(format!("Top of pipeline: {}", first))
+                .with_action(format!("forgeplan new {} \"<title>\"", first)),
+        ];
+        print!("{}", hints::render_next_action_line(&next_hints));
     }
 
     Ok(())

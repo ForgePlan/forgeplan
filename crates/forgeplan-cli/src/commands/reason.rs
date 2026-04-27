@@ -1,6 +1,7 @@
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::fpf::contexts;
 use forgeplan_core::fpf::core::adi::AdiRecord;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::reason;
 use forgeplan_core::llm::reason::ArtifactContext;
 
@@ -32,11 +33,23 @@ fn load_architecture_hint() -> String {
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
     let (_ws, store) = common::open_store().await?;
 
-    let llm_config = common::require_llm_config()?;
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    // PRD-071 contract: when LLM is unavailable, emit a `Fix:` marker line so
+    // the agent can route to setup-skill instead of guessing.
+    let llm_config = match common::require_llm_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Fix: forgeplan setup-skill");
+            anyhow::bail!("LLM not configured");
+        }
+    };
+    let record = store.get_record(id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Artifact '{}' not found\n\
+             Fix: forgeplan list",
+            id
+        )
+    })?;
 
     // Build artifact context from store metadata, enriching relations with titles
     let raw_relations = store.get_relations(&record.id).await.unwrap_or_default();
@@ -90,7 +103,9 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         record.id, llm_config.provider, llm_config.model
     );
 
-    let (analysis, adi_output) = reason::reason(
+    // PRD-071 contract: LLM call failures (rate limit, auth, network) get a
+    // `Fix:` marker so the agent has a deterministic next step.
+    let (analysis, adi_output) = match reason::reason(
         &llm_config,
         &record.id,
         &record.title,
@@ -99,7 +114,33 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         fpf_context.as_deref(),
         Some(&artifact_context),
     )
-    .await?;
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error: ADI reasoning failed: {}", e);
+            eprintln!("Fix: forgeplan setup-skill");
+            anyhow::bail!("LLM call failed");
+        }
+    };
+
+    // PRD-071 contract: deterministic Next: action for the agent — verify R_eff
+    // after ADI. If evidence_needed is non-empty, point at evidence creation
+    // first (the prerequisite for a meaningful score).
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if !adi_output.evidence_needed.is_empty() {
+        hints_vec.push(
+            Hint::suggestion("Add the missing evidence flagged by ADI").with_action(format!(
+                "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX {} --relation informs",
+                record.id
+            )),
+        );
+    } else {
+        hints_vec.push(
+            Hint::suggestion("Verify R_eff after ADI")
+                .with_action(format!("forgeplan score {}", record.id)),
+        );
+    }
 
     if json {
         // Structured JSON output — use parsed AdiOutput when available
@@ -110,6 +151,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
                 "adi_output": adi_output,
                 "depth": record.depth,
                 "r_eff_score": record.r_eff_score,
+                "_next_action": hints::primary_action(&hints_vec),
             });
             println!("{}", serde_json::to_string_pretty(&structured)?);
         } else {
@@ -120,6 +162,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
                 "adi_analysis": analysis,
                 "depth": record.depth,
                 "r_eff_score": record.r_eff_score,
+                "_next_action": hints::primary_action(&hints_vec),
             });
             println!("{}", serde_json::to_string_pretty(&structured)?);
         }
@@ -199,6 +242,11 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         store.create_artifact(&new_artifact).await?;
         store.add_relation(&note_id, &record.id, "informs").await?;
         println!("  Saved as {} -> linked to {}", note_id, record.id);
+    }
+
+    // PRD-071 contract: terminal Next: line in CLI text mode (json already handled).
+    if !json {
+        print!("{}", hints::render_next_action_line(&hints_vec));
     }
 
     Ok(())

@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::journal;
 
 use crate::commands::common;
@@ -11,6 +12,13 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
         if kind.is_some() {
             println!("Try without --kind filter.");
         }
+        // PRD-071 contract: empty journal — no decision artifacts yet, suggest
+        // creating one.
+        let hints_vec = vec![
+            Hint::suggestion("Shape your first decision artifact")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hints_vec));
         return Ok(());
     }
 
@@ -64,6 +72,26 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
         println!("  ⚠ {} decision(s) without any evidence", no_evidence);
     }
 
+    // PRD-071 contract: pick the most recent decision and suggest inspecting
+    // it. journal::build_journal returns reverse-chronological so entries[0]
+    // is the most recent.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if let Some(first) = entries.first() {
+        if first.evidence_count == 0 && first.status != "deprecated" && first.status != "superseded"
+        {
+            hints_vec.push(
+                Hint::warning(format!("{} has no evidence — score it", first.id))
+                    .with_action(format!("forgeplan score {}", first.id)),
+            );
+        } else {
+            hints_vec.push(
+                Hint::info(format!("Inspect most recent decision {}", first.id))
+                    .with_action(format!("forgeplan get {}", first.id)),
+            );
+        }
+    }
+
     println!();
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }

@@ -6,6 +6,7 @@ use forgeplan_core::db::store::{FpfChunk, LanceStore};
 use forgeplan_core::fpf;
 use forgeplan_core::fpf::ext::rules::Rule;
 use forgeplan_core::fpf::knowledge;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 use crate::ui;
@@ -21,6 +22,13 @@ pub async fn run_dashboard() -> anyhow::Result<()> {
     let fpf_config = config.fpf.as_ref();
     let dashboard = fpf::dashboard(&store, fpf_config).await?;
     print!("{dashboard}");
+
+    // PRD-071 contract: dashboard view → likely next is to drill into rules
+    // for explicit policy view.
+    let hints_vec = vec![
+        Hint::info("Inspect the active FPF rules").with_action("forgeplan fpf rules".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }
@@ -116,6 +124,13 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
         "  Ingested {} FPF sections (keyword-only — build with --features semantic-search for vector search)",
         count
     );
+
+    // PRD-071 contract: after ingest, point at search to verify the KB is queryable.
+    let hints_vec = vec![
+        Hint::suggestion("Search the freshly ingested KB")
+            .with_action("forgeplan fpf search \"trust\"".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 
@@ -213,6 +228,12 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
         let safe_query: String = query.chars().filter(|c| !c.is_control()).collect();
         println!("  No FPF sections match '{}'", safe_query);
         println!("  Hint: Run `forgeplan fpf ingest` first");
+        // PRD-071 contract: empty result — bootstrap path.
+        let hints_vec = vec![
+            Hint::suggestion("Ingest the FPF spec before searching")
+                .with_action("forgeplan fpf ingest".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hints_vec));
         return Ok(());
     }
 
@@ -234,6 +255,14 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
         println!("     {} ({} lines)", snippet, chunk.line_count);
         println!();
     }
+
+    // PRD-071 contract: pick the top hit, suggest fetching its full text.
+    let top_id = results[0].section_id.clone();
+    let hints_vec = vec![
+        Hint::info(format!("Read full text of {}", top_id))
+            .with_action(format!("forgeplan fpf section {}", top_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 
@@ -261,8 +290,17 @@ pub async fn run_section(id: &str, summary: bool) -> anyhow::Result<()> {
                 chunk.body.len() - 500
             );
         }
+        // PRD-071 contract: summary truncated — suggest the full read command
+        // pointing at the same id.
+        let hints_vec = vec![
+            Hint::info("Read full section without truncation")
+                .with_action(format!("forgeplan fpf section {}", chunk.section_id)),
+        ];
+        print!("{}", hints::render_next_action_line(&hints_vec));
     } else {
         println!("{}", chunk.body);
+        // Full read is terminal — agent already has the content.
+        println!("\nDone.");
     }
     Ok(())
 }
@@ -295,10 +333,15 @@ pub async fn run_status() -> anyhow::Result<()> {
 
     // Check ingested
     let store = LanceStore::open(&ws).await?;
+    let mut hints_vec: Vec<Hint> = Vec::new();
     if store.has_fpf() {
         let sections = store.list_fpf_sections().await?;
         if sections.is_empty() {
             println!("  Ingested:  empty (run `forgeplan fpf ingest`)");
+            hints_vec.push(
+                Hint::suggestion("Load the FPF spec")
+                    .with_action("forgeplan fpf ingest".to_string()),
+            );
         } else {
             let total_lines: i32 = sections.iter().map(|s| s.line_count).sum();
             println!(
@@ -315,6 +358,10 @@ pub async fn run_status() -> anyhow::Result<()> {
                     sections.len()
                 );
                 println!("  Action:    Run `forgeplan fpf ingest` to re-sync");
+                hints_vec.push(
+                    Hint::warning("FPF KB is stale — re-ingest")
+                        .with_action("forgeplan fpf ingest".to_string()),
+                );
             } else if source_count > 0 {
                 println!("  Status:    UP TO DATE");
             }
@@ -322,9 +369,17 @@ pub async fn run_status() -> anyhow::Result<()> {
     } else {
         println!("  Ingested:  not initialized");
         println!("  Action:    Run `forgeplan fpf ingest` to load FPF spec");
+        hints_vec.push(
+            Hint::suggestion("Initialize FPF KB").with_action("forgeplan fpf ingest".to_string()),
+        );
     }
 
     println!();
+    // PRD-071 contract: terminal Next:/Done. line.
+    match hints::primary_action(&hints_vec) {
+        Some(cmd) => println!("Next: {}", cmd),
+        None => println!("Done."),
+    }
     Ok(())
 }
 
@@ -361,6 +416,10 @@ pub async fn run_list() -> anyhow::Result<()> {
 
     if sections.is_empty() {
         println!("  No FPF sections loaded. Run `forgeplan fpf ingest` first.");
+        let hints_vec = vec![
+            Hint::suggestion("Load the FPF spec").with_action("forgeplan fpf ingest".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hints_vec));
         return Ok(());
     }
 
@@ -372,6 +431,14 @@ pub async fn run_list() -> anyhow::Result<()> {
     }
     println!();
     println!("  {} sections total", sections.len());
+
+    // PRD-071 contract: pick the first section and suggest reading it. Real id.
+    let top_id = sections[0].section_id.clone();
+    let hints_vec = vec![
+        Hint::info(format!("Read full text of {}", top_id))
+            .with_action(format!("forgeplan fpf section {}", top_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 
@@ -402,6 +469,17 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
         fpf::RuleSource::Default => "Default",
     };
 
+    // PRD-071 contract ACTIONABILITY: substitute a real artifact ID instead of
+    // the `<id>` placeholder. Pick the first PRD / RFC / ADR available so the
+    // suggested command is runnable verbatim. Empty workspace falls back to
+    // the conventional `PRD-NNN` value-to-fill placeholder used elsewhere.
+    let example_id = pick_example_artifact_id(&ws).await;
+
+    let hints_vec = vec![
+        Hint::info("Test rules against an artifact")
+            .with_action(format!("forgeplan fpf check {}", example_id)),
+    ];
+
     if json {
         let dump: Vec<serde_json::Value> = rules
             .iter()
@@ -420,6 +498,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
             "source": source_label,
             "count": rules.len(),
             "rules": dump,
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -452,6 +531,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
             );
         }
         println!();
+        print!("{}", hints::render_next_action_line(&hints_vec));
         return Ok(());
     }
 
@@ -514,7 +594,32 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
         }
     }
     println!();
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
+}
+
+/// PRD-071 helper: pick a real artifact ID for `forgeplan fpf check <id>`
+/// suggestions. Prefer PRD, then RFC, then ADR — the artifact kinds users
+/// most often want to check rules against. Falls back to `PRD-NNN`
+/// (value-to-fill placeholder, allowed by the contract) when the workspace
+/// is empty so the hint stays runnable-shape.
+async fn pick_example_artifact_id(ws: &std::path::Path) -> String {
+    let store = match LanceStore::open(ws).await {
+        Ok(s) => s,
+        Err(_) => return "PRD-NNN".to_string(),
+    };
+    for kind in ["prd", "rfc", "adr"] {
+        let filter = forgeplan_core::db::store::ListFilter {
+            kind: Some(kind.to_string()),
+            status: None,
+        };
+        if let Ok(records) = store.list_records(Some(&filter)).await
+            && let Some(first) = records.first()
+        {
+            return first.id.clone();
+        }
+    }
+    "PRD-NNN".to_string()
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -557,12 +662,35 @@ pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()
         }
     };
 
+    // PRD-071 contract: derive Next: from the winning rule's action — EXPLOIT
+    // means "act now" (activate); EXPLORE/INVESTIGATE means "deepen analysis"
+    // (run reason). Fall back to "inspect artifact" when no rule matched.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    match result.winning.as_ref().map(|w| w.action.as_str()) {
+        Some("EXPLOIT") => hints_vec.push(
+            Hint::suggestion(format!("Activate {}", result.artifact_id))
+                .with_action(format!("forgeplan activate {}", result.artifact_id)),
+        ),
+        Some("INVESTIGATE") | Some("EXPLORE") => hints_vec.push(
+            Hint::suggestion(format!("Deepen ADI on {}", result.artifact_id))
+                .with_action(format!("forgeplan reason {}", result.artifact_id)),
+        ),
+        _ => hints_vec.push(
+            Hint::info(format!("Inspect {}", result.artifact_id))
+                .with_action(format!("forgeplan get {}", result.artifact_id)),
+        ),
+    }
+
     if json {
         let mut val = serde_json::to_value(&result)?;
         if let Some(obj) = val.as_object_mut() {
             obj.insert(
                 "summary".to_string(),
                 serde_json::Value::String(result.summary_line()),
+            );
+            obj.insert(
+                "_next_action".to_string(),
+                serde_json::to_value(hints::primary_action(&hints_vec))?,
             );
         }
         println!("{}", serde_json::to_string_pretty(&val)?);
@@ -618,6 +746,7 @@ pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()
         );
     }
     println!();
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 

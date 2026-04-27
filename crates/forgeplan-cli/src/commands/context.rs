@@ -6,6 +6,7 @@ use console::style;
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
 use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff;
 use forgeplan_core::status::derived::derive_status;
@@ -150,6 +151,33 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         &fgr_score,
     );
 
+    // Build a single primary next-action with a real command, prioritised
+    // by severity: validation errors > missing evidence > ready-to-activate
+    // > otherwise score.
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if must_errors > 0 {
+        hint_list.push(
+            Hint::warning(format!("Fix {} MUST error(s)", must_errors))
+                .with_action(format!("forgeplan validate {}", record.id)),
+        );
+    } else if !has_evidence {
+        hint_list.push(
+            Hint::warning("No evidence linked")
+                .with_action(format!(
+                    "forgeplan new evidence \"Evidence for {}\" && forgeplan link EVID-XXX {} --relation informs",
+                    record.id, record.id
+                )),
+        );
+    } else if validation_passed && report.r_eff > 0.0 && record.status == "draft" {
+        hint_list.push(
+            Hint::info(format!("Ready to activate {}", record.id))
+                .with_action(format!("forgeplan activate {}", record.id)),
+        );
+    } else {
+        hint_list
+            .push(Hint::info("Verify R_eff").with_action(format!("forgeplan score {}", record.id)));
+    }
+
     // --- Output ---
     if json {
         let json_data = serde_json::json!({
@@ -183,6 +211,8 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
                 "grade": fgr_score.grade(),
             },
             "suggestions": suggestions,
+            "_next_action": hints::primary_action(&hint_list),
+            "hints": hint_list,
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
@@ -276,6 +306,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     }
 
     println!();
+    print!("{}", hints::render_next_action_line(&hint_list));
     Ok(())
 }
 

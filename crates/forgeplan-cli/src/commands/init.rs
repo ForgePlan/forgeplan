@@ -6,7 +6,8 @@ use anyhow::Result;
 use console::style;
 
 use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import};
+use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
 use forgeplan_core::workspace::{FORGEPLAN_DIR, find_workspace, init_workspace};
 
 use crate::ui;
@@ -32,6 +33,12 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             if scan {
                 run_scan_import(&cwd, &existing).await?;
             }
+            // PRD-071 contract: hint to start shaping (or to force reinit).
+            let hints_vec = vec![
+                Hint::suggestion("Start shaping a PRD")
+                    .with_action("forgeplan new prd \"<title>\"".to_string()),
+            ];
+            print!("{}", hints::render_next_action_line(&hints_vec));
             return Ok(());
         }
 
@@ -75,6 +82,12 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             run_scan_import(&cwd, &workspace).await?;
         }
 
+        // PRD-071 contract: hint at the next step in the workflow.
+        let hints_vec = vec![
+            Hint::suggestion("Shape your first PRD")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hints_vec));
         return Ok(());
     }
 
@@ -279,6 +292,13 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
         run_scan_import(&cwd, &workspace).await?;
     }
 
+    // PRD-071 contract: deterministic Next: line for agents (CLI text contract).
+    let hints_vec = vec![
+        Hint::suggestion("Shape your first PRD")
+            .with_action("forgeplan new prd \"<title>\"".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
+
     Ok(())
 }
 
@@ -376,7 +396,8 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
     let store = LanceStore::init(workspace).await?;
     let options = ScanImportOptions::default();
 
-    let result = scan_and_import(project_root, &store, &options).await?;
+    // PRD-058 FR-001: ADR-003-compliant variant writes markdown projections.
+    let result = scan_and_import_to_workspace(project_root, workspace, &store, &options).await?;
 
     if result.total_found == 0 {
         println!("  No documents found to import.");
@@ -417,6 +438,19 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
             "  {} unknown file(s) — run {} for details",
             style(result.unknown).dim(),
             style("forgeplan scan-import --dry-run").cyan()
+        );
+    }
+
+    // R2 audit rust-pro HIGH: surface warnings from core (unknown
+    // frontmatter status, projection write failure). PRD-058 R-2 fail-
+    // loud.
+    let warnings_total: usize = result.entries.iter().map(|e| e.warnings.len()).sum();
+    if warnings_total > 0 {
+        println!(
+            "  {} {} warning(s) — run {} to inspect",
+            style("⚠").yellow(),
+            style(warnings_total).yellow().bold(),
+            style("forgeplan scan-import").cyan()
         );
     }
 

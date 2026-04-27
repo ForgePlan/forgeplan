@@ -1,5 +1,6 @@
 use console::style;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::validation::{self, Severity, ValidationResult, adversarial};
 
 use crate::commands::common;
@@ -33,7 +34,11 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
     if to_validate.is_empty()
         && let Some(target_id) = id
     {
-        anyhow::bail!("Artifact '{}' not found", target_id);
+        anyhow::bail!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            target_id
+        );
     }
 
     let mut total_errors = 0;
@@ -90,8 +95,41 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
         }
     }
 
+    // PRD-071 contract: emit deterministic primary next-action.
+    // - single ID + 0 errors → activate
+    // - single ID + errors → fix-style hint (re-validate after editing)
+    // - multi/CI mode → run health to get blind-spot view
+    let next_hints: Vec<Hint> = if let Some(target_id) = id {
+        if total_errors == 0 {
+            vec![
+                Hint::info("Validation passed")
+                    .with_action(format!("forgeplan activate {}", target_id)),
+            ]
+        } else {
+            vec![
+                Hint::warning(format!(
+                    "{} MUST error(s) — fix and revalidate",
+                    total_errors
+                ))
+                .with_action(format!("forgeplan validate {}", target_id)),
+            ]
+        }
+    } else if total_errors > 0 {
+        vec![
+            Hint::warning(format!("{} MUST error(s) across artifacts", total_errors))
+                .with_action("forgeplan health".to_string()),
+        ]
+    } else {
+        vec![Hint::info("All validations passed").with_action("forgeplan health".to_string())]
+    };
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&json_results)?);
+        // Embed _next_action alongside the per-artifact results array.
+        let payload = serde_json::json!({
+            "results": json_results,
+            "_next_action": hints::primary_action(&next_hints),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else if to_validate.len() > 1 {
         println!();
         println!(
@@ -106,6 +144,18 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
     // Session: advance to Coding when single artifact validates PASS
     if id.is_some() && total_errors == 0 && total_passed > 0 {
         common::advance_session(forgeplan_core::session::Phase::Coding, None);
+    }
+
+    // Render primary next-action for non-JSON paths. Errors render as Fix:
+    // (warnings level) so the agent picks them up via the same Next: stream.
+    if !json {
+        if total_errors > 0 {
+            if let Some(fix) = hints::primary_action(&next_hints) {
+                eprintln!("Fix: {}", fix);
+            }
+        } else {
+            print!("{}", hints::render_next_action_line(&next_hints));
+        }
     }
 
     if ci && total_errors > 0 {

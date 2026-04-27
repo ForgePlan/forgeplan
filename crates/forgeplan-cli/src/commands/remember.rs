@@ -3,6 +3,7 @@ use console::style;
 
 use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
 use crate::commands::common;
@@ -83,6 +84,13 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
     .await?;
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
+
+    // PRD-071: list memories so the agent can immediately confirm storage
+    // or chain into recall.
+    let next_hints: Vec<Hint> =
+        vec![Hint::info("Memory stored").with_action("forgeplan remember --list".to_string())];
+    print!("{}", hints::render_next_action_line(&next_hints));
+
     Ok(())
 }
 
@@ -97,6 +105,12 @@ async fn run_list() -> Result<()> {
 
     if records.is_empty() {
         println!("  No memories found.");
+        // PRD-071: empty list — primary action is to capture something.
+        let next_hints: Vec<Hint> = vec![
+            Hint::info("No memories yet")
+                .with_action("forgeplan remember \"<fact to capture>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&next_hints));
         return Ok(());
     }
 
@@ -129,6 +143,13 @@ async fn run_list() -> Result<()> {
     }
 
     println!("\n  {} memory(ies) total", records.len());
+
+    // PRD-071: list output is terminal — show recall as the obvious next step.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Memory list rendered").with_action("forgeplan recall \"<query>\"".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
+
     Ok(())
 }
 
@@ -157,5 +178,11 @@ async fn run_forget(id: &str) -> Result<()> {
     }
 
     println!("  Forgotten: {}", style(id).bold());
+
+    // PRD-071: forget is destructive — direct user to surviving memory list.
+    let next_hints: Vec<Hint> =
+        vec![Hint::info("Memory removed").with_action("forgeplan remember --list".to_string())];
+    print!("{}", hints::render_next_action_line(&next_hints));
+
     Ok(())
 }

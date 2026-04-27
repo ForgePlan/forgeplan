@@ -1,6 +1,7 @@
 use std::fs;
 
 use anyhow::Result;
+use forgeplan_core::hints::{self, Hint};
 
 pub async fn run() -> Result<()> {
     let home =
@@ -9,13 +10,23 @@ pub async fn run() -> Result<()> {
     let skill_dir = home.join(".claude").join("skills").join("forge");
     fs::create_dir_all(&skill_dir)?;
 
-    let skill_content = include_str!("../../../../skills/forge/SKILL.md");
+    // Bundled copy. Authoritative upstream lives in the peer
+    // `forgeplan-marketplace` repo at
+    // `plugins/forgeplan-workflow/skills/forgeplan-methodology/SKILL.md`.
+    // Keep this file in sync with that upstream on release.
+    let skill_content = include_str!("forge-skill.md");
 
     let skill_path = skill_dir.join("SKILL.md");
     fs::write(&skill_path, skill_content)?;
 
     println!("  Installed /forge skill to {}", skill_path.display());
     println!("  Use /forge in Claude Code to activate Forgeplan workflow");
+
+    // PRD-071: skill is installed — point at routing as the entry point.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Skill installed").with_action("forgeplan route \"<your task>\"".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

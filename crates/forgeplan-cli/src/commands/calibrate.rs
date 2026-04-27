@@ -1,4 +1,5 @@
 use forgeplan_core::depth;
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -24,10 +25,15 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     if to_check.is_empty()
         && let Some(target_id) = id
     {
-        anyhow::bail!("Artifact '{}' not found", target_id);
+        anyhow::bail!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            target_id
+        );
     }
 
     let mut escalations = 0;
+    let mut first_escalation_id: Option<String> = None;
 
     for record in &to_check {
         let link_count = store
@@ -61,6 +67,9 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
 
             if result.escalation_needed {
                 escalations += 1;
+                if first_escalation_id.is_none() {
+                    first_escalation_id = Some(result.artifact_id.clone());
+                }
             }
         }
     }
@@ -74,6 +83,20 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if let Some(target) = first_escalation_id {
+        hint_list.push(
+            Hint::warning(format!("Escalate depth for {}", target))
+                .with_action(format!("forgeplan get {}", target)),
+        );
+    } else if let Some(target_id) = id {
+        hint_list.push(
+            Hint::info("Depth looks fine — verify R_eff next")
+                .with_action(format!("forgeplan score {}", target_id)),
+        );
+    }
+
     println!();
+    print!("{}", hints::render_next_action_line(&hint_list));
     Ok(())
 }

@@ -1,5 +1,6 @@
 use console::style;
 use forgeplan_core::gaps::{self, GapSeverity};
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 use crate::ui;
@@ -10,6 +11,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     if gaps.is_empty() {
         println!("No pipeline gaps found. All artifacts comply with depth rules.");
+        // PRD-071 contract: terminal — no actionable next step beyond keeping
+        // the workspace healthy.
+        println!("\nDone.");
         return Ok(());
     }
 
@@ -68,6 +72,23 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
     println!();
+
+    // PRD-071 contract: the highest-severity gap drives the Next: hint. MUST
+    // first, then SHOULD, then COULD. Reuse the gap's artifact_id so the
+    // suggested action lands on a real id.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    let pick = gaps
+        .iter()
+        .find(|g| g.severity == GapSeverity::Must)
+        .or_else(|| gaps.iter().find(|g| g.severity == GapSeverity::Should))
+        .or_else(|| gaps.first());
+    if let Some(gap) = pick {
+        hints_vec.push(
+            Hint::warning(format!("Fix gap on {}: {}", gap.artifact_id, gap.message))
+                .with_action(format!("forgeplan get {}", gap.artifact_id)),
+        );
+    }
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

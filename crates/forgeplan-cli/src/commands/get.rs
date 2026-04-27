@@ -1,3 +1,5 @@
+use forgeplan_core::hints::{self, Hint};
+
 use crate::commands::common;
 use crate::ui;
 
@@ -6,7 +8,39 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let record = store
         .get_record(id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", id))?;
+
+    // Contextual hints — compute up front so both text and JSON paths emit them.
+    let relations = store.get_relations(id).await.unwrap_or_default();
+    let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
+    let has_links = !relations.is_empty() || !incoming.is_empty();
+    let kind: forgeplan_core::artifact::types::ArtifactKind = record
+        .kind
+        .parse()
+        .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
+    let depth: forgeplan_core::artifact::types::Mode = record
+        .depth
+        .parse()
+        .unwrap_or(forgeplan_core::artifact::types::Mode::Standard);
+
+    let mut hints_vec: Vec<Hint> =
+        hints::get_hints(&record.id, &record.status, &kind, has_links, &depth);
+
+    // Top-level Next: hint per status — full command, real ID.
+    let primary = match record.status.as_str() {
+        "draft" => Some(
+            Hint::suggestion("Validate after filling MUST sections")
+                .with_action(format!("forgeplan validate {}", record.id)),
+        ),
+        "active" if record.r_eff_score < 0.5 => Some(
+            Hint::warning("R_eff below 0.5 — score and add evidence")
+                .with_action(format!("forgeplan score {}", record.id)),
+        ),
+        _ => None,
+    };
+    if let Some(h) = primary {
+        hints_vec.insert(0, h);
+    }
 
     if json {
         let json_data = serde_json::json!({
@@ -22,6 +56,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "body": record.body,
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
@@ -48,22 +83,10 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     println!();
     println!("{}", record.body);
 
-    // Contextual hints
-    let relations = store.get_relations(id).await.unwrap_or_default();
-    let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
-    let has_links = !relations.is_empty() || !incoming.is_empty();
-    let kind: forgeplan_core::artifact::types::ArtifactKind = record
-        .kind
-        .parse()
-        .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
-    let depth: forgeplan_core::artifact::types::Mode = record
-        .depth
-        .parse()
-        .unwrap_or(forgeplan_core::artifact::types::Mode::Standard);
-    let get_hints = forgeplan_core::hints::get_hints(&record.status, &kind, has_links, &depth);
-    if !get_hints.is_empty() {
-        print!("{}", forgeplan_core::hints::format_hints(&get_hints));
+    if !hints_vec.is_empty() {
+        print!("{}", hints::format_hints(&hints_vec));
     }
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

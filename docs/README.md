@@ -36,6 +36,7 @@ Full methodology reference. Canonical source for humans learning to use Forgepla
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Full learning path (course format) |
 | [GLOSSARY.md](methodology/GLOSSARY.md) | 31 terms + lifecycle reference table |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint base verification, audit incidents, process improvements |
+| [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 markers (Next/Or/Wait/Done/Fix), good/bad examples, agent reading protocol |
 
 ## Operations
 
@@ -45,6 +46,7 @@ Setup, hooks, and repository protection.
 |---|---|
 | [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Rules and guardrails for AI agents working in this project |
 | [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | PreToolUse / PostToolUse hooks (safety, formatting, tests) |
+| [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — `forgeplan_dispatch/claim/release/claims` MCP tools, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Branch protection, PR rules, destructive-action prevention |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Full Git rules — branching lifecycle, PR pipeline, release process, worktrees |
 | [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — what was ported from `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` to our crates |

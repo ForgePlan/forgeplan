@@ -35,6 +35,7 @@ docs/
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Полный курс обучения (формат курса) |
 | [GLOSSARY.md](methodology/GLOSSARY.md) | 31 термин + справочная таблица lifecycle |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint verification, audit incidents, улучшения процесса |
+| [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 маркеров (Next/Or/Wait/Done/Fix), good/bad примеры, agent reading protocol |
 
 ## Операции
 
@@ -44,6 +45,7 @@ docs/
 |---|---|
 | [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Правила и ограничения для AI-агентов, работающих в проекте |
 | [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | Хуки PreToolUse / PostToolUse (безопасность, форматирование, тесты) |
+| [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — MCP-инструменты `forgeplan_dispatch/claim/release/claims`, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Защита веток, правила PR, предотвращение деструктивных действий |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Полные Git-правила — lifecycle веток, PR pipeline, процесс релиза, worktrees |
 | [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — что портировано из `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` в наши crates |

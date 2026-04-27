@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::lifecycle;
 use forgeplan_core::projection;
 
@@ -12,13 +13,19 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     }
 
     // Auto-generate new ID: same prefix, next sequence
+    // PRD-071 contract: missing-artifact error emits a `Fix:` marker so the
+    // agent has a deterministic next step (list available artifacts).
     let record = store
         .get_record(id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {id}"))?;
+        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {id}\nFix: forgeplan list"))?;
     let new_id = store.next_id(&record.kind).await?;
 
-    let result = lifecycle::reopen(&store, id, reason, &new_id).await?;
+    // PRD-071 contract: lifecycle gate failure (e.g. status=draft) emits
+    // a `Fix:` marker — `validate` reveals what state is missing.
+    let result = lifecycle::reopen(&store, id, reason, &new_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
 
     // Render projections for both old (deprecated) and new (draft)
     if let Some(old_record) = store.get_record(&result.old_id).await? {
@@ -89,9 +96,17 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
         result.new_id, result.new_kind
     );
     println!("  Link: {} --based_on--> {id}", result.new_id);
-    println!();
-    println!("  * Next: fill required sections in {}", result.new_id);
-    println!("    -> forgeplan validate {}", result.new_id);
+
+    // PRD-071: primary action is to validate the freshly-minted draft so
+    // the user can fill MUST sections and chain into activation.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info(format!(
+            "New draft {} created — fill MUST sections",
+            result.new_id
+        ))
+        .with_action(format!("forgeplan validate {}", result.new_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

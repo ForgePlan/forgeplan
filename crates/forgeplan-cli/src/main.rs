@@ -3,6 +3,21 @@ mod ui;
 
 use clap::{Parser, Subcommand};
 
+/// Load `.env` from the nearest `.forgeplan/` workspace (walk-up from cwd).
+///
+/// dotenvy's default `dotenv()` only reads `.env` from the current directory,
+/// which misses `.forgeplan/.env` — the canonical location for forgeplan
+/// API keys (PROB-041). This walks up from cwd to find a workspace and
+/// loads its `.env` first. Does not override already-set env vars, so
+/// precedence is: shell env > workspace .env > cwd .env.
+fn load_workspace_env() {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
+    {
+        dotenvy::from_path(ws.join(".env")).ok();
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "forgeplan",
@@ -16,6 +31,63 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Query the activity log — append-only JSONL record of every MCP tool
+    /// invocation at .forgeplan/logs/tools-YYYY-MM-DD.jsonl. Use this to
+    /// reconstruct what the agent did over a time window, attribute LLM-token
+    /// spend, or audit destructive operations.
+    Activity {
+        /// Time window in hours back from now (1..=720, default 24)
+        #[arg(long, default_value_t = 24)]
+        since_hours: u32,
+        /// Filter by tool name. Comma-separated for multiple:
+        /// "forgeplan_score,forgeplan_activate"
+        #[arg(long)]
+        tool: Option<String>,
+        /// Filter by status: ok, tool_err, or rpc_err. Omit for all.
+        #[arg(long)]
+        status: Option<String>,
+        /// Cap result set (most recent N). 1..=5000, default 500.
+        #[arg(long, default_value_t = 500)]
+        limit: u32,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Aggregate statistics from the activity log grouped by tool name:
+    /// count, error count, p50/p95 duration, total time. Use to attribute
+    /// LLM-token spend and identify slow tools.
+    ActivityStats {
+        /// Time window in hours (1..=720, default 24)
+        #[arg(long, default_value_t = 24)]
+        since_hours: u32,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore a soft-deleted artifact from the most recent non-consumed
+    /// receipt in `.forgeplan/trash/`. Works for delete (recreates row +
+    /// moves projection back), supersede (resets status + drops link), and
+    /// deprecate (resets status). Refuses if a different artifact with the
+    /// same ID currently exists. TTL default: 30 days from the destructive op.
+    Restore {
+        /// Artifact ID to recover from the most recent non-consumed receipt
+        id: String,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reverse the most recent destructive operation (delete, supersede, or
+    /// deprecate) by reading the soft-delete trash and applying restore to
+    /// the most recently written non-consumed receipt. If no matching receipt
+    /// is found, returns an error with guidance; the tool never guesses.
+    UndoLast {
+        /// Time window (hours) to search for the last destructive op (1..=720, default 24)
+        #[arg(long, default_value_t = 24)]
+        within_hours: u32,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize a new .forgeplan/ workspace
     Init {
         /// Force reinitialize even if .forgeplan/ exists
@@ -206,6 +278,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Claim an artifact (PRD-057 multi-agent coordination — soft signal "I'm working on this")
+    Claim {
+        /// Artifact ID to claim (e.g. PRD-057)
+        id: String,
+        /// Agent identity ("name/version"). Defaults to `cli/<version>`.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Time-to-live in minutes (default 30, max 1440 = 24h, min 1)
+        #[arg(long, default_value = "30")]
+        ttl_minutes: u32,
+        /// Optional free-form note surfaced by `forgeplan claims`
+        #[arg(long)]
+        note: Option<String>,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// List active claims (sorted by expiry, soonest first)
+    Claims {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Show evidence decay impact on R_eff scores
     Decay,
     /// Compare estimated vs actual hours — calibrate estimation accuracy
@@ -339,6 +434,20 @@ enum Commands {
         #[arg(long)]
         reason: String,
     },
+    /// Release a claim (PRD-057). Idempotent — missing claim = success.
+    Release {
+        /// Artifact ID to release
+        id: String,
+        /// Agent identity. Defaults to `cli/<version>` (or empty when --force).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Force-release regardless of holder (orchestrator escape hatch)
+        #[arg(long)]
+        force: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Renew a stale artifact (stale → active) with extended validity
     Renew {
         /// Artifact ID
@@ -384,6 +493,27 @@ enum Commands {
         /// Backfill "Affected Files" section into artifacts missing it
         #[arg(long)]
         backfill: bool,
+    },
+    /// Compute a parallel-safe work plan for N sub-agents (PRD-057 dispatcher)
+    Dispatch {
+        /// Number of sub-agents the orchestrator can hand work to (>=1, max 64)
+        #[arg(long, short = 'n')]
+        agents: u32,
+        /// Optional filter: only artifacts with this parent Epic ID
+        #[arg(long)]
+        epic: Option<String>,
+        /// Optional filter: only consider artifacts of this kind (prd/rfc/spec/...)
+        #[arg(long, short = 't')]
+        kind: Option<String>,
+        /// Status filter (default `draft`; pass `any` for all states)
+        #[arg(long, short = 's', default_value = "draft")]
+        status: String,
+        /// Jaccard threshold for file-overlap conflict detection (default 0.3)
+        #[arg(long, default_value = "0.3")]
+        overlap_threshold: f64,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Check for drifted decisions (affected files changed after decision)
     Drift {
@@ -470,6 +600,38 @@ enum Commands {
     },
     /// Show artifacts in topological order (dependency order)
     Order {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read advisory phase state for an artifact. Returns current_phase,
+    /// workflow_type, timestamps, and the full append-only transition history
+    /// from `.forgeplan/state/<id>.yaml`. If no state file exists yet
+    /// (pre-PRD-056 artifact or phase tracking was disabled), returns
+    /// `current_phase: unknown` -- never an error. Phase tracking is advisory
+    /// and never blocks other tools.
+    Phase {
+        /// Artifact ID whose phase state to read
+        id: String,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manually advance (or set) the advisory phase marker for an artifact.
+    /// Appends a transition to the history. Does NOT validate phase ordering --
+    /// advisory layer allows out-of-order jumps (e.g. direct `done` override).
+    /// Full phase enforcement lands in a later PRD under EPIC-005. Use when
+    /// auto-advancement missed a transition or when reclassifying workflow state.
+    #[command(name = "phase-advance")]
+    PhaseAdvance {
+        /// Artifact ID to advance
+        id: String,
+        /// Target phase: shape, validate, adi, code, test, audit, evidence, done
+        #[arg(long, value_enum)]
+        to: commands::phase_advance::PhaseArg,
+        /// Optional reason / justification (recorded in history)
+        #[arg(long)]
+        reason: Option<String>,
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
@@ -647,12 +809,32 @@ enum FpfCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env file (if exists) for API keys and config overrides
+    // Load .env from workspace first (.forgeplan/.env via walk-up from cwd),
+    // then fall back to cwd .env. Neither call overrides shell env vars —
+    // precedence: shell env > workspace .env > cwd .env.
+    load_workspace_env();
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Activity {
+            since_hours,
+            tool,
+            status,
+            limit,
+            json,
+        } => {
+            commands::activity::run(since_hours, tool.as_deref(), status.as_deref(), limit, json)
+                .await
+        }
+        Commands::ActivityStats { since_hours, json } => {
+            commands::activity_stats::run(since_hours, json).await
+        }
+        Commands::Restore { id, json } => commands::restore::run(&id, json).await,
+        Commands::UndoLast { within_hours, json } => {
+            commands::undo_last::run(within_hours, json).await
+        }
         Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
         Commands::New {
             kind,
@@ -764,6 +946,23 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Commands::Progress { id, json } => commands::progress::run(id.as_deref(), json).await,
+        Commands::Claim {
+            id,
+            agent,
+            ttl_minutes,
+            note,
+            json,
+        } => {
+            commands::claim::run(
+                &id,
+                agent.as_deref(),
+                Some(ttl_minutes),
+                note.as_deref(),
+                json,
+            )
+            .await
+        }
+        Commands::Claims { json } => commands::claims::run(json).await,
         Commands::Decay => commands::decay::run().await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
         Commands::CalibrateEstimate {
@@ -809,6 +1008,24 @@ async fn main() -> anyhow::Result<()> {
                 commands::coverage::run_coverage().await
             }
         }
+        Commands::Dispatch {
+            agents,
+            epic,
+            kind,
+            status,
+            overlap_threshold,
+            json,
+        } => {
+            commands::dispatch::run(
+                agents,
+                epic.as_deref(),
+                kind.as_deref(),
+                Some(status.as_str()),
+                Some(overlap_threshold),
+                json,
+            )
+            .await
+        }
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
@@ -828,6 +1045,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Activate { id, force } => commands::activate::run(&id, force).await,
         Commands::Supersede { id, by } => commands::supersede::run(&id, &by).await,
         Commands::Deprecate { id, reason } => commands::deprecate::run(&id, &reason).await,
+        Commands::Release {
+            id,
+            agent,
+            force,
+            json,
+        } => commands::release::run(&id, agent.as_deref(), force, json).await,
         Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
         Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,
@@ -859,6 +1082,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Tree { id, depth, json } => commands::tree::run(id.as_deref(), depth, json).await,
         Commands::Order { json } => commands::order::run(json).await,
+        Commands::Phase { id, json } => commands::phase::run(&id, json).await,
+        Commands::PhaseAdvance {
+            id,
+            to,
+            reason,
+            json,
+        } => commands::phase_advance::run(&id, to, reason.as_deref(), json).await,
         Commands::Migrate => commands::migrate::run().await,
         Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,

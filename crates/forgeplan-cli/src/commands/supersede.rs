@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::lifecycle;
 use forgeplan_core::projection;
 
@@ -17,7 +18,12 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
         projection::sync_file_to_store(&store, &ws, &record).await?;
     }
 
-    let result = lifecycle::supersede(&store, id, by).await?;
+    // PRD-071 contract: error path emits a `Fix:` marker line so agents have a
+    // deterministic next action (validate the source, or pick a different
+    // replacement target).
+    let result = lifecycle::supersede(&store, id, by)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
 
     // Re-render projection with updated status
     if let Some(record) = store.get_record(id).await? {
@@ -61,6 +67,13 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
             println!("  ! {dep} depends on superseded {id} → consider updating to {by}");
         }
     }
+
+    // PRD-071: verify the new successor exists and is in good shape.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info(format!("Superseded by {} — verify successor", by))
+            .with_action(format!("forgeplan get {}", by)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

@@ -2,6 +2,7 @@ use std::env;
 
 use forgeplan_core::coverage;
 use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 /// `forgeplan scan [--path <dir>]` — scan codebase for modules
@@ -30,6 +31,11 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
 
     if modules.is_empty() {
         println!("  No source modules found.");
+        let hint_list = vec![
+            Hint::info("Initialize a workspace to scan for decisions")
+                .with_action("forgeplan init -y".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -48,6 +54,12 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
         total_files,
         total_lines
     );
+
+    let hint_list = vec![
+        Hint::info("See decision coverage per module")
+            .with_action("forgeplan coverage".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }
@@ -102,6 +114,19 @@ pub async fn run_coverage() -> anyhow::Result<()> {
         }
     }
 
+    let hint_list: Vec<Hint> = if !uncovered.is_empty() {
+        vec![
+            Hint::warning(format!("{} uncovered module(s)", uncovered.len()))
+                .with_action("forgeplan coverage --backfill".to_string()),
+        ]
+    } else {
+        vec![
+            Hint::info("Coverage complete — verify drift")
+                .with_action("forgeplan drift".to_string()),
+        ]
+    };
+    print!("{}", hints::render_next_action_line(&hint_list));
+
     Ok(())
 }
 
@@ -114,8 +139,9 @@ pub async fn run_backfill() -> anyhow::Result<()> {
     let store = LanceStore::open(&ws).await?;
     let updated = coverage::backfill_affected_files(&store).await?;
 
-    if updated.is_empty() {
+    let hint_list: Vec<Hint> = if updated.is_empty() {
         println!("  All active PRD/RFC/ADR already have 'Affected Files' section.");
+        vec![Hint::info("Re-check decision coverage").with_action("forgeplan coverage".to_string())]
     } else {
         println!("  Backfilled {} artifact(s):", updated.len());
         for id in &updated {
@@ -123,7 +149,13 @@ pub async fn run_backfill() -> anyhow::Result<()> {
         }
         println!();
         println!("  Edit each artifact to fill in actual file paths.");
-    }
+        let first = updated.first().cloned().unwrap_or_default();
+        vec![
+            Hint::warning(format!("Fill 'Affected Files' in {}", first))
+                .with_action(format!("forgeplan get {}", first)),
+        ]
+    };
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

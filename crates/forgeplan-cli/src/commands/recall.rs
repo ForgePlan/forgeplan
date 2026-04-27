@@ -2,6 +2,7 @@ use anyhow::Result;
 use console::style;
 
 use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -43,14 +44,34 @@ pub async fn run(
     // Limit
     records.truncate(limit);
 
+    let mut hints_vec: Vec<Hint> = Vec::new();
+
     if records.is_empty() {
+        // PRD-071 contract: when no memories matched, suggest capturing one.
+        hints_vec.push(
+            Hint::suggestion("Capture a memory with `memory_retain`")
+                .with_action("forgeplan recall --limit 5".to_string()),
+        );
         if json {
-            println!("[]");
+            let payload = serde_json::json!({
+                "memories": [],
+                "_next_action": hints::primary_action(&hints_vec),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             println!("  No memories found.");
+            print!("{}", hints::render_next_action_line(&hints_vec));
         }
         return Ok(());
     }
+
+    // PRD-071 contract: pick first memory id and suggest promotion. Default
+    // kind=note (cheapest, always-available); user picks a real kind.
+    let first_id = records[0].id.clone();
+    hints_vec.push(
+        Hint::suggestion(format!("Promote {} to a real artifact", first_id))
+            .with_action(format!("forgeplan promote {} --kind note", first_id)),
+    );
 
     if json {
         let json_data: Vec<_> = records
@@ -67,7 +88,11 @@ pub async fn run(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json_data)?);
+        let payload = serde_json::json!({
+            "memories": json_data,
+            "_next_action": hints::primary_action(&hints_vec),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
@@ -87,5 +112,6 @@ pub async fn run(
         );
     }
 
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }

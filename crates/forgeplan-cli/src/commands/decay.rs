@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scoring::decay;
 
 use crate::commands::common;
@@ -8,6 +9,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     if entries.is_empty() {
         println!("No evidence decay detected. All linked evidence is current.");
+        let hint_list =
+            vec![Hint::info("Run health check next").with_action("forgeplan health".to_string())];
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -35,6 +39,16 @@ pub async fn run() -> anyhow::Result<()> {
 
     println!("Hint: Create a RefreshReport to re-evaluate stale evidence:");
     println!("  forgeplan new refresh \"Re-evaluate <artifact>\"");
+
+    // Anchor the next-action on the first decayed artifact (real ID).
+    let first = &entries[0];
+    let hint_list = vec![
+        Hint::warning(format!("Refresh {}", first.artifact_id)).with_action(format!(
+            "forgeplan new refresh \"Re-evaluate {}\"",
+            first.artifact_id
+        )),
+    ];
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

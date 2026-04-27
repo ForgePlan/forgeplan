@@ -3,6 +3,7 @@ use console::style;
 
 use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::db::store::NewArtifact;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
 use crate::commands::common;
@@ -12,29 +13,39 @@ use crate::commands::common;
 pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     let (workspace, store) = common::open_store().await?;
 
-    // Validate kind
+    // Validate kind. PRD-071 contract: error path emits a `Fix:` marker line.
     let artifact_kind: ArtifactKind = kind.parse().map_err(|e| {
         anyhow::anyhow!(
-            "Unknown artifact kind '{}': {}. Use: prd, rfc, adr, note, problem, etc.",
+            "Unknown artifact kind '{}': {}. Use: prd, rfc, adr, note, problem, etc.\n\
+             Fix: forgeplan promote {} --kind prd",
             kind,
-            e
+            e,
+            memory_id
         )
     })?;
 
     // Don't promote to memory (circular)
     if matches!(artifact_kind, ArtifactKind::Memory) {
-        anyhow::bail!("Cannot promote memory to memory");
+        anyhow::bail!(
+            "Cannot promote memory to memory\n\
+             Fix: forgeplan promote {} --kind note",
+            memory_id
+        );
     }
 
     // Get the memory record
-    let record = store
-        .get_record(memory_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", memory_id))?;
+    let record = store.get_record(memory_id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Memory '{}' not found\n\
+             Fix: forgeplan list --type memory",
+            memory_id
+        )
+    })?;
 
     if record.kind != "memory" {
         anyhow::bail!(
-            "'{}' is not a memory (kind: {}). Only memories can be promoted.",
+            "'{}' is not a memory (kind: {}). Only memories can be promoted.\n\
+             Fix: forgeplan list --type memory",
             memory_id,
             record.kind
         );
@@ -120,6 +131,14 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         "  Status: draft — fill required sections, then: forgeplan validate {}",
         new_id
     );
+
+    // PRD-071 contract: terminal Next: line — promoted artifact is in draft,
+    // user has to fill MUST sections then validate.
+    let hints_vec = vec![
+        Hint::suggestion(format!("Validate {} after filling MUST sections", new_id))
+            .with_action(format!("forgeplan validate {}", new_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }

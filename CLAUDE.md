@@ -19,6 +19,20 @@ Everything else in this file is guidelines, not red lines.
 
 ---
 
+## 🤖 Hint protocol (PRD-071 — agent reading)
+
+Каждый CLI/MCP вывод эмитит **один** контрактный маркер для следующего шага:
+- **`Next: <full command>`** — основное действие (run as-is, real IDs, no placeholders)
+- **`Or: <command>`** — альтернатива к Next (если primary blocks)
+- **`Wait: <condition>`** — async/TTL — retry после condition
+- **`Done.`** — workflow complete (terminal)
+- **`Fix: <command>`** — error remediation (paired with `Error:`)
+
+JSON: `{"_next_action": "<command>" | null, ...}`. Полный контракт + bad/good примеры:
+[`docs/methodology/agent-protocol.md`](docs/methodology/agent-protocol.md).
+
+---
+
 ## 🎯 Terminology precision (reasoning rule)
 
 **Не использовать специализированные термины** (hexagonal, monadic, idempotent,
@@ -290,6 +304,26 @@ Hooks в `.claude/hooks/` блокируют нарушения методоло
 **Fields**: Status (Backlog/To Do/Doing/Review/Done), Phase (Shape/Validate/Code/Evidence/Done), Depth, Artifact, Type, Sprint, Branch, Tags.
 
 Full guide: `docs/methodology/UNIFIED-WORKFLOW.ru.md`.
+
+## Multi-agent (v0.24.0+)
+
+При работе 2-5 суб-агентов в одном workspace используй MCP tools:
+- `forgeplan_dispatch --agents N` — получить план (buckets + serial queue)
+- `forgeplan_claim <id> --ttl 30` — «я беру этот артефакт»
+- `forgeplan_release <id>` — «закончил»
+- `forgeplan_claims` — кто сейчас что делает
+
+Guide: `docs/operations/MULTI-AGENT.ru.md`.
+
+## Docs — update on every release
+
+**Red line** для методологии: release, который добавляет user-facing MCP tool или CLI flag, **не мерджится в main** без:
+- раздела в `CHANGELOG.md`
+- соответствующего документа в `docs/operations/` или `docs/methodology/`
+- обновлённого индекса `docs/README.md` и `docs/README.ru.md`
+- упоминания новой фичи в этом CLAUDE.md (если меняет workflow)
+
+Иначе пользователи читают stale-docs, а фичи висят undocumented. Проверяй в последнем commit перед PR.
 
 ---
 
