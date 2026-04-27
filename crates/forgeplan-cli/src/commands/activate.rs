@@ -1,3 +1,4 @@
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::lifecycle;
 use forgeplan_core::projection;
 
@@ -18,7 +19,9 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         projection::sync_file_to_store(&store, &ws, &record).await?;
     }
 
-    let result = lifecycle::activate(&store, id, force).await?;
+    let result = lifecycle::activate(&store, id, force)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
 
     // Re-render projection with updated status
     if let Some(record) = store.get_record(id).await? {
@@ -65,7 +68,8 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         println!("  Activated {id} ({old_status} → active)");
     }
 
-    // Hints: suggest evidence if not linked
+    // Hints: suggest evidence if not linked, then verify R_eff
+    let mut emitted: Vec<Hint> = Vec::new();
     if let Some(record) = store.get_record(id).await? {
         let rels = store.get_relations(id).await.unwrap_or_default();
         let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
@@ -77,11 +81,21 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
             .kind
             .parse()
             .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
-        let hints = forgeplan_core::hints::activate_hints(true, has_evidence, &kind);
-        if !hints.is_empty() {
-            print!("{}", forgeplan_core::hints::format_hints(&hints));
+        emitted = forgeplan_core::hints::activate_hints(id, true, has_evidence, &kind);
+        if !emitted.is_empty() {
+            print!("{}", forgeplan_core::hints::format_hints(&emitted));
         }
     }
+
+    // Primary next-action: verify R_eff after activation (always actionable
+    // unless the activate_hints already suggested adding evidence first).
+    let mut next_hints: Vec<Hint> = Vec::new();
+    if let Some(action) = hints::primary_action(&emitted) {
+        next_hints.push(Hint::info("activation hint").with_action(action));
+    } else {
+        next_hints.push(Hint::info("verify R_eff").with_action(format!("forgeplan score {}", id)));
+    }
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     // Session: reset to Idle after successful activation
     common::advance_session(forgeplan_core::session::Phase::Idle, None);

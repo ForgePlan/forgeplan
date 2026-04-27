@@ -1,6 +1,7 @@
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::search::filter::ArtifactFilter as QueryFilter;
 
 use crate::commands::common;
@@ -43,14 +44,37 @@ pub async fn run(
         .map(|r| r.to_summary())
         .collect();
 
+    let mut hints_vec: Vec<Hint> = Vec::new();
+
     if artifacts.is_empty() {
+        // Empty workspace — guide user to create the first PRD.
+        let action = match kind_filter {
+            Some("prd") | None => "forgeplan new prd \"<title>\"".to_string(),
+            Some(k) => format!("forgeplan new {} \"<title>\"", k),
+        };
+        hints_vec.push(Hint::suggestion("No artifacts match — create one").with_action(action));
+
         if json {
+            // PRD-071: bw-compat — stdout is bare array so existing
+            // `forgeplan list --json | jq '.[]'` consumers still work.
+            // Hint goes to stderr per the additive `Next:` marker rule.
             println!("[]");
+            if let Some(next) = hints::primary_action(&hints_vec) {
+                eprintln!("Next: {}", next);
+            }
         } else {
             println!("  No artifacts found.");
+            print!("{}", hints::render_next_action_line(&hints_vec));
         }
         return Ok(());
     }
+
+    // Pick first artifact for default Next: action.
+    let first_id = artifacts[0].id.clone();
+    hints_vec.push(
+        Hint::info(format!("Inspect {}", first_id))
+            .with_action(format!("forgeplan get {}", first_id)),
+    );
 
     if json {
         let json_data: Vec<_> = artifacts
@@ -64,7 +88,13 @@ pub async fn run(
                 })
             })
             .collect();
+        // PRD-071: bw-compat — stdout is bare array so existing
+        // `forgeplan list --json | jq '.[]'` consumers still work.
+        // Hint goes to stderr per the additive `Next:` marker rule.
         println!("{}", serde_json::to_string_pretty(&json_data)?);
+        if let Some(next) = hints::primary_action(&hints_vec) {
+            eprintln!("Next: {}", next);
+        }
         return Ok(());
     }
 
@@ -124,5 +154,6 @@ pub async fn run(
     }
 
     println!("\n  {} artifact(s) total", artifacts.len());
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }

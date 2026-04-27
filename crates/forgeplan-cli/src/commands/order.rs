@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use forgeplan_core::graph::topological;
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -21,12 +22,40 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     let result = topological::kahn_sort(&all_relations, &resolved_ids);
 
+    // PRD-071 contract: priority — fix cycles first, then activate ready
+    // artifacts, else inspect order.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if let Some(cycle) = result.cycles.first() {
+        if let Some(first_id) = cycle.first() {
+            hints_vec.push(
+                Hint::warning(format!("Cycle includes {} — break it", first_id))
+                    .with_action(format!("forgeplan get {}", first_id)),
+            );
+        }
+    } else if let Some(ready_id) = result
+        .ready
+        .iter()
+        .find(|id| !active_ids.contains(*id))
+        .cloned()
+    {
+        hints_vec.push(
+            Hint::suggestion(format!("Activate ready artifact {}", ready_id))
+                .with_action(format!("forgeplan activate {}", ready_id)),
+        );
+    } else if let Some(id) = result.order.first() {
+        hints_vec.push(
+            Hint::info(format!("Inspect first in topological order ({})", id))
+                .with_action(format!("forgeplan get {}", id)),
+        );
+    }
+
     if json {
         let data = serde_json::json!({
             "order": result.order,
             "cycles": result.cycles,
             "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({"id": id, "blocked_by": deps})).collect::<Vec<_>>(),
             "ready": result.ready,
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&data)?);
         return Ok(());
@@ -42,6 +71,12 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     if result.order.is_empty() {
         println!("  No linked artifacts found. Use `forgeplan link` to create dependencies.");
+        let bootstrap = vec![
+            Hint::suggestion("Link two artifacts to build a dependency graph").with_action(
+                "forgeplan link <source-id> <target-id> --relation refines".to_string(),
+            ),
+        ];
+        print!("{}", hints::render_next_action_line(&bootstrap));
         return Ok(());
     }
 
@@ -89,5 +124,6 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         total, active_count, ready_count, blocked_count
     );
 
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }

@@ -1,5 +1,6 @@
 use console::style;
 use forgeplan_core::health;
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
 use crate::commands::common;
@@ -30,6 +31,39 @@ pub async fn run(
     let config = workspace::load_config(&ws)?;
     let report = health::health_report(&store).await?;
 
+    // PRD-071 contract: derive a single deterministic Next: action from the
+    // report. Priority order — blind spots > stubs > orphans > stale > at risk
+    // > healthy. Use the first id in each bucket so the hint is real and
+    // copy-pasteable.
+    let mut hints_vec: Vec<Hint> = Vec::new();
+    if let Some(spot) = report.blind_spots.first() {
+        hints_vec.push(
+            Hint::warning(format!("Validate blind spot {}", spot.id))
+                .with_action(format!("forgeplan validate {}", spot.id)),
+        );
+    } else if let Some(stub) = report.active_stubs.first() {
+        hints_vec.push(
+            Hint::warning(format!("Active stub detected: {}", stub.id))
+                .with_action(format!("forgeplan review {}", stub.id)),
+        );
+    } else if let Some(orphan) = report.orphans.first() {
+        hints_vec.push(
+            Hint::warning(format!("Orphan artifact {}", orphan))
+                .with_action(format!("forgeplan get {}", orphan)),
+        );
+    } else if report.stale_count > 0 {
+        hints_vec.push(
+            Hint::warning(format!("{} stale evidence", report.stale_count))
+                .with_action("forgeplan stale".to_string()),
+        );
+    } else if let Some(risk) = report.at_risk.first() {
+        hints_vec.push(
+            Hint::warning(format!("At-risk artifact {}", risk.id))
+                .with_action(format!("forgeplan score {}", risk.id)),
+        );
+    }
+    // No hints → workspace healthy → render `Done.` terminal indicator.
+
     if json {
         let json_data = serde_json::json!({
             "project": config.project_name,
@@ -57,6 +91,7 @@ pub async fn run(
                 "markers_found": s.markers_found,
                 "message": s.message,
             })).collect::<Vec<_>>(),
+            "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
@@ -72,8 +107,9 @@ pub async fn run(
             report.stale_count,
             report.at_risk.len(),
         );
-        if let Some(action) = report.next_actions.first() {
-            println!("Next: {}", action);
+        match hints::primary_action(&hints_vec) {
+            Some(cmd) => println!("Next: {}", cmd),
+            None => println!("Done."),
         }
         return Ok(());
     }
@@ -250,6 +286,13 @@ pub async fn run(
     if !has_issues && report.total > 0 {
         println!();
         println!("  {}", style("Project looks healthy!").green().bold());
+    }
+
+    // PRD-071 contract: terminal Next:/Done line.
+    match hints::primary_action(&hints_vec) {
+        Some(cmd) => println!("\nNext: {}", cmd),
+        None if report.total > 0 => println!("\nDone."),
+        None => {}
     }
 
     println!();

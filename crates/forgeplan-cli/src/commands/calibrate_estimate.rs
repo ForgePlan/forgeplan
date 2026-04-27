@@ -3,31 +3,40 @@ use console::style;
 
 use forgeplan_core::estimate::types::ItemSource;
 use forgeplan_core::estimate::{calculator, confidence, extractor, scorer};
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 use crate::commands::estimate::load_estimate_config;
 
 /// Compare estimated hours with actual hours to calibrate estimation accuracy.
 pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> Result<()> {
+    // PRD-071 contract: error paths emit `Fix:` markers so agents have a
+    // deterministic next action.
     if !actual_hours.is_finite() || actual_hours <= 0.0 {
         anyhow::bail!(
-            "Actual hours must be a positive finite number (got: {})",
-            actual_hours
+            "Actual hours must be a positive finite number (got: {})\n\
+             Fix: forgeplan calibrate-estimate {} --actual-hours 8",
+            actual_hours,
+            artifact_id
         );
     }
 
     let store = common::store().await?;
 
     // Get the artifact
-    let record = store
-        .get_record(artifact_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", artifact_id))?;
+    let record = store.get_record(artifact_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", artifact_id)
+    })?;
 
     // Re-run estimate pipeline (same as estimate command)
     let work_items = extractor::extract_work_items(&record.body);
     if work_items.is_empty() {
-        anyhow::bail!("No estimable items in {}. Cannot calibrate.", artifact_id);
+        anyhow::bail!(
+            "No estimable items in {}. Cannot calibrate.\n\
+             Fix: forgeplan estimate {}",
+            artifact_id,
+            artifact_id
+        );
     }
 
     let scored_items = scorer::score_items(&work_items);
@@ -96,7 +105,11 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
     };
 
     if estimated <= 0.0 {
-        anyhow::bail!("Estimate returned 0h. Fill FR/Phase sections first.");
+        anyhow::bail!(
+            "Estimate returned 0h. Fill FR/Phase sections first.\n\
+             Fix: forgeplan estimate {}",
+            artifact_id
+        );
     }
 
     // Calculate ratio
@@ -163,6 +176,28 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
         );
     }
     println!();
+
+    let mut hint_list: Vec<Hint> = Vec::new();
+    if ratio > 1.5 {
+        hint_list.push(
+            Hint::warning(format!(
+                "Estimates {:.1}x optimistic — re-estimate with buffer",
+                ratio
+            ))
+            .with_action(format!("forgeplan estimate {} --my-grade", artifact_id)),
+        );
+    } else if ratio < 0.5 {
+        hint_list.push(
+            Hint::info("Estimates conservative — re-grade")
+                .with_action(format!("forgeplan estimate {} --my-grade", artifact_id)),
+        );
+    } else {
+        hint_list.push(
+            Hint::info("Calibration recorded — verify next artifact")
+                .with_action(format!("forgeplan score {}", artifact_id)),
+        );
+    }
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

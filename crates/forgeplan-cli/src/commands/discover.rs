@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use forgeplan_core::discover::{
     DiscoverSession, Phase, Protocol, SessionStatus, list_sessions, load_session, save_session,
 };
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -68,6 +69,12 @@ pub async fn run_start(name: &str) -> Result<()> {
     );
     println!();
 
+    let hint_list = vec![
+        Hint::info(format!("Track session {}", session.id))
+            .with_action(format!("forgeplan discover show {}", session.id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hint_list));
+
     Ok(())
 }
 
@@ -80,6 +87,11 @@ pub async fn run_list() -> Result<()> {
     if sessions.is_empty() {
         println!("  No discovery sessions found.");
         println!("  Start one: forgeplan discover start <project-name>");
+        let hint_list = vec![
+            Hint::info("Start a discovery session")
+                .with_action("forgeplan discover start <project-name>".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -104,6 +116,21 @@ pub async fn run_list() -> Result<()> {
     println!();
     println!("  {} session(s) total", sessions.len());
     println!();
+
+    // Pick the first in-progress session as the next-action target.
+    let active = sessions
+        .iter()
+        .find(|s| s.status != SessionStatus::Completed)
+        .or_else(|| sessions.first());
+    let hint_list = if let Some(s) = active {
+        vec![
+            Hint::info(format!("Inspect session {}", s.id))
+                .with_action(format!("forgeplan discover show {}", s.id)),
+        ]
+    } else {
+        Vec::new()
+    };
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }
@@ -178,6 +205,19 @@ pub async fn run_show(session_id: &str) -> Result<()> {
     println!("  Total findings: {}", session.findings.len());
     println!();
 
+    let hint_list = if session.status == SessionStatus::Completed {
+        vec![
+            Hint::info("Validate post-discovery health")
+                .with_action("forgeplan health".to_string()),
+        ]
+    } else {
+        vec![
+            Hint::info(format!("Complete session {}", session.id))
+                .with_action(format!("forgeplan discover complete {}", session.id)),
+        ]
+    };
+    print!("{}", hints::render_next_action_line(&hint_list));
+
     Ok(())
 }
 
@@ -190,6 +230,11 @@ pub async fn run_complete(session_id: &str) -> Result<()> {
 
     if session.status == SessionStatus::Completed {
         println!("  Session {} already completed.", session_id);
+        let hint_list = vec![
+            Hint::info("Validate post-discovery health")
+                .with_action("forgeplan health".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -208,6 +253,10 @@ pub async fn run_complete(session_id: &str) -> Result<()> {
     println!();
     println!("  Next: forgeplan health  (validate discovery)");
     println!();
+
+    let hint_list =
+        vec![Hint::info("Validate discovery output").with_action("forgeplan health".to_string())];
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

@@ -55,6 +55,33 @@ impl Hint {
     }
 }
 
+/// Extract the primary next-action from a list of hints — used for the `_next_action`
+/// field in JSON output and the `Next:` line in CLI text output.
+///
+/// **PRD-071 contract**: every command's response should expose exactly ONE primary
+/// next-action (or `None` for terminal states). This is a single deterministic command
+/// the agent should run next, distinct from the multi-hint advisory list.
+///
+/// Selection rule: first hint with a non-empty `action` (Warning before Info before
+/// Suggestion ordering preserved by the caller). Returns `None` if no hint has an action.
+pub fn primary_action(hints: &[Hint]) -> Option<String> {
+    hints
+        .iter()
+        .find_map(|h| h.action.as_ref().map(|a| a.to_string()))
+}
+
+/// Render the primary next-action as a `Next: <command>` line for CLI text output.
+///
+/// Returns empty string if no actionable hint present (terminal state). This guarantees
+/// every CLI command's text output ends with either a `Next:` line or an explicit
+/// terminal status — no silent gaps.
+pub fn render_next_action_line(hints: &[Hint]) -> String {
+    match primary_action(hints) {
+        Some(cmd) => format!("\nNext: {}\n", cmd),
+        None => String::new(),
+    }
+}
+
 /// Format hints for terminal output.
 pub fn format_hints(hints: &[Hint]) -> String {
     if hints.is_empty() {
@@ -80,13 +107,26 @@ pub fn format_hints(hints: &[Hint]) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Hints for `forgeplan score` output.
-pub fn score_hints(r_eff: f64, has_evidence: bool, evidence_cl0_count: usize) -> Vec<Hint> {
+///
+/// `artifact_id` — the real ID being scored (e.g. `PRD-001`). Substituted into
+/// every emitted action so hints are runnable verbatim. Per PRD-071 ACTIONABILITY
+/// contract: target IDs MUST be real, only "value-to-fill" placeholders allowed
+/// (e.g. `<verification>` for evidence title, `EVID-NNN` for yet-to-exist evidence).
+pub fn score_hints(
+    artifact_id: &str,
+    r_eff: f64,
+    has_evidence: bool,
+    evidence_cl0_count: usize,
+) -> Vec<Hint> {
     let mut hints = Vec::new();
 
     if !has_evidence {
         hints.push(
             Hint::warning("No evidence linked — R_eff will be 0.0")
-                .with_action("forgeplan new evidence \"<what you verified>\" && forgeplan link EVID-XXX <artifact> --relation informs")
+                .with_action(format!(
+                    "forgeplan new evidence \"<verification>\" && forgeplan link EVID-NNN {} --relation informs",
+                    artifact_id
+                ))
         );
     }
 
@@ -112,7 +152,12 @@ pub fn score_hints(r_eff: f64, has_evidence: bool, evidence_cl0_count: usize) ->
 
 /// Hints for `forgeplan get` output.
 /// Accepts typed enums for kind and depth for compile-time safety.
+///
+/// `artifact_id` — the real ID being inspected (e.g. `PRD-001`). Substituted into
+/// every emitted action so hints are runnable verbatim. `<parent-id>` and
+/// `<title>` remain as user-fill placeholders (values not knowable here).
 pub fn get_hints(
+    artifact_id: &str,
     status: &str,
     kind: &crate::artifact::types::ArtifactKind,
     has_links: bool,
@@ -149,15 +194,19 @@ pub fn get_hints(
 
     if !has_links && status != "deprecated" && kind_str != "memory" {
         hints.push(
-            Hint::info("No links — artifact is an orphan")
-                .with_action("forgeplan link <this-id> <parent-id> --relation refines"),
+            Hint::info("No links — artifact is an orphan").with_action(format!(
+                "forgeplan link {} <parent-id> --relation refines",
+                artifact_id
+            )),
         );
     }
 
     if depth_str == "standard" && kind_str == "prd" && !has_links {
         hints.push(
-            Hint::suggestion("Standard PRD should have linked RFC")
-                .with_action("forgeplan new rfc \"<title>\" && forgeplan link RFC-XXX <this-id> --relation based_on")
+            Hint::suggestion("Standard PRD should have linked RFC").with_action(format!(
+                "forgeplan new rfc \"<title>\" && forgeplan link RFC-NNN {} --relation based_on",
+                artifact_id
+            )),
         );
     }
 
@@ -165,7 +214,11 @@ pub fn get_hints(
 }
 
 /// Hints for `forgeplan review` output.
+///
+/// `artifact_id` — the real ID being reviewed (e.g. `PRD-001`). Substituted into
+/// every emitted action so hints are runnable verbatim.
 pub fn review_hints(
+    artifact_id: &str,
     has_evidence: bool,
     is_stub: bool,
     has_must_errors: bool,
@@ -186,15 +239,19 @@ pub fn review_hints(
 
     if has_must_errors {
         hints.push(
-            Hint::warning("Validation has MUST errors — fix before activating")
-                .with_action("forgeplan validate <id> to see specific errors"),
+            Hint::warning("Validation has MUST errors — fix before activating").with_action(
+                format!("forgeplan validate {} to see specific errors", artifact_id),
+            ),
         );
     }
 
     if !has_evidence {
         hints.push(
             Hint::info("No evidence linked — consider adding evidence before activation")
-                .with_action("forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX <id> --relation informs")
+                .with_action(format!(
+                    "forgeplan new evidence \"<verification>\" && forgeplan link EVID-NNN {} --relation informs",
+                    artifact_id
+                ))
         );
     }
 
@@ -202,14 +259,22 @@ pub fn review_hints(
 }
 
 /// Hints for `forgeplan search` when no results found.
+///
+/// The `query` is shown back to the user so they know which input failed.
+/// Per PRD-071 ACTIONABILITY: we don't know what a "shorter" query would be,
+/// so we surface a different surface entirely (`forgeplan list`) as the
+/// concrete next action — that's a runnable command with no placeholders.
 pub fn search_hints(query: &str, result_count: usize) -> Vec<Hint> {
     let mut hints = Vec::new();
 
     if result_count == 0 {
         hints.push(Hint::info(format!("No results for \"{}\"", query)));
         hints.push(
-            Hint::suggestion("Try broader keywords or check spelling")
-                .with_action("forgeplan search \"<shorter query>\""),
+            Hint::suggestion(format!(
+                "Try broader keywords or check spelling (current query: \"{}\")",
+                query
+            ))
+            .with_action("forgeplan list --type prd"),
         );
         hints.push(Hint::suggestion(
             "Search by kind: forgeplan list --type prd",
@@ -220,7 +285,11 @@ pub fn search_hints(query: &str, result_count: usize) -> Vec<Hint> {
 }
 
 /// Hints for `forgeplan activate` when activation fails.
+///
+/// `artifact_id` — the real ID being activated (e.g. `PRD-001`). Substituted into
+/// every emitted action so hints are runnable verbatim.
 pub fn activate_hints(
+    artifact_id: &str,
     validation_passed: bool,
     has_evidence: bool,
     kind: &crate::artifact::types::ArtifactKind,
@@ -230,7 +299,7 @@ pub fn activate_hints(
     if !validation_passed {
         hints.push(
             Hint::warning("Validation gate failed — fix MUST errors before activating")
-                .with_action("forgeplan validate <id>"),
+                .with_action(format!("forgeplan validate {}", artifact_id)),
         );
     }
 
@@ -244,7 +313,10 @@ pub fn activate_hints(
     {
         hints.push(
             Hint::suggestion("Link evidence before activating for non-zero R_eff")
-                .with_action("forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX <id> --relation informs")
+                .with_action(format!(
+                    "forgeplan new evidence \"<verification>\" && forgeplan link EVID-NNN {} --relation informs",
+                    artifact_id
+                ))
         );
     }
 
@@ -297,22 +369,30 @@ mod tests {
 
     #[test]
     fn score_hints_no_evidence() {
-        let hints = score_hints(0.0, false, 0);
+        let hints = score_hints("PRD-001", 0.0, false, 0);
         assert_eq!(hints.len(), 1);
         assert!(hints[0].message.contains("No evidence"));
         assert!(hints[0].action.is_some());
+        // PRD-071 ACTIONABILITY: real target ID, no `<artifact>` placeholder.
+        let action = hints[0].action.as_ref().unwrap();
+        assert!(
+            action.contains("PRD-001"),
+            "expected real ID in action: {}",
+            action
+        );
+        assert!(!action.contains("<artifact>"));
     }
 
     #[test]
     fn score_hints_cl0() {
-        let hints = score_hints(0.7, true, 2);
+        let hints = score_hints("PRD-002", 0.7, true, 2);
         assert_eq!(hints.len(), 1);
         assert!(hints[0].message.contains("CL0"));
     }
 
     #[test]
     fn score_hints_low_reff() {
-        let hints = score_hints(0.3, true, 0);
+        let hints = score_hints("PRD-003", 0.3, true, 0);
         assert_eq!(hints.len(), 1);
         assert!(hints[0].message.contains("below 0.5"));
     }
@@ -320,24 +400,56 @@ mod tests {
     #[test]
     fn get_hints_draft_prd() {
         use crate::artifact::types::{ArtifactKind, Mode};
-        let hints = get_hints("draft", &ArtifactKind::Prd, false, &Mode::Standard);
+        let hints = get_hints(
+            "PRD-001",
+            "draft",
+            &ArtifactKind::Prd,
+            false,
+            &Mode::Standard,
+        );
         assert!(hints.len() >= 2);
         assert!(hints[0].message.contains("draft"));
+        // PRD-071 ACTIONABILITY: actions on this artifact use real ID, no
+        // `<this-id>` placeholder.
+        for h in &hints {
+            if let Some(action) = &h.action {
+                assert!(
+                    !action.contains("<this-id>"),
+                    "action still has <this-id> placeholder: {}",
+                    action
+                );
+            }
+        }
     }
 
     #[test]
     fn get_hints_active_with_links() {
         use crate::artifact::types::{ArtifactKind, Mode};
-        let hints = get_hints("active", &ArtifactKind::Prd, true, &Mode::Standard);
+        let hints = get_hints(
+            "PRD-001",
+            "active",
+            &ArtifactKind::Prd,
+            true,
+            &Mode::Standard,
+        );
         assert!(hints.is_empty());
     }
 
     #[test]
     fn review_hints_stub() {
         use crate::artifact::types::ArtifactKind;
-        let hints = review_hints(false, true, false, &ArtifactKind::Prd);
+        let hints = review_hints("PRD-001", false, true, false, &ArtifactKind::Prd);
         assert!(hints.len() >= 2);
         assert!(hints[0].message.contains("stub"));
+        // PRD-071 ACTIONABILITY: target ID is real for evidence-add hint.
+        for h in &hints {
+            if let Some(action) = &h.action
+                && action.contains("forgeplan link")
+            {
+                assert!(action.contains("PRD-001"), "expected real ID: {}", action);
+                assert!(!action.contains("<id>"));
+            }
+        }
     }
 
     #[test]
@@ -345,20 +457,30 @@ mod tests {
         let hints = search_hints("nonexistent", 0);
         assert_eq!(hints.len(), 3);
         assert!(hints[0].message.contains("No results"));
+        // PRD-071 ACTIONABILITY: no `<shorter query>` placeholder anywhere.
+        for h in &hints {
+            if let Some(action) = &h.action {
+                assert!(!action.contains("<shorter query>"));
+            }
+        }
     }
 
     #[test]
     fn activate_hints_no_evidence_prd() {
         use crate::artifact::types::ArtifactKind;
-        let hints = activate_hints(true, false, &ArtifactKind::Prd);
+        let hints = activate_hints("PRD-001", true, false, &ArtifactKind::Prd);
         assert_eq!(hints.len(), 1);
         assert!(hints[0].message.contains("evidence"));
+        // PRD-071 ACTIONABILITY: real target ID in link command.
+        let action = hints[0].action.as_ref().unwrap();
+        assert!(action.contains("PRD-001"), "expected real ID: {}", action);
+        assert!(!action.contains("<id>"));
     }
 
     #[test]
     fn activate_hints_all_good() {
         use crate::artifact::types::ArtifactKind;
-        let hints = activate_hints(true, true, &ArtifactKind::Prd);
+        let hints = activate_hints("PRD-001", true, true, &ArtifactKind::Prd);
         assert!(hints.is_empty());
     }
 
@@ -371,6 +493,43 @@ mod tests {
         let hints = blocked_hints(&blockers);
         assert_eq!(hints.len(), 1); // only draft blocker gets a hint
         assert!(hints[0].message.contains("ADR-002"));
+    }
+
+    #[test]
+    fn primary_action_returns_first_with_action() {
+        let hints = vec![
+            Hint::info("info no action"),
+            Hint::warning("warn with action").with_action("forgeplan score PRD-001"),
+            Hint::suggestion("suggest with action").with_action("ignored"),
+        ];
+        assert_eq!(
+            primary_action(&hints),
+            Some("forgeplan score PRD-001".to_string())
+        );
+    }
+
+    #[test]
+    fn primary_action_none_when_no_actions() {
+        let hints = vec![Hint::info("just info"), Hint::warning("just warning")];
+        assert_eq!(primary_action(&hints), None);
+    }
+
+    #[test]
+    fn primary_action_none_when_empty() {
+        assert_eq!(primary_action(&[]), None);
+    }
+
+    #[test]
+    fn render_next_action_line_with_action() {
+        let hints = vec![Hint::warning("R_eff is 0").with_action("forgeplan score PRD-001")];
+        let rendered = render_next_action_line(&hints);
+        assert!(rendered.contains("Next: forgeplan score PRD-001"));
+    }
+
+    #[test]
+    fn render_next_action_line_terminal_returns_empty() {
+        let hints = vec![Hint::info("Workflow complete")];
+        assert_eq!(render_next_action_line(&hints), "");
     }
 
     #[test]

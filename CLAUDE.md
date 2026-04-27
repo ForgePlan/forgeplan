@@ -19,6 +19,20 @@ Everything else in this file is guidelines, not red lines.
 
 ---
 
+## 🤖 Hint protocol (PRD-071 — agent reading)
+
+Каждый CLI/MCP вывод эмитит **один** контрактный маркер для следующего шага:
+- **`Next: <full command>`** — основное действие (run as-is, real IDs, no placeholders)
+- **`Or: <command>`** — альтернатива к Next (если primary blocks)
+- **`Wait: <condition>`** — async/TTL — retry после condition
+- **`Done.`** — workflow complete (terminal)
+- **`Fix: <command>`** — error remediation (paired with `Error:`)
+
+JSON: `{"_next_action": "<command>" | null, ...}`. Полный контракт + bad/good примеры:
+[`docs/methodology/agent-protocol.md`](docs/methodology/agent-protocol.md).
+
+---
+
 ## 🎯 Terminology precision (reasoning rule)
 
 **Не использовать специализированные термины** (hexagonal, monadic, idempotent,

@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use forgeplan_core::hints::{self, Hint};
 use serde_json::{Map, Value, json};
 
 /// MCP-aware client targets supported by `forgeplan mcp install`.
@@ -508,9 +509,17 @@ pub async fn run_install_at_path(opts: InstallOptions, path: &Path) -> Result<()
         println!("Binary:                   {binary_str}");
         if unchanged {
             println!("\nNo changes — config already up to date.");
+            // PRD-071 contract: dry-run with no diff is terminal — explicit Done.
+            println!("\nDone.");
         } else {
             println!("\nDiff (-current / +proposed):");
             print_diff(&existing_str, &merged_str);
+            // Re-run without --dry-run is the canonical Next: action.
+            let hints_vec = vec![
+                Hint::suggestion("Apply the proposed changes")
+                    .with_action("forgeplan mcp install".to_string()),
+            ];
+            print!("{}", hints::render_next_action_line(&hints_vec));
         }
         return Ok(());
     }
@@ -521,6 +530,8 @@ pub async fn run_install_at_path(opts: InstallOptions, path: &Path) -> Result<()
             opts.client.display_name(),
             path.display()
         );
+        // PRD-071 contract: idempotent re-run is terminal.
+        println!("\nDone.");
         return Ok(());
     }
 
@@ -541,6 +552,14 @@ pub async fn run_install_at_path(opts: InstallOptions, path: &Path) -> Result<()
     println!("  2. In your project directory, run: forgeplan init -y");
     println!("     (or ask the AI agent — it can call forgeplan_init via MCP)");
     println!("  3. The 47 forgeplan_* MCP tools are now available to the agent");
+
+    // PRD-071 contract: deterministic Next: action for agents — initialize
+    // a workspace.
+    let hints_vec = vec![
+        Hint::suggestion("Initialize a workspace in the current project")
+            .with_action("forgeplan init -y".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
 

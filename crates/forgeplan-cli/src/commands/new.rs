@@ -6,6 +6,7 @@ use forgeplan_core::artifact::store::ArtifactSummary;
 use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
 
@@ -173,24 +174,28 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     println!("  Kind:    {}", template_key);
     println!("  Title:   {}", title);
 
-    // Next-step hint based on kind
-    let hint = match template_key {
-        "prd" => Some(
-            "Next: fill Problem, Goals, Non-Goals, Target Users, FR sections → forgeplan validate",
-        ),
-        "rfc" => Some(
-            "Next: fill Summary, Motivation, Goals, Options, Implementation Phases → forgeplan validate",
-        ),
-        "adr" => Some("Next: fill Context, Decision, Consequences → forgeplan validate"),
-        "evidence" => Some(
-            "Next: fill Structured Fields (verdict, congruence_level, evidence_type) → forgeplan activate",
-        ),
-        "epic" => Some("Next: fill Vision, Children PRDs, Progress → forgeplan validate"),
+    // PRD-071 contract: emit Next: line with full command pointing at the new id.
+    // Rationale advisory printed first; Next line always validate.
+    let rationale = match template_key {
+        "prd" => Some("fill Problem, Goals, Non-Goals, Target Users, FR sections, then validate"),
+        "rfc" => {
+            Some("fill Summary, Motivation, Goals, Options, Implementation Phases, then validate")
+        }
+        "adr" => Some("fill Context, Decision, Consequences, then validate"),
+        "evidence" => {
+            Some("fill Structured Fields (verdict, congruence_level, evidence_type), then validate")
+        }
+        "epic" => Some("fill Vision, Children PRDs, Progress, then validate"),
         _ => None,
     };
-    if let Some(h) = hint {
-        println!("\n  * {}", h);
+    if let Some(r) = rationale {
+        println!("\n  {}", r);
     }
+    let hints_vec = vec![
+        Hint::suggestion(format!("Validate {} after filling MUST sections", id))
+            .with_action(format!("forgeplan validate {}", id)),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     // Session: advance to Shaping for decision artifacts only.
     //

@@ -3,7 +3,25 @@
 > **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
 > (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
 
-## Current: v0.18.0 released 2026-04-11
+## Current: v0.25.0 — PRD-071 hint contract (PR #212, 2026-04-27)
+
+PRD-071 unified 5-rule hint contract shipped. Audit coverage 0% → 100% (70/70 CLI). 36 integration tests + drift-prevention audit script. Awaiting PR #212 review.
+
+- [x] PRD-071 5-cycle multi-agent sprint complete (9 agents, 90 files)
+- [x] EVID-086 linked, PRD-071 + PROB-046 active
+- [x] CHANGELOG.md + docs/README + SKILL.md + agent-protocol.md updated
+- [ ] PR #212 merged to dev (awaiting review)
+- [ ] Tag v0.25.0 after release PR
+
+### Deferred from PRD-071 (low priority)
+- [ ] FR-013: `forgeplan health` add "Hint coverage" metric (audit script sufficient for now)
+- [ ] FR-011: separate `forgeplan-mcp/tests/hint_contract.rs` integration test file (covered via unit tests + dogfood)
+- [ ] FR-014: RU localization for hints (backlog)
+
+### Follow-up items
+- [ ] PROB-047 (potential): `scan-import` should dedupe by title/content hash — current behavior creates duplicate PRDs from doc files
+
+## Previous: v0.24.0 released 2026-04-19 — PRD-057 multi-agent dispatcher
 
 ### Next priorities (from ROADMAP)
 - [ ] Sprint A: Public Presence — Website (PRD-024) + README + crates.io + Docker

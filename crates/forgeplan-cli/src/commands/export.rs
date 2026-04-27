@@ -1,3 +1,5 @@
+use forgeplan_core::hints::{self, Hint};
+
 use crate::commands::common;
 
 pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
@@ -67,6 +69,13 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         relation_count,
         full_path.display()
     );
+
+    let path_str = full_path.display().to_string();
+    let hint_list = vec![
+        Hint::info("Re-import to verify the snapshot round-trips")
+            .with_action(format!("forgeplan import {}", path_str)),
+    ];
+    print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
 }

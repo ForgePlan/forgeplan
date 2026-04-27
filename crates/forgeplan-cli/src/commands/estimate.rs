@@ -4,6 +4,7 @@ use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
 use forgeplan_core::estimate::{
     calculator, confidence, display, domain, extractor, overrides, scorer,
 };
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -18,10 +19,13 @@ pub async fn run(
     let store = common::store().await?;
 
     // Fetch artifact
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let record = store.get_record(id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            id
+        )
+    })?;
 
     // Extract work items from artifact body
     let work_items = extractor::extract_work_items(&record.body);
@@ -30,6 +34,12 @@ pub async fn run(
     let hints = extractor::collect_hints(&record.body, work_items.len(), &record.kind);
 
     if work_items.is_empty() {
+        // Empty estimate: actionable next-step is to fill FR/Phase items.
+        let next_hints = vec![
+            Hint::warning("No estimable items — fill FR/Phase sections")
+                .with_action(format!("forgeplan get {}", id)),
+        ];
+
         if json {
             // In JSON mode, return empty result with hints
             let result = forgeplan_core::estimate::types::EstimateResult {
@@ -42,7 +52,14 @@ pub async fn run(
                 confidence_reasons: vec![],
                 hints,
             };
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            // Wrap with `_next_action` envelope for contract compliance.
+            let inner = serde_json::to_value(&result)?;
+            let payload = serde_json::json!({
+                "result": inner,
+                "_next_action": hints::primary_action(&next_hints),
+                "hints": next_hints,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             println!("  No estimable items found in {}.", id);
             for hint in &hints {
@@ -56,6 +73,7 @@ pub async fn run(
                     println!("    -> {}", action);
                 }
             }
+            print!("{}", hints::render_next_action_line(&next_hints));
         }
         return Ok(());
     }
@@ -161,11 +179,25 @@ pub async fn run(
         None
     };
 
+    // Suggest calibrating the estimate after delivery — this is the
+    // canonical follow-up workflow (estimate → work → calibrate-estimate).
+    let next_hints = vec![Hint::info("Calibrate after delivery").with_action(format!(
+        "forgeplan calibrate-estimate {} --actual-hours <N>",
+        record.id
+    ))];
+
     // Output
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let inner = serde_json::to_value(&result)?;
+        let payload = serde_json::json!({
+            "result": inner,
+            "_next_action": hints::primary_action(&next_hints),
+            "hints": next_hints,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         print!("{}", display::format_table(&result, highlight_grade));
+        print!("{}", hints::render_next_action_line(&next_hints));
     }
 
     Ok(())

@@ -1,4 +1,5 @@
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -7,13 +8,34 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     let stale_records = store.find_stale().await?;
 
     if stale_records.is_empty() {
+        // PRD-071: empty stale list is terminal — no action to take.
         if json {
-            println!("[]");
+            let payload = serde_json::json!({
+                "stale": [],
+                "_next_action": null,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             println!("No stale artifacts found. All valid_until dates are current.");
+            println!("Done.");
         }
         return Ok(());
     }
+
+    // PRD-071: primary action — renew the first stale artifact, providing
+    // a deterministic copy-pasteable command with a real ID.
+    let top_id = stale_records[0].id.clone();
+    let next_year_end = format!("{}-12-31", Utc::now().date_naive().year() + 1);
+    let next_hints: Vec<Hint> = vec![
+        Hint::warning(format!(
+            "{} stale artifact(s) — renew the most recent",
+            stale_records.len()
+        ))
+        .with_action(format!(
+            "forgeplan renew {} --reason \"<why still relevant>\" --until {}",
+            top_id, next_year_end
+        )),
+    ];
 
     if json {
         let today = Utc::now().date_naive();
@@ -24,7 +46,11 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
                 .unwrap_or(0);
             serde_json::json!({"id": r.id, "title": r.title, "valid_until": r.valid_until, "days_expired": days})
         }).collect();
-        println!("{}", serde_json::to_string_pretty(&data)?);
+        let payload = serde_json::json!({
+            "stale": data,
+            "_next_action": hints::primary_action(&next_hints),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
@@ -59,6 +85,8 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     println!();
     println!("Hint: Use `forgeplan score <ID>` to check R_eff impact of stale evidence.");
+
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

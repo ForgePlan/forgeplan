@@ -19,6 +19,596 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.24.0] — 2026-04-19 — Orchestrator dispatcher for 2-5 sub-agents (PRD-057 complete)
+
+Forgeplan now dispatches work. One MCP call — `forgeplan_dispatch
+--agents N` — hands the orchestrator a parallel-safe plan: which
+artifacts each sub-agent should work on, which defer to a serial queue,
+and human-readable reasoning for every decision. Ends the manual
+"read graph + blocked + list + mental overlap calc" loop that was the
+original PRD-057 problem statement.
+
+Four increments (Inc 2, 3, 4) + two adversarial audit rounds (R2 3-agent
+mid-sprint, R3 4-agent final) + 94 net new tests (1391 total). Builds
+on the Inc 1 workspace lock shipped in v0.23.1.
+
+### Added — Agent identity (Inc 2, FR-009 + AC-5)
+
+- **`AgentIdentity`** captures which MCP client last mutated an artifact
+  via `clientInfo` and stamps `last_modified_by: name/version` into
+  frontmatter on every write.
+- **Unknown-frontmatter preservation** — `projection` now keeps
+  agent-owned fm fields (`last_modified_by`, `domain`,
+  `affected_files`) across re-renders triggered by unrelated tools.
+- **Unicode / control-char rejection** in `AgentIdentity::new` — blocks
+  bidi override, ZWJ, RTL, newlines, path separators.
+- **Activity log** carries the captured `clientInfo` — previous `None`
+  TODO closed.
+
+### Added — Claim protocol (Inc 3, FR-004..006, FR-014, AC-2..3)
+
+- **`ClaimStore`** — soft-coordination signal "agent X works on ID
+  until T". YAML files at `.forgeplan/claims/<ID>.yaml` (gitignored).
+  TTL 1 min..24 h, default 30 min. Same-agent calls renew; expired
+  claims transparently overwritten.
+- **Three new MCP tools**: `forgeplan_claim`, `forgeplan_release`
+  (`force: true` orchestrator escape hatch), `forgeplan_claims`.
+- **Atomic writes** via tempfile + rename.
+- **64 KB YAML cap** + path-traversal guard (R2 security HIGH fix).
+
+### Added — Orchestrator dispatcher (Inc 4, FR-001..003, FR-010..011, AC-1)
+
+- **`forgeplan_dispatch`** returns `{buckets, serial_queue, reasoning,
+  candidate_count, claimed_count, blocked_count, skipped_parse_errors}`.
+- **Jaccard file-overlap detection** (0.3 default threshold).
+  Empty `affected_files` biases to serial (R-2 safety).
+- **Least-loaded-first greedy packing** — distributes, deterministic.
+- **Graph-aware** — blocked artifacts excluded via `kahn_sort`.
+- **Claim-aware** — claimed artifacts skipped with reasoning.
+- **Skill matching** via `agent_skills` vs artifact `domain`.
+- **Markdown-section fallback** — legacy artifacts with only
+  `## Affected Files` body section are hydrated via
+  `extract_affected_files(body)`.
+- **Input clamps**: `MAX_AGENTS=64`, `MAX_SKILLS_PER_AGENT=32`,
+  `MAX_AFFECTED_FILES=512`, 512-byte path cap (R3 CWE-770 fix).
+
+### Added — Integration surface (FR-012, FR-013)
+
+- **`forgeplan_health`** body includes `active_claims`,
+  `active_claim_count`, `skipped_claim_files`.
+- **`forgeplan_get`** `_next_action` appends claim holder + expiry
+  when a live claim exists.
+
+### Security
+
+- Path traversal refusal in `ClaimStore` (CWE-22).
+- Unicode homograph rejection in `domain` (CWE-176).
+- Resource caps on `agents`, skills, file lists, YAML size (CWE-400/770).
+- Control chars rejected in agent identity.
+
+### Performance
+
+- Read-only tools (`dispatch`, `claims`, `health`, `get`) don't acquire
+  the workspace lock — orchestrator 1 Hz polling doesn't serialize
+  writers (R2 architect MED).
+- `ClaimStore::list_active_map` for O(1) dispatcher joins.
+
+### Testing
+
+- **+94 tests** (1297 → 1391). 13 dispatch algorithm, 26 claim store
+  (inc. hardening), 14 MCP wiring + validation, 10 dogfood E2E, 4
+  workflow variations, 1 AC-4 concurrent-forgeplan_new unique-ID E2E.
+- **Two adversarial audit rounds** (R2 3-agent, R3 4-agent with
+  production-validator for FR/AC task-completion) — 30 findings
+  closed with regression tests.
+
+### Deferred to v0.25+
+
+- Shared `kv_yaml` abstraction across `phase::store` + `claim` + future
+  dispatch-cache.
+- Per-request identity for HTTP/SSE transports.
+- `load_frontmatter_full` primitive to dedupe 10 read→parse sites.
+- `ListFilter::parent_epic` push-down.
+- `DispatchDecision` structured enum for `reasoning` (i18n).
+- `list_active_map → HashMap<String, Claim>` for holder-based routing.
+- ADR separating claim (ephemeral) from phase (durable) state.
+- Agent profiles at `.forgeplan/agents/<agent_id>.yaml` (v0.27 roadmap).
+
+### References
+
+- PRD-057 `.forgeplan/prds/PRD-057-*.md`
+- EVID-077 `.forgeplan/evidence/EVID-077-*.md` — R_eff=1.00, CL3
+
+## [0.23.1] — 2026-04-19 — Multi-agent workspace lock foundation (PRD-057 Inc 1)
+
+First safety primitive for multi-agent workflow — workspace-level file
+lock that serializes LanceDB write operations across 2-5 concurrent
+sub-agents sharing a `.forgeplan/` directory. Patch bump, no breaking
+changes, no new user-facing tools.
+
+### Added
+
+- **`forgeplan-core::workspace::lock`** module with `WorkspaceLock`
+  RAII guard and `acquire_workspace_lock` async helper. Uses `fs2`
+  flock primitive (Unix) / LockFileEx (Windows). Released automatically
+  on drop including process crash.
+- **30-second timeout** with exponential backoff (10ms → 1000ms) —
+  no indefinite hang if a sibling agent is stuck.
+- **Symlink guards** on both workspace directory and lock file
+  (parity with PRD-055 R3 + PRD-056 hardening).
+- **`#[must_use]`** on guard — compiler catches accidental immediate
+  drop via `let _ =`.
+
+### Wrapped with lock (all MCP write entry points)
+
+- `forgeplan_new` — prevents duplicate ID collision under concurrent
+  `next_id` allocation.
+- `forgeplan_update`
+- `forgeplan_delete`
+- `forgeplan_supersede`
+- `forgeplan_deprecate`
+
+### Hygiene
+
+- `.gitignore`: `.forgeplan/.lock` and `.forgeplan/claims/` (prep for
+  PRD-057 Inc 2-4).
+
+### Verification
+
+- **1297 tests pass / 0 fail** (+6 new regression tests:
+  - `acquire_creates_lock_file`
+  - `lock_releases_on_drop`
+  - `concurrent_acquirers_serialize_and_total_time` (strengthened
+    with wall-time lower bound)
+  - `timeout_surfaces_when_lock_held`
+  - `symlinked_workspace_dir_is_refused` (unix)
+  - `symlinked_lock_file_is_refused` (unix)
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- Rust 1.95 toolchain pinned via `rust-toolchain.toml`.
+
+### Audit
+
+5-agent audit Round 1 (security + logic + arch + rust + task-completion)
+found 1 CRITICAL + 2 HIGH + 4 MEDIUM — **all fixed** in the same PR
+before merge. Net verdict: APPROVE_WITH_FIXES from all 5 agents post-
+hotfix.
+
+### Not included — planned for v0.24.0
+
+- `Claim` module + `forgeplan_claim` / `_release` / `_claims` MCP
+  tools (PRD-057 Inc 3).
+- Agent identity capture (`client_info` → `last_modified_by`
+  frontmatter field) (PRD-057 Inc 2).
+- `forgeplan_dispatch --agents N` tool (PRD-057 Inc 4) — the dispatcher
+  that suggests parallel-safe buckets based on dep graph, file-overlap
+  Jaccard, and domain-skill matching.
+
+Refs: EPIC-005, PRD-057 Inc 1, PR #192.
+
+---
+
+## [0.23.0] — 2026-04-18 — Advisory phase state machine (PRD-056, EPIC-005)
+
+First shipped child of **EPIC-005 "Phase state machine & workflow-aware
+methodology umbrella"**. Every artifact in the greenfield workflow now
+has a visible `current_phase` that auto-advances through the methodology
+cycle (`shape → validate → adi → code → test → audit → evidence → done`)
+with full transition history on disk.
+
+**Advisory-only** — no existing tool is blocked. Full enforcement lands
+in a later PRD under EPIC-005.
+
+### Added — phase state module (`forgeplan-core::phase`)
+
+- Per-artifact state file at `.forgeplan/state/<ID>.yaml` (gitignored)
+  with `current_phase`, `workflow_type`, `advanced_at`, append-only
+  `history: Vec<PhaseTransition>`, `schema_version`.
+- `Phase` enum (Unknown/Shape/Validate/Adi/Code/Test/Audit/Evidence/Done)
+  with `as_str()` and `suggested_next()` helpers.
+- `WorkflowType` enum (currently Greenfield — brownfield/hotfix/research/
+  review-fix/refactor are follow-up child PRDs under EPIC-005).
+- Atomic writes: tmp+rename with pid+nanos+AtomicU64-counter filename,
+  `create_new(true)` against symlink planting, fsync(file) + fsync(dir).
+- Symlink guards on both state directory AND target file, read + write.
+- Path traversal defense via `validate_artifact_id` at every entry point.
+- Size caps: `MAX_HISTORY_ENTRIES=1024` (FIFO drop preserving index 0),
+  `MAX_REASON_LEN=512`, `MAX_STATE_FILE_BYTES=1 MiB`, `MAX_ARTIFACT_ID_LEN=128`.
+- Forward-compat: `schema_version > CURRENT` → refused (no silent data loss).
+- Corrupt YAML quarantined to `<id>.yaml.corrupt.<timestamp>` rather
+  than clobbered — preserves audit-trail forensics.
+
+### Added — auto-advancement hooks (MCP server)
+
+- `forgeplan_new` → `phase=shape` on successful artifact creation.
+- `forgeplan_validate` PASS → `phase=validate`.
+- `forgeplan_activate` / `_supersede` / `_deprecate` → `phase=done`.
+- All hooks fire-and-forget: failures logged via `tracing::warn`,
+  never break the calling tool (advisory invariant).
+
+### Added — MCP tools
+
+- **`forgeplan_phase <id>`** — read current phase + workflow_type +
+  timestamps + full append-only history. Missing state returns
+  `{current_phase: "unknown"}`, never an error.
+- **`forgeplan_phase_advance <id> --to <phase> [--reason]`** — manual
+  override, appends to history, does NOT validate ordering (advisory
+  layer allows out-of-order jumps). `reason` capped at 4096 bytes at
+  MCP boundary + 512 bytes on persist.
+- `PhaseArg` JSON-Schema enum so LLM clients constrain-sample exact
+  values — no paraphrases.
+
+### Added — integration
+
+- `forgeplan_get` response now appends current phase to `_next_action`
+  (`"… Phase: \`shape\` → next \`validate\`."`) when tracking is active.
+- `forgeplan_health` response includes `advisory_phase_mismatches[]` —
+  artifacts with `status=active` but `current_phase` still early-cycle
+  (shape/validate/adi). Strictly advisory — no health failure.
+
+### Added — config
+
+- New optional `phase.enabled: bool` block in `.forgeplan/config.yaml`
+  (default `true`). Flip to `false` for exact pre-v0.23.0 semantics
+  without recompile.
+
+### Fixed — hygiene
+
+- `.gitignore`: added `.forgeplan/logs/` (forgotten in v0.21.0 — activity
+  log was leaking into git) and `.forgeplan/state/` (new in this release).
+
+### Verification
+
+- **1291 tests pass / 0 fail** (+30 new vs v0.22.1 baseline):
+  - 12 phase module unit tests
+  - 14 regression tests (10 from Round 1 + 4 from Round 2 audits)
+  - 4 incidental matches
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- **2 audit rounds** by multi-agent panel (security + logic + rust +
+  architect): 2 CRITICAL + 7 HIGH + 3 MEDIUM findings, **all fixed**
+  before ship. R_eff(PRD-056) = 1.00, Grade A.
+
+### Not included — deferred to follow-up PRDs
+
+- `forgeplan_phase_backfill` command (FR-009, COULD) — populate
+  phase state for existing ~100 artifacts.
+- Full phase enforcement ("замки") — tools refuse to work not in their
+  phase. Separate PRD under EPIC-005.
+- Brownfield, audit-hotfix, research, review-fix, refactor workflow
+  phase enums — each own child PRD under EPIC-005.
+- Read-side `O_NOFOLLOW` TOCTOU closure (platform module needed).
+- `thiserror`-typed `PhaseError` (advisory module, anyhow is fine here).
+
+Refs: EPIC-005, PRD-056, EVID-076.
+
+---
+
+## [0.22.1] — 2026-04-18 — Undo hardening (post-ship audit Round 3)
+
+Security + correctness hotfix for the undo subsystem shipped in v0.22.0.
+A 4-agent multi-lens audit of the PRD-055 code found 2 CRITICAL + 5 HIGH
+real issues. All fixed here with regression tests.
+
+### Fixed — Security
+
+- **Path traversal via tampered `projection_path`** (C-1 sec). Restore no
+  longer trusts `receipt.snapshot.projection_path` verbatim. Destination
+  is recomputed from `workspace + kind + id + slug(title)` and verified
+  with `canonicalize().starts_with(workspace)`. An attacker-crafted
+  receipt pointing at `/etc/passwd` is refused.
+- **Unsanitized strings from receipts reached the agent** (H-1 sec).
+  `report.warnings`, `relations_skipped`, and `receipt_id` in
+  `forgeplan_restore` / `forgeplan_undo_last` responses now go through
+  the same `sanitize_for_hint()` pipeline used elsewhere. Prompt-injection
+  content planted in a receipt can no longer ride into agent context.
+- **Symlinked trash directory or source projection** (H-2 sec). Both
+  `write_receipt` and `trash_projection` now `symlink_metadata`-check
+  their inputs and refuse if either is a symlink — prevents an attacker
+  who can write the `.forgeplan/` tree from redirecting rename targets
+  outside the workspace.
+
+### Fixed — Correctness
+
+- **`mark_consumed` failure silently left receipt unconsumed** (C-1
+  logic, FR-011). A subsequent `undo_last` re-applied the same receipt
+  (harmless for delete, misleading `Ok` for supersede/deprecate).
+  `apply_restore` now propagates the error with clear manual-recovery
+  instructions.
+- **Receipt ID collision at 1/65 536 under concurrent deletes** (H-1
+  logic). Replaced the 16-bit nanos-mask suffix with a 32-bit PRNG
+  (`rand::random::<u32>()`) → effective collision probability
+  ~1/4 294 967 296.
+- **Title edits after creation broke projection resolution** (H-2
+  logic). `soft_delete_capture` now scans `<kind>/<ID>-*.md` on the
+  filesystem and uses the real filename, falling back to current-title
+  slugify only if scan fails. Delete no longer silently leaves an
+  orphan markdown that `scan-import` would resurrect.
+- **Supersede/deprecate restore on collision branch overwrote a
+  different artifact** (H-4 logic). Now refuses if `existing.kind !=
+  snapshot.kind` with an explicit error suggesting manual resolution.
+
+### Hardened
+
+- Parent-directory fsync after `write_receipt` file sync (ext4/xfs
+  durability — `fsync(file)` alone can lose the directory entry on a
+  hard crash).
+- `is_cross_device` now handles Windows `ERROR_NOT_SAME_DEVICE` (17) in
+  addition to Unix `EXDEV` (18).
+
+### Verification
+
+- **1261 tests pass / 0 fail** (+6 new regression tests covering each
+  finding: traversal-projection refusal, `mark_consumed` propagation,
+  kind-mismatch refusal, 32-bit PRNG uniqueness, symlinked-trash
+  refusal, symlinked-source refusal).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+
+Refs: PRD-055 post-ship audit (4-agent panel: code-reviewer,
+security-auditor, rust-pro, architect-reviewer).
+
+---
+
+## [0.22.0] — 2026-04-18 — Reversible destructive ops (PRD-055 complete)
+
+Completes the undo story started in v0.21.0. Every destructive operation —
+`delete`, `supersede`, `deprecate` — is now recoverable via a single tool
+call within a 30-day TTL window.
+
+### Added — wrapping of destructive ops (PRD-055 increment 2)
+
+All three destructive tool handlers now go through `soft_delete_capture`
+before mutating the store:
+
+- `forgeplan_delete`: writes a receipt with full snapshot (body, metadata,
+  outgoing + incoming relations), moves the markdown projection into
+  `.forgeplan/trash/`, then removes the store row.
+- `forgeplan_supersede`: writes a receipt capturing the original status,
+  then applies the lifecycle transition. Projection stays in place.
+- `forgeplan_deprecate`: same pattern.
+
+Crash invariant (PRD-055 ADR #4): receipt is written BEFORE the store
+mutation. A crash in between leaves a harmless orphan receipt which TTL
+purge later collects.
+
+Every destructive-op response now includes a `receipt_id` field and a
+`_next_action` hint pointing at `forgeplan_undo_last` or
+`forgeplan_restore <id>`.
+
+### Added — restore and undo-last tools (PRD-055 increment 3)
+
+- **`forgeplan_restore id=<ID>`** — finds the newest non-consumed receipt
+  for that ID, applies restore. For delete: recreates the store row,
+  moves the projection back, re-links all captured relations. For
+  supersede/deprecate: resets status to pre-op value and drops the new
+  link. Orphaned relation targets are tracked in `relations_skipped`.
+- **`forgeplan_undo_last within_hours=<N>`** — finds the newest
+  non-consumed receipt across all artifacts within the window (default
+  24h, max 720h), applies the same restore logic. Never guesses: returns
+  an explicit error if the window is empty.
+
+Transactional semantics (FR-011): receipt is marked consumed LAST.
+Collision handling (R-3): restore refuses if an artifact with the same
+ID already exists in the store.
+
+### Verification
+
+- **1255 tests pass / 0 fail** (+19 undo tests across receipt and restore
+  modules, +4 integration tests).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+
+### User-visible workflow
+
+Before: `forgeplan_delete PRD-048` → artifact permanently gone.
+
+After:
+```
+forgeplan_delete PRD-048
+  → receipt written, projection moved to trash, store row removed
+  → response: receipt_id + hint "reversible via forgeplan_undo_last"
+
+forgeplan_undo_last
+  → PRD-048 restored with identical body, metadata, relations
+```
+
+Refs: PRD-055 (now functionally complete), PRD-054.
+
+---
+
+## [0.21.0] — 2026-04-18 — Activity log + soft-delete receipt infrastructure
+
+Builds on the v0.20.0 tool-quality work. Adds two pieces of observability
+and recovery infrastructure that make agent-driven use of forgeplan
+materially safer.
+
+### Added — Activity log (PRD-054)
+
+Every MCP tool invocation is now recorded in an append-only JSONL file at
+`.forgeplan/logs/tools-YYYY-MM-DD.jsonl`. One file per UTC day, daily
+rotation happens automatically on first write. Each entry captures
+timestamp, tool name, SHA-256-prefix hash of args (args content is
+NOT logged by default — prevents secrets in titles / descriptions from
+leaking into the log), duration, status (`ok` / `tool_err` / `rpc_err`),
+workspace path, and optional client info.
+
+Two new MCP tools surface the log:
+
+- `forgeplan_activity` — query with `since_hours` (default 24, max 720),
+  `tool` (comma-separated filter), `status`, `limit` (max 5000). Returns
+  entries, warnings about corrupted lines, and a `_next_action` hint.
+- `forgeplan_activity_stats` — per-tool aggregates (count, err_count,
+  p50/p95/total ms), sorted by total time descending.
+
+Dispatch wrapper sits on top of rmcp's `ToolRouter.call` — any existing
+or future tool is logged automatically without per-handler changes. Log
+writes fire-and-forget via `tokio::spawn` so the tool response path adds
+zero latency. Log-write failures are observed via `tracing::warn` and
+never fail the parent tool call.
+
+CLI parity is planned for a future release.
+
+### Added — Soft-delete receipt infrastructure (PRD-055, increment 1 of 3)
+
+Foundation for reversible destructive operations. New module
+`forgeplan-core::undo` provides the receipt data model, JSON
+serialization, trash directory layout, TTL-based lazy purge, and
+cross-platform filesystem rename with fallback to copy+remove for
+cross-device moves.
+
+Does NOT yet wire into `forgeplan_delete` / `forgeplan_supersede` /
+`forgeplan_deprecate` — those still do hard-delete. Wiring is
+planned for v0.22.0. This release ships the underlying primitives so
+integration tests and tooling can exercise the receipt format now.
+
+Key design decisions documented inline in PRD-055:
+1. Move-to-trash plus receipt, not store tombstone column
+2. JSON format, not binary
+3. One receipt per operation (inspectable history)
+4. Write receipt BEFORE mutation (crash invariant — orphan receipts are
+   harmless, but the reverse order would cause data loss)
+5. Lazy TTL purge on invocation, no background daemon
+6. Relations captured in receipt, not re-derived on restore
+
+Default TTL: 30 days. Configurable per-workspace once the wiring lands
+in v0.22.0.
+
+### Changed — Developer experience
+
+- Pinned Rust toolchain to 1.95 via `rust-toolchain.toml` — prevents
+  the class of bug where `cargo clippy` passes locally but fails on CI
+  due to a version skew between developer and runner (hit PR #178 on
+  first push with `clippy::unnecessary_sort_by`).
+
+### Verification
+
+- **1245 tests pass / 0 fail** (+31 new across activity + undo modules,
+  of which 18 in activity and 13 in undo).
+- `cargo clippy --workspace --all-targets -D warnings`: clean.
+- `cargo fmt --check`: 0 diffs.
+- E2E smoke on fresh tempdir: activity log writes 3 JSONL lines across
+  3 tool calls, no secret content leaks into log body.
+
+### Scope trade-offs
+
+`forgeplan_restore` and `forgeplan_undo_last` MCP tools are deferred to
+v0.22.0 along with the wrapping of destructive ops. Shipping the
+primitives now exercises the receipt format under real CI and lets the
+wiring increment land as a cleaner, smaller PR.
+
+Refs: PRD-054, PRD-055.
+
+---
+
+## [0.20.0] — 2026-04-18 — MCP silent-failure hotfix + tool quality (3-round audit)
+
+Originally a v0.19.1 hotfix for two independent silent failures blocking
+MCP adoption in v0.19.0 — users who ran `brew install forgeplan &&
+forgeplan mcp install --client claude && restart Claude Code` got
+**zero tools visible**. Grew via three full audit rounds into a feature
+release: every tool now carries workflow guidance and is hardened
+against invisible prompt-injection.
+
+### Fixed — the original hotfix
+
+- **`ServerCapabilities::default()` returned empty `{}`** — per MCP spec,
+  clients skip `tools/list` when `tools` capability is absent. All 45
+  tools invisible after `forgeplan mcp install`. Fix:
+  `ServerCapabilities::builder().enable_tools().build()`.
+- **`.mcp.json` carried `transport: "stdio"` field** — not MCP spec,
+  silently ignored by Claude Code, compounded the capability miss. Fix:
+  drop `transport`; `smart_merge` narrowly removes legacy entries.
+
+### Added — tool discoverability
+
+- **ToolAnnotations on all 45 tools** — `title`, `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`. Claude Code now
+  auto-approves safe reads and warns before destructive ops.
+- **Schema enums × 6** — `relation`, `kind`, `status`, `journal.kind`,
+  `phase`, `grade` switched from prose strings to JSON-Schema enums.
+  LLMs constrain-sample against these so `"informs"` is verbatim, not
+  paraphrased as `"inform"`.
+- **`_next_action` on 42/42 tools** — 34 as structured JSON field on
+  success, 8 as `_next_action:` prose in error text (via `err_hinted` /
+  `artifact_not_found` / `llm_err`). Every response — success or
+  error — tells the agent what to do next.
+
+### Security — invisible prompt-injection hardening
+
+- **`sanitize_for_hint()`** strips structural punctuation plus invisible
+  Unicode classes: zero-width joiners, bidi overrides/isolates, BOM,
+  soft-hyphen, variation selectors, tag characters. Applied at every
+  `format!` splice of user-controlled values. 15 new unit tests.
+- **`llm_err` no longer echoes upstream error bodies** — provider errors
+  sometimes include request IDs and header fragments; now logged only.
+
+### Fixed — silent-failure class
+
+- `unwrap_or(Value::Null)` replaced with `hinted_result<T>()` helper —
+  serialization failure surfaces as `McpError::internal_error` instead
+  of a `Null` response.
+- `forgeplan_blocked.blocked_count` was reporting `cycles.len()` instead
+  of `blocked.len()`; fixed.
+- `forgeplan_fpf_check` dead match arms (`"deny"/"block"/"warn"`) —
+  core emits `EXPLORE`/`INVESTIGATE`/`EXPLOIT`; match rewritten.
+- Race-condition panic in `forgeplan_link` when artifact deleted
+  concurrently — fixed.
+
+Refs: PROB-039, PRD-048, three audit rounds evidence.
+
+---
+
+## [0.19.0] — 2026-04-16 — One-command MCP install + Clippy 1.95 + website i18n RU
+
+Feature release: `forgeplan mcp install` for frictionless AI agent setup,
+website i18n with 144 Russian pages, Mermaid diagrams, and Rust 1.95 clippy compliance.
+
+### Added
+
+- **`forgeplan mcp install --client claude|cursor|windsurf`** — one-command
+  MCP server configuration. Smart-merge replaces `command`/`args`/`transport`
+  while preserving user `env` (API keys, custom paths). Idempotent, safe to
+  re-run. Cross-platform: macOS / Linux / Windows.
+- **`forgeplan mcp serve`** — alias for `forgeplan serve` (MCP convention naming).
+- **`--use-name [forgeplan|fpl]`** — write the short binary name instead of
+  absolute path. For terminal-based clients where `$PATH` is set up.
+- **`--scope user|project`** — install to user-global (`~/.claude.json`)
+  or project-local (`./.mcp.json`).
+- **`--dry-run`** — preview proposed changes without writing.
+- **`--binary-path`** — override binary path with validation (absolute, exists,
+  executable, no control chars / bidi overrides).
+- **Binary detection** prefers PATH-resolved symlink over `current_exe()`.
+  Fixes Homebrew upgrade breakage where versioned Cellar path goes stale.
+- **Symlink rejection** in atomic write — prevents `.mcp.json -> /etc/passwd`
+  type attacks via pre-planted symlinks.
+- **Website i18n** — 144 Russian pages via Starlight native i18n + Gemini 2.5
+  Flash batch translation. Language switcher EN↔RU. (PRD-047)
+- **6 Mermaid diagrams** in EN+RU docs (pipeline, ADI, R_eff, tutorial,
+  lifecycle, graph).
+- **MCP setup guide** — `docs/guides/mcp-setup` (EN + RU). Covers quick install,
+  smart-merge, troubleshooting.
+- **Website UI polish** — wider search bar, compact theme toggle + language
+  switcher, Cloudflare `/ru/` redirects.
+
+### Fixed
+
+- **Clippy 1.95 compliance** — `collapsible_match` (8 occurrences in
+  `forgeplan-core`) and `unnecessary_sort_by` (3 occurrences) converted to
+  match guards and `sort_by_key(Reverse(...))`.
+- **PROB-026** tag canonicalization + **PROB-027** reindex without `lance/`.
+- **PROB-035** + **PROB-036** deprecated (resolved by PRD-046 + PRD-047).
+
+### Stats
+
+- 1194 tests (+44 from v0.18.0 baseline 1150)
+- 294 website pages (+2 from v0.18.0 baseline 292)
+- 0 clippy warnings on Rust 1.95 (stricter than 1.91 / 1.94)
+- PRD-048 R_eff: 0.80 (Adequate), EVID-075 active
+- 2 adversarial audit rounds (4 agents), 10 CRITICAL/HIGH/MEDIUM findings, all fixed
+
+---
+
 ## [0.18.0] — 2026-04-11 — Production BM25 + Russian morphology + quality gates
 
 Feature release upgrading the search engine and codifying quality rules.

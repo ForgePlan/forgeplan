@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 
+use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace::load_config;
 
 use crate::commands::common;
@@ -52,6 +53,14 @@ pub async fn run() -> Result<()> {
     if artifacts.is_empty() {
         println!("  No artifacts yet. Create one with `forgeplan new <kind> <title>`.");
     }
+
+    // PRD-071: empty workspace → create something; populated → check health.
+    let next_hints: Vec<Hint> = if artifacts.is_empty() {
+        vec![Hint::info("Empty workspace").with_action("forgeplan new prd \"<title>\"".to_string())]
+    } else {
+        vec![Hint::info("Inspect workspace integrity").with_action("forgeplan health".to_string())]
+    };
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

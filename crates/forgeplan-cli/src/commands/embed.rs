@@ -4,6 +4,7 @@ pub async fn run() -> anyhow::Result<()> {
     use crate::commands::common;
     use crate::ui;
     use forgeplan_core::embed::Embedder;
+    use forgeplan_core::hints::{self, Hint};
 
     let store = common::store().await?;
     let config = common::config().unwrap_or_default();
@@ -19,6 +20,11 @@ pub async fn run() -> anyhow::Result<()> {
     let records = store.list_records(None).await?;
     if records.is_empty() {
         ui::info("No artifacts to embed.");
+        let hint_list = vec![
+            Hint::info("Create your first artifact")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }
 
@@ -47,13 +53,25 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     println!("\nDone: {} embedded, {} failed.", ok, err);
+    let hint_list = if err > 0 {
+        vec![
+            Hint::warning(format!("{} artifact(s) failed to embed", err))
+                .with_action("forgeplan health".to_string()),
+        ]
+    } else {
+        vec![
+            Hint::info("Run a semantic search")
+                .with_action("forgeplan search \"<query>\"".to_string()),
+        ]
+    };
+    print!("{}", hints::render_next_action_line(&hint_list));
     Ok(())
 }
 
 #[cfg(not(feature = "semantic-search"))]
 pub async fn run() -> anyhow::Result<()> {
     anyhow::bail!(
-        "Embedding not available. Rebuild with: \
-         cargo build --features semantic-search"
+        "Embedding not available. Rebuild with: cargo build --features semantic-search\n\
+         Fix: cargo build --features semantic-search"
     );
 }

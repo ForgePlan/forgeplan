@@ -1,6 +1,7 @@
 use std::fs;
 
 use anyhow::Result;
+use forgeplan_core::hints::{self, Hint};
 
 pub async fn run() -> Result<()> {
     let home =
@@ -20,6 +21,12 @@ pub async fn run() -> Result<()> {
 
     println!("  Installed /forge skill to {}", skill_path.display());
     println!("  Use /forge in Claude Code to activate Forgeplan workflow");
+
+    // PRD-071: skill is installed — point at routing as the entry point.
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Skill installed").with_action("forgeplan route \"<your task>\"".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
 }

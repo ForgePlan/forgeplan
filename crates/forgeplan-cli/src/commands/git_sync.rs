@@ -1,5 +1,6 @@
 use forgeplan_core::artifact::frontmatter;
 use forgeplan_core::git;
+use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
@@ -10,10 +11,14 @@ use crate::commands::common;
 pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
-    // Find repo root (parent of .forgeplan/)
-    let repo_root = ws
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine repo root from workspace"))?;
+    // PRD-071 contract: errors emit `Fix:` markers so agents have a
+    // deterministic next action.
+    let repo_root = ws.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Cannot determine repo root from workspace\n\
+             Fix: forgeplan health"
+        )
+    })?;
 
     // Determine the reference point
     let since_ref = if let Some(s) = since {
@@ -23,7 +28,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         git::orig_head(repo_root).ok_or_else(|| {
             anyhow::anyhow!(
                 "No ORIG_HEAD found (no recent git pull/merge).\n\
-                 Specify a ref: forgeplan git-sync --since HEAD~3"
+                 Fix: forgeplan git-sync --since HEAD~3"
             )
         })?
     };
@@ -36,13 +41,17 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         commit_hash
     );
 
-    let changed = git::changed_artifact_files(repo_root, &since_ref)?;
+    // PRD-071 contract: git diff failures emit `Fix:` markers.
+    let changed = git::changed_artifact_files(repo_root, &since_ref)
+        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan git-sync --since HEAD~3", e))?;
 
     if changed.is_empty() {
         println!(
             "  No .forgeplan/ files changed since {}.",
             since_ref.chars().take(10).collect::<String>()
         );
+        // PRD-071 contract: nothing to sync — terminal state.
+        println!("\nDone.");
         return Ok(());
     }
 
@@ -200,6 +209,12 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         "\nGit sync complete: {} synced, {} deleted, {} errors (commit {})",
         synced, deleted, errors, commit_hash
     );
+
+    // PRD-071 contract: after a sync, run health to surface anything new.
+    let hints_vec = vec![
+        Hint::suggestion("Audit synced artifacts").with_action("forgeplan health".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
 }
