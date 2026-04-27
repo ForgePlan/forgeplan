@@ -12,7 +12,11 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
     // Verify source exists
     let source = store.get_artifact(source_id).await?;
     if source.is_none() {
-        anyhow::bail!("Source artifact '{}' not found", source_id);
+        anyhow::bail!(
+            "Source artifact '{}' not found
+Fix: forgeplan list",
+            source_id
+        );
     }
 
     // Verify target exists (warning only)

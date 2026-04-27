@@ -81,8 +81,13 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             .iter()
             .enumerate()
             .find(|(_, r)| r.id.to_uppercase() == upper);
-        let (idx, record) =
-            found.ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
+        let (idx, record) = found.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Artifact '{}' not found
+Fix: forgeplan list",
+                target_id
+            )
+        })?;
         let p = &all_progress[idx];
 
         println!();

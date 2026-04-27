@@ -13,10 +13,13 @@ pub async fn run(
     let (ws, store) = common::open_store().await?;
 
     // Verify artifact exists (keep original for old projection cleanup)
-    let original = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let original = store.get_record(id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            id
+        )
+    })?;
 
     if status.is_none() && title.is_none() && depth.is_none() && body.is_none() {
         // PRD-071: Error pairs with concrete Fix: command (use --status as the

@@ -85,10 +85,9 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let store = common::store().await?;
 
     // Get the target artifact
-    let target = store
-        .get_record(target_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", target_id))?;
+    let target = store.get_record(target_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
+    })?;
 
     // --- Recursive R_eff via AssuranceReport ---
     let mut visited = HashSet::new();

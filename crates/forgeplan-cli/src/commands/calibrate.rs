@@ -25,7 +25,11 @@ pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
     if to_check.is_empty()
         && let Some(target_id) = id
     {
-        anyhow::bail!("Artifact '{}' not found", target_id);
+        anyhow::bail!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            target_id
+        );
     }
 
     let mut escalations = 0;

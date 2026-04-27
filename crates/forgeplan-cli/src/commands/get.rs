@@ -8,7 +8,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let record = store
         .get_record(id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", id))?;
 
     // Contextual hints — compute up front so both text and JSON paths emit them.
     let relations = store.get_relations(id).await.unwrap_or_default();

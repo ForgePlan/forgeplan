@@ -6,10 +6,13 @@ use crate::commands::common;
 pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let record = store.get_record(id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            id
+        )
+    })?;
 
     // Check for dependents (other artifacts linking TO this one)
     let all_relations = store.get_all_relations().await?;

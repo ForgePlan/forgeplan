@@ -34,7 +34,11 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
     if to_validate.is_empty()
         && let Some(target_id) = id
     {
-        anyhow::bail!("Artifact '{}' not found", target_id);
+        anyhow::bail!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            target_id
+        );
     }
 
     let mut total_errors = 0;

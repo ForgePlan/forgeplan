@@ -19,10 +19,13 @@ pub async fn run(
     let store = common::store().await?;
 
     // Fetch artifact
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let record = store.get_record(id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Artifact '{}' not found
+Fix: forgeplan list",
+            id
+        )
+    })?;
 
     // Extract work items from artifact body
     let work_items = extractor::extract_work_items(&record.body);
