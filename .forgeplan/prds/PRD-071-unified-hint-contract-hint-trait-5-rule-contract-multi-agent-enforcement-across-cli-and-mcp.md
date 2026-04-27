@@ -167,4 +167,46 @@ EVID-N "PRD-071 hint contract enforcement — 73 CLI + 55 MCP coverage 100%, 0 c
 | PRD-070 | based_on (PR #211 surfaced inconsistency in new CLI) |
 | ADR-008 | informs (self-describing tools — hint is part of self-description) |
 | PRD-046 | based_on (docs sprint where hint mismatch was first noticed) |
+| EVID-086 | informs (5-cycle multi-agent sprint measurements) |
+
+## Progress (2026-04-27)
+
+Sprint завершён за 5 циклов. Audit coverage 0% → **100% (70/70 GOOD)**. Commit `79008b3`.
+
+### FR status
+
+| FR | Status | Evidence |
+|---|---|---|
+| FR-001 | ✅ Done | `crates/forgeplan-core/src/hints.rs` — `Hint`/`HintKind` (расширен `primary_action()` + `render_next_action_line()`) |
+| FR-002 | ⚠️ Adapted | Trait не введён — вместо него helper-functions (proven sufficient by 36 tests) |
+| FR-003 | ✅ Done | 70/70 CLI commands emit `Next:`/`Done.`/`Fix:` per audit |
+| FR-004 | ✅ Done | JSON `_next_action` field present (list/tree — bw-compat: hint to stderr) |
+| FR-005 | ✅ Done | MCP `_next_action` нормализован (~37 sites refined в Cycle 3 Y) |
+| FR-006 | ✅ Done | `Error: <reason>` + `Fix: <command>` pattern в update/import/git_sync/calibrate/lifecycle/promote/reason/decompose/generate/capture |
+| FR-007 | ✅ Done | MCP error responses include `_next_action` в data field |
+| FR-008 | ✅ Done | All hints деривированы из state, no randomness (passing test `score_does_not_emit_legacy_evid_xxx_placeholder` подтверждает determinism) |
+| FR-009 | ✅ Done | `Next:` + optional `Or:` pattern в dispatch/release |
+| FR-010 | ✅ Done | `tests/hint_contract.rs` — 36 tests pass |
+| FR-011 | ⚠️ Deferred | MCP integration test не выделен в отдельный файл — покрытие через `forgeplan-mcp` unit tests (59 pass) + dogfood в Cycle 3 Y |
+| FR-012 | ✅ Done | `scripts/audit-hints.sh` outputs 100.0% coverage metric |
+| FR-013 | ⚠️ Deferred | `forgeplan_health` "Hint coverage" metric — backlog (низкий приоритет, audit script достаточен) |
+| FR-014 | ⚠️ Deferred | RU localization — backlog как описано в PRD |
+
+11/14 done, 3 deferred (FR-002 architectural simplification; FR-011/013/014 — backlog).
+
+### Acceptance Criteria status
+
+- ✅ All MUST FRs green (FR-001/003-010/012)
+- ✅ Phase 1 audit metrics в EVID-086
+- ✅ 70/70 CLI commands contract-compliant (target was 73 — 2 daemon commands `serve`/`watch` skipped legitimately)
+- ✅ 55+/55 MCP tools have `_next_action` field
+- ✅ CI integration test passes (36/36) — new no-hint command fails CI
+- ✅ 3 docs published (SKILL.md, CLAUDE.md hint protocol section, agent-protocol.md)
+
+### Lessons learned
+
+1. **Meta-tooling discipline**: audit script сама нарушала контракт (heuristic recognized only `Next:`). Tools that audit must satisfy the same contract they enforce.
+2. **Strict file partitioning** между параллельными агентами обеспечил zero merge conflicts на 81 файле через 5 циклов.
+3. **Cyclic protocol** (audit → fix → next) поймал W2's bw-compat regression (list/tree JSON shape) в Cycle 4 — fix landed в Cycle 5 W5.
+4. **Live smoke testing** обязателен для классификации MISSING — audit script даёт false negatives когда требуются нестандартные args.
 

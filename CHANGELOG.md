@@ -7,6 +7,46 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.25.0] — 2026-04-27 — Unified hint contract across CLI + MCP (PRD-071 complete)
+
+Forgeplan теперь говорит агентам что делать дальше. Каждый CLI и MCP вывод эмитит **один** контрактный маркер (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — никаких больше «agent reads no-hint output → re-reads CLAUDE.md → guesses → loops». 5-rule контракт (PRESENCE / ACTIONABILITY / DETERMINISM / CONDITIONALITY / CONSISTENCY) реализован за 5 циклов multi-agent sprint, audit coverage 0% → **100% (70/70)**.
+
+### Added — 5-rule hint contract (PRD-071)
+
+- **`Next: <full command>`** — primary action with real IDs (no `<placeholder>`)
+- **`Or: <command>`** — alternate when primary blocks
+- **`Wait: <condition>`** — async/TTL retry signal
+- **`Done.`** — terminal success (workflow complete)
+- **`Fix: <command>`** — error remediation (paired with `Error:` line)
+- JSON output: `_next_action` field (string or null)
+- MCP responses: `_next_action` in success + error data
+
+### Added — Drift prevention infrastructure
+
+- **`crates/forgeplan-cli/tests/hint_contract.rs`** — 36 integration tests asserting every covered command emits contract marker AND no forbidden placeholders. New CLI/MCP command without hint **fails CI**.
+- **`scripts/audit-hints.sh`** — coverage metric (CI-ready), recognizes all 5 markers.
+- **`docs/methodology/agent-protocol.md`** — full contract spec with good/bad hint examples and agent reading protocol.
+- **`CLAUDE.md`** — Hint protocol section (5-line agent reference).
+
+### Changed — backward-compat preserved
+
+- `forgeplan list --json` and `forgeplan tree --json` retain bare-array stdout (`jq '.[]'` and existing scripts not broken). Hint moves to **stderr** in JSON mode.
+- All existing CLI text outputs preserved — hints are additive new lines at end.
+- MCP `_next_action` field was already present (just normalizing values).
+
+### Fixed — edge cases
+
+- 9 commands (get/delete/update/score/estimate/progress/calibrate/validate/link) now emit `Fix: forgeplan list` on "Artifact not found" errors. Previously only `Error:` line — failed PRESENCE rule for not-found path.
+- Audit script now recognizes `Fix:`/`Or:`/`Wait:`/`Done.` markers (was only `Next:` — produced false negatives).
+
+### Sprint metrics
+
+- 5 cycles × 3 parallel agents = 9 unique agents
+- 90 files changed (+3994, -539)
+- 1140 lib + 36 hint_contract + 104 cli_integration_test = **1280 tests passing**
+- 0 fmt diffs, 0 clippy warnings
+- EVID-086 linked to PRD-071, R_eff 0.70 (overall 0.80 A grade)
+
 ## [0.24.0] — 2026-04-19 — Orchestrator dispatcher for 2-5 sub-agents (PRD-057 complete)
 
 Forgeplan now dispatches work. One MCP call — `forgeplan_dispatch

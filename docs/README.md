@@ -36,6 +36,7 @@ Full methodology reference. Canonical source for humans learning to use Forgepla
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Full learning path (course format) |
 | [GLOSSARY.md](methodology/GLOSSARY.md) | 31 terms + lifecycle reference table |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint base verification, audit incidents, process improvements |
+| [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 markers (Next/Or/Wait/Done/Fix), good/bad examples, agent reading protocol |
 
 ## Operations
 
