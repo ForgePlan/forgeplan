@@ -449,3 +449,138 @@ steps:
         .expect("s1 reported");
     assert_eq!(s1["status"].as_str(), Some("skipped"));
 }
+
+// =====================================================================
+// BUG-1 (Phase 6 real-world testing): marketplace discovery root.
+//
+// Before the fix, `playbook show <name>` only searched
+// `<.forgeplan>/playbooks/` and `~/.claude/plugins/*/playbooks/` — packs
+// shipped at `<workspace_root>/marketplace/playbooks/` (e.g. cloned
+// forgeplan repo) were unreachable, so even canonical playbooks like
+// `greenfield-kickoff` produced "no playbook named …" errors.
+// =====================================================================
+
+/// Drop a playbook YAML into `<tmp>/marketplace/playbooks/`. Mirrors the
+/// repo-root layout so the discovery scanner picks it up via the new
+/// `<workspace>/marketplace/playbooks/` root.
+fn write_marketplace_playbook(tmp: &TempDir, file_stem: &str, yaml: &str) -> std::path::PathBuf {
+    let dir = tmp.path().join("marketplace").join("playbooks");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(format!("{file_stem}.yaml"));
+    std::fs::write(&p, yaml).unwrap();
+    p
+}
+
+#[test]
+fn playbook_show_finds_marketplace_playbook() {
+    let tmp = init_workspace();
+    write_marketplace_playbook(&tmp, "mkt-demo", &good_playbook_yaml("mkt-demo"));
+
+    forgeplan()
+        .args(["playbook", "show", "mkt-demo"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Playbook: mkt-demo"))
+        .stdout(predicate::str::contains("only-step"));
+}
+
+#[test]
+fn playbook_list_includes_marketplace_playbooks() {
+    let tmp = init_workspace();
+    write_marketplace_playbook(&tmp, "mkt-pb", &good_playbook_yaml("mkt-pb"));
+    // Also add a workspace-local one to confirm both roots are visible.
+    write_workspace_playbook(&tmp, "ws-pb.yaml", &good_playbook_yaml("ws-pb"));
+
+    let out = forgeplan()
+        .args(["playbook", "list", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let names: Vec<&str> = v["playbooks"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"mkt-pb"),
+        "marketplace playbook missing: {names:?}"
+    );
+    assert!(
+        names.contains(&"ws-pb"),
+        "workspace playbook missing: {names:?}"
+    );
+}
+
+// =====================================================================
+// BUG-4 (Phase 6 real-world testing): exit codes on error paths.
+// =====================================================================
+
+#[test]
+fn playbook_run_failed_step_exits_non_zero() {
+    // Phase 6 BUG-4: previously a playbook whose steps reported `Failed`
+    // still made the CLI exit 0, so CI pipelines greenlit broken
+    // playbooks. This test wires a deliberately-failing forgeplan_core
+    // call (validate without an `id`) and asserts the exit code is
+    // non-zero AND the report still surfaces the failure.
+    let tmp = init_workspace();
+    let yaml = r#"
+schema_version: "1.0"
+name: failing-pb
+title: Always-fails playbook
+steps:
+  - id: bad-validate
+    delegate_to:
+      type: forgeplan_core
+      target: validate
+"#;
+    write_workspace_playbook(&tmp, "failing.yaml", yaml);
+
+    let assertion = forgeplan()
+        .args(["playbook", "run", "failing-pb", "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+    let out = assertion.get_output();
+    let code = out.status.code().unwrap_or(-1);
+    assert_eq!(code, 1, "expected exit 1 for failed step, got {code}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[FAIL]") || stdout.contains("failed"),
+        "report should still surface failure: {stdout}"
+    );
+}
+
+#[test]
+fn playbook_run_failed_step_json_exits_non_zero() {
+    let tmp = init_workspace();
+    let yaml = r#"
+schema_version: "1.0"
+name: json-fail-pb
+title: JSON failing playbook
+steps:
+  - id: bad
+    delegate_to:
+      type: forgeplan_core
+      target: validate
+"#;
+    write_workspace_playbook(&tmp, "fail.yaml", yaml);
+
+    let out = forgeplan()
+        .args(["playbook", "run", "json-fail-pb", "--yes", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code().unwrap_or(-1),
+        1,
+        "expected exit 1 in JSON mode too, stdout={}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // Report body must still be parseable JSON so callers can introspect.
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json body");
+    assert_eq!(v["report"]["failed"].as_u64().unwrap_or(0), 1);
+}

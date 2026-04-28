@@ -251,6 +251,14 @@ pub async fn run(
     // ── 7. Emit report ─────────────────────────────────────────────────────
     let next_action = primary_next_action(&written);
 
+    // BUG-4 (Phase 6 real-world testing): the previous code happily emitted
+    // a "Done." line and returned `Ok(())` even when some drafts could not
+    // be written (LanceDB conflicts, projection failures) or the engine
+    // produced rule-application errors. Capture those before the exit
+    // decision so the JSON / text report is still complete.
+    let had_write_errors = !write_errors.is_empty();
+    let had_apply_errors = !report.errors.is_empty();
+
     if json {
         let payload = json!({
             "drafts": report.drafts.iter().map(draft_to_json).collect::<Vec<_>>(),
@@ -273,6 +281,12 @@ pub async fn run(
         }
     }
 
+    // Exit non-zero when the run produced visible errors. Idempotent skips
+    // (`skipped_existing`) and engine-side `report.skipped` are *not*
+    // failures — they're routine outcomes for a re-run.
+    if had_write_errors || had_apply_errors {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
