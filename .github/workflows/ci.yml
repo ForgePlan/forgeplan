@@ -64,5 +64,20 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo test
-        run: cargo test --workspace
+      - name: Install cargo-nextest
+        # Robust binary install — falls back to cargo install on cache miss.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest run
+        # Parallel test runner — typically ~2x faster than `cargo test` on
+        # workspaces with many tests (we have 1400+). Better failure
+        # isolation: each test runs in its own process.
+        run: cargo nextest run --workspace --all-targets
+
+      - name: cargo test (doc-tests)
+        # nextest does not run doc-tests yet
+        # (https://github.com/nextest-rs/nextest/issues/16). Run separately
+        # to maintain coverage parity with the previous workflow.
+        run: cargo test --workspace --doc
