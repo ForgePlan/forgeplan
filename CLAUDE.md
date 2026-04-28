@@ -14,6 +14,9 @@ Instructions for Claude Code when working in this repository.
 5. **DO NOT create a PR before `Code → Audit → Fix → Test → Fmt → Lint → Verify`**. **Verify** означает: unit tests + **РЕАЛЬНЫЙ E2E каждой затронутой surface** (не один tool из 45 — все затронутые). Dogfood with actual user tooling (brew binary, real client). Silent failures (PROB-035, PROB-039) все от того что протестировали только happy path.
 6. **DO NOT leave PRD stubs** — `forgeplan new prd` → immediately fill in the MUST sections.
 7. **DO NOT activate an artifact without code and evidence** — R_eff must be > 0. **EvidencePack body MUST contain** `verdict:`, `congruence_level:`, `evidence_type:` — без этих structured fields parser тихо ставит CL0 (silent failure → R_eff = 0.1).
+8. **DO NOT call `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` directly from `commands/*.rs` или `server.rs`** — нарушает ADR-003 (markdown — source of truth). Используй `forgeplan_core::projection::sync_file_to_store` + `render_projection` flow (см. canonical `crates/forgeplan-cli/src/commands/deprecate.rs`). Regression guard: `tests/adr_003_invariant.rs` блокирует рост counts. Migration tracker: PROB-048 + PRD-073.
+9. **DO NOT skip the post-release sync step** — после каждого `release/v* → main` PR merge обязательно открывай sync-PR `chore/sync-main-to-dev-after-vX.Y.Z` (branch protection blocks direct push to dev). Без этого dev forever lags `Cargo.toml` version, и следующий release создаст merge conflicts. См. PR #223 как канонический пример flow.
+10. **DO NOT ignore Dependabot alerts at release time** — перед каждым `release/v* → main` PR проверь `gh api repos/.../dependabot/alerts` и в release notes пометь: addressed / scheduled / accepted-with-justification. Накопление alerts — отдельный architectural debt (PROB-XXX TBD при первом triage).
 
 Everything else in this file is guidelines, not red lines.
 
