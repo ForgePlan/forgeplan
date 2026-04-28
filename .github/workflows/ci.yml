@@ -12,6 +12,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  # sccache via GHA cache backend — free, scoped per-branch, ~50-70% speedup
+  # on rebuilds of incremental dep changes. Falls back to no-op if backend
+  # is unavailable, so workflow stays green even on cold cache.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   check:
@@ -32,6 +37,9 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
@@ -43,6 +51,10 @@ jobs:
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
   test:
     name: Tests
@@ -61,8 +73,25 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo test
-        run: cargo test --workspace
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest run
+        run: cargo nextest run --workspace --all-targets
+
+      - name: cargo test (doc-tests)
+        # nextest does not run doc-tests yet (see nextest-rs/nextest#16).
+        # Run separately to maintain coverage parity.
+        run: cargo test --workspace --doc
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
