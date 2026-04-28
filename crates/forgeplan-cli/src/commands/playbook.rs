@@ -9,11 +9,11 @@
 //! Playbooks are searched in this order (first hit wins for `show`/`run`):
 //!
 //! 1. `<workspace>/.forgeplan/playbooks/*.yaml`
-//! 2. `~/.claude/plugins/*/playbooks/*.yaml`
-//!
-//! Built-in / packaged playbooks are not yet shipped — this is intentional
-//! and produces an empty list on a fresh install (Wave 4 will seed bundled
-//! playbooks).
+//! 2. `<workspace>/marketplace/playbooks/*.yaml` — playbooks shipped
+//!    alongside the workspace (e.g. cloned forgeplan repo). This is how
+//!    canonical packs (`greenfield-kickoff`, `brownfield-code`,
+//!    `brownfield-docs`) are picked up out of the box.
+//! 3. `~/.claude/plugins/*/playbooks/*.yaml`
 //!
 //! # Wave 4 dispatcher wiring
 //!
@@ -151,7 +151,10 @@ pub async fn run_list(json: bool) -> anyhow::Result<()> {
 
     if entries.is_empty() {
         println!("No playbooks found.");
-        println!("  Searched: .forgeplan/playbooks/*.yaml, ~/.claude/plugins/*/playbooks/*.yaml");
+        println!(
+            "  Searched: .forgeplan/playbooks/*.yaml, marketplace/playbooks/*.yaml, \
+             ~/.claude/plugins/*/playbooks/*.yaml"
+        );
         println!();
         println!("Done.");
         return Ok(());
@@ -456,10 +459,20 @@ pub async fn run_execute(
             "_next_action": next_action_after_run(&pb, &report),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
-        return Ok(());
+    } else {
+        print_run_text(&pb, &report);
     }
 
-    print_run_text(&pb, &report);
+    // BUG-4 (Phase 6 real-world testing): the previous CLI returned `Ok(())`
+    // even when one or more steps had `Failed` status, so CI pipelines
+    // running `forgeplan playbook run … --yes` thought broken playbooks were
+    // green. Surface a non-zero exit when the executor reports any failed
+    // step. Skipped-only runs are still considered success — skips are
+    // routine (predecessor failed → on_error policy → skip cascade) and
+    // are already reflected in the report body.
+    if report.failed > 0 {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -522,6 +535,14 @@ fn discover_playbooks() -> Vec<DiscoveredPlaybook> {
 
 /// Search roots for playbook discovery.
 ///
+/// Order:
+/// 1. `<.forgeplan>/playbooks/*.yaml` — workspace-local user playbooks
+/// 2. `<workspace_root>/marketplace/playbooks/*.yaml` — canonical packs
+///    shipped alongside the workspace (e.g. the forgeplan repo's own
+///    `marketplace/` directory). Picked up automatically when the user
+///    clones the repo and runs `forgeplan` from inside it.
+/// 3. `~/.claude/plugins/*/playbooks/*.yaml` — Claude plugin caches
+///
 /// Tests set `FORGEPLAN_DISABLE_PLUGIN_DISCOVERY=1` to skip the user-home
 /// plugin scan so the host machine's installed packs do not leak into
 /// integration assertions.
@@ -530,15 +551,27 @@ fn playbook_search_paths() -> Vec<PathBuf> {
 
     // 1. Workspace .forgeplan/playbooks/
     //
-    // `workspace::find_workspace` returns the `.forgeplan/` directory itself,
-    // so we join `playbooks` directly (not `.forgeplan/playbooks`).
+    // `workspace::find_workspace` returns the `.forgeplan/` directory itself
+    // (e.g. `<root>/.forgeplan`); the workspace root used for sibling
+    // discovery is its parent.
     if let Ok(cwd) = std::env::current_dir()
-        && let Some(ws) = workspace::find_workspace(&cwd)
+        && let Some(fp_dir) = workspace::find_workspace(&cwd)
     {
-        paths.push(ws.join("playbooks"));
+        paths.push(fp_dir.join("playbooks"));
+
+        // 2. Marketplace playbooks shipped alongside the workspace.
+        //    `<workspace_root>/marketplace/playbooks/*.yaml` — populated
+        //    when the user runs forgeplan from a clone of the repo (or any
+        //    project that vendors a `marketplace/` sibling to `.forgeplan/`).
+        //    This is BUG-1 (Phase 6 real-world testing): without this root,
+        //    `playbook show greenfield-kickoff` failed on a fresh clone
+        //    because the canonical packs were unreachable.
+        if let Some(root) = fp_dir.parent() {
+            paths.push(root.join("marketplace").join("playbooks"));
+        }
     }
 
-    // 2. Claude plugin packs: ~/.claude/plugins/*/playbooks/
+    // 3. Claude plugin packs: ~/.claude/plugins/*/playbooks/
     let skip_plugins = std::env::var_os("FORGEPLAN_DISABLE_PLUGIN_DISCOVERY")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
