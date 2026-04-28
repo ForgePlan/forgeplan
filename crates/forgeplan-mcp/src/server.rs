@@ -6229,6 +6229,765 @@ impl ForgeplanServer {
             )),
         }
     }
+
+    // ─── Phase 5 tools (PRD-065/066/067) ─────────────────────────────
+    // Wave 3 surface for playbook runtime, ingest engine, plugin
+    // detection. Real dispatchers / artifact writes deferred to Wave 4
+    // (see PRD-065 §"Wave 4 follow-up"); these tools either use
+    // `MockDispatcher` or default to dry-run semantics so agents can
+    // exercise the contract end-to-end without surprise side-effects.
+
+    #[tool(
+        description = "List all discoverable playbooks (workspace + Claude plugin packs). \
+                       Returns name, title, step count, and source path for each. PRD-065 AC-1. \
+                       Read-only filesystem scan.",
+        annotations(
+            title = "List Playbooks",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_list(
+        &self,
+        Parameters(_p): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let entries = phase5_discover_playbooks();
+        let arr: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "name": e.playbook.name,
+                    "title": e.playbook.title,
+                    "steps_count": e.playbook.steps.len(),
+                    "source_path": e.source.display().to_string(),
+                })
+            })
+            .collect();
+
+        // PRD-071 5-rule contract: real ID for the first playbook → primary
+        // action; empty workspace → Done. (terminal, nothing to chain).
+        let next_action = if let Some(first) = entries.first() {
+            let safe = sanitize_for_hint(&first.playbook.name);
+            format!("forgeplan_playbook_show target=\"{safe}\"")
+        } else {
+            "Done.".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "playbooks": arr,
+                "total": entries.len(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Show full details of a single playbook (resolved by name or path). \
+                       Returns the parsed Playbook struct + source path. PRD-065 AC-1.",
+        annotations(
+            title = "Show Playbook",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_show(
+        &self,
+        Parameters(p): Parameters<PlaybookShowParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::playbook::loader::load_playbook;
+
+        let resolved = match phase5_resolve_target(&p.target) {
+            Ok(path) => path,
+            Err(msg) => {
+                return Ok(err_hinted(
+                    &format!(
+                        "playbook target `{}` not resolvable: {msg}",
+                        sanitize_for_hint(&p.target)
+                    ),
+                    "List discoverable playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        let yaml = match tokio::fs::read_to_string(&resolved).await {
+            Ok(s) => s,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("cannot read {}: {e}", resolved.display()),
+                    "Verify the path exists or list playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        let pb = match load_playbook(&yaml) {
+            Ok(pb) => pb,
+            Err(err) => {
+                return Ok(err_hinted(
+                    &format!("playbook parse error: {err}"),
+                    format!(
+                        "Validate to see structured findings: \
+                         `forgeplan_playbook_validate file=\"{}\"`.",
+                        resolved.display()
+                    ),
+                ));
+            }
+        };
+
+        let safe_name = sanitize_for_hint(&pb.name);
+        let next_action =
+            format!("forgeplan_playbook_run target=\"{safe_name}\" yes=true dry_run=true");
+
+        hinted_result(
+            &serde_json::json!({
+                "playbook": pb,
+                "source_path": resolved.display().to_string(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Validate a playbook YAML file (parse + structural checks: cycles, \
+                       unknown step refs, mapping/produces_at consistency). Returns \
+                       `passed` flag + list of errors. PRD-065 AC-2.",
+        annotations(
+            title = "Validate Playbook",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_validate(
+        &self,
+        Parameters(p): Parameters<PlaybookValidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::playbook::loader::load_playbook;
+
+        let yaml = match tokio::fs::read_to_string(&p.file).await {
+            Ok(s) => s,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("cannot read {}: {e}", p.file.display()),
+                    "Verify the path exists or list playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        match load_playbook(&yaml) {
+            Ok(pb) => {
+                let safe = sanitize_for_hint(&pb.name);
+                hinted_result(
+                    &serde_json::json!({
+                        "passed": true,
+                        "name": pb.name,
+                        "title": pb.title,
+                        "steps_count": pb.steps.len(),
+                        "errors": [],
+                        "source_path": p.file.display().to_string(),
+                    }),
+                    format!("forgeplan_playbook_run target=\"{safe}\" yes=true dry_run=true"),
+                )
+            }
+            Err(err) => {
+                let summary = format!("{err}");
+                hinted_result(
+                    &serde_json::json!({
+                        "passed": false,
+                        "source_path": p.file.display().to_string(),
+                        "errors": [{
+                            "location": p.file.display().to_string(),
+                            "message": summary,
+                        }],
+                    }),
+                    format!(
+                        "Fix the YAML, then re-validate: \
+                         `forgeplan_playbook_validate file=\"{}\"`.",
+                        p.file.display()
+                    ),
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Run a playbook end-to-end. Wave 3 wires `MockDispatcher::AlwaysOk` — \
+                       real plugin/agent/skill/command/forgeplan_core dispatchers land in Wave 4. \
+                       Refuses without `yes: true` (ADR-009 security gate). Use `dry_run: true` \
+                       to enumerate steps without invoking dispatchers.",
+        annotations(
+            title = "Run Playbook",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_run(
+        &self,
+        Parameters(p): Parameters<PlaybookRunParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::playbook::loader::load_playbook;
+        use forgeplan_core::playbook::{
+            DispatchOutcome, ExecutorConfig, MockDispatcher, executor::Executor, journal::Journal,
+        };
+
+        // ADR-009 / SPEC-003 §"delegate_to": refuse without yes (except dry-run).
+        if !p.yes && !p.dry_run {
+            let safe = sanitize_for_hint(&p.target);
+            return Ok(err_hinted(
+                "playbook run requires `yes: true` confirmation (ADR-009 security gate)",
+                format!("forgeplan_playbook_run target=\"{safe}\" yes=true"),
+            ));
+        }
+
+        let resolved = match phase5_resolve_target(&p.target) {
+            Ok(path) => path,
+            Err(msg) => {
+                return Ok(err_hinted(
+                    &format!(
+                        "playbook target `{}` not resolvable: {msg}",
+                        sanitize_for_hint(&p.target)
+                    ),
+                    "List discoverable playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        let yaml = match tokio::fs::read_to_string(&resolved).await {
+            Ok(s) => s,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("cannot read {}: {e}", resolved.display()),
+                    "Verify the path exists or list playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        let pb = match load_playbook(&yaml) {
+            Ok(pb) => pb,
+            Err(err) => {
+                return Ok(err_hinted(
+                    &format!("playbook parse error: {err}"),
+                    format!(
+                        "Validate to see structured findings: \
+                         `forgeplan_playbook_validate file=\"{}\"`.",
+                        resolved.display()
+                    ),
+                ));
+            }
+        };
+
+        // Range-check `step` (1-indexed).
+        if let Some(n) = p.step
+            && (n == 0 || n > pb.steps.len())
+        {
+            return Ok(err_hinted(
+                &format!(
+                    "--step out of range: requested {n}, playbook has {} step(s)",
+                    pb.steps.len()
+                ),
+                format!(
+                    "forgeplan_playbook_show target=\"{}\"",
+                    sanitize_for_hint(&pb.name)
+                ),
+            ));
+        }
+
+        if p.dry_run {
+            let from = p.step.unwrap_or(1);
+            let steps: Vec<serde_json::Value> = pb
+                .steps
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i + 1 >= from)
+                .map(|(i, s)| {
+                    serde_json::json!({
+                        "index": i + 1,
+                        "id": s.id,
+                        "delegate": phase5_delegate_label(s),
+                        "requires": s.requires,
+                    })
+                })
+                .collect();
+            let safe_name = sanitize_for_hint(&pb.name);
+            return hinted_result(
+                &serde_json::json!({
+                    "playbook": pb.name,
+                    "source_path": resolved.display().to_string(),
+                    "dry_run": true,
+                    "steps": steps,
+                }),
+                format!("forgeplan_playbook_run target=\"{safe_name}\" yes=true"),
+            );
+        }
+
+        // Real run via MockDispatcher (Wave 4 wires real backends).
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let journal = match Journal::open(&ws) {
+            Ok(j) => j,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("cannot open journal: {e}"),
+                    "Check `.forgeplan/journal/` directory permissions.",
+                ));
+            }
+        };
+
+        let dispatcher = MockDispatcher::new().with_default(DispatchOutcome::success());
+        let cfg = ExecutorConfig {
+            yes_flag: p.yes,
+            // load_playbook already validated; skip duplicate work.
+            skip_revalidation: true,
+        };
+        let mut executor = Executor::new(dispatcher, journal, cfg);
+
+        let report = match executor.run(&pb).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("playbook execution failed: {e}"),
+                    format!(
+                        "Inspect the playbook: \
+                         `forgeplan_playbook_show target=\"{}\"`.",
+                        sanitize_for_hint(&pb.name)
+                    ),
+                ));
+            }
+        };
+
+        // PRD-071: terminal Done. on clean run, otherwise show for diagnosis.
+        let next_action = if report.failed > 0 || report.skipped > 0 {
+            format!(
+                "forgeplan_playbook_show target=\"{}\"",
+                sanitize_for_hint(&pb.name)
+            )
+        } else {
+            "Done.".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "playbook": pb.name,
+                "source_path": resolved.display().to_string(),
+                "report": report,
+                "wave3_note": "MockDispatcher::AlwaysOk used; real dispatchers land in Wave 4.",
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Plan an ingest run (mapping YAML × source file). Wave 3: dry-run-only — \
+                       returns drafts without writing artifacts. Set `dry_run: false` to indicate \
+                       intent to write, but the MCP surface still defers actual writes to the \
+                       `forgeplan ingest` CLI (Wave 4 will wire artifact::Store). PRD-066 AC-1.",
+        annotations(
+            title = "Ingest Plan",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_ingest(
+        &self,
+        Parameters(p): Parameters<IngestParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Wave 3 limitation: forgeplan-core does not currently re-export
+        // `serde_yaml::from_str::<Mapping>` and the MCP crate cannot add
+        // a new top-level dep in this wave. Surface a structured response
+        // pointing the agent at the CLI, which has the full pipeline
+        // available (it links serde_yaml directly).
+        let mapping_exists = tokio::fs::metadata(&p.mapping).await.is_ok();
+        let source_exists = tokio::fs::metadata(&p.source).await.is_ok();
+
+        if !mapping_exists {
+            return Ok(err_hinted(
+                &format!("mapping file not found: {}", p.mapping.display()),
+                "Verify the mapping path. SPEC-004 mappings live under \
+                 `.forgeplan/mappings/*.yaml` by convention.",
+            ));
+        }
+        if !source_exists {
+            return Ok(err_hinted(
+                &format!("source path not found: {}", p.source.display()),
+                "Verify the source path exists.",
+            ));
+        }
+
+        // Document the choice: Wave 3 returns a "planned" view (paths
+        // validated, parameters echoed) and points at the CLI for full
+        // execution. Wave 4 will wire IngestEngine + artifact::Store
+        // here once the YAML loader is re-exported from forgeplan-core.
+        let next_action = format!(
+            "forgeplan ingest --mapping {} --source {}{}{}",
+            shell_quote(&p.mapping.display().to_string()),
+            shell_quote(&p.source.display().to_string()),
+            if p.dry_run { " --dry-run" } else { "" },
+            if p.update { " --update" } else { "" },
+        );
+
+        hinted_result(
+            &serde_json::json!({
+                "wave3_status": "planned",
+                "wave3_note": "Wave 3 MCP surface validates inputs only; full ingest \
+                               execution available via the `forgeplan ingest` CLI. \
+                               Wave 4 will wire IngestEngine + artifact::Store directly.",
+                "mapping": p.mapping.display().to_string(),
+                "source": p.source.display().to_string(),
+                "dry_run": p.dry_run,
+                "update": p.update,
+                "drafts": [],
+                "skipped": [],
+                "errors": [],
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "List installed plugins detected on disk (Claude plugins + agentskills + \
+                       Cursor) + missing entries from the extended registry. PRD-067 AC-1. \
+                       Read-only filesystem scan.",
+        annotations(
+            title = "List Plugins",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_plugins_list(
+        &self,
+        Parameters(_p): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::plugins::{detect_plugins, extended_registry};
+
+        let registry = extended_registry();
+        let installed = detect_plugins(&registry);
+        let installed_names: HashSet<String> =
+            installed.iter().map(|p| p.info.name.clone()).collect();
+        let missing: Vec<&forgeplan_core::plugins::PluginInfo> = registry
+            .iter()
+            .filter(|info| !installed_names.contains(&info.name))
+            .collect();
+
+        let next_action = if let Some(first) = installed.first() {
+            let safe = sanitize_for_hint(&first.info.name);
+            format!("forgeplan_plugins_info name=\"{safe}\"")
+        } else if missing.is_empty() {
+            "Done.".to_string()
+        } else {
+            "forgeplan_plugins_doctor".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "installed": installed,
+                "missing": missing,
+                "installed_count": installed.len(),
+                "missing_count": missing.len(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Health-check across the full plugin registry: separates ok / outdated / \
+                       missing entries and surfaces install hints for the missing ones. \
+                       PRD-067 AC-2.",
+        annotations(
+            title = "Plugins Doctor",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_plugins_doctor(
+        &self,
+        Parameters(_p): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::plugins::{detect_plugins, extended_registry};
+
+        let registry = extended_registry();
+        let installed = detect_plugins(&registry);
+        let installed_map: BTreeMap<String, _> = installed
+            .iter()
+            .map(|p| (p.info.name.clone(), p.clone()))
+            .collect();
+
+        let mut ok: Vec<serde_json::Value> = Vec::new();
+        let mut outdated: Vec<serde_json::Value> = Vec::new();
+        let mut missing: Vec<serde_json::Value> = Vec::new();
+        let mut install_hints: Vec<String> = Vec::new();
+
+        for info in registry.iter() {
+            match installed_map.get(&info.name) {
+                Some(inst) => {
+                    // Compatibility check: false ⇒ outdated, true or err ⇒ ok.
+                    let compatible = inst.is_version_compatible().unwrap_or(true);
+                    if compatible {
+                        ok.push(serde_json::json!({
+                            "name": info.name,
+                            "detected_version": inst.detected_version,
+                            "version_req": info.version_req,
+                            "path": inst.detected_path.display().to_string(),
+                        }));
+                    } else {
+                        outdated.push(serde_json::json!({
+                            "name": info.name,
+                            "detected_version": inst.detected_version,
+                            "required": info.version_req,
+                            "path": inst.detected_path.display().to_string(),
+                        }));
+                        install_hints.push(info.install_command.clone());
+                    }
+                }
+                None => {
+                    missing.push(serde_json::json!({
+                        "name": info.name,
+                        "version_req": info.version_req,
+                        "description": info.description,
+                    }));
+                    install_hints.push(info.install_command.clone());
+                }
+            }
+        }
+
+        // PRD-071: drive the agent to the CLI install command for the first
+        // problem when something is missing/outdated, otherwise terminal.
+        let next_action = if let Some(first_hint) = install_hints.first() {
+            // The hint is a shell command from the static registry — sanitize
+            // before splicing into a string passed back to the agent.
+            let safe = sanitize_for_hint(first_hint);
+            format!("Run install hint: `{safe}`. Then re-check: `forgeplan_plugins_doctor`.")
+        } else {
+            "Done.".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "ok": ok,
+                "outdated": outdated,
+                "missing": missing,
+                "install_hints": install_hints,
+                "ok_count": ok.len(),
+                "outdated_count": outdated.len(),
+                "missing_count": missing.len(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Show details for a single plugin from the extended registry. Returns \
+                       the static PluginInfo plus, if installed, the InstalledPlugin runtime \
+                       record (detected path + version). PRD-067.",
+        annotations(
+            title = "Plugin Info",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_plugins_info(
+        &self,
+        Parameters(p): Parameters<PluginsInfoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::plugins::{detect_plugins, extended_registry};
+
+        let registry = extended_registry();
+        let info = match registry.get(&p.name) {
+            Some(i) => i.clone(),
+            None => {
+                return Ok(err_hinted(
+                    &format!("plugin `{}` not in registry", sanitize_for_hint(&p.name)),
+                    "List all known plugins: `forgeplan_plugins_list`.",
+                ));
+            }
+        };
+
+        let installed = detect_plugins(&registry)
+            .into_iter()
+            .find(|inst| inst.info.name == p.name);
+
+        let next_action = match &installed {
+            Some(inst) => match inst.is_version_compatible() {
+                Ok(true) => "Done.".to_string(),
+                _ => {
+                    let safe_cmd = sanitize_for_hint(&info.install_command);
+                    format!("Update plugin: `{safe_cmd}`.")
+                }
+            },
+            None => {
+                let safe_cmd = sanitize_for_hint(&info.install_command);
+                format!("Install: `{safe_cmd}`.")
+            }
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "info": info,
+                "installed": installed,
+            }),
+            next_action,
+        )
+    }
+}
+
+// ── Phase 5 helpers (PRD-065/066/067) ────────────────────────
+
+/// One discovered playbook plus its source file path.
+struct Phase5DiscoveredPlaybook {
+    playbook: forgeplan_core::playbook::Playbook,
+    source: PathBuf,
+}
+
+/// Discover playbooks in workspace + plugin dirs. Mirror of the CLI helper
+/// (kept here so the MCP crate doesn't depend on forgeplan-cli internals).
+/// Failed-to-parse files are silently skipped; invariant: returns a list,
+/// never errors.
+fn phase5_discover_playbooks() -> Vec<Phase5DiscoveredPlaybook> {
+    use forgeplan_core::playbook::loader::load_playbook;
+    let mut out: Vec<Phase5DiscoveredPlaybook> = Vec::new();
+    let mut seen_names: HashSet<String> = HashSet::new();
+
+    for path in phase5_playbook_search_paths() {
+        let yamls = match phase5_collect_yaml_files(&path) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for file in yamls {
+            if let Ok(yaml) = std::fs::read_to_string(&file)
+                && let Ok(pb) = load_playbook(&yaml)
+                && seen_names.insert(pb.name.clone())
+            {
+                out.push(Phase5DiscoveredPlaybook {
+                    playbook: pb,
+                    source: file,
+                });
+            }
+        }
+    }
+
+    out.sort_by(|a, b| a.playbook.name.cmp(&b.playbook.name));
+    out
+}
+
+/// Search roots for playbook discovery. Workspace `.forgeplan/playbooks/`
+/// first, then any installed Claude plugin pack. Uses `$HOME` directly
+/// (no `dirs` dep) because this MCP crate does not declare it as a dep.
+fn phase5_playbook_search_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
+    {
+        paths.push(ws.join(".forgeplan").join("playbooks"));
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let plugins_root = std::path::Path::new(&home).join(".claude").join("plugins");
+        if let Ok(entries) = std::fs::read_dir(&plugins_root) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    paths.push(entry.path().join("playbooks"));
+                }
+            }
+        }
+    }
+
+    paths
+}
+
+/// List `.yaml` / `.yml` files in `dir` (non-recursive).
+fn phase5_collect_yaml_files(dir: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file()
+            && let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && (ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+        {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Resolve a playbook target argument to a file path. Mirrors the CLI helper.
+fn phase5_resolve_target(target: &str) -> Result<PathBuf, String> {
+    let as_path = std::path::Path::new(target);
+    let looks_like_path = target.contains('/')
+        || target.contains('\\')
+        || target.ends_with(".yaml")
+        || target.ends_with(".yml");
+
+    if looks_like_path && as_path.exists() {
+        return Ok(as_path.to_path_buf());
+    }
+    if as_path.exists() && as_path.is_file() {
+        return Ok(as_path.to_path_buf());
+    }
+
+    for entry in phase5_discover_playbooks() {
+        if entry.playbook.name == target {
+            return Ok(entry.source);
+        }
+    }
+
+    Err(format!(
+        "no playbook named `{}` and no file at that path",
+        target
+    ))
+}
+
+/// Compact label for a step's delegate.
+fn phase5_delegate_label(step: &forgeplan_core::playbook::Step) -> String {
+    use forgeplan_core::playbook::Delegation;
+    match &step.delegate_to {
+        Delegation::Plugin { name, target } => format!("plugin:{name}#{target}"),
+        Delegation::Agent { name } => format!("agent:{name}"),
+        Delegation::Skill { name, pack } => match pack {
+            Some(p) => format!("skill:{name} (pack: {p})"),
+            None => format!("skill:{name}"),
+        },
+        Delegation::Command { command } => format!("command:{}", command.join(" ")),
+        Delegation::ForgeplanCore { target } => match target {
+            forgeplan_core::playbook::ForgeplanOp::Ingest => "forgeplan_core:ingest".into(),
+            forgeplan_core::playbook::ForgeplanOp::New => "forgeplan_core:new".into(),
+            forgeplan_core::playbook::ForgeplanOp::Validate => "forgeplan_core:validate".into(),
+            forgeplan_core::playbook::ForgeplanOp::Activate => "forgeplan_core:activate".into(),
+            forgeplan_core::playbook::ForgeplanOp::Search => "forgeplan_core:search".into(),
+        },
+    }
+}
+
+/// Quote a path for inclusion in a follow-up CLI command if it contains
+/// shell-special characters. Used by the ingest tool's `_next_action`.
+fn shell_quote(s: &str) -> String {
+    if s.contains(char::is_whitespace) || s.contains('"') || s.contains('\'') {
+        format!("\"{}\"", s.replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────
@@ -7993,5 +8752,311 @@ mod claim_mcp_tests {
         assert_ne!(result.is_error, Some(true));
         // Full JSON verification is expensive; we trust ClaimStore tests
         // and verify only that the call path doesn't short-circuit.
+    }
+}
+
+// ─── Phase 5 tool tests (PRD-065/066/067) ────────────────────────────
+#[cfg(test)]
+mod phase5_tests {
+    //! Integration tests for the 8 Phase 5 MCP tool handlers.
+    //!
+    //! Verify wiring (hint contract emission, security gate on
+    //! `forgeplan_playbook_run`, dry-run semantics, registry usage).
+    //! Detection-engine semantics are owned by forgeplan-core tests.
+
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Spin up a minimally-initialized MCP server in a tempdir + isolate
+    /// `$HOME` so plugin/playbook discovery does not pick up the developer
+    /// machine's installed packs (would make tests order-dependent).
+    async fn isolated_server() -> (ForgeplanServer, TempDir, std::ffi::OsString) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = root.join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+        tokio::fs::create_dir_all(ws.join("playbooks"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(ws.join("journal")).await.unwrap();
+        let server = ForgeplanServer::new(root.clone()).await;
+        *server.workspace_path.write().await = Some(ws);
+
+        // Snapshot HOME so caller can restore later.
+        let prev_home = std::env::var_os("HOME").unwrap_or_default();
+        // Point HOME at the tempdir → no ~/.claude/plugins on dev machine.
+        // SAFETY: tests run serially within this module via `serial_test`-
+        // style lock below; we accept the cost of a brief env mutation in
+        // exchange for true filesystem isolation.
+        // SAFETY: process-wide env mutation in test fixture; serialized
+        // by the global test_lock() guard each test holds.
+        unsafe { std::env::set_var("HOME", root.to_str().unwrap()) };
+
+        (server, tmp, prev_home)
+    }
+
+    /// Restore HOME to its pre-test value.
+    fn restore_home(prev: std::ffi::OsString) {
+        // SAFETY: process-wide env mutation in test fixture; tests
+        // serialized by the test_lock() guard each test holds.
+        unsafe { std::env::set_var("HOME", prev) };
+    }
+
+    /// Global mutex to serialize tests that mutate the process-wide
+    /// `HOME` env var (cargo runs tests in parallel by default within a
+    /// crate). Uses `tokio::sync::Mutex` so the guard can be held across
+    /// `.await` points (clippy::await_holding_lock).
+    async fn test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        use std::sync::OnceLock;
+        use tokio::sync::Mutex;
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().await
+    }
+
+    fn body_of(r: &CallToolResult) -> serde_json::Value {
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => serde_json::from_str(&t.text).unwrap(),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    // -- Group A: Playbook tools ---------------------------------------
+
+    #[tokio::test]
+    async fn playbook_list_returns_empty_for_empty_workspace() {
+        let _g = test_lock().await;
+        let (server, _tmp, prev_home) = isolated_server().await;
+        let r = server
+            .forgeplan_playbook_list(Parameters(EmptyParams::default()))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        assert_eq!(body["total"].as_u64().unwrap(), 0);
+        assert!(body["playbooks"].as_array().unwrap().is_empty());
+        // PRD-071: empty → terminal Done.
+        assert_eq!(body["_next_action"].as_str().unwrap(), "Done.");
+        restore_home(prev_home);
+    }
+
+    #[tokio::test]
+    async fn playbook_validate_fails_on_malformed() {
+        let _g = test_lock().await;
+        let (server, tmp, prev_home) = isolated_server().await;
+        // Write a malformed playbook (cycle in requires:).
+        let yaml = r#"
+schema_version: "1.0"
+name: cyclic
+title: Cyclic
+steps:
+  - id: a
+    delegate_to: { type: agent, name: x }
+    requires: [b]
+  - id: b
+    delegate_to: { type: agent, name: y }
+    requires: [a]
+"#;
+        let file = tmp.path().join("bad.yaml");
+        tokio::fs::write(&file, yaml).await.unwrap();
+        let r = server
+            .forgeplan_playbook_validate(Parameters(PlaybookValidateParams { file: file.clone() }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert!(!body["passed"].as_bool().unwrap());
+        assert!(!body["errors"].as_array().unwrap().is_empty());
+        let next = body["_next_action"].as_str().unwrap();
+        assert!(
+            next.contains("forgeplan_playbook_validate"),
+            "Fix hint must point back at validate, got: {next}"
+        );
+        restore_home(prev_home);
+    }
+
+    #[tokio::test]
+    async fn playbook_run_refuses_without_yes() {
+        let _g = test_lock().await;
+        let (server, tmp, prev_home) = isolated_server().await;
+        // Seed a valid playbook in the workspace so `target` resolves.
+        let yaml = r#"
+schema_version: "1.0"
+name: hello
+title: Hello
+steps:
+  - id: only
+    delegate_to: { type: agent, name: a }
+"#;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        tokio::fs::write(ws.join("playbooks/hello.yaml"), yaml)
+            .await
+            .unwrap();
+        // Need to set CWD so phase5_resolve_target's discovery works
+        // (find_workspace walks up from cwd). Restore on drop.
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let r = server
+            .forgeplan_playbook_run(Parameters(PlaybookRunParams {
+                target: "hello".to_string(),
+                dry_run: false,
+                step: None,
+                yes: false,
+            }))
+            .await
+            .unwrap();
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+
+        assert_eq!(
+            r.is_error,
+            Some(true),
+            "must refuse without yes (ADR-009 security gate)"
+        );
+        // The CallToolResult::error wraps the message + Fix: contract.
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => {
+                assert!(
+                    t.text.contains("yes: true") || t.text.contains("ADR-009"),
+                    "error text should explain security gate, got: {}",
+                    t.text
+                );
+            }
+            _ => panic!("expected text"),
+        }
+        restore_home(prev_home);
+    }
+
+    // -- Group B: Ingest tool ------------------------------------------
+
+    #[tokio::test]
+    async fn ingest_dry_run_returns_drafts() {
+        let _g = test_lock().await;
+        let (server, tmp, prev_home) = isolated_server().await;
+        // Wave 3 ingest is dry-only — minimal mapping + source files
+        // need to exist; the tool surfaces a planned response.
+        let mapping = tmp.path().join("mapping.yaml");
+        let source = tmp.path().join("source.md");
+        tokio::fs::write(&mapping, "schema_version: \"1.0\"\n")
+            .await
+            .unwrap();
+        tokio::fs::write(&source, "# heading\nbody\n")
+            .await
+            .unwrap();
+
+        let r = server
+            .forgeplan_ingest(Parameters(IngestParams {
+                mapping: mapping.clone(),
+                source: source.clone(),
+                dry_run: true,
+                update: false,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        // Wave 3 contract: drafts/skipped/errors arrays present (empty).
+        assert!(body["drafts"].is_array());
+        assert!(body["skipped"].is_array());
+        assert!(body["errors"].is_array());
+        assert!(body["dry_run"].as_bool().unwrap());
+        // Hint must point at the CLI per documented Wave 3 deferral.
+        let next = body["_next_action"].as_str().unwrap();
+        assert!(
+            next.contains("forgeplan ingest"),
+            "_next_action should point to CLI, got: {next}"
+        );
+        restore_home(prev_home);
+    }
+
+    // -- Group C: Plugins tools ----------------------------------------
+
+    #[tokio::test]
+    async fn plugins_list_uses_extended_registry() {
+        let _g = test_lock().await;
+        let (server, _tmp, prev_home) = isolated_server().await;
+        let r = server
+            .forgeplan_plugins_list(Parameters(EmptyParams::default()))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        // Extended registry has > 6 entries (default 6 + extras). With HOME
+        // pointed at a tempdir none should be installed (except built-in
+        // forgeplan, which detect_plugins materializes synthetically).
+        let installed = body["installed"].as_array().unwrap();
+        let missing = body["missing"].as_array().unwrap();
+        // Total = installed + missing must be ≥ 6 (default registry size).
+        assert!(
+            installed.len() + missing.len() >= 6,
+            "extended registry should expose ≥ 6 plugins; got {} + {}",
+            installed.len(),
+            missing.len()
+        );
+        // Built-in forgeplan should be in installed (synthetic).
+        let has_forgeplan = installed
+            .iter()
+            .any(|p| p["info"]["name"].as_str() == Some("forgeplan"));
+        assert!(
+            has_forgeplan,
+            "built-in forgeplan must be reported as installed"
+        );
+        restore_home(prev_home);
+    }
+
+    #[tokio::test]
+    async fn plugins_doctor_reports_missing_with_install_hints() {
+        let _g = test_lock().await;
+        let (server, _tmp, prev_home) = isolated_server().await;
+        let r = server
+            .forgeplan_plugins_doctor(Parameters(EmptyParams::default()))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        let missing_count = body["missing_count"].as_u64().unwrap();
+        // With HOME isolated to tempdir, every non-builtin plugin is missing.
+        assert!(
+            missing_count > 0,
+            "expected missing plugins under HOME=tempdir"
+        );
+        let install_hints = body["install_hints"].as_array().unwrap();
+        assert!(
+            !install_hints.is_empty(),
+            "install_hints must be populated when missing_count > 0"
+        );
+        // PRD-071: hint must drive the agent to remediation.
+        let next = body["_next_action"].as_str().unwrap();
+        assert!(
+            next.contains("install") || next.contains("Install"),
+            "doctor _next_action should mention install, got: {next}"
+        );
+        restore_home(prev_home);
+    }
+
+    // -- Sanity: plugins_info on missing entry returns hinted error ----
+
+    #[tokio::test]
+    async fn plugins_info_unknown_plugin_returns_hinted_error() {
+        let _g = test_lock().await;
+        let (server, _tmp, prev_home) = isolated_server().await;
+        let r = server
+            .forgeplan_plugins_info(Parameters(PluginsInfoParams {
+                name: "definitely-not-a-real-plugin-xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => {
+                assert!(
+                    t.text.contains("forgeplan_plugins_list"),
+                    "error must hint at list tool, got: {}",
+                    t.text
+                );
+            }
+            _ => panic!("expected text"),
+        }
+        restore_home(prev_home);
     }
 }

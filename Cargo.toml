@@ -33,6 +33,11 @@ notify = "7"
 notify-debouncer-mini = "0.5"
 dotenvy = "0.15"
 fs2 = "0.4"
+schemars = "0.8"
+semver = { version = "1", features = ["serde"] }
+tera = { version = "1", default-features = false }
+walkdir = "2"
+globset = "0.4"
 
 [profile.release]
 strip = true          # strip debug symbols (-16%)

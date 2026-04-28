@@ -1,0 +1,124 @@
+# =====================================================================
+# brownfield-code.yaml — Canonical playbook: legacy code repo onboarding
+# =====================================================================
+#
+# Purpose:
+#   Bring a code-only brownfield repository (50+ commits, no docs) into
+#   Forgeplan's structured world by orchestrating C4 architecture
+#   extraction, ingestion of those docs as forge Notes, git-history
+#   inference for ADR drafts, and a final summary Note linking
+#   everything to EPIC-007.
+#
+# When to run:
+#   `forgeplan playbook run brownfield-code --yes`
+#   (typically suggested by `forgeplan init` when the repo has git
+#   history, no docs/, and no .obsidian/ — see PRD-067 FR-5).
+#
+# References:
+#   - SPEC-003 — Playbook YAML schema
+#   - PRD-065 — Playbook runtime
+#   - PRD-067 — Plugin detection + recommendation
+#   - PRD-068 — forge-history-miner skill
+#   - ADR-009 — Forgeplan as orchestrator
+#   - marketplace/mappings/c4-to-forge.yaml — companion mapping
+# =====================================================================
+
+schema_version: "1.0"
+name: brownfield-code
+title: "Brownfield code-first onboarding"
+description: |
+  Five-step orchestration that converts a code-heavy brownfield repo
+  into a Forgeplan-managed knowledge graph: detect → run C4 → ingest
+  C4 → mine git history → write summary Note. Each ingest step adheres
+  to the ADR-009 hallucination-proof invariant (every artifact carries
+  a `## Sources` block).
+
+# ---------------------------------------------------------------------
+# Recommendation engine signals (PRD-067 FR-5)
+# Higher specificity = better match. Forge `init` matches against the
+# detected project state and ranks playbooks accordingly.
+# ---------------------------------------------------------------------
+triggered_by:
+  has_git: true
+  commit_count_min: 50
+  has_docs: false
+  has_obsidian: false
+
+# ---------------------------------------------------------------------
+# Prerequisites — surfaced via `forgeplan plugins doctor` + step
+# fallback_hint when missing at runtime.
+# ---------------------------------------------------------------------
+requires:
+  plugins:
+    - name: c4-architecture
+      version: ">=1.0"
+  skills:
+    - name: forge-history-miner
+      pack: brownfield-code-pack
+
+# ---------------------------------------------------------------------
+# Steps — DAG ordering via `requires:` (step IDs only, never freeform)
+# ---------------------------------------------------------------------
+steps:
+
+  # 1. Detect — confirm the repo really matches our triggered_by signals
+  #    before delegating to expensive plugins. Forgeplan_core only.
+  - id: detect-c4-need
+    delegate_to:
+      type: forgeplan_core
+      target: validate
+    input:
+      check: brownfield-code-signals
+    on_error: abort
+
+  # 2. Run C4 architecture extraction — produces C4-Documentation/.
+  #    Sequential after detection; aborts early on fallback if missing.
+  - id: run-c4-architecture
+    delegate_to:
+      type: plugin
+      name: c4-architecture
+      target: c4-code
+    input:
+      scope: full-repo
+    produces_at: "C4-Documentation/"
+    requires: [detect-c4-need]
+    fallback_hint: "claude plugin install c4-architecture"
+    on_error: abort
+
+  # 3. Ingest the C4 output into forge Notes via the canonical mapping.
+  - id: ingest-c4
+    delegate_to:
+      type: forgeplan_core
+      target: ingest
+    mapping: c4-to-forge
+    produces_at: "C4-Documentation/"
+    requires: [run-c4-architecture]
+    on_error: abort
+
+  # 4. Mine git history for inferred ADR drafts.
+  #    Optional — `on_error: continue` so a missing skill doesn't kill
+  #    the whole flow; user still gets the C4 Notes from step 3.
+  - id: run-history-miner
+    delegate_to:
+      type: skill
+      name: forge-history-miner
+      pack: brownfield-code-pack
+    input:
+      since: "12.months.ago"
+    produces_at: ".forgeplan/notes/inferred-adrs.md"
+    requires: [ingest-c4]
+    fallback_hint: "forgeplan skill install brownfield-code-pack"
+    on_error: continue
+
+  # 5. Summary Note linking everything imported by the run.
+  #    Lives entirely in forgeplan_core, no external deps.
+  - id: summary-note
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: note
+      title: "Brownfield onboarding summary"
+      tags: ["brownfield", "auto-import"]
+    requires: [run-history-miner]
+    on_error: abort

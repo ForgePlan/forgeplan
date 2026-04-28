@@ -1,0 +1,148 @@
+# =====================================================================
+# c4-to-forge.yaml — Canonical mapping: C4 architecture docs → Forge artifacts
+# =====================================================================
+#
+# Purpose:
+#   Translates output of the `c4-architecture` plugin (Markdown C4 docs at
+#   `C4-Documentation/code/`) into Forge artifacts living under
+#   `.forgeplan/{notes,epics}/`. Each generated artifact carries a
+#   mandatory `## Sources` section pointing back to the originating
+#   markdown line range — ADR-009 hallucination-proof invariant.
+#
+# Why target=note (not prd/spec):
+#   Per EVID-088 (Spike-1), C4 docs lack product context (Non-Goals,
+#   Errors, FR) required by PRD/SPEC validation gates. Notes skip the
+#   gate, making them the correct landing target for code-level
+#   architecture inferences. Authors can promote a Note to PRD/SPEC
+#   manually after enrichment.
+#
+# References:
+#   - SPEC-004 — Mapping YAML schema
+#   - PRD-066 — Ingest engine
+#   - ADR-009 — Forgeplan as orchestrator
+#   - EVID-088 — Spike-1 c4-to-forge concept validation
+#   - .local/spike-1-c4-to-forge-mapping.yaml — fixture this file evolved from
+#
+# Versioning:
+#   Bump `schema_version` for breaking changes to *this* file's schema.
+#   Bump `compat_spec_version` when upstream c4-architecture plugin
+#   output format breaks. Keep both in sync with marketplace registry.
+# =====================================================================
+
+schema_version: "1.0"
+name: c4-to-forge
+title: "C4 architecture docs → Forge notes + epic link"
+compat_spec_version: "c4-architecture: ^1.0"
+source_kind: c4-documentation
+target_kind: forge
+
+# ---------------------------------------------------------------------
+# Sources — discover C4 markdown files
+# ---------------------------------------------------------------------
+sources:
+  - pattern: "C4-Documentation/code/**/*.md"
+    type: markdown
+    parser: front_matter_plus_sections
+  - pattern: "C4-Documentation/components/**/*.md"
+    type: markdown
+    parser: front_matter_plus_sections
+
+# ---------------------------------------------------------------------
+# Rules — three transformation patterns
+# ---------------------------------------------------------------------
+rules:
+
+  # ─────────────────────────────────────────────────────────────────
+  # Rule 1: C4 component (Container-level building block) → Note
+  # Captures purpose + responsibilities into a small Note artifact.
+  # ─────────────────────────────────────────────────────────────────
+  - id: c4-component-to-note
+    when:
+      file_glob: "C4-Documentation/components/*.md"
+      front_matter:
+        kind: component
+    target:
+      kind: note
+    fields:
+      title: "{{ front_matter.name | trim }}"
+      summary: "{{ section.purpose | default(value='C4 component (auto-imported)') | trim }}"
+      details: "{{ section.responsibilities | bullet_list }}"
+      tags: "c4,component,auto-imported"
+    sources_section:
+      include: true
+      format: "{path}:{line_start}-{line_end}"
+      precision: line
+      source_hash: true
+    links:
+      - target_artifact_id: "EPIC-007"
+        relation: refines
+        if_exists: skip
+
+  # ─────────────────────────────────────────────────────────────────
+  # Rule 2: Public function section in C4 code-level docs → Note
+  # Per EVID-088: target=note (not PRD), since C4 docs cover algorithm
+  # but never product Non-Goals or FR — PRD validation gate would reject.
+  # ─────────────────────────────────────────────────────────────────
+  - id: c4-pub-fn-to-note
+    when:
+      file_glob: "C4-Documentation/code/**/*.md"
+      heading_path: ["Code Elements", "Public Functions", "*"]
+    target:
+      kind: note
+    fields:
+      title: "{{ heading_text | trim }}"
+      summary: "{{ section.purpose | default(value='Public function (auto-imported from C4 code-level docs)') | trim }}"
+      details: "{{ section.algorithm | bullet_list }}"
+      tags: "c4,pub-fn,auto-imported"
+    sources_section:
+      include: true
+      format: "{path}:{line_start}-{line_end}"
+      precision: line
+      source_hash: true
+    links:
+      - target_artifact_id: "EPIC-007"
+        relation: refines
+        if_exists: skip
+
+  # ─────────────────────────────────────────────────────────────────
+  # Rule 3: Module overview → link to existing EPIC (no new EPIC)
+  # Per EVID-088: do NOT auto-create EPIC. Just link the imported
+  # module Note to the existing parent EPIC. Prevents EPIC sprawl.
+  # ─────────────────────────────────────────────────────────────────
+  - id: c4-overview-to-link
+    when:
+      file_glob: "C4-Documentation/code/**/*.md"
+      heading_path: ["Overview"]
+    target:
+      kind: note
+    fields:
+      title: "{{ front_matter.module_name | default(value=heading_text) | trim }}"
+      summary: "{{ section.purpose | default(value='Module overview (C4 code level)') | trim }}"
+      details: "{{ section.description | bullet_list }}"
+      tags: "c4,overview,module,auto-imported"
+    sources_section:
+      include: true
+      format: "{path}:1"
+      precision: file
+      source_hash: true
+    links:
+      - target_artifact_id: "EPIC-007"
+        relation: refines
+        if_exists: skip
+
+# ---------------------------------------------------------------------
+# Guards — safety limits & invariants
+# ---------------------------------------------------------------------
+guards:
+  max_artifacts: 100
+  require_section: ["Sources"]
+  forbid_overwrite_active: true
+
+# ---------------------------------------------------------------------
+# Errors — per-condition policy overrides (defaults applied otherwise)
+# ---------------------------------------------------------------------
+errors:
+  missing_required_field: error
+  source_unreachable: warn
+  duplicate_source_hash: skip
+  template_filter_violation: error

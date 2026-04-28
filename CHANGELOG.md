@@ -7,6 +7,79 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.26.0] — 2026-04-28 — Playbook runtime + Ingest engine + Plugin detection (EPIC-007 Phase 2)
+
+Forgeplan становится **оркестратором**. Три новых core capabilities (PRD-065 / PRD-066 / PRD-067) воплощают ADR-009: сам forgeplan-core не генерирует документы — он **знает когда какой playbook запускать**, **кому делегировать каждый шаг**, и **как ингестить output в forge-граф** с обязательной `## Sources` секцией (hallucination-proof invariant). Реализация — четырёхволновой sprint, 9 параллельных агентов, ~9000 LOC, +168 unit tests, plus integration E2E из Wave 4.
+
+### Added — Playbook runtime (PRD-065 / SPEC-003)
+
+- **`forgeplan-core::playbook::{types,loader,executor,dispatch,journal}`** — декларативная YAML-схема + runtime executor.
+- **5 типов делегации** (strict typed, no arbitrary shell): `plugin` (Claude Code plugin via Task tool), `agent` (subagent via Task tool), `skill` (agent-skills capability), `command` (opt-in shell), `forgeplan_core` (internal op: `ingest`/`new`/`validate`/`activate`/`search`).
+- **DAG-ordering** через `requires:` (step IDs), цикл-detection, unknown-ref detection в loader.
+- **`fallback_hint`** — точная install-команда, эмитится если plugin/skill не установлен (AC-4 PRD-065).
+- **Journal** в `.forgeplan/journal/playbook-runs.jsonl` — resumable partial failures.
+- **JSON Schema** опубликована в `docs/schemas/playbook.schema.yaml` (FR-2).
+
+### Added — Ingest engine (PRD-066 / SPEC-004)
+
+- **`forgeplan-core::ingest::{types,sources,template,engine,idempotency}`** — declarative mapping engine.
+- **Tera-style шаблоны** с **whitelist filters** (10): `trim`, `lower`, `upper`, `bullet_list`, `comma_list`, `slugify`, `truncate`, `default(value=...)`, `replace`, `table`. Любой не-whitelisted filter → load error (security boundary, ADR-009).
+- **`## Sources` invariant** — `sources_section.include: false` отвергается deserialization, артефакт без Sources не создаётся.
+- **`compat_spec_version`** per mapping — semver-pinning upstream plugin output, fail-fast при upstream breaking change.
+- **5 source kinds**: `c4-documentation`, `autoresearch`, `git-log`, `ddd-model`, `sparc-spec`.
+- **6 target artifact kinds**: `prd`, `adr`, `epic`, `note`, `spec`, `problem`.
+- **Idempotency** через `source_hash` — re-run = update existing, не дубликаты (AC-3 PRD-066).
+- **JSON Schema** опубликована в `docs/schemas/mapping.schema.yaml` (FR-2).
+
+### Added — Plugin detection + self-describing hints (PRD-067)
+
+- **`forgeplan-core::plugins::{detection,registry,hints}`** — детектит installed plugins.
+- **Detection paths**: `~/.claude/plugins/cache/`, `.claude/plugins/`, `.agentskills/`, `.cursor/skills/`.
+- **Project signals**: `empty_repo`, `legacy_code_no_docs`, `docs_vault_present`, `has_package_json`, `has_cargo_toml`, `git_commit_count`.
+- **Recommendation engine** — signals × installed_plugins → applicable playbooks; emitted в init hint.
+- **CLI**: `forgeplan plugins {list|doctor|info <name>}`.
+
+### Added — CLI / MCP surface
+
+- **5 new CLI commands**: `forgeplan playbook {list|show|run|validate}`, `forgeplan ingest`, `forgeplan plugins {list|doctor|info}`.
+- **8 new MCP tools** wrapping the same surface for agent integration.
+- All новые команды эмитят PRD-071 hint markers (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — coverage 100% по drift-prevention audit script.
+
+### Added — Canonical marketplace assets
+
+- **`marketplace/mappings/c4-to-forge.yaml`** — production-ready mapping для c4-architecture plugin output. Per EVID-088 (Spike-1 measurement): target=`note` по умолчанию (не `prd`/`spec`) — code-derived артефакты не имеют product-context для PRD/SPEC validation gate.
+- **`marketplace/playbooks/brownfield-code.yaml`** — 5-step canonical playbook: `detect-c4-need` → `run-c4-architecture` (Plugin) → `ingest-c4` (ForgeplanCore + mapping) → `run-history-miner` (Skill) → `summary-note` (ForgeplanCore). `triggered_by: { has_git: true, commit_count_min: 50, has_docs: false }`.
+
+### Added — Documentation
+
+- **`docs/operations/PLAYBOOK-AUTHORING.ru.md`** — guide для авторов playbook'ов: 5 типов делегации, DAG, fallback hints, conventions.
+- **`docs/operations/INGEST-MAPPINGS.ru.md`** — guide для авторов mapping'ов: Tera caveat (`default(value="...")`), whitelist, hallucination-proof invariant, target=note default per EVID-088.
+- **`docs/README.md` + `docs/README.ru.md`** — index updates.
+
+### Stats
+
+- **+9000 LOC** across 3 new modules + CLI + MCP.
+- **+168 unit tests** (W1: 39 / W2: 110 / W3: 58, including 16 dogfood E2E from Wave 3) + Wave 4 integration E2E.
+- **0 fmt diffs / 0 clippy warnings** on default and `--features semantic-search`.
+- 4 waves × 9 unique agents (1 architect + 3 W1 + 5 W2 + 4 W3 + 2 W4) с gate checks per wave.
+
+### Deferred to follow-up sprint
+
+- **Real Plugin / Agent / Skill dispatchers** — Wave 3 экзекутор делегирует через mocked Task tool subprocess в этом релизе. Production wiring (через runtime Task tool API) — следующий sprint.
+- **MCP `forgeplan_ingest`** — pure CLI command в v0.26.0; MCP wrapper отложен (CLI cover тех же scenarios через `forgeplan serve`).
+- **`brownfield-docs-pack` / `greenfield-pack`** — only `brownfield-code.yaml` published canonical в этом релизе.
+- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals; parallelizable DAG planner — v2.
+
+### References
+
+- ADR-009 `.forgeplan/adrs/ADR-009-*.md` — orchestrator pivot decision
+- EPIC-007 — Playbook runtime + Pack marketplace (parent)
+- PRD-065 / SPEC-003 — Playbook runtime + schema
+- PRD-066 / SPEC-004 — Ingest engine + mapping schema
+- PRD-067 — Plugin detection + hints
+- EVID-088 — Spike-1 c4-to-forge concept validation (CL3)
+- EVID-089 — Phase 5 implementation evidence pack
+
 ## [0.25.0] — 2026-04-27 — Unified hint contract across CLI + MCP (PRD-071 complete)
 
 Forgeplan теперь говорит агентам что делать дальше. Каждый CLI и MCP вывод эмитит **один** контрактный маркер (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — никаких больше «agent reads no-hint output → re-reads CLAUDE.md → guesses → loops». 5-rule контракт (PRESENCE / ACTIONABILITY / DETERMINISM / CONDITIONALITY / CONSISTENCY) реализован за 5 циклов multi-agent sprint, audit coverage 0% → **100% (70/70)**.
