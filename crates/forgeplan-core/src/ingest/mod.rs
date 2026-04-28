@@ -25,7 +25,8 @@ pub use idempotency::{
     render_source_hash_marker,
 };
 pub use sources::{
-    FrontMatterPlusSections, JsonParser, LogWithBlame, MarkdownOnly, ParseError, ParsedSection,
-    ParsedSource, SourceParser, YamlParser, parser_for,
+    FrontMatterPlusSections, JsonParser, LogWithBlame, MAX_SOURCE_NESTING, MarkdownOnly,
+    ParseError, ParsedSection, ParsedSource, SourceParser, YamlParser, exceeds_nesting_depth,
+    parser_for,
 };
 pub use template::{TemplateEngine, TemplateError};

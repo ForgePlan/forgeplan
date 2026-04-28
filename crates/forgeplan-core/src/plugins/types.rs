@@ -347,7 +347,12 @@ pub struct TriggeredBy {
 /// Populated by the Wave 2 signal scanner; consumed by
 /// [`ProjectSignals::matches`] to evaluate playbook `triggered_by` rules.
 /// Default = "everything off / zero" (a fresh empty directory).
+///
+/// `#[non_exhaustive]` so future signals (`has_makefile`, `has_terraform`)
+/// can be added without breaking external destructuring. Construction is
+/// in-crate via the scanner; consumers should treat instances as opaque.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ProjectSignals {
     pub empty_repo: bool,
     pub has_git: bool,
@@ -406,7 +411,11 @@ impl ProjectSignals {
 
 /// Recommendation row produced by the engine — "this playbook is applicable
 /// to your project (and these plugins are missing for it)".
+///
+/// `#[non_exhaustive]` so the engine can attach extra metadata (`score`,
+/// `confidence`) without breaking downstream destructuring.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct PlaybookRecommendation {
     /// Kebab-case playbook name (matches SPEC-003 `name`).
     pub name: String,
@@ -421,7 +430,11 @@ pub struct PlaybookRecommendation {
 ///
 /// Wave 2's `hints.rs` will produce one of these per applicable playbook and
 /// fold them into the existing `Hint` stream emitted to stderr / JSON.
+///
+/// `#[non_exhaustive]` so future hint metadata (`severity`, `tags`) can be
+/// attached without breaking downstream destructuring.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct RecommendedPlaybookHint {
     /// Kebab-case playbook name.
     pub playbook_name: String,

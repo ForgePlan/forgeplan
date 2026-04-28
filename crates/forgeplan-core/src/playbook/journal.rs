@@ -26,9 +26,23 @@
 //! [`tokio::io::BufWriter`] over [`tokio::fs::File`]. This keeps the
 //! tokio worker thread non-blocking during playbook runs (the executor is
 //! already in an async context) and coalesces JSON-line writes into a
-//! single syscall per flush instead of two per entry. Durability is
-//! guaranteed by [`Journal::flush`] which the executor invokes on
-//! `RunEnd`.
+//! single syscall per flush instead of two per entry.
+//!
+//! # Per-step durability (NEW-S-H2, Audit Round 2)
+//!
+//! `RunStart` and `StepStart` entries are buffered for performance. Each
+//! `StepEnd` is followed by an explicit [`Journal::flush`] call from the
+//! executor — this guarantees that, on a process crash mid-run, every
+//! step that *finished* is durably recorded. PRD-065 FR-6 (resumable
+//! runs) relies on this: recovery treats a missing `StepEnd` (after the
+//! corresponding `StepStart`) as "step was in flight when we crashed —
+//! retry it", which is the correct fail-safe semantic. A fully-buffered
+//! journal would lose the last `StepEnd` on crash, leading the resumer
+//! to falsely retry a step that actually completed.
+//!
+//! Cost: one `fsync`-grade syscall per step. At hundreds of steps per
+//! run this is well within budget; the alternative (best-effort journal,
+//! no resumability) was rejected.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,8 +99,13 @@ impl<'de> Deserialize<'de> for RunId {
 }
 
 /// Kind of journal entry — emitted at the boundaries of a run and each step.
+///
+/// `#[non_exhaustive]` so future entry kinds (e.g. `Heartbeat`,
+/// `Checkpoint` for resumable parallel runs) can be added without
+/// breaking downstream `match` arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum JournalEntryKind {
     /// Emitted once per run, before any step starts.
     RunStart,
@@ -132,6 +151,13 @@ pub struct JournalEntry {
 /// for the file descriptor — buffered bytes are NOT auto-flushed on drop.
 /// Callers MUST invoke [`Journal::flush`] explicitly at end-of-run to
 /// guarantee durability of the final entries.
+///
+/// Durability contract (NEW-S-H2, Audit Round 2):
+/// * `RunStart` / `StepStart` are buffered; on crash they may be lost
+///   without affecting correctness (recovery only inspects `StepEnd`).
+/// * Every `StepEnd` is flushed immediately by the executor via
+///   [`Journal::flush`] so PRD-065 FR-6 (resumable runs) can trust the
+///   journal's tail when the process is killed mid-run.
 pub struct Journal {
     /// Resolved path to the JSONL file.
     path: PathBuf,
@@ -373,6 +399,71 @@ mod tests {
             assert_eq!(parsed.step_id.as_deref(), Some(format!("s{i}").as_str()));
             assert_eq!(parsed.payload["i"], i);
         }
+    }
+
+    /// NEW-S-H2 (Audit Round 2): per-step durability test. We append
+    /// `RunStart + StepStart + StepEnd`, call `flush` (mirroring what the
+    /// executor does after every `StepEnd`), then drop the journal handle
+    /// **without** another flush call to simulate a process crash. All
+    /// three lines must already be on disk because the explicit flush
+    /// pushed them through the BufWriter.
+    #[tokio::test]
+    async fn journal_step_end_is_durable() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("durable_step.jsonl");
+        let run_id = RunId(0xfeed_face_dead_beef);
+        {
+            let mut journal = Journal::open_at(path.clone()).expect("open");
+            journal
+                .append(&JournalEntry {
+                    ts: Utc::now(),
+                    run_id,
+                    playbook_name: "durable".into(),
+                    step_id: None,
+                    kind: JournalEntryKind::RunStart,
+                    payload: serde_json::Value::Null,
+                })
+                .await
+                .expect("RunStart");
+            journal
+                .append(&JournalEntry {
+                    ts: Utc::now(),
+                    run_id,
+                    playbook_name: "durable".into(),
+                    step_id: Some("s1".into()),
+                    kind: JournalEntryKind::StepStart,
+                    payload: serde_json::Value::Null,
+                })
+                .await
+                .expect("StepStart");
+            journal
+                .append(&JournalEntry {
+                    ts: Utc::now(),
+                    run_id,
+                    playbook_name: "durable".into(),
+                    step_id: Some("s1".into()),
+                    kind: JournalEntryKind::StepEnd,
+                    payload: serde_json::json!({"success": true}),
+                })
+                .await
+                .expect("StepEnd");
+            // Mirrors the executor's per-StepEnd flush. Subsequent crash
+            // (drop without final flush) must not lose committed lines.
+            journal.flush().await.expect("flush after StepEnd");
+            // Journal dropped here — simulates crash before RunEnd.
+        }
+        let contents = fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(
+            lines.len(),
+            3,
+            "all 3 lines (RunStart/StepStart/StepEnd) must be durable, got {}: {contents:?}",
+            lines.len()
+        );
+        // StepEnd must be the last entry and parseable.
+        let last: JournalEntry = serde_json::from_str(lines[2]).expect("parse");
+        assert_eq!(last.kind, JournalEntryKind::StepEnd);
+        assert_eq!(last.step_id.as_deref(), Some("s1"));
     }
 
     /// `RunId::to_hex` produces stable 16-char output and round-trips via serde.

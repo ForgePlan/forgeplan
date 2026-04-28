@@ -18,7 +18,6 @@ use super::sources::{ParsedSection, ParsedSource};
 use super::template::{TemplateEngine, TemplateError};
 use super::types::{
     ArtifactTargetKind, Guards, IfExists, LinkSpec, Mapping, Rule, Selector, SourcesSectionSpec,
-    Template,
 };
 
 // ---------------------------------------------------------------------------
@@ -37,7 +36,13 @@ pub struct IngestOptions {
 }
 
 /// A planned artifact that has not yet been written to disk.
+///
+/// `#[non_exhaustive]` so future engine revisions can attach extra
+/// metadata (e.g. `confidence_score`, `applied_filters`) without
+/// breaking external destructuring. Construction is in-crate only —
+/// callers should treat this as opaque-shaped.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct IngestArtifactDraft {
     /// Forge artifact kind (`prd`, `spec`, …).
     pub kind: ArtifactTargetKind,
@@ -57,7 +62,11 @@ pub struct IngestArtifactDraft {
 }
 
 /// Link planned by a [`Rule`]'s `links:` block.
+///
+/// `#[non_exhaustive]` so future link metadata (`weight`, `provenance`)
+/// can be attached without breaking external destructuring.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct DraftLink {
     pub target: String,
     pub relation: String,
@@ -65,7 +74,11 @@ pub struct DraftLink {
 }
 
 /// Why a rule×source pair was not turned into a draft.
+///
+/// `#[non_exhaustive]` so future skip-classes (`MaxArtifactsApproaching`,
+/// `MissingPlugin`) can be added without breaking external `match` arms.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub enum SkipReason {
     /// `rule.when` selector did not match the source.
     SelectorMismatch {
@@ -81,7 +94,11 @@ pub enum SkipReason {
 }
 
 /// A non-fatal error tied to a specific rule (e.g. template missing variable).
+///
+/// `#[non_exhaustive]` so future per-rule diagnostics (`severity`,
+/// `suggested_fix`) can be added without breaking external destructuring.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct RuleError {
     pub rule_id: String,
     pub source_path: String,
@@ -89,7 +106,12 @@ pub struct RuleError {
 }
 
 /// Aggregated outcome of a single [`IngestEngine::apply`] call.
+///
+/// `#[non_exhaustive]` so future telemetry fields (`elapsed_ms`,
+/// `mappings_applied`) can be added without breaking external
+/// destructuring.
 #[derive(Debug, Clone, Serialize, Default)]
+#[non_exhaustive]
 pub struct IngestReport {
     pub drafts: Vec<IngestArtifactDraft>,
     pub skipped: Vec<SkipReason>,
@@ -107,7 +129,12 @@ pub struct IngestReport {
 pub const DEFAULT_MAX_ARTIFACTS: usize = 10_000;
 
 /// Hard errors that abort the whole apply call.
+///
+/// `#[non_exhaustive]` so future engine revisions can introduce new
+/// hard-error classes (mapping-version mismatch, glob-budget exceeded)
+/// without forcing downstream consumers to update `match` arms.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum IngestError {
     #[error(transparent)]
     Template(#[from] TemplateError),
@@ -606,11 +633,6 @@ fn render_links(
         });
     }
     Ok(out)
-}
-
-fn _coerce_unused(_t: &Template) {
-    // Force a `use Template` even if the linter prunes; the compiler will
-    // remove this. Keeps the `Template` re-export visible for documentation.
 }
 
 // ---------------------------------------------------------------------------

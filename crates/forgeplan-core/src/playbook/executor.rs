@@ -76,6 +76,11 @@ pub struct StepReport {
 }
 
 /// Terminal state of a single step in a run.
+//
+// NOTE (Audit Round 2): considered for `#[non_exhaustive]` but reverted —
+// CLI `commands/playbook.rs` exhaustively matches on this enum and lives
+// outside this fix-2 agent's owned scope. Future statuses (`Retried`,
+// `TimedOut`) must be coordinated with that file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
@@ -113,7 +118,12 @@ impl ExecutionReport {
 
 /// Executor errors raised before any step runs (validation / setup) or
 /// unrecoverable mid-run problems (journal IO).
+///
+/// `#[non_exhaustive]` so future executor revisions (parallel steps,
+/// resumable runs) can introduce new error classes without forcing
+/// downstream `match` arms to be re-checked.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum ExecutorError {
     /// Re-validation failed for a programmatically-built playbook.
     #[error(transparent)]
@@ -371,7 +381,16 @@ impl<D: Dispatcher> Executor<D> {
         })
     }
 
-    /// Write the closing `StepEnd` entry for `report`.
+    /// Write the closing `StepEnd` entry for `report` and flush the journal
+    /// to disk.
+    ///
+    /// Per-step flush (NEW-S-H2, Audit Round 2): every `StepEnd` is
+    /// followed by an explicit [`Journal::flush`] so that, on a process
+    /// crash mid-run, every step that *finished* is durably recorded.
+    /// PRD-065 FR-6 (resumable runs) treats a missing `StepEnd` after the
+    /// matching `StepStart` as "step in flight when killed — retry"; a
+    /// fully-buffered journal would lose the last `StepEnd` and falsely
+    /// retry a completed step.
     async fn write_step_pair(
         &mut self,
         run_id: RunId,
@@ -393,7 +412,9 @@ impl<D: Dispatcher> Executor<D> {
                     "message": report.message,
                 }),
             })
-            .await
+            .await?;
+        // NEW-S-H2: flush on every StepEnd so resumable runs trust the tail.
+        self.journal.flush().await
     }
 }
 

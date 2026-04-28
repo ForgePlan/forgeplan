@@ -14,6 +14,82 @@ use thiserror::Error;
 use super::types::Parser;
 
 // ---------------------------------------------------------------------------
+// Resource limits (NEW-S-H1, Audit Round 2)
+// ---------------------------------------------------------------------------
+
+/// Maximum nesting depth tolerated in source YAML / JSON content before
+/// the parser is invoked. Mirrors the CLI's `MAX_MAPPING_NESTING` so the
+/// same defence-in-depth limit applies to source bodies, not just mapping
+/// YAMLs.
+///
+/// `serde_yaml` < 0.9 / `serde_json` do not expose recursion knobs, so we
+/// count balanced `{`/`[` opener tokens (skipping bytes inside string
+/// literals) as a cheap heuristic and reject before the parser ever sees
+/// the input. A 10 MiB source with 5M unmatched opens stack-overflows the
+/// parser despite passing the size cap.
+pub const MAX_SOURCE_NESTING: usize = 256;
+
+/// Returns `true` if `content` exceeds [`MAX_SOURCE_NESTING`] string-aware
+/// open-bracket depth. The check is a string-literal-aware running balance
+/// of `{`/`[` minus `}`/`]`; bytes inside `"..."` and `'...'` literals are
+/// skipped.
+///
+/// Used by [`YamlParser`] / [`FrontMatterPlusSections`] (defence in depth)
+/// and by the CLI's `read_source_with_limits` (primary gate).
+pub fn exceeds_nesting_depth(content: &str, limit: usize) -> bool {
+    let bytes = content.as_bytes();
+    let mut depth: usize = 0;
+    let mut max_depth: usize = 0;
+    let mut in_double: bool = false;
+    let mut in_single: bool = false;
+    let mut escape: bool = false;
+
+    for &b in bytes {
+        if escape {
+            // Previous byte was `\`; current byte is consumed as the
+            // escaped char regardless of value.
+            escape = false;
+            continue;
+        }
+        if in_double {
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_double = false,
+                _ => {}
+            }
+            continue;
+        }
+        if in_single {
+            match b {
+                b'\\' => escape = true,
+                b'\'' => in_single = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_double = true,
+            b'\'' => in_single = true,
+            b'{' | b'[' => {
+                depth = depth.saturating_add(1);
+                if depth > max_depth {
+                    max_depth = depth;
+                    if max_depth > limit {
+                        // Short-circuit — caller only needs the boolean.
+                        return true;
+                    }
+                }
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    max_depth > limit
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -72,7 +148,12 @@ impl ParsedSource {
 }
 
 /// Errors a parser can raise.
+///
+/// `#[non_exhaustive]` so future parser strategies can introduce new
+/// failure modes (e.g. binary-format errors) without forcing downstream
+/// `match` arms to be re-checked.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ParseError {
     #[error("yaml front-matter parse error in {path}: {source}")]
     FrontMatter {
@@ -92,6 +173,15 @@ pub enum ParseError {
         #[source]
         source: serde_yaml::Error,
     },
+    /// Source content exceeds [`MAX_SOURCE_NESTING`] open-bracket depth —
+    /// a stack-bomb defence (NEW-S-H1, Audit Round 2). Surfaced before the
+    /// parser is invoked so a malicious 10 MiB YAML with 5M `[` tokens
+    /// cannot blow the stack.
+    #[error(
+        "source `{path}` rejected: nesting depth exceeds {limit} open-bracket tokens \
+         (CWE-674 stack-overflow defence)"
+    )]
+    NestingTooDeep { path: String, limit: usize },
 }
 
 /// Strategy interface implemented by each parser variant.
@@ -200,6 +290,16 @@ fn split_front_matter<'a>(
     let fm: serde_json::Value = if yaml_text.trim().is_empty() {
         empty_object()
     } else {
+        // NEW-S-H1 (Audit Round 2): defence-in-depth nesting guard. Front-
+        // matter is small in typical use, but the parser fans through the
+        // same `serde_yaml::from_str` stack as full YAML documents and will
+        // overflow on adversarial nesting just the same.
+        if exceeds_nesting_depth(yaml_text, MAX_SOURCE_NESTING) {
+            return Err(ParseError::NestingTooDeep {
+                path: path.to_owned(),
+                limit: MAX_SOURCE_NESTING,
+            });
+        }
         let yaml: serde_yaml::Value =
             serde_yaml::from_str(yaml_text).map_err(|e| ParseError::FrontMatter {
                 path: path.to_owned(),
@@ -498,6 +598,16 @@ pub struct YamlParser;
 impl SourceParser for YamlParser {
     fn parse(&self, path: &Path, content: &str) -> Result<ParsedSource, ParseError> {
         let path_str = path.display().to_string();
+        // NEW-S-H1 (Audit Round 2): stack-bomb defence in depth. Primary
+        // gate is the CLI's `read_source_with_limits`, but the parser may
+        // be invoked from non-CLI callers (Wave 3 MCP tools, library
+        // consumers) and must still refuse adversarial inputs.
+        if exceeds_nesting_depth(content, MAX_SOURCE_NESTING) {
+            return Err(ParseError::NestingTooDeep {
+                path: path_str,
+                limit: MAX_SOURCE_NESTING,
+            });
+        }
         let yaml: serde_yaml::Value =
             serde_yaml::from_str(content).map_err(|e| ParseError::YamlDocument {
                 path: path_str.clone(),
@@ -653,5 +763,85 @@ mod tests {
         let parsed = MarkdownOnly.parse(&p("e.md"), "").unwrap();
         assert!(parsed.sections.is_empty());
         assert_eq!(parsed.line_count, 0);
+    }
+
+    // ── NEW-S-H1 (Audit Round 2): nesting heuristic + parser guards ──────
+
+    #[test]
+    fn exceeds_nesting_depth_counts_balanced_open_brackets() {
+        // 10 unmatched opens — well below the 256 default.
+        let s = "[".repeat(10);
+        assert!(!exceeds_nesting_depth(&s, MAX_SOURCE_NESTING));
+
+        // Exactly limit + 1 unmatched opens triggers.
+        let mut bomb = String::new();
+        for _ in 0..(MAX_SOURCE_NESTING + 1) {
+            bomb.push('[');
+        }
+        assert!(exceeds_nesting_depth(&bomb, MAX_SOURCE_NESTING));
+
+        // Balanced brackets at high depth: depth grows then shrinks; the
+        // peak depth is what trips the guard.
+        let mut peak = String::new();
+        for _ in 0..(MAX_SOURCE_NESTING + 5) {
+            peak.push('[');
+        }
+        for _ in 0..(MAX_SOURCE_NESTING + 5) {
+            peak.push(']');
+        }
+        assert!(exceeds_nesting_depth(&peak, MAX_SOURCE_NESTING));
+    }
+
+    #[test]
+    fn exceeds_nesting_depth_string_aware() {
+        // Open brackets *inside string literals* must not contribute. A
+        // realistic 10-deep YAML scalar containing 1000 literal `[` bytes
+        // should pass.
+        let mut s = String::from("key: \"");
+        s.push_str(&"[".repeat(1000));
+        s.push('"');
+        assert!(
+            !exceeds_nesting_depth(&s, MAX_SOURCE_NESTING),
+            "literal `[` inside double-quoted string must not count"
+        );
+
+        // Same for single-quoted.
+        let mut s2 = String::from("key: '");
+        s2.push_str(&"[".repeat(1000));
+        s2.push('\'');
+        assert!(!exceeds_nesting_depth(&s2, MAX_SOURCE_NESTING));
+
+        // But unbalanced opens *outside* a string still trip.
+        let mut s3 = String::from("key: \"safe\"\n");
+        s3.push_str(&"[".repeat(MAX_SOURCE_NESTING + 1));
+        assert!(exceeds_nesting_depth(&s3, MAX_SOURCE_NESTING));
+    }
+
+    #[test]
+    fn yaml_parser_rejects_deep_nesting() {
+        let bomb = "[".repeat(MAX_SOURCE_NESTING + 50);
+        let err = YamlParser.parse(&p("bomb.yaml"), &bomb).unwrap_err();
+        match err {
+            ParseError::NestingTooDeep { limit, .. } => {
+                assert_eq!(limit, MAX_SOURCE_NESTING);
+            }
+            other => panic!("expected NestingTooDeep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn front_matter_parser_rejects_deep_nesting() {
+        // Build a markdown body whose front-matter block contains an
+        // adversarially nested mapping. The opener is `---\n` … `\n---`
+        // and inside lives the bomb.
+        let bomb_inner = "[".repeat(MAX_SOURCE_NESTING + 50);
+        let md = format!("---\nkey: {bomb_inner}\n---\n\n# Body\n");
+        let err = FrontMatterPlusSections.parse(&p("a.md"), &md).unwrap_err();
+        match err {
+            ParseError::NestingTooDeep { limit, .. } => {
+                assert_eq!(limit, MAX_SOURCE_NESTING);
+            }
+            other => panic!("expected NestingTooDeep, got {other:?}"),
+        }
     }
 }

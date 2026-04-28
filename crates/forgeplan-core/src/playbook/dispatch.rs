@@ -70,7 +70,12 @@ impl DispatchOutcome {
 ///
 /// Distinct from "delegate ran and reported failure" (`success: false`):
 /// these errors mean we couldn't even invoke the delegate.
+///
+/// `#[non_exhaustive]` so Wave 3+ dispatchers can add new error classes
+/// (rate-limit, sandbox-violation, etc.) without breaking downstream
+/// `match` arms.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum DispatchError {
     /// Delegate type isn't installed on this host (e.g. plugin missing).
     /// Wave 3 plugin engine populates this with the install hint copied
@@ -99,7 +104,12 @@ pub enum DispatchError {
 /// Security-check error returned by [`validate_command_delegate_security`].
 /// Mapped to [`DispatchError::SecurityRefused`] by the executor when bubbling
 /// through an actual dispatch call.
+///
+/// `#[non_exhaustive]` so future security gates (network-bound delegates,
+/// untrusted plugin signatures) can extend the enum without breaking
+/// downstream consumers.
 #[derive(Error, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SecurityError {
     /// `delegate_to: command` step needs `--yes` opt-in.
     #[error(

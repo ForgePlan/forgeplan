@@ -23,7 +23,12 @@ use super::types::{InstalledPlugin, ProjectSignals, RecommendedPlaybookHint, Tri
 /// into this struct via a `From` impl in Wave 3 — we keep the type local here
 /// to avoid the `playbook → plugins → playbook` cycle described in
 /// `types::TriggeredBy`.
+///
+/// `#[non_exhaustive]` so the engine can grow new playbook metadata
+/// (`min_schema_version`, `tags`) without breaking external
+/// destructuring.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct KnownPlaybook {
     /// Kebab-case playbook name (matches SPEC-003 `name`).
     pub name: String,

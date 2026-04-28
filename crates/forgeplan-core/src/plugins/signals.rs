@@ -21,7 +21,12 @@ use super::types::ProjectSignals;
 /// Errors raised by [`detect_signals`]. Most signal-detection issues are
 /// folded into "false / 0" rather than errors; only structural problems
 /// (missing root, unreadable directory) escape as `Err`.
+///
+/// `#[non_exhaustive]` so Wave 2+ signal sniffers can add new structural
+/// error classes (corrupt git, missing executables) without breaking
+/// downstream `match` arms.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SignalError {
     /// The workspace root does not exist or is not a directory.
     #[error("workspace root not found: {0}")]

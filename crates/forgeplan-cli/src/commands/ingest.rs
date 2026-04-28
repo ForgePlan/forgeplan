@@ -44,6 +44,12 @@ const MAX_SOURCE_SIZE: u64 = 10 * 1024 * 1024;
 /// ever sees the input.
 const MAX_MAPPING_NESTING: usize = 256;
 
+/// Maximum opener depth we tolerate in source content (NEW-S-H1, Audit
+/// Round 2). Mirrors [`MAX_MAPPING_NESTING`] for source YAML / JSON / front-
+/// matter so a 10 MiB source with 5M `[` tokens cannot stack-overflow the
+/// parser despite passing the size cap.
+const MAX_SOURCE_NESTING: usize = 256;
+
 /// Read a mapping YAML file with [`MAX_MAPPING_SIZE`] / [`MAX_MAPPING_NESTING`]
 /// guards. Surfaces a structured `Err` rather than reading multi-GB into
 /// the heap or letting `serde_yaml` blow the stack.
@@ -73,8 +79,13 @@ fn read_mapping_with_limits(path: &Path) -> Result<String> {
     Ok(content)
 }
 
-/// Read a source file with [`MAX_SOURCE_SIZE`] guard. Returns an `Err` so
-/// the per-file parser can downgrade to a soft warning if it chooses.
+/// Read a source file with [`MAX_SOURCE_SIZE`] + [`MAX_SOURCE_NESTING`]
+/// guards (NEW-S-H1, Audit Round 2). Returns an `Err` so the per-file
+/// parser can downgrade to a soft warning if it chooses.
+///
+/// The nesting heuristic uses a string-literal-aware running balance of
+/// `{`/`[` minus `}`/`]` opens — adversarial 10 MiB sources with 5M
+/// unmatched opens are rejected before `serde_yaml::from_str` is invoked.
 fn read_source_with_limits(path: &Path) -> Result<String> {
     let meta = std::fs::metadata(path)
         .with_context(|| format!("failed to stat source {}", path.display()))?;
@@ -87,8 +98,17 @@ fn read_source_with_limits(path: &Path) -> Result<String> {
             MAX_SOURCE_SIZE
         );
     }
-    std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read source {}", path.display()))
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read source {}", path.display()))?;
+    if exceeds_nesting_depth(&content, MAX_SOURCE_NESTING) {
+        anyhow::bail!(
+            "source {} too deeply nested (peak depth exceeds {} open-bracket tokens; \
+             stack-overflow defence)",
+            path.display(),
+            MAX_SOURCE_NESTING
+        );
+    }
+    Ok(content)
 }
 
 use forgeplan_core::artifact::types::ArtifactKind;
@@ -97,7 +117,7 @@ use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::ingest::{
     ArtifactTargetKind, DraftLink, IfExists, IngestArtifactDraft, IngestEngine, IngestOptions,
     IngestReport, Mapping, ParsedSource, SourceSpec, UpdateDecision, artifact_needs_update,
-    extract_existing_source_hash, parser_for,
+    exceeds_nesting_depth, extract_existing_source_hash, parser_for,
 };
 use forgeplan_core::link;
 use forgeplan_core::projection;
@@ -501,6 +521,11 @@ async fn write_draft(
             UpdateDecision::Create => {
                 // Stale title-collision with no hash marker — fall through to create.
             }
+            // `UpdateDecision` is `#[non_exhaustive]` (Audit Round 2 T-H4):
+            // unknown variants fall through to the create path so a stale
+            // CLI build still produces an artifact rather than silently
+            // dropping the draft.
+            _ => {}
         }
     }
 
@@ -620,6 +645,11 @@ async fn add_links(ws: &Path, store: &LanceStore, source_id: &str, links: &[Draf
                     relation,
                     e
                 ),
+                // `IfExists` is `#[non_exhaustive]` (Audit Round 2 T-H4):
+                // future policies (`Merge`, `Defer`) fall back to the
+                // safest behaviour — silently skip — until the CLI grows
+                // explicit handling.
+                _ => {}
             }
         }
         // Best-effort frontmatter mirror; ignore errors so we don't half-write.
@@ -808,6 +838,10 @@ fn kind_label(k: &ArtifactTargetKind) -> String {
         ArtifactTargetKind::Note => "note",
         ArtifactTargetKind::Spec => "spec",
         ArtifactTargetKind::Problem => "problem",
+        // `ArtifactTargetKind` is `#[non_exhaustive]` (Audit Round 2):
+        // unknown variants render as `unknown` so the CLI doesn't crash on
+        // a stale binary against a newer mapping.
+        _ => "unknown",
     }
     .to_string()
 }
@@ -820,6 +854,9 @@ fn artifact_kind_from_draft(k: &ArtifactTargetKind) -> ArtifactKind {
         ArtifactTargetKind::Note => ArtifactKind::Note,
         ArtifactTargetKind::Spec => ArtifactKind::Spec,
         ArtifactTargetKind::Problem => ArtifactKind::ProblemCard,
+        // `ArtifactTargetKind` is `#[non_exhaustive]` (Audit Round 2):
+        // fall back to `Note` (lowest-trust artifact) on unknown variants.
+        _ => ArtifactKind::Note,
     }
 }
 
@@ -959,5 +996,41 @@ mod tests {
         std::fs::write(&p, "# heading\nbody\n").unwrap();
         let content = read_source_with_limits(&p).expect("ok");
         assert!(content.contains("heading"));
+    }
+
+    // ── NEW-S-H1 (Audit Round 2): source nesting guard ──────────────────
+
+    #[test]
+    fn read_source_with_limits_rejects_deep_nesting() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bomb.yaml");
+        // 1000 unmatched `[` opens — well over MAX_SOURCE_NESTING (256).
+        let mut content = String::new();
+        for _ in 0..1000 {
+            content.push('[');
+        }
+        std::fs::write(&p, content).unwrap();
+        let err = read_source_with_limits(&p).expect_err("should reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("too deeply nested") || msg.contains("stack-overflow"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_source_with_limits_string_literals_do_not_count() {
+        // A realistic source containing 1000 literal `[` bytes inside a
+        // double-quoted YAML scalar must NOT trip the nesting guard.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("literal.yaml");
+        let mut content = String::from("key: \"");
+        for _ in 0..1000 {
+            content.push('[');
+        }
+        content.push('"');
+        content.push('\n');
+        std::fs::write(&p, content).unwrap();
+        let _ = read_source_with_limits(&p).expect("string-literal `[` must not count");
     }
 }

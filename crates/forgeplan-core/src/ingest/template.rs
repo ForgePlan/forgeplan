@@ -35,7 +35,12 @@ use super::types::{ALLOWED_FILTERS, Template};
 // ---------------------------------------------------------------------------
 
 /// Errors produced by the [`TemplateEngine`].
+///
+/// `#[non_exhaustive]` so future filter additions or engine swaps can
+/// introduce new error classes (timeout, recursion limit) without
+/// breaking downstream `match` arms.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TemplateError {
     /// Constructing the underlying Tera instance failed (should not happen
     /// for the fixed filter set — but kept as a `Result` for forward-compat).
@@ -135,7 +140,7 @@ impl TemplateEngine {
         // Defence in depth: every filter referenced must be whitelisted.
         if let Some(bad) = template.first_disallowed_filter() {
             return Err(TemplateError::DisallowedFilter {
-                filter: bad.to_owned(),
+                filter: bad,
                 allowed: ALLOWED_FILTERS,
             });
         }

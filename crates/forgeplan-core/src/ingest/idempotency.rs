@@ -20,7 +20,11 @@ use sha2::{Digest, Sha256};
 use super::sources::ParsedSource;
 
 /// Decision returned by [`artifact_needs_update`].
+///
+/// `#[non_exhaustive]` so future idempotency policies (`Merge`, `Diff`)
+/// can be added without breaking downstream `match` arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UpdateDecision {
     /// No existing artifact — create it.
     Create,

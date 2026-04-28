@@ -33,6 +33,12 @@ pub const SUPPORTED_SCHEMA_RANGE: &str = ">=1.0.0, <2.0.0";
 
 /// Errors emitted by [`load_playbook`]. Each variant matches a row from
 /// the SPEC-003 §"Errors" matrix.
+//
+// NOTE (Audit Round 2): considered for `#[non_exhaustive]` but reverted —
+// CLI `commands/playbook.rs` and MCP `server.rs` already exhaustively
+// `match` on this enum and live outside this fix-2 agent's owned scope.
+// Future SPEC-003 revisions that introduce new error variants must update
+// those callers in the same PR.
 #[derive(Error, Debug)]
 pub enum LoaderError {
     /// `serde_yaml` failed (malformed YAML, missing required fields, unknown
