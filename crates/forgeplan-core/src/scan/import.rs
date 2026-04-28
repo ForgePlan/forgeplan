@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
-use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind};
+use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind_with_path};
 use crate::scan::discovery::{DiscoveredFile, discover_markdown_files};
 use crate::scan::status_map::map_external_status;
 
@@ -138,7 +138,7 @@ async fn scan_and_import_inner(
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
 
-        let detection = detect_kind(filename, &file.content);
+        let detection = detect_kind_with_path(filename, Some(&file.relative_path), &file.content);
 
         let entry = match detection {
             Some(det) => {
