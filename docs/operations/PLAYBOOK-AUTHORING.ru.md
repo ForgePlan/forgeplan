@@ -298,6 +298,164 @@ forgeplan playbook run brownfield-code --yes --step run-c4-architecture
 | `produces_at` есть, но `mapping` нет | WARN (output не ingestится) |
 | `mapping` есть, но `produces_at` нет | ERROR |
 
+## Subprocess lifecycle (Phase 6)
+
+С v0.27.0 четыре делегации (`plugin`, `agent`, `skill`, `command`)
+запускают **реальный subprocess**, а не mock-stub. Пятая (`forgeplan_core`)
+по-прежнему остаётся direct internal call в текущем процессе. Эта
+секция объясняет invariants, которым должен соответствовать pack
+author при выборе делегации и параметров шага.
+
+Источник истины — [ADR-010](../../.forgeplan/adrs/ADR-010-phase-6-subprocess-invocation-via-tokio-process-with-kill-on-drop-and-timeout.md)
++ [EVID-090](../../.forgeplan/evidence/EVID-090-spike-2-tokio-process-subprocess-invocation-validated-for-phase-6-dispatchers.md)
+(Spike-2 measurement, CL3).
+
+### Async exec через tokio::process
+
+Все subprocess-based dispatchers строят
+`tokio::process::Command` с фиксированной конфигурацией:
+
+```text
+stdin   = Stdio::null()        // нет path для interactive injection
+stdout  = Stdio::piped()       // concurrent drain (избегает 64K-buffer deadlock)
+stderr  = Stdio::piped()       // same — capture для journal
+env     = clear() + allow-list // нет утечки FORGEPLAN_*
+kill_on_drop(true)             // SIGKILL/TerminateProcess при cancel/panic
+```
+
+Output читается concurrent через `tokio::join!(stdout, stderr, wait)` —
+sequential read-then-wait зависает на stderr-heavy children.
+
+Cap на буфер — **10 MiB** на каждый поток. Превышение → step Failed
+с `OutputTooLarge`. Pack authors: если plugin emits >10 MiB stdout,
+пишите его в файл (`produces_at`), а не в stdout.
+
+### Timeout policy
+
+| Делегация | Default timeout | Почему |
+|---|---:|---|
+| `plugin` | **600 s** (10 мин) | Полные C4/autoresearch/DDD прогоны бывают долгими |
+| `agent` | **300 s** (5 мин) | Subagent invoke — ограниченный scope |
+| `skill` | **180 s** | In-process v1 stub; Wave 5 = real registry |
+| `command` | **180 s** | Whitelisted shell — короткие операции |
+| `forgeplan_core` | **n/a** | Direct internal call, без subprocess |
+
+Per-step override (FR-8 follow-up — schema_version 1.1):
+
+```yaml
+- id: deep-c4-scan
+  delegate_to: { type: plugin, name: c4-architecture, target: c4-code }
+  timeout_seconds: 1200          # 20 мин для большого монорепо
+```
+
+`timeout_seconds: Option<u32>` — backward compatible: старые playbook'и
+без поля грузятся OK с дефолтом для типа делегации. Поле landed в
+schema 1.1 (additive minor bump).
+
+При timeout runtime вызывает `child.kill().await`, journal записывает
+`Failed { reason: timeout, duration_ms }`, остальные шаги
+abort'ятся (если `on_error: abort` — default) или продолжаются
+(если `on_error: continue`).
+
+### Security model
+
+Хардкорные invariants Phase 6 (см. ADR-010 §Invariants):
+
+- **NEVER**: `Stdio::inherit()` для stdin — закрывает interactive
+  prompt injection.
+- **NEVER**: `sh -c` или shell expansion. `command:`-делегации принимают
+  `Vec<String>` — direct exec через argv-list, никаких глоб'ов или
+  переменных оболочки в процессе spawn.
+- **NEVER**: env passthrough by default. `env_clear()` + explicit
+  allow-list (`PATH`, `HOME`, опционально `FORGEPLAN_WORKSPACE`).
+  Никакие `FORGEPLAN_*` ключи (LLM provider, OpenAI keys) НЕ утекают
+  в subprocess.
+- **NEVER**: `command:`-делегация без флага `--yes` в run-команде. Гейт
+  `validate_command_delegate_security` отвергает execution в
+  interactive режиме.
+- **ALWAYS**: `kill_on_drop(true)` — гарантия очистки zombie
+  processes на Ctrl+C, panic, или drop executor'а.
+- **ALWAYS**: timeout enforced — нет «бесконечного» step'а.
+
+Pack authors: если ваш plugin требует переменную окружения, добавьте
+её в allow-list через `env:` поле шага (a follow-up FR — пока хардкод
+allow-list внутри dispatcher).
+
+### Fallback hint behaviour
+
+Если plugin/agent/skill **не установлен**, subprocess не запускается.
+Dispatcher эмитит `DispatchError::DelegateMissing` с install-командой
+из `fallback_hint`:
+
+```yaml
+- id: run-c4-architecture
+  delegate_to: { type: plugin, name: c4-architecture, target: c4-code }
+  fallback_hint: "claude plugin install c4-architecture"
+```
+
+В terminal output:
+
+```text
+Error: step `run-c4-architecture` requires plugin `c4-architecture`,
+       not installed.
+Fix: claude plugin install c4-architecture
+```
+
+Контракт `Fix:` маркера — PRD-071 (см.
+[agent-protocol.md](../methodology/agent-protocol.md)). Агент Claude
+Code распарсит `Fix:` и предложит выполнить install-команду или
+прервать playbook.
+
+`fallback_hint` обязательно для каждой `plugin`/`skill` делегации —
+load-time error, если поле отсутствует у `plugin:` step. Это
+явный invariant ADR-009: pack author не может полагаться, что
+target-плагин установлен глобально.
+
+### Скрытое поведение `forgeplan_core`
+
+Делегация `forgeplan_core` — единственная **без subprocess**:
+
+```yaml
+- id: ingest-c4
+  delegate_to: { type: forgeplan_core, target: ingest }
+  mapping: c4-to-forge
+  produces_at: "C4-Documentation/"
+```
+
+Реальный путь — direct internal call в `forgeplan_core_dispatcher.rs`.
+`ForgeplanOp::Ingest` мапится на existing `ingest::engine::run()` API
+без дополнительного процесса.
+
+Преимущества: no overhead на fork+exec, shared в-memory state,
+journal flushes synchronous. Используется heavy в `greenfield-kickoff.yaml`
+(7 шагов через ForgeplanCore + 1 optional Skill).
+
+Ограничение: `forgeplan_core` поддерживает строго 5 операций —
+`ingest`, `new`, `validate`, `activate`, `search`. Нужна другая —
+делайте через `command:` с явным `forgeplan <subcommand>` или
+открывайте PR в `forgeplan-core::playbook::dispatch::forgeplan_core_dispatcher`.
+
+### Resumability + journal
+
+Journal flushed **после каждого `StepEnd`** (per Phase 5 contract).
+При kill -9 во время step → restart через `forgeplan playbook run X --yes`
+resumes с последнего persisted StepEnd.
+
+`kill_on_drop` гарантирует, что subprocess с убитого forgeplan-процесса
+тоже не остаётся zombie — tokio runtime отправляет SIGKILL при Drop
+уже после того, как forgeplan-процесс упал. Spike-2 (EVID-090)
+verified: после timeout/kill `pgrep` показывал 0 zombies.
+
+Pack authors не должны делать step «ленивым» (например, polling
+external API). Вместо этого — `Wait:` hint (PRD-071) с явным TTL
+и retry-командой; отдельный шаг получит свежий subprocess.
+
+### Кросс-ссылки секции
+
+- [ADR-010 — Subprocess invocation strategy](../../.forgeplan/adrs/ADR-010-phase-6-subprocess-invocation-via-tokio-process-with-kill-on-drop-and-timeout.md) — формальное решение
+- [EVID-090 — Spike-2 measurement](../../.forgeplan/evidence/EVID-090-spike-2-tokio-process-subprocess-invocation-validated-for-phase-6-dispatchers.md) — empirical CL3
+- [PRD-072 — Phase 6 PRD](../../.forgeplan/prds/PRD-072-real-subprocess-dispatchers-init-recommendation-wiring-greenfield-playbook.md) — FR-1..FR-10 scope
+
 ## Кросс-ссылки
 
 - [SPEC-003 — Playbook YAML schema](../../.forgeplan/specs/SPEC-003-playbook-yaml-schema.md) — формальный контракт

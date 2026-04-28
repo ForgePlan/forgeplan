@@ -38,7 +38,10 @@ pub mod command_dispatcher;
 pub mod forgeplan_core_dispatcher;
 pub mod helpers;
 pub mod plugin_dispatcher;
+pub mod routing;
 pub mod skill_dispatcher;
+
+pub use routing::RoutingDispatcher;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

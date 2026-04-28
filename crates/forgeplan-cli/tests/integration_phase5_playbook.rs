@@ -134,9 +134,11 @@ fn e2e_playbook_show_renders_structure() {
         .stdout(predicate::str::contains("mine-history"))
         .stdout(predicate::str::contains("extract-c4"))
         .stdout(predicate::str::contains("validate-graph"))
-        // Delegate labels confirm 3 different variant types are wired.
+        // Phase 6 Wave 4: fixture now uses 3× skill delegates (ALL skill —
+        // no plugin/forgeplan_core), so we assert presence of skill labels
+        // representing each step.
         .stdout(predicate::str::contains("skill:forge-history-miner"))
-        .stdout(predicate::str::contains("plugin:c4-architecture"))
+        .stdout(predicate::str::contains("skill:c4-extractor-stub"))
         // The `Next:` hint must point at the run command.
         .stdout(predicate::str::contains(
             "Next: forgeplan playbook run brownfield-code-mini",
@@ -227,7 +229,14 @@ fn e2e_playbook_run_yes_writes_journal() {
         String::from_utf8_lossy(&out.stdout),
     );
 
-    let v: Value = serde_json::from_slice(&out.stdout).expect("test fixture: run output is JSON");
+    // Phase 6 Wave 4: SkillDispatcher emits trace line `[skill-invoke] /...`
+    // to stdout BEFORE the JSON payload. Strip leading non-JSON to parse.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json_start = stdout
+        .find('{')
+        .expect("test fixture: run output must contain JSON object");
+    let v: Value =
+        serde_json::from_str(&stdout[json_start..]).expect("test fixture: run output is JSON");
     assert_eq!(v["report"]["success"], 3, "all 3 steps must succeed: {v}");
     assert_eq!(v["report"]["failed"], 0);
     assert_eq!(v["report"]["skipped"], 0);
