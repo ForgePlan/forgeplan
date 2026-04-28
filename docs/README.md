@@ -50,6 +50,8 @@ Setup, hooks, and repository protection.
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Branch protection, PR rules, destructive-action prevention |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Full Git rules — branching lifecycle, PR pipeline, release process, worktrees |
 | [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — what was ported from `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` to our crates |
+| [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ playbook authoring** — declarative YAML workflows, 5 delegation types, fallback hints, DAG ordering (PRD-065/SPEC-003) |
+| [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ ingest mapping authoring** — translate plugin output to forge artifacts with hallucination-proof `## Sources` invariant (PRD-066/SPEC-004) |
 
 ## Schemas
 

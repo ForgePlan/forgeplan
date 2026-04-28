@@ -6229,6 +6229,1083 @@ impl ForgeplanServer {
             )),
         }
     }
+
+    // ─── Phase 5 tools (PRD-065/066/067) ─────────────────────────────
+    // Wave 3 surface for playbook runtime, ingest engine, plugin
+    // detection. Real dispatchers / artifact writes deferred to Wave 4
+    // (see PRD-065 §"Wave 4 follow-up"); these tools either use
+    // `MockDispatcher` or default to dry-run semantics so agents can
+    // exercise the contract end-to-end without surprise side-effects.
+
+    #[tool(
+        description = "List all discoverable playbooks (workspace + Claude plugin packs). \
+                       Returns name, title, step count, and source path for each. PRD-065 AC-1. \
+                       Read-only filesystem scan.",
+        annotations(
+            title = "List Playbooks",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_list(
+        &self,
+        Parameters(_p): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let entries = phase5_discover_playbooks();
+        let arr: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "name": e.playbook.name,
+                    "title": e.playbook.title,
+                    "steps_count": e.playbook.steps.len(),
+                    "source_path": e.source.display().to_string(),
+                })
+            })
+            .collect();
+
+        // PRD-071 5-rule contract: real ID for the first playbook → primary
+        // action; empty workspace → Done. (terminal, nothing to chain).
+        let next_action = if let Some(first) = entries.first() {
+            let safe = sanitize_for_hint(&first.playbook.name);
+            format!("forgeplan_playbook_show target=\"{safe}\"")
+        } else {
+            "Done.".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "playbooks": arr,
+                "total": entries.len(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Show full details of a single playbook (resolved by name or path). \
+                       Returns the parsed Playbook struct + source path. PRD-065 AC-1.",
+        annotations(
+            title = "Show Playbook",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_show(
+        &self,
+        Parameters(p): Parameters<PlaybookShowParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::playbook::loader::load_playbook;
+
+        // HIGH-S1: canonicalize + confine path; emit only a generic error
+        // (no full path echoed back).
+        let resolved = match phase5_resolve_target(&p.target) {
+            Ok(path) => path,
+            Err(_msg) => {
+                return Ok(err_hinted(
+                    &format!(
+                        "playbook target `{}` not resolvable",
+                        sanitize_for_hint(&p.target)
+                    ),
+                    "List discoverable playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        // HIGH-S2: bound size + nesting before reading.
+        let yaml =
+            match phase5_read_yaml_bounded(&resolved, PHASE5_MAX_PLAYBOOK_SIZE, PHASE5_MAX_NESTING)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(err_hinted(
+                        &format!("cannot read playbook: {}", phase5_redact_read_error(&e)),
+                        "Verify the file is well-formed and below 1 MiB.",
+                    ));
+                }
+            };
+
+        let pb = match load_playbook(&yaml) {
+            Ok(pb) => pb,
+            Err(err) => {
+                // HIGH-S1/S6: do NOT echo `serde_yaml::Error` content (which
+                // includes excerpts of the offending source). Surface only
+                // structured metadata.
+                let parse_meta = phase5_redact_loader_error(&err);
+                return Ok(err_hinted(
+                    &format!("playbook parse error: {}", parse_meta["kind"]),
+                    "Validate to see structured findings: \
+                     `forgeplan_playbook_validate file=\"<path>\"`.",
+                ));
+            }
+        };
+
+        let safe_name = sanitize_for_hint(&pb.name);
+        let next_action =
+            format!("forgeplan_playbook_run target=\"{safe_name}\" yes=true dry_run=true");
+
+        hinted_result(
+            &serde_json::json!({
+                "playbook": pb,
+                "source_path": phase5_redact_path(&resolved),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Validate a playbook YAML file (parse + structural checks: cycles, \
+                       unknown step refs, mapping/produces_at consistency). Returns \
+                       `passed` flag + list of errors. PRD-065 AC-2.",
+        annotations(
+            title = "Validate Playbook",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_validate(
+        &self,
+        Parameters(p): Parameters<PlaybookValidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::playbook::loader::load_playbook;
+
+        // HIGH-S1: confine `file` to allowed roots + canonicalize.
+        let resolved = match phase5_validate_path(&p.file) {
+            Ok(c) => c,
+            Err(_) => {
+                return Ok(err_hinted(
+                    "cannot read playbook (path not in workspace)",
+                    "Verify the path exists or list playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        // HIGH-S2: bound size + nesting before reading.
+        let yaml =
+            match phase5_read_yaml_bounded(&resolved, PHASE5_MAX_PLAYBOOK_SIZE, PHASE5_MAX_NESTING)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(err_hinted(
+                        &format!("cannot read playbook: {}", phase5_redact_read_error(&e)),
+                        "Verify the file is well-formed and below 1 MiB.",
+                    ));
+                }
+            };
+
+        let redacted_path = phase5_redact_path(&resolved);
+
+        match load_playbook(&yaml) {
+            Ok(pb) => {
+                let safe = sanitize_for_hint(&pb.name);
+                hinted_result(
+                    &serde_json::json!({
+                        "passed": true,
+                        "name": pb.name,
+                        "title": pb.title,
+                        "steps_count": pb.steps.len(),
+                        "errors": [],
+                        "source_path": redacted_path,
+                    }),
+                    format!("forgeplan_playbook_run target=\"{safe}\" yes=true dry_run=true"),
+                )
+            }
+            Err(err) => {
+                // HIGH-S1/S6: emit ONLY structured fields (kind, line, column,
+                // counts) — never echo raw `serde_yaml::Error` text, which can
+                // contain excerpts of the offending source (potentially
+                // exfiltrating the contents of an arbitrary file the
+                // attacker pointed us at).
+                let parse_meta = phase5_redact_loader_error(&err);
+                hinted_result(
+                    &serde_json::json!({
+                        "passed": false,
+                        "source_path": redacted_path,
+                        "errors": [parse_meta],
+                    }),
+                    "Fix the YAML, then re-validate: \
+                     `forgeplan_playbook_validate file=\"<path>\"`.",
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Run a playbook end-to-end. Wave 3 wires `MockDispatcher::AlwaysOk` — \
+                       real plugin/agent/skill/command/forgeplan_core dispatchers land in Wave 4. \
+                       Refuses without `yes: true` (ADR-009 security gate). Use `dry_run: true` \
+                       to enumerate steps without invoking dispatchers.",
+        annotations(
+            title = "Run Playbook",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_playbook_run(
+        &self,
+        Parameters(p): Parameters<PlaybookRunParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::playbook::loader::load_playbook;
+        use forgeplan_core::playbook::{
+            DispatchOutcome, ExecutorConfig, MockDispatcher, executor::Executor, journal::Journal,
+        };
+
+        // ADR-009 / SPEC-003 §"delegate_to": refuse without yes (except dry-run).
+        if !p.yes && !p.dry_run {
+            let safe = sanitize_for_hint(&p.target);
+            return Ok(err_hinted(
+                "playbook run requires `yes: true` confirmation (ADR-009 security gate)",
+                format!("forgeplan_playbook_run target=\"{safe}\" yes=true"),
+            ));
+        }
+
+        // HIGH-S1: canonicalize + confine path; emit only a generic error
+        // (no full path echoed back).
+        let resolved = match phase5_resolve_target(&p.target) {
+            Ok(path) => path,
+            Err(_msg) => {
+                return Ok(err_hinted(
+                    &format!(
+                        "playbook target `{}` not resolvable",
+                        sanitize_for_hint(&p.target)
+                    ),
+                    "List discoverable playbooks: `forgeplan_playbook_list`.",
+                ));
+            }
+        };
+
+        // HIGH-S2: bound size + nesting before reading.
+        let yaml =
+            match phase5_read_yaml_bounded(&resolved, PHASE5_MAX_PLAYBOOK_SIZE, PHASE5_MAX_NESTING)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(err_hinted(
+                        &format!("cannot read playbook: {}", phase5_redact_read_error(&e)),
+                        "Verify the file is well-formed and below 1 MiB.",
+                    ));
+                }
+            };
+
+        let pb = match load_playbook(&yaml) {
+            Ok(pb) => pb,
+            Err(err) => {
+                // HIGH-S1/S6: do NOT leak `serde_yaml::Error` body content
+                // (line excerpts of the offending file).
+                let parse_meta = phase5_redact_loader_error(&err);
+                return Ok(err_hinted(
+                    &format!("playbook parse error: {}", parse_meta["kind"]),
+                    "Validate to see structured findings: \
+                     `forgeplan_playbook_validate file=\"<path>\"`.",
+                ));
+            }
+        };
+
+        // Range-check `step` (1-indexed).
+        if let Some(n) = p.step
+            && (n == 0 || n > pb.steps.len())
+        {
+            return Ok(err_hinted(
+                &format!(
+                    "--step out of range: requested {n}, playbook has {} step(s)",
+                    pb.steps.len()
+                ),
+                format!(
+                    "forgeplan_playbook_show target=\"{}\"",
+                    sanitize_for_hint(&pb.name)
+                ),
+            ));
+        }
+
+        if p.dry_run {
+            let from = p.step.unwrap_or(1);
+            let steps: Vec<serde_json::Value> = pb
+                .steps
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i + 1 >= from)
+                .map(|(i, s)| {
+                    serde_json::json!({
+                        "index": i + 1,
+                        "id": s.id,
+                        "delegate": phase5_delegate_label(s),
+                        "requires": s.requires,
+                    })
+                })
+                .collect();
+            let safe_name = sanitize_for_hint(&pb.name);
+            return hinted_result(
+                &serde_json::json!({
+                    "playbook": pb.name,
+                    "source_path": phase5_redact_path(&resolved),
+                    "dry_run": true,
+                    "steps": steps,
+                }),
+                format!("forgeplan_playbook_run target=\"{safe_name}\" yes=true"),
+            );
+        }
+
+        // Real run via MockDispatcher (Wave 4 wires real backends).
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        let journal = match Journal::open(&ws) {
+            Ok(j) => j,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("cannot open journal: {e}"),
+                    "Check `.forgeplan/journal/` directory permissions.",
+                ));
+            }
+        };
+
+        let dispatcher = MockDispatcher::new().with_default(DispatchOutcome::success());
+        let cfg = ExecutorConfig {
+            yes_flag: p.yes,
+            // load_playbook already validated; skip duplicate work.
+            skip_revalidation: true,
+            // HIGH-S5: forward the optional `step` arg so MCP-driven runs
+            // honour resumable runs (PRD-065 FR-6). Range-checked above.
+            start_step: p.step,
+        };
+        let mut executor = Executor::new(dispatcher, journal, cfg);
+
+        let report = match executor.run(&pb).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("playbook execution failed: {e}"),
+                    format!(
+                        "Inspect the playbook: \
+                         `forgeplan_playbook_show target=\"{}\"`.",
+                        sanitize_for_hint(&pb.name)
+                    ),
+                ));
+            }
+        };
+
+        // PRD-071: terminal Done. on clean run, otherwise show for diagnosis.
+        let next_action = if report.failed > 0 || report.skipped > 0 {
+            format!(
+                "forgeplan_playbook_show target=\"{}\"",
+                sanitize_for_hint(&pb.name)
+            )
+        } else {
+            "Done.".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "playbook": pb.name,
+                "source_path": phase5_redact_path(&resolved),
+                "report": report,
+                "wave3_note": "MockDispatcher::AlwaysOk used; real dispatchers land in Wave 4.",
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Plan an ingest run (mapping YAML × source file). Wave 3: dry-run-only — \
+                       returns drafts without writing artifacts. Set `dry_run: false` to indicate \
+                       intent to write, but the MCP surface still defers actual writes to the \
+                       `forgeplan ingest` CLI (Wave 4 will wire artifact::Store). PRD-066 AC-1.",
+        annotations(
+            title = "Ingest Plan",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_ingest(
+        &self,
+        Parameters(p): Parameters<IngestParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Wave 3 limitation: forgeplan-core does not currently re-export
+        // `serde_yaml::from_str::<Mapping>` and the MCP crate cannot add
+        // a new top-level dep in this wave. Surface a structured response
+        // pointing the agent at the CLI, which has the full pipeline
+        // available (it links serde_yaml directly).
+
+        // HIGH-S1: confine both paths to allowed roots; emit only generic
+        // errors (no full path echo to the client).
+        let mapping_canon = match phase5_validate_path(&p.mapping) {
+            Ok(c) => c,
+            Err(_) => {
+                return Ok(err_hinted(
+                    "mapping file not found or outside workspace",
+                    "Verify the mapping path. SPEC-004 mappings live under \
+                     `.forgeplan/mappings/*.yaml` by convention.",
+                ));
+            }
+        };
+        let source_canon = match phase5_validate_path(&p.source) {
+            Ok(c) => c,
+            Err(_) => {
+                return Ok(err_hinted(
+                    "source path not found or outside workspace",
+                    "Verify the source path exists under the workspace.",
+                ));
+            }
+        };
+
+        // HIGH-S2: enforce size limits so a hostile mapping or source
+        // cannot OOM the MCP server. Nesting check applies to the YAML
+        // mapping; source files are content-typed (md, etc.) so we only
+        // bound their size.
+        if let Ok(meta) = tokio::fs::metadata(&mapping_canon).await
+            && meta.len() > PHASE5_MAX_MAPPING_SIZE
+        {
+            return Ok(err_hinted(
+                &format!(
+                    "mapping exceeds {}-byte size limit",
+                    PHASE5_MAX_MAPPING_SIZE
+                ),
+                "Trim the mapping or split into multiple SPEC-004 files.",
+            ));
+        }
+        if let Ok(meta) = tokio::fs::metadata(&source_canon).await
+            && meta.len() > PHASE5_MAX_SOURCE_SIZE
+        {
+            return Ok(err_hinted(
+                &format!("source exceeds {}-byte size limit", PHASE5_MAX_SOURCE_SIZE),
+                "Split the source file before ingestion.",
+            ));
+        }
+
+        // Document the choice: Wave 3 returns a "planned" view (paths
+        // validated, parameters echoed) and points at the CLI for full
+        // execution. Wave 4 will wire IngestEngine + artifact::Store
+        // here once the YAML loader is re-exported from forgeplan-core.
+        //
+        // HIGH-S6: hint uses redacted paths so the MCP client never sees
+        // the host's absolute filesystem layout.
+        let mapping_redacted = phase5_redact_path(&mapping_canon);
+        let source_redacted = phase5_redact_path(&source_canon);
+        let next_action = format!(
+            "forgeplan ingest --mapping {} --source {}{}{}",
+            shell_quote(&mapping_redacted),
+            shell_quote(&source_redacted),
+            if p.dry_run { " --dry-run" } else { "" },
+            if p.update { " --update" } else { "" },
+        );
+
+        hinted_result(
+            &serde_json::json!({
+                "wave3_status": "planned",
+                "wave3_note": "Wave 3 MCP surface validates inputs only; full ingest \
+                               execution available via the `forgeplan ingest` CLI. \
+                               Wave 4 will wire IngestEngine + artifact::Store directly.",
+                "mapping": mapping_redacted,
+                "source": source_redacted,
+                "dry_run": p.dry_run,
+                "update": p.update,
+                "drafts": [],
+                "skipped": [],
+                "errors": [],
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "List installed plugins detected on disk (Claude plugins + agentskills + \
+                       Cursor) + missing entries from the extended registry. PRD-067 AC-1. \
+                       Read-only filesystem scan.",
+        annotations(
+            title = "List Plugins",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_plugins_list(
+        &self,
+        Parameters(_p): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::plugins::{detect_plugins, extended_registry};
+
+        let registry = extended_registry();
+        let installed = detect_plugins(&registry);
+        let installed_names: HashSet<String> =
+            installed.iter().map(|p| p.info.name.clone()).collect();
+        let missing: Vec<&forgeplan_core::plugins::PluginInfo> = registry
+            .iter()
+            .filter(|info| !installed_names.contains(&info.name))
+            .collect();
+
+        let next_action = if let Some(first) = installed.first() {
+            let safe = sanitize_for_hint(&first.info.name);
+            format!("forgeplan_plugins_info name=\"{safe}\"")
+        } else if missing.is_empty() {
+            "Done.".to_string()
+        } else {
+            "forgeplan_plugins_doctor".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "installed": installed,
+                "missing": missing,
+                "installed_count": installed.len(),
+                "missing_count": missing.len(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Health-check across the full plugin registry: separates ok / outdated / \
+                       missing entries and surfaces install hints for the missing ones. \
+                       PRD-067 AC-2.",
+        annotations(
+            title = "Plugins Doctor",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_plugins_doctor(
+        &self,
+        Parameters(_p): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::plugins::{detect_plugins, extended_registry};
+
+        let registry = extended_registry();
+        let installed = detect_plugins(&registry);
+        let installed_map: BTreeMap<String, _> = installed
+            .iter()
+            .map(|p| (p.info.name.clone(), p.clone()))
+            .collect();
+
+        let mut ok: Vec<serde_json::Value> = Vec::new();
+        let mut outdated: Vec<serde_json::Value> = Vec::new();
+        let mut missing: Vec<serde_json::Value> = Vec::new();
+        let mut install_hints: Vec<String> = Vec::new();
+
+        for info in registry.iter() {
+            match installed_map.get(&info.name) {
+                Some(inst) => {
+                    // Compatibility check: false ⇒ outdated, true or err ⇒ ok.
+                    let compatible = inst.is_version_compatible().unwrap_or(true);
+                    if compatible {
+                        ok.push(serde_json::json!({
+                            "name": info.name,
+                            "detected_version": inst.detected_version,
+                            "version_req": info.version_req,
+                            "path": inst.detected_path.display().to_string(),
+                        }));
+                    } else {
+                        outdated.push(serde_json::json!({
+                            "name": info.name,
+                            "detected_version": inst.detected_version,
+                            "required": info.version_req,
+                            "path": inst.detected_path.display().to_string(),
+                        }));
+                        install_hints.push(info.install_command.clone());
+                    }
+                }
+                None => {
+                    missing.push(serde_json::json!({
+                        "name": info.name,
+                        "version_req": info.version_req,
+                        "description": info.description,
+                    }));
+                    install_hints.push(info.install_command.clone());
+                }
+            }
+        }
+
+        // PRD-071: drive the agent to the CLI install command for the first
+        // problem when something is missing/outdated, otherwise terminal.
+        let next_action = if let Some(first_hint) = install_hints.first() {
+            // The hint is a shell command from the static registry — sanitize
+            // before splicing into a string passed back to the agent.
+            let safe = sanitize_for_hint(first_hint);
+            format!("Run install hint: `{safe}`. Then re-check: `forgeplan_plugins_doctor`.")
+        } else {
+            "Done.".to_string()
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "ok": ok,
+                "outdated": outdated,
+                "missing": missing,
+                "install_hints": install_hints,
+                "ok_count": ok.len(),
+                "outdated_count": outdated.len(),
+                "missing_count": missing.len(),
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "Show details for a single plugin from the extended registry. Returns \
+                       the static PluginInfo plus, if installed, the InstalledPlugin runtime \
+                       record (detected path + version). PRD-067.",
+        annotations(
+            title = "Plugin Info",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_plugins_info(
+        &self,
+        Parameters(p): Parameters<PluginsInfoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use forgeplan_core::plugins::{detect_plugins, extended_registry};
+
+        let registry = extended_registry();
+        let info = match registry.get(&p.name) {
+            Some(i) => i.clone(),
+            None => {
+                return Ok(err_hinted(
+                    &format!("plugin `{}` not in registry", sanitize_for_hint(&p.name)),
+                    "List all known plugins: `forgeplan_plugins_list`.",
+                ));
+            }
+        };
+
+        let installed = detect_plugins(&registry)
+            .into_iter()
+            .find(|inst| inst.info.name == p.name);
+
+        let next_action = match &installed {
+            Some(inst) => match inst.is_version_compatible() {
+                Ok(true) => "Done.".to_string(),
+                _ => {
+                    let safe_cmd = sanitize_for_hint(&info.install_command);
+                    format!("Update plugin: `{safe_cmd}`.")
+                }
+            },
+            None => {
+                let safe_cmd = sanitize_for_hint(&info.install_command);
+                format!("Install: `{safe_cmd}`.")
+            }
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "info": info,
+                "installed": installed,
+            }),
+            next_action,
+        )
+    }
+}
+
+// ── Phase 5 helpers (PRD-065/066/067) ────────────────────────
+
+// =====================================================================
+// Phase 5 resource limits (HIGH-S2 — Audit Round 1 finding)
+// =====================================================================
+//
+// Reading a playbook / mapping YAML over MCP always pulls the full file
+// into memory before parsing. Without bounds an attacker controlling MCP
+// input can OOM-crash the server with a multi-GB file or stack-overflow
+// `serde_yaml` with deep nesting. We enforce size + nesting heuristics
+// up front.
+
+/// Maximum playbook YAML size accepted by Phase 5 MCP tools (1 MiB).
+const PHASE5_MAX_PLAYBOOK_SIZE: u64 = 1024 * 1024;
+
+/// Maximum mapping YAML size (1 MiB) — used by `forgeplan_ingest`.
+const PHASE5_MAX_MAPPING_SIZE: u64 = 1024 * 1024;
+
+/// Maximum source file size accepted by Phase 5 MCP tools (10 MiB).
+const PHASE5_MAX_SOURCE_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Maximum opener depth (`{` / `[` count) in a Phase 5 YAML payload.
+/// `serde_yaml` < 0.9 has no public recursion-limit knob.
+const PHASE5_MAX_NESTING: usize = 256;
+
+/// Size + nesting outcome for Phase 5 YAML reads. Carries a redaction-
+/// friendly summary suitable for error messages without quoting offending
+/// content.
+#[derive(Debug)]
+enum Phase5ReadError {
+    /// File metadata reports a length above the configured limit.
+    TooLarge { actual: u64, limit: u64 },
+    /// Nesting heuristic exceeded the configured limit.
+    TooDeep { actual: usize, limit: usize },
+    /// Underlying I/O error (file missing, permission denied, etc).
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for Phase5ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { actual, limit } => {
+                write!(f, "file too large ({} bytes > {} bytes)", actual, limit)
+            }
+            Self::TooDeep { actual, limit } => write!(
+                f,
+                "YAML too deeply nested ({} > {} brackets)",
+                actual, limit
+            ),
+            Self::Io(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+/// Read a YAML payload from disk under the given size + nesting bounds.
+///
+/// Used by every Phase 5 MCP handler so a single oversize input cannot
+/// OOM-crash the server (HIGH-S2). The on-disk file size is checked via
+/// `metadata()` before any allocation; nesting is heuristically counted on
+/// the loaded string and rejected before invoking `serde_yaml`.
+async fn phase5_read_yaml_bounded(
+    path: &std::path::Path,
+    size_limit: u64,
+    nesting_limit: usize,
+) -> Result<String, Phase5ReadError> {
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(Phase5ReadError::Io)?;
+    let len = meta.len();
+    if len > size_limit {
+        return Err(Phase5ReadError::TooLarge {
+            actual: len,
+            limit: size_limit,
+        });
+    }
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(Phase5ReadError::Io)?;
+    let depth = content.bytes().filter(|b| *b == b'{' || *b == b'[').count();
+    if depth > nesting_limit {
+        return Err(Phase5ReadError::TooDeep {
+            actual: depth,
+            limit: nesting_limit,
+        });
+    }
+    Ok(content)
+}
+
+/// Render a relative path string for inclusion in MCP responses.
+///
+/// HIGH-S6 (Audit Round 1): the MCP server should not leak absolute on-disk
+/// paths to the client (which may be a hostile agent). We strip the
+/// workspace prefix when possible and otherwise return only the file name.
+fn phase5_redact_path(path: &std::path::Path) -> String {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(stripped) = path.strip_prefix(&cwd)
+    {
+        return stripped.display().to_string();
+    }
+    if let Some(ws) = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| forgeplan_core::workspace::find_workspace(&cwd))
+        && let Some(parent) = ws.parent()
+        && let Ok(stripped) = path.strip_prefix(parent)
+    {
+        return stripped.display().to_string();
+    }
+    // Fall back to file name only — never leak absolute paths.
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from)
+        .unwrap_or_else(|| "<redacted>".to_string())
+}
+
+/// Redact a [`Phase5ReadError`] into a structured message safe for MCP
+/// clients (no absolute paths, no offending content excerpts).
+fn phase5_redact_read_error(err: &Phase5ReadError) -> String {
+    match err {
+        Phase5ReadError::TooLarge { limit, .. } => {
+            format!("file exceeds the {}-byte size limit", limit)
+        }
+        Phase5ReadError::TooDeep { limit, .. } => {
+            format!("YAML exceeds the {}-bracket nesting limit", limit)
+        }
+        // Display impl on io::Error is path-free — safe.
+        Phase5ReadError::Io(e) => format!("io error: {}", e.kind()),
+    }
+}
+
+/// Redact a [`forgeplan_core::playbook::loader::LoaderError`] for MCP
+/// responses. The default `Display` for [`LoaderError::Yaml`] forwards to
+/// `serde_yaml::Error`, which emits offending source excerpts (HIGH-S1).
+/// We extract only line/column metadata.
+fn phase5_redact_loader_error(
+    err: &forgeplan_core::playbook::loader::LoaderError,
+) -> serde_json::Value {
+    use forgeplan_core::playbook::loader::LoaderError;
+    match err {
+        LoaderError::Yaml(e) => {
+            let loc = e.location();
+            serde_json::json!({
+                "kind": "yaml_parse_error",
+                "line": loc.as_ref().map(|l| l.line()),
+                "column": loc.as_ref().map(|l| l.column()),
+            })
+        }
+        LoaderError::EmptySteps => serde_json::json!({ "kind": "empty_steps" }),
+        LoaderError::UnknownStepRef { pairs } => serde_json::json!({
+            "kind": "unknown_step_ref",
+            "count": pairs.len(),
+        }),
+        LoaderError::Cycle { path } => serde_json::json!({
+            "kind": "cycle",
+            "path_len": path.len(),
+        }),
+        LoaderError::MappingWithoutProducesAt { step_id } => serde_json::json!({
+            "kind": "mapping_without_produces_at",
+            "step_id": sanitize_for_hint(step_id),
+        }),
+        LoaderError::UnsupportedSchemaVersion { version, supported } => serde_json::json!({
+            "kind": "unsupported_schema_version",
+            "version": sanitize_for_hint(version),
+            "supported": sanitize_for_hint(supported),
+        }),
+        LoaderError::InternalRange { range, .. } => serde_json::json!({
+            "kind": "internal_range",
+            "range": sanitize_for_hint(range),
+        }),
+    }
+}
+
+/// Roots a Phase 5 file path is permitted to live under (HIGH-S1).
+///
+/// We accept files under either:
+///   1. The current working directory (typical workspace) — but only after
+///      crossing through a `find_workspace` check so it actually corresponds
+///      to a `.forgeplan/` workspace, **OR**
+///   2. The `~/.claude/plugins/*/playbooks/` directory tree where Claude
+///      plugin packs install playbook bundles.
+///
+/// Each path is canonicalized before the check — we explicitly want to
+/// reject `../../etc/passwd` even when the symlink target is benign.
+fn phase5_allowed_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+
+    // 1. Workspace root (parent of `.forgeplan/`).
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
+        && let Some(parent) = ws.parent()
+        && let Ok(canon) = parent.canonicalize()
+    {
+        roots.push(canon);
+    }
+
+    // 2. Claude plugins root (each pack ships its own `playbooks/`).
+    if let Ok(home) = std::env::var("HOME") {
+        let plugins_root = std::path::Path::new(&home).join(".claude").join("plugins");
+        if let Ok(canon) = plugins_root.canonicalize() {
+            roots.push(canon);
+        }
+    }
+
+    roots
+}
+
+/// Validate that `path` is an existing regular file under one of
+/// [`phase5_allowed_roots`] (HIGH-S1). Returns the canonicalized path on
+/// success and a generic error message (no leaked path components) on
+/// failure.
+fn phase5_validate_path(path: &std::path::Path) -> Result<PathBuf, &'static str> {
+    let canon = path.canonicalize().map_err(|_| "path does not exist")?;
+    if !canon.is_file() {
+        return Err("path is not a regular file");
+    }
+    let roots = phase5_allowed_roots();
+    if roots.is_empty() {
+        // Be conservative: with no recognized roots we refuse rather than
+        // fall through to "anything goes".
+        return Err("workspace root not resolved");
+    }
+    for root in &roots {
+        if canon.starts_with(root) {
+            return Ok(canon);
+        }
+    }
+    Err("path is outside the allowed roots")
+}
+
+/// One discovered playbook plus its source file path.
+struct Phase5DiscoveredPlaybook {
+    playbook: forgeplan_core::playbook::Playbook,
+    source: PathBuf,
+}
+
+/// Discover playbooks in workspace + plugin dirs. Mirror of the CLI helper
+/// (kept here so the MCP crate doesn't depend on forgeplan-cli internals).
+/// Failed-to-parse files are silently skipped; invariant: returns a list,
+/// never errors.
+fn phase5_discover_playbooks() -> Vec<Phase5DiscoveredPlaybook> {
+    use forgeplan_core::playbook::loader::load_playbook;
+    let mut out: Vec<Phase5DiscoveredPlaybook> = Vec::new();
+    let mut seen_names: HashSet<String> = HashSet::new();
+
+    for path in phase5_playbook_search_paths() {
+        let yamls = match phase5_collect_yaml_files(&path) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for file in yamls {
+            // HIGH-S2: enforce size limit at discovery time so a single
+            // oversized YAML cannot blow up `playbook list`.
+            if let Ok(meta) = std::fs::metadata(&file)
+                && meta.len() > PHASE5_MAX_PLAYBOOK_SIZE
+            {
+                continue;
+            }
+            if let Ok(yaml) = std::fs::read_to_string(&file) {
+                let depth = yaml.bytes().filter(|b| *b == b'{' || *b == b'[').count();
+                if depth > PHASE5_MAX_NESTING {
+                    continue;
+                }
+                if let Ok(pb) = load_playbook(&yaml)
+                    && seen_names.insert(pb.name.clone())
+                {
+                    out.push(Phase5DiscoveredPlaybook {
+                        playbook: pb,
+                        source: file,
+                    });
+                }
+            }
+        }
+    }
+
+    out.sort_by(|a, b| a.playbook.name.cmp(&b.playbook.name));
+    out
+}
+
+/// Search roots for playbook discovery. Workspace `.forgeplan/playbooks/`
+/// first, then any installed Claude plugin pack. Uses `$HOME` directly
+/// (no `dirs` dep) because this MCP crate does not declare it as a dep.
+///
+/// Note: `find_workspace` already returns the `.forgeplan/` directory (not
+/// the project root), so we join `playbooks` directly. Earlier versions
+/// of this helper double-joined `.forgeplan` and produced a path that
+/// never existed on disk — discovery silently returned an empty list.
+fn phase5_playbook_search_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
+    {
+        paths.push(ws.join("playbooks"));
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let plugins_root = std::path::Path::new(&home).join(".claude").join("plugins");
+        if let Ok(entries) = std::fs::read_dir(&plugins_root) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    paths.push(entry.path().join("playbooks"));
+                }
+            }
+        }
+    }
+
+    paths
+}
+
+/// List `.yaml` / `.yml` files in `dir` (non-recursive).
+fn phase5_collect_yaml_files(dir: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file()
+            && let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && (ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+        {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Resolve a playbook target argument to a file path.
+///
+/// HIGH-S1 (Audit Round 1): a path-like `target` is canonicalized and
+/// confined to the allowed roots returned by [`phase5_allowed_roots`].
+/// Inputs like `/etc/passwd` or `../../../etc/passwd` are rejected with a
+/// generic error string (no leaked path) so an attacker cannot probe the
+/// host filesystem via the MCP surface.
+///
+/// Discovered names (the second branch) are always re-validated through
+/// [`phase5_validate_path`] for defense-in-depth: even if a hostile
+/// playbook-discovery root were ever introduced, the same gate will refuse
+/// resolutions that escape the allowed roots.
+fn phase5_resolve_target(target: &str) -> Result<PathBuf, String> {
+    let as_path = std::path::Path::new(target);
+    let looks_like_path = target.contains('/')
+        || target.contains('\\')
+        || target.ends_with(".yaml")
+        || target.ends_with(".yml");
+
+    if looks_like_path {
+        return phase5_validate_path(as_path).map_err(|reason| reason.to_string());
+    }
+
+    // Bare-name lookup: rely on discovery to surface only files we already
+    // walked, then re-validate the canonical path to remain consistent
+    // with the path-mode branch.
+    for entry in phase5_discover_playbooks() {
+        if entry.playbook.name == target {
+            return phase5_validate_path(&entry.source).map_err(|reason| reason.to_string());
+        }
+    }
+
+    Err("no playbook with that name".to_string())
+}
+
+/// Compact label for a step's delegate.
+fn phase5_delegate_label(step: &forgeplan_core::playbook::Step) -> String {
+    use forgeplan_core::playbook::Delegation;
+    match &step.delegate_to {
+        Delegation::Plugin { name, target } => format!("plugin:{name}#{target}"),
+        Delegation::Agent { name } => format!("agent:{name}"),
+        Delegation::Skill { name, pack } => match pack {
+            Some(p) => format!("skill:{name} (pack: {p})"),
+            None => format!("skill:{name}"),
+        },
+        Delegation::Command { command } => format!("command:{}", command.join(" ")),
+        Delegation::ForgeplanCore { target } => match target {
+            forgeplan_core::playbook::ForgeplanOp::Ingest => "forgeplan_core:ingest".into(),
+            forgeplan_core::playbook::ForgeplanOp::New => "forgeplan_core:new".into(),
+            forgeplan_core::playbook::ForgeplanOp::Validate => "forgeplan_core:validate".into(),
+            forgeplan_core::playbook::ForgeplanOp::Activate => "forgeplan_core:activate".into(),
+            forgeplan_core::playbook::ForgeplanOp::Search => "forgeplan_core:search".into(),
+        },
+    }
+}
+
+/// Quote a path for inclusion in a follow-up CLI command if it contains
+/// shell-special characters. Used by the ingest tool's `_next_action`.
+fn shell_quote(s: &str) -> String {
+    if s.contains(char::is_whitespace) || s.contains('"') || s.contains('\'') {
+        format!("\"{}\"", s.replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
 }
 
 // ── ServerHandler ────────────────────────────────────────────
@@ -7993,5 +9070,567 @@ mod claim_mcp_tests {
         assert_ne!(result.is_error, Some(true));
         // Full JSON verification is expensive; we trust ClaimStore tests
         // and verify only that the call path doesn't short-circuit.
+    }
+}
+
+// ─── Phase 5 tool tests (PRD-065/066/067) ────────────────────────────
+#[cfg(test)]
+mod phase5_tests {
+    //! Integration tests for the 8 Phase 5 MCP tool handlers.
+    //!
+    //! Verify wiring (hint contract emission, security gate on
+    //! `forgeplan_playbook_run`, dry-run semantics, registry usage).
+    //! Detection-engine semantics are owned by forgeplan-core tests.
+
+    use super::*;
+    use tempfile::TempDir;
+
+    /// RAII guard that captures HOME + cwd at construction and restores
+    /// both on drop, including when a test panics.
+    ///
+    /// Without this, an assertion failure mid-test would drop the
+    /// associated `TempDir` while the process working directory still
+    /// pointed inside it — the next test's `std::env::current_dir()` then
+    /// errors with `NotFound`. Restoring via Drop ensures the state is
+    /// always returned to the caller's view of the world even on panic.
+    struct EnvSnapshot {
+        prev_home: std::ffi::OsString,
+        prev_cwd: PathBuf,
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            // SAFETY: process-wide env mutation in test fixture; tests
+            // are serialized by the `test_lock()` guard each test holds,
+            // so no other thread is observing HOME concurrently.
+            unsafe { std::env::set_var("HOME", &self.prev_home) };
+            // Best-effort cwd restore. If the previous cwd vanished —
+            // shouldn't happen in practice, but defend against it — fall
+            // back to `/` so subsequent tests can call `current_dir()`.
+            if std::env::set_current_dir(&self.prev_cwd).is_err() {
+                let _ = std::env::set_current_dir("/");
+            }
+        }
+    }
+
+    /// Spin up a minimally-initialized MCP server in a tempdir + isolate
+    /// `$HOME` and the process working directory so plugin/playbook
+    /// discovery + the HIGH-S1 path-confinement check both anchor inside
+    /// the test workspace (not the host machine's clone of the repo).
+    async fn isolated_server() -> (ForgeplanServer, TempDir, EnvSnapshot) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = root.join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+        tokio::fs::create_dir_all(ws.join("playbooks"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(ws.join("journal")).await.unwrap();
+        let server = ForgeplanServer::new(root.clone()).await;
+        *server.workspace_path.write().await = Some(ws);
+
+        // Snapshot HOME + cwd so the [`EnvSnapshot`] guard can restore them.
+        let prev_home = std::env::var_os("HOME").unwrap_or_default();
+        let prev_cwd = std::env::current_dir().unwrap();
+        // Point HOME at the tempdir → no ~/.claude/plugins on dev machine.
+        // SAFETY: tests run serially within this module via `test_lock()`
+        // (taken before `isolated_server` is called); we accept the cost
+        // of a brief env mutation in exchange for true filesystem isolation.
+        unsafe { std::env::set_var("HOME", root.to_str().unwrap()) };
+        // Anchor cwd inside the tempdir so HIGH-S1's `phase5_allowed_roots`
+        // resolves to this test's `.forgeplan/` rather than the developer's.
+        std::env::set_current_dir(&root).unwrap();
+
+        (
+            server,
+            tmp,
+            EnvSnapshot {
+                prev_home,
+                prev_cwd,
+            },
+        )
+    }
+
+    /// Explicit restore-on-success entry point. The Drop impl on
+    /// [`EnvSnapshot`] handles the panic / early-return cases — call sites
+    /// invoke this at the end of happy-path tests for symmetry with the
+    /// older fixture API. Functionally identical to letting the snapshot
+    /// drop at scope exit.
+    fn restore_env(_snap: EnvSnapshot) {
+        // Drop runs the actual restore.
+    }
+
+    /// Global mutex to serialize tests that mutate the process-wide
+    /// `HOME` env var (cargo runs tests in parallel by default within a
+    /// crate). Uses `tokio::sync::Mutex` so the guard can be held across
+    /// `.await` points (clippy::await_holding_lock).
+    async fn test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        use std::sync::OnceLock;
+        use tokio::sync::Mutex;
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().await
+    }
+
+    fn body_of(r: &CallToolResult) -> serde_json::Value {
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => serde_json::from_str(&t.text).unwrap(),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    // -- Group A: Playbook tools ---------------------------------------
+
+    #[tokio::test]
+    async fn playbook_list_returns_empty_for_empty_workspace() {
+        let _g = test_lock().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        let r = server
+            .forgeplan_playbook_list(Parameters(EmptyParams::default()))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        assert_eq!(body["total"].as_u64().unwrap(), 0);
+        assert!(body["playbooks"].as_array().unwrap().is_empty());
+        // PRD-071: empty → terminal Done.
+        assert_eq!(body["_next_action"].as_str().unwrap(), "Done.");
+        restore_env(snap);
+    }
+
+    #[tokio::test]
+    async fn playbook_validate_fails_on_malformed() {
+        let _g = test_lock().await;
+        let (server, tmp, snap) = isolated_server().await;
+        // Write a malformed playbook (cycle in requires:). HIGH-S1 path
+        // confinement now requires the file to live under the workspace
+        // root, so it goes into `.forgeplan/playbooks/` rather than the
+        // bare tempdir.
+        let yaml = r#"
+schema_version: "1.0"
+name: cyclic
+title: Cyclic
+steps:
+  - id: a
+    delegate_to: { type: agent, name: x }
+    requires: [b]
+  - id: b
+    delegate_to: { type: agent, name: y }
+    requires: [a]
+"#;
+        let pb_dir = tmp.path().join(".forgeplan").join("playbooks");
+        tokio::fs::create_dir_all(&pb_dir).await.unwrap();
+        let file = pb_dir.join("bad.yaml");
+        tokio::fs::write(&file, yaml).await.unwrap();
+        let r = server
+            .forgeplan_playbook_validate(Parameters(PlaybookValidateParams { file: file.clone() }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert!(!body["passed"].as_bool().unwrap());
+        assert!(!body["errors"].as_array().unwrap().is_empty());
+        let next = body["_next_action"].as_str().unwrap();
+        assert!(
+            next.contains("forgeplan_playbook_validate"),
+            "Fix hint must point back at validate, got: {next}"
+        );
+        restore_env(snap);
+    }
+
+    #[tokio::test]
+    async fn playbook_run_refuses_without_yes() {
+        let _g = test_lock().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        // Seed a valid playbook in the workspace so `target` resolves.
+        let yaml = r#"
+schema_version: "1.0"
+name: hello
+title: Hello
+steps:
+  - id: only
+    delegate_to: { type: agent, name: a }
+"#;
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        tokio::fs::write(ws.join("playbooks/hello.yaml"), yaml)
+            .await
+            .unwrap();
+
+        let r = server
+            .forgeplan_playbook_run(Parameters(PlaybookRunParams {
+                target: "hello".to_string(),
+                dry_run: false,
+                step: None,
+                yes: false,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            r.is_error,
+            Some(true),
+            "must refuse without yes (ADR-009 security gate)"
+        );
+        // The CallToolResult::error wraps the message + Fix: contract.
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => {
+                assert!(
+                    t.text.contains("yes: true") || t.text.contains("ADR-009"),
+                    "error text should explain security gate, got: {}",
+                    t.text
+                );
+            }
+            _ => panic!("expected text"),
+        }
+        restore_env(snap);
+    }
+
+    // -- Group B: Ingest tool ------------------------------------------
+
+    #[tokio::test]
+    async fn ingest_dry_run_returns_drafts() {
+        let _g = test_lock().await;
+        let (server, tmp, snap) = isolated_server().await;
+        // Wave 3 ingest is dry-only — minimal mapping + source files
+        // need to exist; the tool surfaces a planned response. HIGH-S1
+        // requires the files to live under the workspace.
+        let mapping = tmp.path().join(".forgeplan").join("mapping.yaml");
+        let source = tmp.path().join(".forgeplan").join("source.md");
+        tokio::fs::write(&mapping, "schema_version: \"1.0\"\n")
+            .await
+            .unwrap();
+        tokio::fs::write(&source, "# heading\nbody\n")
+            .await
+            .unwrap();
+
+        let r = server
+            .forgeplan_ingest(Parameters(IngestParams {
+                mapping: mapping.clone(),
+                source: source.clone(),
+                dry_run: true,
+                update: false,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        // Wave 3 contract: drafts/skipped/errors arrays present (empty).
+        assert!(body["drafts"].is_array());
+        assert!(body["skipped"].is_array());
+        assert!(body["errors"].is_array());
+        assert!(body["dry_run"].as_bool().unwrap());
+        // Hint must point at the CLI per documented Wave 3 deferral.
+        let next = body["_next_action"].as_str().unwrap();
+        assert!(
+            next.contains("forgeplan ingest"),
+            "_next_action should point to CLI, got: {next}"
+        );
+        restore_env(snap);
+    }
+
+    // -- Group C: Plugins tools ----------------------------------------
+
+    #[tokio::test]
+    async fn plugins_list_uses_extended_registry() {
+        let _g = test_lock().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        let r = server
+            .forgeplan_plugins_list(Parameters(EmptyParams::default()))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        // Extended registry has > 6 entries (default 6 + extras). With HOME
+        // pointed at a tempdir none should be installed (except built-in
+        // forgeplan, which detect_plugins materializes synthetically).
+        let installed = body["installed"].as_array().unwrap();
+        let missing = body["missing"].as_array().unwrap();
+        // Total = installed + missing must be ≥ 6 (default registry size).
+        assert!(
+            installed.len() + missing.len() >= 6,
+            "extended registry should expose ≥ 6 plugins; got {} + {}",
+            installed.len(),
+            missing.len()
+        );
+        // Built-in forgeplan should be in installed (synthetic).
+        let has_forgeplan = installed
+            .iter()
+            .any(|p| p["info"]["name"].as_str() == Some("forgeplan"));
+        assert!(
+            has_forgeplan,
+            "built-in forgeplan must be reported as installed"
+        );
+        restore_env(snap);
+    }
+
+    #[tokio::test]
+    async fn plugins_doctor_reports_missing_with_install_hints() {
+        let _g = test_lock().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        let r = server
+            .forgeplan_plugins_doctor(Parameters(EmptyParams::default()))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true));
+        let body = body_of(&r);
+        let missing_count = body["missing_count"].as_u64().unwrap();
+        // With HOME isolated to tempdir, every non-builtin plugin is missing.
+        assert!(
+            missing_count > 0,
+            "expected missing plugins under HOME=tempdir"
+        );
+        let install_hints = body["install_hints"].as_array().unwrap();
+        assert!(
+            !install_hints.is_empty(),
+            "install_hints must be populated when missing_count > 0"
+        );
+        // PRD-071: hint must drive the agent to remediation.
+        let next = body["_next_action"].as_str().unwrap();
+        assert!(
+            next.contains("install") || next.contains("Install"),
+            "doctor _next_action should mention install, got: {next}"
+        );
+        restore_env(snap);
+    }
+
+    // -- Sanity: plugins_info on missing entry returns hinted error ----
+
+    #[tokio::test]
+    async fn plugins_info_unknown_plugin_returns_hinted_error() {
+        let _g = test_lock().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        let r = server
+            .forgeplan_plugins_info(Parameters(PluginsInfoParams {
+                name: "definitely-not-a-real-plugin-xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => {
+                assert!(
+                    t.text.contains("forgeplan_plugins_list"),
+                    "error must hint at list tool, got: {}",
+                    t.text
+                );
+            }
+            _ => panic!("expected text"),
+        }
+        restore_env(snap);
+    }
+
+    // ── HIGH-S1: path canonicalization rejects out-of-workspace paths ──
+
+    #[tokio::test]
+    async fn phase5_resolve_target_rejects_etc_passwd() {
+        let _g = test_lock().await;
+        let (_server, _tmp, snap) = isolated_server().await;
+        // Even if /etc/passwd exists on the host, our allow-list of roots
+        // (workspace + ~/.claude/plugins) excludes it, so the resolver must
+        // refuse without leaking content.
+        let err = phase5_resolve_target("/etc/passwd").expect_err("must refuse");
+        // Error string must NOT contain `/etc/passwd` — generic message only.
+        assert!(
+            !err.contains("/etc/passwd"),
+            "error must not echo target path, got: {err}"
+        );
+        restore_env(snap);
+    }
+
+    #[tokio::test]
+    async fn phase5_resolve_target_rejects_traversal_attempt() {
+        let _g = test_lock().await;
+        let (_server, _tmp, snap) = isolated_server().await;
+        // `..` traversal — even when the underlying path exists, the
+        // canonical form should land outside the allowed roots.
+        let err = phase5_resolve_target("../../../etc/passwd").expect_err("must refuse");
+        assert!(
+            !err.contains("/etc/passwd"),
+            "error must not echo traversal target, got: {err}"
+        );
+        restore_env(snap);
+    }
+
+    #[tokio::test]
+    async fn phase5_resolve_target_accepts_workspace_path() {
+        let _g = test_lock().await;
+        let (_server, tmp, snap) = isolated_server().await;
+        // Write a real playbook inside the workspace. The fixture already
+        // created `.forgeplan/playbooks/` so we can reuse it directly.
+        let yaml = r#"
+schema_version: "1.0"
+name: ws-pb
+title: WS
+steps:
+  - id: only
+    delegate_to: { type: agent, name: a }
+"#;
+        let pb_path = tmp
+            .path()
+            .join(".forgeplan")
+            .join("playbooks")
+            .join("ws.yaml");
+        tokio::fs::write(&pb_path, yaml).await.unwrap();
+        // Path-mode resolve should canonicalize and pass the allow-list.
+        let resolved =
+            phase5_resolve_target(pb_path.to_str().unwrap()).expect("workspace path must resolve");
+        assert!(resolved.ends_with("ws.yaml"));
+        restore_env(snap);
+    }
+
+    // ── HIGH-S6 / HIGH-S1: serde_yaml error content is NOT echoed ──
+
+    #[tokio::test]
+    async fn playbook_validate_redacts_yaml_error_content() {
+        let _g = test_lock().await;
+        let (server, tmp, snap) = isolated_server().await;
+
+        // Write a YAML file that contains a recognisable secret-looking
+        // string and then fails to parse. If `serde_yaml::Error` content
+        // were forwarded verbatim, the secret would round-trip back to
+        // the MCP client.
+        const SECRET_TOKEN: &str = "S3CR3T_CANARY_TOKEN_zzqq";
+        let bad = format!(
+            "schema_version: \"1.0\"\nname: bad\nsecret: {SECRET_TOKEN}\nsteps: [: invalid"
+        );
+        let bad_path = tmp
+            .path()
+            .join(".forgeplan")
+            .join("playbooks")
+            .join("bad.yaml");
+        tokio::fs::write(&bad_path, &bad).await.unwrap();
+
+        let r = server
+            .forgeplan_playbook_validate(Parameters(PlaybookValidateParams {
+                file: bad_path.clone(),
+            }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert_eq!(body["passed"].as_bool(), Some(false), "must report failure");
+        let raw = serde_json::to_string(&body).unwrap();
+        assert!(
+            !raw.contains(SECRET_TOKEN),
+            "redacted error must NOT echo source content; got: {raw}"
+        );
+        // We do still want a structured `kind` field so agents can branch.
+        let errors = body["errors"].as_array().expect("errors array");
+        assert!(!errors.is_empty(), "must surface error metadata");
+        assert!(
+            errors[0]["kind"].is_string(),
+            "first error must carry a structured `kind`"
+        );
+
+        restore_env(snap);
+    }
+
+    // ── HIGH-S2: oversized YAML is rejected before parsing ──
+
+    #[tokio::test]
+    async fn playbook_validate_rejects_oversized_yaml() {
+        let _g = test_lock().await;
+        let (server, tmp, snap) = isolated_server().await;
+
+        let big_path = tmp
+            .path()
+            .join(".forgeplan")
+            .join("playbooks")
+            .join("huge.yaml");
+        let big = "k: ".to_string() + &"a".repeat((PHASE5_MAX_PLAYBOOK_SIZE as usize) + 4096);
+        tokio::fs::write(&big_path, big).await.unwrap();
+
+        let r = server
+            .forgeplan_playbook_validate(Parameters(PlaybookValidateParams {
+                file: big_path.clone(),
+            }))
+            .await
+            .unwrap();
+        // Oversize = error result (size guard fires before parse).
+        assert_eq!(r.is_error, Some(true), "oversized must fail");
+        match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => {
+                assert!(
+                    t.text.contains("size limit") || t.text.contains("too large"),
+                    "error must mention size limit, got: {}",
+                    t.text
+                );
+            }
+            _ => panic!("expected text"),
+        }
+
+        restore_env(snap);
+    }
+
+    // ── HIGH-S5: --step N wires through to executor on real run ──
+
+    #[tokio::test]
+    async fn playbook_run_step_skips_earlier_via_mcp() {
+        let _g = test_lock().await;
+        let (server, tmp, snap) = isolated_server().await;
+
+        // 3-step independent playbook. We use no `requires:` so the
+        // executor's predecessor-not-successful skip rule doesn't compound
+        // with the explicit `--step` skip — we only want to verify that
+        // step=2 leaves exactly s1 marked Skipped and s2/s3 succeed.
+        let yaml = r#"
+schema_version: "1.0"
+name: three-pb
+title: Three
+steps:
+  - id: s1
+    delegate_to: { type: agent, name: a }
+  - id: s2
+    delegate_to: { type: agent, name: a }
+  - id: s3
+    delegate_to: { type: agent, name: a }
+"#;
+        let pb_path = tmp
+            .path()
+            .join(".forgeplan")
+            .join("playbooks")
+            .join("three.yaml");
+        tokio::fs::write(&pb_path, yaml).await.unwrap();
+
+        let r = server
+            .forgeplan_playbook_run(Parameters(PlaybookRunParams {
+                target: "three-pb".to_string(),
+                dry_run: false,
+                step: Some(2), // skip s1, run s2..s3
+                yes: true,
+            }))
+            .await
+            .unwrap();
+        // Surface the underlying error message if the call was rejected so
+        // we get diagnostics instead of an opaque assertion failure.
+        let err_text = match &r.content[0].raw {
+            rmcp::model::RawContent::Text(t) => t.text.clone(),
+            _ => String::new(),
+        };
+        assert_ne!(
+            r.is_error,
+            Some(true),
+            "happy-path run with --step; error: {err_text}"
+        );
+        let body = body_of(&r);
+        let report = &body["report"];
+        // s1 should be skipped, s2 + s3 should succeed.
+        assert_eq!(
+            report["skipped"].as_u64(),
+            Some(1),
+            "step=2 must skip exactly one earlier step; body={body}"
+        );
+        assert_eq!(
+            report["success"].as_u64(),
+            Some(2),
+            "step=2 must execute the remaining two steps; body={body}"
+        );
+        // The skipped step must specifically be s1 (the one before --step).
+        let per_step = report["per_step"].as_array().expect("per_step array");
+        let s1 = per_step
+            .iter()
+            .find(|e| e["step_id"].as_str() == Some("s1"))
+            .expect("s1 reported");
+        assert_eq!(s1["status"].as_str(), Some("skipped"));
+
+        restore_env(snap);
     }
 }

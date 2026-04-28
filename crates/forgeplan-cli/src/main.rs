@@ -699,6 +699,37 @@ enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Playbook runtime (PRD-065 / SPEC-003) — declarative YAML
+    /// orchestration with delegations to external plugins.
+    Playbook {
+        #[command(subcommand)]
+        action: PlaybookAction,
+    },
+    /// Ingest engine (PRD-066 / SPEC-004) — apply mapping YAML to plugin
+    /// outputs, generate forge artifacts with file:line source refs.
+    Ingest {
+        /// Path to mapping YAML file
+        #[arg(long)]
+        mapping: std::path::PathBuf,
+        /// Source path (file or dir to ingest)
+        #[arg(long)]
+        source: std::path::PathBuf,
+        /// Print drafts without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Allow update of existing artifacts (vs skip on hash match)
+        #[arg(long)]
+        update: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Plugin detection + recommendations (PRD-067) — list installed
+    /// plugins, doctor health-check, info on specific plugin.
+    Plugins {
+        #[command(subcommand)]
+        action: PluginsAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -728,6 +759,74 @@ enum McpAction {
         /// Print proposed change without writing
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlaybookAction {
+    /// List available playbooks (built-in + installed packs) with applicable
+    /// recommendations based on project signals.
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show playbook structure (steps, delegations, requires).
+    Show {
+        /// Playbook name (e.g. brownfield-code) or path to .yaml file
+        target: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate playbook YAML against SPEC-003 schema.
+    Validate {
+        /// Path to playbook YAML file
+        file: std::path::PathBuf,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a playbook — sequential step execution with delegations.
+    Run {
+        /// Playbook name or path
+        target: String,
+        /// Confirm execution (required — prevents accidental runs)
+        #[arg(long)]
+        yes: bool,
+        /// Print steps without executing
+        #[arg(long)]
+        dry_run: bool,
+        /// Start from specific step (1-indexed)
+        #[arg(long)]
+        step: Option<usize>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginsAction {
+    /// List installed plugins (Claude / agent-skills / Cursor / Forgeplan).
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Health check across known plugins — reports missing, outdated, OK.
+    Doctor {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show details for a specific plugin (path, version, description).
+    Info {
+        /// Plugin name (e.g. c4-architecture)
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1145,6 +1244,34 @@ async fn main() -> anyhow::Result<()> {
                 };
                 commands::mcp::run_install(opts).await
             }
+        },
+        Commands::Playbook { action } => match action {
+            PlaybookAction::List { json } => commands::playbook::run_list(json).await,
+            PlaybookAction::Show { target, json } => {
+                commands::playbook::run_show(&target, json).await
+            }
+            PlaybookAction::Validate { file, json } => {
+                commands::playbook::run_validate(&file, json).await
+            }
+            PlaybookAction::Run {
+                target,
+                yes,
+                dry_run,
+                step,
+                json,
+            } => commands::playbook::run_execute(&target, yes, dry_run, step, json).await,
+        },
+        Commands::Ingest {
+            mapping,
+            source,
+            dry_run,
+            update,
+            json,
+        } => commands::ingest::run(&mapping, &source, dry_run, update, json).await,
+        Commands::Plugins { action } => match action {
+            PluginsAction::List { json } => commands::plugins::run_list(json).await,
+            PluginsAction::Doctor { json } => commands::plugins::run_doctor(json).await,
+            PluginsAction::Info { name, json } => commands::plugins::run_info(&name, json).await,
         },
     }
 }

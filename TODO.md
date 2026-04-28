@@ -3,7 +3,62 @@
 > **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
 > (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
 
-## Current: v0.25.0 — PRD-071 hint contract (PR #212, 2026-04-27)
+## Current: v0.26.0 — PRD-065/066/067 Playbook + Ingest + Plugin detection (Phase 5)
+
+EPIC-007 Phase 2 — Forgeplan становится оркестратором. ADR-009 implementation-complete: playbook runtime + ingest engine + plugin detection + canonical marketplace mapping/playbook. 4-wave sprint, 9 agents, ~9000 LOC.
+
+### PRD-065 — Playbook runtime + YAML schema
+- [x] FR-1 Rust module `forgeplan-core::playbook::{types,loader,executor,dispatch,journal}`
+- [x] FR-2 JSON Schema `docs/schemas/playbook.schema.yaml`
+- [x] FR-3 CLI `forgeplan playbook {list|show|run|validate}`
+- [x] FR-4 5-variant typed Delegation enum
+- [x] FR-5 Step output capture via `produces_at` + `mapping`
+- [x] FR-6 Journal `.forgeplan/journal/playbook-runs.jsonl`
+- [x] FR-7 Progress reporting (TTY-aware stderr)
+- [x] FR-8 Hint contract integration (PRD-071)
+- [x] AC-1..AC-6 acceptance criteria covered (Wave 4 E2E)
+- [ ] Real Plugin/Agent/Skill subprocess dispatchers (deferred to follow-up sprint)
+
+### PRD-066 — Ingest engine + mapping YAML
+- [x] FR-1 Rust module `forgeplan-core::ingest::{types,sources,template,engine,idempotency}`
+- [x] FR-2 JSON Schema `docs/schemas/mapping.schema.yaml`
+- [x] FR-3 CLI `forgeplan ingest --mapping --source --dry-run`
+- [x] FR-4 Source-ref format `{path}:{line_start}-{line_end}`
+- [x] FR-5 Idempotency via `source_hash`
+- [x] FR-6 Canonical `marketplace/mappings/c4-to-forge.yaml` (Wave 4)
+- [x] FR-7 `forgeplan doctor --sources` invariant validation
+- [x] AC-1..AC-6 acceptance criteria covered (Wave 4 E2E)
+- [ ] MCP `forgeplan_ingest` wrapper (deferred — CLI cover via `forgeplan serve`)
+- [ ] 4 additional canonical mappings (autoresearch/git/ddd/spec → forge) — follow-up
+
+### PRD-067 — Plugin detection + self-describing hints
+- [x] FR-1 Rust module `forgeplan-core::plugins::{detection,registry,hints}`
+- [x] FR-2 Detection scanner paths (`.claude/plugins/cache/`, `.agentskills/`, etc.)
+- [x] FR-3 Plugin registry с known plugins
+- [x] FR-4 Project signal detector
+- [x] FR-5 Playbook recommendation engine (signals × plugins → applicable)
+- [x] FR-6 CLI `forgeplan plugins {list|doctor|info}`
+- [x] FR-7 Hint extension (ADR-008 pattern + `recommended_playbook`)
+- [x] AC-1..AC-7 acceptance criteria covered
+
+### Documentation + Marketplace
+- [x] `docs/operations/PLAYBOOK-AUTHORING.ru.md` (Wave 4 W4B)
+- [x] `docs/operations/INGEST-MAPPINGS.ru.md` (Wave 4 W4B)
+- [x] `marketplace/mappings/c4-to-forge.yaml` canonical (Wave 4 W4B)
+- [x] `marketplace/playbooks/brownfield-code.yaml` canonical (Wave 4 W4B)
+- [x] `docs/README.md` + `docs/README.ru.md` index entries (Wave 4 W4B)
+- [x] CHANGELOG.md v0.26.0 section
+- [x] EVID-089 — Phase 5 evidence pack
+
+### Follow-up backlog (Phase 5 → Wave 5)
+- [ ] Real subprocess dispatch for `delegate_to: plugin/agent/skill` (Wave 3 mocked it)
+- [ ] MCP `forgeplan_ingest` wrapper
+- [ ] Canonical mappings: autoresearch / git-log / ddd / sparc → forge
+- [ ] Canonical playbooks: `greenfield.yaml`, `brownfield-docs.yaml`, `audit.yaml`, `release.yaml`
+- [ ] Parallel step execution (DAG planner)
+- [ ] Tag v0.26.0 + cargo-dist Release workflow
+
+## Previous: v0.25.0 — PRD-071 hint contract (PR #212, 2026-04-27)
 
 PRD-071 unified 5-rule hint contract shipped. Audit coverage 0% → 100% (70/70 CLI). 36 integration tests + drift-prevention audit script. Awaiting PR #212 review.
 

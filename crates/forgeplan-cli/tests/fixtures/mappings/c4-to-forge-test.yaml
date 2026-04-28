@@ -1,0 +1,65 @@
+# Phase 5 Wave 4 test fixture: minimal C4 -> Forge mapping.
+#
+# Derived from `.local/spike-1-c4-to-forge-mapping.yaml` (Spike-1) but
+# trimmed to two rules and rewritten with Tera 1.x compatible filter
+# syntax (`default(value="...")` per the w2b deviation note — Tera 1.x
+# requires named arguments for `default`, unlike the Tera 2.x style used
+# in the original spike file).
+#
+# Both rules target `note` (per EVID-088 finding: minimum-viable target
+# for E2E coverage of the ingest pipeline; richer kinds are exercised by
+# the marketplace canonical mapping in Wave 4).
+#
+# Used by: integration_phase5_ingest.rs
+schema_version: "1.0"
+name: c4-to-forge-test
+title: "C4 -> Forge (Wave 4 test fixture)"
+compat_spec_version: "^1.0"
+source_kind: c4-documentation
+target_kind: forge
+
+sources:
+  - pattern: "c4-mini/**/*.md"
+    type: markdown
+    parser: front_matter_plus_sections
+
+rules:
+  # Rule 1: any markdown with front_matter.kind == "component" -> note
+  - id: c4-component-to-note
+    when:
+      file_glob: "**/c4-mini/components/*.md"
+      front_matter:
+        kind: component
+    target:
+      kind: note
+    fields:
+      title: "{{ front_matter.name | default(value=\"Unnamed component\") }}"
+      summary: "{{ section.purpose | default(value=\"(no purpose section)\") }}"
+    sources_section:
+      include: true
+      format: "{path}:{line_start}-{line_end}"
+      precision: line
+      source_hash: true
+
+  # Rule 2: any markdown with front_matter.kind == "struct" -> note.
+  # No struct components in the c4-mini fixture; included to prove the
+  # selector-skip path (rule load OK, zero matches, no error).
+  - id: c4-struct-to-note
+    when:
+      file_glob: "**/c4-mini/**/*.md"
+      front_matter:
+        kind: struct
+    target:
+      kind: note
+    fields:
+      title: "{{ front_matter.name | default(value=\"Unnamed struct\") }}"
+      summary: "Imported struct from C4 docs"
+    sources_section:
+      include: true
+      format: "{path}:{line_start}-{line_end}"
+      precision: line
+      source_hash: true
+
+guards:
+  max_artifacts: 50
+  forbid_overwrite_active: true

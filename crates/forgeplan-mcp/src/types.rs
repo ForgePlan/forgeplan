@@ -500,6 +500,72 @@ pub struct FpfListItem {
     pub line_count: i32,
 }
 
+// ─── Phase 5 tools (PRD-065/066/067) — request DTOs ──────────────────
+
+/// Params for `forgeplan_playbook_show` — accepts either a kebab-case
+/// playbook name or a path to a `.yaml` file.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlaybookShowParams {
+    /// Playbook name (matches discovery results) or path to a YAML file.
+    pub target: String,
+}
+
+/// Params for `forgeplan_playbook_validate`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlaybookValidateParams {
+    /// Path to the playbook YAML file to validate.
+    pub file: std::path::PathBuf,
+}
+
+/// Params for `forgeplan_playbook_run`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlaybookRunParams {
+    /// Playbook name or path to a YAML file.
+    pub target: String,
+    /// Plan-only — no dispatcher invocations, just enumerate steps.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Optional 1-indexed start step (skip earlier steps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<usize>,
+    /// Required to consent to opt-in shell execution (ADR-009 / SPEC-003).
+    /// Without `yes: true` the tool refuses to run.
+    #[serde(default)]
+    pub yes: bool,
+}
+
+/// Params for `forgeplan_ingest`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct IngestParams {
+    /// Path to mapping YAML file (SPEC-004 schema).
+    pub mapping: std::path::PathBuf,
+    /// Path to the source file (or directory) the mapping consumes.
+    pub source: std::path::PathBuf,
+    /// Plan-only — engine runs but no artifacts written. Wave 3 default.
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+    /// Allow updating existing artifacts (idempotent re-ingest).
+    #[serde(default)]
+    pub update: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Params for `forgeplan_plugins_info`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginsInfoParams {
+    /// Plugin name (kebab-case) as registered in the extended registry.
+    pub name: String,
+}
+
+/// Empty params for tools that take no arguments. We declare it explicitly
+/// so the JSON-Schema export advertises a (correct) empty object instead of
+/// rmcp falling back to `Parameters<()>` quirks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct EmptyParams {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

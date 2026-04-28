@@ -1,0 +1,41 @@
+# Phase 5 Wave 4 test fixture: a 3-step "brownfield code" playbook.
+#
+# Exercises three of the five `delegate_to` variants from SPEC-003:
+#   - plugin (external Task-tool invocation; stubbed by MockDispatcher in tests)
+#   - skill  (loaded inside agent)
+#   - forgeplan_core (internal op — `validate`)
+#
+# The `requires:` chain enforces DAG ordering (mine -> map -> validate) so the
+# E2E test can assert step IDs are emitted in the expected order. Each step
+# carries a `fallback_hint` so the missing-plugin path is exercised too.
+#
+# Used by: integration_phase5_playbook.rs
+schema_version: "1.0"
+name: brownfield-code-mini
+title: Brownfield code (mini fixture)
+description: |
+  Minimal brownfield playbook for Phase 5 Wave 4 E2E tests. Three steps,
+  one of each: plugin / skill / forgeplan_core.
+
+steps:
+  - id: mine-history
+    delegate_to:
+      type: skill
+      name: forge-history-miner
+      pack: brownfield-code-pack
+    fallback_hint: "forgeplan skill install brownfield-code-pack"
+
+  - id: extract-c4
+    delegate_to:
+      type: plugin
+      name: c4-architecture
+      target: c4-code
+    requires: [mine-history]
+    fallback_hint: "claude plugin install c4-architecture"
+
+  - id: validate-graph
+    delegate_to:
+      type: forgeplan_core
+      target: validate
+    requires: [extract-c4]
+    fallback_hint: "forgeplan validate --all"

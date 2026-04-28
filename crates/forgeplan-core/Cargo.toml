@@ -32,6 +32,11 @@ sha2 = "0.10"
 tracing = "0.1"
 rand = "0.8"
 fs2.workspace = true
+schemars.workspace = true
+semver.workspace = true
+tera.workspace = true
+walkdir.workspace = true
+globset.workspace = true
 
 [features]
 default = []
