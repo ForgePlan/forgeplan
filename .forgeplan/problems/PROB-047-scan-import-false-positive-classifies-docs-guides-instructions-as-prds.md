@@ -11,7 +11,9 @@ links:
   relation: informs
 - target: ADR-003
   relation: informs
-status: draft
+- target: EVID-092
+  relation: based_on
+status: active
 title: scan-import false-positive — classifies docs/guides/instructions as PRDs
 ---
 
@@ -20,7 +22,7 @@ created: 2026-04-28
 id: PROB-047
 kind: problem
 title: scan-import false-positive — classifies docs/guides/instructions as PRDs
-status: draft
+status: active
 ---
 
 # PROB-047: scan-import false-positive — classifies docs/guides/instructions as PRDs

@@ -87,3 +87,7 @@ W1-L2-CLAUDE-additional-sources.zip
 
 # Workspace advisory lock file (PRD-057) — fs2 flock on .forgeplan/.lock
 .forgeplan/.lock
+
+# Playbook execution journal (PRD-065) — per-run JSONL of step results,
+# workspace-local runtime state, not version-controlled.
+.forgeplan/journal/
