@@ -619,6 +619,140 @@ steps:
         );
     }
 
+    /// CRIT-T4 (Audit Round 1): 3-node cycle `a → b → c → a`. Iterative DFS
+    /// path-trimming is most likely to mis-report on cycles longer than the
+    /// trivial 2-node case, so we explicitly check that all 3 nodes appear
+    /// in the returned cycle path and that it closes back on itself.
+    #[test]
+    fn detect_cycles_finds_3_node_cycle() {
+        let yaml = r#"
+schema_version: "1.0"
+name: cyclic3
+title: Cyclic3
+steps:
+  - id: a
+    delegate_to: { type: agent, name: x }
+    requires: [c]
+  - id: b
+    delegate_to: { type: agent, name: y }
+    requires: [a]
+  - id: c
+    delegate_to: { type: agent, name: z }
+    requires: [b]
+"#;
+        let pb: Playbook = serde_yaml::from_str(yaml).expect("parses");
+        let cycle = pb.detect_cycles().expect("must find 3-node cycle");
+        for needle in ["a", "b", "c"] {
+            assert!(
+                cycle.contains(&needle),
+                "cycle path should contain `{needle}`: {cycle:?}"
+            );
+        }
+        assert_eq!(cycle.first(), cycle.last(), "cycle should close: {cycle:?}");
+    }
+
+    /// CRIT-T4 (Audit Round 1): 4-node cycle `a → b → c → d → a`.
+    #[test]
+    fn detect_cycles_finds_4_node_cycle() {
+        let yaml = r#"
+schema_version: "1.0"
+name: cyclic4
+title: Cyclic4
+steps:
+  - id: a
+    delegate_to: { type: agent, name: w }
+    requires: [d]
+  - id: b
+    delegate_to: { type: agent, name: x }
+    requires: [a]
+  - id: c
+    delegate_to: { type: agent, name: y }
+    requires: [b]
+  - id: d
+    delegate_to: { type: agent, name: z }
+    requires: [c]
+"#;
+        let pb: Playbook = serde_yaml::from_str(yaml).expect("parses");
+        let cycle = pb.detect_cycles().expect("must find 4-node cycle");
+        for needle in ["a", "b", "c", "d"] {
+            assert!(
+                cycle.contains(&needle),
+                "cycle path should contain `{needle}`: {cycle:?}"
+            );
+        }
+        assert_eq!(cycle.first(), cycle.last(), "cycle should close: {cycle:?}");
+    }
+
+    /// CRIT-T4 (Audit Round 1): diamond DAG must NOT be reported as a cycle.
+    /// Graph: `a → b`, `a → c`, `b → d`, `c → d` — two paths from a to d
+    /// but no back-edge.
+    #[test]
+    fn detect_cycles_distinguishes_dag_from_cycle() {
+        let yaml = r#"
+schema_version: "1.0"
+name: diamond
+title: Diamond
+steps:
+  - id: a
+    delegate_to: { type: agent, name: a }
+  - id: b
+    delegate_to: { type: agent, name: b }
+    requires: [a]
+  - id: c
+    delegate_to: { type: agent, name: c }
+    requires: [a]
+  - id: d
+    delegate_to: { type: agent, name: d }
+    requires: [b, c]
+"#;
+        let pb: Playbook = serde_yaml::from_str(yaml).expect("parses");
+        assert!(
+            pb.detect_cycles().is_none(),
+            "diamond DAG must be acyclic: {:?}",
+            pb.detect_cycles()
+        );
+    }
+
+    /// CRIT-T4 (Audit Round 1): two disconnected cycles in the same
+    /// playbook. The detector returns the first cycle it finds; we just
+    /// assert that it returns *some* cycle, not which one (don't
+    /// over-specify implementation order).
+    #[test]
+    fn detect_cycles_returns_first_cycle_in_disconnected_graph() {
+        let yaml = r#"
+schema_version: "1.0"
+name: two-cycles
+title: TwoCycles
+steps:
+  - id: a
+    delegate_to: { type: agent, name: a }
+    requires: [b]
+  - id: b
+    delegate_to: { type: agent, name: b }
+    requires: [a]
+  - id: x
+    delegate_to: { type: agent, name: x }
+    requires: [y]
+  - id: y
+    delegate_to: { type: agent, name: y }
+    requires: [x]
+"#;
+        let pb: Playbook = serde_yaml::from_str(yaml).expect("parses");
+        let cycle = pb.detect_cycles().expect("must find one of the cycles");
+        assert!(
+            !cycle.is_empty(),
+            "returned cycle path must be non-empty: {cycle:?}"
+        );
+        assert_eq!(cycle.first(), cycle.last(), "cycle should close: {cycle:?}");
+        // Sanity: the cycle nodes should belong to one of the two components.
+        let in_first = cycle.iter().all(|n| *n == "a" || *n == "b");
+        let in_second = cycle.iter().all(|n| *n == "x" || *n == "y");
+        assert!(
+            in_first || in_second,
+            "cycle should belong to a single component: {cycle:?}"
+        );
+    }
+
     /// Acyclic graph → `None`. Also exercises detect_command_delegates.
     #[test]
     fn detect_cycles_returns_none_for_dag() {

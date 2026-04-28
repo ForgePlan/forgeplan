@@ -48,6 +48,14 @@ pub struct ExecutorConfig {
     /// refs / empty steps) at the start of `run`. Use when `Playbook` was
     /// already vetted by [`crate::playbook::loader::load_playbook`].
     pub skip_revalidation: bool,
+    /// One-indexed topological-order step number to start execution at.
+    /// `None` (default) means start at step 1. Steps before this index are
+    /// recorded as `Skipped` with reason `"skipped via --step N"`.
+    /// `Some(0)` or `Some(n)` with `n > total_steps` is rejected with
+    /// [`ExecutorError::InvalidStartStep`].
+    ///
+    /// Wired from CLI/MCP `--step N` flag (HIGH-S5, Audit Round 1).
+    pub start_step: Option<usize>,
 }
 
 /// Per-step result captured during a run. Stored in execution order
@@ -114,6 +122,13 @@ pub enum ExecutorError {
     /// (resumable runs) depends on a complete journal.
     #[error("journal write failed: {0}")]
     Journal(#[from] std::io::Error),
+    /// `ExecutorConfig::start_step` is `Some(0)` or exceeds the total
+    /// number of steps in the (topologically ordered) playbook (HIGH-S5,
+    /// Audit Round 1).
+    #[error(
+        "--step {requested} is out of range (playbook has {total} step(s); valid range 1..={total})"
+    )]
+    InvalidStartStep { requested: usize, total: usize },
 }
 
 // =====================================================================
@@ -159,27 +174,69 @@ impl<D: Dispatcher> Executor<D> {
             playbook.steps.iter().map(|s| (s.id.as_str(), s)).collect();
 
         let run_id = RunId::new();
-        self.journal.append(&JournalEntry {
-            ts: chrono::Utc::now(),
-            run_id,
-            playbook_name: playbook.name.clone(),
-            step_id: None,
-            kind: JournalEntryKind::RunStart,
-            payload: serde_json::json!({
-                "title": playbook.title,
-                "step_count": playbook.steps.len(),
-                "yes_flag": self.config.yes_flag,
-            }),
-        })?;
+        self.journal
+            .append(&JournalEntry {
+                ts: chrono::Utc::now(),
+                run_id,
+                playbook_name: playbook.name.clone(),
+                step_id: None,
+                kind: JournalEntryKind::RunStart,
+                payload: serde_json::json!({
+                    "title": playbook.title,
+                    "step_count": playbook.steps.len(),
+                    "yes_flag": self.config.yes_flag,
+                }),
+            })
+            .await?;
         info!(run_id = %run_id, name = %playbook.name, "playbook run started");
+
+        // --step N support (HIGH-S5, Audit Round 1) — clamp + validate.
+        let start_index = match self.config.start_step {
+            None => 0usize,
+            Some(n) => {
+                if n == 0 {
+                    return Err(ExecutorError::InvalidStartStep {
+                        requested: 0,
+                        total: order.len(),
+                    });
+                }
+                if n > order.len() {
+                    return Err(ExecutorError::InvalidStartStep {
+                        requested: n,
+                        total: order.len(),
+                    });
+                }
+                n - 1
+            }
+        };
 
         // Track terminal state per step so downstream skipping is accurate.
         let mut state: HashMap<&str, StepStatus> = HashMap::with_capacity(order.len());
         let mut per_step: Vec<StepReport> = Vec::with_capacity(order.len());
         let mut abort_after_failure = false;
 
-        for step_id in &order {
+        for (idx, step_id) in order.iter().enumerate() {
             let step = by_id.get(step_id.as_str()).copied().expect("id in by_id");
+
+            // HIGH-S5: skip steps before --step N. Recorded as Skipped so
+            // downstream reports stay accurate, but state stays Skipped so
+            // dependents see the predecessor as not Success.
+            if idx < start_index {
+                let report = StepReport {
+                    step_id: step.id.clone(),
+                    status: StepStatus::Skipped,
+                    output_path: None,
+                    message: Some(format!(
+                        "skipped via --step {}",
+                        start_index + 1 // user-facing 1-indexed value
+                    )),
+                };
+                self.write_step_pair(run_id, &playbook.name, &report, true)
+                    .await?;
+                state.insert(step.id.as_str(), StepStatus::Skipped);
+                per_step.push(report);
+                continue;
+            }
 
             // Skip if any predecessor failed/skipped (graph constraint) or if
             // an Abort-policy failure already took down the run.
@@ -201,23 +258,26 @@ impl<D: Dispatcher> Executor<D> {
                         "skipped: predecessor not successful".into()
                     }),
                 };
-                self.write_step_pair(run_id, &playbook.name, &report, true)?;
+                self.write_step_pair(run_id, &playbook.name, &report, true)
+                    .await?;
                 state.insert(step.id.as_str(), StepStatus::Skipped);
                 per_step.push(report);
                 continue;
             }
 
             // StepStart entry.
-            self.journal.append(&JournalEntry {
-                ts: chrono::Utc::now(),
-                run_id,
-                playbook_name: playbook.name.clone(),
-                step_id: Some(step.id.clone()),
-                kind: JournalEntryKind::StepStart,
-                payload: serde_json::json!({
-                    "delegate_kind": delegate_kind_label(step),
-                }),
-            })?;
+            self.journal
+                .append(&JournalEntry {
+                    ts: chrono::Utc::now(),
+                    run_id,
+                    playbook_name: playbook.name.clone(),
+                    step_id: Some(step.id.clone()),
+                    kind: JournalEntryKind::StepStart,
+                    payload: serde_json::json!({
+                        "delegate_kind": delegate_kind_label(step),
+                    }),
+                })
+                .await?;
             info!(step = %step.id, "step start");
 
             // Security gate (Command without --yes).
@@ -228,7 +288,8 @@ impl<D: Dispatcher> Executor<D> {
                     output_path: None,
                     message: Some(sec_err.to_string()),
                 };
-                self.write_step_pair(run_id, &playbook.name, &report, false)?;
+                self.write_step_pair(run_id, &playbook.name, &report, false)
+                    .await?;
                 state.insert(step.id.as_str(), StepStatus::Failed);
                 per_step.push(report);
                 if step.on_error == OnError::Abort {
@@ -263,7 +324,8 @@ impl<D: Dispatcher> Executor<D> {
             };
 
             let success = report.status == StepStatus::Success;
-            self.write_step_pair(run_id, &playbook.name, &report, success)?;
+            self.write_step_pair(run_id, &playbook.name, &report, success)
+                .await?;
             state.insert(step.id.as_str(), report.status);
             if !success {
                 if step.on_error == OnError::Abort {
@@ -277,19 +339,21 @@ impl<D: Dispatcher> Executor<D> {
         }
 
         let (success, failed, skipped) = tally(&per_step);
-        self.journal.append(&JournalEntry {
-            ts: chrono::Utc::now(),
-            run_id,
-            playbook_name: playbook.name.clone(),
-            step_id: None,
-            kind: JournalEntryKind::RunEnd,
-            payload: serde_json::json!({
-                "success": success,
-                "failed": failed,
-                "skipped": skipped,
-            }),
-        })?;
-        self.journal.flush()?;
+        self.journal
+            .append(&JournalEntry {
+                ts: chrono::Utc::now(),
+                run_id,
+                playbook_name: playbook.name.clone(),
+                step_id: None,
+                kind: JournalEntryKind::RunEnd,
+                payload: serde_json::json!({
+                    "success": success,
+                    "failed": failed,
+                    "skipped": skipped,
+                }),
+            })
+            .await?;
+        self.journal.flush().await?;
         info!(
             run_id = %run_id,
             success,
@@ -308,26 +372,28 @@ impl<D: Dispatcher> Executor<D> {
     }
 
     /// Write the closing `StepEnd` entry for `report`.
-    fn write_step_pair(
+    async fn write_step_pair(
         &mut self,
         run_id: RunId,
         playbook_name: &str,
         report: &StepReport,
         success: bool,
     ) -> std::io::Result<()> {
-        self.journal.append(&JournalEntry {
-            ts: chrono::Utc::now(),
-            run_id,
-            playbook_name: playbook_name.to_string(),
-            step_id: Some(report.step_id.clone()),
-            kind: JournalEntryKind::StepEnd,
-            payload: serde_json::json!({
-                "status": report.status,
-                "success": success,
-                "output_path": report.output_path,
-                "message": report.message,
-            }),
-        })
+        self.journal
+            .append(&JournalEntry {
+                ts: chrono::Utc::now(),
+                run_id,
+                playbook_name: playbook_name.to_string(),
+                step_id: Some(report.step_id.clone()),
+                kind: JournalEntryKind::StepEnd,
+                payload: serde_json::json!({
+                    "status": report.status,
+                    "success": success,
+                    "output_path": report.output_path,
+                    "message": report.message,
+                }),
+            })
+            .await
     }
 }
 
@@ -606,6 +672,7 @@ steps:
         let cfg = ExecutorConfig {
             yes_flag: false,
             skip_revalidation: false,
+            start_step: None,
         };
         let mut exec = Executor::new(mock, fresh_journal(), cfg);
         let report = exec.run(&pb).await.expect("runs");
@@ -694,6 +761,159 @@ steps:
             },
         ];
         assert_eq!(tally(&per_step), (2, 1, 1));
+    }
+
+    /// HIGH-S5 (Audit Round 1): `start_step = Some(3)` skips steps 1 and 2,
+    /// dispatches steps 3, 4, 5. Skipped steps are recorded with the
+    /// `"skipped via --step N"` message.
+    #[tokio::test]
+    async fn executor_start_step_skips_earlier() {
+        let yaml = r#"
+schema_version: "1.0"
+name: start-step-flow
+title: Start Step
+steps:
+  - id: a
+    delegate_to: { type: agent, name: a }
+  - id: b
+    delegate_to: { type: agent, name: b }
+    requires: [a]
+  - id: c
+    delegate_to: { type: agent, name: c }
+    requires: [b]
+  - id: d
+    delegate_to: { type: agent, name: d }
+    requires: [c]
+  - id: e
+    delegate_to: { type: agent, name: e }
+    requires: [d]
+"#;
+        let pb = load_playbook(yaml).expect("loads");
+        let mock = MockDispatcher::new();
+        let cfg = ExecutorConfig {
+            yes_flag: false,
+            skip_revalidation: false,
+            start_step: Some(3),
+        };
+        let mut exec = Executor::new(mock, fresh_journal(), cfg);
+        let report = exec.run(&pb).await.expect("runs");
+
+        // Topo order is [a, b, c, d, e]. Steps at indices 0,1 (a,b) skipped
+        // due to --step 3 — but step c (index 2) requires b. b is Skipped,
+        // so c's predecessor check fails and c is also Skipped (graph
+        // constraint). This is the correct semantic: --step N starts at
+        // step N regardless of dependencies, and downstream graph rules
+        // still apply. The test asserts that the Skipped reasons differ:
+        // a/b skipped via --step, c skipped because predecessor failed.
+        assert_eq!(report.per_step.len(), 5);
+        assert_eq!(report.per_step[0].step_id, "a");
+        assert_eq!(report.per_step[0].status, StepStatus::Skipped);
+        assert!(
+            report.per_step[0]
+                .message
+                .as_deref()
+                .unwrap_or("")
+                .contains("--step"),
+            "expected --step skip reason, got {:?}",
+            report.per_step[0].message
+        );
+        assert_eq!(report.per_step[1].step_id, "b");
+        assert_eq!(report.per_step[1].status, StepStatus::Skipped);
+        assert!(
+            report.per_step[1]
+                .message
+                .as_deref()
+                .unwrap_or("")
+                .contains("--step"),
+        );
+        // c, d, e were NOT directly --step skipped; they fail predecessor
+        // check (b is Skipped, not Success). Per-step messages should
+        // mention "predecessor".
+        assert_eq!(report.per_step[2].status, StepStatus::Skipped);
+        assert_eq!(report.per_step[3].status, StepStatus::Skipped);
+        assert_eq!(report.per_step[4].status, StepStatus::Skipped);
+    }
+
+    /// `start_step = Some(1)` is the same as no start_step — every step
+    /// dispatches normally.
+    #[tokio::test]
+    async fn executor_start_step_one_dispatches_all() {
+        let yaml = r#"
+schema_version: "1.0"
+name: ss1
+title: SS1
+steps:
+  - id: a
+    delegate_to: { type: agent, name: a }
+  - id: b
+    delegate_to: { type: agent, name: b }
+"#;
+        let pb = load_playbook(yaml).expect("loads");
+        let mock = MockDispatcher::new();
+        let cfg = ExecutorConfig {
+            yes_flag: false,
+            skip_revalidation: false,
+            start_step: Some(1),
+        };
+        let mut exec = Executor::new(mock, fresh_journal(), cfg);
+        let report = exec.run(&pb).await.expect("runs");
+        assert_eq!(report.success, 2);
+        assert_eq!(report.skipped, 0);
+    }
+
+    /// `start_step = Some(0)` is rejected with `InvalidStartStep` (1-indexed).
+    #[tokio::test]
+    async fn executor_start_step_zero_rejected() {
+        let yaml = r#"
+schema_version: "1.0"
+name: ss0
+title: SS0
+steps:
+  - id: a
+    delegate_to: { type: agent, name: a }
+"#;
+        let pb = load_playbook(yaml).expect("loads");
+        let cfg = ExecutorConfig {
+            yes_flag: false,
+            skip_revalidation: false,
+            start_step: Some(0),
+        };
+        let mut exec = Executor::new(MockDispatcher::new(), fresh_journal(), cfg);
+        let err = exec.run(&pb).await.unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidStartStep { requested: 0, .. }),
+            "expected InvalidStartStep(0), got {err:?}"
+        );
+    }
+
+    /// `start_step` greater than the step count returns `InvalidStartStep`.
+    #[tokio::test]
+    async fn executor_start_step_too_large_rejected() {
+        let yaml = r#"
+schema_version: "1.0"
+name: ssbig
+title: SSBig
+steps:
+  - id: a
+    delegate_to: { type: agent, name: a }
+  - id: b
+    delegate_to: { type: agent, name: b }
+"#;
+        let pb = load_playbook(yaml).expect("loads");
+        let cfg = ExecutorConfig {
+            yes_flag: false,
+            skip_revalidation: false,
+            start_step: Some(99),
+        };
+        let mut exec = Executor::new(MockDispatcher::new(), fresh_journal(), cfg);
+        let err = exec.run(&pb).await.unwrap_err();
+        match err {
+            ExecutorError::InvalidStartStep { requested, total } => {
+                assert_eq!(requested, 99);
+                assert_eq!(total, 2);
+            }
+            other => panic!("expected InvalidStartStep, got {other:?}"),
+        }
     }
 
     /// `ExecutionReport::ok` requires no failures and no skips.

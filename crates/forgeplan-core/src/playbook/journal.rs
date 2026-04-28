@@ -19,13 +19,23 @@
 //! [`RunId`] because `uuid` isn't a workspace dependency yet. Wave 3
 //! may upgrade to UUID v7 once `uuid` is added — see the report attached
 //! to this sprint.
+//!
+//! # Async I/O + buffering (CRIT-P2, Audit Round 1)
+//!
+//! [`Journal::append`] is `async` and writes through a
+//! [`tokio::io::BufWriter`] over [`tokio::fs::File`]. This keeps the
+//! tokio worker thread non-blocking during playbook runs (the executor is
+//! already in an async context) and coalesces JSON-line writes into a
+//! single syscall per flush instead of two per entry. Durability is
+//! guaranteed by [`Journal::flush`] which the executor invokes on
+//! `RunEnd`.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::io::{self, AsyncWriteExt, BufWriter};
 
 /// 64-bit random run identifier rendered as 16-char lower-hex.
 ///
@@ -112,21 +122,31 @@ pub struct JournalEntry {
     pub payload: serde_json::Value,
 }
 
-/// Append-only JSONL writer.
+/// Append-only JSONL writer (async + buffered).
 ///
-/// Holds the underlying file handle open for the lifetime of the run.
-/// Drop closes the file via `std::fs::File`'s `Drop`.
+/// Holds a [`tokio::io::BufWriter`] over [`tokio::fs::File`] for the
+/// lifetime of the run; entries are coalesced and written without
+/// blocking the tokio worker thread (CRIT-P2, Audit Round 1).
+///
+/// `Drop` flushes the OS handle implicitly via `BufWriter`'s `Drop` only
+/// for the file descriptor — buffered bytes are NOT auto-flushed on drop.
+/// Callers MUST invoke [`Journal::flush`] explicitly at end-of-run to
+/// guarantee durability of the final entries.
 pub struct Journal {
     /// Resolved path to the JSONL file.
     path: PathBuf,
     /// Lazily opened on first append; allows construction in dry-run paths
     /// without touching the filesystem.
-    file: Option<File>,
+    writer: Option<BufWriter<tokio::fs::File>>,
 }
 
 impl Journal {
     /// Open (or create) the journal under `<workspace_root>/.forgeplan/journal/playbook-runs.jsonl`.
     /// Creates the parent directory if missing.
+    ///
+    /// Synchronous filesystem prep keeps callers (CLI/MCP) free to open
+    /// journals from non-async contexts; the actual write path goes
+    /// through async [`Self::append`].
     ///
     /// # Errors
     /// Any [`io::Error`] propagated from `create_dir_all` / `OpenOptions`.
@@ -134,10 +154,17 @@ impl Journal {
         let dir = workspace_root.join(".forgeplan").join("journal");
         let path = dir.join("playbook-runs.jsonl");
         fs::create_dir_all(&dir)?;
-        let file = OpenOptions::new().append(true).create(true).open(&path)?;
+        // We open the std file, then convert to tokio::fs::File. This
+        // keeps Journal::open synchronous (CLI calls it from non-async
+        // contexts) while routing all writes through async I/O.
+        let std_file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)?;
+        let tokio_file = tokio::fs::File::from_std(std_file);
         Ok(Self {
             path,
-            file: Some(file),
+            writer: Some(BufWriter::new(tokio_file)),
         })
     }
 
@@ -147,10 +174,14 @@ impl Journal {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().append(true).create(true).open(&path)?;
+        let std_file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)?;
+        let tokio_file = tokio::fs::File::from_std(std_file);
         Ok(Self {
             path,
-            file: Some(file),
+            writer: Some(BufWriter::new(tokio_file)),
         })
     }
 
@@ -161,26 +192,38 @@ impl Journal {
 
     /// Append one entry as a single JSON line + `\n`.
     ///
+    /// Buffered: bytes land in an in-process `BufWriter` and are flushed
+    /// by [`Self::flush`] (called by the executor on `RunEnd`).
+    ///
     /// # Errors
     /// `io::Error` on write failure or `serde_json::Error` rendered as
     /// `io::Error` if the entry can't be serialized (in practice never —
     /// every field is `Serialize`).
-    pub fn append(&mut self, entry: &JournalEntry) -> io::Result<()> {
-        let line = serde_json::to_string(entry)
+    pub async fn append(&mut self, entry: &JournalEntry) -> io::Result<()> {
+        // Build the serialized payload outside the borrow on `self.writer`
+        // so we can return early on serde failure.
+        let mut line = serde_json::to_string(entry)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let file = self
-            .file
+        line.push('\n');
+        let writer = self
+            .writer
             .as_mut()
             .ok_or_else(|| io::Error::other("journal file handle not open"))?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
-        Ok(())
+        writer.write_all(line.as_bytes()).await
     }
 
-    /// Flush the OS file buffer to disk. Cheap no-op when there's no handle.
-    pub fn flush(&mut self) -> io::Result<()> {
-        if let Some(file) = self.file.as_mut() {
-            file.flush()?;
+    /// Flush the BufWriter and the underlying OS file buffer to disk.
+    ///
+    /// Must be called at the end of every run to guarantee durability;
+    /// `BufWriter::Drop` does not flush. Cheap no-op when no handle is
+    /// open.
+    pub async fn flush(&mut self) -> io::Result<()> {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush().await?;
+            // `flush` on BufWriter only drains the in-memory buffer to the
+            // underlying file. Sync the file's data to disk so committed
+            // entries survive a process crash.
+            writer.get_mut().sync_data().await?;
         }
         Ok(())
     }
@@ -193,7 +236,6 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
     use tempfile::tempdir;
 
     fn make_entry(run_id: RunId, kind: JournalEntryKind, step_id: Option<&str>) -> JournalEntry {
@@ -207,23 +249,20 @@ mod tests {
         }
     }
 
-    /// Append round-trip via tempfile: write one entry, read back, parse.
-    #[test]
-    fn append_round_trip_via_tempfile() {
+    /// Append round-trip via tempfile: write one entry, flush, read back, parse.
+    #[tokio::test]
+    async fn append_round_trip_via_tempfile() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("test.jsonl");
         let mut journal = Journal::open_at(path.clone()).expect("open");
         let run_id = RunId::new();
         journal
             .append(&make_entry(run_id, JournalEntryKind::RunStart, None))
+            .await
             .expect("append");
-        journal.flush().expect("flush");
+        journal.flush().await.expect("flush");
 
-        let mut contents = String::new();
-        File::open(&path)
-            .expect("read")
-            .read_to_string(&mut contents)
-            .expect("read");
+        let contents = fs::read_to_string(&path).expect("read");
         assert_eq!(contents.lines().count(), 1);
         let parsed: JournalEntry =
             serde_json::from_str(contents.lines().next().expect("line")).expect("parse");
@@ -233,25 +272,29 @@ mod tests {
     }
 
     /// Multi-entry append preserves order and lines parse independently.
-    #[test]
-    fn multi_entry_preserves_order() {
+    #[tokio::test]
+    async fn multi_entry_preserves_order() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("multi.jsonl");
         let mut journal = Journal::open_at(path.clone()).expect("open");
         let run_id = RunId::new();
         journal
             .append(&make_entry(run_id, JournalEntryKind::RunStart, None))
+            .await
             .expect("a");
         journal
             .append(&make_entry(run_id, JournalEntryKind::StepStart, Some("s1")))
+            .await
             .expect("b");
         journal
             .append(&make_entry(run_id, JournalEntryKind::StepEnd, Some("s1")))
+            .await
             .expect("c");
         journal
             .append(&make_entry(run_id, JournalEntryKind::RunEnd, None))
+            .await
             .expect("d");
-        journal.flush().expect("flush");
+        journal.flush().await.expect("flush");
 
         let contents = fs::read_to_string(&path).expect("read");
         let lines: Vec<_> = contents.lines().collect();
@@ -273,8 +316,8 @@ mod tests {
     }
 
     /// `Journal::open` creates the journal directory under a fresh workspace.
-    #[test]
-    fn open_creates_missing_journal_dir() {
+    #[tokio::test]
+    async fn open_creates_missing_journal_dir() {
         let dir = tempdir().expect("tempdir");
         let workspace = dir.path().join("freshworkspace");
         fs::create_dir_all(&workspace).expect("workspace");
@@ -290,9 +333,46 @@ mod tests {
         // Smoke: append works.
         journal
             .append(&make_entry(RunId::new(), JournalEntryKind::RunStart, None))
+            .await
             .expect("append");
-        journal.flush().expect("flush");
+        journal.flush().await.expect("flush");
         assert!(expected.exists());
+    }
+
+    /// CRIT-P2 (Audit Round 1): durability test — write 5 entries, flush,
+    /// drop the journal, then re-open the file and confirm all 5 lines are
+    /// present in correct order. Guards against `BufWriter::Drop` losing
+    /// buffered bytes.
+    #[tokio::test]
+    async fn flush_persists_all_entries_in_order() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("durable.jsonl");
+        let run_id = RunId(0xdead_beef_cafe_f00d);
+        {
+            let mut journal = Journal::open_at(path.clone()).expect("open");
+            for i in 0..5 {
+                let entry = JournalEntry {
+                    ts: Utc::now(),
+                    run_id,
+                    playbook_name: "durable".to_string(),
+                    step_id: Some(format!("s{i}")),
+                    kind: JournalEntryKind::StepEnd,
+                    payload: serde_json::json!({"i": i}),
+                };
+                journal.append(&entry).await.expect("append");
+            }
+            journal.flush().await.expect("flush");
+            // Journal dropped here.
+        }
+        let contents = fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 5, "expected 5 lines, got {}", lines.len());
+        for (i, line) in lines.iter().enumerate() {
+            let parsed: JournalEntry = serde_json::from_str(line).expect("parse");
+            assert_eq!(parsed.run_id, run_id);
+            assert_eq!(parsed.step_id.as_deref(), Some(format!("s{i}").as_str()));
+            assert_eq!(parsed.payload["i"], i);
+        }
     }
 
     /// `RunId::to_hex` produces stable 16-char output and round-trips via serde.

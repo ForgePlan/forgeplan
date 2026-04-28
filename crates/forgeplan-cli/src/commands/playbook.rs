@@ -36,6 +36,86 @@ use forgeplan_core::playbook::{
 use forgeplan_core::workspace;
 
 // =====================================================================
+// Resource limits (HIGH-S2 — Audit Round 1 finding)
+// =====================================================================
+//
+// Reading a playbook YAML always pulls the full file into memory before
+// parsing, and `serde_yaml` has no built-in recursion limit. An attacker
+// (or an accidental commit) can ship a multi-GB or deeply-nested YAML
+// that crashes the process via OOM or stack overflow.
+//
+// We bound input size up front and cheaply heuristic-check nesting
+// before invoking the parser.
+
+/// Maximum size, in bytes, of a playbook YAML file (1 MiB). Real playbooks
+/// are a few KB; 1 MiB leaves three orders of magnitude of headroom while
+/// still bounding adversarial input.
+const MAX_PLAYBOOK_SIZE: u64 = 1024 * 1024;
+
+/// Maximum opener depth we tolerate in playbook YAML. Real specs nest at
+/// most ~5 deep (root → steps[] → step → delegate_to → fields). 256 is a
+/// generous ceiling that still rules out gigabyte stack-bomb inputs.
+///
+/// `serde_yaml` < 0.9 does not expose a recursion-limit knob, so we count
+/// `{`/`[` characters in the source as a cheap heuristic and reject before
+/// the parser ever sees the input.
+const MAX_PLAYBOOK_NESTING: usize = 256;
+
+/// Error surfaced by [`read_playbook_with_limits`] when the file exceeds
+/// either the size or nesting bound. Carries a short, redaction-friendly
+/// summary suitable for error output without quoting offending content.
+#[derive(Debug)]
+enum PlaybookReadError {
+    /// File metadata reports a length above [`MAX_PLAYBOOK_SIZE`].
+    TooLarge { actual: u64, limit: u64 },
+    /// Heuristic nesting (count of `{`/`[`) exceeds [`MAX_PLAYBOOK_NESTING`].
+    TooDeep { actual: usize, limit: usize },
+    /// Underlying I/O error (file missing, permission denied, etc).
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for PlaybookReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { actual, limit } => write!(
+                f,
+                "playbook file exceeds size limit ({} bytes > {} bytes)",
+                actual, limit
+            ),
+            Self::TooDeep { actual, limit } => write!(
+                f,
+                "playbook YAML is too deeply nested ({} > {} brackets)",
+                actual, limit
+            ),
+            Self::Io(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+/// Read a playbook YAML file, enforcing [`MAX_PLAYBOOK_SIZE`] and
+/// [`MAX_PLAYBOOK_NESTING`]. The file is opened only after a metadata
+/// pre-check, so adversarial multi-GB inputs never enter our address space.
+fn read_playbook_with_limits(path: &Path) -> Result<String, PlaybookReadError> {
+    let meta = std::fs::metadata(path).map_err(PlaybookReadError::Io)?;
+    let len = meta.len();
+    if len > MAX_PLAYBOOK_SIZE {
+        return Err(PlaybookReadError::TooLarge {
+            actual: len,
+            limit: MAX_PLAYBOOK_SIZE,
+        });
+    }
+    let content = std::fs::read_to_string(path).map_err(PlaybookReadError::Io)?;
+    let depth = content.bytes().filter(|b| *b == b'{' || *b == b'[').count();
+    if depth > MAX_PLAYBOOK_NESTING {
+        return Err(PlaybookReadError::TooDeep {
+            actual: depth,
+            limit: MAX_PLAYBOOK_NESTING,
+        });
+    }
+    Ok(content)
+}
+
+// =====================================================================
 // Public commands (wired in main.rs)
 // =====================================================================
 
@@ -128,10 +208,10 @@ pub async fn run_show(target: &str, json: bool) -> anyhow::Result<()> {
         }
     };
 
-    let yaml = match std::fs::read_to_string(&resolved) {
+    let yaml = match read_playbook_with_limits(&resolved) {
         Ok(s) => s,
         Err(e) => {
-            print_io_error(&resolved, &e, json);
+            print_playbook_read_error(&resolved, &e, json);
             std::process::exit(2);
         }
     };
@@ -218,10 +298,10 @@ pub async fn run_show(target: &str, json: bool) -> anyhow::Result<()> {
 
 /// `forgeplan playbook validate <file> [--json]`
 pub async fn run_validate(file: &Path, json: bool) -> anyhow::Result<()> {
-    let yaml = match std::fs::read_to_string(file) {
+    let yaml = match read_playbook_with_limits(file) {
         Ok(s) => s,
         Err(e) => {
-            print_io_error(file, &e, json);
+            print_playbook_read_error(file, &e, json);
             std::process::exit(2);
         }
     };
@@ -291,10 +371,10 @@ pub async fn run_execute(
         }
     };
 
-    let yaml = match std::fs::read_to_string(&resolved) {
+    let yaml = match read_playbook_with_limits(&resolved) {
         Ok(s) => s,
         Err(e) => {
-            print_io_error(&resolved, &e, json);
+            print_playbook_read_error(&resolved, &e, json);
             std::process::exit(2);
         }
     };
@@ -361,6 +441,10 @@ pub async fn run_execute(
         yes_flag: yes,
         // load_playbook already validated; skip duplicate work in executor.
         skip_revalidation: true,
+        // HIGH-S5: forward `--step N` so resumable runs (PRD-065 FR-6)
+        // actually skip earlier steps. Validated above; safe to pass
+        // through verbatim.
+        start_step,
     };
     let mut executor = Executor::new(dispatcher, journal, cfg);
 
@@ -408,7 +492,10 @@ fn discover_playbooks() -> Vec<DiscoveredPlaybook> {
             Err(_) => continue,
         };
         for file in yamls {
-            match std::fs::read_to_string(&file) {
+            // HIGH-S2: enforce size + nesting limits during discovery so a
+            // single oversized YAML cannot blow up `playbook list` or any
+            // tool that calls into `discover_playbooks`.
+            match read_playbook_with_limits(&file) {
                 Ok(yaml) => match load_playbook(&yaml) {
                     Ok(pb) => {
                         if seen_names.insert(pb.name.clone()) {
@@ -427,11 +514,7 @@ fn discover_playbooks() -> Vec<DiscoveredPlaybook> {
                     }
                 },
                 Err(err) => {
-                    eprintln!(
-                        "warn: cannot read playbook file {}: {}",
-                        file.display(),
-                        err
-                    );
+                    eprintln!("warn: skipping playbook file {}: {}", file.display(), err);
                 }
             }
         }
@@ -722,6 +805,75 @@ fn print_io_error(file: &Path, err: &std::io::Error, json: bool) {
     }
 }
 
+/// Print a [`PlaybookReadError`] with the appropriate `Fix:` hint.
+///
+/// HIGH-S2 (Audit Round 1): size/depth limit violations are surfaced as
+/// structured errors with actionable remediation rather than letting
+/// `serde_yaml` panic or OOM the process.
+fn print_playbook_read_error(file: &Path, err: &PlaybookReadError, json: bool) {
+    match err {
+        PlaybookReadError::Io(io) => {
+            print_io_error(file, io, json);
+        }
+        PlaybookReadError::TooLarge { actual, limit } => {
+            let msg = format!(
+                "playbook {} is too large ({} bytes; limit {} bytes)",
+                file.display(),
+                actual,
+                limit
+            );
+            let fix = format!(
+                "split or trim the playbook below {} bytes, or run a custom build",
+                limit
+            );
+            if json {
+                let payload = serde_json::json!({
+                    "passed": false,
+                    "source_path": file.display().to_string(),
+                    "error": msg,
+                    "limit_bytes": limit,
+                    "actual_bytes": actual,
+                    "_next_action": fix,
+                });
+                if let Ok(s) = serde_json::to_string_pretty(&payload) {
+                    println!("{}", s);
+                }
+            } else {
+                eprintln!("Error: {}", msg);
+                eprintln!("Fix: {}", fix);
+            }
+        }
+        PlaybookReadError::TooDeep { actual, limit } => {
+            let msg = format!(
+                "playbook {} is too deeply nested ({} bracket tokens; limit {})",
+                file.display(),
+                actual,
+                limit
+            );
+            let fix = format!(
+                "flatten the YAML structure to fewer than {} `{{`/`[` tokens",
+                limit
+            );
+            if json {
+                let payload = serde_json::json!({
+                    "passed": false,
+                    "source_path": file.display().to_string(),
+                    "error": msg,
+                    "limit": limit,
+                    "actual": actual,
+                    "_next_action": fix,
+                });
+                if let Ok(s) = serde_json::to_string_pretty(&payload) {
+                    println!("{}", s);
+                }
+            } else {
+                eprintln!("Error: {}", msg);
+                eprintln!("Fix: {}", fix);
+            }
+        }
+    }
+}
+
 /// Print an error from `resolve_target` (no playbook by that name / path).
 fn print_resolve_error(target: &str, msg: &str, json: bool) {
     let fix = "forgeplan playbook list".to_string();
@@ -991,5 +1143,53 @@ steps:
     delegate_to: { type: agent, name: a }
 "#;
         load_playbook(yaml).expect("loads")
+    }
+
+    // ── HIGH-S2: size + nesting limits ──────────────────────────────
+
+    #[test]
+    fn read_playbook_with_limits_rejects_oversized_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.yaml");
+        // Write 2 MiB of valid (but pointless) YAML keys.
+        let big = "k: ".to_string() + &"a".repeat((MAX_PLAYBOOK_SIZE as usize) + 1024);
+        std::fs::write(&p, big).unwrap();
+        let err = read_playbook_with_limits(&p).expect_err("should reject");
+        match err {
+            PlaybookReadError::TooLarge { actual, limit } => {
+                assert!(actual > limit);
+                assert_eq!(limit, MAX_PLAYBOOK_SIZE);
+            }
+            other => panic!("expected TooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_playbook_with_limits_rejects_too_deep_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("deep.yaml");
+        // 300 nested flow openers — well above MAX_PLAYBOOK_NESTING (256).
+        let mut s = String::new();
+        for _ in 0..(MAX_PLAYBOOK_NESTING + 50) {
+            s.push('[');
+        }
+        std::fs::write(&p, s).unwrap();
+        let err = read_playbook_with_limits(&p).expect_err("should reject");
+        match err {
+            PlaybookReadError::TooDeep { actual, limit } => {
+                assert!(actual > limit);
+                assert_eq!(limit, MAX_PLAYBOOK_NESTING);
+            }
+            other => panic!("expected TooDeep, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_playbook_with_limits_accepts_normal_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ok.yaml");
+        std::fs::write(&p, "schema_version: \"1.0\"\nname: ok\ntitle: t\nsteps:\n  - id: only\n    delegate_to: { type: agent, name: a }\n").unwrap();
+        let s = read_playbook_with_limits(&p).expect("ok");
+        assert!(s.contains("ok"));
     }
 }

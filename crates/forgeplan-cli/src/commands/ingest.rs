@@ -22,6 +22,75 @@ use anyhow::{Context, Result};
 use console::style;
 use serde_json::json;
 
+// =====================================================================
+// Resource limits (HIGH-S2 — Audit Round 1 finding)
+// =====================================================================
+//
+// Mapping YAML and source files are read in full before parsing. Without
+// bounds an attacker (or accidental commit) can crash the process with a
+// multi-GB input or stack-bomb the YAML parser via deep nesting.
+
+/// Maximum size of a mapping YAML file (1 MiB).
+const MAX_MAPPING_SIZE: u64 = 1024 * 1024;
+
+/// Maximum size of a single source file (10 MiB). Sources are markdown / YAML
+/// snapshots produced by other tools — generous but bounded.
+const MAX_SOURCE_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Maximum opener depth we tolerate in mapping YAML.
+///
+/// `serde_yaml` < 0.9 does not expose a recursion-limit knob, so we count
+/// `{`/`[` characters as a cheap heuristic and reject before the parser
+/// ever sees the input.
+const MAX_MAPPING_NESTING: usize = 256;
+
+/// Read a mapping YAML file with [`MAX_MAPPING_SIZE`] / [`MAX_MAPPING_NESTING`]
+/// guards. Surfaces a structured `Err` rather than reading multi-GB into
+/// the heap or letting `serde_yaml` blow the stack.
+fn read_mapping_with_limits(path: &Path) -> Result<String> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat mapping {}", path.display()))?;
+    let len = meta.len();
+    if len > MAX_MAPPING_SIZE {
+        anyhow::bail!(
+            "mapping {} too large: {} bytes (limit {} bytes)",
+            path.display(),
+            len,
+            MAX_MAPPING_SIZE
+        );
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read mapping {}", path.display()))?;
+    let depth = content.bytes().filter(|b| *b == b'{' || *b == b'[').count();
+    if depth > MAX_MAPPING_NESTING {
+        anyhow::bail!(
+            "mapping {} too deeply nested: {} bracket tokens (limit {})",
+            path.display(),
+            depth,
+            MAX_MAPPING_NESTING
+        );
+    }
+    Ok(content)
+}
+
+/// Read a source file with [`MAX_SOURCE_SIZE`] guard. Returns an `Err` so
+/// the per-file parser can downgrade to a soft warning if it chooses.
+fn read_source_with_limits(path: &Path) -> Result<String> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat source {}", path.display()))?;
+    let len = meta.len();
+    if len > MAX_SOURCE_SIZE {
+        anyhow::bail!(
+            "source {} too large: {} bytes (limit {} bytes)",
+            path.display(),
+            len,
+            MAX_SOURCE_SIZE
+        );
+    }
+    std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read source {}", path.display()))
+}
+
 use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, LanceStore, NewArtifact};
 use forgeplan_core::hints::{self, Hint};
@@ -61,9 +130,22 @@ pub async fn run(
         std::process::exit(2);
     }
 
-    // ── 2. Load mapping YAML ───────────────────────────────────────────────
-    let mapping_yaml = std::fs::read_to_string(mapping_path)
-        .with_context(|| format!("failed to read mapping {}", mapping_path.display()))?;
+    // ── 2. Load mapping YAML (HIGH-S2: bound size + depth) ─────────────────
+    let mapping_yaml = match read_mapping_with_limits(mapping_path) {
+        Ok(s) => s,
+        Err(e) => {
+            emit_error(
+                json,
+                &format!("{e}"),
+                Some(&format!(
+                    "trim mapping {} below {} bytes",
+                    mapping_path.display(),
+                    MAX_MAPPING_SIZE
+                )),
+            );
+            std::process::exit(2);
+        }
+    };
     let mapping: Mapping = match serde_yaml::from_str(&mapping_yaml) {
         Ok(m) => m,
         Err(e) => {
@@ -257,11 +339,24 @@ fn pick_spec_for_path<'a>(specs: &'a [SourceSpec], path: &Path) -> Option<&'a So
     specs.iter().find(|s| simple_glob_match(&s.pattern, path))
 }
 
-/// Read + parse a single source file. Returns `Ok(None)` on parse error so we
-/// can surface a soft warning instead of aborting the whole ingest.
+/// Read + parse a single source file. Returns `Ok(None)` on parse error or
+/// over-size so we can surface a soft warning instead of aborting the whole
+/// ingest run on a single misbehaving file (HIGH-S2).
 fn parse_one(spec: &SourceSpec, path: &Path) -> Result<Option<ParsedSource>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read source {}", path.display()))?;
+    let content = match read_source_with_limits(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // Soft warning + continue — one oversized file should not blow
+            // up the whole ingest. The user gets visibility without DoS risk.
+            eprintln!(
+                "  {} skipping {} (size guard): {}",
+                style("⚠").yellow(),
+                path.display(),
+                e
+            );
+            return Ok(None);
+        }
+    };
     let parser = parser_for(&spec.parser);
     match parser.parse(path, &content) {
         Ok(p) => Ok(Some(p)),
@@ -818,5 +913,51 @@ mod tests {
         assert_eq!(default_depth_for(&ArtifactKind::Note), "tactical");
         assert_eq!(default_depth_for(&ArtifactKind::EvidencePack), "tactical");
         assert_eq!(default_depth_for(&ArtifactKind::Epic), "standard");
+    }
+
+    // ── HIGH-S2: size + nesting limits ──────────────────────────────
+
+    #[test]
+    fn read_mapping_with_limits_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.yaml");
+        let big = "a: ".to_string() + &"x".repeat((MAX_MAPPING_SIZE as usize) + 4096);
+        std::fs::write(&p, big).unwrap();
+        let err = read_mapping_with_limits(&p).expect_err("should reject");
+        assert!(format!("{err}").contains("too large"));
+    }
+
+    #[test]
+    fn read_mapping_with_limits_rejects_too_deep_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("deep.yaml");
+        let mut s = String::new();
+        for _ in 0..(MAX_MAPPING_NESTING + 50) {
+            s.push('[');
+        }
+        std::fs::write(&p, s).unwrap();
+        let err = read_mapping_with_limits(&p).expect_err("should reject");
+        assert!(format!("{err}").contains("too deeply nested"));
+    }
+
+    #[test]
+    fn read_source_with_limits_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.md");
+        // Slightly over MAX_SOURCE_SIZE with literal bytes.
+        let len = (MAX_SOURCE_SIZE as usize) + 4096;
+        let big = "x".repeat(len);
+        std::fs::write(&p, big).unwrap();
+        let err = read_source_with_limits(&p).expect_err("should reject");
+        assert!(format!("{err}").contains("too large"));
+    }
+
+    #[test]
+    fn read_source_with_limits_accepts_normal_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ok.md");
+        std::fs::write(&p, "# heading\nbody\n").unwrap();
+        let content = read_source_with_limits(&p).expect("ok");
+        assert!(content.contains("heading"));
     }
 }

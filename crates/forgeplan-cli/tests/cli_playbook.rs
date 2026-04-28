@@ -366,3 +366,70 @@ fn playbook_run_step_out_of_range_exits_two() {
     assert!(stderr.contains("out of range"));
     assert!(stderr.contains("Fix: forgeplan playbook show step-pb"));
 }
+
+/// HIGH-S5 (Audit Round 1): `--step N` must reach the executor on a real
+/// run so resumable playbooks (PRD-065 FR-6) actually skip earlier steps.
+/// Before the fix the flag was parsed but discarded — every step always ran.
+///
+/// We use three INDEPENDENT steps (no `requires:`) so the only skip in the
+/// report can be attributed to `--step 2`. A linear playbook would compound
+/// the explicit skip with the executor's predecessor-not-successful rule.
+#[test]
+fn playbook_run_step_skips_earlier_steps() {
+    let tmp = init_workspace();
+    let yaml = r#"
+schema_version: "1.0"
+name: linear-pb
+title: Three-step independent
+steps:
+  - id: s1
+    delegate_to:
+      type: agent
+      name: alpha
+  - id: s2
+    delegate_to:
+      type: agent
+      name: alpha
+  - id: s3
+    delegate_to:
+      type: agent
+      name: alpha
+"#;
+    write_workspace_playbook(&tmp, "linear.yaml", yaml);
+
+    let out = forgeplan()
+        .args([
+            "playbook",
+            "run",
+            "linear-pb",
+            "--yes",
+            "--step",
+            "2",
+            "--json",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}\nstdout={}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout),
+    );
+
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    // step=2 → s1 skipped, s2 + s3 succeed.
+    assert_eq!(
+        v["report"]["skipped"], 1,
+        "exactly one step must be skipped"
+    );
+    assert_eq!(v["report"]["success"], 2, "remaining steps must execute");
+
+    // The skipped step must be the first one (s1), not an arbitrary later one.
+    let per_step = v["report"]["per_step"].as_array().expect("array");
+    let s1 = per_step
+        .iter()
+        .find(|e| e["step_id"].as_str() == Some("s1"))
+        .expect("s1 reported");
+    assert_eq!(s1["status"].as_str(), Some("skipped"));
+}

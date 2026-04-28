@@ -5,10 +5,26 @@
 //! the whitelisted filters. Rendering a [`Template`] re-validates the filter
 //! list as defence in depth: even if a malformed [`Template`] sneaks past
 //! deserialization, the engine refuses to render it.
+//!
+//! # Performance — template caching (CRIT-P1, Audit Round 1)
+//!
+//! Tera 1.x's `render_str` requires `&mut Tera` because it inserts a synthetic
+//! template into the engine's internal `HashMap<String, Template>`. Cloning
+//! Tera per render duplicates filter pointers, parser config, and the
+//! templates map — at 50 rules × 200 sources × 5 fields that becomes 50 000
+//! clones per `apply` call.
+//!
+//! Mitigation: each [`Template`] source is registered into a shared `Tera`
+//! instance under a stable hash-derived name on first render. Subsequent
+//! calls hit the cached parsed AST through `Tera::render(&name, &ctx)` which
+//! is `&self`. The cache lives on the engine and is protected by a `Mutex`
+//! so the engine remains `Sync`.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use serde_json::Value as Json;
+use sha2::{Digest, Sha256};
 use tera::{Context, Tera, Value as TeraValue};
 use thiserror::Error;
 
@@ -51,8 +67,25 @@ pub enum TemplateError {
 ///
 /// Construction is deterministic and cheap (no I/O). The struct is `Sync` —
 /// each [`render`](Self::render) call is independent.
+///
+/// Internally holds a `Mutex<Tera>` so previously-seen template sources
+/// can be registered (via [`Tera::add_raw_template`]) on first sight and
+/// re-used through the `&self` [`Tera::render`] path on subsequent calls,
+/// avoiding the per-call full-engine clone that `render_str` requires.
+/// See module docs §"Performance — template caching".
 pub struct TemplateEngine {
+    /// Tera instance plus the set of template names already registered.
+    /// `Mutex` is the simplest concurrency primitive that preserves
+    /// `Sync`; render contention is negligible because each rule × source
+    /// only registers once and renders are CPU-fast.
+    inner: Mutex<TemplateInner>,
+}
+
+struct TemplateInner {
     tera: Tera,
+    /// Registered template-source-hash → registered name. Lookup avoids the
+    /// `add_raw_template` re-parse cost on cache hit.
+    registered: HashMap<String, String>,
 }
 
 impl TemplateEngine {
@@ -80,7 +113,12 @@ impl TemplateEngine {
         tera.register_filter("replace", filter_replace);
         tera.register_filter("table", filter_table);
 
-        Ok(Self { tera })
+        Ok(Self {
+            inner: Mutex::new(TemplateInner {
+                tera,
+                registered: HashMap::new(),
+            }),
+        })
     }
 
     /// Render `template` against `ctx`.
@@ -88,6 +126,11 @@ impl TemplateEngine {
     /// `ctx` is a `serde_json::Value` (typically an `Object`) — the field that
     /// matches the template's identifier root is exposed as a top-level Tera
     /// variable.
+    ///
+    /// First call for a given template source registers and parses the
+    /// template (`add_raw_template`); subsequent calls reuse the cached AST
+    /// via `Tera::render`. This avoids the per-call full Tera clone that
+    /// `render_str` would otherwise require (CRIT-P1, Audit Round 1).
     pub fn render(&self, template: &Template, ctx: &Json) -> Result<String, TemplateError> {
         // Defence in depth: every filter referenced must be whitelisted.
         if let Some(bad) = template.first_disallowed_filter() {
@@ -98,13 +141,47 @@ impl TemplateEngine {
         }
 
         let context = build_context(ctx)?;
-        // Tera doesn't expose `render_str` on `&self`; clone the engine for a
-        // single render. The clone is cheap (filter pointers + tiny config
-        // tables).
-        let mut tera = self.tera.clone();
-        tera.render_str(template.as_str(), &context)
+        let key = template_cache_key(template.as_str());
+
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| TemplateError::Render(format!("template cache mutex poisoned: {e}")))?;
+        let name = if let Some(existing) = inner.registered.get(&key) {
+            existing.clone()
+        } else {
+            // Use the hash as the registered name — collision-free for any
+            // realistic workload and stable across calls.
+            let new_name = key.clone();
+            inner
+                .tera
+                .add_raw_template(&new_name, template.as_str())
+                .map_err(|e| TemplateError::Render(format_tera_error(&e)))?;
+            inner.registered.insert(key, new_name.clone());
+            new_name
+        };
+
+        inner
+            .tera
+            .render(&name, &context)
             .map_err(|e| TemplateError::Render(format_tera_error(&e)))
     }
+}
+
+/// Stable per-source cache key. SHA-256 truncated to 32 hex chars (128 bits)
+/// — collision resistance well beyond any plausible mapping size, and the
+/// hex-only string is a valid Tera template name.
+fn template_cache_key(src: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(src.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(34);
+    out.push_str("tpl_");
+    for byte in &digest[..16] {
+        use std::fmt::Write;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// Recursively flatten a `tera::Error` chain into a single readable string.
@@ -511,6 +588,44 @@ mod tests {
         // `try_get_value` lenient mode).
         let res = render("{{ missing_var }}", json!({}));
         assert!(res.is_err(), "expected error, got {res:?}");
+    }
+
+    /// CRIT-P1 (Audit Round 1): verify that repeated rendering of the same
+    /// template source goes through the cached path without panicking and
+    /// without registering duplicates. We assert that the `registered` map
+    /// only grows by 1 across many renders of the same source.
+    #[test]
+    fn tera_engine_does_not_clone_per_render() {
+        let engine = TemplateEngine::new().expect("init");
+        let tpl: Template = "{{ x | upper }}".parse().expect("parse");
+        // Warm up + many renders — should not panic, should reuse cache.
+        for _ in 0..10_000 {
+            let out = engine.render(&tpl, &json!({"x": "hello"})).expect("render");
+            assert_eq!(out, "HELLO");
+        }
+        // Only one cache entry registered for this source.
+        let cache_size = engine.inner.lock().expect("lock").registered.len();
+        assert_eq!(
+            cache_size, 1,
+            "expected exactly one cached template, got {cache_size}"
+        );
+    }
+
+    /// Different template sources should each get one cache slot.
+    #[test]
+    fn template_cache_grows_per_distinct_source() {
+        let engine = TemplateEngine::new().expect("init");
+        let t1: Template = "{{ x | upper }}".parse().unwrap();
+        let t2: Template = "{{ x | lower }}".parse().unwrap();
+        let t3: Template = "{{ x | trim }}".parse().unwrap();
+        engine.render(&t1, &json!({"x": "hi"})).unwrap();
+        engine.render(&t2, &json!({"x": "HI"})).unwrap();
+        engine.render(&t3, &json!({"x": "  hi  "})).unwrap();
+        // Render again — sizes must not grow.
+        engine.render(&t1, &json!({"x": "again"})).unwrap();
+        engine.render(&t2, &json!({"x": "AGAIN"})).unwrap();
+        let size = engine.inner.lock().unwrap().registered.len();
+        assert_eq!(size, 3, "expected 3 cache entries, got {size}");
     }
 
     #[test]

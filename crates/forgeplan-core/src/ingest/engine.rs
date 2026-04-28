@@ -100,6 +100,12 @@ pub struct IngestReport {
 // Errors
 // ---------------------------------------------------------------------------
 
+/// Default cap when [`Guards::max_artifacts`] is `None` (HIGH-S3, Audit
+/// Round 1). Chosen as 10 000 — well above any plausible mapping output
+/// (~hundreds of drafts) while small enough to bound worst-case memory at
+/// roughly tens of MB of `IngestArtifactDraft` bodies.
+pub const DEFAULT_MAX_ARTIFACTS: usize = 10_000;
+
 /// Hard errors that abort the whole apply call.
 #[derive(Debug, Error)]
 pub enum IngestError {
@@ -115,6 +121,13 @@ pub enum IngestError {
 
     #[error("guards.max_artifacts={limit} exceeded ({produced} drafts produced)")]
     MaxArtifactsExceeded { limit: usize, produced: usize },
+
+    /// A defence-in-depth invariant was violated by a programmatically-built
+    /// [`Mapping`] that bypassed serde validation (CRIT-T2, Audit Round 1).
+    /// Concrete examples: `SourcesSectionSpec::include == false`, which the
+    /// deserializer normally rejects but a builder could set.
+    #[error("invariant violation: {0}")]
+    InvariantViolation(&'static str),
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +154,15 @@ impl IngestEngine {
     ///
     /// The engine never writes to disk; callers (Wave 3 CLI) inspect the
     /// returned drafts and dispatch them through `artifact::Store`.
+    ///
+    /// # Resource limits (HIGH-S3, Audit Round 1)
+    ///
+    /// `mapping.guards.max_artifacts` is enforced **inside the inner loop**
+    /// — the engine aborts with [`IngestError::MaxArtifactsExceeded`] on
+    /// the first draft that pushes `report.drafts.len()` past the limit.
+    /// When unset, [`DEFAULT_MAX_ARTIFACTS`] applies. This prevents
+    /// memory exhaustion from runaway mappings (e.g. a buggy rule
+    /// producing millions of drafts).
     pub fn apply(
         &self,
         mapping: &Mapping,
@@ -148,7 +170,24 @@ impl IngestEngine {
         opts: IngestOptions,
     ) -> Result<IngestReport, IngestError> {
         let _ = opts; // dry_run is informational in this wave.
+
+        // CRIT-T2 (Audit Round 1) — defence in depth: every rule must
+        // have `sources_section.include == true`. The deserializer
+        // already enforces this, but a programmatic builder can bypass
+        // it; reject before any drafts are produced.
+        for rule in &mapping.rules {
+            if !rule.sources_section.include {
+                return Err(IngestError::InvariantViolation(
+                    "sources_section.include must be true (ADR-009 hallucination-proof invariant)",
+                ));
+            }
+        }
+
         let mut report = IngestReport::default();
+        let limit = mapping
+            .guards
+            .max_artifacts
+            .unwrap_or(DEFAULT_MAX_ARTIFACTS);
 
         for rule in &mapping.rules {
             let matcher = match &rule.when.file_glob {
@@ -159,7 +198,21 @@ impl IngestEngine {
             for source in &parsed_sources {
                 match self.apply_rule(rule, source, matcher.as_ref(), &mapping.guards) {
                     Ok(MatchOutcome::Drafts(mut drafts)) => {
-                        report.drafts.append(&mut drafts);
+                        // Drain into the report one at a time so we can
+                        // bail the moment the cap is exceeded — never
+                        // accumulate a bigger Vec than `limit + 1`.
+                        for draft in drafts.drain(..) {
+                            if report.drafts.len() >= limit {
+                                return Err(IngestError::MaxArtifactsExceeded {
+                                    limit,
+                                    // Report the count produced *so far*
+                                    // including this rejected one — useful
+                                    // for diagnostics.
+                                    produced: report.drafts.len() + 1,
+                                });
+                            }
+                            report.drafts.push(draft);
+                        }
                     }
                     Ok(MatchOutcome::Skip(reason)) => report.skipped.push(reason),
                     Err(err) => report.errors.push(RuleError {
@@ -169,16 +222,6 @@ impl IngestEngine {
                     }),
                 }
             }
-        }
-
-        // Enforce the global cap last so we still report partial output.
-        if let Some(limit) = mapping.guards.max_artifacts
-            && report.drafts.len() > limit
-        {
-            return Err(IngestError::MaxArtifactsExceeded {
-                limit,
-                produced: report.drafts.len(),
-            });
         }
 
         Ok(report)
@@ -269,7 +312,11 @@ impl IngestEngine {
         // Idempotency hash over the unrendered source text.
         let source_hash = compute_source_hash(source, &rule.id);
 
-        // Assemble body.
+        // Assemble body. The hallucination-proof invariant
+        // `sources_section.include == true` is checked once per `apply`
+        // call (see `IngestEngine::apply`) — defence in depth against
+        // programmatic builders that bypass serde validation (CRIT-T2,
+        // Audit Round 1).
         let sources_block =
             render_sources_block(&rule.sources_section, source, section, &source_hash);
         let body = assemble_body(&rendered_fields, &sources_block, &source_hash);
@@ -443,6 +490,15 @@ fn render_sources_block(
     section: Option<&ParsedSection>,
     source_hash: &str,
 ) -> String {
+    // Defence in depth (CRIT-T2): the apply-level pre-flight check should
+    // already have caught `include == false`. Keep this assertion as a
+    // safety net so debug builds catch programmatic bypasses; release
+    // builds proceed with the rendered block (the apply pass would have
+    // bailed already).
+    debug_assert!(
+        spec.include,
+        "sources_section.include must be true (ADR-009 invariant)"
+    );
     let (line_start, line_end) = match section {
         Some(s) => (s.line_start, s.line_end),
         None => (1, source.line_count.max(1)),
@@ -855,6 +911,124 @@ rules:
         assert_eq!(humanise_field_name("title"), "Title");
         assert_eq!(humanise_field_name("data_models"), "Data Models");
         assert_eq!(humanise_field_name("target_users"), "Target Users");
+    }
+
+    /// HIGH-S3 (Audit Round 1): `max_artifacts` is enforced inside the
+    /// inner loop — the engine bails out the moment one more draft would
+    /// cross the cap, never accumulating more than `limit + 1` drafts in
+    /// the report.
+    #[test]
+    fn max_artifacts_pre_flight_aborts() {
+        let yaml = r#"
+schema_version: "1.0"
+name: t
+title: t
+compat_spec_version: "^1.0"
+source_kind: c4-documentation
+target_kind: forge
+sources:
+  - pattern: ".local/**/*.md"
+    type: markdown
+    parser: front_matter_plus_sections
+rules:
+  - id: cap-test
+    when:
+      file_glob: ".local/**/*.md"
+      heading_path: ["Code Elements", "Core Types", "*"]
+    target: { kind: note }
+    fields:
+      title: "{{ heading_text | trim }}"
+    sources_section:
+      include: true
+guards:
+  max_artifacts: 5
+"#;
+        let mapping = parse_mapping(yaml);
+        let source = parse_spike();
+        // Spike-1 has > 5 Core Types so the pre-flight cap should bite
+        // before the inner loop completes. We can't observe the partial
+        // report (engine returns Err), but we can assert the error
+        // mentions the same limit value and that `produced` ≤ limit + 1.
+        let engine = IngestEngine::new().unwrap();
+        let err = engine
+            .apply(&mapping, vec![source], IngestOptions::default())
+            .unwrap_err();
+        match err {
+            IngestError::MaxArtifactsExceeded { limit, produced } => {
+                assert_eq!(limit, 5, "limit should match guards");
+                assert!(
+                    produced <= limit + 1,
+                    "pre-flight should abort at limit+1, got produced={produced}"
+                );
+            }
+            other => panic!("expected MaxArtifactsExceeded, got {other:?}"),
+        }
+    }
+
+    /// `Guards::max_artifacts == None` falls back to [`DEFAULT_MAX_ARTIFACTS`]
+    /// — apply succeeds for small fixtures.
+    #[test]
+    fn max_artifacts_default_applies_when_unset() {
+        let yaml = r#"
+schema_version: "1.0"
+name: t
+title: t
+compat_spec_version: "^1.0"
+source_kind: c4-documentation
+target_kind: forge
+sources:
+  - pattern: ".local/**/*.md"
+    type: markdown
+    parser: front_matter_plus_sections
+rules:
+  - id: r1
+    when:
+      file_glob: ".local/**/*.md"
+      heading_path: ["Code Elements", "Core Types", "*"]
+    target: { kind: spec }
+    fields:
+      title: "{{ heading_text | trim }}"
+    sources_section:
+      include: true
+"#;
+        // No `guards:` key at all — DEFAULT_MAX_ARTIFACTS applies (10_000),
+        // well above the spike fixture's draft count.
+        let mapping = parse_mapping(yaml);
+        let source = parse_spike();
+        let engine = IngestEngine::new().unwrap();
+        let report = engine
+            .apply(&mapping, vec![source], IngestOptions::default())
+            .expect("default cap should pass");
+        assert!(!report.drafts.is_empty());
+    }
+
+    /// CRIT-T2 (Audit Round 1): construct a `SourcesSectionSpec` with
+    /// `include: false` programmatically (bypassing the deserializer that
+    /// normally rejects it) and assert that `apply` returns an
+    /// `InvariantViolation` error before producing any drafts.
+    #[test]
+    fn sources_section_include_false_runtime_invariant() {
+        // Build a valid mapping, then mutate one rule's sources_section.
+        // Direct field access works because the field is `pub`.
+        let mut mapping = parse_mapping(SPIKE_MAPPING);
+        // Sanity check: deserializer accepted the mapping.
+        assert!(!mapping.rules.is_empty());
+        // Programmatic bypass: poke `include = false` directly.
+        mapping.rules[0].sources_section.include = false;
+        let source = parse_spike();
+        let engine = IngestEngine::new().unwrap();
+        let err = engine
+            .apply(&mapping, vec![source], IngestOptions::default())
+            .unwrap_err();
+        match err {
+            IngestError::InvariantViolation(msg) => {
+                assert!(
+                    msg.contains("include"),
+                    "invariant message should mention `include`: {msg}"
+                );
+            }
+            other => panic!("expected InvariantViolation, got {other:?}"),
+        }
     }
 
     #[test]

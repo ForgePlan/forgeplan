@@ -12,6 +12,17 @@
 //! before it is ever evaluated. This is the primary defence against arbitrary
 //! code execution from untrusted mapping packs.
 //!
+//! ## Tera built-in pre-emption (CRIT-T3)
+//!
+//! Several whitelisted filter names — notably `replace` and `default` — are
+//! also Tera **built-ins**. Tera resolves built-ins before any user-registered
+//! filter, so registering custom handlers with the same name is dead code
+//! during render. The whitelist therefore allows these names *because the
+//! Tera built-in semantics are acceptable*; downstream consumers must NOT
+//! rely on a custom replacement being invoked. The validator
+//! [`Template::from_str`] enforces only the **set of filter names** allowed —
+//! the actual filter behavior is whatever Tera ships.
+//!
 //! # Hallucination-proof invariant
 //!
 //! Per [ADR-009][adr], every generated artifact MUST contain a `## Sources`
@@ -701,10 +712,17 @@ fn collect_filters(nodes: &[Node]) -> Vec<String> {
 }
 
 fn walk_node_filters(node: &Node, out: &mut Vec<String>) {
+    // Exhaustive match — every Tera `Node` variant must be covered. New
+    // variants in future Tera releases will surface as compile errors here,
+    // ensuring the security walker stays in sync. See [CRIT-S1] in the
+    // Phase 5 audit Round 1 for the original bypass that motivated this.
     match node {
         Node::VariableBlock(_, expr) => walk_expr_filters(expr, out),
         Node::FilterSection(_, fs, _) => {
             out.push(fs.filter.name.clone());
+            for arg in fs.filter.args.values() {
+                walk_expr_filters(arg, out);
+            }
             for n in &fs.body {
                 walk_node_filters(n, out);
             }
@@ -740,12 +758,25 @@ fn walk_node_filters(node: &Node, out: &mut Vec<String>) {
             }
         }
         Node::MacroDefinition(_, mdef, _) => {
+            // Default arg values can themselves carry filters; previously
+            // ignored which let `{% macro m(x=y|striptags) %}` smuggle through.
+            for default in mdef.args.values().flatten() {
+                walk_expr_filters(default, out);
+            }
             for n in &mdef.body {
                 walk_node_filters(n, out);
             }
         }
-        // Other node kinds carry no filters.
-        _ => {}
+        // Variants that carry no expressions: literally cannot host filters.
+        Node::Super
+        | Node::Text(_)
+        | Node::Extends(_, _)
+        | Node::Include(_, _, _)
+        | Node::ImportMacro(_, _, _)
+        | Node::Raw(_, _, _)
+        | Node::Break(_)
+        | Node::Continue(_)
+        | Node::Comment(_, _) => {}
     }
 }
 
@@ -760,6 +791,10 @@ fn walk_expr_filters(expr: &Expr, out: &mut Vec<String>) {
 }
 
 fn walk_exprval_filters(val: &ExprVal, out: &mut Vec<String>) {
+    // Exhaustive match — every Tera `ExprVal` variant must be covered. The
+    // previous wildcard arm let `Test` and `StringConcat` smuggle filters
+    // past the whitelist (CRIT-S1). The compiler will now reject any new
+    // variant added in future Tera versions until the walker is updated.
     match val {
         ExprVal::Math(m) => {
             walk_expr_filters(&m.lhs, out);
@@ -788,8 +823,30 @@ fn walk_exprval_filters(val: &ExprVal, out: &mut Vec<String>) {
             walk_expr_filters(&in_.lhs, out);
             walk_expr_filters(&in_.rhs, out);
         }
-        // String/Int/Float/Bool/Ident/Test/StringConcat: no filters to collect.
-        _ => {}
+        ExprVal::Test(t) => {
+            // Tera evaluates filters inside test args during render; the
+            // walker MUST recurse here. Without this, the bypass
+            // `{% if x is defined(y | striptags) %}` slips past the whitelist.
+            for arg in &t.args {
+                walk_expr_filters(arg, out);
+            }
+        }
+        ExprVal::StringConcat(sc) => {
+            // `values: Vec<ExprVal>` — no filters at this level (filters
+            // live on `Expr`, not `ExprVal`), but the nested ExprVals can
+            // contain `FunctionCall` / `Array` / `In` etc. with filtered
+            // sub-expressions. Recurse so e.g. `"a" ~ f(x | striptags)` is
+            // caught.
+            for v in &sc.values {
+                walk_exprval_filters(v, out);
+            }
+        }
+        // True leaves — cannot host filters or sub-expressions.
+        ExprVal::String(_)
+        | ExprVal::Int(_)
+        | ExprVal::Float(_)
+        | ExprVal::Bool(_)
+        | ExprVal::Ident(_) => {}
     }
 }
 
@@ -1124,5 +1181,222 @@ errors:
         assert_eq!(m.rules.len(), 1);
         assert_eq!(m.guards.max_artifacts, Some(50));
         assert_eq!(m.errors.template_filter_violation, Some(ErrorAction::Error));
+    }
+
+    // -- 15. CRIT-S1 regression: walker must not skip Test/StringConcat ------
+    //
+    // Bypass class: filters smuggled through ExprVal variants the walker
+    // previously hit with a `_ => ()` wildcard. Tera evaluates these at
+    // render, so missing them means the whitelist is advisory at best.
+    // Each test below targets a different ExprVal variant.
+
+    /// Filter inside a `Test` argument — `is defined(y | striptags)`.
+    #[test]
+    fn template_rejects_filter_in_test_arg() {
+        // Tera grammar: `test_arg = { logic_expr | array_filter }` — args may
+        // carry filters. Pre-fix, the walker ignored them entirely.
+        let src = "{% if x is defined(y | striptags) %}hi{% endif %}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must mention disallowed filter, got: {err}"
+        );
+        assert!(
+            err.contains("whitelist"),
+            "must reference whitelist, got: {err}"
+        );
+    }
+
+    /// StringConcat with a function call whose arg uses a forbidden filter.
+    /// Bypass shape: `"a" ~ f(x | striptags)` — the StringConcat values are
+    /// `Vec<ExprVal>`, the function call's kwargs are `Vec<Expr>` with
+    /// filters. The walker now recurses through ExprVal::StringConcat.
+    #[test]
+    fn template_rejects_filter_in_string_concat() {
+        let src = r#"{{ "a" ~ f(arg=x | striptags) }}"#;
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside string concat fn arg, got: {err}"
+        );
+    }
+
+    /// Filter inside an `In` lhs — Tera grammar `in_cond` permits a
+    /// `basic_expr_filter` on the lhs, so `(x | striptags) in items` is a
+    /// real parse path. The walker covered `In` already; this test pins
+    /// the behaviour so a future regression is loud.
+    #[test]
+    fn template_rejects_filter_in_in_expr() {
+        let src = "{% if (x | striptags) in items %}hi{% endif %}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags") || err.contains("parse"),
+            "must catch filter inside `in` expr, got: {err}"
+        );
+    }
+
+    /// Filter inside a function-call argument — `f(arg=x | striptags)`.
+    /// Walker had this covered; lock it in as part of the bypass surface.
+    #[test]
+    fn template_rejects_filter_in_function_call_arg() {
+        let src = "{{ f(arg=x | striptags) }}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside fn arg, got: {err}"
+        );
+    }
+
+    /// Filter inside an array literal — `[x | striptags, y]`.
+    #[test]
+    fn template_rejects_filter_in_array_literal() {
+        // Arrays appear as `array_filter` in Tera grammar; their elements
+        // are full Exprs and may carry filters.
+        let src = "{% set v = [x | striptags, y] %}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside array literal, got: {err}"
+        );
+    }
+
+    /// Filter inside a Math expression — `(x | striptags) + 1`.
+    #[test]
+    fn template_rejects_filter_in_math_expr() {
+        let src = "{{ (x | striptags) + 1 }}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside math expr, got: {err}"
+        );
+    }
+
+    /// Filter inside a Logic comparison — `x | striptags > 0`.
+    #[test]
+    fn template_rejects_filter_in_logic_expr() {
+        let src = "{% if x | striptags == \"a\" %}hi{% endif %}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside logic expr, got: {err}"
+        );
+    }
+
+    /// Filter inside a `{% filter %}...{% endfilter %}` block fn-call args.
+    #[test]
+    fn template_rejects_filter_in_filter_section_args() {
+        // The block-level filter name itself was already collected; what was
+        // missing was filters embedded in its kwargs.
+        let src = "{% filter upper(arg=x | striptags) %}body{% endfilter %}";
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside filter-section kwargs, got: {err}"
+        );
+    }
+
+    /// Filter inside a macro definition's default arg value.
+    #[test]
+    fn template_rejects_filter_in_macro_default_arg() {
+        let src = r#"{% macro greet(name=x | striptags) %}hi{% endmacro %}"#;
+        let err = src.parse::<Template>().unwrap_err();
+        assert!(
+            err.contains("striptags"),
+            "must catch filter inside macro default arg, got: {err}"
+        );
+    }
+
+    // -- 16. Walker exhaustiveness: every ExprVal variant has an arm --------
+    //
+    // The match in `walk_exprval_filters` and `walk_node_filters` is
+    // exhaustive (no `_` wildcard). This compile-time guarantee is what
+    // closes the door on future Tera versions adding variants we don't
+    // know about. We additionally exercise each known variant at runtime
+    // so a refactor that re-introduces a wildcard is caught.
+
+    /// Hand-built representative templates for each `ExprVal` variant. If
+    /// any walker arm regresses to skip a variant, at least one of the
+    /// embedded forbidden filters will leak through.
+    #[test]
+    fn template_walker_covers_all_exprval_variants() {
+        // Each entry: (description, template source). All MUST be rejected
+        // because each contains a `striptags` filter somewhere a walker arm
+        // is required to recurse into.
+        let bypass_attempts: &[(&str, &str)] = &[
+            ("Math", "{{ (x | striptags) + 1 }}"),
+            ("Logic", "{% if x | striptags == \"a\" %}hi{% endif %}"),
+            ("FunctionCall", "{{ f(arg=x | striptags) }}"),
+            ("Array", "{% set v = [x | striptags] %}"),
+            ("In", "{% if (x | striptags) in items %}hi{% endif %}"),
+            ("Test", "{% if x is defined(y | striptags) %}hi{% endif %}"),
+            ("StringConcat", r#"{{ "a" ~ f(arg=x | striptags) }}"#),
+            // Leaf variants (String/Int/Float/Bool/Ident) cannot host a
+            // filter directly; their walker arms intentionally do nothing.
+            // They are exercised implicitly by every other test parsing OK.
+        ];
+        for (variant, src) in bypass_attempts {
+            let err = src.parse::<Template>().unwrap_err();
+            assert!(
+                err.contains("striptags") || err.contains("parse"),
+                "{variant}: bypass not caught — `{src}` returned `{err}`"
+            );
+        }
+    }
+
+    // -- 17. CRIT-T3 regression: whitelist-name contract for `replace` /  ---
+    //                            `default` (Tera built-ins pre-empt) -------
+
+    /// `replace` is a Tera built-in; the whitelist allows the **name**, so
+    /// using it in a template must parse successfully even though no custom
+    /// implementation is registered.
+    #[test]
+    fn template_accepts_tera_builtin_replace() {
+        let src = r#"{{ x | replace(from="a", to="b") }}"#;
+        let t: Template = src
+            .parse()
+            .unwrap_or_else(|e| panic!("Tera built-in `replace` must parse: {e}"));
+        assert_eq!(t.as_str(), src);
+    }
+
+    /// `default` is also a Tera built-in; same contract as `replace`.
+    #[test]
+    fn template_accepts_tera_builtin_default() {
+        let src = r#"{{ x | default(value="fallback") }}"#;
+        let t: Template = src
+            .parse()
+            .unwrap_or_else(|e| panic!("Tera built-in `default` must parse: {e}"));
+        assert_eq!(t.as_str(), src);
+    }
+
+    /// Tera built-ins NOT in our whitelist (e.g. `striptags`, `safe`,
+    /// `json_encode`, `escape`) MUST be rejected even though Tera ships an
+    /// implementation. The whitelist is an allow-list, not a block-list.
+    #[test]
+    fn template_rejects_arbitrary_tera_builtin() {
+        for forbidden in ["striptags", "safe", "json_encode", "escape"] {
+            let src = format!("{{{{ x | {forbidden} }}}}");
+            let err = src
+                .parse::<Template>()
+                .err()
+                .unwrap_or_else(|| panic!("Tera built-in `{forbidden}` slipped past whitelist"));
+            assert!(
+                err.contains(forbidden) || err.contains("whitelist"),
+                "{forbidden}: error did not mention filter or whitelist: {err}"
+            );
+        }
+    }
+
+    /// Filters that don't exist anywhere — neither built-in nor whitelisted.
+    /// Belt-and-suspenders: covers the case where someone deletes the
+    /// whitelist contains-check by mistake.
+    #[test]
+    fn template_rejects_unknown_filter() {
+        let err = "{{ x | nonexistent_filter }}"
+            .parse::<Template>()
+            .unwrap_err();
+        assert!(
+            err.contains("nonexistent_filter") || err.contains("whitelist"),
+            "unexpected error: {err}"
+        );
     }
 }
