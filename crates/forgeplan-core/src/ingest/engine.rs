@@ -645,7 +645,10 @@ mod tests {
     use crate::ingest::sources::{FrontMatterPlusSections, SourceParser};
     use std::path::PathBuf;
 
-    const SPIKE_INPUT: &str = include_str!("../../../../.local/spike-1-c4-scoring.md");
+    // Tracked test fixture (mirrored from `.local/spike-1-c4-scoring.md`,
+    // which is gitignored — `.local/` excluded). Copied into `tests/fixtures/`
+    // so CI builds (which don't have `.local/`) can compile the test.
+    const SPIKE_INPUT: &str = include_str!("../../tests/fixtures/spike-1-c4-scoring.md");
 
     /// Spike-1 mapping, normalised to valid Tera syntax (named `value=`,
     /// double-quoted args). Mirrors `.local/spike-1-c4-to-forge-mapping.yaml`
