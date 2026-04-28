@@ -36,7 +36,12 @@ fn write_workspace_playbook(tmp: &TempDir, filename: &str, yaml: &str) -> std::p
     p
 }
 
-/// Minimal valid playbook (1 agent step).
+/// Minimal valid playbook (1 forgeplan_core step).
+///
+/// Uses `forgeplan_core: search` delegation (in-process, deterministic) so
+/// `playbook run` tests work without external `agent`/`plugin` binaries.
+/// Phase 6 Wave 4 swap: previously `agent: hello` (Mock-success); now
+/// `forgeplan_core: search { query }` invokes the real internal search op.
 fn good_playbook_yaml(name: &str) -> String {
     format!(
         r#"
@@ -46,8 +51,10 @@ title: Sample {name}
 steps:
   - id: only-step
     delegate_to:
-      type: agent
-      name: hello
+      type: forgeplan_core
+      target: search
+    input:
+      query: hello
 "#
     )
 }
@@ -231,7 +238,7 @@ fn playbook_show_by_name_succeeds() {
         .success()
         .stdout(predicate::str::contains("Playbook: demo-show"))
         .stdout(predicate::str::contains("only-step"))
-        .stdout(predicate::str::contains("agent:hello"))
+        .stdout(predicate::str::contains("forgeplan_core:search"))
         .stdout(predicate::str::contains(
             "Next: forgeplan playbook run demo-show",
         ));
@@ -377,6 +384,9 @@ fn playbook_run_step_out_of_range_exits_two() {
 #[test]
 fn playbook_run_step_skips_earlier_steps() {
     let tmp = init_workspace();
+    // Phase 6 Wave 4: use forgeplan_core: search delegation (in-process,
+    // deterministic — no external `agent` binary needed). Three independent
+    // steps with no `requires:` so the only skip can be attributed to --step 2.
     let yaml = r#"
 schema_version: "1.0"
 name: linear-pb
@@ -384,16 +394,22 @@ title: Three-step independent
 steps:
   - id: s1
     delegate_to:
-      type: agent
-      name: alpha
+      type: forgeplan_core
+      target: search
+    input:
+      query: alpha
   - id: s2
     delegate_to:
-      type: agent
-      name: alpha
+      type: forgeplan_core
+      target: search
+    input:
+      query: alpha
   - id: s3
     delegate_to:
-      type: agent
-      name: alpha
+      type: forgeplan_core
+      target: search
+    input:
+      query: alpha
 "#;
     write_workspace_playbook(&tmp, "linear.yaml", yaml);
 

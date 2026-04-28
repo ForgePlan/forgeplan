@@ -3,7 +3,50 @@
 > **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
 > (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
 
-## Current: v0.26.0 — PRD-065/066/067 Playbook + Ingest + Plugin detection (Phase 5)
+## Current: v0.27.0 — PRD-072 Phase 6 real dispatchers + init wiring + greenfield playbook
+
+EPIC-007 Phase 6 — engine layer (v0.26.0) переходит в **user-facing activation**.
+PRD-072 / RFC-007 / ADR-010 закрывают Phase 5 deferral: 5 production
+`Dispatcher` impls (real subprocess через tokio::process + ForgeplanCore
+direct call), `forgeplan init` теперь эмитит recommendation hints, и
+greenfield-kickoff.yaml доступен в marketplace. 3 waves × 8 agents,
+~5000 LOC, +60 unit + 5 integration tests.
+
+### PRD-072 — Phase 6 real subprocess dispatchers
+- [x] FR-1 `PluginDispatcher` (claude-code-plugin subprocess, default 600s)
+- [x] FR-2 `AgentDispatcher` (task-tool agent-invoke, default 300s)
+- [x] FR-3 `SkillDispatcher` (in-process v1 stub — Wave 5 real registry)
+- [x] FR-4 `CommandDispatcher` (security-hardened: env_clear, no shell, --yes)
+- [x] FR-5 `ForgeplanCoreDispatcher` (direct internal call)
+- [x] FR-6 `commands::init::run` recommendation wiring
+- [x] FR-7 `marketplace/playbooks/greenfield-kickoff.yaml` canonical (7 steps)
+- [x] FR-9 Subprocess lifecycle (tokio::process + kill_on_drop + Stdio::piped + 10 MiB cap)
+- [x] FR-10 Security (env_clear, allow-list, no shell expansion, --yes gate)
+- [x] AC-3..AC-7 init recommendation hints (закрывает PRD-067)
+- [x] AC-7 + AC-8 greenfield-kickoff validate + dry-run pass
+- [x] AC-9 regression-free (1384+ lib + 372+ integration tests PASS)
+- [ ] FR-8 Per-step `timeout_seconds` override (schema landed; executor wiring partial — Wave 5)
+- [ ] AC-1, AC-2 real brownfield E2E run on real c4-architecture installed plugin (Wave 5)
+- [ ] AC-10 kill -9 mid-step resumability E2E (Wave 5)
+
+### Documentation + Marketplace (Phase 6)
+- [x] `docs/operations/PLAYBOOK-AUTHORING.ru.md` Subprocess lifecycle section (Wave 4)
+- [x] `docs/operations/INGEST-MAPPINGS.ru.md` Workflow integration update (Wave 4)
+- [x] `marketplace/playbooks/greenfield-kickoff.yaml` canonical (Wave 3)
+- [x] CHANGELOG.md v0.27.0 section (Wave 4)
+- [x] EVID-091 — Phase 6 closure evidence pack (Wave 4)
+
+### Follow-up backlog (Phase 6 → Wave 5)
+- [ ] Per-step `timeout_seconds` override fully wired through executor
+- [ ] Real `SkillDispatcher` registry (replace trace-only stub)
+- [ ] Per-step `env:` allow-list with whitelist mapping
+- [ ] AC-1/AC-2/AC-10 real brownfield-code E2E + kill -9 resumability
+- [ ] /audit Round 1+2 на Phase 6 (security focus subprocess execution surface)
+- [ ] Activate PRD-072 / RFC-007 / ADR-010 (post-audit, R_eff ≥ 0.7 with EVID-090 + EVID-091)
+- [ ] Tag v0.27.0 + cargo-dist Release workflow
+- [ ] PR feat/phase6-real-dispatchers → dev (after audit)
+
+## Previous: v0.26.0 — PRD-065/066/067 Playbook + Ingest + Plugin detection (Phase 5)
 
 EPIC-007 Phase 2 — Forgeplan становится оркестратором. ADR-009 implementation-complete: playbook runtime + ingest engine + plugin detection + canonical marketplace mapping/playbook. 4-wave sprint, 9 agents, ~9000 LOC.
 
@@ -17,7 +60,7 @@ EPIC-007 Phase 2 — Forgeplan становится оркестратором. 
 - [x] FR-7 Progress reporting (TTY-aware stderr)
 - [x] FR-8 Hint contract integration (PRD-071)
 - [x] AC-1..AC-6 acceptance criteria covered (Wave 4 E2E)
-- [ ] Real Plugin/Agent/Skill subprocess dispatchers (deferred to follow-up sprint)
+- [x] Real Plugin/Agent/Skill subprocess dispatchers (closed by Phase 6 / PRD-072 FR-1..FR-5)
 
 ### PRD-066 — Ingest engine + mapping YAML
 - [x] FR-1 Rust module `forgeplan-core::ingest::{types,sources,template,engine,idempotency}`
@@ -39,7 +82,11 @@ EPIC-007 Phase 2 — Forgeplan становится оркестратором. 
 - [x] FR-5 Playbook recommendation engine (signals × plugins → applicable)
 - [x] FR-6 CLI `forgeplan plugins {list|doctor|info}`
 - [x] FR-7 Hint extension (ADR-008 pattern + `recommended_playbook`)
-- [x] AC-1..AC-7 acceptance criteria covered
+- [x] AC-1, AC-2, AC-6 закрыты в Phase 5
+- [x] AC-3 — `forgeplan init` empty repo → `recommended: greenfield-kickoff` (closed by Phase 6 / PRD-072 FR-6)
+- [x] AC-4 — `forgeplan init` `.obsidian/` → `recommended: brownfield-docs` (closed by Phase 6)
+- [x] AC-5 — `forgeplan init` legacy code >100 commits → `recommended: brownfield-code` (closed by Phase 6)
+- [x] AC-7 — backward compat (FORGEPLAN_HINTS=0 / non-TTY) (closed by Phase 6)
 
 ### Documentation + Marketplace
 - [x] `docs/operations/PLAYBOOK-AUTHORING.ru.md` (Wave 4 W4B)
@@ -50,13 +97,14 @@ EPIC-007 Phase 2 — Forgeplan становится оркестратором. 
 - [x] CHANGELOG.md v0.26.0 section
 - [x] EVID-089 — Phase 5 evidence pack
 
-### Follow-up backlog (Phase 5 → Wave 5)
-- [ ] Real subprocess dispatch for `delegate_to: plugin/agent/skill` (Wave 3 mocked it)
-- [ ] MCP `forgeplan_ingest` wrapper
-- [ ] Canonical mappings: autoresearch / git-log / ddd / sparc → forge
-- [ ] Canonical playbooks: `greenfield.yaml`, `brownfield-docs.yaml`, `audit.yaml`, `release.yaml`
-- [ ] Parallel step execution (DAG planner)
-- [ ] Tag v0.26.0 + cargo-dist Release workflow
+### Follow-up backlog (Phase 5 — partially closed by Phase 6)
+- [x] Real subprocess dispatch for `delegate_to: plugin/agent/skill` (closed by PRD-072 FR-1..FR-3 / Phase 6 Wave 1)
+- [x] Canonical playbook `greenfield-kickoff.yaml` (closed by PRD-072 FR-7 / Phase 6 Wave 3)
+- [ ] MCP `forgeplan_ingest` wrapper (still deferred — CLI cover via `forgeplan serve`)
+- [ ] Canonical mappings: autoresearch / git-log / ddd / sparc → forge (still backlog)
+- [ ] Canonical playbooks: `brownfield-docs.yaml`, `audit.yaml`, `release.yaml` (3 of 4 still backlog)
+- [ ] Parallel step execution (DAG planner) — Non-Goals v1
+- [ ] Tag v0.26.0 + cargo-dist Release workflow (released in branch — pending tag)
 
 ## Previous: v0.25.0 — PRD-071 hint contract (PR #212, 2026-04-27)
 

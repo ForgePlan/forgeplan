@@ -49,7 +49,7 @@ docs/
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Защита веток, правила PR, предотвращение деструктивных действий |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Полные Git-правила — lifecycle веток, PR pipeline, процесс релиза, worktrees |
 | [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — что портировано из `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` в наши crates |
-| [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ авторинг playbook'ов** — декларативные YAML-workflow, 5 типов делегации, fallback hints, DAG ordering (PRD-065/SPEC-003) |
+| [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ авторинг playbook'ов** — декларативные YAML-workflow, 5 типов делегации, fallback hints, DAG ordering. **v0.27.0+ Subprocess lifecycle** секция (real dispatchers, kill_on_drop, timeout policy, security model) per ADR-010/PRD-072 |
 | [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ авторинг ingest mapping'ов** — перевод output плагинов в forge-артефакты с invariant'ом `## Sources` (PRD-066/SPEC-004) |
 
 ## Схемы

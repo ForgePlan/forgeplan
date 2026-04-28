@@ -6439,8 +6439,8 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Run a playbook end-to-end. Wave 3 wires `MockDispatcher::AlwaysOk` — \
-                       real plugin/agent/skill/command/forgeplan_core dispatchers land in Wave 4. \
+        description = "Run a playbook end-to-end. Wave 4 wires the production \
+                       plugin/agent/skill/command/forgeplan_core dispatchers via `RoutingDispatcher`. \
                        Refuses without `yes: true` (ADR-009 security gate). Use `dry_run: true` \
                        to enumerate steps without invoking dispatchers.",
         annotations(
@@ -6457,7 +6457,7 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         use forgeplan_core::playbook::loader::load_playbook;
         use forgeplan_core::playbook::{
-            DispatchOutcome, ExecutorConfig, MockDispatcher, executor::Executor, journal::Journal,
+            ExecutorConfig, dispatch::RoutingDispatcher, executor::Executor, journal::Journal,
         };
 
         // ADR-009 / SPEC-003 §"delegate_to": refuse without yes (except dry-run).
@@ -6556,13 +6556,21 @@ impl ForgeplanServer {
             );
         }
 
-        // Real run via MockDispatcher (Wave 4 wires real backends).
+        // Real run via RoutingDispatcher (Wave 4 production wiring).
+        // `require_workspace()` returns the `.forgeplan/` directory itself
+        // (the convention in this MCP server). RoutingDispatcher and
+        // Journal both expect the project root (parent of `.forgeplan/`),
+        // so we step up one level.
         let ws = match self.require_workspace().await {
             Ok(w) => w,
             Err(e) => return Ok(err_result(&e)),
         };
+        let project_root = ws
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| ws.clone());
 
-        let journal = match Journal::open(&ws) {
+        let journal = match Journal::open(&project_root) {
             Ok(j) => j,
             Err(e) => {
                 return Ok(err_hinted(
@@ -6572,7 +6580,7 @@ impl ForgeplanServer {
             }
         };
 
-        let dispatcher = MockDispatcher::new().with_default(DispatchOutcome::success());
+        let dispatcher = RoutingDispatcher::new(project_root.clone());
         let cfg = ExecutorConfig {
             yes_flag: p.yes,
             // load_playbook already validated; skip duplicate work.
@@ -6612,7 +6620,6 @@ impl ForgeplanServer {
                 "playbook": pb.name,
                 "source_path": phase5_redact_path(&resolved),
                 "report": report,
-                "wave3_note": "MockDispatcher::AlwaysOk used; real dispatchers land in Wave 4.",
             }),
             next_action,
         )
@@ -9571,17 +9578,19 @@ steps:
         // executor's predecessor-not-successful skip rule doesn't compound
         // with the explicit `--step` skip — we only want to verify that
         // step=2 leaves exactly s1 marked Skipped and s2/s3 succeed.
+        // Phase 6 Wave 4 swap: skill delegate (in-process v1 stub returns
+        // success unconditionally — no external binary, no LanceStore needed).
         let yaml = r#"
 schema_version: "1.0"
 name: three-pb
 title: Three
 steps:
   - id: s1
-    delegate_to: { type: agent, name: a }
+    delegate_to: { type: skill, name: dummy }
   - id: s2
-    delegate_to: { type: agent, name: a }
+    delegate_to: { type: skill, name: dummy }
   - id: s3
-    delegate_to: { type: agent, name: a }
+    delegate_to: { type: skill, name: dummy }
 "#;
         let pb_path = tmp
             .path()

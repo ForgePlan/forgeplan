@@ -15,19 +15,20 @@
 //! and produces an empty list on a fresh install (Wave 4 will seed bundled
 //! playbooks).
 //!
-//! # Wave 4 follow-up
+//! # Wave 4 dispatcher wiring
 //!
-//! `run_execute` currently uses `MockDispatcher::AlwaysOk` because the real
-//! Plugin/Agent/Skill/Command/ForgeplanCore dispatchers are scheduled for
-//! Wave 4 (subprocess invocation via Task tool). The CLI surface, journal
-//! integration, and hint contract are complete; only the dispatch backend
-//! remains stubbed. A `tracing::warn!`-equivalent stderr line is emitted on
-//! every real run so users are not surprised.
+//! `run_execute` constructs a [`RoutingDispatcher`] that fans `step.delegate_to`
+//! out to the five Wave 1 production dispatchers (plugin / agent / skill /
+//! command / forgeplan_core). The CLI surface, journal integration, and hint
+//! contract were completed in Waves 2–3; Wave 4 closes the e2e gap by swapping
+//! the previous `MockDispatcher::AlwaysOk` placeholder for real subprocess /
+//! in-process execution.
 
 use std::path::{Path, PathBuf};
 
 use forgeplan_core::playbook::{
-    DispatchOutcome, ExecutorConfig, MockDispatcher, Playbook,
+    ExecutorConfig, Playbook,
+    dispatch::RoutingDispatcher,
     executor::{ExecutionReport, Executor},
     journal::Journal,
     loader::{LoaderError, load_playbook},
@@ -416,12 +417,6 @@ pub async fn run_execute(
         return run_dry_run(&pb, &resolved, start_step, json);
     }
 
-    // Real run — delegate to MockDispatcher (Wave 4 wires real backends).
-    eprintln!(
-        "warn: Real dispatchers wired in Wave 4 — using MockDispatcher::AlwaysOk for {}",
-        pb.name
-    );
-
     // `Journal::open` expects the project root (parent of `.forgeplan/`),
     // because it builds `<root>/.forgeplan/journal/...`. `find_workspace`
     // returns the `.forgeplan/` dir itself, so we step up one level when it
@@ -436,7 +431,7 @@ pub async fn run_execute(
     };
     let journal = Journal::open(&workspace_root)?;
 
-    let dispatcher = MockDispatcher::new().with_default(DispatchOutcome::success());
+    let dispatcher = RoutingDispatcher::new(workspace_root.clone());
     let cfg = ExecutorConfig {
         yes_flag: yes,
         // load_playbook already validated; skip duplicate work in executor.

@@ -16,6 +16,32 @@
 //! pre-compute outcomes synchronously and return them via `async fn`.
 //!
 //! References: SPEC-003 §"delegate_to", PRD-065 FR-4.
+//!
+//! # Phase 6 layout (PRD-072 / RFC-007)
+//!
+//! Wave 1 of Phase 6 splits this single file into per-delegate modules,
+//! sharing `helpers::run_subprocess` for subprocess lifecycle (ADR-010 +
+//! EVID-090). The trait, error types, security gate, and Mock/Recording
+//! stubs live here in `mod.rs`. Production impls live in their own files:
+//!
+//! - [`plugin_dispatcher`]        — FR-1
+//! - [`agent_dispatcher`]         — FR-2
+//! - [`skill_dispatcher`]         — FR-3
+//! - [`command_dispatcher`]       — FR-4 (security-hardened)
+//! - [`forgeplan_core_dispatcher`] — FR-5 (internal bridge, no subprocess)
+//! - [`helpers`]                  — shared subprocess helper
+//!
+//! Each Wave 1 teammate owns exactly one of these files plus tests.
+
+pub mod agent_dispatcher;
+pub mod command_dispatcher;
+pub mod forgeplan_core_dispatcher;
+pub mod helpers;
+pub mod plugin_dispatcher;
+pub mod routing;
+pub mod skill_dispatcher;
+
+pub use routing::RoutingDispatcher;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

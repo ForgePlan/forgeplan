@@ -310,6 +310,31 @@ forgeplan ingest --mapping c4-to-forge --source C4-Documentation/
 forgeplan ingest --mapping c4-to-forge --source C4-Documentation/ --update
 ```
 
+## Workflow integration: ingest из playbook (Phase 6)
+
+С v0.27.0 шаги `delegate_to: { type: forgeplan_core, target: ingest }`
+в playbook'ах вызывают ingest engine **прямым internal API call** в
+текущем процессе forgeplan, без subprocess или CLI shell-out (как
+было в Phase 5).
+
+Это значит:
+
+- **No process overhead**: ingest шаг наследует уже загруженные
+  workspace state, LanceDB connection и LLM provider config —
+  не нужно re-init.
+- **Shared journal**: журналируемые события идут в тот же
+  `.forgeplan/journal/playbook-runs.jsonl` без race с CLI.
+- **Same security boundary**: whitelist filters (10) + `## Sources`
+  invariant + `compat_spec_version` остаются обязательными — direct
+  call использует тот же `ingest::engine::run()`, что и CLI.
+
+Pack authors могут полагаться, что ingest-шаг внутри playbook'а
+ведёт себя идентично standalone `forgeplan ingest --mapping <name>`,
+включая идемпотентность через `source_hash` и dry-run preview.
+
+См. [ADR-010 §Affected Files](../../.forgeplan/adrs/ADR-010-phase-6-subprocess-invocation-via-tokio-process-with-kill-on-drop-and-timeout.md)
++ [PLAYBOOK-AUTHORING.ru.md §Subprocess lifecycle](PLAYBOOK-AUTHORING.ru.md#subprocess-lifecycle-phase-6).
+
 ## Кросс-ссылки
 
 - [SPEC-004 — Mapping YAML schema](../../.forgeplan/specs/SPEC-004-mapping-yaml-schema.md) — формальный контракт
