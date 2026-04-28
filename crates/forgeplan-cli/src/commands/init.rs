@@ -1,12 +1,17 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use console::style;
 
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::plugins::{
+    KnownPlaybook, build_recommendations, detect_plugins, detect_signals, extended_registry,
+    format_recommendations,
+};
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
 use forgeplan_core::workspace::{FORGEPLAN_DIR, find_workspace, init_workspace};
 
@@ -33,6 +38,7 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             if scan {
                 run_scan_import(&cwd, &existing).await?;
             }
+            emit_recommendation_hints(&cwd);
             // PRD-071 contract: hint to start shaping (or to force reinit).
             let hints_vec = vec![
                 Hint::suggestion("Start shaping a PRD")
@@ -82,6 +88,7 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             run_scan_import(&cwd, &workspace).await?;
         }
 
+        emit_recommendation_hints(&cwd);
         // PRD-071 contract: hint at the next step in the workflow.
         let hints_vec = vec![
             Hint::suggestion("Shape your first PRD")
@@ -292,6 +299,7 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
         run_scan_import(&cwd, &workspace).await?;
     }
 
+    emit_recommendation_hints(&cwd);
     // PRD-071 contract: deterministic Next: line for agents (CLI text contract).
     let hints_vec = vec![
         Hint::suggestion("Shape your first PRD")
@@ -383,6 +391,145 @@ fn agent_display_name(agent: &str) -> &str {
         "gemini" => "Gemini CLI",
         "copilot" => "Copilot",
         _ => agent,
+    }
+}
+
+/// Bundled minimal playbook descriptors (PRD-072 FR-6, PRD-067 AC-3/AC-4/AC-5).
+///
+/// Wave 2 ships these descriptors so the recommendation engine can emit
+/// `Next:` hints from the very first `forgeplan init` invocation; the full
+/// canonical YAML files arrive in Wave 3 (`marketplace/playbooks/*.yaml`).
+///
+/// `KnownPlaybook` and `TriggeredBy` are `#[non_exhaustive]` — direct
+/// struct-literal construction is forbidden outside `forgeplan-core`, so we
+/// build them via `serde_json::from_value`, which is the supported escape
+/// hatch for non-exhaustive types.
+fn bundled_known_playbooks() -> Vec<KnownPlaybook> {
+    let raw = serde_json::json!([
+        {
+            "name": "greenfield-kickoff",
+            "source_pack": "forgeplan",
+            "triggered_by": { "empty_repo": true, "has_git": true },
+            "requires_plugins": ["forgeplan"]
+        },
+        {
+            "name": "brownfield-docs",
+            "source_pack": "brownfield-docs-pack",
+            "triggered_by": { "has_obsidian": true },
+            "requires_plugins": ["forgeplan"]
+        },
+        {
+            "name": "brownfield-code",
+            "source_pack": "forgeplan",
+            "triggered_by": {
+                "has_git": true,
+                "commit_count_min": 100,
+                "has_docs": false
+            },
+            "requires_plugins": ["c4-architecture", "forgeplan"]
+        }
+    ]);
+    serde_json::from_value(raw).expect("bundled playbook descriptors are well-formed")
+}
+
+/// Discover known playbooks from disk (workspace-local + installed plugin packs)
+/// and merge with bundled descriptors. Discovery failures are non-fatal —
+/// the bundled list is always returned.
+fn discover_known_playbooks(workspace_root: &Path) -> Vec<KnownPlaybook> {
+    let mut found = bundled_known_playbooks();
+    let mut seen: std::collections::HashSet<String> =
+        found.iter().map(|p| p.name.clone()).collect();
+
+    let mut search_dirs: Vec<PathBuf> = Vec::new();
+    search_dirs.push(workspace_root.join("playbooks"));
+    search_dirs.push(workspace_root.join(".forgeplan").join("playbooks"));
+    if let Ok(home) = std::env::var("HOME") {
+        let plugins_root = PathBuf::from(home).join(".claude").join("plugins");
+        if let Ok(entries) = std::fs::read_dir(&plugins_root) {
+            for entry in entries.flatten() {
+                let pb_dir = entry.path().join("playbooks");
+                if pb_dir.is_dir() {
+                    search_dirs.push(pb_dir);
+                }
+            }
+        }
+    }
+
+    for dir in search_dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                continue;
+            }
+            if let Some(pb) = parse_known_playbook(&path)
+                && seen.insert(playbook_name(&pb).to_string())
+            {
+                found.push(pb);
+            }
+        }
+    }
+
+    found
+}
+
+/// Extract the `name` from a `KnownPlaybook` without requiring direct field
+/// access (the struct is `#[non_exhaustive]`). Round-trips via `serde_json`.
+fn playbook_name(pb: &KnownPlaybook) -> String {
+    serde_json::to_value(pb)
+        .ok()
+        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Best-effort YAML parse of a playbook descriptor. Reads the YAML, converts
+/// to a JSON `Value`, then deserializes through `serde_json` (the supported
+/// route for `#[non_exhaustive]` targets).
+fn parse_known_playbook(path: &Path) -> Option<KnownPlaybook> {
+    let raw_text = std::fs::read_to_string(path).ok()?;
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&raw_text).ok()?;
+    let json_value = serde_json::to_value(yaml_value).ok()?;
+    // Reject documents that don't even carry a `name` so we don't pollute the
+    // recommendation list with empty-named entries.
+    json_value.get("name")?.as_str()?;
+    serde_json::from_value::<KnownPlaybook>(json_value).ok()
+}
+
+/// Emit playbook recommendation hints to stderr after workspace creation.
+///
+/// Honours `FORGEPLAN_HINTS=0` (PRD-067 AC-7) and stderr TTY status so
+/// machine-readable consumers (CI, piped agents) are not polluted. Any
+/// signal/plugin detection failure is logged but never propagated.
+fn emit_recommendation_hints(workspace_root: &Path) {
+    let env_flag = std::env::var("FORGEPLAN_HINTS").ok();
+    if env_flag.as_deref() == Some("0") {
+        return;
+    }
+    // When `FORGEPLAN_HINTS=1` is explicitly set, bypass the TTY guard so
+    // CI / agentic pipelines that read stderr can opt in to hints. Default
+    // (env unset) keeps the no-TTY suppression so piped consumers stay quiet.
+    let force = env_flag.as_deref() == Some("1");
+    if !force && !std::io::stderr().is_terminal() {
+        return;
+    }
+
+    let signals = match detect_signals(workspace_root) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!(
+                "warning: skipping playbook recommendations — signal detection failed: {err}"
+            );
+            return;
+        }
+    };
+    let installed = detect_plugins(&extended_registry());
+    let known = discover_known_playbooks(workspace_root);
+    let recs = build_recommendations(&signals, &installed, &known);
+    let formatted = format_recommendations(&recs);
+    if !formatted.is_empty() {
+        eprintln!("{}", formatted);
     }
 }
 

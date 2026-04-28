@@ -1,0 +1,165 @@
+# =====================================================================
+# greenfield-kickoff.yaml — Canonical playbook: empty repo bootstrap
+# =====================================================================
+#
+# Purpose:
+#   Take a brand-new project (empty repo or just `git init`-ed) from
+#   "no artifacts at all" to a structured Forgeplan workspace with a
+#   captured vision, an initial stack ADR, an Epic, three PRD stubs,
+#   and (optionally) a scaffolded `docs/` tree — all written through
+#   the in-process `ForgeplanCore` dispatcher so this playbook has
+#   **zero external plugin/agent dependencies**. The single optional
+#   skill step (forge-scaffolder) degrades gracefully via
+#   `fallback_hint` when the skill is not installed.
+#
+# When to run:
+#   `forgeplan playbook run greenfield-kickoff --yes`
+#   Recommended by `forgeplan init` on an empty repo (PRD-067 FR-5,
+#   PRD-072 FR-6 / AC-3) — surfaced by the recommendation engine when
+#   `triggered_by` matches the detected project state below.
+#
+# Expected duration: ~3-5 seconds (all six artifact creates run
+# in-process; only the final skill step may shell out).
+#
+# Where it fits in ForgePlan:
+#   This is the canonical "Shape" entry point of the methodology
+#   loop (Shape → Validate → Code → Evidence → Activate). After this
+#   playbook completes, the user has the minimum scaffold required to
+#   start filling in PRD MUST sections and progress towards
+#   `forgeplan validate` passing.
+#
+# References:
+#   - PRD-072 FR-7 + AC-7 + AC-8 — this playbook closes those.
+#   - SPEC-003 — Playbook YAML schema (this file is schema_version 1.0).
+#   - RFC-007 §"Greenfield playbook" — design rationale.
+#   - marketplace/playbooks/brownfield-code.yaml — companion playbook.
+# =====================================================================
+
+schema_version: "1.0"
+name: greenfield-kickoff
+title: "Greenfield project bootstrap"
+description: |
+  Bootstrap a new project end-to-end through ForgeplanCore:
+    1. Capture the project vision as a Note
+    2. Record the initial stack decision as an ADR
+    3. Create the kickoff Epic that groups the first PRDs
+    4. Stub three feature PRDs hanging off the Epic
+    5. Scaffold a docs/ tree (optional skill — gracefully skipped
+       with an install hint if forge-scaffolder is missing)
+
+  Every artifact-creating step is a `forgeplan_core: new` op, so this
+  playbook runs identically with or without external plugins
+  installed. The only soft dependency is the forge-scaffolder skill
+  for step 7; its absence does not abort the run (`on_error: continue`).
+
+# ---------------------------------------------------------------------
+# Recommendation engine signals (PRD-067 FR-5)
+# Match: empty/just-initialised git repo with no prior commits.
+# ---------------------------------------------------------------------
+triggered_by:
+  empty_repo: true
+  has_git: true
+
+# ---------------------------------------------------------------------
+# Prerequisites — no plugins required (this playbook is self-contained
+# via ForgeplanCore). One optional skill — surfaced via doctor + step
+# `fallback_hint` at runtime; a missing skill does not abort the run.
+# ---------------------------------------------------------------------
+requires:
+  plugins: []
+  skills:
+    - name: forge-scaffolder
+      pack: brownfield-docs-pack
+
+# ---------------------------------------------------------------------
+# Steps — strict DAG via `requires:` (step IDs only, never freeform).
+# Phase 6 v1 schema: no `timeout_seconds` field yet (deferred to FR-8
+# follow-up which bumps SPEC-003 to 1.1).
+# ---------------------------------------------------------------------
+steps:
+
+  # 1. Capture project vision as a Note. First step — no requires.
+  #    Notes have minimal MUST rules and skip the validation gate, so
+  #    this is a safe quick-write to anchor the rest of the playbook.
+  - id: capture-vision
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: note
+      title: "Project vision capture"
+    on_error: abort
+
+  # 2. Record the initial stack decision as an ADR draft. Sequential
+  #    after vision so the author can reference the captured vision
+  #    while filling in alternatives + consequences.
+  - id: stack-decision
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: adr
+      title: "Initial stack decision"
+    requires: [capture-vision]
+    on_error: abort
+
+  # 3. Create the kickoff Epic. Hangs the three feature PRDs off a
+  #    single parent so the project graph stays connected from day one.
+  - id: kickoff-epic
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: epic
+      title: "Project initial scope"
+    requires: [stack-decision]
+    on_error: abort
+
+  # 4-6. Three feature PRD stubs — same parent (kickoff-epic). All three
+  #      depend only on the Epic, so the executor can fan them out in
+  #      parallel once the DAG scheduler supports it (Phase 7 follow-up;
+  #      Phase 6 executor runs them sequentially per their declaration
+  #      order, which is still correct).
+  - id: prd-feature-1
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: prd
+      title: "First feature PRD"
+    requires: [kickoff-epic]
+    on_error: abort
+
+  - id: prd-feature-2
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: prd
+      title: "Second feature PRD"
+    requires: [kickoff-epic]
+    on_error: abort
+
+  - id: prd-feature-3
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: prd
+      title: "Third feature PRD"
+    requires: [kickoff-epic]
+    on_error: abort
+
+  # 7. Optional docs/ scaffold via the forge-scaffolder skill. Sits at
+  #    the leaf of the DAG so an absent or failing skill does not
+  #    cascade — `on_error: continue` records the failure in the report
+  #    while the rest of the playbook still counts as a successful
+  #    bootstrap.
+  - id: scaffold-docs
+    delegate_to:
+      type: skill
+      name: forge-scaffolder
+      pack: brownfield-docs-pack
+    requires: [kickoff-epic]
+    fallback_hint: "claude skill install ForgePlan/forge-scaffolder"
+    on_error: continue
