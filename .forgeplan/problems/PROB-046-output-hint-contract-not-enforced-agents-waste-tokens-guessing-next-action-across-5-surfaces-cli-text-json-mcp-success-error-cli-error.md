@@ -5,7 +5,8 @@ kind: problem
 links:
 - target: PRD-070
   relation: informs
-status: active
+status: deprecated
+deprecated_reason: Resolved via PRD-071 hint contract implementation shipped in v0.25.0. Hint coverage now 100% across CLI text/JSON + MCP success/error. EVID-086 closes the loop.
 title: Output hint contract not enforced — agents waste tokens guessing next-action across 5 surfaces (CLI text/JSON, MCP success/error, CLI error)
 ---
 
