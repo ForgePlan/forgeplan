@@ -7,6 +7,248 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [0.27.0] — 2026-04-28 — Real subprocess dispatchers + init recommendation hints + greenfield playbook (EPIC-007 Phase 6)
+
+Phase 6 переводит engine layer из v0.26.0 в **user-facing activation**.
+PRD-072 / RFC-007 / ADR-010 закрывают Phase 5 deferral: 5 production
+`Dispatcher` impls (real subprocess через `tokio::process` + ForgeplanCore
+direct call), `forgeplan init` теперь эмитит recommendation hints, и
+канонический `greenfield-kickoff.yaml` доступен в marketplace.
+
+### Added — Real subprocess dispatchers (PRD-072 / RFC-007 / ADR-010)
+
+- **`forgeplan-core::playbook::dispatch::{plugin,agent,skill,command,forgeplan_core}_dispatcher`** —
+  5 production реализаций trait `Dispatcher`. Замена `MockDispatcher::AlwaysOk`
+  в `playbook run --yes` и MCP `forgeplan_playbook_run`.
+- **`PluginDispatcher` (FR-1)** — claude-code-plugin subprocess invocation,
+  default 600s timeout, fallback_hint surfacing на missing-install.
+- **`AgentDispatcher` (FR-2)** — task-tool agent-invoke, default 300s timeout,
+  symmetric к plugin path.
+- **`SkillDispatcher` (FR-3)** — in-process v1 stub (trace-only). Real registry
+  resolution отложена в Wave 5.
+- **`CommandDispatcher` (FR-4)** — security-hardened: `env_clear` + allow-list,
+  no shell expansion, `--yes` gate trust upstream. Default 180s.
+- **`ForgeplanCoreDispatcher` (FR-5)** — direct internal call (no subprocess)
+  для `ingest`/`new`/`validate`/`activate`/`search`. Замена Phase 5 CLI
+  shell-out — теперь делегация выполняется в том же процессе.
+- **`dispatch::helpers::run_subprocess`** — общая обёртка `tokio::process::Command`
+  с `kill_on_drop(true)`, `Stdio::piped` для stdout/stderr, `Stdio::null` для stdin,
+  concurrent drain через `tokio::join!`, 10 MiB cap, timeout с child kill.
+- **Pre-Wave 0 split**: `dispatch.rs` (single 466 LOC) → `dispatch/` directory
+  с per-delegate modules. `mod.rs` сохраняет trait + Mock/Recording stubs +
+  DispatchError + SecurityError без изменения публичного API.
+
+### Added — Init recommendation wiring (PRD-067 AC-3/4/5/7 closed)
+
+- **`commands::init::run` extension (FR-6)** — после workspace creation
+  собирает project signals (`detect_signals`) + installed plugins
+  (`detect_plugins(extended_registry)`) + `build_recommendations` +
+  `format_recommendations` → emit на stderr.
+- **3 bundled `KnownPlaybook` descriptors** — `greenfield-kickoff`,
+  `brownfield-docs`, `brownfield-code` — для recommendation engine
+  до момента когда полные marketplace YAML файлы land.
+- **Backward compat**: `FORGEPLAN_HINTS=0` или non-TTY stderr → no
+  recommendation emission (PRD-067 AC-7).
+- **Non-fatal degradation**: signal/plugin detection failure → warning
+  на stderr + продолжение init (no abort).
+
+### Added — Canonical greenfield playbook (PRD-072 FR-7)
+
+- **`marketplace/playbooks/greenfield-kickoff.yaml`** — 7 шагов через
+  `ForgeplanCore` + 1 optional `Skill` step. Все мандатные шаги без
+  внешних плагинов: `capture-vision` (note) → `stack-decision` (adr) →
+  `kickoff-epic` (epic) → 3× `prd-feature` (parallel after epic) →
+  `scaffold-docs` (skill, `on_error: continue`).
+- **`forgeplan playbook validate`** проходит: `OK: greenfield-kickoff
+  (7 steps)` + `Done.` hint.
+- **Documentation footer в YAML** — purpose, expected duration, fit
+  в methodology.
+
+### Changed — Schema 1.0 → 1.1 (additive)
+
+- **`Step.timeout_seconds: Option<u32>`** (FR-8) — backward compat:
+  старые playbook'и без поля грузятся OK с дефолтом per-delegate
+  type (300s general / 600s plugin / 180s command/skill).
+- **`SPEC-003 schema_version`** bumped 1.0 → 1.1. Loader принимает
+  оба значения (semver-range minor bump).
+
+### Fixed — Phase 6 real-world bugs (PR #220, commit 69ea571)
+
+После merge'а Phase 6 в dev manual smoke testing на release binary
+обнаружил 4 production bugs, которые 1834 automated тестов пропустили:
+
+- **HIGH `playbook show <name>`** — name lookup НЕ находил
+  `marketplace/playbooks/`. Discovery roots расширены до workspace
+  marketplace, не только `.forgeplan/playbooks/` + `~/.claude/plugins/*/playbooks/`.
+  Теперь shipping playbooks доступны через name lookup, не только absolute path.
+- **HIGH `plugins doctor`** — exit 0 при missing plugins (документировано
+  exit 1). Fixed: `if !missing.is_empty() || !outdated.is_empty() { exit(1) }`.
+  CI gate теперь работает.
+- **HIGH `marketplace/playbooks/brownfield-code.yaml`** — `detect-c4-need`
+  step missing `input.id`, validate fails на step 1. Removed broken step,
+  playbook reduced 5 → 4 steps, validate clean.
+- **CRITICAL systemic** — все error paths возвращали `exit 0`
+  (`eprintln!("Error:..."); return Ok(())`). Fixed ~10 sites в
+  `commands/playbook.rs` + `ingest.rs`: explicit `std::process::exit(1)`.
+  Real CI integration теперь catches all CLI failures.
+- **BONUS dev profile fix (commit 0acf884)** — `[profile.dev] debug =
+  "line-tables-only"` снижает linker memory ~50%. Закрыт recurring
+  `collect2: ld signal 7 [Bus error]` OOM на ubuntu-latest 16GB
+  который преследовал PR #217+ Phase 5/6 PRs. Universal CI speedup.
+
+### Fixed — PROB-047 mitigation 1 (PR #221, commit 80f458c)
+
+`scan-import` classifier (`crates/forgeplan-core/src/scan/detect.rs`)
+ошибочно классифицировал product guides и instruction files как
+PRD-артефакты через **Tier 3 content heuristics** (`## Goals`,
+`## Problem`, `## Decision` headings). PR #218 был symptom-only
+cleanup — false-positives recurred при следующем scan-import.
+
+- **`is_doc_path(relative_path: &Path) -> bool`** — blacklist для:
+  recursive `docs/`, `marketplace/`, plus root-level meta-files
+  (`CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`,
+  `CONTRIBUTING.md`, `TODO.md`, `ROADMAP.md`, `LICENSE.md`,
+  `SECURITY.md`, plus `.ru.md` localized variants).
+- **`detect_kind_with_path(filename, relative_path, content)`** —
+  path-aware variant suppresses Tier 3 ONLY. Tier 1 (frontmatter
+  `kind:`) и Tier 2 (filename pattern PRD-XXX/RFC-XXX) остаются
+  authoritative — explicit signals always win.
+- **`detect_kind`** retained as wrapper passing `None` for path
+  — backward compat with all 15 existing tests.
+- **+11 unit tests**: `is_doc_path` matrix coverage + path-aware
+  Tier 3 suppression + Tier 1/Tier 2 precedence under docs.
+- **EVID-092** (verdict: supports, congruence_level: 3, evidence_type:
+  test) — same-context measurement linked to PROB-047. R_eff: 0.0 → 0.71 (B).
+- **Mitigations 2-5 deferred to Phase 7+** sprint (frontmatter precedence
+  formalization, scan-import default `--dry-run` + opt-in `--apply`,
+  content_hash idempotency, brownfield test fixtures).
+
+### Workspace hygiene (PR #221)
+
+- `.forgeplan/journal/` (PRD-065 playbook runtime per-run JSONL) → gitignore.
+- PROB-046 deprecated — resolved via PRD-071 hint contract (shipped v0.25.0).
+- EPIC-007 advisory phase advanced to evidence (children 4/5 shipped).
+- 9 untracked scan-import false-positives removed via `forgeplan reindex`.
+- `forgeplan health`: "Project looks healthy" — 0 blind spots, 0 orphans,
+  0 phase mismatches, 0 duplicate pairs.
+
+### Stats
+
+- **+5000 LOC** across `forgeplan-core::playbook::dispatch` (5 dispatchers
+  + helpers) + `commands::init::run` extension + canonical YAML.
+- **+60 unit tests** (Wave 1: 44 unit tests распределены по dispatchers + helpers).
+- **+5 integration tests** в `integration_phase6_init.rs` (empty repo,
+  `.obsidian` vault, legacy code with >100 commits, `FORGEPLAN_HINTS=0`,
+  signal failure path).
+- **Workspace test count**: 1384+ lib + 372+ integration, all PASS.
+- **Code quality**: 0 fmt diffs, 0 check warnings, 0 clippy warnings
+  (rust 1.91 strict).
+- **3 waves × 8 unique agents** через TeamCreate Mode A:
+  - Pre-Wave 0: dispatch.rs split + Spike-2 manual c4-architecture run + EVID-090 (CL3)
+  - Wave 1: 6 parallel agents (helpers + 5 dispatchers, strict file ownership)
+  - Wave 2: 1 agent (init wiring + integration tests)
+  - Wave 3: 1 agent (greenfield-kickoff.yaml + validate)
+  - Wave 4: 1 agent (this — docs + EVID-091 + CHANGELOG + TODO)
+
+### Deferred to follow-up sprint
+
+- **`Step.timeout_seconds` per-step override (FR-8 wiring)** — schema field
+  landed, executor wiring partial; full per-step override через
+  `dispatch::helpers::run_subprocess` parameter — Wave 5.
+- **Real `SkillDispatcher` registry** — текущий impl = trace-only stub
+  (loggable invariants + fallback_hint). Wave 5 = real skill resolution
+  через agent-skills capability registry.
+- **Per-step env allow-list extension** — сейчас allow-list захардкожен
+  в helpers (`PATH`, `HOME`, `FORGEPLAN_WORKSPACE`). PRD-076 (TBD) —
+  декларативный `step.env:` override с whitelist через mapping.
+- **MCP `forgeplan_ingest`** wrapper — pure CLI command в v0.27.0
+  (still); MCP wrapper remains deferred (CLI cover via `forgeplan serve`).
+- **3 canonical playbooks** — `brownfield-docs.yaml`, `audit.yaml`,
+  `release.yaml` — backlog (greenfield + brownfield-code published).
+- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals.
+
+### References
+
+- ADR-010 `.forgeplan/adrs/ADR-010-*.md` — subprocess invocation strategy
+- RFC-007 `.forgeplan/rfcs/RFC-007-*.md` — Phase 6 dispatcher architecture
+- PRD-072 `.forgeplan/prds/PRD-072-*.md` — Phase 6 PRD (FR-1..FR-10)
+- EVID-090 — Spike-2 tokio::process measurement (CL3 same-context)
+- EVID-091 — Phase 6 closure evidence pack (this release)
+- EPIC-007 — Playbook Runtime + Pack Marketplace (parent)
+
+## [0.26.0] — 2026-04-28 — Playbook runtime + Ingest engine + Plugin detection (EPIC-007 Phase 2)
+
+Forgeplan становится **оркестратором**. Три новых core capabilities (PRD-065 / PRD-066 / PRD-067) воплощают ADR-009: сам forgeplan-core не генерирует документы — он **знает когда какой playbook запускать**, **кому делегировать каждый шаг**, и **как ингестить output в forge-граф** с обязательной `## Sources` секцией (hallucination-proof invariant). Реализация — четырёхволновой sprint, 9 параллельных агентов, ~9000 LOC, +168 unit tests, plus integration E2E из Wave 4.
+
+### Added — Playbook runtime (PRD-065 / SPEC-003)
+
+- **`forgeplan-core::playbook::{types,loader,executor,dispatch,journal}`** — декларативная YAML-схема + runtime executor.
+- **5 типов делегации** (strict typed, no arbitrary shell): `plugin` (Claude Code plugin via Task tool), `agent` (subagent via Task tool), `skill` (agent-skills capability), `command` (opt-in shell), `forgeplan_core` (internal op: `ingest`/`new`/`validate`/`activate`/`search`).
+- **DAG-ordering** через `requires:` (step IDs), цикл-detection, unknown-ref detection в loader.
+- **`fallback_hint`** — точная install-команда, эмитится если plugin/skill не установлен (AC-4 PRD-065).
+- **Journal** в `.forgeplan/journal/playbook-runs.jsonl` — resumable partial failures.
+- **JSON Schema** опубликована в `docs/schemas/playbook.schema.yaml` (FR-2).
+
+### Added — Ingest engine (PRD-066 / SPEC-004)
+
+- **`forgeplan-core::ingest::{types,sources,template,engine,idempotency}`** — declarative mapping engine.
+- **Tera-style шаблоны** с **whitelist filters** (10): `trim`, `lower`, `upper`, `bullet_list`, `comma_list`, `slugify`, `truncate`, `default(value=...)`, `replace`, `table`. Любой не-whitelisted filter → load error (security boundary, ADR-009).
+- **`## Sources` invariant** — `sources_section.include: false` отвергается deserialization, артефакт без Sources не создаётся.
+- **`compat_spec_version`** per mapping — semver-pinning upstream plugin output, fail-fast при upstream breaking change.
+- **5 source kinds**: `c4-documentation`, `autoresearch`, `git-log`, `ddd-model`, `sparc-spec`.
+- **6 target artifact kinds**: `prd`, `adr`, `epic`, `note`, `spec`, `problem`.
+- **Idempotency** через `source_hash` — re-run = update existing, не дубликаты (AC-3 PRD-066).
+- **JSON Schema** опубликована в `docs/schemas/mapping.schema.yaml` (FR-2).
+
+### Added — Plugin detection + self-describing hints (PRD-067)
+
+- **`forgeplan-core::plugins::{detection,registry,hints}`** — детектит installed plugins.
+- **Detection paths**: `~/.claude/plugins/cache/`, `.claude/plugins/`, `.agentskills/`, `.cursor/skills/`.
+- **Project signals**: `empty_repo`, `legacy_code_no_docs`, `docs_vault_present`, `has_package_json`, `has_cargo_toml`, `git_commit_count`.
+- **Recommendation engine** — signals × installed_plugins → applicable playbooks; emitted в init hint.
+- **CLI**: `forgeplan plugins {list|doctor|info <name>}`.
+
+### Added — CLI / MCP surface
+
+- **5 new CLI commands**: `forgeplan playbook {list|show|run|validate}`, `forgeplan ingest`, `forgeplan plugins {list|doctor|info}`.
+- **8 new MCP tools** wrapping the same surface for agent integration.
+- All новые команды эмитят PRD-071 hint markers (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — coverage 100% по drift-prevention audit script.
+
+### Added — Canonical marketplace assets
+
+- **`marketplace/mappings/c4-to-forge.yaml`** — production-ready mapping для c4-architecture plugin output. Per EVID-088 (Spike-1 measurement): target=`note` по умолчанию (не `prd`/`spec`) — code-derived артефакты не имеют product-context для PRD/SPEC validation gate.
+- **`marketplace/playbooks/brownfield-code.yaml`** — 5-step canonical playbook: `detect-c4-need` → `run-c4-architecture` (Plugin) → `ingest-c4` (ForgeplanCore + mapping) → `run-history-miner` (Skill) → `summary-note` (ForgeplanCore). `triggered_by: { has_git: true, commit_count_min: 50, has_docs: false }`.
+
+### Added — Documentation
+
+- **`docs/operations/PLAYBOOK-AUTHORING.ru.md`** — guide для авторов playbook'ов: 5 типов делегации, DAG, fallback hints, conventions.
+- **`docs/operations/INGEST-MAPPINGS.ru.md`** — guide для авторов mapping'ов: Tera caveat (`default(value="...")`), whitelist, hallucination-proof invariant, target=note default per EVID-088.
+- **`docs/README.md` + `docs/README.ru.md`** — index updates.
+
+### Stats
+
+- **+9000 LOC** across 3 new modules + CLI + MCP.
+- **+168 unit tests** (W1: 39 / W2: 110 / W3: 58, including 16 dogfood E2E from Wave 3) + Wave 4 integration E2E.
+- **0 fmt diffs / 0 clippy warnings** on default and `--features semantic-search`.
+- 4 waves × 9 unique agents (1 architect + 3 W1 + 5 W2 + 4 W3 + 2 W4) с gate checks per wave.
+
+### Deferred to follow-up sprint
+
+- **Real Plugin / Agent / Skill dispatchers** — Wave 3 экзекутор делегирует через mocked Task tool subprocess в этом релизе. Production wiring (через runtime Task tool API) — следующий sprint.
+- **MCP `forgeplan_ingest`** — pure CLI command в v0.26.0; MCP wrapper отложен (CLI cover тех же scenarios через `forgeplan serve`).
+- **`brownfield-docs-pack` / `greenfield-pack`** — only `brownfield-code.yaml` published canonical в этом релизе.
+- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals; parallelizable DAG planner — v2.
+
+### References
+
+- ADR-009 `.forgeplan/adrs/ADR-009-*.md` — orchestrator pivot decision
+- EPIC-007 — Playbook runtime + Pack marketplace (parent)
+- PRD-065 / SPEC-003 — Playbook runtime + schema
+- PRD-066 / SPEC-004 — Ingest engine + mapping schema
+- PRD-067 — Plugin detection + hints
+- EVID-088 — Spike-1 c4-to-forge concept validation (CL3)
+- EVID-089 — Phase 5 implementation evidence pack
+
 ## [0.25.0] — 2026-04-27 — Unified hint contract across CLI + MCP (PRD-071 complete)
 
 Forgeplan теперь говорит агентам что делать дальше. Каждый CLI и MCP вывод эмитит **один** контрактный маркер (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — никаких больше «agent reads no-hint output → re-reads CLAUDE.md → guesses → loops». 5-rule контракт (PRESENCE / ACTIONABILITY / DETERMINISM / CONDITIONALITY / CONSISTENCY) реализован за 5 циклов multi-agent sprint, audit coverage 0% → **100% (70/70)**.

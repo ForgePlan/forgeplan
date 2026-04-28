@@ -1,0 +1,42 @@
+# Phase 5 Wave 4 test fixture: a 3-step "brownfield code" playbook.
+#
+# Phase 6 Wave 4 swap: switched to 3× skill delegates (in-process v1 stub
+# returns success unconditionally — no external `claude-code-plugin` binary
+# или LanceStore-initialized workspace needed). Tests journal/DAG ordering
+# pattern, не plugin invocation specifically. Real plugin/forgeplan_core
+# E2E лежит в integration_phase6_e2e.rs.
+#
+# The `requires:` chain enforces DAG ordering (mine -> map -> validate) so the
+# E2E test can assert step IDs are emitted в expected order.
+#
+# Used by: integration_phase5_playbook.rs
+schema_version: "1.0"
+name: brownfield-code-mini
+title: Brownfield code (mini fixture)
+description: |
+  Minimal 3-step playbook for Phase 5 Wave 4 E2E tests. All steps via skill
+  delegates (Phase 6 v1 stub) so tests pass без external dependencies.
+
+steps:
+  - id: mine-history
+    delegate_to:
+      type: skill
+      name: forge-history-miner
+      pack: brownfield-code-pack
+    fallback_hint: "forgeplan skill install brownfield-code-pack"
+
+  - id: extract-c4
+    delegate_to:
+      type: skill
+      name: c4-extractor-stub
+      pack: brownfield-code-pack
+    requires: [mine-history]
+    fallback_hint: "claude plugin install c4-architecture (real plugin in Phase 7)"
+
+  - id: validate-graph
+    delegate_to:
+      type: skill
+      name: validate-graph-stub
+      pack: brownfield-code-pack
+    requires: [extract-c4]
+    fallback_hint: "forgeplan validate --all"

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::artifact::frontmatter::parse_frontmatter;
 use crate::artifact::types::ArtifactKind;
 
@@ -28,18 +30,91 @@ pub struct DetectionResult {
 ///
 /// Returns `None` if no tier can determine the type.
 pub fn detect_kind(filename: &str, content: &str) -> Option<DetectionResult> {
-    // Tier 1: Frontmatter
+    detect_kind_with_path(filename, None, content)
+}
+
+/// Path-aware variant of `detect_kind`. When `relative_path` matches a known
+/// documentation location (PROB-047 mitigation 1), Tier 3 (content heuristic)
+/// detection is suppressed — frontmatter and filename patterns remain
+/// authoritative because they are explicit signals.
+///
+/// This prevents misclassification of guides, instruction files, and config
+/// docs (e.g. `docs/methodology/FORGEPLAN-GUIDE.md` containing `## Goals`,
+/// `CLAUDE.md` containing `## Problem`) as PRDs.
+pub fn detect_kind_with_path(
+    filename: &str,
+    relative_path: Option<&Path>,
+    content: &str,
+) -> Option<DetectionResult> {
+    // Tier 1: Frontmatter — explicit, always authoritative.
     if let Some(result) = detect_from_frontmatter(content) {
         return Some(result);
     }
 
-    // Tier 2: Filename pattern
+    // Tier 2: Filename pattern (PRD-001, RFC-002…) — explicit naming convention.
     if let Some(result) = detect_from_filename(filename) {
         return Some(result);
     }
 
-    // Tier 3: Content heuristics
+    // Tier 3: Content heuristics — suppressed for known documentation paths
+    // because guides describing artifact structure naturally contain the
+    // same headings as the artifacts themselves (PROB-047).
+    if let Some(path) = relative_path
+        && is_doc_path(path)
+    {
+        return None;
+    }
     detect_from_content(content)
+}
+
+/// Returns `true` if `relative_path` points to a documentation file or
+/// project meta-file that should NOT be auto-classified by content
+/// heuristics (PROB-047 mitigation 1). Explicit frontmatter or filename
+/// patterns still win — this guard only suppresses Tier 3.
+///
+/// Blacklist:
+/// - any file under `docs/` or `marketplace/` (recursive)
+/// - root-level project meta-files: `CLAUDE.md`, `AGENTS.md`, `README.md`,
+///   `CONTRIBUTING.md`, `CHANGELOG.md`, `TODO.md`, `ROADMAP.md`,
+///   `LICENSE.md`, `SECURITY.md`, plus their `.ru.md` localized variants
+pub fn is_doc_path(relative_path: &Path) -> bool {
+    let path_str = relative_path.to_string_lossy();
+    let normalized = path_str.replace('\\', "/");
+    let normalized = normalized.trim_start_matches("./");
+
+    if normalized.starts_with("docs/") || normalized.starts_with("marketplace/") {
+        return true;
+    }
+
+    // Root-level meta-files (no path separators after normalization).
+    if !normalized.contains('/') {
+        const ROOT_DOC_FILES: &[&str] = &[
+            "CLAUDE.md",
+            "CLAUDE.ru.md",
+            "AGENTS.md",
+            "AGENTS.ru.md",
+            "README.md",
+            "README.ru.md",
+            "CONTRIBUTING.md",
+            "CONTRIBUTING.ru.md",
+            "CHANGELOG.md",
+            "CHANGELOG.ru.md",
+            "TODO.md",
+            "TODO.ru.md",
+            "ROADMAP.md",
+            "ROADMAP.ru.md",
+            "LICENSE.md",
+            "SECURITY.md",
+        ];
+        if ROOT_DOC_FILES
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(normalized))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Tier 1: Parse YAML frontmatter for `kind` field.
@@ -329,5 +404,124 @@ mod tests {
     fn binary_looking_content_returns_none() {
         let content = "\0\0\0binary garbage\x01\x02";
         assert!(detect_kind("binary.md", content).is_none());
+    }
+
+    // ============================================================
+    // PROB-047 mitigation 1: filename/path blacklist for docs
+    // ============================================================
+
+    #[test]
+    fn is_doc_path_under_docs_directory() {
+        assert!(is_doc_path(Path::new(
+            "docs/methodology/FORGEPLAN-GUIDE.md"
+        )));
+        assert!(is_doc_path(Path::new("docs/foo.md")));
+        assert!(is_doc_path(Path::new("./docs/foo.md")));
+    }
+
+    #[test]
+    fn is_doc_path_under_marketplace_directory() {
+        assert!(is_doc_path(Path::new("marketplace/playbooks/foo.md")));
+        assert!(is_doc_path(Path::new("./marketplace/foo.md")));
+    }
+
+    #[test]
+    fn is_doc_path_root_level_meta_files() {
+        assert!(is_doc_path(Path::new("CLAUDE.md")));
+        assert!(is_doc_path(Path::new("AGENTS.md")));
+        assert!(is_doc_path(Path::new("README.md")));
+        assert!(is_doc_path(Path::new("README.ru.md")));
+        assert!(is_doc_path(Path::new("CHANGELOG.md")));
+        assert!(is_doc_path(Path::new("CONTRIBUTING.md")));
+        assert!(is_doc_path(Path::new("TODO.md")));
+        assert!(is_doc_path(Path::new("ROADMAP.md")));
+    }
+
+    #[test]
+    fn is_doc_path_meta_files_case_insensitive() {
+        assert!(is_doc_path(Path::new("claude.md")));
+        assert!(is_doc_path(Path::new("Readme.md")));
+    }
+
+    #[test]
+    fn is_doc_path_not_blacklisted() {
+        // Real artifact locations
+        assert!(!is_doc_path(Path::new(".forgeplan/prds/PRD-001-real.md")));
+        assert!(!is_doc_path(Path::new(".forgeplan/adrs/ADR-001.md")));
+        // Sub-crate CHANGELOG isn't blacklisted — keeps classifier conservative
+        assert!(!is_doc_path(Path::new("crates/foo/CHANGELOG.md")));
+        // Random root .md files are NOT blacklisted (only specific stems)
+        assert!(!is_doc_path(Path::new("PRD-001-design.md")));
+        assert!(!is_doc_path(Path::new("notes.md")));
+    }
+
+    #[test]
+    fn path_aware_suppresses_content_tier_under_docs() {
+        // FORGEPLAN-GUIDE has `## Problem` and `## Goals` — Tier 3 would
+        // classify it as PRD without the path guard.
+        let content = "# Forgeplan Guide\n\n## Problem\nDescribed.\n\n## Goals\nListed.";
+        let path = Path::new("docs/methodology/FORGEPLAN-GUIDE.md");
+
+        // Without path: Tier 3 classifies as PRD (the bug).
+        assert_eq!(
+            detect_kind("FORGEPLAN-GUIDE.md", content).map(|r| r.tier),
+            Some(DetectionTier::Content)
+        );
+
+        // With path: Tier 3 suppressed — guide stays unclassified.
+        assert!(detect_kind_with_path("FORGEPLAN-GUIDE.md", Some(path), content).is_none());
+    }
+
+    #[test]
+    fn path_aware_suppresses_content_tier_for_root_claude_md() {
+        // CLAUDE.md contains `## Problem` (in red lines section) and
+        // would otherwise hit PRD content heuristic.
+        let content = "# CLAUDE.md\n\n## Problem\nFoo.\n\n## Goals\nBar.";
+        let path = Path::new("CLAUDE.md");
+
+        assert!(detect_kind_with_path("CLAUDE.md", Some(path), content).is_none());
+    }
+
+    #[test]
+    fn path_aware_honors_explicit_frontmatter_under_docs() {
+        // Explicit `kind: prd` frontmatter is authoritative even under docs/
+        // — user opted in deliberately.
+        let content = "---\nkind: prd\nid: PRD-099\n---\n# Real PRD in docs/\n\n## Problem\nX.";
+        let path = Path::new("docs/PRD-099-architecture.md");
+
+        let result = detect_kind_with_path("PRD-099-architecture.md", Some(path), content).unwrap();
+        assert_eq!(result.kind, ArtifactKind::Prd);
+        assert_eq!(result.tier, DetectionTier::Frontmatter);
+    }
+
+    #[test]
+    fn path_aware_honors_filename_pattern_under_docs() {
+        // Filename pattern PRD-001 is also explicit — keep classifying it.
+        let content = "# Real PRD in docs\n\nNo frontmatter, but filename is explicit.";
+        let path = Path::new("docs/PRD-099-arch.md");
+
+        let result = detect_kind_with_path("PRD-099-arch.md", Some(path), content).unwrap();
+        assert_eq!(result.kind, ArtifactKind::Prd);
+        assert_eq!(result.tier, DetectionTier::Filename);
+    }
+
+    #[test]
+    fn path_aware_passthrough_for_non_blacklisted_paths() {
+        // Files under .forgeplan/ or random locations are unaffected.
+        let content = "# Foo\n\n## Problem\nX.\n\n## Goals\nY.";
+        let path = Path::new(".forgeplan/prds/PRD-099.md");
+
+        let result = detect_kind_with_path("PRD-099.md", Some(path), content).unwrap();
+        // Filename tier wins here, but if we strip filename pattern...
+        assert_eq!(result.kind, ArtifactKind::Prd);
+    }
+
+    #[test]
+    fn path_aware_no_path_falls_back_to_old_behavior() {
+        // detect_kind_with_path(.., None, ..) === detect_kind
+        let content = "# Foo\n\n## Problem\nX.\n\n## Goals\nY.";
+        let r1 = detect_kind("foo.md", content);
+        let r2 = detect_kind_with_path("foo.md", None, content);
+        assert_eq!(r1.map(|r| r.kind), r2.map(|r| r.kind));
     }
 }

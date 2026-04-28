@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.25.0"
+version = "0.27.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ForgePlan/forgeplan"
@@ -33,6 +33,22 @@ notify = "7"
 notify-debouncer-mini = "0.5"
 dotenvy = "0.15"
 fs2 = "0.4"
+schemars = "0.8"
+semver = { version = "1", features = ["serde"] }
+tera = { version = "1", default-features = false }
+walkdir = "2"
+globset = "0.4"
+
+[profile.dev]
+# Reduce debug section size by ~50% — this avoids `ld` OOM on GitHub-hosted
+# runners (16 GB RAM) when linking large workspaces (forgeplan-core +
+# forgeplan-cli + forgeplan-mcp + lancedb dependency tree).
+#
+# `line-tables-only` keeps file:line for backtraces but drops verbose type
+# info — sufficient for CI test diagnostics, dev cycle, and debugger use.
+# Without this, Phase 5/6 PRs intermittently fail Tests job with
+# `collect2: fatal error: ld terminated with signal 7 [Bus error]`.
+debug = "line-tables-only"
 
 [profile.release]
 strip = true          # strip debug symbols (-16%)
