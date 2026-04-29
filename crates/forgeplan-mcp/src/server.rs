@@ -1727,6 +1727,20 @@ impl ForgeplanServer {
             _ => {}
         }
 
+        // ADR-003 / PROB-048 file-first: pre-mutation file→store sync for
+        // both source AND target (either may have user-side edits we don't
+        // want to clobber).
+        if let Err(e) = projection::sync_before_mutation(&ws, &store, &p.source).await {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync (source) failed: {e}"
+            )));
+        }
+        if let Err(e) = projection::sync_before_mutation(&ws, &store, &p.target).await {
+            // Target sync failure is non-fatal — target may not exist locally
+            // (e.g., cross-workspace reference). Log and proceed.
+            tracing::warn!("pre-mutation sync (target {}) failed: {e}", p.target);
+        }
+
         if let Err(e) = store.add_relation(&p.source, &p.target, &relation).await {
             let safe_src = sanitize_for_hint(&p.source);
             let safe_tgt = sanitize_for_hint(&p.target);
@@ -1739,37 +1753,17 @@ impl ForgeplanServer {
             ));
         }
 
-        // Sync file→LanceDB (preserve user edits), then re-render projection
-        if let Ok(Some(record)) = store.get_record(&p.source).await {
-            let _ = projection::sync_file_to_store(&store, &ws, &record).await;
-            // Re-read after sync. Possible states:
-            //   Ok(Some(r)) — use the refreshed record
-            //   Ok(None)    — artifact deleted concurrently (race) — fall
-            //                 back to the original record so we don't panic
-            //   Err(_)      — store error — same fallback
-            // Previous code used `.unwrap_or(Some(record)).unwrap()` which
-            // panics on Ok(None). Fixed per Round 3 deep QA.
-            let record = store
-                .get_record(&p.source)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or(record);
-            let links = store.get_relations(&p.source).await.unwrap_or_default();
-            let _ = projection::render_projection(
-                &ws,
-                &record.id,
-                &record.kind,
-                &record.title,
-                &record.status,
-                &record.depth,
-                record.author.as_deref(),
-                record.parent_epic.as_deref(),
-                record.valid_until.as_deref(),
-                &record.body,
-                &links,
-            )
-            .await;
+        // ADR-003 / PROB-048 file-first: render BOTH source and target
+        // projections. Source's frontmatter gets the new outgoing link;
+        // target's frontmatter is rebuilt from store so any existing
+        // incoming-link metadata in the file body stays consistent.
+        // PROB-048 observed bug — link rendered only for source — closed.
+        if let Err(e) = projection::render_after_mutation(&ws, &store, &p.source).await {
+            tracing::warn!("post-mutation render (source {}) failed: {e}", p.source);
+        }
+        if let Err(e) = projection::render_after_mutation(&ws, &store, &p.target).await {
+            // Target may not have a markdown projection in this workspace.
+            tracing::warn!("post-mutation render (target {}) failed: {e}", p.target);
         }
 
         let safe_src = sanitize_for_hint(&p.source);
@@ -2285,12 +2279,36 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
+        let ws_opt = self.require_workspace().await.ok();
+
+        // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
+        if let Some(ws) = &ws_opt
+            && let Err(e) =
+                forgeplan_core::projection::sync_before_mutation(ws, &store, &p.id).await
+        {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync failed: {e}"
+            )));
+        }
+
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
+                // ADR-003 / PROB-048 file-first: render store → file so the
+                // file's `status:` reflects active. Avoids file/lance skew.
+                if let Some(ws) = &ws_opt
+                    && let Err(e) =
+                        forgeplan_core::projection::render_after_mutation(ws, &store, &p.id).await
+                {
+                    tracing::warn!(
+                        "post-mutation render for {} failed: {e} — file projection stale",
+                        p.id
+                    );
+                }
+
                 // PRD-056: activation is terminal — advance phase to Done.
-                if let Ok(ws) = self.require_workspace().await {
+                if let Some(ws) = &ws_opt {
                     maybe_advance_phase(
-                        &ws,
+                        ws,
                         &p.id,
                         forgeplan_core::phase::Phase::Done,
                         "forgeplan_activate",
@@ -2398,8 +2416,28 @@ impl ForgeplanServer {
             }
         };
 
+        // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
+        if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync failed: {e}"
+            )));
+        }
+
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
             Ok(result) => {
+                // ADR-003 / PROB-048 file-first: render store → file. Both the
+                // superseded artifact (new status + supersede link) and the
+                // replacement (incoming reverse link) are written.
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.id).await
+                {
+                    tracing::warn!("post-mutation render for superseded {} failed: {e}", p.id);
+                }
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.by).await
+                {
+                    tracing::warn!("post-mutation render for replacement {} failed: {e}", p.by);
+                }
                 // PRD-056: supersede is terminal — advance phase to Done.
                 maybe_advance_phase(
                     &ws,
@@ -2515,8 +2553,30 @@ impl ForgeplanServer {
             }
         };
 
+        // ADR-003 / PROB-048 file-first: flush user file edits → store before
+        // lifecycle transition so they aren't lost.
+        if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync failed: {e}"
+            )));
+        }
+
         match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
             Ok(dependents) => {
+                // ADR-003 / PROB-048 file-first: render store → file so the
+                // markdown projection's `status:` frontmatter reflects the
+                // transition. Without this, a CLI re-deprecate would see a
+                // file `status: active` and a store `status: deprecated`.
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.id).await
+                {
+                    tracing::warn!(
+                        "post-mutation render for {} failed: {e} — \
+                         LanceDB has the deprecation, file projection is stale",
+                        p.id
+                    );
+                }
+
                 // PRD-056: deprecation is terminal — advance phase to Done.
                 maybe_advance_phase(
                     &ws,
