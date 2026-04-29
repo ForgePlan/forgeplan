@@ -782,6 +782,7 @@ mod tests {
             requires: None,
             fallback_hint: None,
             on_error: OnError::Abort,
+            timeout_seconds: None,
         }
     }
 
@@ -815,6 +816,7 @@ mod tests {
             requires: None,
             fallback_hint: None,
             on_error: OnError::Abort,
+            timeout_seconds: None,
         };
         let err = d.dispatch(&step).await.expect_err("must reject");
         match err {
