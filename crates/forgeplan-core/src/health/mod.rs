@@ -584,6 +584,7 @@ mod tests {
 
     #[test]
     fn no_blind_spot_when_evidence_linked() {
+        // Direction A: evidence → artifact (canonical: EVID informs PRD).
         let records = [make_record("PRD-001", "prd")];
         let refs: Vec<&ArtifactRecord> = records.iter().collect();
         let evidence = vec![make_record("EVID-001", "evidence")];
@@ -595,6 +596,49 @@ mod tests {
 
         let spots = find_blind_spots(&refs, &evidence, &outgoing);
         assert!(spots.is_empty());
+    }
+
+    #[test]
+    fn no_blind_spot_when_artifact_links_to_evidence() {
+        // Direction B: artifact → evidence (e.g., PROB based_on EVID).
+        // This direction was the gap that surfaced during the 2026-04-28
+        // sprint — health detector must check both directions because users
+        // may record the relation on either side of the edge.
+        // PROB-048 — bi-directional traversal regression guard.
+        let mut prob = make_record("PROB-048", "problem");
+        prob.status = "active".into();
+        let records = [prob];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence = vec![make_record("EVID-092", "evidence")];
+        let mut outgoing: RelationIndex = BTreeMap::new();
+        // PROB-048 → EVID-092 (based_on) — only this side recorded.
+        outgoing.insert(
+            "PROB-048".into(),
+            vec![("EVID-092".into(), "based_on".into())],
+        );
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert!(
+            spots.is_empty(),
+            "active PROB linked to evidence via outgoing edge \
+             should NOT be a blind spot (got: {spots:?})"
+        );
+    }
+
+    #[test]
+    fn blind_spot_when_no_link_in_either_direction() {
+        // Negative case: active PROB, evidence exists in workspace, but no
+        // edge connects them in either direction → blind spot.
+        let mut prob = make_record("PROB-049", "problem");
+        prob.status = "active".into();
+        let records = [prob];
+        let refs: Vec<&ArtifactRecord> = records.iter().collect();
+        let evidence = vec![make_record("EVID-100", "evidence")];
+        let outgoing: RelationIndex = BTreeMap::new();
+
+        let spots = find_blind_spots(&refs, &evidence, &outgoing);
+        assert_eq!(spots.len(), 1);
+        assert_eq!(spots[0].id, "PROB-049");
     }
 
     #[test]
