@@ -32,6 +32,39 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Probe sccache backend
+        # Probe whether the GHA cache backend is healthy. If reachable,
+        # set RUSTC_WRAPPER for subsequent steps. If unreachable (Azure
+        # outage etc.), leave it unset so cargo uses direct rustc.
+        # This prevents a hard CI failure from third-party infrastructure
+        # outages — the trade-off is a slower run on probe failure, not
+        # a broken pipeline (lesson learned from PR #226 first attempt).
+        run: |
+          export SCCACHE_GHA_ENABLED=true
+          if timeout 30 sccache --start-server >/dev/null 2>&1; then
+            # Server started — try a tiny rustc invocation to confirm the
+            # backend is actually reachable for read/write operations.
+            echo 'fn main() {}' > /tmp/probe.rs
+            if timeout 30 sccache rustc \
+                --edition 2021 \
+                --crate-name probe \
+                --crate-type bin \
+                /tmp/probe.rs \
+                -o /tmp/probe 2>/dev/null; then
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "✓ sccache probe passed — wrapper enabled"
+            else
+              sccache --stop-server >/dev/null 2>&1 || true
+              echo "✗ sccache probe failed (rustc invocation) — falling back to direct rustc"
+            fi
+          else
+            echo "✗ sccache probe failed (server start) — falling back to direct rustc"
+          fi
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
@@ -43,6 +76,10 @@ jobs:
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets
+
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats || true
 
   test:
     name: Tests
@@ -61,19 +98,41 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Probe sccache backend
+        # Same probe pattern as in the check job — see comment above.
+        run: |
+          export SCCACHE_GHA_ENABLED=true
+          if timeout 30 sccache --start-server >/dev/null 2>&1; then
+            echo 'fn main() {}' > /tmp/probe.rs
+            if timeout 30 sccache rustc \
+                --edition 2021 \
+                --crate-name probe \
+                --crate-type bin \
+                /tmp/probe.rs \
+                -o /tmp/probe 2>/dev/null; then
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "✓ sccache probe passed — wrapper enabled"
+            else
+              sccache --stop-server >/dev/null 2>&1 || true
+              echo "✗ sccache probe failed (rustc invocation) — falling back to direct rustc"
+            fi
+          else
+            echo "✗ sccache probe failed (server start) — falling back to direct rustc"
+          fi
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-nextest
-        # Robust binary install — falls back to cargo install on cache miss.
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
       - name: cargo nextest run
-        # Parallel test runner — typically ~2x faster than `cargo test` on
-        # workspaces with many tests (we have 1400+). Better failure
-        # isolation: each test runs in its own process.
         run: cargo nextest run --workspace --all-targets
 
       - name: cargo test (doc-tests)
@@ -81,3 +140,7 @@ jobs:
         # (https://github.com/nextest-rs/nextest/issues/16). Run separately
         # to maintain coverage parity with the previous workflow.
         run: cargo test --workspace --doc
+
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats || true

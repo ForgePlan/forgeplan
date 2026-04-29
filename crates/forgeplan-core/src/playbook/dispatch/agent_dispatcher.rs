@@ -144,13 +144,19 @@ impl Dispatcher for AgentDispatcher {
 
         // 5. Build subprocess spec. cwd = workspace_root so produces_at
         //    relative paths land where the executor expects them.
+        // Per-step timeout (PRD-072 FR-8): step.timeout_seconds overrides
+        // the dispatcher default when set; otherwise default applies.
+        let timeout = step
+            .timeout_seconds
+            .map(|s| Duration::from_secs(u64::from(s)))
+            .unwrap_or(self.default_timeout);
         let program_str = program.to_string_lossy().into_owned();
         let spec = SubprocessSpec {
             program: &program_str,
             args: &args,
             env: &env,
             cwd: Some(&self.workspace_root),
-            timeout: self.default_timeout,
+            timeout,
             stdin_data: None,
         };
 
@@ -211,6 +217,7 @@ mod tests {
             requires: None,
             fallback_hint: None,
             on_error: OnError::Abort,
+            timeout_seconds: None,
         }
     }
 

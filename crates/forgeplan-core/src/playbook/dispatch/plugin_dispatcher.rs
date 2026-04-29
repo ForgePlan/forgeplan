@@ -158,8 +158,8 @@ impl Dispatcher for PluginDispatcher {
         let env = build_env_allowlist(&[], &base_env);
 
         let timeout = step
-            .timeout_seconds()
-            .map(Duration::from_secs)
+            .timeout_seconds
+            .map(|s| Duration::from_secs(u64::from(s)))
             .unwrap_or(self.default_timeout);
 
         let spec = SubprocessSpec {
@@ -208,26 +208,6 @@ fn which_in_path(program: &str) -> Option<PathBuf> {
         }
     }
     None
-}
-
-// =====================================================================
-// Step::timeout_seconds shim
-// =====================================================================
-//
-// PRD-072 FR-8 plans to add `timeout_seconds: Option<u32>` to `Step` once
-// SPEC-003 minor-bumps to 1.1. Until that ships, expose a trait-style
-// extension method that returns `None` so the dispatcher integrates
-// cleanly when the field lands without code churn here.
-trait StepTimeoutExt {
-    fn timeout_seconds(&self) -> Option<u64>;
-}
-
-impl StepTimeoutExt for Step {
-    fn timeout_seconds(&self) -> Option<u64> {
-        // FR-8 not yet wired into the type. When the field lands:
-        //   self.timeout_seconds.map(u64::from)
-        None
-    }
 }
 
 // =====================================================================
@@ -282,6 +262,7 @@ mod tests {
             requires: None,
             fallback_hint: None,
             on_error: OnError::Abort,
+            timeout_seconds: None,
         }
     }
 
@@ -297,6 +278,7 @@ mod tests {
             requires: None,
             fallback_hint: None,
             on_error: OnError::Abort,
+            timeout_seconds: None,
         }
     }
 

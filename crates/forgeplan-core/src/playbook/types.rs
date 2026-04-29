@@ -147,6 +147,13 @@ pub struct Step {
     /// Error handling policy — `abort` (default) or `continue`.
     #[serde(default)]
     pub on_error: OnError,
+    /// Per-step timeout override in seconds (PRD-072 FR-8 / SPEC-003 1.1).
+    /// When `None`, the dispatcher applies its delegate-type default
+    /// (300s general / 600s plugin / 180s command/skill). When `Some(n)`,
+    /// `n` overrides the default for this single step. Backward compat:
+    /// playbooks without this field load identically to schema 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u32>,
 }
 
 /// Delegation target — strict 5-variant enum from SPEC-003 §"delegate_to".
