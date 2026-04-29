@@ -247,6 +247,48 @@ fn filter_preserved(fm: &Frontmatter) -> Option<Frontmatter> {
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// Sync file → store BEFORE mutation. Preserves any user edits to the
+/// markdown body that haven't been picked up yet.
+///
+/// Convenience wrapper around `sync_file_to_store` that handles the
+/// `get_record + Option` boilerplate in the common case where caller
+/// only has the artifact ID. PROB-048 / ADR-003 enforcement helper —
+/// use as the first step of every mutating handler in `commands/` and
+/// `server.rs`.
+///
+/// No-op if the artifact does not exist (e.g., create flow).
+pub async fn sync_before_mutation(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+) -> anyhow::Result<()> {
+    if let Some(record) = store.get_record(id).await? {
+        sync_file_to_store(store, workspace, &record).await?;
+    }
+    Ok(())
+}
+
+/// Render store → file AFTER mutation. Reads the current artifact state
+/// from LanceDB and writes the markdown projection.
+///
+/// Convenience wrapper around `render_projection_record` that fetches
+/// the record + relations. PROB-048 / ADR-003 enforcement helper — use
+/// as the last step of every mutating handler.
+///
+/// No-op if the artifact does not exist (e.g., delete flow already
+/// removed both file and record).
+pub async fn render_after_mutation(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+) -> anyhow::Result<()> {
+    if let Some(record) = store.get_record(id).await? {
+        let links = store.get_relations(id).await.unwrap_or_default();
+        render_projection_record(workspace, &record, &links).await?;
+    }
+    Ok(())
+}
+
 /// Sync file body to LanceDB store if file was edited by user.
 /// Call this before render_projection to ensure LanceDB has the latest body.
 /// Returns true if sync happened (file was newer).
@@ -1100,5 +1142,94 @@ mod tests {
         let id = crate::artifact::identity::AgentIdentity::unknown();
         let result = stamp_agent_identity(&ws, "PRD-404", "prd", "Missing", &id).await;
         assert!(result.is_err(), "should propagate the read error");
+    }
+
+    // ============================================================
+    // PROB-048 / ADR-003 helpers — sync_before_mutation +
+    // render_after_mutation
+    // ============================================================
+
+    #[tokio::test]
+    async fn sync_before_mutation_is_noop_for_missing_artifact() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path().to_path_buf();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        // Artifact does not exist — helper must not error.
+        let result = sync_before_mutation(&ws, &store, "PRD-NEVER-CREATED").await;
+        assert!(
+            result.is_ok(),
+            "sync_before_mutation should be no-op for missing artifact, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_after_mutation_is_noop_for_missing_artifact() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path().to_path_buf();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let result = render_after_mutation(&ws, &store, "PRD-NEVER-CREATED").await;
+        assert!(
+            result.is_ok(),
+            "render_after_mutation should be no-op for missing artifact, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_after_mutation_writes_file_with_status_from_store() {
+        // The PROB-048 deprecate bug pattern, in miniature:
+        //   1. create artifact (status = draft) — file gets status: draft
+        //   2. mutate store directly (status → deprecated)
+        //   3. call render_after_mutation
+        //   4. file should now reflect status: deprecated
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path().to_path_buf();
+        tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let new_artifact = crate::db::store::NewArtifact {
+            id: "PRD-901".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Test artifact".to_string(),
+            body: "## Summary\n\nA test PRD.".to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        store.create_artifact(&new_artifact).await.unwrap();
+
+        // Initial render — file has status: draft
+        render_after_mutation(&ws, &store, "PRD-901").await.unwrap();
+        let file_path = ws.join("prds/PRD-901-test-artifact.md");
+        let initial = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(
+            initial.contains("status: draft"),
+            "initial file should have status: draft, got:\n{initial}"
+        );
+
+        // Mutate store: simulate lifecycle::activate behaviour bypassing
+        // the projection. This is the bug pattern — store updated, file
+        // stale.
+        store
+            .update_artifact("PRD-901", Some("active"), None)
+            .await
+            .unwrap();
+
+        // The bug: without render_after_mutation, file would still say draft.
+        // With our helper: file gets refreshed.
+        render_after_mutation(&ws, &store, "PRD-901").await.unwrap();
+        let after = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(
+            after.contains("status: active"),
+            "post-mutation file should have status: active, got:\n{after}"
+        );
+        assert!(
+            !after.contains("status: draft"),
+            "post-mutation file should NOT have status: draft, got:\n{after}"
+        );
     }
 }
