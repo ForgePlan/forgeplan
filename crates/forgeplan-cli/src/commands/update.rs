@@ -43,6 +43,16 @@ Fix: forgeplan list",
         );
     }
 
+    // PRD-073 file-first migration: each mutation goes through a helper that
+    // does {sync file→DB, mutate, render DB→file}. Title change is handled
+    // explicitly: we sync once and remove the OLD projection BEFORE the
+    // metadata helper renders to the new slug, so we don't leak orphan files
+    // and we capture user file edits before the old slug disappears.
+    if title.is_some() {
+        projection::sync_before_mutation(&ws, &store, id).await?;
+        let _ = projection::remove_projection(&ws, id, &original.kind).await;
+    }
+
     // Depth update
     if let Some(d) = depth {
         let _: forgeplan_core::artifact::types::Mode = d.parse().map_err(|_| {
@@ -54,20 +64,16 @@ Fix: forgeplan list",
                 id,
             )
         })?;
-        store.update_depth(id, d).await?;
+        projection::update_depth_with_projection(&ws, &store, id, d).await?;
     }
-
-    // Sync file→LanceDB BEFORE any mutations — capture user edits from the OLD file
-    // (must happen before title change which removes the old projection file)
-    projection::sync_file_to_store(&store, &ws, &original).await?;
 
     // Update metadata (status, title)
     if status.is_some() || title.is_some() {
-        store.update_artifact(id, status, title).await?;
+        projection::update_metadata_with_projection(&ws, &store, id, status, title).await?;
     }
 
     // Update body
-    let body_updated = if let Some(b) = body {
+    if let Some(b) = body {
         let raw_content = if let Some(path) = b.strip_prefix('@') {
             tokio::fs::read_to_string(path)
                 .await
@@ -87,9 +93,8 @@ Fix: forgeplan list",
             raw_content
         };
 
-        // Safety check: warn if new body is significantly shorter than existing
-        // (likely shell escaping corruption — use --body @file for safe updates)
-        // Re-read from store AFTER sync to get the latest body (sync may have updated it from file)
+        // Safety check: warn if new body is significantly shorter than existing.
+        // Re-read after the metadata mutation above may have synced file→DB.
         let current = store.get_record(id).await?.unwrap_or(original.clone());
         let old_len = current.body.len();
         let new_len = body_content.len();
@@ -103,56 +108,7 @@ Fix: forgeplan list",
             );
         }
 
-        store.update_body(id, &body_content).await?;
-        true
-    } else {
-        false
-    };
-
-    // Remove old projection file (title change → different slug → stale file)
-    if title.is_some() {
-        let _ = projection::remove_projection(&ws, id, &original.kind).await;
-    }
-
-    // Re-render projection
-    let updated = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' disappeared after update", id))?;
-    let links = store.get_relations(id).await.unwrap_or_default();
-
-    if body_updated {
-        // Body was explicitly set via CLI — use render_projection_with_body
-        // to override file-on-disk (files-first normally reads from file).
-        projection::render_projection_with_body(
-            &ws,
-            &updated.id,
-            &updated.kind,
-            &updated.title,
-            &updated.status,
-            &updated.depth,
-            updated.author.as_deref(),
-            updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(),
-            &updated.body,
-            &links,
-        )
-        .await?;
-    } else {
-        projection::render_projection(
-            &ws,
-            &updated.id,
-            &updated.kind,
-            &updated.title,
-            &updated.status,
-            &updated.depth,
-            updated.author.as_deref(),
-            updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(),
-            &updated.body,
-            &links,
-        )
-        .await?;
+        projection::update_body_with_projection(&ws, &store, id, &body_content).await?;
     }
 
     // Log changes

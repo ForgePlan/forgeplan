@@ -1,5 +1,5 @@
-use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::projection;
 
 use crate::commands::common;
 
@@ -51,22 +51,13 @@ Fix: forgeplan list",
         .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
         .count();
     if relation_count > 0 {
-        store.delete_relations_for_artifact(id).await?;
         eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
     }
 
-    // Delete from LanceDB
-    store.delete_artifact(id).await?;
-
-    // Remove markdown projection file
-    if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-        let slug = forgeplan_core::artifact::types::slugify(&record.title);
-        let filename = format!("{}-{}.md", record.id, slug);
-        let filepath = ws.join(kind.dir_name()).join(&filename);
-        if filepath.exists() {
-            tokio::fs::remove_file(&filepath).await.ok();
-        }
-    }
+    // PRD-073 file-first: helper removes the projection file FIRST, then
+    // cascades relations and the LanceDB row. Failure mid-flow leaves the
+    // workspace recoverable via reindex.
+    projection::delete_artifact_with_projection(&ws, &store, id).await?;
 
     println!("  Deleted: {} \"{}\"", record.id, record.title);
 

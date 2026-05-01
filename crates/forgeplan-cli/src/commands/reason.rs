@@ -4,6 +4,7 @@ use forgeplan_core::fpf::core::adi::AdiRecord;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::reason;
 use forgeplan_core::llm::reason::ArtifactContext;
+use forgeplan_core::projection;
 
 use crate::commands::common;
 
@@ -31,7 +32,7 @@ fn load_architecture_hint() -> String {
 }
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
-    let (_ws, store) = common::open_store().await?;
+    let (ws, store) = common::open_store().await?;
 
     // PRD-071 contract: when LLM is unavailable, emit a `Fix:` marker line so
     // the agent can route to setup-skill instead of guessing.
@@ -239,8 +240,10 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             tags: Vec::new(),
         };
 
-        store.create_artifact(&new_artifact).await?;
-        store.add_relation(&note_id, &record.id, "informs").await?;
+        // PRD-073 file-first: helpers handle projection writes for both
+        // the new note and the bidirectional link rendering.
+        projection::create_artifact_with_projection(&ws, &store, &new_artifact).await?;
+        projection::add_link_with_projection(&ws, &store, &note_id, &record.id, "informs").await?;
         println!("  Saved as {} -> linked to {}", note_id, record.id);
     }
 

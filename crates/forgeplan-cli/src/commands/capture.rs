@@ -67,22 +67,8 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         tags: Vec::new(),
     };
 
-    store.create_artifact(&artifact).await?;
-
-    let filepath = projection::render_projection(
-        &workspace,
-        &id,
-        template_key,
-        &title,
-        "draft",
-        "tactical",
-        None,
-        None,
-        None,
-        &body,
-        &[],
-    )
-    .await?;
+    let filepath =
+        projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
 
     println!("  Captured: {}", filepath.display());
     println!("  ID:       {}", id);

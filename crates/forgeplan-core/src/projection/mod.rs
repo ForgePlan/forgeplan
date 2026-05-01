@@ -534,6 +534,195 @@ pub async fn remove_projection(workspace: &Path, id: &str, kind: &str) -> anyhow
     Ok(())
 }
 
+// =============================================================================
+// PRD-073 file-first mutation helpers
+// -----------------------------------------------------------------------------
+// ADR-003 says: markdown is the source of truth, LanceDB is a derived index.
+// These helpers wrap the {sync_before, store mutation, render_after} triplet
+// so command handlers and MCP handlers don't have to repeat the pattern (and
+// don't get a chance to forget a step). Each commits to a defined ordering
+// chosen so a process kill between steps leaves the workspace recoverable.
+// =============================================================================
+
+/// Create a new artifact with file-first ordering: write the markdown
+/// projection first, then sync to LanceDB. If the LanceDB insert fails,
+/// the orphan file is reconciled by the next `forgeplan reindex`.
+///
+/// PRD-073 FR-001 helper. Used by `capture` / `remember` / `promote` /
+/// `reason` (note-creating commands).
+pub async fn create_artifact_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    artifact: &crate::db::store::NewArtifact,
+) -> anyhow::Result<PathBuf> {
+    // 1. File first — projection is the source of truth.
+    let path = render_projection(
+        workspace,
+        &artifact.id,
+        &artifact.kind,
+        &artifact.title,
+        &artifact.status,
+        &artifact.depth,
+        artifact.author.as_deref(),
+        artifact.parent_epic.as_deref(),
+        artifact.valid_until.as_deref(),
+        &artifact.body,
+        &[],
+    )
+    .await?;
+
+    // 2. Then derived index. If this fails, file remains and reindex recovers.
+    store.create_artifact(artifact).await?;
+    Ok(path)
+}
+
+/// Delete an artifact, its relations, and its markdown file. File is removed
+/// FIRST (so any failure on the DB side doesn't leave a phantom file behind);
+/// then relations are cascaded; then the row itself.
+///
+/// No-op if the artifact does not exist in LanceDB.
+///
+/// PRD-073 FR-001 helper. Used by `delete` / `promote` (delete-after-move) /
+/// `remember` (forget).
+pub async fn delete_artifact_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+) -> anyhow::Result<()> {
+    let kind = match store.get_record(id).await? {
+        Some(record) => record.kind,
+        None => return Ok(()),
+    };
+
+    // 1. Remove file first (source of truth gone → workspace state unambiguous).
+    remove_projection(workspace, id, &kind).await?;
+
+    // 2. Cascade relations + record from the derived index.
+    store.delete_relations_for_artifact(id).await?;
+    store.delete_artifact(id).await?;
+    Ok(())
+}
+
+/// Update artifact metadata (status and/or title) with file-first guarantees:
+/// sync any user edits to the markdown body into LanceDB, mutate, then
+/// re-render the projection so frontmatter reflects the new state.
+///
+/// PRD-073 FR-001 helper. Used by `update` (status/title path).
+pub async fn update_metadata_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    status: Option<&str>,
+    title: Option<&str>,
+) -> anyhow::Result<()> {
+    sync_before_mutation(workspace, store, id).await?;
+    store.update_artifact(id, status, title).await?;
+    render_after_mutation(workspace, store, id).await?;
+    Ok(())
+}
+
+/// Replace artifact body with the supplied content. Unlike other mutation
+/// helpers, this does NOT call `sync_before_mutation` — the caller is
+/// explicitly overwriting whatever is on disk with a CLI/MCP-supplied body,
+/// so reading the file first would be a no-op at best and a race at worst.
+///
+/// The post-mutation render uses `force_body=true` so the new body lands in
+/// the markdown projection (rather than being preserved from the stale file).
+///
+/// PRD-073 FR-001 helper. Used by `update --body` and MCP body-update paths.
+pub async fn update_body_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    body: &str,
+) -> anyhow::Result<()> {
+    store.update_body(id, body).await?;
+    if let Some(record) = store.get_record(id).await? {
+        let links = store.get_relations(id).await.unwrap_or_default();
+        render_projection_with_body(
+            workspace,
+            &record.id,
+            &record.kind,
+            &record.title,
+            &record.status,
+            &record.depth,
+            record.author.as_deref(),
+            record.parent_epic.as_deref(),
+            record.valid_until.as_deref(),
+            body,
+            &links,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Update artifact depth (Tactical / Standard / Deep / Critical) with
+/// file-first guarantees.
+///
+/// PRD-073 FR-001 helper. Used by `update --depth`.
+pub async fn update_depth_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    depth: &str,
+) -> anyhow::Result<()> {
+    sync_before_mutation(workspace, store, id).await?;
+    store.update_depth(id, depth).await?;
+    render_after_mutation(workspace, store, id).await?;
+    Ok(())
+}
+
+/// Add a typed relation between two artifacts, then re-render the projection
+/// for **both** source and target. Without re-rendering both sides, the
+/// target file's frontmatter never picks up any drift correction it needed
+/// (see PROB-048 observed-symptom #2: phantom orphan health signal because
+/// only the source side was rendered). This is FR-005 in PRD-073.
+///
+/// Note: outgoing-only frontmatter means the new edge appears in the source
+/// file's `links:` block; the target file gets re-rendered as a side effect
+/// so its own outgoing links stay synchronized with LanceDB.
+///
+/// PRD-073 FR-001 / FR-005 helper. Used by `link` / `reason` (auto-linking).
+pub async fn add_link_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    source: &str,
+    target: &str,
+    relation: &str,
+) -> anyhow::Result<()> {
+    sync_before_mutation(workspace, store, source).await?;
+    sync_before_mutation(workspace, store, target).await?;
+
+    store.add_relation(source, target, relation).await?;
+
+    render_after_mutation(workspace, store, source).await?;
+    render_after_mutation(workspace, store, target).await?;
+    Ok(())
+}
+
+/// Remove a typed relation between two artifacts and re-render projections
+/// for both source and target so neither file's frontmatter retains a stale
+/// edge.
+///
+/// PRD-073 FR-005 helper. Used by `unlink`.
+pub async fn delete_link_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    source: &str,
+    target: &str,
+    relation: &str,
+) -> anyhow::Result<()> {
+    sync_before_mutation(workspace, store, source).await?;
+    sync_before_mutation(workspace, store, target).await?;
+
+    store.delete_relation(source, target, relation).await?;
+
+    render_after_mutation(workspace, store, source).await?;
+    render_after_mutation(workspace, store, target).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

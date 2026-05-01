@@ -1,7 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::types::{ArtifactKind, slugify};
+use forgeplan_core::artifact::types::slugify;
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
@@ -65,23 +65,8 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         // C1: memory artifacts have no tags at creation; users add via `forgeplan tag`.
         tags: Vec::new(),
     };
-    store.create_artifact(&artifact).await?;
-
-    // Write markdown projection
-    projection::render_projection(
-        &workspace,
-        &id,
-        "memory",
-        &title,
-        "active",
-        "tactical",
-        Some("cli"),
-        None,
-        None,
-        &body,
-        &[],
-    )
-    .await?;
+    // PRD-073 file-first: helper writes file first, then syncs to LanceDB.
+    projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
 
@@ -166,16 +151,8 @@ async fn run_forget(id: &str) -> Result<()> {
         anyhow::bail!("'{}' is not a memory (kind: {})", id, record.kind);
     }
 
-    // Delete from LanceDB
-    store.delete_artifact(id).await?;
-
-    // Remove markdown file
-    let slug = slugify(&record.title);
-    let filename = format!("{}-{}.md", record.id, slug);
-    let filepath = ws.join(ArtifactKind::Memory.dir_name()).join(&filename);
-    if filepath.exists() {
-        tokio::fs::remove_file(&filepath).await.ok();
-    }
+    // PRD-073 file-first: helper removes file first, then cascades DB.
+    projection::delete_artifact_with_projection(&ws, &store, id).await?;
 
     println!("  Forgotten: {}", style(id).bold());
 

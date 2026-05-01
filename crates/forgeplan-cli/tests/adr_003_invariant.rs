@@ -41,13 +41,27 @@ const FORBIDDEN_PATTERNS: &[&str] = &[
 /// Current baseline. Bumping these UP requires explicit ADR amendment.
 /// Bumping them DOWN is the goal — every migrated handler reduces the count.
 ///
-/// CLI baseline counted on 2026-04-29 across `crates/forgeplan-cli/src/commands/*.rs`.
-const CLI_BASELINE: usize = 27;
+/// CLI baseline last lowered on 2026-04-30 (PRD-073 Phase 3a — 13 nominal
+/// bypass sites migrated to `core::projection` mutation helpers across
+/// capture / link / update / delete / remember / reason / promote).
+///
+/// Remaining 14 sites are the file→store sync mechanisms themselves
+/// (reindex / git_sync / import_cmd / watch / ingest) — they ARE the
+/// projection-rebuild flow and need a separate helper extraction
+/// (PRD-073 Phase 3b) before this baseline can drop further.
+const CLI_BASELINE: usize = 14;
 
-/// MCP baseline counted on 2026-04-29 across `crates/forgeplan-mcp/src/server.rs`,
-/// production code paths only (test fixtures inside `#[cfg(test)]` are exempt
-/// because tests need raw store access for setup).
-const MCP_BASELINE: usize = 5;
+/// MCP baseline last lowered on 2026-04-30 (PRD-073 Phase 3a — `forgeplan_link`
+/// and `forgeplan_discover_finding` migrated to `core::projection` helpers).
+///
+/// Remaining 3 sites are all inside `forgeplan_import` (delete + create +
+/// add_relation in the bundle-replay loop) — that handler IS the JSON→DB
+/// sync mechanism, analogous to CLI `import_cmd.rs`. Migrating it requires
+/// a higher-level `import_artifact_with_projection` helper (PRD-073 Phase 3b).
+///
+/// Production code paths only — `#[cfg(test)]` fixtures are exempt because
+/// test setup legitimately needs raw store access.
+const MCP_BASELINE: usize = 3;
 
 #[test]
 fn cli_commands_have_no_new_direct_lance_mutations() {

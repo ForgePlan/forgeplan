@@ -1727,21 +1727,14 @@ impl ForgeplanServer {
             _ => {}
         }
 
-        // ADR-003 / PROB-048 file-first: pre-mutation file→store sync for
-        // both source AND target (either may have user-side edits we don't
-        // want to clobber).
-        if let Err(e) = projection::sync_before_mutation(&ws, &store, &p.source).await {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync (source) failed: {e}"
-            )));
-        }
-        if let Err(e) = projection::sync_before_mutation(&ws, &store, &p.target).await {
-            // Target sync failure is non-fatal — target may not exist locally
-            // (e.g., cross-workspace reference). Log and proceed.
-            tracing::warn!("pre-mutation sync (target {}) failed: {e}", p.target);
-        }
-
-        if let Err(e) = store.add_relation(&p.source, &p.target, &relation).await {
+        // ADR-003 / PROB-048 / PRD-073 file-first: helper does pre-sync for
+        // both sides, the add_relation, then post-render for both sides.
+        // sync_before/render_after are no-ops when the target is not local
+        // (cross-workspace reference) so the previous warn-and-continue
+        // behavior is preserved by the helper's natural laziness.
+        if let Err(e) =
+            projection::add_link_with_projection(&ws, &store, &p.source, &p.target, &relation).await
+        {
             let safe_src = sanitize_for_hint(&p.source);
             let safe_tgt = sanitize_for_hint(&p.target);
             return Ok(err_hinted(
@@ -1751,19 +1744,6 @@ impl ForgeplanServer {
                      source != target. Self-links and dangling targets are rejected."
                 ),
             ));
-        }
-
-        // ADR-003 / PROB-048 file-first: render BOTH source and target
-        // projections. Source's frontmatter gets the new outgoing link;
-        // target's frontmatter is rebuilt from store so any existing
-        // incoming-link metadata in the file body stays consistent.
-        // PROB-048 observed bug — link rendered only for source — closed.
-        if let Err(e) = projection::render_after_mutation(&ws, &store, &p.source).await {
-            tracing::warn!("post-mutation render (source {}) failed: {e}", p.source);
-        }
-        if let Err(e) = projection::render_after_mutation(&ws, &store, &p.target).await {
-            // Target may not have a markdown projection in this workspace.
-            tracing::warn!("post-mutation render (target {}) failed: {e}", p.target);
         }
 
         let safe_src = sanitize_for_hint(&p.source);
@@ -5220,7 +5200,12 @@ impl ForgeplanServer {
             tags: tags.clone(),
         };
 
-        if let Err(e) = store.create_artifact(&new_artifact).await {
+        // PRD-073 file-first: helper writes the markdown projection FIRST,
+        // then syncs to LanceDB. Failure mid-flow leaves an orphan file that
+        // the next reindex reconciles.
+        if let Err(e) =
+            projection::create_artifact_with_projection(&ws, &store, &new_artifact).await
+        {
             return Ok(err_result(&format!("Failed to create artifact: {e}")));
         }
 

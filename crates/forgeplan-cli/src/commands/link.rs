@@ -28,31 +28,12 @@ Fix: forgeplan list",
         );
     }
 
-    // Add relation in LanceDB
-    store.add_relation(source_id, target_id, &relation).await?;
-
-    // Sync file→LanceDB if user edited the file, then update projection
-    if let Some(record) = store.get_record(source_id).await? {
-        forgeplan_core::projection::sync_file_to_store(&store, &ws, &record).await?;
-        // Re-read record after potential sync
-        let record = store.get_record(source_id).await?.unwrap();
-        let all_relations = store.get_relations(source_id).await?;
-        let links: Vec<(String, String)> = all_relations;
-        forgeplan_core::projection::render_projection(
-            &ws,
-            &record.id,
-            &record.kind,
-            &record.title,
-            &record.status,
-            &record.depth,
-            record.author.as_deref(),
-            record.parent_epic.as_deref(),
-            record.valid_until.as_deref(),
-            &record.body,
-            &links,
-        )
-        .await?;
-    }
+    // PRD-073 FR-005: helper handles sync→add_relation→render for BOTH sides
+    // so target file's frontmatter stays in lockstep with LanceDB.
+    forgeplan_core::projection::add_link_with_projection(
+        &ws, &store, source_id, target_id, &relation,
+    )
+    .await?;
 
     common::log_change_field(
         &store,
@@ -96,31 +77,11 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
         );
     }
 
-    store
-        .delete_relation(source_id, target_id, &relation)
-        .await?;
-
-    // Sync file→LanceDB if user edited the file, then update projection
-    if let Some(record) = store.get_record(source_id).await? {
-        forgeplan_core::projection::sync_file_to_store(&store, &ws, &record).await?;
-        let record = store.get_record(source_id).await?.unwrap();
-        let all_relations = store.get_relations(source_id).await?;
-        let links: Vec<(String, String)> = all_relations;
-        forgeplan_core::projection::render_projection(
-            &ws,
-            &record.id,
-            &record.kind,
-            &record.title,
-            &record.status,
-            &record.depth,
-            record.author.as_deref(),
-            record.parent_epic.as_deref(),
-            record.valid_until.as_deref(),
-            &record.body,
-            &links,
-        )
-        .await?;
-    }
+    // PRD-073 FR-005: bidirectional render via helper.
+    forgeplan_core::projection::delete_link_with_projection(
+        &ws, &store, source_id, target_id, &relation,
+    )
+    .await?;
 
     common::log_change_field(
         &store,
