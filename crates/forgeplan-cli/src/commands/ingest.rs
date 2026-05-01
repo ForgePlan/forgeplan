@@ -226,7 +226,7 @@ pub async fn run(
     }
 
     // ── 6. Write drafts to workspace ───────────────────────────────────────
-    let (ws, store) = common::open_store().await?;
+    let (ws, store, _lock) = common::open_store_locked().await?;
 
     let mut written: Vec<WrittenArtifact> = Vec::new();
     let mut skipped_existing: Vec<String> = Vec::new();

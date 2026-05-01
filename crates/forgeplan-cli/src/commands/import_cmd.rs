@@ -1,6 +1,7 @@
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::projection;
 use forgeplan_core::validation::rules::check_stub_detailed;
 
 use crate::commands::common;
@@ -29,7 +30,7 @@ fn build_frontmatter(id: &str, kind: &str, status: &str, title: &str) -> Frontma
 }
 
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let (_ws, store) = common::open_store().await?;
+    let (ws, store, _lock) = common::open_store_locked().await?;
     let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {
@@ -95,7 +96,11 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         }
 
         if existing.is_some() {
-            store.delete_artifact(id).await?;
+            // PRD-073 audit H3: routed through helper so the markdown
+            // projection is removed in lockstep with the LanceDB row.
+            // Fixes the previous bypass where re-import via `--force`
+            // left the OLD file on disk while the OLD row was deleted.
+            projection::delete_artifact_with_projection(&ws, &store, id).await?;
         }
 
         // Validate kind against known types
@@ -174,7 +179,12 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
                 .unwrap_or_default(),
         };
 
-        store.create_artifact(&new_artifact).await?;
+        // PRD-073 audit H3: helper writes the markdown projection FIRST,
+        // then syncs the LanceDB row. Previous direct `store.create_artifact`
+        // call left every imported artifact in DB-only state with no
+        // markdown file backing — breaking ADR-003 invariant the moment
+        // import completed.
+        projection::create_artifact_with_projection(&ws, &store, &new_artifact).await?;
         imported += 1;
     }
 
@@ -186,7 +196,9 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             let relation = rel["relation"].as_str().unwrap_or("informs");
             if !source.is_empty()
                 && !target.is_empty()
-                && store.add_relation(source, target, relation).await.is_ok()
+                && projection::add_link_with_projection(&ws, &store, source, target, relation)
+                    .await
+                    .is_ok()
             {
                 relations_imported += 1;
             }

@@ -14,7 +14,7 @@ use crate::commands::common;
 
 /// Run restore for a specific artifact ID.
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, store, _lock) = common::open_store_locked().await?;
 
     // Lazy TTL purge — best-effort, never fails the command. Mirrors
     // the MCP tool's defense against unbounded receipt accumulation.

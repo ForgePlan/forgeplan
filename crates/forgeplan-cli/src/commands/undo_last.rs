@@ -15,7 +15,7 @@ use crate::commands::common;
 /// Run undo-last across the workspace. Mirrors `UndoLastParams`:
 /// - `within_hours` clamped 1..=720 (default 24).
 pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, store, _lock) = common::open_store_locked().await?;
 
     let within = within_hours.clamp(1, 720);
     let receipts = undo::list_receipts(&ws).await?;

@@ -5,7 +5,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, store, _lock) = common::open_store_locked().await?;
 
     // Capture old status before transition
     let old_status = store

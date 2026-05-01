@@ -4032,6 +4032,24 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ImportParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        // Audit H3 follow-up: serialize import behind workspace lock so a
+        // concurrent CLI mutation cannot interleave with the bundle replay.
+        // Each artifact in the bundle is now a file-first operation via
+        // the helper (per H3 fix), but the BATCH still needs atomicity
+        // from any external observer's perspective.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -4073,7 +4091,10 @@ impl ForgeplanServer {
             }
 
             if existing.is_some() {
-                let _ = store.delete_artifact(id).await;
+                // PRD-073 audit H3: helper removes file + relations + DB row
+                // in lockstep so re-import via force=true doesn't strand
+                // the OLD markdown file.
+                let _ = projection::delete_artifact_with_projection(&ws, &store, id).await;
             }
 
             let new_art = NewArtifact {
@@ -4089,7 +4110,12 @@ impl ForgeplanServer {
                 tags: Vec::new(),
             };
 
-            if let Err(e) = store.create_artifact(&new_art).await {
+            // PRD-073 audit H3: file-first helper writes the markdown
+            // projection alongside the LanceDB row; previous direct
+            // `store.create_artifact` left every imported artifact in
+            // DB-only state (live-confirmed in audit testing).
+            if let Err(e) = projection::create_artifact_with_projection(&ws, &store, &new_art).await
+            {
                 return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
             }
             imported += 1;
@@ -4103,7 +4129,9 @@ impl ForgeplanServer {
                 let relation = rel["relation"].as_str().unwrap_or("informs");
                 if !source.is_empty()
                     && !target.is_empty()
-                    && store.add_relation(source, target, relation).await.is_ok()
+                    && projection::add_link_with_projection(&ws, &store, source, target, relation)
+                        .await
+                        .is_ok()
                 {
                     relations_imported += 1;
                 }

@@ -54,41 +54,37 @@ const FORBIDDEN_METHODS: &[&str] = &[
 /// Bumping them DOWN is the goal — every migrated handler reduces the count.
 ///
 /// CLI baseline last lowered on 2026-05-01 (PRD-073 Phase 3a + audit
-/// remediation — 17 nominal bypass sites migrated to `core::projection`
-/// mutation helpers, plus 4 multi-line bypass sites that the previous
-/// single-line literal-match counter had silently let through:
+/// remediation + import file-first migration — 20 bypass sites migrated:
 /// capture, link (add+unlink), update (depth/metadata/body), delete,
-/// remember (create+forget), reason (save flow), promote, new, tag (add+remove),
-/// generate.
+/// remember (create+forget), reason (save flow), promote, new, tag
+/// (add+remove), generate, **import_cmd** (live-confirmed in audit
+/// testing that import was leaving DB-only state — H3 fix).
 ///
-/// Remaining 17 sites are the file→store sync mechanisms themselves
-/// (reindex 5 / git_sync 5 / import_cmd 3 / watch 1 / ingest 3) — they
-/// ARE the projection-rebuild flow and need higher-level helpers
-/// (`import_artifact_with_projection`, `reindex_workspace_via_projection`)
-/// in PRD-073 Phase 3b before this baseline can drop further. Phase 4
-/// (visibility lockdown via `pub(crate)`) is blocked on Phase 3b.
-const CLI_BASELINE: usize = 17;
+/// Remaining 14 sites are sync mechanisms still awaiting helper
+/// extraction (reindex 5 / git_sync 5 / watch 1 / ingest 3) —
+/// they ARE the projection-rebuild flow and need
+/// `reindex_workspace_via_projection` / `git_sync_via_projection`
+/// in PRD-073 Phase 3b before this baseline can drop further.
+/// Phase 4 (visibility lockdown via `pub(crate)`) is blocked on Phase 3b.
+const CLI_BASELINE: usize = 14;
 
 /// MCP baseline last lowered on 2026-05-01 (PRD-073 Phase 3a + audit
-/// remediation — `forgeplan_link`, `forgeplan_discover_finding`,
-/// `forgeplan_new`, `forgeplan_update` (metadata + body),
-/// `forgeplan_capture`, `forgeplan_generate` migrated to
-/// `core::projection` helpers).
+/// remediation + import file-first migration). Migrated handlers:
+/// `forgeplan_link`, `forgeplan_discover_finding`, `forgeplan_new`,
+/// `forgeplan_update` (metadata + body), `forgeplan_capture`,
+/// `forgeplan_generate`, **`forgeplan_import`** (live-confirmed H3 fix —
+/// previously left every imported artifact in DB-only state).
 ///
-/// Remaining 4 sites:
-/// - 3 inside `forgeplan_import` (delete + create + add_relation in the
-///   bundle-replay loop) — Class B sync mechanism, awaits `import_artifact_with_projection`
-///   helper (PRD-073 Phase 3b)
-/// - 1 inside `forgeplan_delete` (`store.delete_artifact` after
-///   `soft_delete_capture` already moved file to trash) — file-first
-///   ordering is satisfied by the soft-delete receipt mechanism, but the
-///   raw store call is left in place because routing through
-///   `delete_artifact_with_projection` would also drop relations that
-///   `restore` needs to recreate. PRD-055 soft-delete pattern.
+/// Remaining 1 site: `forgeplan_delete`'s `store.delete_artifact` call
+/// after `soft_delete_capture` already moved the file to trash. File-first
+/// ordering is satisfied by the soft-delete receipt mechanism, but the
+/// raw store call is left in place because routing through
+/// `delete_artifact_with_projection` would also drop relations that
+/// `restore` needs to recreate. PRD-055 soft-delete pattern.
 ///
 /// Production code paths only — `#[cfg(test)]` fixtures are exempt because
 /// test setup legitimately needs raw store access.
-const MCP_BASELINE: usize = 4;
+const MCP_BASELINE: usize = 1;
 
 #[test]
 fn cli_commands_have_no_new_direct_lance_mutations() {

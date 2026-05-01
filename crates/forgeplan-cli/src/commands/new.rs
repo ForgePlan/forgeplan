@@ -46,7 +46,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
 
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let (workspace, store) = common::open_store().await?;
+    let (workspace, store, _lock) = common::open_store_locked().await?;
 
     // Duplicate guard (FR-001 of PRD-043): warn before creating an artifact
     // whose title closely matches an existing one of the same kind.
@@ -65,6 +65,22 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
                 dup_score * 100.0
             );
         } else {
+            // PRD-073 audit follow-up: non-tty shells (agent/CI/script)
+            // cannot answer the cliclack prompt — `interact()` returns Err
+            // and `unwrap_or(false)` would silently cancel without telling
+            // the caller why. Refuse with an explicit `Fix:` hint per
+            // PRD-071 hint contract instead.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!(
+                    "Found similar artifact: {} \"{}\" (similarity {:.0}%). Non-interactive shell cannot prompt — re-run with --allow-duplicate to override.\nFix: forgeplan new {} \"{}\" --allow-duplicate",
+                    dup_id,
+                    dup_title,
+                    dup_score * 100.0,
+                    kind_str,
+                    title,
+                );
+            }
             let proceed = cliclack::confirm(format!(
                 "Found similar artifact: {} \"{}\" (similarity {:.0}%)\nContinue creating new artifact?",
                 dup_id,

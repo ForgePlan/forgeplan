@@ -32,7 +32,7 @@ fn load_architecture_hint() -> String {
 }
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, store, _lock) = common::open_store_locked().await?;
 
     // PRD-071 contract: when LLM is unavailable, emit a `Fix:` marker line so
     // the agent can route to setup-skill instead of guessing.
