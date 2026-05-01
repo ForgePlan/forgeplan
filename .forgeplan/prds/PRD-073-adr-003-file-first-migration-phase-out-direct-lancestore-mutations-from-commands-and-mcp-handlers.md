@@ -2,13 +2,15 @@
 depth: standard
 id: PRD-073
 kind: prd
-status: draft
-title: ADR-003 file-first migration — phase out direct LanceStore mutations from commands and MCP handlers
 links:
 - target: PROB-048
   relation: based_on
 - target: ADR-003
   relation: based_on
+- target: PROB-048
+  relation: based_on
+status: draft
+title: ADR-003 file-first migration — phase out direct LanceStore mutations from commands and MCP handlers
 ---
 
 # PRD-073: ADR-003 file-first migration
@@ -93,3 +95,5 @@ Total: ~9-12h focused work across 5 PRs / 1 sprint.
 - PROB-048: documents the invariant violation (this PRD addresses)
 - ADR-003: invariant definition (this PRD enforces)
 - EVID-XXX: end-to-end reproducibility measurement (TBD)
+
+
