@@ -43,17 +43,15 @@ Fix: forgeplan list",
         );
     }
 
-    // PRD-073 file-first migration: each mutation goes through a helper that
-    // does {sync file→DB, mutate, render DB→file}. Title change is handled
-    // explicitly: we sync once and remove the OLD projection BEFORE the
-    // metadata helper renders to the new slug, so we don't leak orphan files
-    // and we capture user file edits before the old slug disappears.
-    if title.is_some() {
-        projection::sync_before_mutation(&ws, &store, id).await?;
-        let _ = projection::remove_projection(&ws, id, &original.kind).await;
-    }
+    // PRD-073 audit fix: order is metadata FIRST (which writes any title
+    // change into LanceDB), THEN depth/body (each renders against the new
+    // title → new slug). The previous order ran depth before metadata, so
+    // the depth helper rendered to the OLD slug — defeating the OLD-file
+    // cleanup and leaving both filenames on disk. Old-slug cleanup happens
+    // AT THE END via `remove_projection_at` with the original title so we
+    // pin the exact path and don't risk prefix collisions.
 
-    // Depth update
+    // Validate depth string up-front so the inner helper doesn't see invalid input.
     if let Some(d) = depth {
         let _: forgeplan_core::artifact::types::Mode = d.parse().map_err(|_| {
             // PRD-071: pair Error with a concrete Fix command (default to
@@ -64,12 +62,16 @@ Fix: forgeplan list",
                 id,
             )
         })?;
-        projection::update_depth_with_projection(&ws, &store, id, d).await?;
     }
 
-    // Update metadata (status, title)
+    // Update metadata (status, title) FIRST so subsequent renders see the new title.
     if status.is_some() || title.is_some() {
         projection::update_metadata_with_projection(&ws, &store, id, status, title).await?;
+    }
+
+    // Depth update — renders against the (possibly new) title from DB.
+    if let Some(d) = depth {
+        projection::update_depth_with_projection(&ws, &store, id, d).await?;
     }
 
     // Update body
@@ -109,6 +111,13 @@ Fix: forgeplan list",
         }
 
         projection::update_body_with_projection(&ws, &store, id, &body_content).await?;
+    }
+
+    // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place
+    // (so there's no orphan window) and use exact-path removal so we don't
+    // accidentally clobber a sibling artifact whose ID is a prefix of this one.
+    if title.is_some() {
+        let _ = projection::remove_projection_at(&ws, id, &original.kind, &original.title).await;
     }
 
     // Log changes

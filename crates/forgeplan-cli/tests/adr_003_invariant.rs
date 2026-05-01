@@ -24,44 +24,71 @@ use std::path::Path;
 /// Mutating LanceStore methods that bypass file-first flow when called
 /// directly from a command handler. Read-only methods (`get_*`, `list_*`,
 /// `search_*`) are excluded — they don't violate the invariant.
-const FORBIDDEN_PATTERNS: &[&str] = &[
-    "store.create_artifact(",
-    "store.update_artifact(",
-    "store.update_valid_until(",
-    "store.update_depth(",
-    "store.update_body(",
-    "store.add_tags(",
-    "store.remove_tags(",
-    "store.delete_artifact(",
-    "store.add_relation(",
-    "store.delete_relation(",
-    "store.delete_relations_for_artifact(",
+///
+/// The matcher is whitespace-tolerant: both `store.create_artifact(` AND
+/// the multi-line chain
+///
+/// ```text
+/// store
+///     .create_artifact(...)
+/// ```
+///
+/// count as a single violation. The previous single-line literal-match
+/// implementation under-counted by ~21 calls (audit 2026-05-01) because
+/// rustfmt naturally wraps long method chains.
+const FORBIDDEN_METHODS: &[&str] = &[
+    "create_artifact",
+    "update_artifact",
+    "update_valid_until",
+    "update_depth",
+    "update_body",
+    "add_tags",
+    "remove_tags",
+    "delete_artifact",
+    "add_relation",
+    "delete_relation",
+    "delete_relations_for_artifact",
 ];
 
 /// Current baseline. Bumping these UP requires explicit ADR amendment.
 /// Bumping them DOWN is the goal — every migrated handler reduces the count.
 ///
-/// CLI baseline last lowered on 2026-04-30 (PRD-073 Phase 3a — 13 nominal
-/// bypass sites migrated to `core::projection` mutation helpers across
-/// capture / link / update / delete / remember / reason / promote).
+/// CLI baseline last lowered on 2026-05-01 (PRD-073 Phase 3a + audit
+/// remediation — 17 nominal bypass sites migrated to `core::projection`
+/// mutation helpers, plus 4 multi-line bypass sites that the previous
+/// single-line literal-match counter had silently let through:
+/// capture, link (add+unlink), update (depth/metadata/body), delete,
+/// remember (create+forget), reason (save flow), promote, new, tag (add+remove),
+/// generate.
 ///
-/// Remaining 14 sites are the file→store sync mechanisms themselves
-/// (reindex / git_sync / import_cmd / watch / ingest) — they ARE the
-/// projection-rebuild flow and need a separate helper extraction
-/// (PRD-073 Phase 3b) before this baseline can drop further.
-const CLI_BASELINE: usize = 14;
+/// Remaining 17 sites are the file→store sync mechanisms themselves
+/// (reindex 5 / git_sync 5 / import_cmd 3 / watch 1 / ingest 3) — they
+/// ARE the projection-rebuild flow and need higher-level helpers
+/// (`import_artifact_with_projection`, `reindex_workspace_via_projection`)
+/// in PRD-073 Phase 3b before this baseline can drop further. Phase 4
+/// (visibility lockdown via `pub(crate)`) is blocked on Phase 3b.
+const CLI_BASELINE: usize = 17;
 
-/// MCP baseline last lowered on 2026-04-30 (PRD-073 Phase 3a — `forgeplan_link`
-/// and `forgeplan_discover_finding` migrated to `core::projection` helpers).
+/// MCP baseline last lowered on 2026-05-01 (PRD-073 Phase 3a + audit
+/// remediation — `forgeplan_link`, `forgeplan_discover_finding`,
+/// `forgeplan_new`, `forgeplan_update` (metadata + body),
+/// `forgeplan_capture`, `forgeplan_generate` migrated to
+/// `core::projection` helpers).
 ///
-/// Remaining 3 sites are all inside `forgeplan_import` (delete + create +
-/// add_relation in the bundle-replay loop) — that handler IS the JSON→DB
-/// sync mechanism, analogous to CLI `import_cmd.rs`. Migrating it requires
-/// a higher-level `import_artifact_with_projection` helper (PRD-073 Phase 3b).
+/// Remaining 4 sites:
+/// - 3 inside `forgeplan_import` (delete + create + add_relation in the
+///   bundle-replay loop) — Class B sync mechanism, awaits `import_artifact_with_projection`
+///   helper (PRD-073 Phase 3b)
+/// - 1 inside `forgeplan_delete` (`store.delete_artifact` after
+///   `soft_delete_capture` already moved file to trash) — file-first
+///   ordering is satisfied by the soft-delete receipt mechanism, but the
+///   raw store call is left in place because routing through
+///   `delete_artifact_with_projection` would also drop relations that
+///   `restore` needs to recreate. PRD-055 soft-delete pattern.
 ///
 /// Production code paths only — `#[cfg(test)]` fixtures are exempt because
 /// test setup legitimately needs raw store access.
-const MCP_BASELINE: usize = 3;
+const MCP_BASELINE: usize = 4;
 
 #[test]
 fn cli_commands_have_no_new_direct_lance_mutations() {
@@ -127,10 +154,67 @@ fn count_violations_in_dir(dir: &Path) -> usize {
 }
 
 fn count_violations_in_text(text: &str) -> usize {
-    FORBIDDEN_PATTERNS
-        .iter()
-        .map(|pat| text.matches(pat).count())
-        .sum()
+    let bytes = text.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i + 5 <= bytes.len() {
+        // Find next standalone `store` identifier. Skip if preceded or
+        // followed by an identifier character (e.g. `mystore.x`, `stores.x`).
+        if &bytes[i..i + 5] == b"store" {
+            let prev_ok = i == 0 || !is_ident_char(bytes[i - 1]);
+            let after = i + 5;
+            let next_ok = after >= bytes.len() || !is_ident_char(bytes[after]);
+            if prev_ok && next_ok && matches_forbidden_call(bytes, after) {
+                count += 1;
+                i = after;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    count
+}
+
+/// Starting at `pos` (immediately after the `store` token), check whether
+/// the byte stream forms `store . <method> (` with arbitrary whitespace
+/// (including newlines) between tokens, and `<method>` matches any entry
+/// in `FORBIDDEN_METHODS`.
+fn matches_forbidden_call(bytes: &[u8], pos: usize) -> bool {
+    let mut i = skip_ws(bytes, pos);
+    if i >= bytes.len() || bytes[i] != b'.' {
+        return false;
+    }
+    i = skip_ws(bytes, i + 1);
+    for method in FORBIDDEN_METHODS {
+        let m = method.as_bytes();
+        if i + m.len() > bytes.len() {
+            continue;
+        }
+        if &bytes[i..i + m.len()] != m {
+            continue;
+        }
+        let after_method = i + m.len();
+        // Reject if followed by an identifier char (e.g. "create_artifact_x").
+        if after_method < bytes.len() && is_ident_char(bytes[after_method]) {
+            continue;
+        }
+        let paren = skip_ws(bytes, after_method);
+        if paren < bytes.len() && bytes[paren] == b'(' {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
 }
 
 fn read_until_test_module(path: &Path) -> String {

@@ -144,27 +144,10 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         // TODO: add `--tag key=value` flag in future sprint.
         tags: Vec::new(),
     };
-    store
-        .create_artifact(&artifact)
+    // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
+    let filepath = projection::create_artifact_with_projection(&workspace, &store, &artifact)
         .await
-        .with_context(|| format!("Failed to create artifact {} in LanceDB", id))?;
-
-    // Render markdown projection (git-tracked)
-    let filepath = projection::render_projection(
-        &workspace,
-        &id,
-        template_key,
-        title,
-        "draft",
-        depth,
-        None,
-        None,
-        None,
-        &rendered,
-        &[],
-    )
-    .await
-    .with_context(|| format!("Failed to write projection for {}", id))?;
+        .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
 
     // Log creation in change_log
     common::log_change(&store, &id, "create", "cli").await;

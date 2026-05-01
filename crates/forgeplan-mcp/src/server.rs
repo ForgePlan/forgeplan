@@ -1209,26 +1209,10 @@ impl ForgeplanServer {
             tags: Vec::new(),
         };
 
-        store
-            .create_artifact(&artifact)
+        // PRD-073 audit: helper writes file FIRST then syncs to LanceDB.
+        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
             .await
             .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
-
-        let filepath = projection::render_projection(
-            &ws,
-            &id,
-            template_key,
-            &p.title,
-            "draft",
-            "standard",
-            None,
-            None,
-            None,
-            &rendered,
-            &[],
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
         // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
         // first modifier is attributable even without an update call.
@@ -1902,12 +1886,13 @@ impl ForgeplanServer {
             }
         };
 
-        // Verify exists
+        // Verify exists. The helpers do their own sync_before_mutation; we
+        // only need the existence check here (and presence info downstream).
         let pre_record = store
             .get_record(&p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-        let pre_record = match pre_record {
+        let _pre_record = match pre_record {
             Some(r) => r,
             None => return Ok(artifact_not_found(&p.id)),
         };
@@ -1947,67 +1932,33 @@ impl ForgeplanServer {
             ));
         }
 
-        // Sync file→LanceDB BEFORE mutations — capture user edits
-        let _ = projection::sync_file_to_store(&store, &ws, &pre_record).await;
-
+        // PRD-073 audit: route metadata + body mutations through file-first
+        // helpers. Each helper handles its own sync→mutate→render triplet.
         if p.status.is_some() || p.title.is_some() {
             let status_str = p.status.as_ref().map(|s| s.as_str());
-            store
-                .update_artifact(&p.id, status_str, p.title.as_deref())
+            projection::update_metadata_with_projection(
+                &ws,
+                &store,
+                &p.id,
+                status_str,
+                p.title.as_deref(),
+            )
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        }
+
+        if let Some(ref body) = p.body {
+            projection::update_body_with_projection(&ws, &store, &p.id, body)
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
 
-        let body_updated = if let Some(ref body) = p.body {
-            store
-                .update_body(&p.id, body)
-                .await
-                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            true
-        } else {
-            false
-        };
-
-        // Re-render projection
+        // Re-fetch for the response payload.
         let updated = store
             .get_record(&p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
-        let links = store.get_relations(&p.id).await.unwrap_or_default();
-
-        if body_updated {
-            // Body was explicitly set — use force_body to write to file (files = truth)
-            let _ = projection::render_projection_with_body(
-                &ws,
-                &updated.id,
-                &updated.kind,
-                &updated.title,
-                &updated.status,
-                &updated.depth,
-                updated.author.as_deref(),
-                updated.parent_epic.as_deref(),
-                updated.valid_until.as_deref(),
-                &updated.body,
-                &links,
-            )
-            .await;
-        } else {
-            let _ = projection::render_projection(
-                &ws,
-                &updated.id,
-                &updated.kind,
-                &updated.title,
-                &updated.status,
-                &updated.depth,
-                updated.author.as_deref(),
-                updated.parent_epic.as_deref(),
-                updated.valid_until.as_deref(),
-                &updated.body,
-                &links,
-            )
-            .await;
-        }
 
         // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
         // rendered file. Best-effort — a stamping failure must not fail
@@ -2921,26 +2872,10 @@ impl ForgeplanServer {
             tags: Vec::new(),
         };
 
-        store
-            .create_artifact(&artifact)
+        // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
+        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-
-        let filepath = projection::render_projection(
-            &ws,
-            &id,
-            template_key,
-            &title,
-            "draft",
-            "tactical",
-            None,
-            None,
-            None,
-            &body,
-            &[],
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         // PRD-071: single primary — review the captured draft. Lifecycle
@@ -3954,26 +3889,10 @@ impl ForgeplanServer {
             tags: Vec::new(),
         };
 
-        store
-            .create_artifact(&artifact)
+        // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
+        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-
-        let filepath = projection::render_projection(
-            &ws,
-            &id,
-            template_key,
-            &title,
-            "draft",
-            "standard",
-            None,
-            None,
-            None,
-            &body,
-            &[],
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         let next_action = format!(

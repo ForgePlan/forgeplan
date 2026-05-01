@@ -50,14 +50,17 @@ Fix: forgeplan list",
         .iter()
         .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
         .count();
-    if relation_count > 0 {
-        eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
-    }
 
     // PRD-073 file-first: helper removes the projection file FIRST, then
     // cascades relations and the LanceDB row. Failure mid-flow leaves the
-    // workspace recoverable via reindex.
+    // workspace recoverable via reindex. Audit fix: announce relation
+    // removal AFTER the helper succeeds so a mid-flow failure doesn't lie
+    // to the user.
     projection::delete_artifact_with_projection(&ws, &store, id).await?;
+
+    if relation_count > 0 {
+        eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
+    }
 
     println!("  Deleted: {} \"{}\"", record.id, record.title);
 

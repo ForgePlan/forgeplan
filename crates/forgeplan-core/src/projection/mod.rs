@@ -114,7 +114,10 @@ pub async fn render_projection_record(
         &record.tags,
         preserved_fm.as_ref(),
     )?;
-    tokio::fs::write(&filepath, &content).await?;
+    // PRD-073 audit C1 (security): atomic tempfile+rename so a kill -9 between
+    // truncate and write cannot zero-out the markdown projection. The previous
+    // `tokio::fs::write` was non-atomic on POSIX (open+truncate+write).
+    atomic_markdown_write(&filepath, content.as_bytes()).await?;
     Ok(filepath)
 }
 
@@ -217,7 +220,8 @@ async fn render_projection_inner(
         &[],
         preserved_fm.as_ref(),
     )?;
-    tokio::fs::write(&filepath, &content).await?;
+    // PRD-073 audit C1: atomic write protects against kill-mid-truncate window.
+    atomic_markdown_write(&filepath, content.as_bytes()).await?;
 
     Ok(filepath)
 }
@@ -518,20 +522,65 @@ async fn atomic_markdown_write(path: &Path, bytes: &[u8]) -> std::io::Result<()>
 }
 
 /// Remove a projection file for a deleted artifact.
+///
+/// PRD-073 audit C2 (security): the previous implementation matched
+/// `name.to_uppercase().starts_with(&id.to_uppercase())` and broke on
+/// the first match found via `read_dir` ordering. That collided in two
+/// ways: (a) memory IDs like `mem-auth` are a prefix of `mem-auth-system`,
+/// so deleting the first could clobber the second; (b) numeric IDs once
+/// they cross 999 (`PRD-100` is a prefix of `PRD-1000`).
+///
+/// The current implementation requires `<id>-` (trailing hyphen) as the
+/// prefix, which fixes the numeric case, AND walks the entire directory
+/// removing **every** matching file rather than just the first. The
+/// trailing-hyphen requirement also rejects bare-`<id>.md` names that
+/// don't follow the slug convention. For full correctness on the memory
+/// case, callers that know the title can use `remove_projection_at` to
+/// pin the exact filename.
 pub async fn remove_projection(workspace: &Path, id: &str, kind: &str) -> anyhow::Result<()> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
-    if dir.exists() {
-        let mut read_dir = tokio::fs::read_dir(&dir).await?;
-        while let Some(entry) = read_dir.next_entry().await? {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.to_uppercase().starts_with(&id.to_uppercase()) && name.ends_with(".md") {
-                tokio::fs::remove_file(entry.path()).await?;
-                break;
-            }
+    if !dir.exists() {
+        return Ok(());
+    }
+    let needle = format!("{}-", id.to_uppercase());
+    let mut read_dir = tokio::fs::read_dir(&dir).await?;
+    while let Some(entry) = read_dir.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".md") && name.to_uppercase().starts_with(&needle) {
+            // Also reject candidates whose ID prefix is a strict-prefix of
+            // another ID (e.g. PRD-100 → "PRD-100-"; PRD-1000 → "PRD-1000-"
+            // — both start with "PRD-100-"? No: PRD-1000- contains digit '0'
+            // after the prefix-and-hyphen, so the trailing-hyphen check
+            // separates `prd-100-foo.md` from `prd-1000-foo.md`).
+            tokio::fs::remove_file(entry.path()).await?;
         }
     }
     Ok(())
+}
+
+/// Remove a projection file at a specific path computed from `(id, kind, title)`.
+/// Use when you know the exact title (typically `original.title` from a
+/// fetched record) and want to avoid prefix collisions entirely.
+///
+/// Returns Ok(true) if the file existed and was removed, Ok(false) if
+/// nothing was there.
+pub async fn remove_projection_at(
+    workspace: &Path,
+    id: &str,
+    kind: &str,
+    title: &str,
+) -> anyhow::Result<bool> {
+    let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
+    let dir = workspace.join(artifact_kind.dir_name());
+    let slug = slugify(title);
+    let filepath = dir.join(format!("{}-{}.md", id, slug));
+    if filepath.exists() {
+        tokio::fs::remove_file(&filepath).await?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 // =============================================================================
@@ -548,6 +597,13 @@ pub async fn remove_projection(workspace: &Path, id: &str, kind: &str) -> anyhow
 /// projection first, then sync to LanceDB. If the LanceDB insert fails,
 /// the orphan file is reconciled by the next `forgeplan reindex`.
 ///
+/// PRD-073 audit C3 fix: uses `render_projection_with_body` (force_body=true)
+/// so a stale file already at the slug path (e.g. left over from a previous
+/// failed create, or an unrelated `git checkout` artefact) is overwritten
+/// by the caller-supplied body. The previous force_body=false path would
+/// silently keep the on-disk body and stamp it into the new LanceDB row,
+/// guaranteeing file/DB divergence on creation.
+///
 /// PRD-073 FR-001 helper. Used by `capture` / `remember` / `promote` /
 /// `reason` (note-creating commands).
 pub async fn create_artifact_with_projection(
@@ -555,8 +611,9 @@ pub async fn create_artifact_with_projection(
     store: &crate::db::store::LanceStore,
     artifact: &crate::db::store::NewArtifact,
 ) -> anyhow::Result<PathBuf> {
-    // 1. File first — projection is the source of truth.
-    let path = render_projection(
+    // 1. File first — projection is the source of truth, with caller body
+    //    forced over any pre-existing file at the same slug path.
+    let path = render_projection_with_body(
         workspace,
         &artifact.id,
         &artifact.kind,
@@ -584,18 +641,26 @@ pub async fn create_artifact_with_projection(
 ///
 /// PRD-073 FR-001 helper. Used by `delete` / `promote` (delete-after-move) /
 /// `remember` (forget).
+///
+/// Audit C2 fix: removes the projection file at the EXACT path computed from
+/// the record's `(id, kind, title)` rather than via prefix scan, so deleting
+/// `mem-auth` cannot accidentally remove `mem-auth-system-...md`. If the
+/// on-disk filename doesn't match the DB title (e.g. user renamed a file
+/// without `forgeplan reindex`), the orphan is intentionally left behind to
+/// be surfaced by `forgeplan health` rather than guessed at.
 pub async fn delete_artifact_with_projection(
     workspace: &Path,
     store: &crate::db::store::LanceStore,
     id: &str,
 ) -> anyhow::Result<()> {
-    let kind = match store.get_record(id).await? {
-        Some(record) => record.kind,
+    let record = match store.get_record(id).await? {
+        Some(r) => r,
         None => return Ok(()),
     };
 
     // 1. Remove file first (source of truth gone → workspace state unambiguous).
-    remove_projection(workspace, id, &kind).await?;
+    //    Exact-path removal — no prefix collision with sibling IDs.
+    let _ = remove_projection_at(workspace, id, &record.kind, &record.title).await?;
 
     // 2. Cascade relations + record from the derived index.
     store.delete_relations_for_artifact(id).await?;
@@ -607,6 +672,10 @@ pub async fn delete_artifact_with_projection(
 /// sync any user edits to the markdown body into LanceDB, mutate, then
 /// re-render the projection so frontmatter reflects the new state.
 ///
+/// PRD-073 audit fix: short-circuits on `(None, None)` instead of paying
+/// the sync round-trip to bump `updated_at` for nothing. Debug-asserts so
+/// future callers see the contract violation in test builds.
+///
 /// PRD-073 FR-001 helper. Used by `update` (status/title path).
 pub async fn update_metadata_with_projection(
     workspace: &Path,
@@ -615,6 +684,13 @@ pub async fn update_metadata_with_projection(
     status: Option<&str>,
     title: Option<&str>,
 ) -> anyhow::Result<()> {
+    debug_assert!(
+        status.is_some() || title.is_some(),
+        "update_metadata_with_projection called with no fields to change for {id}",
+    );
+    if status.is_none() && title.is_none() {
+        return Ok(());
+    }
     sync_before_mutation(workspace, store, id).await?;
     store.update_artifact(id, status, title).await?;
     render_after_mutation(workspace, store, id).await?;
@@ -626,8 +702,12 @@ pub async fn update_metadata_with_projection(
 /// explicitly overwriting whatever is on disk with a CLI/MCP-supplied body,
 /// so reading the file first would be a no-op at best and a race at worst.
 ///
-/// The post-mutation render uses `force_body=true` so the new body lands in
-/// the markdown projection (rather than being preserved from the stale file).
+/// PRD-073 audit H2 (security): file is written FIRST, then LanceDB is
+/// updated. If the process is killed between the two writes, the file holds
+/// the user's intended body and the next `forgeplan reindex` propagates it
+/// to LanceDB. The previous order (DB-first, then file) would let a
+/// kill-mid-flow strand the user's edit only in LanceDB, where the next
+/// reindex would silently overwrite it with the stale on-disk body.
 ///
 /// PRD-073 FR-001 helper. Used by `update --body` and MCP body-update paths.
 pub async fn update_body_with_projection(
@@ -636,24 +716,35 @@ pub async fn update_body_with_projection(
     id: &str,
     body: &str,
 ) -> anyhow::Result<()> {
+    let record = match store.get_record(id).await? {
+        Some(r) => r,
+        None => {
+            // Mirror the underlying `store.update_body` behavior on a missing
+            // ID — propagate the error so callers don't silently no-op.
+            anyhow::bail!("artifact '{id}' not found");
+        }
+    };
+    let links = store.get_relations(id).await.unwrap_or_default();
+
+    // 1. File first — write the user's body to the markdown projection. This
+    //    establishes the source of truth before the derived index is touched.
+    render_projection_with_body(
+        workspace,
+        &record.id,
+        &record.kind,
+        &record.title,
+        &record.status,
+        &record.depth,
+        record.author.as_deref(),
+        record.parent_epic.as_deref(),
+        record.valid_until.as_deref(),
+        body,
+        &links,
+    )
+    .await?;
+
+    // 2. DB second — sync the derived index. If this fails, reindex recovers.
     store.update_body(id, body).await?;
-    if let Some(record) = store.get_record(id).await? {
-        let links = store.get_relations(id).await.unwrap_or_default();
-        render_projection_with_body(
-            workspace,
-            &record.id,
-            &record.kind,
-            &record.title,
-            &record.status,
-            &record.depth,
-            record.author.as_deref(),
-            record.parent_epic.as_deref(),
-            record.valid_until.as_deref(),
-            body,
-            &links,
-        )
-        .await?;
-    }
     Ok(())
 }
 
@@ -673,6 +764,38 @@ pub async fn update_depth_with_projection(
     Ok(())
 }
 
+/// Add tags to an artifact with file-first guarantees: sync any user file
+/// edits, mutate, render the projection so frontmatter `tags:` reflects the
+/// new state.
+///
+/// PRD-073 FR-001 helper. Used by `forgeplan tag`.
+pub async fn add_tags_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    tags: &[String],
+) -> anyhow::Result<()> {
+    sync_before_mutation(workspace, store, id).await?;
+    store.add_tags(id, tags).await?;
+    render_after_mutation(workspace, store, id).await?;
+    Ok(())
+}
+
+/// Remove tags from an artifact with file-first guarantees.
+///
+/// PRD-073 FR-001 helper. Used by `forgeplan untag`.
+pub async fn remove_tags_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    tags: &[String],
+) -> anyhow::Result<()> {
+    sync_before_mutation(workspace, store, id).await?;
+    store.remove_tags(id, tags).await?;
+    render_after_mutation(workspace, store, id).await?;
+    Ok(())
+}
+
 /// Add a typed relation between two artifacts, then re-render the projection
 /// for **both** source and target. Without re-rendering both sides, the
 /// target file's frontmatter never picks up any drift correction it needed
@@ -684,6 +807,13 @@ pub async fn update_depth_with_projection(
 /// so its own outgoing links stay synchronized with LanceDB.
 ///
 /// PRD-073 FR-001 / FR-005 helper. Used by `link` / `reason` (auto-linking).
+///
+/// Audit fix: only the source-side pre-sync and the relation write itself
+/// are fatal. Target-side pre-sync and BOTH post-render calls are
+/// best-effort with `tracing::warn!` because the target may legitimately
+/// be in a state that doesn't have a local file (cross-workspace
+/// reference) and a transient FS error on rendering should not strand
+/// the relation that already landed in LanceDB.
 pub async fn add_link_with_projection(
     workspace: &Path,
     store: &crate::db::store::LanceStore,
@@ -692,18 +822,28 @@ pub async fn add_link_with_projection(
     relation: &str,
 ) -> anyhow::Result<()> {
     sync_before_mutation(workspace, store, source).await?;
-    sync_before_mutation(workspace, store, target).await?;
+    if let Err(e) = sync_before_mutation(workspace, store, target).await {
+        tracing::warn!("add_link: pre-sync target {target} failed (continuing): {e}");
+    }
 
     store.add_relation(source, target, relation).await?;
 
-    render_after_mutation(workspace, store, source).await?;
-    render_after_mutation(workspace, store, target).await?;
+    if let Err(e) = render_after_mutation(workspace, store, source).await {
+        tracing::warn!("add_link: post-render source {source} failed (continuing): {e}");
+    }
+    if let Err(e) = render_after_mutation(workspace, store, target).await {
+        tracing::warn!("add_link: post-render target {target} failed (continuing): {e}");
+    }
     Ok(())
 }
 
 /// Remove a typed relation between two artifacts and re-render projections
 /// for both source and target so neither file's frontmatter retains a stale
 /// edge.
+///
+/// Audit fix: same warn-and-continue policy as `add_link_with_projection`.
+/// Source pre-sync and the relation delete are fatal; target pre-sync and
+/// both renders are best-effort.
 ///
 /// PRD-073 FR-005 helper. Used by `unlink`.
 pub async fn delete_link_with_projection(
@@ -714,12 +854,18 @@ pub async fn delete_link_with_projection(
     relation: &str,
 ) -> anyhow::Result<()> {
     sync_before_mutation(workspace, store, source).await?;
-    sync_before_mutation(workspace, store, target).await?;
+    if let Err(e) = sync_before_mutation(workspace, store, target).await {
+        tracing::warn!("delete_link: pre-sync target {target} failed (continuing): {e}");
+    }
 
     store.delete_relation(source, target, relation).await?;
 
-    render_after_mutation(workspace, store, source).await?;
-    render_after_mutation(workspace, store, target).await?;
+    if let Err(e) = render_after_mutation(workspace, store, source).await {
+        tracing::warn!("delete_link: post-render source {source} failed (continuing): {e}");
+    }
+    if let Err(e) = render_after_mutation(workspace, store, target).await {
+        tracing::warn!("delete_link: post-render target {target} failed (continuing): {e}");
+    }
     Ok(())
 }
 
