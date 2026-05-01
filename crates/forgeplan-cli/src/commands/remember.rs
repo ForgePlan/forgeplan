@@ -30,7 +30,7 @@ pub async fn run(
 }
 
 async fn run_remember(text: &str, category: &str) -> Result<()> {
-    let (workspace, store, _lock) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // Generate slug from first 50 chars
     let slug_source: String = text.chars().take(50).collect();
@@ -139,7 +139,7 @@ async fn run_list() -> Result<()> {
 }
 
 async fn run_forget(id: &str) -> Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     // Verify it exists and is a memory
     let record = store

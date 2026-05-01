@@ -4,7 +4,7 @@ use forgeplan_core::llm::decompose;
 use crate::commands::common;
 
 pub async fn run(prd_id: &str) -> anyhow::Result<()> {
-    let (_ws, store, _lock) = common::open_store_locked().await?;
+    let (_ws, _lock, store) = common::open_store_locked().await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable so the agent has a
     // deterministic remediation step instead of free-form prose.

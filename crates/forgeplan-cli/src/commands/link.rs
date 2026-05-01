@@ -7,7 +7,7 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
     // Normalize relation
     let relation = link::normalize_relation(relation)?;
 
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     // Verify source exists
     let source = store.get_artifact(source_id).await?;
@@ -60,7 +60,7 @@ Fix: forgeplan list",
 
 pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> anyhow::Result<()> {
     let relation = link::normalize_relation(relation)?;
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     // Check relation exists before deleting.
     // Use get_all_relations for resilient lookup (works even if source artifact is deleted).

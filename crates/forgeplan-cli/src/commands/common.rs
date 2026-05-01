@@ -61,10 +61,22 @@ pub async fn store() -> anyhow::Result<LanceStore> {
 /// Default timeout is 30 s — a stuck sibling agent surfaces as a
 /// clean timeout error instead of an indefinite hang.
 ///
-/// IMPORTANT: bind the returned guard to a NAMED variable for the
-/// intended scope (`let (ws, store, _lock) = ...`). Dropping the
-/// guard releases the lock immediately.
-pub async fn open_store_locked() -> anyhow::Result<(PathBuf, LanceStore, WorkspaceLock)> {
+/// **Drop ordering matters for LOCAL bindings.** Local variables drop
+/// in *reverse* declaration order. The returned tuple is
+/// `(PathBuf, WorkspaceLock, LanceStore)` — by-design, so when callers
+/// destructure as `let (ws, _lock, store) = ...` the drop sequence is
+/// `store` → `_lock` → `ws`. This guarantees the LanceStore connection
+/// drops (potentially flushing any pending state) BEFORE the workspace
+/// lock is released. The previous tuple shape `(PathBuf, LanceStore,
+/// WorkspaceLock)` placed `_lock` last and dropped it FIRST — a window
+/// where a future LanceDB version that queues writes on Table::Drop
+/// would commit them outside the lock. Audit 2026-05-01 H-1.
+///
+/// IMPORTANT: bind the lock guard to a NAMED variable for the intended
+/// scope (`let (ws, _lock, store) = ...`). Pattern is `_lock` (with
+/// leading underscore) — that suppresses unused-warning while still
+/// preserving the binding for the function's lifetime.
+pub async fn open_store_locked() -> anyhow::Result<(PathBuf, WorkspaceLock, LanceStore)> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
@@ -73,7 +85,7 @@ pub async fn open_store_locked() -> anyhow::Result<(PathBuf, LanceStore, Workspa
     let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
     let _config = workspace::load_config(&ws)?;
     let store = LanceStore::open(&ws).await?;
-    Ok((ws, store, lock))
+    Ok((ws, lock, store))
 }
 
 /// Load session state from workspace.

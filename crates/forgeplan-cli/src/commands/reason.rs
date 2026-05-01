@@ -32,7 +32,12 @@ fn load_architecture_hint() -> String {
 }
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    // Audit 2026-05-01 H4: do NOT hold the workspace lock across the LLM
+    // call (10–60 s). Open lock-free for the read + LLM phases; re-acquire
+    // only for the brief save block. Otherwise every concurrent CLI
+    // mutation in a multi-agent workspace would time out at the 30 s
+    // default lock timeout.
+    let (_ws, store) = common::open_store().await?;
 
     // PRD-071 contract: when LLM is unavailable, emit a `Fix:` marker line so
     // the agent can route to setup-skill instead of guessing.
@@ -184,6 +189,11 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     }
 
     if save {
+        // Re-open under the workspace lock for the brief write phase.
+        // Drops the lock-free `store` first, then acquires the locked
+        // store + lock guard scoped to this block only.
+        drop(store);
+        let (ws, _lock, store) = common::open_store_locked().await?;
         let note_id = store.next_id("NOTE").await?;
 
         // Convert LLM output to structured AdiRecord

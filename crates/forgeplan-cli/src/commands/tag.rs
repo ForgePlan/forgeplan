@@ -7,7 +7,7 @@ use forgeplan_core::projection;
 
 /// Add tags to an artifact.
 pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     // Verify artifact exists
     let _existing = store
@@ -58,7 +58,7 @@ pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
 
 /// Remove tags from an artifact.
 pub async fn run_remove(id: &str, tags: &[String]) -> Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     let _existing = store
         .get_record(id)

@@ -17,7 +17,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         )
     })?;
 
-    let (workspace, store, _lock) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable so the agent has a
     // deterministic remediation step.

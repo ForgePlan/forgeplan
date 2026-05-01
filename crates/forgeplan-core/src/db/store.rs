@@ -14,10 +14,15 @@ use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
 use crate::db::{convert, migrate, schema};
 
-/// Validate that an artifact ID is safe for use in SQL-like filters.
+/// Validate that an artifact ID is safe for use in SQL-like filters AND
+/// safe to compose into filesystem paths (audit 2026-05-01 #1 — was a
+/// path-traversal vector when import passed unfiltered `id` straight
+/// into `format!("{id}-{slug}.md")`).
+///
 /// Accepts: `PREFIX-NNN` (e.g. PRD-001), `mem-slug-words` (e.g. mem-my-decision).
-/// Rejects IDs containing SQL operators, quotes, semicolons, or other injection vectors.
-fn validate_id_for_filter(id: &str) -> anyhow::Result<()> {
+/// Rejects IDs containing SQL operators, quotes, semicolons, path
+/// separators, or any other character outside `[A-Za-z0-9_-]`.
+pub fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
     if id.is_empty() {
         anyhow::bail!("Artifact ID cannot be empty");
     }
@@ -531,7 +536,7 @@ impl LanceStore {
     ///
     /// See Sprint 13.3 audit finding H3 for context.
     async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
-        validate_id_for_filter(&record.id)?;
+        validate_artifact_id(&record.id)?;
         let schema = schema::artifacts_schema();
         let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
         let batch = RecordBatch::try_new(
@@ -639,7 +644,7 @@ impl LanceStore {
 
     /// Delete an artifact by ID.
     pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
-        validate_id_for_filter(id)?;
+        validate_artifact_id(id)?;
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts.delete(&predicate).await?;
         Ok(())
@@ -652,8 +657,8 @@ impl LanceStore {
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
-        validate_id_for_filter(source)?;
-        validate_id_for_filter(target)?;
+        validate_artifact_id(source)?;
+        validate_artifact_id(target)?;
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
@@ -683,7 +688,7 @@ impl LanceStore {
     /// Remove ALL relations where artifact is source or target (cascade on delete).
     /// Uses case-insensitive matching via `lower()` for consistency with Rust-side checks.
     pub async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
-        validate_id_for_filter(id)?;
+        validate_artifact_id(id)?;
         let lower_id = id.to_ascii_lowercase().replace('\'', "''");
         let filter = format!(
             "lower(source_id) = '{}' OR lower(target_id) = '{}'",
@@ -2550,22 +2555,22 @@ mod tests {
 
     #[test]
     fn validate_id_accepts_valid_ids() {
-        assert!(validate_id_for_filter("PRD-001").is_ok());
-        assert!(validate_id_for_filter("RFC-002").is_ok());
-        assert!(validate_id_for_filter("EVID-047").is_ok());
-        assert!(validate_id_for_filter("mem-my-decision").is_ok());
-        assert!(validate_id_for_filter("NOTE-001").is_ok());
-        assert!(validate_id_for_filter("NONEXISTENT").is_ok());
+        assert!(validate_artifact_id("PRD-001").is_ok());
+        assert!(validate_artifact_id("RFC-002").is_ok());
+        assert!(validate_artifact_id("EVID-047").is_ok());
+        assert!(validate_artifact_id("mem-my-decision").is_ok());
+        assert!(validate_artifact_id("NOTE-001").is_ok());
+        assert!(validate_artifact_id("NONEXISTENT").is_ok());
     }
 
     #[test]
     fn validate_id_rejects_injection_attempts() {
-        assert!(validate_id_for_filter("").is_err());
-        assert!(validate_id_for_filter("'; DROP TABLE--").is_err());
-        assert!(validate_id_for_filter("PRD-001' OR '1'='1").is_err());
-        assert!(validate_id_for_filter("123-invalid").is_err());
-        assert!(validate_id_for_filter("has space").is_err());
-        assert!(validate_id_for_filter("has;semicolon").is_err());
+        assert!(validate_artifact_id("").is_err());
+        assert!(validate_artifact_id("'; DROP TABLE--").is_err());
+        assert!(validate_artifact_id("PRD-001' OR '1'='1").is_err());
+        assert!(validate_artifact_id("123-invalid").is_err());
+        assert!(validate_artifact_id("has space").is_err());
+        assert!(validate_artifact_id("has;semicolon").is_err());
     }
 
     // ── Tags (PRD-035 FR-001) ───────────────────────────────────────

@@ -46,7 +46,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
 
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let (workspace, store, _lock) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // Duplicate guard (FR-001 of PRD-043): warn before creating an artifact
     // whose title closely matches an existing one of the same kind.

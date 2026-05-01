@@ -9,7 +9,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
-    let (workspace, store, _lock) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable.
     let llm_config = match common::require_llm_config() {

@@ -114,6 +114,15 @@ impl ArtifactKind {
 }
 
 /// Convert title to filename slug.
+///
+/// Note: keeps Unicode for backward compatibility with existing
+/// workspaces that have non-ASCII slugs (e.g. cyrillic). The audit
+/// recommendation to switch to `is_ascii_alphanumeric()` (defense in
+/// depth for the import path-traversal class) is left as a separate
+/// migration since changing the slug rule would orphan existing files
+/// on disk. The path-traversal vector itself is closed by the
+/// `validate_artifact_id` calls in every projection helper that
+/// composes a filesystem path (audit 2026-05-01 CRITICAL #1 fix).
 pub fn slugify(title: &str) -> String {
     title
         .to_lowercase()

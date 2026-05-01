@@ -10,7 +10,7 @@ pub async fn run(
     depth: Option<&str>,
     body: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     // Verify artifact exists (keep original for old projection cleanup)
     let original = store.get_record(id).await?.ok_or_else(|| {

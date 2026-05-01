@@ -11,7 +11,7 @@ use crate::commands::common;
 /// Promote a memory artifact to a full artifact of the specified kind.
 /// Reads memory content, creates a new artifact, then deletes the memory.
 pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
-    let (workspace, store, _lock) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // Validate kind. PRD-071 contract: error path emits a `Fix:` marker line.
     let artifact_kind: ArtifactKind = kind.parse().map_err(|e| {

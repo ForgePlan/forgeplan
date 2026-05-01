@@ -4,7 +4,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     let record = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(

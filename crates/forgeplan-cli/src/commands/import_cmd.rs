@@ -30,7 +30,7 @@ fn build_frontmatter(id: &str, kind: &str, status: &str, title: &str) -> Frontma
 }
 
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let (ws, store, _lock) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
     let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {

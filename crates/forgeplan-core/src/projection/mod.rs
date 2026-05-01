@@ -538,7 +538,10 @@ async fn atomic_markdown_write(path: &Path, bytes: &[u8]) -> std::io::Result<()>
 /// case, callers that know the title can use `remove_projection_at` to
 /// pin the exact filename.
 pub async fn remove_projection(workspace: &Path, id: &str, kind: &str) -> anyhow::Result<()> {
-    let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
+    crate::db::store::validate_artifact_id(id)?;
+    let artifact_kind: ArtifactKind = kind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
     let dir = workspace.join(artifact_kind.dir_name());
     if !dir.exists() {
         return Ok(());
@@ -571,7 +574,10 @@ pub async fn remove_projection_at(
     kind: &str,
     title: &str,
 ) -> anyhow::Result<bool> {
-    let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
+    crate::db::store::validate_artifact_id(id)?;
+    let artifact_kind: ArtifactKind = kind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
     let dir = workspace.join(artifact_kind.dir_name());
     let slug = slugify(title);
     let filepath = dir.join(format!("{}-{}.md", id, slug));
@@ -611,6 +617,15 @@ pub async fn create_artifact_with_projection(
     store: &crate::db::store::LanceStore,
     artifact: &crate::db::store::NewArtifact,
 ) -> anyhow::Result<PathBuf> {
+    // Audit 2026-05-01 #1 (security CRITICAL): validate id BEFORE composing
+    // it into a filesystem path. Without this, a JSON import with
+    // `"id": "../../etc/evil"` would write outside the workspace via
+    // `format!("{id}-{slug}.md")` resolved against `workspace/<kind>/`.
+    crate::db::store::validate_artifact_id(&artifact.id)?;
+    let _: ArtifactKind = artifact.kind.parse().map_err(|e| {
+        anyhow::anyhow!("invalid kind '{}' for {}: {e}", artifact.kind, artifact.id)
+    })?;
+
     // 1. File first — projection is the source of truth, with caller body
     //    forced over any pre-existing file at the same slug path.
     let path = render_projection_with_body(
@@ -653,10 +668,21 @@ pub async fn delete_artifact_with_projection(
     store: &crate::db::store::LanceStore,
     id: &str,
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
     let record = match store.get_record(id).await? {
         Some(r) => r,
         None => return Ok(()),
     };
+    // Audit 2026-05-01 H1 (typescript-type-auditor + rust-pro): bail on
+    // unknown kind rather than silently falling back to ArtifactKind::Note,
+    // which would let `delete` remove a wrong-directory file.
+    let _: ArtifactKind = record.kind.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "invalid kind '{}' for {} (DB row corrupt?): {e}",
+            record.kind,
+            id
+        )
+    })?;
 
     // 1. Remove file first (source of truth gone → workspace state unambiguous).
     //    Exact-path removal — no prefix collision with sibling IDs.
@@ -684,12 +710,26 @@ pub async fn update_metadata_with_projection(
     status: Option<&str>,
     title: Option<&str>,
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
     debug_assert!(
         status.is_some() || title.is_some(),
         "update_metadata_with_projection called with no fields to change for {id}",
     );
     if status.is_none() && title.is_none() {
         return Ok(());
+    }
+    // Audit 2026-05-01 H2: reject empty-string status/title at the helper
+    // boundary instead of letting them write `status: ` (yaml null) into
+    // the DB row that fails every subsequent parse.
+    if let Some(s) = status
+        && s.trim().is_empty()
+    {
+        anyhow::bail!("status cannot be empty");
+    }
+    if let Some(t) = title
+        && t.trim().is_empty()
+    {
+        anyhow::bail!("title cannot be empty");
     }
     sync_before_mutation(workspace, store, id).await?;
     store.update_artifact(id, status, title).await?;
@@ -716,6 +756,7 @@ pub async fn update_body_with_projection(
     id: &str,
     body: &str,
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
     let record = match store.get_record(id).await? {
         Some(r) => r,
         None => {
@@ -758,6 +799,7 @@ pub async fn update_depth_with_projection(
     id: &str,
     depth: &str,
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
     sync_before_mutation(workspace, store, id).await?;
     store.update_depth(id, depth).await?;
     render_after_mutation(workspace, store, id).await?;
@@ -775,6 +817,7 @@ pub async fn add_tags_with_projection(
     id: &str,
     tags: &[String],
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
     sync_before_mutation(workspace, store, id).await?;
     store.add_tags(id, tags).await?;
     render_after_mutation(workspace, store, id).await?;
@@ -790,6 +833,7 @@ pub async fn remove_tags_with_projection(
     id: &str,
     tags: &[String],
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
     sync_before_mutation(workspace, store, id).await?;
     store.remove_tags(id, tags).await?;
     render_after_mutation(workspace, store, id).await?;
@@ -821,6 +865,8 @@ pub async fn add_link_with_projection(
     target: &str,
     relation: &str,
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(source)?;
+    crate::db::store::validate_artifact_id(target)?;
     sync_before_mutation(workspace, store, source).await?;
     if let Err(e) = sync_before_mutation(workspace, store, target).await {
         tracing::warn!("add_link: pre-sync target {target} failed (continuing): {e}");
@@ -853,6 +899,8 @@ pub async fn delete_link_with_projection(
     target: &str,
     relation: &str,
 ) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(source)?;
+    crate::db::store::validate_artifact_id(target)?;
     sync_before_mutation(workspace, store, source).await?;
     if let Err(e) = sync_before_mutation(workspace, store, target).await {
         tracing::warn!("delete_link: pre-sync target {target} failed (continuing): {e}");
