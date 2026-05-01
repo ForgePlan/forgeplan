@@ -1,14 +1,31 @@
 # =====================================================================
-# audit.yaml — Multi-agent adversarial code review playbook
+# audit.yaml — Multi-agent adversarial code review playbook (REFERENCE)
 # =====================================================================
+#
+# **Status: REFERENCE EXAMPLE, requires task-tool 1.x**
+#
+#   This playbook is provided as a runnable template for the multi-agent
+#   audit pattern used during PRD-073 (see EVID-094). The agent dispatcher
+#   resolves `agents-pro:architect-reviewer` / `agents-core:code-reviewer`
+#   / `agents-pro:security-expert` by spawning a `task-tool` subprocess
+#   and forwarding the agent name. **Without task-tool installed and
+#   recognising those names, this playbook fails with `DelegateMissing`
+#   at runtime.** No Forgeplan-side registry exists yet (planned in
+#   PRD-069 SkillDispatcher real registry).
+#
+#   To run end-to-end today: install the agents-pro / agents-core plugin
+#   packs and a task-tool that recognises namespaced agent names. The
+#   forge-orchestrator team-lead pattern in /Users/explosovebit/.claude/
+#   teams/ is the canonical runner; this YAML mirrors that structure for
+#   playbook-based invocation when the dispatcher catches up.
 #
 # Purpose:
 #   Run three audit agents in parallel against a target branch / PR,
-#   collect findings, and synthesize a per-severity report. This is
-#   the canonical "audit round" pattern that PRD-073 used four times
-#   during its development — each round caught CRITICAL / HIGH defects
-#   that integration tests had silently passed (multi-line ratchet gap,
-#   tuple drop order, path-traversal in import, etc.).
+#   collect findings, and synthesize a per-severity report. PRD-073 used
+#   this exact pattern four times during its development — each round
+#   caught CRITICAL / HIGH defects that integration tests had silently
+#   passed (multi-line ratchet gap, tuple drop order, path-traversal in
+#   import, etc.).
 #
 # When to run:
 #   `forgeplan playbook run audit --yes`

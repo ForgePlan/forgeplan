@@ -763,8 +763,18 @@ pub async fn update_metadata_with_projection(
     id: &str,
     status: Option<&str>,
     title: Option<&str>,
-) -> anyhow::Result<()> {
-    crate::db::store::validate_artifact_id(id)?;
+) -> MutationResult<()> {
+    // Audit follow-up: this helper is the canary for the `MutationError`
+    // enum migration. Other helpers will follow in PRD-073 Phase 3c when
+    // the typed-error contract is stable.
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || id.is_empty()
+        || !id.chars().next().unwrap_or(' ').is_ascii_alphabetic()
+    {
+        return Err(MutationError::InvalidId(id.to_string()));
+    }
     // Short-circuit on `(None, None)` instead of paying the sync round-trip
     // and bumping `updated_at` for nothing. Callers should gate upstream
     // (e.g. `update.rs` does `if status.is_some() || title.is_some()`); the
@@ -778,12 +788,12 @@ pub async fn update_metadata_with_projection(
     if let Some(s) = status
         && s.trim().is_empty()
     {
-        anyhow::bail!("status cannot be empty");
+        return Err(MutationError::EmptyField { field: "status" });
     }
     if let Some(t) = title
         && t.trim().is_empty()
     {
-        anyhow::bail!("title cannot be empty");
+        return Err(MutationError::EmptyField { field: "title" });
     }
     sync_before_mutation(workspace, store, id).await?;
     store.update_artifact(id, status, title).await?;
@@ -1023,6 +1033,9 @@ pub async fn sync_body_from_file(
 
 /// Sync metadata (status / title) from frontmatter into LanceDB.
 /// Used by `git_sync` when the pulled file's frontmatter differs from DB.
+///
+/// Symmetric with `update_metadata_with_projection` short-circuit:
+/// `(None, None)` returns `Ok(())` without bumping `updated_at`.
 pub async fn sync_metadata_from_file(
     store: &crate::db::store::LanceStore,
     id: &str,
@@ -1030,6 +1043,9 @@ pub async fn sync_metadata_from_file(
     title: Option<&str>,
 ) -> anyhow::Result<()> {
     crate::db::store::validate_artifact_id(id)?;
+    if status.is_none() && title.is_none() {
+        return Ok(());
+    }
     store.update_artifact(id, status, title).await?;
     Ok(())
 }
@@ -2032,5 +2048,239 @@ mod tests {
             .unwrap()
             .updated_at;
         assert_eq!(before, after, "short-circuit must not bump updated_at");
+    }
+
+    // ─── Phase 3b/4 audit-fix regression tests (2026-05-01) ──────────
+
+    fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
+        crate::db::store::NewArtifact {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: "draft".to_string(),
+            title: format!("Test {id}"),
+            body: "body".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    /// A1.1 — sync_artifact_from_file rejects path-traversal IDs.
+    #[tokio::test]
+    async fn sync_artifact_from_file_rejects_path_traversal_id() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let evil = art("../../etc/evil", "note");
+        assert!(
+            sync_artifact_from_file(&store, &evil).await.is_err(),
+            "must reject path-traversal id at sync_from_file boundary",
+        );
+    }
+
+    /// A1.2 — sync_body_from_file validates id.
+    #[tokio::test]
+    async fn sync_body_from_file_rejects_bad_id() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let result = sync_body_from_file(&store, "../etc/evil", "body").await;
+        assert!(result.is_err(), "must reject bad id");
+    }
+
+    /// A1.3 — sync_relation_from_file validates BOTH ids.
+    #[tokio::test]
+    async fn sync_relation_from_file_validates_both_ids() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        assert!(
+            sync_relation_from_file(&store, "../bad", "PRD-001", "informs")
+                .await
+                .is_err(),
+            "must reject bad source",
+        );
+        assert!(
+            sync_relation_from_file(&store, "PRD-001", "../bad", "informs")
+                .await
+                .is_err(),
+            "must reject bad target",
+        );
+    }
+
+    /// A1.4 — delete_orphan_artifact only mutates DB, never disk.
+    #[tokio::test]
+    async fn delete_orphan_artifact_does_not_touch_disk() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        // Place an artifact on disk + in DB
+        let a = art("PRD-905", "prd");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+        let file = ws.join("prds").join("PRD-905-test-prd-905.md");
+        assert!(file.exists(), "setup: file should exist");
+
+        delete_orphan_artifact(&store, "PRD-905").await.unwrap();
+        // DB row gone
+        assert!(store.get_record("PRD-905").await.unwrap().is_none());
+        // File untouched (caller's responsibility — orphan helper assumes file already gone)
+        assert!(
+            file.exists(),
+            "delete_orphan_artifact must NOT touch the file (caller already removed it)",
+        );
+    }
+
+    /// A1.5 — delete_orphan_relation cleanup.
+    #[tokio::test]
+    async fn delete_orphan_relation_drops_edge() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-906", "prd");
+        let b = art("EVID-906", "evidence");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+        create_artifact_with_projection(&ws, &store, &b)
+            .await
+            .unwrap();
+        add_link_with_projection(&ws, &store, "EVID-906", "PRD-906", "informs")
+            .await
+            .unwrap();
+
+        delete_orphan_relation(&store, "EVID-906", "PRD-906", "informs")
+            .await
+            .unwrap();
+
+        let rels = store.get_relations("EVID-906").await.unwrap();
+        assert!(rels.is_empty(), "edge must be gone");
+    }
+
+    /// A1.6 — add_links_batch validates all ids up front, no partial state.
+    #[tokio::test]
+    async fn add_links_batch_validates_up_front_and_no_partial_state() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-907", "prd");
+        let b = art("EVID-907", "evidence");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+        create_artifact_with_projection(&ws, &store, &b)
+            .await
+            .unwrap();
+
+        // Mix: first link is good, second is path-traversal payload.
+        let links = vec![
+            ("EVID-907".into(), "PRD-907".into(), "informs".into()),
+            ("../../etc/evil".into(), "PRD-907".into(), "informs".into()),
+        ];
+        let result = add_links_batch_with_projection(&ws, &store, &links).await;
+        assert!(
+            result.is_err(),
+            "must bail on bad id BEFORE any side effect"
+        );
+        // No relations applied — even the first (good) link.
+        let rels = store.get_relations("EVID-907").await.unwrap();
+        assert!(
+            rels.is_empty(),
+            "no partial state — the good link must NOT have landed when batch validation failed",
+        );
+    }
+
+    /// A1.7 — add_links_batch deduplicates renders for repeated participants.
+    #[tokio::test]
+    async fn add_links_batch_deduplicates_unique_participants() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        // 1 source, 3 distinct targets → 4 unique participants, 3 relations.
+        for id in ["EVID-908", "PRD-908", "PRD-909", "PRD-910"] {
+            let kind = if id.starts_with("EVID") {
+                "evidence"
+            } else {
+                "prd"
+            };
+            create_artifact_with_projection(&ws, &store, &art(id, kind))
+                .await
+                .unwrap();
+        }
+        let links = vec![
+            ("EVID-908".into(), "PRD-908".into(), "informs".into()),
+            ("EVID-908".into(), "PRD-909".into(), "informs".into()),
+            ("EVID-908".into(), "PRD-910".into(), "informs".into()),
+        ];
+
+        let applied = add_links_batch_with_projection(&ws, &store, &links)
+            .await
+            .unwrap();
+        assert_eq!(applied, 3, "all 3 links applied");
+        let rels = store.get_relations("EVID-908").await.unwrap();
+        assert_eq!(rels.len(), 3, "all 3 outgoing edges in DB");
+    }
+
+    /// A1.8 — delete_artifact_after_soft_delete only mutates DB.
+    #[tokio::test]
+    async fn delete_artifact_after_soft_delete_only_drops_db_row() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-911", "prd");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+        let file = ws.join("prds").join("PRD-911-test-prd-911.md");
+        assert!(file.exists());
+
+        delete_artifact_after_soft_delete(&store, "PRD-911")
+            .await
+            .unwrap();
+
+        assert!(store.get_record("PRD-911").await.unwrap().is_none());
+        assert!(
+            file.exists(),
+            "helper must NOT touch the file (caller already moved it to trash)",
+        );
+    }
+
+    /// A1.9 — sync_metadata_from_file accepts (None, None) without bumping
+    /// updated_at — sync mechanisms shouldn't pay for a no-op.
+    #[tokio::test]
+    async fn sync_metadata_from_file_no_op_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-912", "prd");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+
+        // Calling with (None, None) should NOT error and should NOT mutate.
+        // (Audit code-reviewer #3: catches the inconsistency vs update_metadata_with_projection.)
+        let result = sync_metadata_from_file(&store, "PRD-912", None, None).await;
+        assert!(result.is_ok(), "no-op sync should succeed");
     }
 }

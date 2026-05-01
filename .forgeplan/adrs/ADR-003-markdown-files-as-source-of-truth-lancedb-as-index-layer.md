@@ -155,16 +155,16 @@ them. Once both baselines reach 0, **Phase 4** demotes the mutating
 `commands/*.rs` or `server.rs` becomes a compile-time error and the
 regression test is kept as belt-and-suspenders.
 
-### Status of the migration (2026-05-01, post-audit)
+### Status of the migration (2026-05-01, post-audit, post-3b/4 lockdown)
 
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Helper API design + canary migration | ✅ done (commit on dev) |
 | 2 | MCP lifecycle handlers + bidirectional links | ✅ done (PR #227) |
 | 3a | Bulk migration of all visible bypasses + audit remediation | ✅ done (EVID-094): 17 CLI + 7 MCP nominal bypass sites migrated through 9 helpers; multi-line ratchet fixed; atomic writes, prefix-collision, --depth+--title ordering, warn-and-continue semantics, file-first body ordering all corrected per A-AUDIT findings |
-| 3b | Sync-mechanism extraction (reindex / git_sync / import_cmd / watch / ingest / forgeplan_import) → higher-level helpers + migration | ⏳ planned — current ratchet baselines: CLI 17 / MCP 4 |
-| 4 | `pub(crate)` visibility lockdown for `LanceStore::create_artifact / update_artifact / update_body / update_depth / add_tags / remove_tags / delete_artifact / add_relation / delete_relation / delete_relations_for_artifact` | ⏳ blocked on 3b. `update_embedding` and `update_r_eff_score` remain `pub` per Class A above, fronted by `DerivedDataWriter` trait |
-| 5 | Closure EVID with `git clone → reindex → diff` reproducibility (CL3 evidence pack) | ⏳ partial — EVID-094 covers Phase 3a surfaces at CL2 |
+| 3b | Sync-mechanism extraction (reindex / git_sync / import_cmd / watch / ingest / forgeplan_import) → higher-level helpers + migration | ✅ done (commit 598c90b): 6 new `sync_*_from_file` helpers + `delete_orphan_*` extracted; reindex/git_sync/watch/ingest/import_cmd migrated; ratchet baselines CLI 17 → 0, MCP 4 → 0 |
+| 4 | `pub(crate)` visibility lockdown for `LanceStore::create_artifact / update_artifact / update_body / update_depth / add_tags / remove_tags / delete_artifact / add_relation / delete_relation / delete_relations_for_artifact` | ✅ done (commit 598c90b): all 11 mutating methods demoted; `update_embedding` + `update_r_eff_score` stay `pub` per Class A above; test fixtures use `*_for_test` escape hatches gated on `cfg(any(test, all(feature = "test-helpers", debug_assertions)))` so release builds with the feature accidentally enabled still get the lockdown |
+| 5 | Closure EVID with `git clone → reindex → diff` reproducibility (CL3 evidence pack) | ⏳ partial — EVID-094 covers Phase 3a surfaces at CL2; full clone-reproducibility EVID at CL3 deferred to PRD-073 Phase 3c (typed `MutationError` + per-helper migration also lands there) |
 
 This amendment does not change the original decision (markdown is the
 source of truth, LanceDB is the derived index). It clarifies which method

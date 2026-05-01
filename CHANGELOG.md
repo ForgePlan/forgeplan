@@ -7,6 +7,100 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [Unreleased] — PRD-073 file-first invariant compile-enforced (Phase 3a → 3b → 4)
+
+Closes PRD-073 (PROB-048 → ADR-003 invariant). The "markdown is source
+of truth, LanceDB is derived index" rule is now compile-time enforced —
+direct `LanceStore::*` mutating methods are `pub(crate)`, so any code
+outside `forgeplan-core` that tries to bypass the projection helpers
+fails to compile, not just fails the regression-test ratchet. Four
+adversarial audit rounds (general / live-test / Rust-focused / final
+team-lead) closed 7 CRITICAL + 13 HIGH findings before this entry.
+EVID-094.
+
+### Added — file-first projection helpers (15 total)
+
+- 9 mutation helpers: `create_artifact_with_projection`,
+  `delete_artifact_with_projection`, `update_metadata_with_projection`,
+  `update_body_with_projection`, `update_depth_with_projection`,
+  `add_link_with_projection`, `delete_link_with_projection`,
+  `add_tags_with_projection`, `remove_tags_with_projection`. Each does
+  the {sync_before, mutate, render_after} triplet so callers can no
+  longer forget projection.
+- 6 sync-from-file helpers: `sync_artifact_from_file`,
+  `sync_body_from_file`, `sync_metadata_from_file`,
+  `sync_relation_from_file`, `delete_orphan_artifact`,
+  `delete_orphan_relation`. For reindex / git_sync / watch where the
+  file is already authoritative.
+- `add_links_batch_with_projection`: deduplicates pre-sync + post-render
+  per unique participant. 100-link bundle: ~600 LanceDB calls + 400 file
+  ops → 2×U + N where U is unique IDs.
+- `delete_artifact_after_soft_delete`: brief helper for the MCP
+  soft-delete pattern (file already in trash, only DB row to drop).
+- `MutationError` enum + `MutationResult<T>` alias introduced (typed
+  errors); helper signature migration deferred to PRD-073 Phase 3c.
+- `marketplace/playbooks/audit.yaml`: reference template for the
+  multi-agent adversarial audit pattern (requires task-tool dispatcher).
+
+### Changed (BREAKING for downstream library consumers)
+
+- **`LanceStore::*` mutating methods are now `pub(crate)`**: 11 methods
+  (`create_artifact`, `update_artifact`, `update_valid_until`,
+  `update_depth`, `update_body`, `add_tags`, `remove_tags`,
+  `delete_artifact`, `add_relation`, `delete_relation`,
+  `delete_relations_for_artifact`) are no longer accessible from
+  external crates. External callers must go through
+  `forgeplan_core::projection::*` helpers. **Migration**: replace
+  `store.create_artifact(&art)` with
+  `projection::create_artifact_with_projection(&ws, &store, &art)`.
+- **Slugify is now ASCII-only**: `is_ascii_alphanumeric` instead of
+  `is_alphanumeric`. Workspaces with cyrillic/CJK slugs require
+  `forgeplan reindex` after pulling this version; existing files
+  remain on disk but get a fresh ASCII slug on next render.
+- **`LanceStore::update_embedding` and `update_r_eff_score` stay `pub`**
+  (Class A derived data, ADR-003 Amendment 1).
+
+### Changed (behavioral — visible to CLI users)
+
+- **All 22 CLI mutation handlers now hold an exclusive workspace lock**
+  (30 s timeout) for the duration of the operation. Concurrent
+  `forgeplan update` invocations that previously raced now serialize
+  cleanly. Scripts using `&` or `xargs -P` against the same workspace
+  may see lock-contention errors that were previously silent races.
+- **`forgeplan delete` now creates a soft-delete receipt** (parity
+  with MCP). Recoverable via `forgeplan undo-last` or
+  `forgeplan restore <id>` within 30 days.
+- **All markdown writes are atomic** (tempfile + rename). Kill -9
+  mid-write no longer leaves zero-length projection files.
+
+### Added (developer-facing)
+
+- New Cargo feature `forgeplan-core/test-helpers`: exposes
+  `*_for_test` escape hatches on `LanceStore` for downstream test
+  fixtures. **Gated on `debug_assertions`** so release builds with this
+  feature accidentally enabled still get the lockdown. Production
+  binaries MUST NOT enable this feature; release builds with both
+  feature on AND debug_assertions off compile-error out.
+
+### Fixed
+
+- Path-traversal CVE class on import: `id` field validation in every
+  projection helper that composes a filesystem path.
+- Multi-line ratchet test scanner: was missing 21 multi-line
+  `store\n.method(` invocations under the previous literal matcher.
+- `update --depth --title` orphan-file recreation: metadata mutation
+  now runs FIRST so subsequent depth/body renders see the new title.
+- `mem-foo` vs `mem-foo-bar` prefix collision: exact-path delete via
+  `remove_projection_at`.
+- 4-process concurrent `forgeplan update` race: workspace lock plus
+  lock-then-open ordering (LanceStore connections snapshot at open).
+- `add_link / delete_link` warn-and-continue semantics restored
+  (target sync + post-render are best-effort, source side fatal).
+- `update_body_with_projection` ordering inverted to file-first.
+- `forgeplan_import` no longer leaves DB-only state.
+- `forgeplan new` non-tty similar-title prompt: explicit `Error: ...
+  Fix: --allow-duplicate` instead of silent cancel.
+
 ## [0.27.0] — 2026-04-28 — Real subprocess dispatchers + init recommendation hints + greenfield playbook (EPIC-007 Phase 6)
 
 Phase 6 переводит engine layer из v0.26.0 в **user-facing activation**.

@@ -358,18 +358,18 @@ impl LanceStore {
 
     /// Test-only escape hatch for raw artifact insertion. Production code
     /// MUST go through `forgeplan_core::projection::*` helpers (Phase 4
-    /// `pub(crate)` lockdown). This `#[cfg(any(test, feature = "test-helpers"))]`
+    /// `pub(crate)` lockdown). This `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`
     /// shim lets test fixtures in downstream crates seed LanceDB
     /// directly without coupling them to the projection pipeline they're
     /// not exercising.
-    #[cfg(any(test, feature = "test-helpers"))]
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub async fn create_artifact_for_test(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         self.create_artifact(artifact).await
     }
 
     /// Test-only escape hatch for raw relation insertion. Same rationale as
     /// `create_artifact_for_test`.
-    #[cfg(any(test, feature = "test-helpers"))]
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub async fn add_relation_for_test(
         &self,
         source: &str,
@@ -381,7 +381,7 @@ impl LanceStore {
 
     /// Test-only escape hatch for raw artifact deletion. Same rationale as
     /// `create_artifact_for_test`.
-    #[cfg(any(test, feature = "test-helpers"))]
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub async fn delete_artifact_for_test(&self, id: &str) -> anyhow::Result<()> {
         self.delete_artifact(id).await
     }

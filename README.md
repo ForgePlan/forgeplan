@@ -220,6 +220,13 @@ git checkout -b feat/my-feature
 # PR → dev (main is touched only via release branches)
 ```
 
+### Cargo features
+
+| Feature | Default | Purpose |
+|---|---|---|
+| `semantic-search` | off | BGE-M3 vector search via `fastembed` (~150 MB model on first run) |
+| `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
