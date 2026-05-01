@@ -37,6 +37,7 @@ Full methodology reference. Canonical source for humans learning to use Forgepla
 | [GLOSSARY.md](methodology/GLOSSARY.md) | 31 terms + lifecycle reference table |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint base verification, audit incidents, process improvements |
 | [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 markers (Next/Or/Wait/Done/Fix), good/bad examples, agent reading protocol |
+| [release-workflow.md](methodology/release-workflow.md) | End-to-end release recipe — dependabot triage gate, version bump, release/* PR strategy, post-release sync (CLAUDE.md red lines #9 + #10), hotfix flow, anti-patterns |
 
 ## Operations
 
