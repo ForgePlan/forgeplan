@@ -208,15 +208,26 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
                 .collect()
         })
         .unwrap_or_default();
+    let relations_attempted = link_triples.len();
     let relations_imported =
         projection::add_links_batch_with_projection(&ws, &store, &link_triples)
             .await
             .unwrap_or(0);
 
     println!(
-        "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} relations",
-        imported, skipped, downgraded, relations_imported
+        "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} of {} relations applied",
+        imported, skipped, downgraded, relations_imported, relations_attempted
     );
+
+    // Audit A10 (architect): half-failed imports were previously silent at
+    // the CLI level. Surface the gap explicitly so the operator knows to
+    // run `forgeplan health` immediately.
+    if relations_imported < relations_attempted {
+        eprintln!(
+            "  ⚠ {} relation(s) failed to apply (likely missing artifacts). Run `forgeplan health` to verify.",
+            relations_attempted - relations_imported
+        );
+    }
 
     // PRD-071 contract: after import, run a health check to surface drafts /
     // stubs / blind spots that came in.
