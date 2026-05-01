@@ -1034,8 +1034,14 @@ pub async fn sync_body_from_file(
 /// Sync metadata (status / title) from frontmatter into LanceDB.
 /// Used by `git_sync` when the pulled file's frontmatter differs from DB.
 ///
-/// Symmetric with `update_metadata_with_projection` short-circuit:
-/// `(None, None)` returns `Ok(())` without bumping `updated_at`.
+/// Symmetric with `update_metadata_with_projection`:
+/// - `(None, None)` short-circuits without bumping `updated_at`.
+/// - empty-string status/title is rejected at the helper boundary
+///   (audit MEDIUM-1, code-reviewer 2026-05-01) — a YAML frontmatter
+///   `status: ""` parses as `Some("")` and would otherwise write a
+///   yaml-null status into the DB row that fails every subsequent
+///   `parse::<Status>()`. Same H2 silent-corruption class as the
+///   sibling helper closes.
 pub async fn sync_metadata_from_file(
     store: &crate::db::store::LanceStore,
     id: &str,
@@ -1045,6 +1051,16 @@ pub async fn sync_metadata_from_file(
     crate::db::store::validate_artifact_id(id)?;
     if status.is_none() && title.is_none() {
         return Ok(());
+    }
+    if let Some(s) = status
+        && s.trim().is_empty()
+    {
+        anyhow::bail!("status cannot be empty");
+    }
+    if let Some(t) = title
+        && t.trim().is_empty()
+    {
+        anyhow::bail!("title cannot be empty");
     }
     store.update_artifact(id, status, title).await?;
     Ok(())
@@ -2282,5 +2298,27 @@ mod tests {
         // (Audit code-reviewer #3: catches the inconsistency vs update_metadata_with_projection.)
         let result = sync_metadata_from_file(&store, "PRD-912", None, None).await;
         assert!(result.is_ok(), "no-op sync should succeed");
+    }
+
+    /// MEDIUM-1 (code-reviewer 2026-05-01) — sync_metadata_from_file must
+    /// reject empty-string status/title, mirroring the sibling helper's
+    /// H2 silent-corruption guard. A YAML `status: ""` from a pulled file
+    /// must NOT land in DB as yaml-null.
+    #[tokio::test]
+    async fn sync_metadata_from_file_rejects_empty_status_and_title() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-913", "prd");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+
+        let empty_status = sync_metadata_from_file(&store, "PRD-913", Some(""), None).await;
+        assert!(empty_status.is_err(), "must reject empty status");
+        let empty_title = sync_metadata_from_file(&store, "PRD-913", None, Some("   ")).await;
+        assert!(empty_title.is_err(), "must reject whitespace-only title");
     }
 }
