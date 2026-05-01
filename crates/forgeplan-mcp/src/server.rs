@@ -2047,9 +2047,10 @@ impl ForgeplanServer {
             }
         };
 
-        // Safe to mutate store — receipt is on disk.
-        store
-            .delete_artifact(&p.id)
+        // Safe to mutate store — receipt is on disk and file is in trash.
+        // Helper exists so the LanceStore method can stay pub(crate) per
+        // ADR-003 Phase 4 lockdown.
+        forgeplan_core::projection::delete_artifact_after_soft_delete(&store, &p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
@@ -4122,22 +4123,29 @@ impl ForgeplanServer {
             imported += 1;
         }
 
-        let mut relations_imported = 0usize;
-        if let Some(relations) = data["relations"].as_array() {
-            for rel in relations {
-                let source = rel["source"].as_str().unwrap_or_default();
-                let target = rel["target"].as_str().unwrap_or_default();
-                let relation = rel["relation"].as_str().unwrap_or("informs");
-                if !source.is_empty()
-                    && !target.is_empty()
-                    && projection::add_link_with_projection(&ws, &store, source, target, relation)
-                        .await
-                        .is_ok()
-                {
-                    relations_imported += 1;
-                }
-            }
-        }
+        // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync
+        // + post-render per unique participant.
+        let link_triples: Vec<(String, String, String)> = data["relations"]
+            .as_array()
+            .map(|relations| {
+                relations
+                    .iter()
+                    .filter_map(|rel| {
+                        let source = rel["source"].as_str()?;
+                        let target = rel["target"].as_str()?;
+                        let relation = rel["relation"].as_str().unwrap_or("informs");
+                        if source.is_empty() || target.is_empty() {
+                            return None;
+                        }
+                        Some((source.to_string(), target.to_string(), relation.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let relations_imported =
+            projection::add_links_batch_with_projection(&ws, &store, &link_triples)
+                .await
+                .unwrap_or(0);
 
         // PRD-071: single primary action per state.
         let next_action = if imported == 0 && skipped == 0 {
@@ -8214,7 +8222,7 @@ mod claim_mcp_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact_for_test(&artifact).await.unwrap();
         projection::render_projection(
             ws,
             id,
@@ -8403,7 +8411,7 @@ mod claim_mcp_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact_for_test(&artifact).await.unwrap();
         projection::render_projection(
             &ws,
             "PRD-950",
@@ -8456,7 +8464,7 @@ mod claim_mcp_tests {
             .clone()
             .expect("store initialized");
         store
-            .add_relation("PRD-961", "PRD-960", "based_on")
+            .add_relation_for_test("PRD-961", "PRD-960", "based_on")
             .await
             .unwrap();
 
@@ -8637,7 +8645,7 @@ mod claim_mcp_tests {
                 valid_until: None,
                 tags: Vec::new(),
             };
-            store.create_artifact(&artifact).await.unwrap();
+            store.create_artifact_for_test(&artifact).await.unwrap();
         }
 
         let mut params = dp(2);

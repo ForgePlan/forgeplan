@@ -206,15 +206,15 @@ async fn test_integration_activate_blocks_stub_artifact() {
     );
 
     store
-        .create_artifact(&new_prd("PRD-700", &padded))
+        .create_artifact_for_test(&new_prd("PRD-700", &padded))
         .await
         .unwrap();
     store
-        .create_artifact(&new_evidence("EVID-700"))
+        .create_artifact_for_test(&new_evidence("EVID-700"))
         .await
         .unwrap();
     store
-        .add_relation("EVID-700", "PRD-700", "informs")
+        .add_relation_for_test("EVID-700", "PRD-700", "informs")
         .await
         .unwrap();
 
@@ -243,15 +243,15 @@ async fn test_integration_activate_does_not_block_filled_body_on_stub_gate() {
         FR-1: activate must call check_stub before promoting.\n";
 
     store
-        .create_artifact(&new_prd("PRD-701", body))
+        .create_artifact_for_test(&new_prd("PRD-701", body))
         .await
         .unwrap();
     store
-        .create_artifact(&new_evidence("EVID-701"))
+        .create_artifact_for_test(&new_evidence("EVID-701"))
         .await
         .unwrap();
     store
-        .add_relation("EVID-701", "PRD-701", "informs")
+        .add_relation_for_test("EVID-701", "PRD-701", "informs")
         .await
         .unwrap();
 
@@ -284,7 +284,7 @@ async fn test_integration_activate_already_active_no_recheck() {
         valid_until: None,
         tags: Vec::new(),
     };
-    store.create_artifact(&note).await.unwrap();
+    store.create_artifact_for_test(&note).await.unwrap();
 
     // active → active should be a no-op transition error (or success), but
     // crucially must NOT panic / hit the stub gate.

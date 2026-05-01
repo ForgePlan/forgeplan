@@ -356,8 +356,38 @@ impl LanceStore {
         })
     }
 
+    /// Test-only escape hatch for raw artifact insertion. Production code
+    /// MUST go through `forgeplan_core::projection::*` helpers (Phase 4
+    /// `pub(crate)` lockdown). This `#[cfg(any(test, feature = "test-helpers"))]`
+    /// shim lets test fixtures in downstream crates seed LanceDB
+    /// directly without coupling them to the projection pipeline they're
+    /// not exercising.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn create_artifact_for_test(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+        self.create_artifact(artifact).await
+    }
+
+    /// Test-only escape hatch for raw relation insertion. Same rationale as
+    /// `create_artifact_for_test`.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn add_relation_for_test(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        self.add_relation(source, target, relation).await
+    }
+
+    /// Test-only escape hatch for raw artifact deletion. Same rationale as
+    /// `create_artifact_for_test`.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn delete_artifact_for_test(&self, id: &str) -> anyhow::Result<()> {
+        self.delete_artifact(id).await
+    }
+
     /// Insert a new artifact, returning its ID.
-    pub async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+    pub(crate) async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         // Validate ID format — prevent path traversal and SQL injection
         if !artifact
             .id
@@ -434,7 +464,7 @@ impl LanceStore {
     }
 
     /// Update artifact updated_at (and optionally status/title).
-    pub async fn update_artifact(
+    pub(crate) async fn update_artifact(
         &self,
         id: &str,
         status: Option<&str>,
@@ -458,7 +488,11 @@ impl LanceStore {
     }
 
     /// Update the valid_until column of an artifact (ADR-005: renew).
-    pub async fn update_valid_until(&self, id: &str, valid_until: &str) -> anyhow::Result<()> {
+    pub(crate) async fn update_valid_until(
+        &self,
+        id: &str,
+        valid_until: &str,
+    ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts
@@ -475,7 +509,7 @@ impl LanceStore {
     }
 
     /// Update the depth column of an artifact.
-    pub async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
+    pub(crate) async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts
@@ -585,7 +619,7 @@ impl LanceStore {
     /// PROB-026 fix: previously tags were stored as-is (case-sensitive,
     /// spaces allowed, no validation). Now canonicalized for consistent
     /// filtering and display.
-    pub async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
+    pub(crate) async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
         let mut record = self
             .get_record(id)
             .await?
@@ -611,7 +645,7 @@ impl LanceStore {
 
     /// Remove the given tags from an existing artifact. Unknown tags are
     /// silently ignored. Returns error if the artifact does not exist.
-    pub async fn remove_tags(&self, id: &str, to_remove: &[String]) -> anyhow::Result<()> {
+    pub(crate) async fn remove_tags(&self, id: &str, to_remove: &[String]) -> anyhow::Result<()> {
         let mut record = self
             .get_record(id)
             .await?
@@ -643,7 +677,7 @@ impl LanceStore {
     }
 
     /// Delete an artifact by ID.
-    pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
+    pub(crate) async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
         validate_artifact_id(id)?;
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts.delete(&predicate).await?;
@@ -651,7 +685,7 @@ impl LanceStore {
     }
 
     /// Add a relation between two artifacts. Rejects duplicates.
-    pub async fn add_relation(
+    pub(crate) async fn add_relation(
         &self,
         source: &str,
         target: &str,
@@ -687,7 +721,7 @@ impl LanceStore {
 
     /// Remove ALL relations where artifact is source or target (cascade on delete).
     /// Uses case-insensitive matching via `lower()` for consistency with Rust-side checks.
-    pub async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+    pub(crate) async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
         validate_artifact_id(id)?;
         let lower_id = id.to_ascii_lowercase().replace('\'', "''");
         let filter = format!(
@@ -699,7 +733,7 @@ impl LanceStore {
     }
 
     /// Remove a specific relation between two artifacts.
-    pub async fn delete_relation(
+    pub(crate) async fn delete_relation(
         &self,
         source: &str,
         target: &str,
@@ -953,7 +987,7 @@ impl LanceStore {
     }
 
     /// Update the body column of an artifact.
-    pub async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
+    pub(crate) async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         let escaped_body = body.replace('\'', "''");

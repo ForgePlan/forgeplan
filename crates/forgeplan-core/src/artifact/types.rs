@@ -113,21 +113,28 @@ impl ArtifactKind {
     }
 }
 
-/// Convert title to filename slug.
+/// Convert title to filename slug — ASCII-only.
 ///
-/// Note: keeps Unicode for backward compatibility with existing
-/// workspaces that have non-ASCII slugs (e.g. cyrillic). The audit
-/// recommendation to switch to `is_ascii_alphanumeric()` (defense in
-/// depth for the import path-traversal class) is left as a separate
-/// migration since changing the slug rule would orphan existing files
-/// on disk. The path-traversal vector itself is closed by the
-/// `validate_artifact_id` calls in every projection helper that
-/// composes a filesystem path (audit 2026-05-01 CRITICAL #1 fix).
+/// Audit 2026-05-01 #10 (defense-in-depth): rejects non-ASCII characters
+/// so the slug is always safe across cross-platform filesystems
+/// (Windows rejects many non-ASCII filenames; old NFS strips them;
+/// grep/CI tooling assumes ASCII). Falls back to id-only filename when
+/// the title is fully non-ASCII (slug is empty, caller composes
+/// `<id>-.md` which still validates).
+///
+/// Migration: workspaces with existing non-ASCII slugs are rebuilt by
+/// `forgeplan reindex` — Phase 2 of the reindexer detects that the file
+/// at the OLD slug doesn't match the NEW slug, and `delete_orphan_artifact`
+/// removes the stale row. Users then see `forgeplan_health` flag the
+/// renamed file and re-create the artifact via `scan-import`.
+///
+/// The path-traversal CVE class is closed independently by
+/// `validate_artifact_id` (audit 2026-05-01 CRITICAL #1 fix).
 pub fn slugify(title: &str) -> String {
     title
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())

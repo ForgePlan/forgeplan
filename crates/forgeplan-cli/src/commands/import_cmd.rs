@@ -188,22 +188,30 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         imported += 1;
     }
 
-    let mut relations_imported = 0usize;
-    if let Some(relations) = data["relations"].as_array() {
-        for rel in relations {
-            let source = rel["source"].as_str().unwrap_or_default();
-            let target = rel["target"].as_str().unwrap_or_default();
-            let relation = rel["relation"].as_str().unwrap_or("informs");
-            if !source.is_empty()
-                && !target.is_empty()
-                && projection::add_link_with_projection(&ws, &store, source, target, relation)
-                    .await
-                    .is_ok()
-            {
-                relations_imported += 1;
-            }
-        }
-    }
+    // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync +
+    // post-render per unique participant. For a 100-link bundle this is
+    // ~2×U LanceDB+file ops vs the naive 6×N (audit measurement).
+    let link_triples: Vec<(String, String, String)> = data["relations"]
+        .as_array()
+        .map(|relations| {
+            relations
+                .iter()
+                .filter_map(|rel| {
+                    let source = rel["source"].as_str()?;
+                    let target = rel["target"].as_str()?;
+                    let relation = rel["relation"].as_str().unwrap_or("informs");
+                    if source.is_empty() || target.is_empty() {
+                        return None;
+                    }
+                    Some((source.to_string(), target.to_string(), relation.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let relations_imported =
+        projection::add_links_batch_with_projection(&ws, &store, &link_triples)
+            .await
+            .unwrap_or(0);
 
     println!(
         "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} relations",

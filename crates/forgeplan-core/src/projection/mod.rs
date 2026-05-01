@@ -4,6 +4,60 @@ use std::path::{Path, PathBuf};
 use crate::artifact::frontmatter::{self, Frontmatter};
 use crate::artifact::types::{ArtifactKind, slugify};
 
+/// Typed error returned by file-first mutation helpers.
+///
+/// Audit 2026-05-01 H3 (typescript-type-auditor): replacing the
+/// previous `anyhow::Result<()>` lets callers (especially MCP) decide
+/// per-variant how to react. The CLI today uses warn-and-continue
+/// inside the helpers; MCP will be able to enforce strict mode by
+/// matching on `recoverable: false` variants.
+///
+/// Variants are added incrementally — additional variants are not a
+/// breaking change because every helper's return type is
+/// `MutationResult<T>` (= `Result<T, MutationError>`) and `From` impls
+/// keep `?` propagation working.
+#[derive(Debug, thiserror::Error)]
+pub enum MutationError {
+    /// The artifact ID failed `validate_artifact_id` — likely an
+    /// attempted path-traversal payload. Always fatal.
+    #[error("invalid artifact id: {0}")]
+    InvalidId(String),
+
+    /// The supplied `kind` field could not be parsed as an `ArtifactKind`.
+    /// Always fatal — silent fallback to `Note` would let mutations land
+    /// in the wrong directory (audit H1).
+    #[error("invalid artifact kind '{kind}' for {id}: {source}")]
+    InvalidKind {
+        id: String,
+        kind: String,
+        #[source]
+        source: anyhow::Error,
+    },
+
+    /// `Some("")` or `Some("   ")` for status/title at the helper boundary.
+    /// Always fatal (audit H2).
+    #[error("{field} cannot be empty")]
+    EmptyField { field: &'static str },
+
+    /// The underlying `LanceStore` mutation returned an error. Wrapped so
+    /// callers can distinguish DB errors from validation errors.
+    #[error("LanceStore mutation failed: {0}")]
+    StoreError(#[from] anyhow::Error),
+}
+
+/// Convenience alias mirroring `anyhow::Result` for helpers.
+pub type MutationResult<T> = std::result::Result<T, MutationError>;
+
+impl MutationError {
+    /// Whether the error is potentially recoverable by retry / fallback.
+    /// `false` means the workspace state is wedged or the input is
+    /// invalid; `true` means a transient failure (mostly StoreError —
+    /// LanceDB transient I/O).
+    pub fn is_recoverable(&self) -> bool {
+        matches!(self, MutationError::StoreError(_))
+    }
+}
+
 /// Frontmatter keys that `render_markdown_with_tags` writes from LanceDB
 /// record data. Any key **not** in this set is preserved from the file on
 /// disk across renders — this is how agent-owned fields such as
@@ -914,6 +968,211 @@ pub async fn delete_link_with_projection(
     if let Err(e) = render_after_mutation(workspace, store, target).await {
         tracing::warn!("delete_link: post-render target {target} failed (continuing): {e}");
     }
+    Ok(())
+}
+
+// =============================================================================
+// PRD-073 Phase 3b — sync-mechanism helpers (file→DB direction)
+// -----------------------------------------------------------------------------
+// `reindex`, `git_sync`, `watch` read FROM the markdown file (which is already
+// authoritative per ADR-003) and write INTO LanceDB. The `_with_projection`
+// helpers above are the wrong shape here — they would re-render the file
+// from DB after syncing, producing a no-op write that perturbs mtime and
+// could trigger watcher loops.
+//
+// These thin wrappers exist so that:
+// (a) command handlers in `forgeplan-cli` keep going through the
+//     `forgeplan_core::projection::*` namespace (visible to the regression
+//     guard test as approved channels)
+// (b) Phase 4 visibility lockdown can demote `LanceStore::*` mutating
+//     methods to `pub(crate)` while these wrappers stay `pub`
+// (c) intent is documented at the call site: "sync from file" vs "mutate
+//     and re-render" — future maintainers can't confuse the two.
+//
+// The wrappers are intentionally minimal — they validate the artifact ID
+// against path-traversal (audit CRITICAL #1) and forward to the underlying
+// store. Callers are responsible for ensuring the file is authoritative.
+// =============================================================================
+
+/// Sync a fully-formed `NewArtifact` into LanceDB. Caller has already
+/// read+parsed the markdown file (which is the source of truth) and wants
+/// the DB row to mirror it. Used by `reindex` / `git_sync` / `watch`.
+pub async fn sync_artifact_from_file(
+    store: &crate::db::store::LanceStore,
+    artifact: &crate::db::store::NewArtifact,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(&artifact.id)?;
+    let _: ArtifactKind = artifact.kind.parse().map_err(|e| {
+        anyhow::anyhow!("invalid kind '{}' for {}: {e}", artifact.kind, artifact.id)
+    })?;
+    store.create_artifact(artifact).await?;
+    Ok(())
+}
+
+/// Sync a freshly-read body from file into LanceDB. Caller is `reindex` /
+/// `git_sync` / `watch` after detecting the file is newer than the DB row.
+pub async fn sync_body_from_file(
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    body: &str,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
+    store.update_body(id, body).await?;
+    Ok(())
+}
+
+/// Sync metadata (status / title) from frontmatter into LanceDB.
+/// Used by `git_sync` when the pulled file's frontmatter differs from DB.
+pub async fn sync_metadata_from_file(
+    store: &crate::db::store::LanceStore,
+    id: &str,
+    status: Option<&str>,
+    title: Option<&str>,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
+    store.update_artifact(id, status, title).await?;
+    Ok(())
+}
+
+/// Sync a relation from a markdown `links:` block into LanceDB.
+/// Used by `reindex` / `git_sync` to restore typed relations after
+/// rebuilding the DB from files.
+pub async fn sync_relation_from_file(
+    store: &crate::db::store::LanceStore,
+    source: &str,
+    target: &str,
+    relation: &str,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(source)?;
+    crate::db::store::validate_artifact_id(target)?;
+    store.add_relation(source, target, relation).await?;
+    Ok(())
+}
+
+/// Delete an orphan artifact row whose markdown file is already gone or
+/// whose `kind` field is corrupt. Used by `reindex` Phase 2 cleanup and
+/// `git_sync` on `'D'` (file-deleted) entries. The file is NOT removed
+/// because (a) reindex assumes file is already missing, (b) git_sync was
+/// triggered BY the deletion. If you want to delete an artifact AND its
+/// projection, use `delete_artifact_with_projection`.
+pub async fn delete_orphan_artifact(
+    store: &crate::db::store::LanceStore,
+    id: &str,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
+    store.delete_artifact(id).await?;
+    Ok(())
+}
+
+/// Delete an orphan relation whose source or target artifact no longer
+/// exists. Used by `reindex` Phase 3 cleanup.
+pub async fn delete_orphan_relation(
+    store: &crate::db::store::LanceStore,
+    source: &str,
+    target: &str,
+    relation: &str,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(source)?;
+    crate::db::store::validate_artifact_id(target)?;
+    store.delete_relation(source, target, relation).await?;
+    Ok(())
+}
+
+/// Add multiple links in one batch with deduplicated rendering.
+///
+/// Naive `add_link_with_projection` in a loop costs `4 × N` `get_record`
+/// calls + `2 × N` file reads + `2 × N` file writes. For a 100-link
+/// import bundle that's 600 LanceDB calls + 400 file ops. This batch
+/// helper:
+///
+/// 1. Pre-syncs each unique source/target ONCE before any add_relation
+/// 2. Adds all relations
+/// 3. Renders each affected file ONCE at the end
+///
+/// Result: `~2 × U` `get_record` calls + `~2 × U` file writes where U
+/// is the count of unique source-or-target IDs (typically << N).
+///
+/// Per-link errors are collected and returned as a count; the function
+/// itself returns `Ok` after attempting every link unless one of the
+/// pre-sync calls fails (those are fatal because they snapshot user
+/// edits). Audit H6 (code-analyzer 2026-05-01).
+///
+/// PRD-073 FR-001 / FR-005 helper. Used by `import_cmd` /
+/// `forgeplan_import` / `ingest` (any caller that adds many relations
+/// in one shot).
+pub async fn add_links_batch_with_projection(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    links: &[(String, String, String)],
+) -> anyhow::Result<usize> {
+    if links.is_empty() {
+        return Ok(0);
+    }
+
+    // Validate all IDs up front so we don't half-apply the batch.
+    for (source, target, _) in links {
+        crate::db::store::validate_artifact_id(source)?;
+        crate::db::store::validate_artifact_id(target)?;
+    }
+
+    // Collect unique participants for one pre-sync per file.
+    let mut unique_ids: Vec<&str> = Vec::with_capacity(links.len() * 2);
+    for (source, target, _) in links {
+        if !unique_ids.contains(&source.as_str()) {
+            unique_ids.push(source);
+        }
+        if !unique_ids.contains(&target.as_str()) {
+            unique_ids.push(target);
+        }
+    }
+
+    // Phase 1: pre-sync each unique participant ONCE (best-effort —
+    // missing target is a legitimate cross-workspace ref, not an error).
+    for id in &unique_ids {
+        if let Err(e) = sync_before_mutation(workspace, store, id).await {
+            tracing::warn!("add_links_batch: pre-sync {id} failed (continuing): {e}");
+        }
+    }
+
+    // Phase 2: add all relations. Count failures rather than bail so
+    // bulk imports surface "imported N of M" instead of stopping cold.
+    let mut applied = 0usize;
+    for (source, target, relation) in links {
+        match store.add_relation(source, target, relation).await {
+            Ok(_) => applied += 1,
+            Err(e) => {
+                tracing::warn!(
+                    "add_links_batch: add_relation {source} --{relation}--> {target} failed: {e}",
+                );
+            }
+        }
+    }
+
+    // Phase 3: render each affected file ONCE (warn-and-continue —
+    // see `add_link_with_projection` for the same policy on single ops).
+    for id in &unique_ids {
+        if let Err(e) = render_after_mutation(workspace, store, id).await {
+            tracing::warn!("add_links_batch: post-render {id} failed (continuing): {e}");
+        }
+    }
+
+    Ok(applied)
+}
+
+/// Delete an artifact's LanceDB row AFTER its markdown projection has
+/// already been moved to trash by `undo::soft_delete_capture`. The file
+/// is intentionally NOT touched by this helper — `soft_delete_capture`
+/// owns the file→trash move.
+///
+/// Used by MCP `forgeplan_delete` (PRD-055 soft-delete pattern). CLI
+/// `forgeplan delete` since 2026-05-01 also goes through soft_delete +
+/// this helper for parity (audit follow-up).
+pub async fn delete_artifact_after_soft_delete(
+    store: &crate::db::store::LanceStore,
+    id: &str,
+) -> anyhow::Result<()> {
+    crate::db::store::validate_artifact_id(id)?;
+    store.delete_artifact(id).await?;
     Ok(())
 }
 

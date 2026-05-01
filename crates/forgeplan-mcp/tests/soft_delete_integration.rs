@@ -32,7 +32,7 @@ async fn new_ws_with_artifact() -> (TempDir, std::path::PathBuf, LanceStore, New
         valid_until: None,
         tags: Vec::new(),
     };
-    store.create_artifact(&artifact).await.unwrap();
+    store.create_artifact_for_test(&artifact).await.unwrap();
     (tmp, ws, store, artifact)
 }
 
@@ -83,7 +83,7 @@ async fn soft_delete_capture_writes_receipt_before_mutation() {
     assert_eq!(listed[0].snapshot.id, "PRD-001");
 
     // Now it's safe to remove from store.
-    store.delete_artifact("PRD-001").await.unwrap();
+    store.delete_artifact_for_test("PRD-001").await.unwrap();
 
     // Invariant still holds: receipt survives.
     let listed = list_receipts(&ws).await.unwrap();

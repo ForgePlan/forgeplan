@@ -53,62 +53,65 @@ const FORBIDDEN_METHODS: &[&str] = &[
 /// Current baseline. Bumping these UP requires explicit ADR amendment.
 /// Bumping them DOWN is the goal — every migrated handler reduces the count.
 ///
-/// CLI baseline last lowered on 2026-05-01 (PRD-073 Phase 3a + audit
-/// remediation + import file-first migration — 20 bypass sites migrated:
-/// capture, link (add+unlink), update (depth/metadata/body), delete,
-/// remember (create+forget), reason (save flow), promote, new, tag
-/// (add+remove), generate, **import_cmd** (live-confirmed in audit
-/// testing that import was leaving DB-only state — H3 fix).
+/// CLI baseline = 0 since 2026-05-01 (PRD-073 Phase 3b complete).
 ///
-/// Remaining 14 sites are sync mechanisms still awaiting helper
-/// extraction (reindex 5 / git_sync 5 / watch 1 / ingest 3) —
-/// they ARE the projection-rebuild flow and need
-/// `reindex_workspace_via_projection` / `git_sync_via_projection`
-/// in PRD-073 Phase 3b before this baseline can drop further.
-/// Phase 4 (visibility lockdown via `pub(crate)`) is blocked on Phase 3b.
-const CLI_BASELINE: usize = 14;
+/// Phase 3b extracted six sync-mechanism helpers in `core::projection`
+/// (`sync_artifact_from_file`, `sync_body_from_file`, `sync_metadata_from_file`,
+/// `sync_relation_from_file`, `delete_orphan_artifact`, `delete_orphan_relation`)
+/// and migrated all remaining 14 CLI sites: reindex (5), git_sync (5),
+/// watch (1), ingest (3). Phase 3a-style nominal bypasses in `ingest`
+/// were also collapsed onto existing `_with_projection` helpers (DB-first
+/// → file-first ordering). Result: zero direct `LanceStore::*` mutations
+/// in `commands/*.rs`.
+///
+/// **No more bypasses allowed**: any new mutation site must go through
+/// the `forgeplan_core::projection::*` namespace. Phase 4 makes this a
+/// compile-time error by demoting the underlying `LanceStore` mutating
+/// methods to `pub(crate)`.
+const CLI_BASELINE: usize = 0;
 
-/// MCP baseline last lowered on 2026-05-01 (PRD-073 Phase 3a + audit
-/// remediation + import file-first migration). Migrated handlers:
-/// `forgeplan_link`, `forgeplan_discover_finding`, `forgeplan_new`,
-/// `forgeplan_update` (metadata + body), `forgeplan_capture`,
-/// `forgeplan_generate`, **`forgeplan_import`** (live-confirmed H3 fix —
-/// previously left every imported artifact in DB-only state).
+/// MCP baseline = 0 since 2026-05-01 (PRD-073 Phase 4 lockdown complete).
 ///
-/// Remaining 1 site: `forgeplan_delete`'s `store.delete_artifact` call
-/// after `soft_delete_capture` already moved the file to trash. File-first
-/// ordering is satisfied by the soft-delete receipt mechanism, but the
-/// raw store call is left in place because routing through
-/// `delete_artifact_with_projection` would also drop relations that
-/// `restore` needs to recreate. PRD-055 soft-delete pattern.
+/// `forgeplan_delete`'s former `store.delete_artifact` call (after
+/// `soft_delete_capture` moves file to trash) was migrated to
+/// `forgeplan_core::projection::delete_artifact_after_soft_delete` so the
+/// underlying `LanceStore` mutating methods could be demoted to
+/// `pub(crate)` (Phase 4). Now any direct mutation from `server.rs`
+/// production code is a compile-time error, not just a regression-test
+/// failure.
 ///
-/// Production code paths only — `#[cfg(test)]` fixtures are exempt because
-/// test setup legitimately needs raw store access.
-const MCP_BASELINE: usize = 1;
+/// Production code paths only — `#[cfg(test)]` fixtures use the
+/// `*_for_test` escape hatches behind the `test-helpers` feature flag.
+const MCP_BASELINE: usize = 0;
 
 #[test]
+#[allow(clippy::absurd_extreme_comparisons)]
 fn cli_commands_have_no_new_direct_lance_mutations() {
     let count = count_violations_in_dir(Path::new("src/commands"));
+    // Baseline is now 0 — any direct mutation from `commands/*.rs` is a
+    // failure. The ratchet-down branch below stays as documentation in
+    // case a regression+fix lands together (count would be > 0 in
+    // diff-1, then back to 0 after fix; the assert still catches the
+    // diff-1 state).
     assert!(
         count <= CLI_BASELINE,
         "ADR-003 regression: CLI commands/ has {count} direct LanceStore mutations \
-         (baseline = {CLI_BASELINE}). Either migrate the new call to the file-first \
-         flow (sync_file_to_store + lifecycle/link operation + render_projection — \
-         see crates/forgeplan-cli/src/commands/deprecate.rs for the canonical \
-         pattern) OR, if you migrated an existing site, lower CLI_BASELINE in \
-         this test."
+         (baseline = {CLI_BASELINE}). Migrate to a `forgeplan_core::projection::*` \
+         helper (see capture.rs / link.rs for examples). Phase 4 lockdown demoted \
+         `LanceStore::*` mutating methods to `pub(crate)` so the compiler also \
+         enforces this — if your code compiled, you used a helper; if it didn't, \
+         this test is the diagnostic."
     );
     if count < CLI_BASELINE {
         panic!(
             "ADR-003 ratchet: CLI count dropped from {CLI_BASELINE} to {count}. \
-             Update CLI_BASELINE = {count} in tests/adr_003_invariant.rs to lock in \
-             the improvement (otherwise a future regression up to {CLI_BASELINE} would \
-             pass silently)."
+             Update CLI_BASELINE = {count} in tests/adr_003_invariant.rs."
         );
     }
 }
 
 #[test]
+#[allow(clippy::absurd_extreme_comparisons)]
 fn mcp_server_has_no_new_direct_lance_mutations() {
     // MCP server is a single big file; we exclude test fixtures by ignoring
     // anything inside `#[cfg(test)]` blocks (rough — counts whole-file).
@@ -119,8 +122,10 @@ fn mcp_server_has_no_new_direct_lance_mutations() {
     assert!(
         count <= MCP_BASELINE,
         "ADR-003 regression: MCP server.rs has {count} direct LanceStore mutations \
-         in production code (baseline = {MCP_BASELINE}). Migrate to the file-first \
-         flow used by CLI commands — see deprecate.rs for the pattern."
+         in production code (baseline = {MCP_BASELINE}). Phase 4 demoted the \
+         underlying methods to `pub(crate)` — if your code compiled, you went \
+         through a `forgeplan_core::projection::*` helper. This test is a \
+         belt-and-suspenders check for invariant drift."
     );
     if count < MCP_BASELINE {
         panic!(

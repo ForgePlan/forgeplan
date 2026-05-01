@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use forgeplan_core::projection;
 use notify::RecursiveMode;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 
@@ -168,7 +169,7 @@ async fn sync_single_file(
                 tags: Vec::new(),
             };
 
-            store.create_artifact(&artifact).await?;
+            projection::sync_artifact_from_file(store, &artifact).await?;
             println!("NEW  {} — created from file", id);
             Ok(Some(id))
         }
