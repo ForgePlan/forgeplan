@@ -1,5 +1,6 @@
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
+use forgeplan_core::undo;
 
 use crate::commands::common;
 
@@ -51,23 +52,43 @@ Fix: forgeplan list",
         .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
         .count();
 
-    // PRD-073 file-first: helper removes the projection file FIRST, then
-    // cascades relations and the LanceDB row. Failure mid-flow leaves the
-    // workspace recoverable via reindex. Audit fix: announce relation
-    // removal AFTER the helper succeeds so a mid-flow failure doesn't lie
-    // to the user.
+    // PRD-055 + audit follow-up 2026-05-01: capture soft-delete receipt
+    // BEFORE mutating store. Brings CLI into parity with MCP
+    // `forgeplan_delete` which has had soft-delete since release.
+    // Receipt holds full snapshot + relations so `forgeplan undo-last`
+    // and `forgeplan restore <id>` recover the artifact end-to-end.
+    let receipt_id = undo::soft_delete_capture(
+        &ws,
+        &store,
+        &record,
+        undo::DestructiveOp::Delete,
+        None,
+        None,
+    )
+    .await?;
+
+    // PRD-073 file-first: helper removes the projection file (likely no-op
+    // because soft_delete_capture already moved it to trash) then cascades
+    // relations and the LanceDB row. Failure mid-flow is recoverable via
+    // `forgeplan restore <id>` from the receipt above.
     projection::delete_artifact_with_projection(&ws, &store, id).await?;
 
     if relation_count > 0 {
         eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
     }
 
-    println!("  Deleted: {} \"{}\"", record.id, record.title);
+    println!(
+        "  Deleted: {} \"{}\" (receipt {receipt_id})",
+        record.id, record.title
+    );
 
-    // Terminal action: deletion can't be undone, but the operator usually
-    // wants to verify the workspace is consistent next.
-    let hint_list =
-        vec![Hint::info("Verify workspace integrity").with_action("forgeplan health".to_string())];
+    // Soft-deleted: surface the recovery path.
+    let hint_list = vec![
+        Hint::info(format!(
+            "Recoverable via `forgeplan restore {id}` (within 30 days)"
+        ))
+        .with_action(format!("forgeplan restore {id}")),
+    ];
     print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())

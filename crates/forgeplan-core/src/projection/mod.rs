@@ -711,10 +711,10 @@ pub async fn update_metadata_with_projection(
     title: Option<&str>,
 ) -> anyhow::Result<()> {
     crate::db::store::validate_artifact_id(id)?;
-    debug_assert!(
-        status.is_some() || title.is_some(),
-        "update_metadata_with_projection called with no fields to change for {id}",
-    );
+    // Short-circuit on `(None, None)` instead of paying the sync round-trip
+    // and bumping `updated_at` for nothing. Callers should gate upstream
+    // (e.g. `update.rs` does `if status.is_some() || title.is_some()`); the
+    // helper-level guard is defensive.
     if status.is_none() && title.is_none() {
         return Ok(());
     }
@@ -1614,5 +1614,164 @@ mod tests {
             !after.contains("status: draft"),
             "post-mutation file should NOT have status: draft, got:\n{after}"
         );
+    }
+
+    // ─── Audit-fix regression tests (2026-05-01) ───────────────────
+
+    /// Audit CRITICAL #1: `create_artifact_with_projection` must reject
+    /// path-traversal IDs before composing the filesystem path.
+    #[tokio::test]
+    async fn create_artifact_rejects_path_traversal_id() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let evil = crate::db::store::NewArtifact {
+            id: "../../etc/evil".to_string(),
+            kind: "note".to_string(),
+            status: "draft".to_string(),
+            title: "evil".to_string(),
+            body: "owned".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        let result = create_artifact_with_projection(&ws, &store, &evil).await;
+        assert!(result.is_err(), "must reject path-traversal id");
+        // No file written outside the workspace.
+        assert!(!tmp.path().join("../../etc/evil-evil.md").exists());
+    }
+
+    /// Audit C2: `delete_artifact_with_projection` uses exact-path
+    /// removal so deleting `mem-foo` cannot clobber sibling
+    /// `mem-foo-bar` whose filename also starts with `mem-foo-`.
+    #[tokio::test]
+    async fn delete_artifact_exact_path_does_not_clobber_sibling() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        // Create two memory artifacts where one ID is a strict prefix of the other.
+        for (id, title) in [("mem-foo", "foo"), ("mem-foo-bar", "foo bar")] {
+            let art = crate::db::store::NewArtifact {
+                id: id.to_string(),
+                kind: "memory".to_string(),
+                status: "active".to_string(),
+                title: title.to_string(),
+                body: "body".to_string(),
+                depth: "tactical".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            };
+            create_artifact_with_projection(&ws, &store, &art)
+                .await
+                .unwrap();
+        }
+
+        let mem_dir = ws.join("memory");
+        let foo_path = mem_dir.join("mem-foo-foo.md");
+        let foo_bar_path = mem_dir.join("mem-foo-bar-foo-bar.md");
+        assert!(
+            foo_path.exists() && foo_bar_path.exists(),
+            "both files must exist before delete"
+        );
+
+        delete_artifact_with_projection(&ws, &store, "mem-foo")
+            .await
+            .unwrap();
+
+        assert!(!foo_path.exists(), "mem-foo file must be removed");
+        assert!(
+            foo_bar_path.exists(),
+            "mem-foo-bar file must NOT be removed (sibling protected)"
+        );
+    }
+
+    /// Audit H2: `update_metadata_with_projection` must reject empty
+    /// status/title at the helper boundary instead of writing yaml-null
+    /// values into LanceDB.
+    #[tokio::test]
+    async fn update_metadata_rejects_empty_status_and_title() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let art = crate::db::store::NewArtifact {
+            id: "PRD-901".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Test".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        create_artifact_with_projection(&ws, &store, &art)
+            .await
+            .unwrap();
+
+        let empty_status =
+            update_metadata_with_projection(&ws, &store, "PRD-901", Some(""), None).await;
+        assert!(empty_status.is_err(), "must reject empty status");
+        let empty_title =
+            update_metadata_with_projection(&ws, &store, "PRD-901", None, Some("   ")).await;
+        assert!(empty_title.is_err(), "must reject whitespace-only title");
+    }
+
+    /// Audit H2 + early-return: `update_metadata_with_projection(None, None)`
+    /// must short-circuit without the sync round-trip + DB touch.
+    #[tokio::test]
+    async fn update_metadata_short_circuits_on_no_op() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let art = crate::db::store::NewArtifact {
+            id: "PRD-902".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Test".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        create_artifact_with_projection(&ws, &store, &art)
+            .await
+            .unwrap();
+
+        // Capture the original updated_at — short-circuit MUST NOT bump it.
+        let before = store
+            .get_record("PRD-902")
+            .await
+            .unwrap()
+            .unwrap()
+            .updated_at;
+        // Sleep just enough that any DB touch would yield a different timestamp.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        update_metadata_with_projection(&ws, &store, "PRD-902", None, None)
+            .await
+            .unwrap();
+
+        let after = store
+            .get_record("PRD-902")
+            .await
+            .unwrap()
+            .unwrap()
+            .updated_at;
+        assert_eq!(before, after, "short-circuit must not bump updated_at");
     }
 }

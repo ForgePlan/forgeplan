@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{NaiveDate, Utc};
+use forgeplan_core::scoring::evidence::parse_evidence_from_record;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
@@ -2026,7 +2027,7 @@ impl ForgeplanServer {
 
         // PRD-055 soft-delete: write receipt + move projection to trash
         // BEFORE store mutation (crash invariant).
-        let receipt_id = match soft_delete_capture(
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
             &store,
             &record,
@@ -2327,7 +2328,7 @@ impl ForgeplanServer {
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
-        let receipt_id = match soft_delete_capture(
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
             &store,
             &record,
@@ -2464,7 +2465,7 @@ impl ForgeplanServer {
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
-        let receipt_id = match soft_delete_capture(
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
             &store,
             &record,
@@ -7417,174 +7418,6 @@ impl rmcp::ServerHandler for ForgeplanServer {
 
         result
     }
-}
-
-// Evidence parsing delegated to forgeplan_core::scoring::evidence
-use forgeplan_core::scoring::evidence::parse_evidence_from_record;
-
-// ── Soft-delete (PRD-055 increment 2) ────────────────────────
-
-/// Capture an artifact's full state + relations and write a soft-delete
-/// receipt BEFORE the caller mutates the store. Also moves the markdown
-/// projection into trash. Returns the receipt_id so the caller can
-/// include it in the tool response (agents surface it for quick undo).
-///
-/// # Crash invariant (PRD-055 ADR #4)
-///
-/// This function must be called BEFORE the store mutation. On a crash
-/// after this returns Ok but before the store mutation lands, the
-/// worst case is an orphan receipt — purged by TTL, harmless. The
-/// reverse order would risk data loss if the crash happened between
-/// store mutation and receipt write.
-///
-/// # Error handling
-///
-/// If this helper errors, the caller MUST NOT proceed with the
-/// destructive operation. Returning the error up lets the tool
-/// respond with a clear failure instead of wiping data silently.
-///
-/// # TTL purge
-///
-/// We also trigger `purge_expired` lazily on each destructive op so
-/// the trash directory stays bounded without a background daemon
-/// (ADR #5). Purge errors are logged but do not block the operation.
-async fn soft_delete_capture(
-    workspace: &std::path::Path,
-    store: &forgeplan_core::db::store::LanceStore,
-    record: &ArtifactRecord,
-    op: forgeplan_core::undo::DestructiveOp,
-    reason: Option<&str>,
-    replacement: Option<&str>,
-) -> anyhow::Result<String> {
-    use forgeplan_core::undo::{
-        ArtifactSnapshot, CapturedRelation, DEFAULT_TTL_DAYS, Receipt, RelationDirection,
-        generate_receipt_id, purge_expired, trash_projection, trashed_projection_path,
-        write_receipt,
-    };
-
-    // Gather outgoing + incoming relations so restore can replay both
-    // directions (PRD-055 ADR #6).
-    let mut relations = Vec::new();
-    if let Ok(outgoing) = store.get_relations(&record.id).await {
-        for (to, relation) in outgoing {
-            relations.push(CapturedRelation {
-                from: record.id.clone(),
-                to,
-                relation,
-                direction: RelationDirection::Outgoing,
-            });
-        }
-    }
-    if let Ok(incoming) = store.get_incoming_relations(&record.id).await {
-        for (from, relation) in incoming {
-            relations.push(CapturedRelation {
-                from,
-                to: record.id.clone(),
-                relation,
-                direction: RelationDirection::Incoming,
-            });
-        }
-    }
-
-    // Resolve original projection path BEFORE move. Audit H-2 logic:
-    // cannot trust `slugify(current_title)` because the title may have
-    // been edited after artifact creation, so the projection filename
-    // on disk differs. Instead: scan the kind directory for any file
-    // matching `<ID>-*.md` and take the first match. Fall back to
-    // slugify only if filesystem scan fails (e.g. missing dir).
-    let projection_path = if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-        let kind_dir = workspace.join(kind.dir_name());
-        let id_prefix = format!("{}-", record.id);
-        let mut found: Option<std::path::PathBuf> = None;
-        if let Ok(mut entries) = tokio::fs::read_dir(&kind_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Some(name) = entry.file_name().to_str()
-                    && name.starts_with(&id_prefix)
-                    && name.ends_with(".md")
-                {
-                    found = Some(entry.path());
-                    break;
-                }
-            }
-        }
-        match found {
-            Some(p) => p.display().to_string(),
-            None => {
-                // Fallback to current-title slug. Better than nothing
-                // for the happy path where the title was never edited.
-                let slug = forgeplan_core::artifact::types::slugify(&record.title);
-                kind_dir
-                    .join(format!("{}-{slug}.md", record.id))
-                    .display()
-                    .to_string()
-            }
-        }
-    } else {
-        String::new()
-    };
-
-    let receipt_id = generate_receipt_id(&record.kind, &record.id);
-    let trashed = trashed_projection_path(workspace, &receipt_id)
-        .display()
-        .to_string();
-
-    let snapshot = ArtifactSnapshot {
-        id: record.id.clone(),
-        kind: record.kind.clone(),
-        status: record.status.clone(),
-        title: record.title.clone(),
-        depth: record.depth.clone(),
-        body: record.body.clone(),
-        author: record.author.clone(),
-        parent_epic: record.parent_epic.clone(),
-        valid_until: record.valid_until.clone(),
-        relations,
-        projection_path: projection_path.clone(),
-    };
-
-    let receipt = Receipt {
-        receipt_id: receipt_id.clone(),
-        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        op,
-        snapshot,
-        reason: reason.map(String::from),
-        replacement: replacement.map(String::from),
-        trashed_projection: trashed,
-        activity_log_hash: None, // future: correlate with activity log entry
-        consumed: false,
-    };
-
-    // Write receipt first (crash invariant).
-    write_receipt(workspace, &receipt).await?;
-
-    // Move projection file into trash ONLY for Delete — supersede and
-    // deprecate leave the markdown in place (status change is reflected
-    // in frontmatter, projection stays). If restore is called later for
-    // a supersede/deprecate receipt, the projection is already on disk;
-    // restore just reverts status and removes the supersede/deprecate
-    // artifacts (new supersede link, reason fields).
-    let projection_pathbuf = std::path::PathBuf::from(&projection_path);
-    if matches!(op, forgeplan_core::undo::DestructiveOp::Delete)
-        && projection_pathbuf.exists()
-        && let Err(e) = trash_projection(workspace, &receipt_id, &projection_pathbuf).await
-    {
-        tracing::warn!(
-            "soft_delete: failed to move projection {}: {}. Receipt written, artifact \
-             will still be recoverable via store snapshot.",
-            projection_pathbuf.display(),
-            e
-        );
-    }
-
-    // Fire-and-forget TTL purge so trash stays bounded (ADR #5).
-    let ws_clone = workspace.to_path_buf();
-    tokio::spawn(async move {
-        if let Err(e) = purge_expired(&ws_clone, DEFAULT_TTL_DAYS).await {
-            tracing::warn!("TTL purge failed: {}", e);
-        }
-    });
-
-    Ok(receipt_id)
 }
 
 // ── Methodology hints ──────────────────────────────────────────
