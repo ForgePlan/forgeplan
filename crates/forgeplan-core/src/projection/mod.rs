@@ -4,59 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::artifact::frontmatter::{self, Frontmatter};
 use crate::artifact::types::{ArtifactKind, slugify};
 
-/// Typed error returned by file-first mutation helpers.
-///
-/// Audit 2026-05-01 H3 (typescript-type-auditor): replacing the
-/// previous `anyhow::Result<()>` lets callers (especially MCP) decide
-/// per-variant how to react. The CLI today uses warn-and-continue
-/// inside the helpers; MCP will be able to enforce strict mode by
-/// matching on `recoverable: false` variants.
-///
-/// Variants are added incrementally — additional variants are not a
-/// breaking change because every helper's return type is
-/// `MutationResult<T>` (= `Result<T, MutationError>`) and `From` impls
-/// keep `?` propagation working.
-#[derive(Debug, thiserror::Error)]
-pub enum MutationError {
-    /// The artifact ID failed `validate_artifact_id` — likely an
-    /// attempted path-traversal payload. Always fatal.
-    #[error("invalid artifact id: {0}")]
-    InvalidId(String),
-
-    /// The supplied `kind` field could not be parsed as an `ArtifactKind`.
-    /// Always fatal — silent fallback to `Note` would let mutations land
-    /// in the wrong directory (audit H1).
-    #[error("invalid artifact kind '{kind}' for {id}: {source}")]
-    InvalidKind {
-        id: String,
-        kind: String,
-        #[source]
-        source: anyhow::Error,
-    },
-
-    /// `Some("")` or `Some("   ")` for status/title at the helper boundary.
-    /// Always fatal (audit H2).
-    #[error("{field} cannot be empty")]
-    EmptyField { field: &'static str },
-
-    /// The underlying `LanceStore` mutation returned an error. Wrapped so
-    /// callers can distinguish DB errors from validation errors.
-    #[error("LanceStore mutation failed: {0}")]
-    StoreError(#[from] anyhow::Error),
-}
-
-/// Convenience alias mirroring `anyhow::Result` for helpers.
-pub type MutationResult<T> = std::result::Result<T, MutationError>;
-
-impl MutationError {
-    /// Whether the error is potentially recoverable by retry / fallback.
-    /// `false` means the workspace state is wedged or the input is
-    /// invalid; `true` means a transient failure (mostly StoreError —
-    /// LanceDB transient I/O).
-    pub fn is_recoverable(&self) -> bool {
-        matches!(self, MutationError::StoreError(_))
-    }
-}
+mod error;
+pub use error::{MutationError, MutationResult};
 
 /// Frontmatter keys that `render_markdown_with_tags` writes from LanceDB
 /// record data. Any key **not** in this set is preserved from the file on
