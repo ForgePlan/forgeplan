@@ -1,0 +1,239 @@
+# =====================================================================
+# release.yaml — Canonical playbook: cut a Forgeplan release
+# =====================================================================
+#
+# Purpose:
+#   Automate the pre-merge portion of `docs/methodology/release-workflow.md`:
+#   pre-conditions check (cargo fmt + clippy + test, forgeplan health) →
+#   Dependabot triage gate → CHANGELOG verification → version bump →
+#   release/v* branch + commit + push + PR. The post-merge portion
+#   (tag on main, cargo-dist, brew, post-release sync to dev) requires
+#   the merge to have happened on GitHub and is therefore tracked
+#   separately by `post-release-sync.yaml` (TODO — open task once a
+#   release is cut against this playbook for the first time).
+#
+# When to run:
+#   `forgeplan playbook run release --yes` from a clean `dev` branch
+#   that has diverged from `main`. Maintainer MUST hand-edit the
+#   placeholder `vX.Y.Z` token in step args BEFORE the run — SPEC-003
+#   1.1 has no template engine, so this playbook ships as a runbook
+#   rather than a one-button automation. PROB-050 follow-up A-1 may
+#   add a 1.2 schema bump introducing parameterized `step.input` for
+#   that ergonomic gain.
+#
+# Red lines this playbook protects (CLAUDE.md):
+#   - #9 post-release sync — the post-release branch is created here;
+#     the sibling playbook continues after merge
+#   - #10 Dependabot triage at release time — the triage step lists
+#     open alerts, aborting if a HIGH-severity unaccepted alert is
+#     present (manual classification doc is authored separately)
+#
+# References:
+#   - docs/methodology/release-workflow.md — the canonical recipe this
+#     playbook automates
+#   - SPEC-003 — Playbook YAML schema (`Delegation::Command` takes
+#     `command: Vec<String>` rather than `target` + `input.args`)
+#   - PRD-065 — Playbook runtime
+#   - ADR-009 — Forgeplan as orchestrator
+#   - ADR-011 — claude --print dispatcher (not used by this playbook —
+#     pure forgeplan_core + command)
+# =====================================================================
+
+schema_version: "1.0"
+name: release
+title: "Cut a Forgeplan release"
+description: |
+  Automated pre-merge portion of the release workflow. The playbook
+  verifies pre-conditions, runs the Dependabot triage gate, prompts
+  for version bump (manual edit of vX.Y.Z token), opens the
+  `release/vX.Y.Z` branch, and creates the PR to main.
+
+  All red-line items are enforced (#9 post-release sync — the
+  post-release branch is created here; #10 Dependabot triage —
+  the triage step is mandatory and aborts on HIGH unaccepted).
+  After PR #X is merged on main, run `post-release-sync.yaml` to
+  close the loop.
+
+  Manual checkpoints (the playbook will pause/abort if not satisfied):
+    1. CHANGELOG.md `[Unreleased]` block has at least one entry.
+    2. Maintainer hand-edits `vX.Y.Z` placeholder in step args before
+       run (SPEC-003 1.1 has no template engine — PROB-050 A-1).
+    3. After PR #X is merged, maintainer runs `post-release-sync.yaml`.
+
+# ---------------------------------------------------------------------
+# Recommendation engine signals — `forgeplan init` will not propose
+# this playbook automatically; it is invoked explicitly by maintainers.
+# ---------------------------------------------------------------------
+triggered_by:
+  has_git: true
+  has_cargo_toml: true
+
+# ---------------------------------------------------------------------
+# Prerequisites — `gh` CLI for PR creation, `cargo` toolchain. Today
+# SPEC-003 1.1 only enumerates `plugins:` and `skills:` blocks; the
+# command-tool prereqs (cargo / gh / git) are documented in the
+# header comment and validated at runtime via `command:` step
+# fallbacks. PROB-050 follow-up A-1 (SPEC-003 1.2) may add a
+# `commands:` block; until then, this section is intentionally empty.
+# ---------------------------------------------------------------------
+requires:
+  plugins: []
+  skills: []
+
+steps:
+
+  # 1. Pre-condition gate — `cargo fmt --check` must be clean.
+  #    `Delegation::Command` ships the entire argv as `command:
+  #    [program, ...args]` per SPEC-003 §"delegate_to", with no
+  #    separate `input.args`.
+  - id: preflight-cargo-fmt
+    delegate_to:
+      type: command
+      command: ["cargo", "fmt", "--", "--check"]
+    on_error: abort
+
+  # 2. Clippy gate — workspace + all-targets, deny warnings.
+  - id: preflight-cargo-clippy
+    delegate_to:
+      type: command
+      command:
+        - cargo
+        - clippy
+        - "--workspace"
+        - "--all-targets"
+        - "--features"
+        - test-helpers
+        - "--"
+        - "-D"
+        - warnings
+    requires: [preflight-cargo-fmt]
+    on_error: abort
+
+  # 3. Test gate — full workspace test.
+  - id: preflight-cargo-test
+    delegate_to:
+      type: command
+      command:
+        - cargo
+        - test
+        - "--workspace"
+        - "--features"
+        - test-helpers
+    requires: [preflight-cargo-clippy]
+    on_error: abort
+
+  # 4. Health gate — `forgeplan health` reports 0 blind_spots / 0
+  #    stale / no advisory phase mismatches. ForgeplanOp does not
+  #    yet include `health` (PROB-050 A-1 schema bump candidate);
+  #    invoked via `command:` against the locally-installed binary.
+  - id: preflight-forgeplan-health
+    delegate_to:
+      type: command
+      command: ["forgeplan", "health"]
+    requires: [preflight-cargo-test]
+    on_error: abort
+
+  # 5. Dependabot triage gate (CLAUDE.md red line #10). Lists open
+  #    alerts to stdout. The maintainer classifies each into
+  #    addressed/scheduled/accepted in
+  #    `docs/operations/dependabot-triage-<date>.md` BEFORE merging
+  #    the release PR — the playbook does not enforce the doc's
+  #    existence; that is a Section-1 manual checkpoint.
+  - id: dependabot-triage-list
+    delegate_to:
+      type: command
+      command:
+        - gh
+        - api
+        - "repos/ForgePlan/forgeplan/dependabot/alerts"
+        - "--jq"
+        - ".[] | select(.state == \"open\") | {number, severity: .security_advisory.severity, package: .dependency.package.name}"
+    produces_at: ".forgeplan/scan/dependabot-open-alerts.json"
+    requires: [preflight-forgeplan-health]
+    on_error: abort
+
+  # 6. CHANGELOG check — `[Unreleased]` block has at least one bullet.
+  #    `bash -c` so the grep + pipe + `|| exit 1` semantics survive.
+  - id: changelog-check
+    delegate_to:
+      type: command
+      command:
+        - bash
+        - "-c"
+        - "grep -A 200 '^## \\[Unreleased\\]' CHANGELOG.md | grep -E '^- ' | head -1 || (echo 'CHANGELOG [Unreleased] block has no bullets — add at least one entry before cutting a release' && exit 1)"
+    requires: [dependabot-triage-list]
+    on_error: abort
+
+  # 7. Open `release/vX.Y.Z` branch. The `vX.Y.Z` token MUST be
+  #    hand-edited by the maintainer before run (SPEC-003 1.1 has no
+  #    template engine; PROB-050 A-1 may add one).
+  - id: open-release-branch
+    delegate_to:
+      type: command
+      command: ["git", "checkout", "-b", "release/vX.Y.Z"]
+    requires: [changelog-check]
+    on_error: abort
+
+  # 8. Bump Cargo.toml versions across the workspace via cargo-edit's
+  #    `cargo set-version`. If cargo-edit is missing, the step
+  #    aborts with the install hint in fallback_hint.
+  - id: bump-cargo-version
+    delegate_to:
+      type: command
+      command: ["cargo", "set-version", "--workspace", "X.Y.Z"]
+    requires: [open-release-branch]
+    fallback_hint: "cargo install cargo-edit (provides `cargo set-version`)"
+    on_error: abort
+
+  # 9. Stage the version bump (CHANGELOG hand-edit happens between
+  #    step 6 and step 9 in the maintainer's editor).
+  - id: stage-release-commit
+    delegate_to:
+      type: command
+      command:
+        - git
+        - commit
+        - "-am"
+        - "release: vX.Y.Z — version bump + CHANGELOG"
+    requires: [bump-cargo-version]
+    on_error: abort
+
+  # 10. Push the release branch.
+  - id: push-release-branch
+    delegate_to:
+      type: command
+      command: ["git", "push", "origin", "release/vX.Y.Z"]
+    requires: [stage-release-commit]
+    on_error: abort
+
+  # 11. Open PR `release/vX.Y.Z → main` via `gh`.
+  - id: open-release-pr
+    delegate_to:
+      type: command
+      command:
+        - gh
+        - pr
+        - create
+        - "--base"
+        - main
+        - "--head"
+        - "release/vX.Y.Z"
+        - "--title"
+        - "release: vX.Y.Z"
+        - "--body"
+        - "See CHANGELOG.md `[vX.Y.Z]` section. Dependabot triage in `docs/operations/dependabot-triage-YYYY-MM-DD.md`."
+    requires: [push-release-branch]
+    on_error: abort
+
+  # 12. Summary Note — record the release artifacts created by this
+  #     run (branch name, PR URL) so post-release-sync can reference.
+  - id: release-summary-note
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: note
+      title: "Release vX.Y.Z — pre-merge automation summary"
+      tags: ["release", "vX.Y.Z"]
+    requires: [open-release-pr]
+    on_error: abort
