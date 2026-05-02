@@ -14,10 +14,15 @@ use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
 use crate::db::{convert, migrate, schema};
 
-/// Validate that an artifact ID is safe for use in SQL-like filters.
+/// Validate that an artifact ID is safe for use in SQL-like filters AND
+/// safe to compose into filesystem paths (audit 2026-05-01 #1 — was a
+/// path-traversal vector when import passed unfiltered `id` straight
+/// into `format!("{id}-{slug}.md")`).
+///
 /// Accepts: `PREFIX-NNN` (e.g. PRD-001), `mem-slug-words` (e.g. mem-my-decision).
-/// Rejects IDs containing SQL operators, quotes, semicolons, or other injection vectors.
-fn validate_id_for_filter(id: &str) -> anyhow::Result<()> {
+/// Rejects IDs containing SQL operators, quotes, semicolons, path
+/// separators, or any other character outside `[A-Za-z0-9_-]`.
+pub fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
     if id.is_empty() {
         anyhow::bail!("Artifact ID cannot be empty");
     }
@@ -351,8 +356,38 @@ impl LanceStore {
         })
     }
 
+    /// Test-only escape hatch for raw artifact insertion. Production code
+    /// MUST go through `forgeplan_core::projection::*` helpers (Phase 4
+    /// `pub(crate)` lockdown). This `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`
+    /// shim lets test fixtures in downstream crates seed LanceDB
+    /// directly without coupling them to the projection pipeline they're
+    /// not exercising.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    pub async fn create_artifact_for_test(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+        self.create_artifact(artifact).await
+    }
+
+    /// Test-only escape hatch for raw relation insertion. Same rationale as
+    /// `create_artifact_for_test`.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    pub async fn add_relation_for_test(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
+        self.add_relation(source, target, relation).await
+    }
+
+    /// Test-only escape hatch for raw artifact deletion. Same rationale as
+    /// `create_artifact_for_test`.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    pub async fn delete_artifact_for_test(&self, id: &str) -> anyhow::Result<()> {
+        self.delete_artifact(id).await
+    }
+
     /// Insert a new artifact, returning its ID.
-    pub async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+    pub(crate) async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         // Validate ID format — prevent path traversal and SQL injection
         if !artifact
             .id
@@ -429,7 +464,7 @@ impl LanceStore {
     }
 
     /// Update artifact updated_at (and optionally status/title).
-    pub async fn update_artifact(
+    pub(crate) async fn update_artifact(
         &self,
         id: &str,
         status: Option<&str>,
@@ -453,7 +488,11 @@ impl LanceStore {
     }
 
     /// Update the valid_until column of an artifact (ADR-005: renew).
-    pub async fn update_valid_until(&self, id: &str, valid_until: &str) -> anyhow::Result<()> {
+    pub(crate) async fn update_valid_until(
+        &self,
+        id: &str,
+        valid_until: &str,
+    ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts
@@ -470,7 +509,7 @@ impl LanceStore {
     }
 
     /// Update the depth column of an artifact.
-    pub async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
+    pub(crate) async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts
@@ -531,7 +570,7 @@ impl LanceStore {
     ///
     /// See Sprint 13.3 audit finding H3 for context.
     async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
-        validate_id_for_filter(&record.id)?;
+        validate_artifact_id(&record.id)?;
         let schema = schema::artifacts_schema();
         let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
         let batch = RecordBatch::try_new(
@@ -580,7 +619,7 @@ impl LanceStore {
     /// PROB-026 fix: previously tags were stored as-is (case-sensitive,
     /// spaces allowed, no validation). Now canonicalized for consistent
     /// filtering and display.
-    pub async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
+    pub(crate) async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
         let mut record = self
             .get_record(id)
             .await?
@@ -606,7 +645,7 @@ impl LanceStore {
 
     /// Remove the given tags from an existing artifact. Unknown tags are
     /// silently ignored. Returns error if the artifact does not exist.
-    pub async fn remove_tags(&self, id: &str, to_remove: &[String]) -> anyhow::Result<()> {
+    pub(crate) async fn remove_tags(&self, id: &str, to_remove: &[String]) -> anyhow::Result<()> {
         let mut record = self
             .get_record(id)
             .await?
@@ -638,22 +677,22 @@ impl LanceStore {
     }
 
     /// Delete an artifact by ID.
-    pub async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
-        validate_id_for_filter(id)?;
+    pub(crate) async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
+        validate_artifact_id(id)?;
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         self.artifacts.delete(&predicate).await?;
         Ok(())
     }
 
     /// Add a relation between two artifacts. Rejects duplicates.
-    pub async fn add_relation(
+    pub(crate) async fn add_relation(
         &self,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
-        validate_id_for_filter(source)?;
-        validate_id_for_filter(target)?;
+        validate_artifact_id(source)?;
+        validate_artifact_id(target)?;
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
@@ -682,8 +721,8 @@ impl LanceStore {
 
     /// Remove ALL relations where artifact is source or target (cascade on delete).
     /// Uses case-insensitive matching via `lower()` for consistency with Rust-side checks.
-    pub async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
-        validate_id_for_filter(id)?;
+    pub(crate) async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+        validate_artifact_id(id)?;
         let lower_id = id.to_ascii_lowercase().replace('\'', "''");
         let filter = format!(
             "lower(source_id) = '{}' OR lower(target_id) = '{}'",
@@ -694,7 +733,7 @@ impl LanceStore {
     }
 
     /// Remove a specific relation between two artifacts.
-    pub async fn delete_relation(
+    pub(crate) async fn delete_relation(
         &self,
         source: &str,
         target: &str,
@@ -948,7 +987,7 @@ impl LanceStore {
     }
 
     /// Update the body column of an artifact.
-    pub async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
+    pub(crate) async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         let escaped_body = body.replace('\'', "''");
@@ -2550,22 +2589,22 @@ mod tests {
 
     #[test]
     fn validate_id_accepts_valid_ids() {
-        assert!(validate_id_for_filter("PRD-001").is_ok());
-        assert!(validate_id_for_filter("RFC-002").is_ok());
-        assert!(validate_id_for_filter("EVID-047").is_ok());
-        assert!(validate_id_for_filter("mem-my-decision").is_ok());
-        assert!(validate_id_for_filter("NOTE-001").is_ok());
-        assert!(validate_id_for_filter("NONEXISTENT").is_ok());
+        assert!(validate_artifact_id("PRD-001").is_ok());
+        assert!(validate_artifact_id("RFC-002").is_ok());
+        assert!(validate_artifact_id("EVID-047").is_ok());
+        assert!(validate_artifact_id("mem-my-decision").is_ok());
+        assert!(validate_artifact_id("NOTE-001").is_ok());
+        assert!(validate_artifact_id("NONEXISTENT").is_ok());
     }
 
     #[test]
     fn validate_id_rejects_injection_attempts() {
-        assert!(validate_id_for_filter("").is_err());
-        assert!(validate_id_for_filter("'; DROP TABLE--").is_err());
-        assert!(validate_id_for_filter("PRD-001' OR '1'='1").is_err());
-        assert!(validate_id_for_filter("123-invalid").is_err());
-        assert!(validate_id_for_filter("has space").is_err());
-        assert!(validate_id_for_filter("has;semicolon").is_err());
+        assert!(validate_artifact_id("").is_err());
+        assert!(validate_artifact_id("'; DROP TABLE--").is_err());
+        assert!(validate_artifact_id("PRD-001' OR '1'='1").is_err());
+        assert!(validate_artifact_id("123-invalid").is_err());
+        assert!(validate_artifact_id("has space").is_err());
+        assert!(validate_artifact_id("has;semicolon").is_err());
     }
 
     // ── Tags (PRD-035 FR-001) ───────────────────────────────────────

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::types::{ArtifactKind, slugify};
+use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
@@ -11,7 +11,7 @@ use crate::commands::common;
 /// Promote a memory artifact to a full artifact of the specified kind.
 /// Reads memory content, creates a new artifact, then deletes the memory.
 pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
-    let (workspace, store) = common::open_store().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // Validate kind. PRD-071 contract: error path emits a `Fix:` marker line.
     let artifact_kind: ArtifactKind = kind.parse().map_err(|e| {
@@ -83,42 +83,13 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         // C1: propagate tags from source memory artifact, if any.
         tags: record.tags.clone(),
     };
-    store.create_artifact(&artifact).await?;
+    // PRD-073 file-first: helper writes the markdown projection first, then
+    // syncs to LanceDB. If LanceDB insert fails, reindex recovers.
+    projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
 
-    // Write markdown projection
-    projection::render_projection(
-        &workspace,
-        &new_id,
-        artifact_kind.template_key(),
-        &title,
-        "draft",
-        "tactical",
-        record.author.as_deref(),
-        None,
-        None,
-        &body,
-        &[],
-    )
-    .await?;
-
-    // Delete the original memory
-    store.delete_artifact(memory_id).await?;
-
-    // Remove memory markdown file
-    let mem_slug = slugify(&record.title);
-    let mem_filename = format!("{}-{}.md", memory_id, mem_slug);
-    let mem_filepath = workspace
-        .join(ArtifactKind::Memory.dir_name())
-        .join(&mem_filename);
-    if mem_filepath.exists()
-        && let Err(e) = tokio::fs::remove_file(&mem_filepath).await
-    {
-        eprintln!(
-            "  Warning: could not remove memory file {}: {}",
-            mem_filepath.display(),
-            e
-        );
-    }
+    // PRD-073 file-first: helper removes the memory's markdown file first,
+    // then cascades relations and the LanceDB row.
+    projection::delete_artifact_with_projection(&workspace, &store, memory_id).await?;
 
     println!(
         "  Promoted {} → {} ({})",

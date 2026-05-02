@@ -1,6 +1,7 @@
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::projection;
 use forgeplan_core::validation::rules::check_stub_detailed;
 
 use crate::commands::common;
@@ -29,7 +30,7 @@ fn build_frontmatter(id: &str, kind: &str, status: &str, title: &str) -> Frontma
 }
 
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let (_ws, store) = common::open_store().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
     let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {
@@ -95,7 +96,11 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         }
 
         if existing.is_some() {
-            store.delete_artifact(id).await?;
+            // PRD-073 audit H3: routed through helper so the markdown
+            // projection is removed in lockstep with the LanceDB row.
+            // Fixes the previous bypass where re-import via `--force`
+            // left the OLD file on disk while the OLD row was deleted.
+            projection::delete_artifact_with_projection(&ws, &store, id).await?;
         }
 
         // Validate kind against known types
@@ -174,29 +179,55 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
                 .unwrap_or_default(),
         };
 
-        store.create_artifact(&new_artifact).await?;
+        // PRD-073 audit H3: helper writes the markdown projection FIRST,
+        // then syncs the LanceDB row. Previous direct `store.create_artifact`
+        // call left every imported artifact in DB-only state with no
+        // markdown file backing — breaking ADR-003 invariant the moment
+        // import completed.
+        projection::create_artifact_with_projection(&ws, &store, &new_artifact).await?;
         imported += 1;
     }
 
-    let mut relations_imported = 0usize;
-    if let Some(relations) = data["relations"].as_array() {
-        for rel in relations {
-            let source = rel["source"].as_str().unwrap_or_default();
-            let target = rel["target"].as_str().unwrap_or_default();
-            let relation = rel["relation"].as_str().unwrap_or("informs");
-            if !source.is_empty()
-                && !target.is_empty()
-                && store.add_relation(source, target, relation).await.is_ok()
-            {
-                relations_imported += 1;
-            }
-        }
-    }
+    // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync +
+    // post-render per unique participant. For a 100-link bundle this is
+    // ~2×U LanceDB+file ops vs the naive 6×N (audit measurement).
+    let link_triples: Vec<(String, String, String)> = data["relations"]
+        .as_array()
+        .map(|relations| {
+            relations
+                .iter()
+                .filter_map(|rel| {
+                    let source = rel["source"].as_str()?;
+                    let target = rel["target"].as_str()?;
+                    let relation = rel["relation"].as_str().unwrap_or("informs");
+                    if source.is_empty() || target.is_empty() {
+                        return None;
+                    }
+                    Some((source.to_string(), target.to_string(), relation.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let relations_attempted = link_triples.len();
+    let relations_imported =
+        projection::add_links_batch_with_projection(&ws, &store, &link_triples)
+            .await
+            .unwrap_or(0);
 
     println!(
-        "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} relations",
-        imported, skipped, downgraded, relations_imported
+        "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} of {} relations applied",
+        imported, skipped, downgraded, relations_imported, relations_attempted
     );
+
+    // Audit A10 (architect): half-failed imports were previously silent at
+    // the CLI level. Surface the gap explicitly so the operator knows to
+    // run `forgeplan health` immediately.
+    if relations_imported < relations_attempted {
+        eprintln!(
+            "  ⚠ {} relation(s) failed to apply (likely missing artifacts). Run `forgeplan health` to verify.",
+            relations_attempted - relations_imported
+        );
+    }
 
     // PRD-071 contract: after import, run a health check to surface drafts /
     // stubs / blind spots that came in.

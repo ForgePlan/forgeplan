@@ -9,7 +9,7 @@ use crate::commands::common;
 
 /// `forgeplan scan-import [--path <dir>] [--dry-run]`
 pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
     let project_root = ws
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root"))?;

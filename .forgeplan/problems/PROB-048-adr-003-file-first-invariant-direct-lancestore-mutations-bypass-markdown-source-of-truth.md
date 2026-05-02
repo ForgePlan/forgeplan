@@ -1,14 +1,14 @@
 ---
-depth: standard
+depth: tactical
 id: PROB-048
 kind: problem
-status: active
-title: ADR-003 file-first invariant — direct LanceStore mutations bypass markdown source-of-truth
 links:
 - target: ADR-003
   relation: based_on
 - target: PRD-073
   relation: informs
+status: draft
+title: ADR-003 file-first invariant — direct LanceStore mutations bypass markdown source-of-truth
 ---
 
 # PROB-048: ADR-003 file-first invariant violated by direct LanceStore mutations
@@ -70,3 +70,4 @@ Three independent skews surfaced в одной сессии:
 - ADR-003: source of truth invariant (this problem cites)
 - PRD-073: full migration plan (this problem informs)
 - EVID-XXX (TBD after PRD-073 completion)
+

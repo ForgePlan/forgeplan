@@ -91,3 +91,8 @@ W1-L2-CLAUDE-additional-sources.zip
 # Playbook execution journal (PRD-065) — per-run JSONL of step results,
 # workspace-local runtime state, not version-controlled.
 .forgeplan/journal/
+
+# Sprint handoff files for new-chat sessions (cold-context briefings).
+# Local meta-documentation about future tracks of work; not part of the
+# code or project artifacts.
+/HANDOFF-*.md

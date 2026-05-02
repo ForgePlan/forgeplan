@@ -226,7 +226,7 @@ pub async fn run(
     }
 
     // ── 6. Write drafts to workspace ───────────────────────────────────────
-    let (ws, store) = common::open_store().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     let mut written: Vec<WrittenArtifact> = Vec::new();
     let mut skipped_existing: Vec<String> = Vec::new();
@@ -558,26 +558,12 @@ async fn write_draft(
         valid_until: None,
         tags: vec![format!("source=ingest:{}", draft.rule_id)],
     };
-    store
-        .create_artifact(&new)
+    // PRD-073 Phase 3b: file-first helper writes the markdown projection
+    // FIRST then syncs to LanceDB. Previous DB-first order would have
+    // stranded the artifact in DB-only state on a crash between the two.
+    projection::create_artifact_with_projection(ws, store, &new)
         .await
-        .with_context(|| format!("create_artifact failed for {id}"))?;
-
-    projection::render_projection_with_body(
-        ws,
-        &id,
-        template_key,
-        &draft.title,
-        "draft",
-        default_depth_for(&kind),
-        None,
-        None,
-        None,
-        &draft.body,
-        &[],
-    )
-    .await
-    .with_context(|| format!("projection write failed for {id}"))?;
+        .with_context(|| format!("create_artifact_with_projection failed for {id}"))?;
 
     common::log_change(store, &id, "ingest_create", "cli").await;
 
@@ -592,25 +578,10 @@ async fn update_existing(
     record: &ArtifactRecord,
     draft: &IngestArtifactDraft,
 ) -> Result<()> {
-    store
-        .update_body(&record.id, &draft.body)
+    // PRD-073 Phase 3b: file-first body update — helper writes file then DB.
+    projection::update_body_with_projection(ws, store, &record.id, &draft.body)
         .await
-        .with_context(|| format!("update_body failed for {}", record.id))?;
-    projection::render_projection_with_body(
-        ws,
-        &record.id,
-        record.kind.as_str(),
-        &record.title,
-        record.status.as_str(),
-        record.depth.as_str(),
-        record.author.as_deref(),
-        record.parent_epic.as_deref(),
-        record.valid_until.as_deref(),
-        &draft.body,
-        &[],
-    )
-    .await
-    .with_context(|| format!("projection write failed for {}", record.id))?;
+        .with_context(|| format!("update_body_with_projection failed for {}", record.id))?;
     common::log_change(store, &record.id, "ingest_update", "cli").await;
     Ok(())
 }
@@ -639,8 +610,10 @@ async fn add_links(ws: &Path, store: &LanceStore, source_id: &str, links: &[Draf
             Ok(r) => r,
             Err(_) => continue,
         };
-        // Add via LanceDB (relations table) regardless — graph stays in sync.
-        if let Err(e) = store.add_relation(source_id, &lnk.target, &relation).await {
+        // PRD-073 Phase 3b: file-first link helper handles bidirectional render.
+        if let Err(e) =
+            projection::add_link_with_projection(ws, store, source_id, &lnk.target, &relation).await
+        {
             match lnk.if_exists {
                 IfExists::Skip => {}
                 IfExists::Warn => eprintln!(

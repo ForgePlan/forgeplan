@@ -5,7 +5,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     let old_status = store
         .get_record(id)

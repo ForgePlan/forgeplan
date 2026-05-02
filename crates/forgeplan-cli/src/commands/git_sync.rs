@@ -1,6 +1,7 @@
 use forgeplan_core::artifact::frontmatter;
 use forgeplan_core::git;
 use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::projection;
 
 use crate::commands::common;
 
@@ -68,7 +69,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 if let Some(id) = extract_id_from_path(&file.path)
                     && store.get_record(&id).await?.is_some()
                 {
-                    store.delete_artifact(&id).await?;
+                    projection::delete_orphan_artifact(&store, &id).await?;
                     let entry =
                         forgeplan_core::changelog::ChangeLogEntry::new(&id, "delete", "git_sync")
                             .with_commit(&commit_hash);
@@ -118,14 +119,18 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                     Some(record) => {
                         // Existing artifact — update body if changed
                         if record.body.trim() != body.trim() {
-                            store.update_body(&id, &body).await?;
+                            projection::sync_body_from_file(&store, &id, &body).await?;
                             // Also sync frontmatter fields
                             if let Some(status) = fm.get("status").and_then(|v| v.as_str()) {
                                 let status_lower = status.to_lowercase();
                                 if record.status != status_lower {
-                                    store
-                                        .update_artifact(&id, Some(&status_lower), None)
-                                        .await?;
+                                    projection::sync_metadata_from_file(
+                                        &store,
+                                        &id,
+                                        Some(&status_lower),
+                                        None,
+                                    )
+                                    .await?;
                                 }
                             }
                             "update"
@@ -162,7 +167,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                             tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                         };
 
-                        store.create_artifact(&artifact).await?;
+                        projection::sync_artifact_from_file(&store, &artifact).await?;
                         "create"
                     }
                 };
@@ -178,7 +183,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         if let (Some(t), Some(r)) = (target, relation)
                             && !existing.iter().any(|(et, er)| et == t && er == r)
                         {
-                            let _ = store.add_relation(&id, t, r).await;
+                            let _ = projection::sync_relation_from_file(&store, &id, t, r).await;
                         }
                     }
                 }

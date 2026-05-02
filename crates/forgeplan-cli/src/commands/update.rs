@@ -10,7 +10,7 @@ pub async fn run(
     depth: Option<&str>,
     body: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     // Verify artifact exists (keep original for old projection cleanup)
     let original = store.get_record(id).await?.ok_or_else(|| {
@@ -43,7 +43,15 @@ Fix: forgeplan list",
         );
     }
 
-    // Depth update
+    // PRD-073 audit fix: order is metadata FIRST (which writes any title
+    // change into LanceDB), THEN depth/body (each renders against the new
+    // title → new slug). The previous order ran depth before metadata, so
+    // the depth helper rendered to the OLD slug — defeating the OLD-file
+    // cleanup and leaving both filenames on disk. Old-slug cleanup happens
+    // AT THE END via `remove_projection_at` with the original title so we
+    // pin the exact path and don't risk prefix collisions.
+
+    // Validate depth string up-front so the inner helper doesn't see invalid input.
     if let Some(d) = depth {
         let _: forgeplan_core::artifact::types::Mode = d.parse().map_err(|_| {
             // PRD-071: pair Error with a concrete Fix command (default to
@@ -54,20 +62,20 @@ Fix: forgeplan list",
                 id,
             )
         })?;
-        store.update_depth(id, d).await?;
     }
 
-    // Sync file→LanceDB BEFORE any mutations — capture user edits from the OLD file
-    // (must happen before title change which removes the old projection file)
-    projection::sync_file_to_store(&store, &ws, &original).await?;
-
-    // Update metadata (status, title)
+    // Update metadata (status, title) FIRST so subsequent renders see the new title.
     if status.is_some() || title.is_some() {
-        store.update_artifact(id, status, title).await?;
+        projection::update_metadata_with_projection(&ws, &store, id, status, title).await?;
+    }
+
+    // Depth update — renders against the (possibly new) title from DB.
+    if let Some(d) = depth {
+        projection::update_depth_with_projection(&ws, &store, id, d).await?;
     }
 
     // Update body
-    let body_updated = if let Some(b) = body {
+    if let Some(b) = body {
         let raw_content = if let Some(path) = b.strip_prefix('@') {
             tokio::fs::read_to_string(path)
                 .await
@@ -87,9 +95,8 @@ Fix: forgeplan list",
             raw_content
         };
 
-        // Safety check: warn if new body is significantly shorter than existing
-        // (likely shell escaping corruption — use --body @file for safe updates)
-        // Re-read from store AFTER sync to get the latest body (sync may have updated it from file)
+        // Safety check: warn if new body is significantly shorter than existing.
+        // Re-read after the metadata mutation above may have synced file→DB.
         let current = store.get_record(id).await?.unwrap_or(original.clone());
         let old_len = current.body.len();
         let new_len = body_content.len();
@@ -103,56 +110,14 @@ Fix: forgeplan list",
             );
         }
 
-        store.update_body(id, &body_content).await?;
-        true
-    } else {
-        false
-    };
-
-    // Remove old projection file (title change → different slug → stale file)
-    if title.is_some() {
-        let _ = projection::remove_projection(&ws, id, &original.kind).await;
+        projection::update_body_with_projection(&ws, &store, id, &body_content).await?;
     }
 
-    // Re-render projection
-    let updated = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' disappeared after update", id))?;
-    let links = store.get_relations(id).await.unwrap_or_default();
-
-    if body_updated {
-        // Body was explicitly set via CLI — use render_projection_with_body
-        // to override file-on-disk (files-first normally reads from file).
-        projection::render_projection_with_body(
-            &ws,
-            &updated.id,
-            &updated.kind,
-            &updated.title,
-            &updated.status,
-            &updated.depth,
-            updated.author.as_deref(),
-            updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(),
-            &updated.body,
-            &links,
-        )
-        .await?;
-    } else {
-        projection::render_projection(
-            &ws,
-            &updated.id,
-            &updated.kind,
-            &updated.title,
-            &updated.status,
-            &updated.depth,
-            updated.author.as_deref(),
-            updated.parent_epic.as_deref(),
-            updated.valid_until.as_deref(),
-            &updated.body,
-            &links,
-        )
-        .await?;
+    // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place
+    // (so there's no orphan window) and use exact-path removal so we don't
+    // accidentally clobber a sibling artifact whose ID is a prefix of this one.
+    if title.is_some() {
+        let _ = projection::remove_projection_at(&ws, id, &original.kind, &original.title).await;
     }
 
     // Log changes
