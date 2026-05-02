@@ -62,6 +62,14 @@ pub enum MutationError {
         kind_file: String,
     },
 
+    /// The artifact id passed in does not correspond to an existing row.
+    /// This is an input-side concern — caller passed an unknown id —
+    /// distinct from `StoreError` which signals transient I/O failure.
+    /// Wave 1A audit follow-up: previously misclassified as `StoreError`,
+    /// which let `is_recoverable() == true` mislead MCP strict mode.
+    #[error("artifact '{id}' not found")]
+    RowNotFound { id: String },
+
     /// The underlying `LanceStore` mutation returned an error. Wrapped so
     /// callers can distinguish DB errors from validation errors.
     #[error("LanceStore mutation failed: {0}")]
@@ -110,6 +118,15 @@ mod tests {
             path: PathBuf::from("/tmp/missing"),
         };
         assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn row_not_found_is_not_recoverable() {
+        let e = MutationError::RowNotFound {
+            id: "PRD-9999".to_string(),
+        };
+        assert!(!e.is_recoverable());
+        assert!(format!("{e}").contains("PRD-9999"));
     }
 
     #[test]

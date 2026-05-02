@@ -96,4 +96,20 @@ Total: ~9-12h focused work across 5 PRs / 1 sprint.
 - ADR-003: invariant definition (this PRD enforces)
 - EVID-XXX: end-to-end reproducibility measurement (TBD)
 
+## Progress
+
+- [x] Phase 1 — Helper API design + canary (`update_metadata_with_projection`)
+- [x] Phase 2 — MCP handlers + bidirectional links
+- [x] Phase 3a — Bulk CLI migration + adversarial audit remediation (EVID-094)
+- [x] Phase 3b — Sync-mechanism extraction (`sync_*_from_file` + `delete_orphan_*`)
+- [x] Phase 4 — `pub(crate)` visibility lockdown (compile-time enforcement)
+- [x] **Phase 3c — Typed `MutationError` + 16-helper migration** (2026-05-02)
+  - 16 `projection::*` helpers migrated from `anyhow::Result<T>` to `MutationResult<T>`
+  - `error.rs` extracted as a stable, low-conflict module (Wave 1A/1B/1C parallel work)
+  - 7 variants finalised: `InvalidId`, `InvalidKind`, `EmptyField`, `FileNotFound`, `ProjectionMismatch`, `RowNotFound`, `StoreError`
+  - Wave 1A audit fix: `update_body_with_projection` now returns `RowNotFound` instead of misleading `StoreError`
+  - `sync_artifact_from_file` / `sync_body_from_file` take `workspace: &Path` to construct `FileNotFound { id, path }`
+  - ADR-003 Amendment 2 records before/after taxonomy + downstream migration path
+- [ ] Phase 3d — drift detection in `sync_metadata_from_file` / `sync_relation_from_file` + `HashSet` dedup in `add_links_batch_with_projection` (Wave 1B audit LOW-4)
+- [ ] Phase 5 — EVID-094 supplement: clone reproducibility at CL3 + closure
 

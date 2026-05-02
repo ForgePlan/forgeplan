@@ -119,7 +119,15 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                     Some(record) => {
                         // Existing artifact — update body if changed
                         if record.body.trim() != body.trim() {
-                            projection::sync_body_from_file(&store, &id, &body).await?;
+                            projection::sync_body_from_file(
+                                &ws,
+                                &store,
+                                &id,
+                                &record.kind,
+                                &record.title,
+                                &body,
+                            )
+                            .await?;
                             // Also sync frontmatter fields
                             if let Some(status) = fm.get("status").and_then(|v| v.as_str()) {
                                 let status_lower = status.to_lowercase();
@@ -167,7 +175,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                             tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                         };
 
-                        projection::sync_artifact_from_file(&store, &artifact).await?;
+                        projection::sync_artifact_from_file(&ws, &store, &artifact).await?;
                         "create"
                     }
                 };

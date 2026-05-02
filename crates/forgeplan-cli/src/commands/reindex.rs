@@ -85,7 +85,15 @@ pub async fn run() -> anyhow::Result<()> {
                 Some(record) => {
                     // Compare body — sync if different
                     if record.body.trim() != body.trim() {
-                        projection::sync_body_from_file(&store, &id, &body).await?;
+                        projection::sync_body_from_file(
+                            &ws,
+                            &store,
+                            &id,
+                            &record.kind,
+                            &record.title,
+                            &body,
+                        )
+                        .await?;
                         common::log_change(&store, &id, "update", "reindex").await;
                         println!("  SYNC {} — body updated from file", id);
                         synced += 1;
@@ -125,7 +133,7 @@ pub async fn run() -> anyhow::Result<()> {
                         tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                     };
 
-                    projection::sync_artifact_from_file(&store, &artifact).await?;
+                    projection::sync_artifact_from_file(&ws, &store, &artifact).await?;
                     common::log_change(&store, &id, "create", "reindex").await;
                     println!("  NEW  {} — created from file", id);
                     synced += 1;
