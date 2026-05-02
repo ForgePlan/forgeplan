@@ -53,6 +53,15 @@ pub enum MutationError {
     /// missing on disk. Audit S1: file-first invariant means the file is the
     /// source of truth, so this is fatal — caller must reconcile via
     /// `forgeplan reindex` or restore the file.
+    ///
+    /// **`path` MUST be workspace-relative** (R1 H-8 / R2 M-R2-2 security):
+    /// constructors in `projection::mod` strip the workspace prefix before
+    /// raising this variant so the Display does not leak the user's
+    /// absolute filesystem layout to MCP error JSON / Claude Desktop logs.
+    /// Producers in this module fall back to `file_name()` if `strip_prefix`
+    /// fails (symlink/canonicalization mismatch); they MUST NOT pass an
+    /// absolute path. Future contributors: tests at the construction sites
+    /// assert `!path.is_absolute()` — keep them green.
     #[error("file not found for {id} at {path}")]
     FileNotFound { id: String, path: PathBuf },
 
@@ -85,7 +94,7 @@ pub enum MutationError {
     /// The underlying `LanceStore` mutation returned an error. Wrapped so
     /// callers can distinguish DB errors from validation errors.
     ///
-    /// TODO(PRD-073 Phase 3d): split into `StoreTransient` (lock contention,
+    /// TODO(PROB-049): split into `StoreTransient` (lock contention,
     /// transient I/O — `is_recoverable() == true`) vs `StoreFatal` (schema
     /// mismatch, missing-table, malformed predicate — `is_recoverable() ==
     /// false`). Today every `?` from `LanceStore::*` collapses into this

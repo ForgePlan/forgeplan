@@ -105,6 +105,18 @@ EVID-094.
   `forgeplan restore <id>` within 30 days.
 - **All markdown writes are atomic** (tempfile + rename). Kill -9
   mid-write no longer leaves zero-length projection files.
+- **File frontmatter `title:` now preserves non-ASCII titles verbatim**
+  (PRD-073 Phase 3c R2 audit M-R2-3 / security). Previously, an
+  artifact created with a Cyrillic / CJK / emoji title (anything that
+  slugifies to empty) was rendered with `title: untitled` in the file
+  frontmatter — losing the user's original title from the on-disk
+  representation while the DB row preserved it. The Phase 3c
+  `projection_slug` helper now applies the `untitled` fallback only
+  to the on-disk filename (e.g. `prds/PRD-001-untitled.md`), and the
+  frontmatter receives the original title. Operators with non-ASCII
+  confidential titles should be aware that the file frontmatter now
+  contains the full title verbatim (the slug filename already exposed
+  partial title information pre-fix; this aligns the two surfaces).
 
 ### Added (developer-facing)
 

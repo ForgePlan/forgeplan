@@ -724,7 +724,7 @@ pub async fn delete_artifact_with_projection(
     // success* for delete (callers re-run delete during cleanup loops and
     // expect this to be a no-op), unlike `update_body_with_projection` which
     // returns `RowNotFound`. The asymmetry is intentional — documented here
-    // and in the variant taxonomy. TODO(PRD-073 Phase 3d): if a unified
+    // and in the variant taxonomy. TODO(PROB-049): if a unified
     // contract emerges, revisit; current state is two helpers, two policies,
     // both correct for their semantic class (idempotent destructor vs
     // input-validating mutator).
@@ -1057,12 +1057,17 @@ pub async fn sync_artifact_from_file(
     match tokio::fs::metadata(&path).await {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // R1 audit H-8 (security-expert): strip the workspace prefix so the
-            // error Display does not leak the user's home directory / project
-            // location to MCP error JSON / Claude Desktop transcripts. We
-            // surface only the workspace-relative path (e.g.
-            // `prds/PRD-001-foo.md`).
-            let rel_path = path.strip_prefix(workspace).unwrap_or(&path).to_path_buf();
+            // R1 audit H-8 + R2 audit M-R2-1: strip the workspace prefix so
+            // the error Display does not leak the user's home directory /
+            // project location. R2 hardening: if `strip_prefix` fails (which
+            // can happen under symlink/canonicalization mismatch on macOS
+            // `/Users/...` vs `/private/Users/...`), fall back to file_name
+            // only — NEVER to the absolute path. Previous `unwrap_or(&path)`
+            // silently reintroduced the leak in those edge cases.
+            let rel_path = path
+                .strip_prefix(workspace)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| path.file_name().map(PathBuf::from).unwrap_or_default());
             return Err(MutationError::FileNotFound {
                 id: artifact.id.clone(),
                 path: rel_path,
@@ -1108,12 +1113,16 @@ pub async fn sync_body_from_file(
         projection_slug(title)
     ));
     // R1 audit M-1: ENOENT only — EACCES / other I/O fall through as StoreError.
-    // R1 audit H-8: strip workspace prefix in the error to avoid leaking abs
-    // path through MCP error JSON.
+    // R1 audit H-8 + R2 M-R2-1: strip workspace prefix; on strip failure, fall
+    // back to file_name (never the absolute path) to avoid leaks under
+    // symlink/canonicalization mismatch.
     match tokio::fs::metadata(&path).await {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let rel_path = path.strip_prefix(workspace).unwrap_or(&path).to_path_buf();
+            let rel_path = path
+                .strip_prefix(workspace)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| path.file_name().map(PathBuf::from).unwrap_or_default());
             return Err(MutationError::FileNotFound {
                 id: id.to_string(),
                 path: rel_path,
@@ -2733,11 +2742,18 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
 
-        // All-Cyrillic title → slugify returns "" → `untitled` fallback.
+        // R2 audit M-R2-2: replaced fragile premise check
+        // `assert!(slugify(cyrillic_title).is_empty())` with a *behavioral*
+        // guard on `projection_slug`. The original premise would panic
+        // (silently disabling the real round-trip assertions) if slugify
+        // ever transliterated Cyrillic. The contract this test depends on
+        // is "projection_slug always produces a non-empty slug" — that's
+        // invariant under slugify impl changes.
         let cyrillic_title = "Тестовый артефакт";
+        let slug = projection_slug(cyrillic_title);
         assert!(
-            crate::artifact::types::slugify(cyrillic_title).is_empty(),
-            "test premise: slugify of all-Cyrillic must be empty (else this test does not exercise the fallback path)",
+            !slug.is_empty(),
+            "projection_slug must always produce a non-empty slug regardless of slugify impl, got: {slug:?}",
         );
 
         let mut a = art("PRD-940", "prd");
@@ -2746,8 +2762,12 @@ mod tests {
             .await
             .expect("create with Cyrillic title must succeed");
 
-        // The on-disk file is at `<id>-untitled.md`, NOT `<id>-.md`.
-        let expected = ws.join("prds").join("PRD-940-untitled.md");
+        // The on-disk file is at the slug computed by `projection_slug`.
+        // Today that's `<id>-untitled.md` (slugify returns "" for Cyrillic
+        // → fallback fires). After a future transliteration change it
+        // could be `<id>-testovyy-artefakt.md`. Either way the round-trip
+        // must work.
+        let expected = ws.join("prds").join(format!("PRD-940-{slug}.md"));
         assert!(
             expected.exists(),
             "create_artifact_with_projection must write the projection at the `untitled` fallback path, but {expected:?} does not exist",
@@ -2781,19 +2801,65 @@ mod tests {
             );
     }
 
-    /// R1 audit MEDIUM-1 (code-review): `metadata().is_err()` previously
-    /// conflated ENOENT with EACCES / EIO, which would mislead an MCP client
-    /// trying to remediate ("permission denied" wrongly looks like "file
-    /// missing"). Post-fix: only `ErrorKind::NotFound` produces the typed
-    /// `FileNotFound`; other I/O errors fall through as `StoreError`.
+    /// R2 audit M-R2-1 fix: actually exercise the M-1 disambiguation
+    /// between ENOENT and EACCES. Before this test, only ENOENT was
+    /// covered (and that test name overclaimed). On Unix we can chmod the
+    /// parent directory to 0o000 and confirm `metadata()` returns
+    /// `PermissionDenied` (NOT `NotFound`) → typed-error contract routes
+    /// it as `StoreError` (recoverable: true), NOT `FileNotFound`.
     ///
-    /// This test confirms the typed contract for the happy path of the new
-    /// `match` arm; the EACCES leg is hard to test portably (would need a
-    /// chmod-based fixture) but the `match` is shape-checked by `cargo
-    /// check`. The path-not-existing case is already covered by
-    /// `sync_artifact_from_file_returns_file_not_found_when_missing`.
+    /// This is the regression guard for "permission-denied wrongly
+    /// classified as file-missing" — the audit risk that motivated M-1.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn sync_artifact_file_not_found_uses_errorkind_notfound_match() {
+    async fn sync_artifact_returns_store_error_for_eacces_not_filenotfound() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let prds_dir = ws.join("prds");
+        tokio::fs::create_dir_all(&prds_dir).await.unwrap();
+
+        // Lock the parent dir so any `metadata()` on a child returns
+        // EACCES, not ENOENT.
+        let mut perms = tokio::fs::metadata(&prds_dir).await.unwrap().permissions();
+        perms.set_mode(0o000);
+        tokio::fs::set_permissions(&prds_dir, perms.clone())
+            .await
+            .unwrap();
+
+        let ghost = art("PRD-942", "prd");
+        let result = sync_artifact_from_file(&ws, &store, &ghost).await;
+
+        // Restore perms before asserting so a panic doesn't leave an
+        // unreadable temp dir behind.
+        let mut restored = perms.clone();
+        restored.set_mode(0o755);
+        tokio::fs::set_permissions(&prds_dir, restored)
+            .await
+            .unwrap();
+
+        let err = result.expect_err("EACCES must produce some MutationError");
+        // The disambiguation contract: EACCES routes to StoreError, NOT
+        // FileNotFound. If this assertion ever flips to FileNotFound, the
+        // M-1 fix has regressed.
+        assert!(
+            matches!(err, MutationError::StoreError(_)),
+            "EACCES must surface as StoreError (recoverable=true), NOT FileNotFound. got: {err:?}",
+        );
+        assert!(
+            err.is_recoverable(),
+            "StoreError from EACCES must be classified as recoverable (operator can fix perms and retry)",
+        );
+    }
+
+    /// Companion to the EACCES test: confirm the typed contract for the
+    /// happy `ErrorKind::NotFound` branch. Names the contract being tested
+    /// directly — no overclaim.
+    #[tokio::test]
+    async fn sync_artifact_returns_filenotfound_for_missing_file() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
