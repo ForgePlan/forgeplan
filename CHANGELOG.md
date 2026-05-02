@@ -7,7 +7,7 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
-## [Unreleased] — PRD-073 file-first invariant compile-enforced (Phase 3a → 3b → 4)
+## [Unreleased] — PRD-073 file-first invariant compile-enforced (Phase 3a → 3b → 3c → 4)
 
 Closes PRD-073 (PROB-048 → ADR-003 invariant). The "markdown is source
 of truth, LanceDB is derived index" rule is now compile-time enforced —
@@ -59,6 +59,39 @@ EVID-094.
   remain on disk but get a fresh ASCII slug on next render.
 - **`LanceStore::update_embedding` and `update_r_eff_score` stay `pub`**
   (Class A derived data, ADR-003 Amendment 1).
+- **BREAKING (forgeplan-core lib only)**: 16 mutation helpers in
+  `projection::*` migrated from `anyhow::Result<T>` to `MutationResult<T>`
+  (PRD-073 Phase 3c, ADR-003 Amendment 2). CLI binary and MCP server
+  surfaces unaffected. Library consumers see the same `?` ergonomics via
+  anyhow's blanket `From<E: std::error::Error + Send + Sync + 'static>`
+  impl. Variant taxonomy: `InvalidId`, `InvalidKind`, `EmptyField`,
+  `FileNotFound`, `ProjectionMismatch`, `RowNotFound`, `StoreError`. Use
+  `MutationError::is_recoverable()` to drive retry / warn-and-continue
+  policy instead of string-matching on flattened error messages.
+  Concrete migration example for downstream library consumers:
+  ```rust
+  // Before (anyhow::Result):
+  let err = create_artifact_with_projection(...).await.unwrap_err();
+  if err.to_string().contains("invalid id") { /* ... */ }
+
+  // After (MutationResult):
+  match create_artifact_with_projection(...).await {
+      Err(MutationError::InvalidId(_)) => /* fatal input */,
+      Err(e) if e.is_recoverable()     => /* transient — retry ok */,
+      Err(_)                           => /* fatal — surface to user */,
+      Ok(path) => /* happy path */,
+  }
+  ```
+  See ADR-003 Amendment 2 (`.forgeplan/adrs/ADR-003-*.md`) for the full
+  before/after error matrix and Phase 3d reserved-variant notes.
+- **`sync_artifact_from_file` and `sync_body_from_file` signatures take
+  `workspace: &Path`** to enable `FileNotFound { id, path }` typed errors
+  with the actual on-disk location. CLI callers (`reindex`, `git_sync`,
+  `watch`) updated. (PRD-073 Phase 3c)
+- **`update_body_with_projection` now returns `RowNotFound`** (not
+  `StoreError`) for the missing-id case — fixes Wave 1A audit finding
+  where `is_recoverable() == true` would have mislabeled an
+  unrecoverable input error as a transient I/O failure.
 
 ### Changed (behavioral — visible to CLI users)
 
@@ -72,6 +105,18 @@ EVID-094.
   `forgeplan restore <id>` within 30 days.
 - **All markdown writes are atomic** (tempfile + rename). Kill -9
   mid-write no longer leaves zero-length projection files.
+- **File frontmatter `title:` now preserves non-ASCII titles verbatim**
+  (PRD-073 Phase 3c R2 audit M-R2-3 / security). Previously, an
+  artifact created with a Cyrillic / CJK / emoji title (anything that
+  slugifies to empty) was rendered with `title: untitled` in the file
+  frontmatter — losing the user's original title from the on-disk
+  representation while the DB row preserved it. The Phase 3c
+  `projection_slug` helper now applies the `untitled` fallback only
+  to the on-disk filename (e.g. `prds/PRD-001-untitled.md`), and the
+  frontmatter receives the original title. Operators with non-ASCII
+  confidential titles should be aware that the file frontmatter now
+  contains the full title verbatim (the slug filename already exposed
+  partial title information pre-fix; this aligns the two surfaces).
 
 ### Added (developer-facing)
 

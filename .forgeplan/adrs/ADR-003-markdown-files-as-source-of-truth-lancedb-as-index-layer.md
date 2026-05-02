@@ -172,3 +172,144 @@ families are part of the invariant and which are deliberate carve-outs so
 contributors can read the regression guard's `FORBIDDEN_PATTERNS` and
 understand both what it covers and what it intentionally does not.
 
+## Amendment 2 — Phase 3c Typed Errors (2026-05-02)
+
+Phase 3a/3b established the file-first invariant by extracting helpers in
+`forgeplan_core::projection::*` and demoting `LanceStore::*` mutating
+methods to `pub(crate)`. All 16 helpers returned `anyhow::Result<T>`.
+Phase 3c migrates them to `MutationResult<T>` (alias for
+`std::result::Result<T, MutationError>`) so callers can react per-variant
+instead of string-matching on a flattened error message.
+
+### Motivation
+
+`anyhow::Result<()>` collapses every failure mode into a single opaque
+chain. Two concrete consequences observed during Phase 3a/3b adversarial
+audits:
+
+1. **MCP cannot enforce strict mode.** An MCP handler receiving "invalid
+   id" needs to return a fatal `ToolError`, but receiving "LanceDB
+   transient I/O" should retry. With `anyhow::Error` the only signal is
+   `format!("{e}")`, which is brittle (string-matching on error messages
+   is the classic anti-pattern that breaks on every prose tweak).
+2. **CLI swallowed `RowNotFound` as recoverable.** Wave 1A audit
+   surfaced `update_body_with_projection`'s "id not found" being wrapped
+   as `StoreError(anyhow!(...))`. `is_recoverable() == true` told the
+   warn-and-continue layer this was transient. It wasn't — the row never
+   existed. A new `RowNotFound { id }` variant fixes the
+   classification.
+
+Typed errors let the MCP handler `match err.kind()` for strict mode and
+the CLI `if err.is_recoverable() { warn() } else { abort() }` for
+lenient mode — same helper, two policies, no string-matching.
+
+### Variant taxonomy
+
+| Variant | Recoverable? | When emitted |
+|---|---|---|
+| `InvalidId(String)` | no | id failed `validate_artifact_id` (path-traversal payloads, empty, illegal chars) |
+| `InvalidKind { id, kind, source }` | no | frontmatter `kind` not parseable as `ArtifactKind` |
+| `EmptyField { field }` | no | `Some("")` / `Some("   ")` for status or title at helper boundary |
+| `FileNotFound { id, path }` | no | sync-from-file helper called for a missing markdown file |
+| `ProjectionMismatch { id, kind_db, kind_file }` | no | drift between on-disk frontmatter `kind` and DB row `kind` (defined; live drift detection arrives in Phase 3d for `sync_metadata_from_file` / `sync_relation_from_file`) |
+| `RowNotFound { id }` | no | input-side: caller passed an id that has no DB row (replaces misleading `StoreError` for this case) |
+| `StoreError(#[from] anyhow::Error)` | **yes** | underlying `LanceStore` mutation failure — transient I/O, lock contention |
+
+### Before / after error matrix
+
+| Helper | Phase 3a/3b (`anyhow::Result`) | Phase 3c (`MutationResult`) |
+|---|---|---|
+| `create_artifact_with_projection` | `bail!("invalid id")` / `bail!("invalid kind")` / `?` on store | `InvalidId` / `InvalidKind` / `StoreError` |
+| `delete_artifact_with_projection` | `bail!("invalid id")` / `?` on store | `InvalidId` / `StoreError` |
+| `update_metadata_with_projection` | `bail!("status cannot be empty")` / `bail!("title cannot be empty")` / `bail!("invalid id")` | `EmptyField{status}` / `EmptyField{title}` / `InvalidId` / `StoreError` |
+| `update_body_with_projection` | `bail!("invalid id")` / `bail!("not found in store")` / `?` on store | `InvalidId` / **`RowNotFound`** (was misclassified as `StoreError`) / `StoreError` |
+| `update_depth_with_projection` | `bail!("invalid id")` / `?` on store | `InvalidId` / `StoreError` |
+| `add_tags_with_projection` / `remove_tags_with_projection` | `bail!("invalid id")` / `?` on store | `InvalidId` / `StoreError` |
+| `add_link_with_projection` / `delete_link_with_projection` | `bail!("invalid id")` x2 / `?` on store | `InvalidId` (source/target) / `StoreError` |
+| `add_links_batch_with_projection` | `anyhow::Result<usize>` | `MutationResult<usize>` (per-link `InvalidId` / `StoreError`) |
+| `sync_artifact_from_file` | `bail!("invalid id")` / `bail!("invalid kind")` / `?` on store | `InvalidId` / `InvalidKind` / **`FileNotFound`** (new — requires `workspace: &Path`) / `StoreError` |
+| `sync_body_from_file` | `bail!("invalid id")` / `?` on store | `InvalidId` / `InvalidKind` / **`FileNotFound`** (new — requires `workspace: &Path`) / `StoreError` |
+| `sync_metadata_from_file` | `bail!("invalid id")` / `bail!("status/title empty")` | `InvalidId` / `EmptyField` / `StoreError` |
+| `sync_relation_from_file` | `bail!("invalid id")` x2 / `?` on store | `InvalidId` / `StoreError` |
+| `delete_orphan_artifact` / `delete_orphan_relation` | `bail!("invalid id")` / `?` on store | `InvalidId` / `StoreError` |
+| `delete_artifact_after_soft_delete` | `bail!("invalid id")` / `?` on store | `InvalidId` / `StoreError` |
+
+### Downstream impact
+
+This is **library-level** breakage only. End users of the `forgeplan`
+CLI binary or the `forgeplan-mcp` server see no behavior change beyond
+the audit fix in `update_body_with_projection`. The break surface is:
+
+- **Direct consumers of `forgeplan_core::projection::*`** — `forgeplan-cli`
+  (in this PR: `commands/git_sync.rs`, `commands/reindex.rs`,
+  `commands/watch.rs`) and any third-party crate calling the helpers.
+- **Anyhow's blanket `From<E: std::error::Error + Send + Sync + 'static>
+  for anyhow::Error`** keeps `?` propagation working unchanged in
+  `anyhow::Result`-returning callers — the `MutationError` is auto-wrapped.
+
+What does **not** break:
+
+- Callers using `?` to bubble up into an `anyhow::Result<T>` function.
+- Callers using `Result<T, anyhow::Error>` explicitly — anyhow's blanket
+  `From` impl handles the conversion.
+
+What **does** break (compile-time, fast feedback):
+
+- Callers that explicitly type the helper return as `anyhow::Result<T>`
+  in a `let ...: anyhow::Result<()> = projection::foo(...)` binding.
+- Callers that `match` on the returned error and pattern-match
+  `anyhow::Error::downcast`-style — they should match `MutationError`
+  variants directly now.
+
+### Migration path for downstream consumers
+
+1. **Update return types** if explicitly annotated with
+   `anyhow::Result<T>` — change to `forgeplan_core::projection::MutationResult<T>`
+   or rely on `?` propagation into a wider `anyhow::Result<T>`.
+2. **Update `match` arms** if the caller pattern-matches error variants
+   — replace string-matching on `format!("{e}")` with
+   `match err { MutationError::InvalidId(id) => ..., MutationError::StoreError(_) => ..., _ => ... }`.
+3. **Call `is_recoverable()`** to drive retry / warn-and-continue
+   policy decisions instead of `format!("{e}").contains("transient")`.
+
+### Architectural change: `workspace: &Path` on sync-from-file helpers
+
+Two helpers gained a `workspace: &Path` parameter so they can construct
+the full file path and emit `FileNotFound { id, path }` with the actual
+on-disk location:
+
+- `sync_artifact_from_file(workspace, store, artifact)`
+- `sync_body_from_file(workspace, store, id, kind, body)`
+
+CLI callers (`reindex.rs`, `git_sync.rs`, `watch.rs`) were updated in
+this PR. External consumers calling these two helpers must thread the
+workspace path through — typically already available as the `Workspace`
+or `&Path` next to the store handle.
+
+### Open work — Phase 3d (deferred)
+
+Two items found during Phase 3c are intentionally deferred so this PR
+stays scoped to the typed-error migration:
+
+1. **Drift detection in `sync_metadata_from_file` and
+   `sync_relation_from_file`** — the `ProjectionMismatch` variant is
+   defined and tested in `error.rs` but not yet emitted by these two
+   helpers. Adding it requires extending their signatures with `kind:
+   &str` (sync_metadata) and `kind: &str` for source+target
+   (sync_relation), so the helper can compare the on-disk frontmatter
+   kind against the DB row's kind. Out of scope for 3c; tracked in
+   PRD-073 Phase 3d.
+2. **`add_links_batch` `Vec::contains` O(N²) dedup** — Wave 1B audit
+   LOW-4 flagged the per-link dedup loop as quadratic. Replacement
+   with `HashSet<&str>` is mechanical and orthogonal to the typed-error
+   migration. Code-comment marker left in place; tracked in PRD-073
+   Phase 3d.
+
+### Status update
+
+| Phase | Scope | Status |
+|---|---|---|
+| 3c | Typed `MutationError` + 16-helper migration | ✅ done (this PR): 16 helpers in `projection/mod.rs` migrated; `error.rs` extracted to its own module; `RowNotFound` variant added (Wave 1A audit fix); `FileNotFound` enabled by `workspace: &Path` on two sync-from-file helpers |
+| 3d | Drift detection in `sync_metadata` / `sync_relation` + `HashSet` dedup in `add_links_batch` | ⏳ pending |
+| 5 | EVID-094 supplement: clone reproducibility at CL3 + closure | ⏳ pending |
+
