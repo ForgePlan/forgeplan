@@ -10,18 +10,21 @@ links:
 - target: ADR-003
   relation: informs
 status: active
-title: PRD-073 Phase 3a (post-audit) — file-first projection helpers + multi-line ratchet fix → 24 nominal bypass sites migrated, baselines CLI 17 / MCP 4 (sync-mechanism only)
-valid_until: 2027-05-01
+title: PRD-073 Phase 3a + 3b + 4 — file-first invariant compile-enforced (45 → 0 bypass sites, 4 audit rounds, 56 findings closed)
 ---
 
-# EVID-094: PRD-073 Phase 3a (post-audit)
+# EVID-094: PRD-073 Phase 3a + 3b + 4 (full sprint closure)
 
 | Field | Value |
 |-------|-------|
 | Status | Active |
 | Created | 2026-05-01 |
 | Valid Until | 2027-05-01 |
-| Target | PRD-073 (Phase 3a partial closure of PROB-048 / ADR-003 invariant), incorporating remediation of architect-review + code-reviewer + security-expert findings |
+| Target | PRD-073 — full closure of PROB-048 / ADR-003 invariant |
+| Phases | 1 + 2 (helpers + MCP migration) + 3a (bulk CLI) + 3b (sync-mechanism extraction) + 4 (`pub(crate)` lockdown) |
+| Audit rounds | 4 (general + live-test + Rust-focused + final team-lead) |
+| Findings closed | 56 (7 CRITICAL + 16 HIGH + 19 MEDIUM + 14 LOW) |
+| PR | [#230](https://github.com/ForgePlan/forgeplan/pull/230) |
 
 ## Structured Fields
 
@@ -82,13 +85,35 @@ that the old matcher missed): `new`, `tag` (add+remove), `generate`, MCP
 `forgeplan_capture`, MCP `forgeplan_generate`. Plus 2 new helpers
 `add_tags_with_projection` / `remove_tags_with_projection`.
 
-### Helpers (9 total, all in `forgeplan_core::projection`)
+### Helpers (15 total, all in `forgeplan_core::projection`)
 
+**Mutation helpers (9, Phase 3a)** — for command handlers, do
+`{sync_before, mutate, render_after}`:
 `create_artifact_with_projection`, `delete_artifact_with_projection`,
 `update_metadata_with_projection`, `update_body_with_projection`,
 `update_depth_with_projection`, `add_link_with_projection`,
 `delete_link_with_projection`, `add_tags_with_projection`,
 `remove_tags_with_projection`.
+
+**Sync-from-file helpers (6, Phase 3b)** — for reindex/git_sync/watch
+where the file is already authoritative, file→DB direction only:
+`sync_artifact_from_file`, `sync_body_from_file`,
+`sync_metadata_from_file`, `sync_relation_from_file`,
+`delete_orphan_artifact`, `delete_orphan_relation`.
+
+**Bonus** (Phase 3a follow-up): `add_links_batch_with_projection` for
+bulk-import perf (deduplicates pre-sync + post-render per unique
+participant — 100-link bundle goes from 600 LanceDB calls to ~2×U + N).
+`delete_artifact_after_soft_delete` for the MCP soft-delete pattern.
+
+**Phase 4 lockdown** demoted 11 mutating `LanceStore` methods to
+`pub(crate)` so direct calls from `commands/*.rs` or `server.rs` now
+fail compile, not just fail the regression test. `update_embedding`
+and `update_r_eff_score` stay `pub` (Class A derived data per
+ADR-003 Amendment 1). Test fixtures use `*_for_test` escape hatches
+gated on `cfg(any(test, all(feature = "test-helpers", debug_assertions)))`
+so release builds with the feature accidentally enabled still keep
+the lockdown.
 
 ### Audit remediation summary (5 CRITICAL + 5 HIGH closed)
 
@@ -128,34 +153,72 @@ that the old matcher missed): `new`, `tag` (add+remove), `generate`, MCP
   fixed: helper now early-returns with debug-assert; CLI gate stays as
   defense-in-depth.
 
-### Verification (post-remediation)
+### Audit round 4 (final team-lead, post-Phase-3b/4)
+
+Three reviewers in parallel via `TeamCreate`: architect (3 HIGH +
+4 MEDIUM + 3 LOW), code-reviewer (1 MEDIUM + 4 LOW), security
+(1 MEDIUM + 1 LOW + 1 INFO). All HIGH + relevant MEDIUM closed:
+- A1: 8 direct unit tests for new helpers added
+- A2: audit.yaml playbook downgraded from "canonical" to "REFERENCE
+  EXAMPLE, requires task-tool 1.x"
+- A3: CHANGELOG `[Unreleased]` entry with BREAKING / behavioral /
+  Added / Fixed sections
+- A4: `update_metadata_with_projection` migrated to `MutationResult<()>`
+  as canary for typed-error contract
+- A5: ADR-003 Amendment 1 status table updated — Phase 3b/4 ✅ done
+- A6: README "Cargo features" section with test-helpers warning
+- S1: `cfg(any(test, feature = "test-helpers"))` tightened to
+  `cfg(any(test, all(feature = "test-helpers", debug_assertions)))` —
+  release builds with the feature accidentally enabled now get ZERO
+  escape-hatch methods
+- A10: `import_cmd.rs` shows "N of M relations applied" + warning on
+  diff — half-failed imports no longer silent
+- MEDIUM-1 (code-reviewer): `sync_metadata_from_file` empty
+  status/title rejection mirroring H2
+
+### Verification (full sprint final)
 
 - `cargo fmt -- --check` clean
 - `cargo check --workspace` 0 warnings
 - `cargo clippy --workspace --all-targets -- -D warnings` clean
-- `cargo test --workspace --no-fail-fast` **1851 passed / 0 failed**
-- `cargo test -p forgeplan --test adr_003_invariant` 2 passed at honest
-  baselines (CLI 17 / MCP 4)
-- **Real E2E reproduction of each fixed CRITICAL** on temp workspace:
-  - CRITICAL #2: `forgeplan update PRD-001 --depth deep --title "Renamed PRD"` →
-    only `PRD-001-renamed-prd.md` exists (old-slug file gone, no orphan)
-  - C2: `forgeplan remember "foo" + remember "foo bar" + remember --forget mem-foo` →
-    `mem-foo-bar-...md` survives (sibling not clobbered)
-  - H2: `forgeplan update PRD-001 --body @file` → file body matches
-    CLI input, frontmatter preserved
-- Full surface E2E: capture / link+unlink / tag+untag (new helpers) /
-  delete cascade / remember+forget / promote — all clean
+- `cargo test --workspace --no-fail-fast` **1866 passed / 0 failed**
+  (+14 audit-regression tests since pre-PRD-073 baseline of 1852)
+- `cargo test -p forgeplan --test adr_003_invariant` 2 passed at
+  baselines **CLI=0 / MCP=0** (multi-line scanner)
+- `cargo build --release -p forgeplan`: clean
+- `strings target/release/forgeplan | grep _for_test`: empty (lockdown
+  preserved in release)
+- **Real E2E** on temp workspaces:
+  - Path traversal via `id` in import bundle: REJECTED before write
+  - Path traversal via `--title "../../etc/evil"`: slugify sanitizes
+  - Empty `--title ""` / `--status ""`: REJECTED at helper boundary
+  - 4-concurrent `update --title TN`: ONE final file (lock + tuple
+    drop-order)
+  - `update --depth+--title` orphan-recreation: ONE file
+  - `mem-foo` vs `mem-foo-bar` collision: sibling survives
+  - Import roundtrip 3 artifacts: 3 files written + 3 DB rows
+  - `kill -9` mid-write × 30 iterations: 0 zero-length files
+  - CLI `delete` + `undo-last` + explicit `restore`: full recovery
+  - `playbook run greenfield-kickoff`: 7/7 steps green, 6 artifacts
+  - `discover start → list → show → complete`: full lifecycle
+  - `claim --ttl-minutes 5` + `release`: roundtrip clean
+  - Lifecycle (activate/deprecate/supersede) with evidence: gates
+    enforce correctly
+  - Tag/untag with frontmatter inspection: tags appear/disappear
+- **Real workspace** (`.forgeplan/` 263 → 264 artifacts including
+  PROB-042 cyrillic→ASCII slug rename): read clean via
+  health/list/status/playbook/blocked/blindspots/search/get/score
 
 ## Interpretation
 
-The migration **partially closes** the ADR-003 invariant violation
-documented in PROB-048. For the 24 mutation paths covered by Phase 3a
-post-audit, the file-first ordering is now centralized in 9
-`core::projection` helpers — handlers can no longer forget the
-projection step because there is nothing to forget at the call site. The
-regression test ratchet (`tests/adr_003_invariant.rs`), now multi-line
-aware, prevents these 24 paths from reverting to direct `LanceStore::*`
-calls without an explicit ADR amendment.
+The migration **fully closes** the ADR-003 invariant violation
+documented in PROB-048. All 30+ mutation paths in `commands/*.rs` and
+`server.rs` production code now go through `forgeplan_core::projection::*`
+helpers. The regression test ratchet (`tests/adr_003_invariant.rs`,
+multi-line aware) shows CLI=0 / MCP=0 — no direct `LanceStore::*`
+mutations remain in production code outside the projection helper
+namespace. Phase 4 `pub(crate)` lockdown makes this a compile-time
+guarantee, not just a regression-test guarantee.
 
 The remaining 21 sites are not nominal bypasses — they are sync
 mechanisms (CLI: `reindex`, `git_sync`, `import_cmd`, `watch`, `ingest`;
@@ -207,3 +270,4 @@ impossible at compile time.
 | PRD-073 | informs |
 | PROB-048 | informs |
 | ADR-003 | informs |
+
