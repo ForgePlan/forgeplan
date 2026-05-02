@@ -154,6 +154,20 @@ pub struct Step {
     /// playbooks without this field load identically to schema 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u32>,
+    /// Per-step USD budget cap for `claude --print` invocations
+    /// (ADR-011 / SPEC-003 1.2). Plugin and Agent dispatchers translate
+    /// this to `--max-budget-usd <N>`; if `None`, the dispatcher applies
+    /// its `DEFAULT_BUDGET_USD` (1.00 typical). Other delegate kinds
+    /// (Skill, Command, ForgeplanCore) ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    /// Per-step tool allowlist for `claude --print` invocations
+    /// (ADR-011 / SPEC-003 1.2). Translated to `--allowedTools <T1> <T2> ...`
+    /// (variadic, separate args per tool). `None` means the dispatcher
+    /// applies its default allowlist (Read, Glob, Grep — least-privilege
+    /// for analytic agents). Other delegate kinds ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// Delegation target — strict 5-variant enum from SPEC-003 §"delegate_to".

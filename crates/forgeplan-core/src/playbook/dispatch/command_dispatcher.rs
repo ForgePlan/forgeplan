@@ -206,6 +206,8 @@ mod tests {
             fallback_hint: None,
             on_error: OnError::Abort,
             timeout_seconds: None,
+            budget_usd: None,
+            allowed_tools: None,
         }
     }
 
