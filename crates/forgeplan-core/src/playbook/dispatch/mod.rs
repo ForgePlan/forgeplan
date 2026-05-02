@@ -34,6 +34,7 @@
 //! Each Wave 1 teammate owns exactly one of these files plus tests.
 
 pub mod agent_dispatcher;
+pub mod claude_print;
 pub mod command_dispatcher;
 pub mod forgeplan_core_dispatcher;
 pub mod helpers;
@@ -383,6 +384,8 @@ mod tests {
             fallback_hint: None,
             on_error: OnError::Abort,
             timeout_seconds: None,
+            budget_usd: None,
+            allowed_tools: None,
         }
     }
 
@@ -399,6 +402,8 @@ mod tests {
             fallback_hint: None,
             on_error: OnError::Abort,
             timeout_seconds: None,
+            budget_usd: None,
+            allowed_tools: None,
         }
     }
 
