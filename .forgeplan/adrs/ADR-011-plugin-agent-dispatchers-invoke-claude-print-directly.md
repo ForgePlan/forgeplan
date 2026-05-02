@@ -66,7 +66,7 @@ Spike validation:
 4. Output decoding:
    - Parse stdout as JSON
    - `is_error: true` OR `api_error_status != null` → DispatchOutcome { success: false, stderr: <api_error or .result> }
-   - `total_cost_usd >= max_budget_usd` → SuccessОperator partial budget exhausted, surface in stderr context
+   - `total_cost_usd >= max_budget_usd` → Success operator with partial budget exhausted, surface in stderr context
    - File at `produces_at` exists после invocation → success path
 5. Каноническое prompt scaffolding для produces_at flow:
    ```

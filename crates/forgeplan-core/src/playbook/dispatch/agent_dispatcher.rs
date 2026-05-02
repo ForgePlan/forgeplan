@@ -194,16 +194,34 @@ impl Dispatcher for AgentDispatcher {
         //    rule still protects against future drift).
         let budget = effective_budget_usd(step);
         let tools = effective_allowed_tools(step);
-        let add_dir = add_dir_for_produces_at(step, &self.workspace_root);
 
-        let mut args: Vec<String> = Vec::with_capacity(8 + tools.len() * 2);
+        // R1 audit CRITICAL — security-expert C-2: validate every
+        // allowed_tools entry before argv construction (flag-injection
+        // surface).
+        crate::playbook::dispatch::claude_print::validate_allowed_tools(&tools).map_err(
+            |reason| DispatchError::Transport(format!("agent step `{}`: {reason}", step.id)),
+        )?;
+
+        // R1 audit CRITICAL — security-expert C-1: canonicalise produces_at,
+        // reject `..` and absolute paths to prevent workspace escape via
+        // `--add-dir`.
+        let add_dir = add_dir_for_produces_at(step, &self.workspace_root).map_err(|reason| {
+            DispatchError::Transport(format!("agent step `{}`: {reason}", step.id))
+        })?;
+
+        let mut args: Vec<String> = Vec::with_capacity(11 + tools.len());
         args.push("--print".to_string());
         args.push("--agent".to_string());
         args.push(agent_name.clone());
         args.push("--output-format".to_string());
         args.push("json".to_string());
         args.push("--max-budget-usd".to_string());
-        args.push(budget.to_string());
+        // R1 audit CRITICAL (rust+code-review C-1): shared format_budget
+        // for argv-shape parity with PluginDispatcher (pre-fix Plugin emitted
+        // "1.00" while Agent emitted "1" for default budget).
+        args.push(crate::playbook::dispatch::claude_print::format_budget(
+            budget,
+        ));
         if let Some(dir) = &add_dir {
             args.push("--add-dir".to_string());
             args.push(dir.to_string_lossy().into_owned());
@@ -642,7 +660,7 @@ printf '%s' '{json}'
         assert_eq!(lines[3], "--output-format");
         assert_eq!(lines[4], "json");
         assert_eq!(lines[5], "--max-budget-usd");
-        assert_eq!(lines[6], "2.5");
+        assert_eq!(lines[6], "2.50");
         let tool_idx = lines
             .iter()
             .position(|l| *l == "--allowedTools")

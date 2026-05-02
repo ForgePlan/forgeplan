@@ -117,6 +117,18 @@ EVID-094.
   confidential titles should be aware that the file frontmatter now
   contains the full title verbatim (the slug filename already exposed
   partial title information pre-fix; this aligns the two surfaces).
+- **`claude` CLI is now a runtime prereq for playbooks that use
+  `delegate_to: plugin` or `delegate_to: agent`** (ADR-011, Phase B).
+  Replaces the never-shipped `claude-code-plugin` / `task-tool` binaries
+  assumed by ADR-010. Plugin and agent steps invoke `claude --print
+  --agent <name>` directly via `tokio::process::Command`. Existing
+  Claude Code session is reused (no `ANTHROPIC_API_KEY` required for
+  interactive runs); CI runs need the env var. Missing binary surfaces
+  `DispatchError::DelegateMissing` with install hint pointing to
+  https://code.claude.com/docs/en/install. New per-step `Step.budget_usd`
+  (default $1.00) and `Step.allowed_tools` (default `[Read, Glob, Grep]`)
+  fields control invocation surface; SPEC-003 1.1 → 1.2 (additive).
+  Skill, Command, and ForgeplanCore dispatchers are unchanged.
 
 ### Added (developer-facing)
 

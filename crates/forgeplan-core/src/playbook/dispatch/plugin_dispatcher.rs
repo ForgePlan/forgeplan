@@ -58,7 +58,7 @@ use async_trait::async_trait;
 
 use super::claude_print::{
     self, ClaudePrintResponse, add_dir_for_produces_at, assemble_prompt, effective_allowed_tools,
-    effective_budget_usd,
+    effective_budget_usd, format_budget, validate_allowed_tools,
 };
 use super::helpers::{self, SubprocessSpec, build_env_allowlist};
 use super::{DispatchError, DispatchOutcome, Dispatcher};
@@ -197,27 +197,46 @@ impl Dispatcher for PluginDispatcher {
         let prompt = assemble_prompt(step);
         let allowed_tools = effective_allowed_tools(step);
         let budget = effective_budget_usd(step);
-        let add_dir = add_dir_for_produces_at(step, &self.workspace_root);
 
-        // Assemble argv per ADR-011 §Decision. Order is functionally
-        // irrelevant for `claude` but kept stable for argv-shape tests.
-        let mut args: Vec<String> = Vec::with_capacity(8 + 2 * allowed_tools.len());
+        // R1 audit CRITICAL — security-expert C-2: validate every
+        // allowed_tools entry against the tool-name regex BEFORE argv
+        // construction, blocking flag-injection like `--debug-flag-x`
+        // smuggled through `Step.allowed_tools`.
+        validate_allowed_tools(&allowed_tools).map_err(|reason| {
+            DispatchError::Transport(format!("plugin step `{}`: {reason}", step.id))
+        })?;
+
+        // R1 audit CRITICAL — security-expert C-1: canonicalise produces_at
+        // and reject `..` / absolute paths to prevent workspace escape
+        // through `--add-dir`. Returns Result now.
+        let add_dir = add_dir_for_produces_at(step, &self.workspace_root).map_err(|reason| {
+            DispatchError::Transport(format!("plugin step `{}`: {reason}", step.id))
+        })?;
+
+        // Assemble argv per ADR-011 §Decision. Order matters: `--add-dir`
+        // MUST precede `--allowedTools` because the latter is variadic and
+        // would consume the `--add-dir <path>` pair as additional tool
+        // names. R1 audit CRITICAL (code-review C-1) for plugin path —
+        // pre-fix order put --allowedTools first, breaking --add-dir.
+        let mut args: Vec<String> = Vec::with_capacity(11 + allowed_tools.len());
         args.push("--print".to_string());
         args.push("--agent".to_string());
         args.push(agent_slug.to_string());
         args.push("--output-format".to_string());
         args.push("json".to_string());
         args.push("--max-budget-usd".to_string());
-        args.push(format!("{budget:.2}"));
+        // R1 audit CRITICAL (rust+code-review C-1/C-2): shared
+        // format_budget for argv-shape parity between Plugin and Agent.
+        args.push(format_budget(budget));
+        if let Some(dir) = &add_dir {
+            args.push("--add-dir".to_string());
+            args.push(dir.to_string_lossy().into_owned());
+        }
         if !allowed_tools.is_empty() {
             args.push("--allowedTools".to_string());
             for tool in &allowed_tools {
                 args.push(tool.clone());
             }
-        }
-        if let Some(dir) = &add_dir {
-            args.push("--add-dir".to_string());
-            args.push(dir.to_string_lossy().into_owned());
         }
 
         // Env: explicit allow-list per ADR-010 (PATH/HOME/USER only).
