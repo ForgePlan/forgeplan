@@ -95,12 +95,24 @@ steps:
     on_error: abort
 
   # 2. Ingest the C4 output into forge Notes via the canonical mapping.
+  #
+  #    Track 4-A8 R1 audit (code-review C-1): `ForgeplanCoreDispatcher::Ingest`
+  #    contract requires `step.input.mapping_path` + `step.input.source_path`
+  #    (parse_op_input in forgeplan_core_dispatcher.rs). Top-level `mapping:`
+  #    is a SOFT WARNING field in `loader.rs` — never read by the
+  #    dispatcher. Pre-fix this step shipped with `mapping: c4-to-forge` at
+  #    top level + no `step.input` and was non-functional end-to-end since
+  #    Phase 6; the broken shape was copied into early drafts of
+  #    `brownfield-docs.yaml` and caught by the new
+  #    `marketplace_playbooks_smoke.rs` regression guard added in the
+  #    Track 4-A8 PR. Fix shape inline here for parity.
   - id: ingest-c4
     delegate_to:
       type: forgeplan_core
       target: ingest
-    mapping: c4-to-forge
-    produces_at: "C4-Documentation/"
+    input:
+      mapping_path: "marketplace/mappings/c4-to-forge.yaml"
+      source_path: "C4-Documentation/"
     requires: [run-c4-architecture]
     on_error: abort
 
