@@ -25,7 +25,9 @@
 //! - Stdin prompt is mandatory.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
+use regex::Regex;
 use serde::Deserialize;
 
 use crate::playbook::types::Step;
@@ -163,6 +165,39 @@ pub fn effective_allowed_tools(step: &Step) -> Vec<String> {
 /// [`DEFAULT_BUDGET_USD`].
 pub fn effective_budget_usd(step: &Step) -> f64 {
     step.budget_usd.unwrap_or(DEFAULT_BUDGET_USD)
+}
+
+/// Pattern enforcing argv-injection-safe agent / plugin / target names:
+/// must start with a letter, then up to 63 additional `[A-Za-z0-9_-]` chars
+/// (total length 1..=64). Compiled lazily and cached.
+fn agent_name_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$").expect("agent name regex literal is valid")
+    })
+}
+
+/// Validate that `name` is safe to splice into argv as an agent / plugin /
+/// target identifier (ADR-011 §Security). Both `AgentDispatcher` and
+/// `PluginDispatcher` MUST call this before spawning `claude --print`.
+///
+/// Reject reasons (non-exhaustive):
+/// - empty
+/// - leading dash (`--allowedTools` would be parsed as a flag by claude)
+/// - shell metacharacters (`;`, `|`, `&`, `$`, backtick, spaces, etc.)
+/// - exceeds 64 chars
+///
+/// Caller wraps the returned `String` in its own `DispatchError::Transport`
+/// (or analogous) so the surrounding context (agent vs plugin) is preserved.
+pub(crate) fn validate_agent_name(name: &str) -> Result<(), String> {
+    if agent_name_regex().is_match(name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "agent name `{name}` rejected: must match ^[A-Za-z][A-Za-z0-9_-]{{0,63}}$ \
+             (argv-injection guard, ADR-011 §Security)"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -361,6 +396,51 @@ mod tests {
         let ws = std::path::PathBuf::from("/work/repo");
         let dir = add_dir_for_produces_at(&step, &ws).unwrap();
         assert_eq!(dir, std::path::PathBuf::from("/work/repo/reports"));
+    }
+
+    #[test]
+    fn validate_agent_name_accepts_typical_identifiers() {
+        for ok in [
+            "auditor",
+            "code-reviewer",
+            "rust_expert",
+            "Agent1",
+            "a",
+            "A1_2-3",
+        ] {
+            validate_agent_name(ok).unwrap_or_else(|e| panic!("must accept `{ok}`: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_argv_injection_forms() {
+        for bad in [
+            "",
+            "--allowedTools",
+            "-x",
+            "a b",
+            "a;b",
+            "a|b",
+            "a$b",
+            "a`b",
+            "a&b",
+            "a/b",
+            "../etc",
+            "1leading-digit",
+        ] {
+            assert!(
+                validate_agent_name(bad).is_err(),
+                "must reject `{bad}` as argv-injection unsafe"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_name_enforces_length_cap() {
+        let ok = "a".to_string() + &"b".repeat(63); // 64 chars total
+        assert!(validate_agent_name(&ok).is_ok());
+        let too_long = "a".to_string() + &"b".repeat(64); // 65 chars
+        assert!(validate_agent_name(&too_long).is_err());
     }
 
     #[test]
