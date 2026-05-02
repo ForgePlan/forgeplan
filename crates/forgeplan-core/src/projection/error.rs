@@ -32,12 +32,16 @@ pub enum MutationError {
     /// The supplied `kind` field could not be parsed as an `ArtifactKind`.
     /// Always fatal — silent fallback to `Note` would let mutations land in
     /// the wrong directory (audit H1).
-    #[error("invalid artifact kind '{kind}' for {id}: {source}")]
+    ///
+    /// R1 audit M-3 (architect+security+rust): `reason: String` keeps the
+    /// typed-error promise — every variant now carries plain data, with no
+    /// `anyhow::Error` chain hiding parser internals or backtrace frames.
+    /// Programmatic callers match on `kind`; humans read `reason`.
+    #[error("invalid artifact kind '{kind}' for {id}: {reason}")]
     InvalidKind {
         id: String,
         kind: String,
-        #[source]
-        source: anyhow::Error,
+        reason: String,
     },
 
     /// `Some("")` or `Some("   ")` for status/title at the helper boundary.
@@ -55,6 +59,14 @@ pub enum MutationError {
     /// Detected drift between the on-disk frontmatter and the LanceDB row
     /// (e.g. kind disagreement). Always fatal — silently picking one side
     /// would amplify the drift on the next sync.
+    ///
+    /// **Reserved for Phase 3d.** No helper currently produces this variant —
+    /// it is defined now so that the variant taxonomy is stable across the
+    /// 3c → 3d transition. Callers writing strict-mode `match` arms today
+    /// MUST use `_ =>` rather than exhaustively matching, since the variant
+    /// will appear without a breaking change. Phase 3d wiring: enrich
+    /// `sync_metadata_from_file` / `sync_relation_from_file` with `kind`
+    /// and `parsed_frontmatter` arguments to compare against DB state.
     #[error("projection mismatch for {id}: file claims {kind_file}, DB has {kind_db}")]
     ProjectionMismatch {
         id: String,
@@ -72,6 +84,13 @@ pub enum MutationError {
 
     /// The underlying `LanceStore` mutation returned an error. Wrapped so
     /// callers can distinguish DB errors from validation errors.
+    ///
+    /// TODO(PRD-073 Phase 3d): split into `StoreTransient` (lock contention,
+    /// transient I/O — `is_recoverable() == true`) vs `StoreFatal` (schema
+    /// mismatch, missing-table, malformed predicate — `is_recoverable() ==
+    /// false`). Today every `?` from `LanceStore::*` collapses into this
+    /// recoverable bucket, which would mislead an MCP retry loop on
+    /// permanent failures (R1 audit H-1, architect+security flagged).
     #[error("LanceStore mutation failed: {0}")]
     StoreError(#[from] anyhow::Error),
 }
@@ -140,13 +159,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_kind_carries_source_chain() {
+    fn invalid_kind_carries_reason() {
         let e = MutationError::InvalidKind {
             id: "X-1".to_string(),
             kind: "bogus".to_string(),
-            source: anyhow::anyhow!("unknown variant"),
+            reason: "unknown variant".to_string(),
         };
-        assert!(format!("{e}").contains("X-1"));
+        let msg = format!("{e}");
+        assert!(msg.contains("X-1"));
+        assert!(msg.contains("bogus"));
+        assert!(msg.contains("unknown variant"));
         assert!(!e.is_recoverable());
     }
 

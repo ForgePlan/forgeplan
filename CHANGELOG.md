@@ -68,6 +68,22 @@ EVID-094.
   `FileNotFound`, `ProjectionMismatch`, `RowNotFound`, `StoreError`. Use
   `MutationError::is_recoverable()` to drive retry / warn-and-continue
   policy instead of string-matching on flattened error messages.
+  Concrete migration example for downstream library consumers:
+  ```rust
+  // Before (anyhow::Result):
+  let err = create_artifact_with_projection(...).await.unwrap_err();
+  if err.to_string().contains("invalid id") { /* ... */ }
+
+  // After (MutationResult):
+  match create_artifact_with_projection(...).await {
+      Err(MutationError::InvalidId(_)) => /* fatal input */,
+      Err(e) if e.is_recoverable()     => /* transient — retry ok */,
+      Err(_)                           => /* fatal — surface to user */,
+      Ok(path) => /* happy path */,
+  }
+  ```
+  See ADR-003 Amendment 2 (`.forgeplan/adrs/ADR-003-*.md`) for the full
+  before/after error matrix and Phase 3d reserved-variant notes.
 - **`sync_artifact_from_file` and `sync_body_from_file` signatures take
   `workspace: &Path`** to enable `FileNotFound { id, path }` typed errors
   with the actual on-disk location. CLI callers (`reindex`, `git_sync`,

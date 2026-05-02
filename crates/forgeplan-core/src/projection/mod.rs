@@ -7,6 +7,35 @@ use crate::artifact::types::{ArtifactKind, slugify};
 mod error;
 pub use error::{MutationError, MutationResult};
 
+/// Compute the on-disk filename slug for a given artifact title.
+///
+/// Wraps `slugify` with the `untitled` fallback used by Phase 3c
+/// (audit LOW-5): when `slugify` produces an empty string — for
+/// titles that are entirely non-ASCII (Cyrillic, CJK, emoji) — we
+/// substitute `"untitled"` rather than emitting `<id>-.md` (a
+/// trailing-dash filename that's valid but ugly). The DB row keeps
+/// the original title verbatim; only the on-disk filename is
+/// sanitised.
+///
+/// Audit R1 CRITICAL (rust-expert) + MEDIUM-2 (code-reviewer):
+/// previously only `create_artifact_with_projection` applied this
+/// fallback. `sync_artifact_from_file`, `sync_body_from_file`,
+/// `render_projection*`, `read_file_body_if_newer`,
+/// `stamp_agent_identity`, and `remove_projection_at` reconstructed
+/// paths with raw `slugify(title)` and would resolve to `<id>-.md`
+/// after a non-ASCII-titled artifact had been created — producing
+/// spurious `FileNotFound` errors on every subsequent sync. This
+/// helper is the single source of truth for the slug-fallback
+/// contract; every path-construction site MUST use it.
+pub(crate) fn projection_slug(title: &str) -> String {
+    let s = slugify(title);
+    if s.is_empty() {
+        "untitled".to_string()
+    } else {
+        s
+    }
+}
+
 /// Frontmatter keys that `render_markdown_with_tags` writes from LanceDB
 /// record data. Any key **not** in this set is preserved from the file on
 /// disk across renders — this is how agent-owned fields such as
@@ -79,7 +108,7 @@ pub async fn render_projection_record(
     let dir = workspace.join(artifact_kind.dir_name());
     tokio::fs::create_dir_all(&dir).await?;
 
-    let slug = slugify(&record.title);
+    let slug = projection_slug(&record.title);
     let filename = format!("{}-{}.md", record.id, slug);
     let filepath = dir.join(&filename);
 
@@ -177,7 +206,7 @@ async fn render_projection_inner(
     let dir = workspace.join(artifact_kind.dir_name());
     tokio::fs::create_dir_all(&dir).await?;
 
-    let slug = slugify(title);
+    let slug = projection_slug(title);
     let filename = format!("{}-{}.md", id, slug);
     let filepath = dir.join(&filename);
 
@@ -331,7 +360,7 @@ pub async fn read_file_body_if_newer(
 ) -> Option<String> {
     let artifact_kind = kind.parse::<ArtifactKind>().ok()?;
     let dir = workspace.join(artifact_kind.dir_name());
-    let slug = slugify(title);
+    let slug = projection_slug(title);
     let filename = format!("{}-{}.md", id, slug);
     let filepath = dir.join(&filename);
 
@@ -472,7 +501,7 @@ pub async fn stamp_agent_identity(
 ) -> anyhow::Result<()> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
-    let slug = slugify(title);
+    let slug = projection_slug(title);
     let filename = format!("{}-{}.md", id, slug);
     let filepath = dir.join(&filename);
 
@@ -582,7 +611,7 @@ pub async fn remove_projection_at(
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
     let dir = workspace.join(artifact_kind.dir_name());
-    let slug = slugify(title);
+    let slug = projection_slug(title);
     let filepath = dir.join(format!("{}-{}.md", id, slug));
     if filepath.exists() {
         tokio::fs::remove_file(&filepath).await?;
@@ -633,27 +662,27 @@ pub async fn create_artifact_with_projection(
             |e: crate::error::ForgeplanError| MutationError::InvalidKind {
                 id: artifact.id.clone(),
                 kind: artifact.kind.clone(),
-                source: e.into(),
+                reason: e.to_string(),
             },
         )?;
 
-    // PRD-073 Phase 3c LOW-5: when the title slugifies to empty (e.g. all
-    // non-ASCII characters such as Cyrillic), fall back to "untitled" rather
-    // than emitting an ugly `<id>-.md` filename. The DB row keeps the
-    // original title; only the on-disk slug is sanitised.
-    let effective_title = if slugify(&artifact.title).is_empty() {
-        "untitled"
-    } else {
-        artifact.title.as_str()
-    };
-
+    // PRD-073 Phase 3c CRITICAL fix (R1 audit): the slug-fallback rule for
+    // non-ASCII titles (Cyrillic, CJK, emoji) lives entirely inside
+    // `projection_slug` now, and `render_projection_with_body` calls it via
+    // `render_projection_inner`. So we pass the **real** title — the file
+    // frontmatter keeps the user's title verbatim, only the on-disk filename
+    // is sanitised. Previously this helper substituted "untitled" for the
+    // entire title, which lost the original from the file's frontmatter
+    // (the DB row was fine, but a `cat <id>-untitled.md` showed `title:
+    // untitled` instead of the user's Cyrillic).
+    //
     // 1. File first — projection is the source of truth, with caller body
     //    forced over any pre-existing file at the same slug path.
     let path = render_projection_with_body(
         workspace,
         &artifact.id,
         &artifact.kind,
-        effective_title,
+        &artifact.title,
         &artifact.status,
         &artifact.depth,
         artifact.author.as_deref(),
@@ -691,6 +720,14 @@ pub async fn delete_artifact_with_projection(
 ) -> MutationResult<()> {
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
+    // R1 audit H-2 (rust+architect+security): missing-row is *idempotent
+    // success* for delete (callers re-run delete during cleanup loops and
+    // expect this to be a no-op), unlike `update_body_with_projection` which
+    // returns `RowNotFound`. The asymmetry is intentional — documented here
+    // and in the variant taxonomy. TODO(PRD-073 Phase 3d): if a unified
+    // contract emerges, revisit; current state is two helpers, two policies,
+    // both correct for their semantic class (idempotent destructor vs
+    // input-validating mutator).
     let record = match store.get_record(id).await? {
         Some(r) => r,
         None => return Ok(()),
@@ -705,7 +742,7 @@ pub async fn delete_artifact_with_projection(
             |e: crate::error::ForgeplanError| MutationError::InvalidKind {
                 id: id.to_string(),
                 kind: record.kind.clone(),
-                source: e.into(),
+                reason: e.to_string(),
             },
         )?;
 
@@ -1002,21 +1039,38 @@ pub async fn sync_artifact_from_file(
     let kind: ArtifactKind = artifact
         .kind
         .parse()
-        .map_err(|e| MutationError::InvalidKind {
-            id: artifact.id.clone(),
-            kind: artifact.kind.clone(),
-            source: anyhow::Error::new(e),
-        })?;
+        .map_err(
+            |e: crate::error::ForgeplanError| MutationError::InvalidKind {
+                id: artifact.id.clone(),
+                kind: artifact.kind.clone(),
+                reason: e.to_string(),
+            },
+        )?;
     let path = workspace.join(kind.dir_name()).join(format!(
         "{}-{}.md",
         artifact.id,
-        slugify(&artifact.title)
+        projection_slug(&artifact.title)
     ));
-    if tokio::fs::metadata(&path).await.is_err() {
-        return Err(MutationError::FileNotFound {
-            id: artifact.id.clone(),
-            path,
-        });
+    // R1 audit M-1: distinguish ENOENT (real file-not-found) from EACCES /
+    // other I/O errors. Treating "permission denied" as `FileNotFound`
+    // would mislead an MCP client trying to remediate.
+    match tokio::fs::metadata(&path).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // R1 audit H-8 (security-expert): strip the workspace prefix so the
+            // error Display does not leak the user's home directory / project
+            // location to MCP error JSON / Claude Desktop transcripts. We
+            // surface only the workspace-relative path (e.g.
+            // `prds/PRD-001-foo.md`).
+            let rel_path = path.strip_prefix(workspace).unwrap_or(&path).to_path_buf();
+            return Err(MutationError::FileNotFound {
+                id: artifact.id.clone(),
+                path: rel_path,
+            });
+        }
+        Err(e) => {
+            return Err(MutationError::StoreError(e.into()));
+        }
     }
     store.create_artifact(artifact).await?;
     Ok(())
@@ -1040,19 +1094,34 @@ pub async fn sync_body_from_file(
 ) -> MutationResult<()> {
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    let parsed_kind: ArtifactKind = kind.parse().map_err(|e| MutationError::InvalidKind {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        source: anyhow::Error::new(e),
-    })?;
-    let path = workspace
-        .join(parsed_kind.dir_name())
-        .join(format!("{}-{}.md", id, slugify(title)));
-    if tokio::fs::metadata(&path).await.is_err() {
-        return Err(MutationError::FileNotFound {
-            id: id.to_string(),
-            path,
-        });
+    let parsed_kind: ArtifactKind =
+        kind.parse().map_err(
+            |e: crate::error::ForgeplanError| MutationError::InvalidKind {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                reason: e.to_string(),
+            },
+        )?;
+    let path = workspace.join(parsed_kind.dir_name()).join(format!(
+        "{}-{}.md",
+        id,
+        projection_slug(title)
+    ));
+    // R1 audit M-1: ENOENT only — EACCES / other I/O fall through as StoreError.
+    // R1 audit H-8: strip workspace prefix in the error to avoid leaking abs
+    // path through MCP error JSON.
+    match tokio::fs::metadata(&path).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let rel_path = path.strip_prefix(workspace).unwrap_or(&path).to_path_buf();
+            return Err(MutationError::FileNotFound {
+                id: id.to_string(),
+                path: rel_path,
+            });
+        }
+        Err(e) => {
+            return Err(MutationError::StoreError(e.into()));
+        }
     }
     store.update_body(id, body).await?;
     Ok(())
@@ -2593,10 +2662,12 @@ mod tests {
         match err {
             MutationError::FileNotFound { id, path } => {
                 assert_eq!(id, "PRD-930");
-                assert!(
-                    path.ends_with("prds/PRD-930-test-prd-930.md"),
-                    "path should be the resolved projection target, got {path:?}",
+                assert_eq!(
+                    path,
+                    std::path::PathBuf::from("prds/PRD-930-test-prd-930.md"),
+                    "path must be workspace-relative (no abs-path leak per R1 H-8)",
                 );
+                assert!(!path.is_absolute(), "FileNotFound.path must be relative",);
             }
             other => panic!("expected FileNotFound, got {other:?}"),
         }
@@ -2630,13 +2701,112 @@ mod tests {
         let err = sync_body_from_file(&ws, &store, "PRD-931", "prd", "Test PRD-931", "new body")
             .await
             .expect_err("missing file must be rejected with FileNotFound");
+        // R1 audit H-8: path is now workspace-relative — strip prefix to compare.
+        let expected_rel = std::path::PathBuf::from("prds/PRD-931-test-prd-931.md");
         match err {
             MutationError::FileNotFound { id, path } => {
                 assert_eq!(id, "PRD-931");
-                assert_eq!(path, file);
+                assert_eq!(path, expected_rel);
+                assert!(
+                    !path.is_absolute(),
+                    "FileNotFound.path must be relative (no abs-path leak)"
+                );
             }
             other => panic!("expected FileNotFound, got {other:?}"),
         }
+    }
+
+    /// R1 audit CRITICAL (rust-expert): regression guard for the slug-fallback
+    /// drift between `create_artifact_with_projection` and `sync_*_from_file`.
+    /// Pre-fix: a Cyrillic / CJK / emoji title slugified to "" in `create`,
+    /// where the `untitled` fallback triggered, but `sync_artifact_from_file`
+    /// and `sync_body_from_file` rebuilt the path with raw `slugify(title)` →
+    /// `prds/PRD-XXX-.md`, which never existed → spurious `FileNotFound`.
+    ///
+    /// Post-fix: the single `projection_slug()` helper applies the fallback
+    /// at every path-construction site. Sync round-trips on a Cyrillic-title
+    /// artifact must succeed.
+    #[tokio::test]
+    async fn projection_slug_fallback_consistent_across_create_and_sync() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        // All-Cyrillic title → slugify returns "" → `untitled` fallback.
+        let cyrillic_title = "Тестовый артефакт";
+        assert!(
+            crate::artifact::types::slugify(cyrillic_title).is_empty(),
+            "test premise: slugify of all-Cyrillic must be empty (else this test does not exercise the fallback path)",
+        );
+
+        let mut a = art("PRD-940", "prd");
+        a.title = cyrillic_title.to_string();
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .expect("create with Cyrillic title must succeed");
+
+        // The on-disk file is at `<id>-untitled.md`, NOT `<id>-.md`.
+        let expected = ws.join("prds").join("PRD-940-untitled.md");
+        assert!(
+            expected.exists(),
+            "create_artifact_with_projection must write the projection at the `untitled` fallback path, but {expected:?} does not exist",
+        );
+
+        // The DB row keeps the original Cyrillic title.
+        let rec = store.get_record("PRD-940").await.unwrap().unwrap();
+        assert_eq!(
+            rec.title, cyrillic_title,
+            "DB title must preserve the user's original (only the on-disk slug is sanitised)",
+        );
+
+        // The file frontmatter ALSO keeps the Cyrillic title (regression guard
+        // for the prior `effective_title = "untitled"` body bug — the file
+        // body must not say `title: "untitled"`).
+        let body = tokio::fs::read_to_string(&expected).await.unwrap();
+        assert!(
+            body.contains(cyrillic_title),
+            "file frontmatter must keep the Cyrillic title, got: {body}",
+        );
+
+        // Now exercise the round-trip — sync_body_from_file must resolve the
+        // path to the SAME file and NOT return FileNotFound. (Skip
+        // sync_artifact_from_file — that is the bootstrap-from-file path and
+        // would conflict with the row we just created via create_artifact.)
+        sync_body_from_file(&ws, &store, "PRD-940", "prd", cyrillic_title, "new body")
+            .await
+            .expect(
+                "sync_body_from_file with Cyrillic title must succeed — \
+                 a `FileNotFound` here is the slug-fallback drift regression",
+            );
+    }
+
+    /// R1 audit MEDIUM-1 (code-review): `metadata().is_err()` previously
+    /// conflated ENOENT with EACCES / EIO, which would mislead an MCP client
+    /// trying to remediate ("permission denied" wrongly looks like "file
+    /// missing"). Post-fix: only `ErrorKind::NotFound` produces the typed
+    /// `FileNotFound`; other I/O errors fall through as `StoreError`.
+    ///
+    /// This test confirms the typed contract for the happy path of the new
+    /// `match` arm; the EACCES leg is hard to test portably (would need a
+    /// chmod-based fixture) but the `match` is shape-checked by `cargo
+    /// check`. The path-not-existing case is already covered by
+    /// `sync_artifact_from_file_returns_file_not_found_when_missing`.
+    #[tokio::test]
+    async fn sync_artifact_file_not_found_uses_errorkind_notfound_match() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let ghost = art("PRD-941", "prd");
+        let err = sync_artifact_from_file(&ws, &store, &ghost)
+            .await
+            .expect_err("missing file must be rejected with FileNotFound");
+        assert!(
+            matches!(err, MutationError::FileNotFound { ref id, .. } if id == "PRD-941"),
+            "ENOENT must surface as typed FileNotFound, got: {err:?}",
+        );
     }
 
     // =========================================================================
@@ -2765,6 +2935,66 @@ mod tests {
         assert!(
             !err.is_recoverable(),
             "missing-row is an input error, not a transient I/O failure"
+        );
+    }
+
+    /// R1 audit HIGH-3 (code-review): explicit happy-path test for
+    /// `update_body_with_projection`. The pre-existing `wave1a_*` suite
+    /// covered invalid-id and missing-row, but no test asserted that the
+    /// happy path actually persists the body. Without this, a Phase 3c
+    /// migration mistake (e.g. flipped `?` operators) could only be caught
+    /// by callers at runtime.
+    #[tokio::test]
+    async fn update_body_with_projection_happy_path_persists_body() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-942", "prd");
+        create_artifact_with_projection(&ws, &store, &a)
+            .await
+            .unwrap();
+
+        let new_body = "## Updated body\n\nfresh content for happy-path";
+        update_body_with_projection(&ws, &store, "PRD-942", new_body)
+            .await
+            .expect("happy path must succeed");
+
+        // DB row body is updated.
+        let rec = store.get_record("PRD-942").await.unwrap().unwrap();
+        assert!(
+            rec.body.contains("fresh content for happy-path"),
+            "DB body must reflect the update, got: {}",
+            rec.body
+        );
+
+        // File body is updated too (file-first invariant).
+        let path = ws.join("prds").join("PRD-942-test-prd-942.md");
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            on_disk.contains("fresh content for happy-path"),
+            "file body must reflect the update, got: {on_disk}"
+        );
+    }
+
+    /// R1 audit HIGH-1 (rust-expert): pin the priority order when both
+    /// `status` and `title` are blank. The current implementation rejects
+    /// `status` first; this test makes the contract explicit so future
+    /// refactors don't silently flip the order.
+    #[tokio::test]
+    async fn sync_metadata_from_file_rejects_blank_status_before_blank_title() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let err = sync_metadata_from_file(&store, "PRD-943", Some(""), Some(""))
+            .await
+            .expect_err("both fields blank must surface a typed error");
+        assert!(
+            matches!(err, MutationError::EmptyField { field } if field == "status"),
+            "status is rejected first by current contract; got: {err:?}",
         );
     }
 
