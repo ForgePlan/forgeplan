@@ -213,6 +213,40 @@ This is the divergence A-14 calls out; ops doc F-RUNTIME-7 cross-references.
       Items (1)-(3) are methodology-doc only; item (4) overlaps with
       A-11 + A-16 and may be folded there.
 
+- [ ] **A-27 (NEW, 2026-05-03 release v0.28.0 architect audit A-1)**:
+      sweep `marketplace/playbooks/*.yaml` headers for stale ADR-010
+      references (`task-tool 1.x`, `claude-code-plugin`, `forge-docs-miner`
+      assumed-installed claims). Update each header to reflect ADR-011
+      reality. **Already partially done в release v0.28.0 для
+      `audit.yaml` + `brownfield-docs.yaml`**, but other playbooks
+      (`brownfield-code.yaml`, `greenfield-kickoff.yaml`, `release.yaml`)
+      should be audited the same way. Touch only headers, not steps —
+      step semantics governed by SPEC-003 schema, not ADR.
+
+- [ ] **A-28 (NEW, 2026-05-03 release v0.28.0 deeper finding)**:
+      `validate_agent_name` regex `^[A-Za-z][A-Za-z0-9_-]{0,63}$`
+      rejects colon-namespaced agent slugs (`agents-pro:architect-reviewer`,
+      `agents-core:code-reviewer`, `agents-pro:security-expert`) which
+      are the canonical Claude Code plugin-agent slug format.
+      Empirically: `audit.yaml` shipped в v0.27.0/v0.28.0 уже cannot run
+      end-to-end because step 1 fails pre-spawn с `DispatchError::Transport(...
+      rejected: must match ^[A-Za-z][A-Za-z0-9_-]{0,63}$...)`. Two
+      alternative fixes:
+      (a) **YAML rewrite** — playbook authors split `pack:slug` into
+          `Delegation::Plugin { name: "pack", target: "slug" }`. PluginDispatcher
+          then validates `pack` and `slug` separately (both colon-free). Existing
+          plugin path code already supports this. **Lower-risk**, no regex
+          changes.
+      (b) **Regex broadening** — extend `validate_agent_name` regex to allow
+          single colon `:` between two `[A-Za-z][A-Za-z0-9_-]+` segments
+          (`^[A-Za-z][A-Za-z0-9_-]{0,30}(:[A-Za-z][A-Za-z0-9_-]{0,30})?$`).
+          **Higher-risk** — colon doesn't have argv special meaning in
+          POSIX `execve`, но needs security review re: shell-eval contexts
+          (we don't shell-eval, but defense in depth).
+      Pick (a) as default, document (b) as optional alt. Audit S-1
+      escalation про SkillDispatcher v1 stub fail-safe redesign (A-23)
+      is orthogonal and stays as-is.
+
 ## Blast Radius
 
 - `forgeplan-core::playbook::dispatch::*` (PluginDispatcher,

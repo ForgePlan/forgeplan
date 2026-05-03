@@ -2,22 +2,29 @@
 # audit.yaml — Multi-agent adversarial code review playbook (REFERENCE)
 # =====================================================================
 #
-# **Status: REFERENCE EXAMPLE, requires task-tool 1.x**
+# **Status: REFERENCE EXAMPLE — predates ADR-011 Phase B Wave 1.**
 #
-#   This playbook is provided as a runnable template for the multi-agent
-#   audit pattern used during PRD-073 (see EVID-094). The agent dispatcher
-#   resolves `agents-pro:architect-reviewer` / `agents-core:code-reviewer`
-#   / `agents-pro:security-expert` by spawning a `task-tool` subprocess
-#   and forwarding the agent name. **Without task-tool installed and
-#   recognising those names, this playbook fails with `DelegateMissing`
-#   at runtime.** No Forgeplan-side registry exists yet (planned in
-#   PRD-069 SkillDispatcher real registry).
+#   This playbook ships as a runnable template for the multi-agent audit
+#   pattern used during PRD-073 (see EVID-094). It originally targeted
+#   the never-shipped `task-tool 1.x` (ADR-010); v0.28.0 + ADR-011
+#   replaced that mechanism with `claude --print --agent <slug>` via
+#   PluginDispatcher / AgentDispatcher (EVID-097 confirms the dispatch
+#   contract end-to-end на real `claude` 2.1.126).
 #
-#   To run end-to-end today: install the agents-pro / agents-core plugin
-#   packs and a task-tool that recognises namespaced agent names. The
-#   forge-orchestrator team-lead pattern in /Users/explosovebit/.claude/
-#   teams/ is the canonical runner; this YAML mirrors that structure for
-#   playbook-based invocation when the dispatcher catches up.
+#   **Current limitation (v0.28.0)**: agent slugs containing `:`
+#   (e.g. `agents-pro:architect-reviewer`) are rejected pre-spawn by the
+#   `validate_agent_name` argv-injection guard whose regex
+#   `^[A-Za-z][A-Za-z0-9_-]{0,63}$` does not allow the colon. Until
+#   PROB-050 A-28 lands a colon-aware slug strategy (likely splitting
+#   `pack:slug` into `Delegation::Plugin { name: "pack", target: "slug" }`),
+#   this playbook fails with `DispatchError::Transport(...rejected:
+#   must match ^[A-Za-z][A-Za-z0-9_-]{0,63}$...)` at step 1.
+#
+#   To run end-to-end today: rewrite the four `delegate_to` blocks to
+#   `type: plugin` with `name: agents-pro` + `target: architect-reviewer`
+#   form (etc). The forge-orchestrator team-lead pattern in
+#   /Users/explosovebit/.claude/teams/ remains the canonical runner;
+#   this YAML stays as the eventual contract once PROB-050 A-28 closes.
 #
 # Purpose:
 #   Run three audit agents in parallel against a target branch / PR,
