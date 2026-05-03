@@ -105,10 +105,14 @@ architect, all carry `TODO(PROB-050)` markers in code where applicable):
       `Result<(), String>`.
 - [ ] **A-13 (rust L-1)**: add `since = "0.28.0"` to plugin
       `with_task_tool` deprecation; align with agent variant.
-- [ ] **A-14 (security H-6)**: gate `FORGEPLAN_CLAUDE_BIN` env override
-      behind `#[cfg(test)]` OR document as test-only with explicit
-      provenance warning. Today either dispatcher honours it; mismatched
-      surface (plugin doesn't read it, agent does).
+- [ ] **A-14 (security H-6 + 2026-05-03 audit S-2)**: gate
+      `FORGEPLAN_CLAUDE_BIN` env override behind `#[cfg(test)]` —
+      **REQUIRED** (audit S-2 escalation: documentation alone is not a
+      mitigation for an env-injection / binary-substitution vector
+      CWE-426). Today: AgentDispatcher honors it in release builds;
+      PluginDispatcher does not read it at all (mismatched surface
+      empirically confirmed 2026-05-03). Fix: cfg-gate + restore parity by
+      removing env-var path entirely from production builds.
 - [ ] **A-15 (security M-3, code-review M-1)**: factor argv builder
       (`claude_print::build_argv(slug, step) -> Vec<String>`) so
       argv-shape tests live in `claude_print.rs` and don't need fake
@@ -130,6 +134,84 @@ architect, all carry `TODO(PROB-050)` markers in code where applicable):
       Partly addressed in R1 fix (added `MAX_PREVIEW_BYTES`,
       `MAX_VALIDATOR_ECHO_BYTES`) — sweep remaining hardcoded `200`
       / `500` to use these constants everywhere.
+
+### Real-E2E discovered (2026-05-03 NOTE-049 / PR 1)
+
+Items added based on real `claude --print` invocation findings (см.
+`docs/operations/phase-b-real-e2e-2026-05-03.md`). Empirically validated
+on `claude` 2.1.126 + dev binary built from `5e08b4d`.
+
+- [x] **A-3 closure (proven)**: real `claude --print` invoked end-to-end
+      from BOTH PluginDispatcher and AgentDispatcher with argv recording
+      wrapper. Argv shape matches ADR-011 §Decision verbatim. JSON envelope
+      decoded successfully on success and failure paths. argv injection
+      guard rejects malicious agent name in 0.01s without spawning. Total
+      cost: ~$1.13 across 5 successful invocations. Evidence: EVID-097
+      (TBD) + ops doc R-6a-* sections.
+- [ ] **A-21 (NEW, real-E2E F-RUNTIME-1)**: playbook discovery uses
+      cwd-relative search (`.forgeplan/playbooks/` → `marketplace/playbooks/`
+      → plugin dirs). Built-in `marketplace/playbooks/` therefore inaccessible
+      from arbitrary user workspaces — only forgeplan-repo callers see them.
+      Bundle built-ins into binary OR resolve from a known global location
+      (e.g. `~/.config/forgeplan/playbooks/`).
+- [x] ~~**A-22 (NEW, real-E2E F-RUNTIME-2)**~~: **RETRACTED 2026-05-03 audit
+      C-1**. Original observation `EXIT_CODE=0` was a `tee` pipeline
+      artefact (`zsh` без `pipefail`, `$?` reflected tee not forgeplan).
+      `commands/playbook.rs:473` already does `exit(1)` on `failed > 0`;
+      `playbook.rs:370-376` does `exit(2)` on resolve failure. Re-verified
+      with `set -o pipefail`: H5 → exit 1, H4 → exit 1, missing playbook
+      → exit 2. **Methodological lesson** (own learning, not a CLI fix):
+      future shell-driven exit-code testing must use `set -o pipefail`
+      OR capture `${PIPESTATUS[0]}` BEFORE piping through `tee`. No
+      action needed on production code.
+- [ ] **A-23 (NEW, real-E2E F-RUNTIME-3 + 2026-05-03 audit S-1)**:
+      `marketplace/playbooks/brownfield-docs.yaml` header claims "fails
+      with `DispatchError::DelegateMissing` (step 1)" when `forge-docs-miner`
+      skill missing — but `SkillDispatcher` is an intentional v1 stub
+      (Phase 6 Wave 5+ TBD per `skill_dispatcher.rs:24-50`) that always
+      returns `success: true` without actual invocation. **Audit S-1
+      escalation**: the silent-skill-no-op pattern violates fail-safe
+      design (CWE-754 / CWE-755) — a release-style playbook with a
+      `verify-signing` skill step would silently green-build. **Strongly
+      preferred fix (option c, NEW)**: change SkillDispatcher v1 stub to
+      return `success: false` with `DispatchError::DelegateMissing`-like
+      reason (`"skill registry not yet implemented (Phase 6 Wave 5+);
+      treat skill steps as failures until then"`) — this is fail-safe
+      behavior pending Wave 5. Alternative options (a) update YAML
+      header, (b) land Wave 5 — only acceptable if (c) deemed too
+      breaking.
+- [ ] **A-24 (NEW, real-E2E F-RUNTIME-5)**: dev binary built from `dev`
+      branch returns the same `forgeplan --version` string (`0.27.0`) as
+      the brew-installed last-released binary. Users (and bug-reporters)
+      cannot distinguish runtime. Append git SHA + build-time to version
+      output for non-release builds (`0.27.0+5e08b4d-dev`).
+- [ ] **A-25 (NEW, real-E2E F-RUNTIME-6)**: `claude --print --max-budget-usd N`
+      enforces budget **post-hoc**: real spend may exceed `N` by 2-5×
+      (measured: `N=$0.05` produced `total_cost_usd=$0.20184575` before
+      `subtype: error_max_budget_usd` returned). Document this in ADR-011
+      §Decision and `claude_print.rs` module docs. Optionally expose a
+      "hard kill on threshold" wrapper if Anthropic CLI gains preemptive
+      enforcement.
+
+A-14 empirical confirmation: `PluginDispatcher::resolve_binary` does NOT
+read `$FORGEPLAN_CLAUDE_BIN` — verified by real-E2E (Plugin run bypassed
+recording wrapper set via env, required PATH-prepend symlink instead).
+This is the divergence A-14 calls out; ops doc F-RUNTIME-7 cross-references.
+
+- [ ] **A-26 (NEW, 2026-05-03 audit S-3 + C-4)**: methodology hardening
+      for future real-E2E sprints — (1) recording dirs MUST be created
+      with `mktemp -d -t forgeplan-e2e-XXXXXX` (mode 700) rather than
+      fixed `/tmp/phase-b-e2e-recordings/` (CWE-377 + CWE-532 — leak of
+      prompts/responses on shared CI runners); (2) `STDIN_LOG` should be
+      gated behind explicit `--capture-stdin` flag когда run может
+      обрабатывать sensitive data; (3) every shell-driven exit-code test
+      MUST use `set -o pipefail` или `${PIPESTATUS[0]}` (lesson learned
+      from A-22 retraction); (4) extend H1/H2/H_PLUGIN coverage to
+      include malformed JSON envelope, HTTP 5xx, signal exit, timeout
+      branches (currently only happy + budget-error envelopes verified
+      end-to-end — failure-path JSON decode still fake-script only).
+      Items (1)-(3) are methodology-doc only; item (4) overlaps with
+      A-11 + A-16 and may be folded there.
 
 ## Blast Radius
 
