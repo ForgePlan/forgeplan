@@ -1074,7 +1074,13 @@ pub async fn sync_artifact_from_file(
             });
         }
         Err(e) => {
-            return Err(MutationError::StoreError(e.into()));
+            // PROB-049 H-1: route through `from_store_err` so EACCES /
+            // EBUSY / EWOULDBLOCK stay transient (operator can fix and
+            // retry) while `tokio::fs::metadata`'s rare ENOENT-adjacent
+            // shapes promote to `StoreFatal`. Identical semantics to the
+            // legacy `StoreError(e.into())` for the existing test
+            // contract — `PermissionDenied` → recoverable=true.
+            return Err(MutationError::from_store_err(e.into()));
         }
     }
     store.create_artifact(artifact).await?;
@@ -1129,7 +1135,12 @@ pub async fn sync_body_from_file(
             });
         }
         Err(e) => {
-            return Err(MutationError::StoreError(e.into()));
+            // PROB-049 H-1: see equivalent comment in
+            // `create_artifact_with_projection` — non-ENOENT I/O errors
+            // funnel through `from_store_err` for accurate transient/fatal
+            // routing instead of being lumped into a single recoverable
+            // bucket.
+            return Err(MutationError::from_store_err(e.into()));
         }
     }
     store.update_body(id, body).await?;
@@ -2842,16 +2853,18 @@ mod tests {
             .unwrap();
 
         let err = result.expect_err("EACCES must produce some MutationError");
-        // The disambiguation contract: EACCES routes to StoreError, NOT
-        // FileNotFound. If this assertion ever flips to FileNotFound, the
-        // M-1 fix has regressed.
+        // The disambiguation contract: EACCES routes to StoreTransient,
+        // NOT FileNotFound. If this assertion ever flips to FileNotFound,
+        // the M-1 fix has regressed. PROB-049 H-1: split `StoreError` →
+        // `StoreTransient` (recoverable) / `StoreFatal` (not). EACCES is
+        // operator-fixable, so it must land in the transient bucket.
         assert!(
-            matches!(err, MutationError::StoreError(_)),
-            "EACCES must surface as StoreError (recoverable=true), NOT FileNotFound. got: {err:?}",
+            matches!(err, MutationError::StoreTransient(_)),
+            "EACCES must surface as StoreTransient (recoverable=true), NOT FileNotFound. got: {err:?}",
         );
         assert!(
             err.is_recoverable(),
-            "StoreError from EACCES must be classified as recoverable (operator can fix perms and retry)",
+            "StoreTransient from EACCES must be classified as recoverable (operator can fix perms and retry)",
         );
     }
 
