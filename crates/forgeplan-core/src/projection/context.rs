@@ -48,12 +48,17 @@ use crate::db::store::LanceStore;
 /// `forgeplan-mcp` in this workspace, but `forgeplan-core` is a public
 /// crate) can construct one. Adding new fields is a breaking change —
 /// PROB-049 reviewers explicitly chose two fields over a builder so the
-/// shape stays grep-able. If a third dependency emerges (e.g. tracing
-/// span, dispatch tracker), revisit at that time.
+/// shape stays grep-able. The `#[non_exhaustive]` attribute makes this
+/// contract compiler-enforced: external code MUST use `MutationContext::new`
+/// and may not construct a struct literal (Round 4 audit HIGH-2 closure).
+/// If a third dependency emerges (e.g. tracing span, dispatch tracker),
+/// `pub fn new` can grow without breaking existing call sites because
+/// existing callers use the builder, not literals.
 // `LanceStore` does not implement `Debug` (it wraps internal Arc'd
 // connection state that is not safe to print), so neither does
 // `MutationContext`. `Clone` + `Copy` are cheap (two references).
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct MutationContext<'a> {
     /// Workspace root (the directory containing `.forgeplan/`,
     /// `prds/`, `rfcs/`, etc.). Helpers resolve projection paths
@@ -70,6 +75,12 @@ pub struct MutationContext<'a> {
 impl<'a> MutationContext<'a> {
     /// Build a new context. Borrows both dependencies for the lifetime
     /// `'a`; the helpers retain no state of their own.
+    ///
+    /// This is the **only** supported construction path — external callers
+    /// cannot use a struct literal (`MutationContext { workspace, store }`)
+    /// because of the `#[non_exhaustive]` attribute on the type. This lets
+    /// us add new fields in a future release without breaking call sites
+    /// (PROB-049 H-6 stability commitment).
     pub fn new(workspace: &'a Path, store: &'a LanceStore) -> Self {
         Self { workspace, store }
     }

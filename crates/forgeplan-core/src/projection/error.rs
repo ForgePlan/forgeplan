@@ -24,8 +24,11 @@ use std::path::PathBuf;
 /// change for downstream callers because every helper's return type is
 /// `MutationResult<T>` and the categorisation helper
 /// [`MutationError::from_store_err`] keeps `?` propagation working through
-/// a single `From<anyhow::Error>` shim.
+/// a single `From<anyhow::Error>` shim. The `#[non_exhaustive]` attribute
+/// makes this contract compiler-enforced — external `match` arms MUST use
+/// `_ =>` to remain forward-compatible (Round 4 audit HIGH-2 closure).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MutationError {
     /// The artifact ID failed `validate_artifact_id` — likely an attempted
     /// path-traversal payload. Always fatal.
@@ -99,9 +102,19 @@ pub enum MutationError {
     /// resolve on retry: lock contention, transient I/O, network blip,
     /// EACCES that an operator can fix and re-run, etc.
     ///
-    /// PROB-049 H-1: split out of the legacy `StoreError` variant. MCP
-    /// retry loops MUST keep retrying this variant; CLI commands warn and
-    /// continue. `is_recoverable() == true`.
+    /// PROB-049 H-1: split out of the legacy `StoreError` variant.
+    /// `is_recoverable() == true`.
+    ///
+    /// **Status (Round 4 audit HIGH-3 closure)**: this variant carries
+    /// the recoverability *intent* but is not yet consumed by any retry
+    /// loop in `forgeplan-mcp` or `forgeplan-cli` — the typed-error split
+    /// is infrastructure for forthcoming retry wiring (tracked under
+    /// PROB-049 follow-ups). Until that lands, the variant is purely
+    /// internal documentation: callers convert to `anyhow::Error` via
+    /// `?` at MCP / CLI boundaries and the recoverability flag is not
+    /// yet inspected. Maintainers extending the typed-error layer should
+    /// wire `is_recoverable()` into the retry path before adding new
+    /// variants that depend on its semantics.
     ///
     /// Categorisation lives in [`MutationError::from_store_err`] — that
     /// helper inspects the `anyhow::Error` chain (looking for
@@ -119,10 +132,14 @@ pub enum MutationError {
     /// predicate, invalid input that survived helper-level validation.
     ///
     /// PROB-049 H-1: split out of the legacy `StoreError` variant.
-    /// MCP retry loops MUST surface this variant immediately — retrying
-    /// hammers LanceDB on a permanent failure. CLI commands also bail
-    /// rather than warn-and-continue.
     /// `is_recoverable() == false`.
+    ///
+    /// **Status (Round 4 audit HIGH-3 closure)**: as with `StoreTransient`,
+    /// this variant carries fatal-failure *intent* but is not yet consumed
+    /// by an MCP retry-loop guard. Today, the variant Display-formats with
+    /// the wrapped `anyhow::Error` chain verbatim — operators see "fatal"
+    /// in error messages but no automation acts on it differently. Future
+    /// retry-wiring PR should grow `is_recoverable()` consumers.
     #[error("LanceStore mutation failed (fatal): {0}")]
     StoreFatal(#[source] anyhow::Error),
 }
@@ -205,6 +222,28 @@ impl MutationError {
     /// catch-alls force us to lean toward retry; once the surface area is
     /// classified upstream we can flip the default to `StoreFatal` for
     /// truly unknown causes.
+    ///
+    /// # Security
+    ///
+    /// The `lancedb::Error::Lance { source }` arm defaults to **transient**
+    /// (recoverable) — see TODO above for rationale. Round 4 audit MED-2
+    /// (security) noted that an attacker with write access to
+    /// `.forgeplan/lance/` could craft a corrupted Lance file producing a
+    /// `lance::Error::Schema` (truly permanent) that this categoriser
+    /// misroutes as transient → MCP retry loops would hammer the DB on
+    /// what is in fact corruption (DoS amplifier).
+    ///
+    /// **Mitigations** (defence in depth):
+    /// 1. Threat model accepts trusted-local-user workspaces — the attack
+    ///    requires filesystem write access to `.forgeplan/lance/` which
+    ///    is already a workspace-trust boundary.
+    /// 2. Future MCP retry-wiring (see [`MutationError::is_recoverable`]
+    ///    consumer story) MUST cap retry attempts — a misclassified-fatal
+    ///    cannot induce an unbounded loop.
+    /// 3. Adding `lance` as a direct dep just for inner categorisation
+    ///    would be net-negative (forces the `lance` major version upgrade
+    ///    cadence onto every consumer of `forgeplan-core`); accepted with
+    ///    justification per audit MED-2.
     pub fn from_store_err(e: anyhow::Error) -> Self {
         if classify_anyhow_as_fatal(&e) {
             MutationError::StoreFatal(e)
