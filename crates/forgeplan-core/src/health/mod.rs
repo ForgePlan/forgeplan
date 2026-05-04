@@ -39,7 +39,13 @@ pub const DEFAULT_UNHEALTHY_PHASE_MISMATCHES: usize = 5;
 /// align their gates with the verdict aggregator if desired. Backward
 /// compatible: existing CI gates continue to read the raw counts; this
 /// struct is purely additive.
+///
+/// `#[non_exhaustive]` (Round 4 audit HIGH-2) — adding new threshold
+/// classes is a SemVer-major break only for callers using struct literals.
+/// Construct via `VerdictThresholds::default()` then override individual
+/// fields, e.g. `VerdictThresholds { orphans: 10, ..Default::default() }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VerdictThresholds {
     pub orphans: usize,
     pub blind_spots: usize,
@@ -69,8 +75,14 @@ impl Default for VerdictThresholds {
 /// Serialized as snake_case strings (`"healthy"`, `"needs_attention"`,
 /// `"unhealthy"`) to match the wire format already used by other
 /// `forgeplan` JSON outputs.
+///
+/// `#[non_exhaustive]` (Round 4 audit HIGH-2) — additional verdict levels
+/// (e.g. `Degraded` for partial-outage signals) may be added in future
+/// releases. External `match` arms MUST use `_ =>` to remain
+/// forward-compatible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Verdict {
     Healthy,
     NeedsAttention,
@@ -590,7 +602,12 @@ fn generate_next_actions(
         && stale_count == 0;
 
     if actions.is_empty() && total > 0 && zero_signals {
-        actions.push("Project looks healthy. Continue implementation.".into());
+        // Drive the literal off `Verdict::Healthy.human_summary()` so the
+        // string only lives in one place — Round 4 audit MED-3 closure.
+        actions.push(format!(
+            "{} Continue implementation.",
+            Verdict::Healthy.human_summary()
+        ));
     }
 
     // Cap at 3 most important actions

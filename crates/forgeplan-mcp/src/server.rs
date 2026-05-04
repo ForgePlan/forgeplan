@@ -2659,10 +2659,24 @@ impl ForgeplanServer {
             })
             .collect();
 
+        // PROB-029 closure: fold the MCP-side `advisory_phase_mismatches`
+        // count into the verdict so MCP consumers (Claude Desktop, agent
+        // IDE plugins) see a consistent `verdict` that reflects ALL signals,
+        // not just the ones the core `health_report` knows about. Without
+        // this, the JSON `verdict` field would say "healthy" while
+        // `advisory_phase_mismatches` printed warnings — the very contradiction
+        // PROB-029 was filed to prevent.
+        let verdict = report.compute_verdict_with(
+            &forgeplan_core::health::VerdictThresholds::default(),
+            phase_mismatches.len(),
+        );
+
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
             "by_status": report.by_status,
+            "verdict": verdict.as_str(),
+            "verdict_summary": verdict.human_summary(),
             "at_risk": report.at_risk.iter().map(|a| serde_json::json!({
                 "id": a.id, "title": a.title, "reason": a.reason
             })).collect::<Vec<_>>(),
