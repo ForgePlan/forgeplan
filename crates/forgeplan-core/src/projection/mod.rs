@@ -646,6 +646,18 @@ pub async fn remove_projection_at(
 ///
 /// PRD-073 FR-001 helper. Used by `capture` / `remember` / `promote` /
 /// `reason` (note-creating commands).
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `artifact.id` fails
+///   `validate_artifact_id` (path-traversal payload, empty, etc.).
+/// - [`MutationError::InvalidKind`] if `artifact.kind` does not parse as
+///   an `ArtifactKind`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the underlying `LanceStore::create_artifact` call or the
+///   markdown-projection write fails. Categorisation via
+///   [`MutationError::from_store_err`] — fatal for schema corruption /
+///   ENOENT, transient for EACCES / lock contention.
 pub async fn create_artifact_with_projection(
     ctx: &MutationContext<'_>,
     artifact: &crate::db::store::NewArtifact,
@@ -715,6 +727,18 @@ pub async fn create_artifact_with_projection(
 /// on-disk filename doesn't match the DB title (e.g. user renamed a file
 /// without `forgeplan reindex`), the orphan is intentionally left behind to
 /// be surfaced by `forgeplan health` rather than guessed at.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::InvalidKind`] if the existing record's `kind` field
+///   is corrupt (audit H1: bail rather than silently fall back to
+///   `Note` and remove a wrong-directory file).
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   any of `get_record` / `delete_relations_for_artifact` /
+///   `delete_artifact` / projection-file removal fails. **Note**:
+///   missing row is *not* an error here — delete is idempotent (asymmetric
+///   with `update_body_with_projection` which returns `RowNotFound`).
 pub async fn delete_artifact_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -767,6 +791,17 @@ pub async fn delete_artifact_with_projection(
 /// future callers see the contract violation in test builds.
 ///
 /// PRD-073 FR-001 helper. Used by `update` (status/title path).
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails the inline validator
+///   (alphanumeric / `-` / `_`, must start with a letter, non-empty).
+/// - [`MutationError::EmptyField`] (`field: "status"` or `"title"`) if
+///   either argument is `Some` of a blank / whitespace string.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the sync-before / `update_artifact` / render-after triplet fails.
+///
+/// `(None, None)` short-circuits with `Ok(())` — no DB round-trip.
 pub async fn update_metadata_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -824,6 +859,15 @@ pub async fn update_metadata_with_projection(
 /// reindex would silently overwrite it with the stale on-disk body.
 ///
 /// PRD-073 FR-001 helper. Used by `update --body` and MCP body-update paths.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::RowNotFound`] if the artifact is not in the store
+///   (unlike `delete_artifact_with_projection`'s idempotent missing-row
+///   policy — `update_body` is an input-validating mutator).
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the projection write or `update_body` call fails.
 pub async fn update_body_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -869,6 +913,12 @@ pub async fn update_body_with_projection(
 /// file-first guarantees.
 ///
 /// PRD-073 FR-001 helper. Used by `update --depth`.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the sync-before / `update_depth` / render-after triplet fails.
 pub async fn update_depth_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -888,6 +938,12 @@ pub async fn update_depth_with_projection(
 /// new state.
 ///
 /// PRD-073 FR-001 helper. Used by `forgeplan tag`.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the sync-before / `add_tags` / render-after triplet fails.
 pub async fn add_tags_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -905,6 +961,12 @@ pub async fn add_tags_with_projection(
 /// Remove tags from an artifact with file-first guarantees.
 ///
 /// PRD-073 FR-001 helper. Used by `forgeplan untag`.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the sync-before / `remove_tags` / render-after triplet fails.
 pub async fn remove_tags_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -937,6 +999,16 @@ pub async fn remove_tags_with_projection(
 /// be in a state that doesn't have a local file (cross-workspace
 /// reference) and a transient FS error on rendering should not strand
 /// the relation that already landed in LanceDB.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `source` or `target` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   source-side pre-sync or `add_relation` fails. Target-side pre-sync
+///   and post-render failures are logged via `tracing::warn!` and
+///   swallowed (best-effort) so a missing-target file does not strand the
+///   relation that already landed in LanceDB.
 pub async fn add_link_with_projection(
     ctx: &MutationContext<'_>,
     source: &str,
@@ -973,6 +1045,15 @@ pub async fn add_link_with_projection(
 /// both renders are best-effort.
 ///
 /// PRD-073 FR-005 helper. Used by `unlink`.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `source` or `target` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   source-side pre-sync or `delete_relation` fails. Target-side
+///   pre-sync and post-render failures are best-effort (warn-and-continue),
+///   matching `add_link_with_projection`.
 pub async fn delete_link_with_projection(
     ctx: &MutationContext<'_>,
     source: &str,
@@ -1031,6 +1112,19 @@ pub async fn delete_link_with_projection(
 /// file-first invariant — if the markdown file is gone between the caller
 /// reading it and the helper running (TOCTOU), refuse to write a DB row
 /// that has no on-disk source. `MutationError::FileNotFound` is fatal.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `artifact.id` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::InvalidKind`] if `artifact.kind` does not parse as
+///   an `ArtifactKind`.
+/// - [`MutationError::FileNotFound`] if the markdown projection at the
+///   resolved path is missing on disk (TOCTOU between caller's read and
+///   this call). The path is workspace-relative for log safety.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   `metadata` returns a non-ENOENT I/O error or `create_artifact`
+///   fails. EACCES on the parent directory routes to `StoreTransient`.
 pub async fn sync_artifact_from_file(
     ctx: &MutationContext<'_>,
     artifact: &crate::db::store::NewArtifact,
@@ -1097,6 +1191,16 @@ pub async fn sync_artifact_from_file(
 /// missing on disk (TOCTOU between caller's read and this call). The DB
 /// row exists by precondition (`update_body` would otherwise fail), but
 /// the on-disk file may have been deleted by a concurrent operation.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::InvalidKind`] if `kind` does not parse as an
+///   `ArtifactKind`.
+/// - [`MutationError::FileNotFound`] if the markdown projection is
+///   missing on disk (workspace-relative path).
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   `metadata` fails with a non-ENOENT shape, or `update_body` fails.
 pub async fn sync_body_from_file(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -1160,6 +1264,16 @@ pub async fn sync_body_from_file(
 ///   yaml-null status into the DB row that fails every subsequent
 ///   `parse::<Status>()`. Same H2 silent-corruption class as the
 ///   sibling helper closes.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::EmptyField`] if either argument is `Some` of a
+///   blank / whitespace string.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   the `update_artifact` call fails.
+///
+/// `(None, None)` short-circuits with `Ok(())` — no DB round-trip.
 pub async fn sync_metadata_from_file(
     ctx: &MutationContext<'_>,
     id: &str,
@@ -1192,6 +1306,13 @@ pub async fn sync_metadata_from_file(
 /// Sync a relation from a markdown `links:` block into LanceDB.
 /// Used by `reindex` / `git_sync` to restore typed relations after
 /// rebuilding the DB from files.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `source` or `target` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   `add_relation` fails.
 pub async fn sync_relation_from_file(
     ctx: &MutationContext<'_>,
     source: &str,
@@ -1214,6 +1335,12 @@ pub async fn sync_relation_from_file(
 /// because (a) reindex assumes file is already missing, (b) git_sync was
 /// triggered BY the deletion. If you want to delete an artifact AND its
 /// projection, use `delete_artifact_with_projection`.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   `delete_artifact` fails.
 pub async fn delete_orphan_artifact(ctx: &MutationContext<'_>, id: &str) -> MutationResult<()> {
     let store = ctx.store;
     crate::db::store::validate_artifact_id(id)
@@ -1224,6 +1351,13 @@ pub async fn delete_orphan_artifact(ctx: &MutationContext<'_>, id: &str) -> Muta
 
 /// Delete an orphan relation whose source or target artifact no longer
 /// exists. Used by `reindex` Phase 3 cleanup.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `source` or `target` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   `delete_relation` fails.
 pub async fn delete_orphan_relation(
     ctx: &MutationContext<'_>,
     source: &str,
@@ -1261,6 +1395,19 @@ pub async fn delete_orphan_relation(
 /// PRD-073 FR-001 / FR-005 helper. Used by `import_cmd` /
 /// `forgeplan_import` / `ingest` (any caller that adds many relations
 /// in one shot).
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if any source or target id in the
+///   batch fails `validate_artifact_id`. Validation runs up front so a
+///   bad id rejects the batch before any write lands.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   any pre-sync call fails (those are fatal because they snapshot
+///   user edits — losing them would corrupt the workspace).
+///
+/// Per-link `add_relation` failures are counted and returned in the
+/// `Ok(usize)` payload (number of relations actually applied) — they do
+/// not abort the batch. See helper body for the full ordering contract.
 pub async fn add_links_batch_with_projection(
     ctx: &MutationContext<'_>,
     links: &[(String, String, String)],
@@ -1333,6 +1480,12 @@ pub async fn add_links_batch_with_projection(
 /// Used by MCP `forgeplan_delete` (PRD-055 soft-delete pattern). CLI
 /// `forgeplan delete` since 2026-05-01 also goes through soft_delete +
 /// this helper for parity (audit follow-up).
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
+///   `delete_artifact` fails.
 pub async fn delete_artifact_after_soft_delete(
     ctx: &MutationContext<'_>,
     id: &str,
