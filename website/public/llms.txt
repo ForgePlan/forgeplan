@@ -1,0 +1,42 @@
+# Forgeplan
+
+> Forgeplan — Rust CLI + MCP server for running engineering projects from
+> idea to implementation through structured artifacts (PRD, RFC, ADR,
+> Epic, Spec, Evidence, Problem, Note). Quality scoring via R_eff
+> (weakest-link), semantic search via BGE-M3, typed links, lifecycle
+> with validation gates. Built for AI agents.
+
+Forgeplan is opinionated about what makes engineering work auditable:
+markdown is the source of truth, derived data (vector index, scores)
+rebuilds from it; every decision carries evidence with structured
+fields (verdict / congruence_level / evidence_type); every artifact
+has a state machine (draft → active → superseded | deprecated | stale).
+
+The CLI binary (`forgeplan`, alias `fpl`) is local-first single-file.
+The MCP server exposes the same operations to any agent via stdio.
+
+## Methodology — start here
+
+- [Overview](https://forgeplan.dev/docs/methodology/overview): how the artifact-driven workflow composes
+- [Routing & Depth](https://forgeplan.dev/docs/methodology/routing): one question that decides ceremony level (Tactical / Standard / Deep / Critical)
+- [Artifact Lifecycle](https://forgeplan.dev/docs/methodology/lifecycle): draft → active → terminal states
+- [Evidence & Scoring](https://forgeplan.dev/docs/methodology/evidence): R_eff weakest-link calculus, why averaging trust is wrong
+- [ADI Reasoning](https://forgeplan.dev/docs/methodology/adi): Abduction → Deduction → Induction cycle for non-trivial decisions
+- [Hint Contract](https://forgeplan.dev/docs/methodology/agent-protocol): every CLI/MCP output emits one of `Next:` / `Or:` / `Wait:` / `Done.` / `Fix:` markers
+
+## Reference
+
+- [CLI Reference](https://forgeplan.dev/docs/cli/): all subcommands with examples
+- [MCP Reference](https://forgeplan.dev/docs/mcp/): MCP tool surface for agents
+- [Marketplace](https://forgeplan.dev/docs/marketplace/): playbooks, mappings, plugin packs
+
+## Getting Started
+
+- [Installation](https://forgeplan.dev/docs/getting-started/installation): brew, cargo, or scripted install
+- [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): from `forgeplan init` to first activated PRD in 5 minutes
+- [Configuration](https://forgeplan.dev/docs/getting-started/configuration): config.yaml + LLM provider setup
+
+## Optional
+
+- [Changelog](https://forgeplan.dev/docs/changelog): release history with theme summaries
+- [GitHub Repo](https://github.com/ForgePlan/forgeplan): source, issues, releases

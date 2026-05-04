@@ -18,7 +18,7 @@ A release ships when **all** of the following are true on `dev`:
 - `cargo fmt -- --check` clean
 - `cargo check --workspace` 0 warnings
 - `cargo clippy --workspace --all-targets -- -D warnings` clean
-- `cargo test --workspace` 0 failures (1850+ tests as of v0.27.0)
+- `cargo test --workspace --features test-helpers` 0 failures (1940+ tests as of v0.28.0)
 - Real E2E smoke on a fresh workspace covers the surfaces that changed
   in this minor (CLAUDE.md red line #5 — automated tests verify code
   correctness, not feature correctness)
@@ -26,6 +26,16 @@ A release ships when **all** of the following are true on `dev`:
   mismatches
 - `git log origin/main..origin/dev` shows a non-empty diff (no point
   releasing if dev hasn't diverged)
+
+**Canonical playbook (v0.28.0+)**: `marketplace/playbooks/release.yaml`
+кодифицирует pre-merge часть этого workflow как 12-step playbook
+(preflight cargo gates → dependabot triage → CHANGELOG check → branch +
+version bump → release PR creation → release-summary Note). На текущей
+схеме SPEC-003 1.2 нет template engine, поэтому maintainer вручную
+правит `vX.Y.Z` placeholder в step args перед `playbook run release --yes`
+(tracked как PROB-050 A-1). Запуск playbook'а автоматизирует pipeline
+ниже до шага 9; шаги 10+ (post-merge tag + sync PR) остаются
+ручными.
 
 If any of these fails, fix on `dev` (PR through `feat/*`) before
 opening the release branch.

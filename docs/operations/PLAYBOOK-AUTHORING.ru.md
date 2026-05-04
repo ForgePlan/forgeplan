@@ -124,10 +124,18 @@ requires:
 | `requires` | array of step IDs | нет | DAG ordering — что должно завершиться первым |
 | `fallback_hint` | string | нет | Команда установки, если delegate отсутствует |
 | `on_error` | enum | нет | `abort` (default) / `continue` |
+| `timeout_seconds` | int | нет | Per-step override default'а dispatcher'а (300s general / 600s plugin / 180s command/skill). Schema 1.1+ (PRD-072 FR-8) |
+| `budget_usd` | float | нет | USD cap для `claude --print` invocations (Plugin/Agent paths). Schema 1.2+ (ADR-011 §Decision). По умолчанию `$1.00` — слишком низок для adversarial review playbook'ов; ставьте `5.00` для audit-style steps. **Внимание**: claude enforces budget post-hoc — observed 1.05-1.25× overrun над cap (PROB-050 A-25). |
+| `allowed_tools` | array of tool names | нет | Whitelist tool names для `claude --print`. По умолчанию `[Read, Glob, Grep]` (least-privilege analytic). Расширяйте до `[Read, Write, Bash]` для production-builder steps. Schema 1.2+ |
 
 `requires` использует **ID шагов**, не артефактов и не файлов.
 Цикл в `requires` или ссылка на несуществующий ID — load error
 (SPEC-003 §Errors).
+
+**Schema versioning** — `schema_version` совместима с `^1.0` (semver caret).
+Поля `timeout_seconds` (1.1) и `budget_usd` + `allowed_tools` (1.2) —
+**additive, не breaking**: playbook'и без них загружаются идентично schema
+1.0. Loader предупреждает (`WARN`) о неизвестных полях, не fails.
 
 ## Пять типов делегации
 
@@ -309,6 +317,28 @@ author при выборе делегации и параметров шага.
 Источник истины — [ADR-010](../../.forgeplan/adrs/ADR-010-phase-6-subprocess-invocation-via-tokio-process-with-kill-on-drop-and-timeout.md)
 + [EVID-090](../../.forgeplan/evidence/EVID-090-spike-2-tokio-process-subprocess-invocation-validated-for-phase-6-dispatchers.md)
 (Spike-2 measurement, CL3).
+
+**Обновление v0.28.0 ([ADR-011](../../.forgeplan/adrs/ADR-011-plugin-agent-dispatchers-invoke-claude-print-directly.md))**:
+для **Plugin** и **Agent** delegations subprocess invocation теперь идёт
+через `claude --print --agent <slug>` (real `claude` CLI), не через
+fictional `task-tool` / `claude-code-plugin` бинари из ADR-010. Argv
+shape:
+
+```text
+claude --print --agent <slug> --output-format json \
+       --max-budget-usd <budget_usd> \
+       [--add-dir <produces_at>] \
+       --allowedTools <T1> <T2> ...
+```
+
+Агенту prompt передаётся через **stdin pipe**, не argv (вариадик
+`--allowedTools` иначе бы поглотил позиционный prompt). JSON envelope
+на stdout содержит `is_error` / `subtype` / `total_cost_usd` для
+dispatcher decoding. Empirical proof: [EVID-097](../../.forgeplan/evidence/EVID-097-phase-b-track-4-a8-real-e2e-closure-measurement.md)
+(real `claude` 2.1.126, 5 invocations, $0.98 spent).
+
+`Skill`, `Command`, `ForgeplanCore` dispatchers — без изменений
+относительно ADR-010 контракта.
 
 ### Async exec через tokio::process
 

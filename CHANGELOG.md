@@ -7,16 +7,86 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
-## [Unreleased] — PRD-073 file-first invariant compile-enforced (Phase 3a → 3b → 3c → 4)
+## [Unreleased]
 
-Closes PRD-073 (PROB-048 → ADR-003 invariant). The "markdown is source
-of truth, LanceDB is derived index" rule is now compile-time enforced —
-direct `LanceStore::*` mutating methods are `pub(crate)`, so any code
-outside `forgeplan-core` that tries to bypass the projection helpers
-fails to compile, not just fails the regression-test ratchet. Four
-adversarial audit rounds (general / live-test / Rust-focused / final
-team-lead) closed 7 CRITICAL + 13 HIGH findings before this entry.
-EVID-094.
+_No changes yet for the next release._
+
+## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
+
+Bundles 14 merge-PRs (#224..#237) since v0.27.0 (2026-04-28). Three
+load-bearing themes: **(1) PRD-073 file-first invariant compile-enforced**
+(ADR-003 — `LanceStore::*` mutating methods are now `pub(crate)`,
+file-first projection wrappers are the only mutation surface), **(2)
+ADR-011 Phase B Wave 1** — Plugin and Agent dispatchers shell out to
+`claude --print` on the real `claude` 2.1.126 binary, replacing the
+fictional `task-tool` from ADR-010, **(3) Track 4-A8 canonical
+playbooks** — `release.yaml` + `brownfield-docs.yaml` ship as runnable
+templates for marketplace skill/mapping authors.
+
+Real-E2E verification of Phase B Wave 1 (PR 1 / 2026-05-03,
+NOTE-049 + EVID-097): 5 measured real `claude --print` invocations
+(3 happy-path success + 1 budget-error envelope decode + 1 retracted
+env-export attempt), byte-identical argv recording wrapper, validation
+guard reject in 0.01s. ADR-011 R_eff = 0.70 grade B (3 evidence packs,
+all CL3 supports).
+
+Dependabot: 16 of 18 open alerts auto-close on this `release/v0.28.0
+→ main` merge (lockfile in dev already at patch versions per round 2 +
+round 3 triage). 2 carry-forward (lru transitive via tantivy, uuid
+transitive via mermaid) с обоснованием в `docs/operations/dependabot-triage-2026-05-03.md`.
+
+Pre-conditions verified before cutting: cargo fmt clean, cargo clippy
+--workspace --all-targets --features test-helpers -- -D warnings clean,
+cargo test --workspace --features test-helpers all PASS (1614+ tests),
+forgeplan health clean.
+
+### Verification (PR 1 + PR 2.5 closures, 2026-05-03 / 2026-05-04)
+
+- **NOTE-049** + **EVID-097**: real-E2E closure of Phase B Wave 1.
+  Production `claude` 2.1.126 invoked through PluginDispatcher AND
+  AgentDispatcher with byte-identical argv recording wrapper.
+  Discovered 5 net-new findings (added to PROB-050 as A-21..A-26 + 1
+  A-22 retract via audit C-1 pipefail discipline lesson). Total spent:
+  ~$0.98 USD across 5 measured claude invocations.
+- **PROB-050 A-3 ✅ closes** with narrowed scope (happy + budget-error
+  envelope verified end-to-end on healthy CLI; failure-path JSON
+  decode coverage tracked in A-11 + A-16).
+- **PROB-050 A-14 wording tightened**: require `#[cfg(test)]` gate for
+  `FORGEPLAN_CLAUDE_BIN` (audit S-2 escalates env-injection vector
+  CWE-426 from documentation-only mitigation to compile-time gate).
+- **PROB-050 A-28 ✅ closes** via YAML rewrite (`Delegation::Agent` →
+  `Delegation::Plugin` split for colon-namespaced agent slugs in
+  `audit.yaml` steps 1-3). Real-E2E proof on 2026-05-04: all 3 parallel
+  agents successfully spawned, claude resolved bare slugs
+  (`architect-reviewer`, `code-reviewer`, `security-expert`), 502s
+  wall-clock real work + ~$3.50 spent — closing what would have been
+  a guaranteed `DispatchError::Transport` reject pre-spawn.
+- **PROB-050 A-29 NEW** (discovered during A-28 verification):
+  `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
+  adversarial-review playbooks. All 3 audit agents hit `error_max_budget_usd`
+  at $1.05-$1.25. Operational fix applied: `audit.yaml` steps 1-3 now
+  carry explicit `budget_usd: 5.00`. Methodology fix tracked as A-29
+  option (b) for next sprint (tier `DEFAULT_BUDGET_QUICK` /
+  `DEFAULT_BUDGET_REVIEW`).
+
+### Added (AI documentation discoverability)
+
+- `website/public/robots.txt`: explicit `Allow: /` for 18 named AI
+  crawlers (GPTBot, ClaudeBot, Google-Extended, CCBot, Applebot,
+  PerplexityBot, и т.д.) — Forgeplan документация specifically built
+  for agentic consumers, signal openness explicitly rather than rely
+  on absence of `Disallow`.
+- `website/public/llms.txt`: curated entry-point per emerging
+  Anthropic/Mintlify convention (https://llmstxt.org/). Provides
+  one-shot context for LLM agents discovering Forgeplan: methodology
+  links, CLI/MCP reference, getting-started anchor. Without this, AI
+  agents had to guess which paths matter.
+
+### Detail — PRD-073 file-first invariant (EVID-094 R_eff=0.80 grade A)
+
+Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
+(general / live-test / Rust-focused / final team-lead) closed
+7 CRITICAL + 13 HIGH findings. PROB-048 deprecated as resolved.
 
 ### Added — file-first projection helpers (15 total)
 
@@ -40,7 +110,11 @@ EVID-094.
 - `MutationError` enum + `MutationResult<T>` alias introduced (typed
   errors); helper signature migration deferred to PRD-073 Phase 3c.
 - `marketplace/playbooks/audit.yaml`: reference template for the
-  multi-agent adversarial audit pattern (requires task-tool dispatcher).
+  multi-agent adversarial audit pattern. Updated header to reflect
+  ADR-011 (claude --print via PluginDispatcher / AgentDispatcher);
+  current YAML uses colon-namespaced agent slugs (`agents-pro:architect-reviewer`)
+  which are pre-spawn-rejected by `validate_agent_name` until PROB-050 A-28
+  introduces a colon-aware slug strategy.
 
 ### Changed (BREAKING for downstream library consumers)
 
