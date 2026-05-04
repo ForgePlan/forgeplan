@@ -86,8 +86,7 @@ pub async fn run() -> anyhow::Result<()> {
                     // Compare body — sync if different
                     if record.body.trim() != body.trim() {
                         projection::sync_body_from_file(
-                            &ws,
-                            &store,
+                            &projection::MutationContext::new(&ws, &store),
                             &id,
                             &record.kind,
                             &record.title,
@@ -133,7 +132,11 @@ pub async fn run() -> anyhow::Result<()> {
                         tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                     };
 
-                    projection::sync_artifact_from_file(&ws, &store, &artifact).await?;
+                    projection::sync_artifact_from_file(
+                        &projection::MutationContext::new(&ws, &store),
+                        &artifact,
+                    )
+                    .await?;
                     common::log_change(&store, &id, "create", "reindex").await;
                     println!("  NEW  {} — created from file", id);
                     synced += 1;
@@ -153,8 +156,13 @@ pub async fn run() -> anyhow::Result<()> {
                         let already_exists =
                             existing_relations.iter().any(|(et, er)| et == t && er == r);
                         if !already_exists {
-                            if let Err(e) =
-                                projection::sync_relation_from_file(&store, &id, t, r).await
+                            if let Err(e) = projection::sync_relation_from_file(
+                                &projection::MutationContext::new(&ws, &store),
+                                &id,
+                                t,
+                                r,
+                            )
+                            .await
                             {
                                 eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
                             } else {
@@ -224,7 +232,11 @@ pub async fn run() -> anyhow::Result<()> {
             };
 
         if let Some(reason) = orphan_reason {
-            projection::delete_orphan_artifact(&store, &record.id).await?;
+            projection::delete_orphan_artifact(
+                &projection::MutationContext::new(&ws, &store),
+                &record.id,
+            )
+            .await?;
             common::log_change(&store, &record.id, "delete", "reindex").await;
             let reason_label = match reason {
                 OrphanReason::CorruptKind => "corrupt kind field",
@@ -253,8 +265,13 @@ pub async fn run() -> anyhow::Result<()> {
             let source_exists = surviving_ids.contains(source);
             let target_exists = surviving_ids.contains(target);
             if !source_exists || !target_exists {
-                if let Err(e) =
-                    projection::delete_orphan_relation(&store, source, target, relation).await
+                if let Err(e) = projection::delete_orphan_relation(
+                    &projection::MutationContext::new(&ws, &store),
+                    source,
+                    target,
+                    relation,
+                )
+                .await
                 {
                     eprintln!(
                         "  WARN orphan relation {source} --{relation}--> {target} delete failed: {e}"

@@ -21,7 +21,7 @@ pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
     }
 
     // PRD-073 file-first: helper handles sync→add_tags→render in one shot.
-    projection::add_tags_with_projection(&ws, &store, id, tags)
+    projection::add_tags_with_projection(&projection::MutationContext::new(&ws, &store), id, tags)
         .await
         .with_context(|| format!("Failed to add tags to {}", id))?;
 
@@ -70,9 +70,13 @@ pub async fn run_remove(id: &str, tags: &[String]) -> Result<()> {
     }
 
     // PRD-073 file-first: helper handles sync→remove_tags→render in one shot.
-    projection::remove_tags_with_projection(&ws, &store, id, tags)
-        .await
-        .with_context(|| format!("Failed to remove tags from {}", id))?;
+    projection::remove_tags_with_projection(
+        &projection::MutationContext::new(&ws, &store),
+        id,
+        tags,
+    )
+    .await
+    .with_context(|| format!("Failed to remove tags from {}", id))?;
 
     let updated = store
         .get_record(id)

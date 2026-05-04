@@ -66,7 +66,11 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         tags: Vec::new(),
     };
     // PRD-073 file-first: helper writes file first, then syncs to LanceDB.
-    projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
+    projection::create_artifact_with_projection(
+        &projection::MutationContext::new(&workspace, &store),
+        &artifact,
+    )
+    .await?;
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
 
@@ -152,7 +156,8 @@ async fn run_forget(id: &str) -> Result<()> {
     }
 
     // PRD-073 file-first: helper removes file first, then cascades DB.
-    projection::delete_artifact_with_projection(&ws, &store, id).await?;
+    projection::delete_artifact_with_projection(&projection::MutationContext::new(&ws, &store), id)
+        .await?;
 
     println!("  Forgotten: {}", style(id).bold());
 
