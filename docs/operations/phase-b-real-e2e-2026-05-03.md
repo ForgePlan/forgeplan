@@ -230,6 +230,14 @@ Result: success: 1, [OK] plugin-step, "Done."
 ```
 Wrapper invocation method: PATH-prepended symlink (см. F-RUNTIME-7 — `FORGEPLAN_CLAUDE_BIN` env override НЕ работает для Plugin).
 
+> **Forward-reference (added 2026-05-04, PR-B v0.29.0)**: starting v0.29.0 the
+> `$FORGEPLAN_CLAUDE_BIN` env override also stops working for **Agent** in
+> release builds (cfg-gated to test compilation only — closes CWE-426 binary
+> substitution per PROB-050 A-14). The PATH-prepended symlink trick described
+> here therefore becomes the **only** wrapper-invocation method that works
+> across both dispatchers in release. See F-RUNTIME-7 row below for closure
+> details.
+
 argv (NUM_ARGS=9, identical к H1b shape):
 ```
 --print --agent general-purpose --output-format json --max-budget-usd 0.50 --allowedTools Read

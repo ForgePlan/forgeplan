@@ -73,6 +73,34 @@ Round 2 — 1 security-expert agent on the Round 1 fixes:
 - Round 1 HIGH-1 + MED-1 confirmed CLOSED.
 - 2 LOW observations: LOW-2 (1-line grep hint near cfg-gate) **applied inline**; LOW-1 (helpers test could take ENV_GUARD lock) **deferred** to PROB-050 (latent — no peer test today).
 
+Round 3 — `forge-audit` multi-expert pass (logic+correctness, test-coverage,
+documentation; performance hit org token limit, non-blocking):
+- **Logic HIGH-1 / Test HIGH-1**: helpers test
+  `resolve_forgeplan_binary_respects_env_override` was tautological pre-PR-B
+  (asserted only `is_some()`, satisfied by `which_in_path("forgeplan")`
+  fallback even if env-var read removed entirely). **Strengthened**: now
+  isolates `$PATH` (saves/restores around set/remove of broken value) and
+  asserts exact `PathBuf::from(cargo)` — symmetric with the new agent_dispatcher
+  positive test.
+- **Documentation HIGH-1 (CHANGELOG migration wording)**: the original entry
+  pointed operators at `AgentDispatcher::with_claude_binary` (Rust API
+  unreachable from brew/CLI users). **Rewritten** with two audiences:
+  CLI/brew operators → pin via `$PATH`; library consumers → builder hook.
+- **Documentation HIGH-2 (website changelog stale)**: regenerated via
+  `node website/scripts/copy-changelog.mjs` so the public mirror surfaces
+  the Security entry immediately rather than waiting for next deploy.
+- **Documentation MEDIUM-1 (ADR-011 silent on contract change)**: added
+  ADR-011 «Amendment 1 — env-var override gated to test builds» block with
+  full rationale, before/after resolution-order table, verification chain,
+  and reversibility statement.
+- **Documentation MEDIUM-3 (phase-b ops doc line 231 stale)**: added inline
+  forward-reference matching the EVID-097 pattern so historical narrative
+  doesn't mislead post-v0.29.0 readers.
+- LOW items (test name security wording, EVID-102 1-year TTL rationale,
+  rustdoc 3-site phrasing alignment, source-grep regression test for
+  cfg-gate placement) **deferred to PROB-050 A-31 follow-up** — none
+  block the security closure claim.
+
 ## Result
 
 | Aspect | Before | After |

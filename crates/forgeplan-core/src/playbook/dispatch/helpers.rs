@@ -341,23 +341,45 @@ mod tests {
 
     #[test]
     fn resolve_forgeplan_binary_respects_env_override() {
-        // Use a known existing file (cargo always exists on Rust dev box).
-        // Test verifies the env-var path; we avoid hitting real PATH.
-        // Skipping if cargo not found (unlikely on Rust workspace).
+        // PROB-050 A-14 strengthen (Round 3 audit, test-coverage HIGH-1):
+        // pre-PR-B this test asserted only `is_some()`, which any host with
+        // `forgeplan` on PATH would satisfy via the `which_in_path` fallback
+        // — making it insensitive to the cfg-gate. Strengthened to (a) clear
+        // PATH so `which_in_path("forgeplan")` cannot accidentally satisfy
+        // the assertion, and (b) compare exact PathBuf so removing or
+        // widening the `#[cfg(test)]` gate breaks the test. Mirrors the
+        // pattern in `agent_dispatcher::tests::dispatch_emits_delegate_missing_when_tool_absent`.
         let cargo_path = which_in_path("cargo");
-        if cargo_path.is_none() {
+        let Some(cargo) = cargo_path else {
             return;
-        }
-        // SAFETY: test-local env var manipulation; no concurrent tests touch it.
+        };
+        let original_path = std::env::var_os("PATH");
+        // SAFETY: test-local env var manipulation; PATH save/restore guards
+        // against leaking the broken PATH to subsequent tests in the same
+        // `cargo test` process. PROB-050 A-31 tracks promoting all
+        // dispatch-test env mutations to a shared static lock; today
+        // `helpers::tests` has no peer test mutating env, so the local
+        // pattern stays defensive-only.
         unsafe {
-            std::env::set_var("FORGEPLAN_BIN", cargo_path.as_ref().unwrap());
+            std::env::set_var("PATH", "/nonexistent-dir-prob-050-a14-helpers-test");
+            std::env::set_var("FORGEPLAN_BIN", &cargo);
         }
         let resolved = resolve_forgeplan_binary(Path::new("/tmp/no-such-workspace"));
-        // SAFETY: cleanup.
+        // SAFETY: cleanup BEFORE the assert so a panic on the assertion does
+        // not poison subsequent tests in the same process.
         unsafe {
             std::env::remove_var("FORGEPLAN_BIN");
+            match original_path {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
         }
-        assert!(resolved.is_some());
+        assert_eq!(
+            resolved.as_deref(),
+            Some(cargo.as_path()),
+            "cfg(test) gate must keep FORGEPLAN_BIN reachable in test \
+             builds; removing or widening the gate would break this assert"
+        );
     }
 
     // ----- run_subprocess tests --------------------------------------------

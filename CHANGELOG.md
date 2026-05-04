@@ -19,11 +19,19 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   test builds honour them for fixture wiring. Restores parity with
   `PluginDispatcher` (which never read these env vars) and closes the
   v0.28.0 release-notes promise (audit S-2 escalation, see
-  [phase-b-real-e2e-2026-05-03.md](docs/operations/phase-b-real-e2e-2026-05-03.md#f-runtime-7)).
-  Operators who relied on the undocumented env-var path for production
-  override should switch to the supported
-  [`AgentDispatcher::with_claude_binary`](crates/forgeplan-core/src/playbook/dispatch/agent_dispatcher.rs)
-  builder hook (or pin via `PATH`).
+  [`docs/operations/phase-b-real-e2e-2026-05-03.md`](docs/operations/phase-b-real-e2e-2026-05-03.md)
+  F-RUNTIME-7).
+
+  **Migration for operators** (CLI / brew / binary distributions):
+  the env-var path was never a documented contract; operators relying on
+  it for production override should pin `claude` via `$PATH` — that is
+  the only supported binary-resolution surface at the CLI / playbook
+  layer. There is no per-invocation override at the YAML schema (SPEC-003)
+  today; tracked as PROB-050 A-31 if such a surface becomes needed.
+
+  **Library consumers** embedding `forgeplan-core` directly can use the
+  `AgentDispatcher::with_claude_binary(path)` builder hook for
+  fixture/spawn-target redirection.
 
 ## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
 
