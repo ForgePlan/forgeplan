@@ -41,6 +41,11 @@ globset.workspace = true
 [features]
 default = []
 semantic-search = ["fastembed"]
+# Exposes test-only escape hatches (`*_for_test`) on `LanceStore` so
+# downstream test fixtures can seed the DB directly without going through
+# the projection pipeline they're not exercising. Production code MUST
+# NOT enable this feature.
+test-helpers = []
 
 [dev-dependencies]
 tempfile = "3"

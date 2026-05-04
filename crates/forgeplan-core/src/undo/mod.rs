@@ -390,6 +390,153 @@ pub async fn purge_expired(workspace: &Path, ttl_days: u32) -> anyhow::Result<us
     Ok(removed)
 }
 
+/// Capture a soft-delete receipt for an artifact and (for `Delete` ops)
+/// move its markdown projection into `.forgeplan/trash/`. Returns the
+/// receipt ID so the caller can include it in user-facing output for
+/// `forgeplan_undo_last` / `forgeplan_restore`.
+///
+/// **Crash invariant**: receipt is written FIRST, projection move SECOND.
+/// If the process is killed between the two, the next `restore` finds the
+/// receipt and uses the snapshot to recreate the artifact (file move
+/// failure is non-fatal — receipt has full body and metadata).
+///
+/// **Helper used by both CLI `forgeplan delete` AND MCP
+/// `forgeplan_delete` / `forgeplan_supersede` / `forgeplan_deprecate`** —
+/// previously lived as a private function in MCP server.rs which left CLI
+/// `delete` permanently destructive (audit 2026-05-01 follow-up).
+///
+/// # Errors
+/// Returns Err if receipt write fails. The caller MUST NOT proceed with
+/// the destructive op in that case.
+pub async fn soft_delete_capture(
+    workspace: &std::path::Path,
+    store: &crate::db::store::LanceStore,
+    record: &crate::db::store::ArtifactRecord,
+    op: DestructiveOp,
+    reason: Option<&str>,
+    replacement: Option<&str>,
+) -> anyhow::Result<String> {
+    use crate::artifact::types::ArtifactKind;
+
+    // Gather outgoing + incoming relations so restore can replay both
+    // directions (PRD-055 ADR #6).
+    let mut relations = Vec::new();
+    if let Ok(outgoing) = store.get_relations(&record.id).await {
+        for (to, relation) in outgoing {
+            relations.push(CapturedRelation {
+                from: record.id.clone(),
+                to,
+                relation,
+                direction: RelationDirection::Outgoing,
+            });
+        }
+    }
+    if let Ok(incoming) = store.get_incoming_relations(&record.id).await {
+        for (from, relation) in incoming {
+            relations.push(CapturedRelation {
+                from,
+                to: record.id.clone(),
+                relation,
+                direction: RelationDirection::Incoming,
+            });
+        }
+    }
+
+    // Resolve original projection path BEFORE move. Cannot trust
+    // `slugify(current_title)` because the title may have been edited
+    // after artifact creation, so the projection filename on disk may
+    // differ. Scan the kind directory for any file matching `<ID>-*.md`
+    // and take the first match. Fall back to slugify only if filesystem
+    // scan fails (e.g. missing dir).
+    let projection_path = if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
+        let kind_dir = workspace.join(kind.dir_name());
+        let id_prefix = format!("{}-", record.id);
+        let mut found: Option<std::path::PathBuf> = None;
+        if let Ok(mut entries) = tokio::fs::read_dir(&kind_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Some(name) = entry.file_name().to_str()
+                    && name.starts_with(&id_prefix)
+                    && name.ends_with(".md")
+                {
+                    found = Some(entry.path());
+                    break;
+                }
+            }
+        }
+        match found {
+            Some(p) => p.display().to_string(),
+            None => {
+                let slug = crate::artifact::types::slugify(&record.title);
+                kind_dir
+                    .join(format!("{}-{slug}.md", record.id))
+                    .display()
+                    .to_string()
+            }
+        }
+    } else {
+        String::new()
+    };
+
+    let receipt_id = generate_receipt_id(&record.kind, &record.id);
+    let trashed = trashed_projection_path(workspace, &receipt_id)
+        .display()
+        .to_string();
+
+    let snapshot = ArtifactSnapshot {
+        id: record.id.clone(),
+        kind: record.kind.clone(),
+        status: record.status.clone(),
+        title: record.title.clone(),
+        depth: record.depth.clone(),
+        body: record.body.clone(),
+        author: record.author.clone(),
+        parent_epic: record.parent_epic.clone(),
+        valid_until: record.valid_until.clone(),
+        relations,
+        projection_path: projection_path.clone(),
+    };
+
+    let receipt = Receipt {
+        receipt_id: receipt_id.clone(),
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        op,
+        snapshot,
+        reason: reason.map(String::from),
+        replacement: replacement.map(String::from),
+        trashed_projection: trashed,
+        activity_log_hash: None,
+        consumed: false,
+    };
+
+    // Write receipt first (crash invariant).
+    write_receipt(workspace, &receipt).await?;
+
+    // Move projection file into trash ONLY for Delete — supersede and
+    // deprecate leave the markdown in place.
+    let projection_pathbuf = std::path::PathBuf::from(&projection_path);
+    if matches!(op, DestructiveOp::Delete)
+        && projection_pathbuf.exists()
+        && let Err(e) = trash_projection(workspace, &receipt_id, &projection_pathbuf).await
+    {
+        tracing::warn!(
+            "soft_delete: failed to move projection {}: {}. Receipt written, artifact \
+             will still be recoverable via store snapshot.",
+            projection_pathbuf.display(),
+            e
+        );
+    }
+
+    // Fire-and-forget TTL purge so trash stays bounded.
+    let ws_clone = workspace.to_path_buf();
+    tokio::spawn(async move {
+        if let Err(e) = purge_expired(&ws_clone, DEFAULT_TTL_DAYS).await {
+            tracing::warn!("TTL purge failed: {}", e);
+        }
+    });
+
+    Ok(receipt_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

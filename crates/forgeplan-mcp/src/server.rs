@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{NaiveDate, Utc};
+use forgeplan_core::scoring::evidence::parse_evidence_from_record;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
@@ -1209,26 +1210,10 @@ impl ForgeplanServer {
             tags: Vec::new(),
         };
 
-        store
-            .create_artifact(&artifact)
+        // PRD-073 audit: helper writes file FIRST then syncs to LanceDB.
+        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
             .await
             .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
-
-        let filepath = projection::render_projection(
-            &ws,
-            &id,
-            template_key,
-            &p.title,
-            "draft",
-            "standard",
-            None,
-            None,
-            None,
-            &rendered,
-            &[],
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("Projection failed: {e}"), None))?;
 
         // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
         // first modifier is attributable even without an update call.
@@ -1727,7 +1712,14 @@ impl ForgeplanServer {
             _ => {}
         }
 
-        if let Err(e) = store.add_relation(&p.source, &p.target, &relation).await {
+        // ADR-003 / PROB-048 / PRD-073 file-first: helper does pre-sync for
+        // both sides, the add_relation, then post-render for both sides.
+        // sync_before/render_after are no-ops when the target is not local
+        // (cross-workspace reference) so the previous warn-and-continue
+        // behavior is preserved by the helper's natural laziness.
+        if let Err(e) =
+            projection::add_link_with_projection(&ws, &store, &p.source, &p.target, &relation).await
+        {
             let safe_src = sanitize_for_hint(&p.source);
             let safe_tgt = sanitize_for_hint(&p.target);
             return Ok(err_hinted(
@@ -1737,39 +1729,6 @@ impl ForgeplanServer {
                      source != target. Self-links and dangling targets are rejected."
                 ),
             ));
-        }
-
-        // Sync file→LanceDB (preserve user edits), then re-render projection
-        if let Ok(Some(record)) = store.get_record(&p.source).await {
-            let _ = projection::sync_file_to_store(&store, &ws, &record).await;
-            // Re-read after sync. Possible states:
-            //   Ok(Some(r)) — use the refreshed record
-            //   Ok(None)    — artifact deleted concurrently (race) — fall
-            //                 back to the original record so we don't panic
-            //   Err(_)      — store error — same fallback
-            // Previous code used `.unwrap_or(Some(record)).unwrap()` which
-            // panics on Ok(None). Fixed per Round 3 deep QA.
-            let record = store
-                .get_record(&p.source)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or(record);
-            let links = store.get_relations(&p.source).await.unwrap_or_default();
-            let _ = projection::render_projection(
-                &ws,
-                &record.id,
-                &record.kind,
-                &record.title,
-                &record.status,
-                &record.depth,
-                record.author.as_deref(),
-                record.parent_epic.as_deref(),
-                record.valid_until.as_deref(),
-                &record.body,
-                &links,
-            )
-            .await;
         }
 
         let safe_src = sanitize_for_hint(&p.source);
@@ -1928,12 +1887,13 @@ impl ForgeplanServer {
             }
         };
 
-        // Verify exists
+        // Verify exists. The helpers do their own sync_before_mutation; we
+        // only need the existence check here (and presence info downstream).
         let pre_record = store
             .get_record(&p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-        let pre_record = match pre_record {
+        let _pre_record = match pre_record {
             Some(r) => r,
             None => return Ok(artifact_not_found(&p.id)),
         };
@@ -1973,67 +1933,33 @@ impl ForgeplanServer {
             ));
         }
 
-        // Sync file→LanceDB BEFORE mutations — capture user edits
-        let _ = projection::sync_file_to_store(&store, &ws, &pre_record).await;
-
+        // PRD-073 audit: route metadata + body mutations through file-first
+        // helpers. Each helper handles its own sync→mutate→render triplet.
         if p.status.is_some() || p.title.is_some() {
             let status_str = p.status.as_ref().map(|s| s.as_str());
-            store
-                .update_artifact(&p.id, status_str, p.title.as_deref())
+            projection::update_metadata_with_projection(
+                &ws,
+                &store,
+                &p.id,
+                status_str,
+                p.title.as_deref(),
+            )
+            .await
+            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        }
+
+        if let Some(ref body) = p.body {
+            projection::update_body_with_projection(&ws, &store, &p.id, body)
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
 
-        let body_updated = if let Some(ref body) = p.body {
-            store
-                .update_body(&p.id, body)
-                .await
-                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            true
-        } else {
-            false
-        };
-
-        // Re-render projection
+        // Re-fetch for the response payload.
         let updated = store
             .get_record(&p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
-        let links = store.get_relations(&p.id).await.unwrap_or_default();
-
-        if body_updated {
-            // Body was explicitly set — use force_body to write to file (files = truth)
-            let _ = projection::render_projection_with_body(
-                &ws,
-                &updated.id,
-                &updated.kind,
-                &updated.title,
-                &updated.status,
-                &updated.depth,
-                updated.author.as_deref(),
-                updated.parent_epic.as_deref(),
-                updated.valid_until.as_deref(),
-                &updated.body,
-                &links,
-            )
-            .await;
-        } else {
-            let _ = projection::render_projection(
-                &ws,
-                &updated.id,
-                &updated.kind,
-                &updated.title,
-                &updated.status,
-                &updated.depth,
-                updated.author.as_deref(),
-                updated.parent_epic.as_deref(),
-                updated.valid_until.as_deref(),
-                &updated.body,
-                &links,
-            )
-            .await;
-        }
 
         // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
         // rendered file. Best-effort — a stamping failure must not fail
@@ -2101,7 +2027,7 @@ impl ForgeplanServer {
 
         // PRD-055 soft-delete: write receipt + move projection to trash
         // BEFORE store mutation (crash invariant).
-        let receipt_id = match soft_delete_capture(
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
             &store,
             &record,
@@ -2121,9 +2047,10 @@ impl ForgeplanServer {
             }
         };
 
-        // Safe to mutate store — receipt is on disk.
-        store
-            .delete_artifact(&p.id)
+        // Safe to mutate store — receipt is on disk and file is in trash.
+        // Helper exists so the LanceStore method can stay pub(crate) per
+        // ADR-003 Phase 4 lockdown.
+        forgeplan_core::projection::delete_artifact_after_soft_delete(&store, &p.id)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
@@ -2285,12 +2212,36 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
+        let ws_opt = self.require_workspace().await.ok();
+
+        // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
+        if let Some(ws) = &ws_opt
+            && let Err(e) =
+                forgeplan_core::projection::sync_before_mutation(ws, &store, &p.id).await
+        {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync failed: {e}"
+            )));
+        }
+
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
+                // ADR-003 / PROB-048 file-first: render store → file so the
+                // file's `status:` reflects active. Avoids file/lance skew.
+                if let Some(ws) = &ws_opt
+                    && let Err(e) =
+                        forgeplan_core::projection::render_after_mutation(ws, &store, &p.id).await
+                {
+                    tracing::warn!(
+                        "post-mutation render for {} failed: {e} — file projection stale",
+                        p.id
+                    );
+                }
+
                 // PRD-056: activation is terminal — advance phase to Done.
-                if let Ok(ws) = self.require_workspace().await {
+                if let Some(ws) = &ws_opt {
                     maybe_advance_phase(
-                        &ws,
+                        ws,
                         &p.id,
                         forgeplan_core::phase::Phase::Done,
                         "forgeplan_activate",
@@ -2378,7 +2329,7 @@ impl ForgeplanServer {
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
-        let receipt_id = match soft_delete_capture(
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
             &store,
             &record,
@@ -2398,8 +2349,28 @@ impl ForgeplanServer {
             }
         };
 
+        // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
+        if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync failed: {e}"
+            )));
+        }
+
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
             Ok(result) => {
+                // ADR-003 / PROB-048 file-first: render store → file. Both the
+                // superseded artifact (new status + supersede link) and the
+                // replacement (incoming reverse link) are written.
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.id).await
+                {
+                    tracing::warn!("post-mutation render for superseded {} failed: {e}", p.id);
+                }
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.by).await
+                {
+                    tracing::warn!("post-mutation render for replacement {} failed: {e}", p.by);
+                }
                 // PRD-056: supersede is terminal — advance phase to Done.
                 maybe_advance_phase(
                     &ws,
@@ -2495,7 +2466,7 @@ impl ForgeplanServer {
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
-        let receipt_id = match soft_delete_capture(
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
             &store,
             &record,
@@ -2515,8 +2486,30 @@ impl ForgeplanServer {
             }
         };
 
+        // ADR-003 / PROB-048 file-first: flush user file edits → store before
+        // lifecycle transition so they aren't lost.
+        if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
+            return Ok(err_result(&format!(
+                "pre-mutation file→store sync failed: {e}"
+            )));
+        }
+
         match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
             Ok(dependents) => {
+                // ADR-003 / PROB-048 file-first: render store → file so the
+                // markdown projection's `status:` frontmatter reflects the
+                // transition. Without this, a CLI re-deprecate would see a
+                // file `status: active` and a store `status: deprecated`.
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.id).await
+                {
+                    tracing::warn!(
+                        "post-mutation render for {} failed: {e} — \
+                         LanceDB has the deprecation, file projection is stale",
+                        p.id
+                    );
+                }
+
                 // PRD-056: deprecation is terminal — advance phase to Done.
                 maybe_advance_phase(
                     &ws,
@@ -2881,26 +2874,10 @@ impl ForgeplanServer {
             tags: Vec::new(),
         };
 
-        store
-            .create_artifact(&artifact)
+        // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
+        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-
-        let filepath = projection::render_projection(
-            &ws,
-            &id,
-            template_key,
-            &title,
-            "draft",
-            "tactical",
-            None,
-            None,
-            None,
-            &body,
-            &[],
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         // PRD-071: single primary — review the captured draft. Lifecycle
@@ -3914,26 +3891,10 @@ impl ForgeplanServer {
             tags: Vec::new(),
         };
 
-        store
-            .create_artifact(&artifact)
+        // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
+        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
             .await
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-
-        let filepath = projection::render_projection(
-            &ws,
-            &id,
-            template_key,
-            &title,
-            "draft",
-            "standard",
-            None,
-            None,
-            None,
-            &body,
-            &[],
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         let next_action = format!(
@@ -4073,6 +4034,24 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ImportParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        // Audit H3 follow-up: serialize import behind workspace lock so a
+        // concurrent CLI mutation cannot interleave with the bundle replay.
+        // Each artifact in the bundle is now a file-first operation via
+        // the helper (per H3 fix), but the BATCH still needs atomicity
+        // from any external observer's perspective.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
+        };
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -4114,7 +4093,10 @@ impl ForgeplanServer {
             }
 
             if existing.is_some() {
-                let _ = store.delete_artifact(id).await;
+                // PRD-073 audit H3: helper removes file + relations + DB row
+                // in lockstep so re-import via force=true doesn't strand
+                // the OLD markdown file.
+                let _ = projection::delete_artifact_with_projection(&ws, &store, id).await;
             }
 
             let new_art = NewArtifact {
@@ -4130,26 +4112,40 @@ impl ForgeplanServer {
                 tags: Vec::new(),
             };
 
-            if let Err(e) = store.create_artifact(&new_art).await {
+            // PRD-073 audit H3: file-first helper writes the markdown
+            // projection alongside the LanceDB row; previous direct
+            // `store.create_artifact` left every imported artifact in
+            // DB-only state (live-confirmed in audit testing).
+            if let Err(e) = projection::create_artifact_with_projection(&ws, &store, &new_art).await
+            {
                 return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
             }
             imported += 1;
         }
 
-        let mut relations_imported = 0usize;
-        if let Some(relations) = data["relations"].as_array() {
-            for rel in relations {
-                let source = rel["source"].as_str().unwrap_or_default();
-                let target = rel["target"].as_str().unwrap_or_default();
-                let relation = rel["relation"].as_str().unwrap_or("informs");
-                if !source.is_empty()
-                    && !target.is_empty()
-                    && store.add_relation(source, target, relation).await.is_ok()
-                {
-                    relations_imported += 1;
-                }
-            }
-        }
+        // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync
+        // + post-render per unique participant.
+        let link_triples: Vec<(String, String, String)> = data["relations"]
+            .as_array()
+            .map(|relations| {
+                relations
+                    .iter()
+                    .filter_map(|rel| {
+                        let source = rel["source"].as_str()?;
+                        let target = rel["target"].as_str()?;
+                        let relation = rel["relation"].as_str().unwrap_or("informs");
+                        if source.is_empty() || target.is_empty() {
+                            return None;
+                        }
+                        Some((source.to_string(), target.to_string(), relation.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let relations_imported =
+            projection::add_links_batch_with_projection(&ws, &store, &link_triples)
+                .await
+                .unwrap_or(0);
 
         // PRD-071: single primary action per state.
         let next_action = if imported == 0 && skipped == 0 {
@@ -5160,7 +5156,12 @@ impl ForgeplanServer {
             tags: tags.clone(),
         };
 
-        if let Err(e) = store.create_artifact(&new_artifact).await {
+        // PRD-073 file-first: helper writes the markdown projection FIRST,
+        // then syncs to LanceDB. Failure mid-flow leaves an orphan file that
+        // the next reindex reconciles.
+        if let Err(e) =
+            projection::create_artifact_with_projection(&ws, &store, &new_artifact).await
+        {
             return Ok(err_result(&format!("Failed to create artifact: {e}")));
         }
 
@@ -7427,174 +7428,6 @@ impl rmcp::ServerHandler for ForgeplanServer {
     }
 }
 
-// Evidence parsing delegated to forgeplan_core::scoring::evidence
-use forgeplan_core::scoring::evidence::parse_evidence_from_record;
-
-// ── Soft-delete (PRD-055 increment 2) ────────────────────────
-
-/// Capture an artifact's full state + relations and write a soft-delete
-/// receipt BEFORE the caller mutates the store. Also moves the markdown
-/// projection into trash. Returns the receipt_id so the caller can
-/// include it in the tool response (agents surface it for quick undo).
-///
-/// # Crash invariant (PRD-055 ADR #4)
-///
-/// This function must be called BEFORE the store mutation. On a crash
-/// after this returns Ok but before the store mutation lands, the
-/// worst case is an orphan receipt — purged by TTL, harmless. The
-/// reverse order would risk data loss if the crash happened between
-/// store mutation and receipt write.
-///
-/// # Error handling
-///
-/// If this helper errors, the caller MUST NOT proceed with the
-/// destructive operation. Returning the error up lets the tool
-/// respond with a clear failure instead of wiping data silently.
-///
-/// # TTL purge
-///
-/// We also trigger `purge_expired` lazily on each destructive op so
-/// the trash directory stays bounded without a background daemon
-/// (ADR #5). Purge errors are logged but do not block the operation.
-async fn soft_delete_capture(
-    workspace: &std::path::Path,
-    store: &forgeplan_core::db::store::LanceStore,
-    record: &ArtifactRecord,
-    op: forgeplan_core::undo::DestructiveOp,
-    reason: Option<&str>,
-    replacement: Option<&str>,
-) -> anyhow::Result<String> {
-    use forgeplan_core::undo::{
-        ArtifactSnapshot, CapturedRelation, DEFAULT_TTL_DAYS, Receipt, RelationDirection,
-        generate_receipt_id, purge_expired, trash_projection, trashed_projection_path,
-        write_receipt,
-    };
-
-    // Gather outgoing + incoming relations so restore can replay both
-    // directions (PRD-055 ADR #6).
-    let mut relations = Vec::new();
-    if let Ok(outgoing) = store.get_relations(&record.id).await {
-        for (to, relation) in outgoing {
-            relations.push(CapturedRelation {
-                from: record.id.clone(),
-                to,
-                relation,
-                direction: RelationDirection::Outgoing,
-            });
-        }
-    }
-    if let Ok(incoming) = store.get_incoming_relations(&record.id).await {
-        for (from, relation) in incoming {
-            relations.push(CapturedRelation {
-                from,
-                to: record.id.clone(),
-                relation,
-                direction: RelationDirection::Incoming,
-            });
-        }
-    }
-
-    // Resolve original projection path BEFORE move. Audit H-2 logic:
-    // cannot trust `slugify(current_title)` because the title may have
-    // been edited after artifact creation, so the projection filename
-    // on disk differs. Instead: scan the kind directory for any file
-    // matching `<ID>-*.md` and take the first match. Fall back to
-    // slugify only if filesystem scan fails (e.g. missing dir).
-    let projection_path = if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-        let kind_dir = workspace.join(kind.dir_name());
-        let id_prefix = format!("{}-", record.id);
-        let mut found: Option<std::path::PathBuf> = None;
-        if let Ok(mut entries) = tokio::fs::read_dir(&kind_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Some(name) = entry.file_name().to_str()
-                    && name.starts_with(&id_prefix)
-                    && name.ends_with(".md")
-                {
-                    found = Some(entry.path());
-                    break;
-                }
-            }
-        }
-        match found {
-            Some(p) => p.display().to_string(),
-            None => {
-                // Fallback to current-title slug. Better than nothing
-                // for the happy path where the title was never edited.
-                let slug = forgeplan_core::artifact::types::slugify(&record.title);
-                kind_dir
-                    .join(format!("{}-{slug}.md", record.id))
-                    .display()
-                    .to_string()
-            }
-        }
-    } else {
-        String::new()
-    };
-
-    let receipt_id = generate_receipt_id(&record.kind, &record.id);
-    let trashed = trashed_projection_path(workspace, &receipt_id)
-        .display()
-        .to_string();
-
-    let snapshot = ArtifactSnapshot {
-        id: record.id.clone(),
-        kind: record.kind.clone(),
-        status: record.status.clone(),
-        title: record.title.clone(),
-        depth: record.depth.clone(),
-        body: record.body.clone(),
-        author: record.author.clone(),
-        parent_epic: record.parent_epic.clone(),
-        valid_until: record.valid_until.clone(),
-        relations,
-        projection_path: projection_path.clone(),
-    };
-
-    let receipt = Receipt {
-        receipt_id: receipt_id.clone(),
-        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        op,
-        snapshot,
-        reason: reason.map(String::from),
-        replacement: replacement.map(String::from),
-        trashed_projection: trashed,
-        activity_log_hash: None, // future: correlate with activity log entry
-        consumed: false,
-    };
-
-    // Write receipt first (crash invariant).
-    write_receipt(workspace, &receipt).await?;
-
-    // Move projection file into trash ONLY for Delete — supersede and
-    // deprecate leave the markdown in place (status change is reflected
-    // in frontmatter, projection stays). If restore is called later for
-    // a supersede/deprecate receipt, the projection is already on disk;
-    // restore just reverts status and removes the supersede/deprecate
-    // artifacts (new supersede link, reason fields).
-    let projection_pathbuf = std::path::PathBuf::from(&projection_path);
-    if matches!(op, forgeplan_core::undo::DestructiveOp::Delete)
-        && projection_pathbuf.exists()
-        && let Err(e) = trash_projection(workspace, &receipt_id, &projection_pathbuf).await
-    {
-        tracing::warn!(
-            "soft_delete: failed to move projection {}: {}. Receipt written, artifact \
-             will still be recoverable via store snapshot.",
-            projection_pathbuf.display(),
-            e
-        );
-    }
-
-    // Fire-and-forget TTL purge so trash stays bounded (ADR #5).
-    let ws_clone = workspace.to_path_buf();
-    tokio::spawn(async move {
-        if let Err(e) = purge_expired(&ws_clone, DEFAULT_TTL_DAYS).await {
-            tracing::warn!("TTL purge failed: {}", e);
-        }
-    });
-
-    Ok(receipt_id)
-}
-
 // ── Methodology hints ──────────────────────────────────────────
 
 /// Generate a methodology hint based on artifact kind after creation.
@@ -8389,7 +8222,7 @@ mod claim_mcp_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact_for_test(&artifact).await.unwrap();
         projection::render_projection(
             ws,
             id,
@@ -8578,7 +8411,7 @@ mod claim_mcp_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact_for_test(&artifact).await.unwrap();
         projection::render_projection(
             &ws,
             "PRD-950",
@@ -8631,7 +8464,7 @@ mod claim_mcp_tests {
             .clone()
             .expect("store initialized");
         store
-            .add_relation("PRD-961", "PRD-960", "based_on")
+            .add_relation_for_test("PRD-961", "PRD-960", "based_on")
             .await
             .unwrap();
 
@@ -8812,7 +8645,7 @@ mod claim_mcp_tests {
                 valid_until: None,
                 tags: Vec::new(),
             };
-            store.create_artifact(&artifact).await.unwrap();
+            store.create_artifact_for_test(&artifact).await.unwrap();
         }
 
         let mut params = dp(2);

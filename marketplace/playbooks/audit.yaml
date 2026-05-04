@@ -1,0 +1,171 @@
+# =====================================================================
+# audit.yaml — Multi-agent adversarial code review playbook (REFERENCE)
+# =====================================================================
+#
+# **Status: REFERENCE EXAMPLE — predates ADR-011 Phase B Wave 1.**
+#
+#   This playbook ships as a runnable template for the multi-agent audit
+#   pattern used during PRD-073 (see EVID-094). It originally targeted
+#   the never-shipped `task-tool 1.x` (ADR-010); v0.28.0 + ADR-011
+#   replaced that mechanism with `claude --print --agent <slug>` via
+#   PluginDispatcher / AgentDispatcher (EVID-097 confirms the dispatch
+#   contract end-to-end на real `claude` 2.1.126).
+#
+#   **Resolution (v0.28.0, PROB-050 A-28 option a)**: each step uses the
+#   `Delegation::Plugin { name: "<pack>", target: "<slug>" }` form rather
+#   than `Delegation::Agent { name: "<pack>:<slug>" }`. PluginDispatcher
+#   validates `<pack>` and `<slug>` separately against the
+#   `validate_agent_name` argv-injection guard (both colon-free), then
+#   composes the canonical `claude --print --agent <slug>` call. This
+#   side-steps the regex restriction without weakening the security
+#   contract. Empirically verified end-to-end on real `claude` 2.1.126
+#   (EVID-098 + EVID-099).
+#
+# Purpose:
+#   Run three audit agents in parallel against a target branch / PR,
+#   collect findings, and synthesize a per-severity report. PRD-073 used
+#   this exact pattern four times during its development — each round
+#   caught CRITICAL / HIGH defects that integration tests had silently
+#   passed (multi-line ratchet gap, tuple drop order, path-traversal in
+#   import, etc.).
+#
+# When to run:
+#   `forgeplan playbook run audit --yes`
+#
+#   Recommended after any branch with ≥10 file changes or any
+#   architectural refactor before opening the PR. The four-commit
+#   feature branch shape (Phase 3a + 3 audit-fix commits) is the
+#   canonical example — see EVID-094 for measurement.
+#
+# Expected duration: 5-10 minutes (three concurrent LLM-driven agents).
+#
+# Where it fits in ForgePlan:
+#   This is the "Audit" step in the methodology loop:
+#     Code → Audit → Fix → Test → Fmt → Lint → Verify → PR
+#
+#   CLAUDE.md red line #5 mandates this step before opening any PR
+#   that touches more than a single bug fix.
+#
+# Pattern documented:
+#   - Three reviewers chosen for non-overlapping perspectives (architect,
+#     code-reviewer, security). Each gets file:line citations + severity
+#     rubric + explicit "0 findings means insufficient looking".
+#   - Round 2 with different agents if Round 1 returns clean.
+#   - Each finding gets a follow-up commit in the same branch (not a
+#     separate PR) — keeps audit + fix bound for git archaeology.
+#
+# References:
+#   - SPEC-003 — Playbook YAML schema (this file is schema_version 1.1).
+#   - PRD-073 EVID-094 — three audit rounds × 5+ findings × 4 commits.
+#   - feedback/audit-scan-branch — audit agents work on current branch.
+# =====================================================================
+
+schema_version: "1.1"
+name: audit
+title: "Multi-agent adversarial code review"
+description: |
+  Three audit agents run in parallel against the current branch:
+
+    1. architect-review — design, patterns, ADR conformance
+    2. code-reviewer    — bugs, edge cases, error handling
+    3. security-expert  — TOCTOU, races, attack surface, CVE classes
+
+  Each agent is given file:line citations from `git diff main...HEAD`,
+  a severity rubric (CRITICAL/HIGH/MEDIUM/LOW), and an explicit "0
+  findings means insufficient looking" instruction.
+
+  After all three return, the playbook synthesizes findings by severity
+  and creates a checklist Note for the dev to address before push.
+
+# ---------------------------------------------------------------------
+# Recommendation engine signals — recommend this playbook on any non-empty
+# git repo. The "audit large-diff branches" heuristic lives in the dev's
+# habit, not the recommendation engine; we surface the playbook generally.
+# ---------------------------------------------------------------------
+triggered_by:
+  has_git: true
+  empty_repo: false
+
+# ---------------------------------------------------------------------
+# Prerequisites — three audit agents are documented in the step-level
+# `delegate_to.target` below. The schema's `requires` block currently
+# accepts only `plugins` and `skills`; agent dependencies are surfaced
+# at runtime via the agent dispatcher's "agent not installed" hint.
+# ---------------------------------------------------------------------
+requires:
+  plugins: []
+  skills: []
+
+# ---------------------------------------------------------------------
+# Steps — three audits run in parallel (no `requires:` between them),
+# then a synthesis step that fans-in their reports.
+# ---------------------------------------------------------------------
+steps:
+
+  # 1. Architect review — design + ADR conformance + invariants.
+  # Plugin variant (PROB-050 A-28 option a): split pack:slug → name + target
+  # so validate_agent_name regex passes (colon-free segments).
+  - id: architect-review
+    delegate_to:
+      type: plugin
+      name: agents-pro
+      target: architect-reviewer
+    input:
+      task: |
+        Adversarial architecture review of the current feature branch.
+        Look for: design correctness, ADR conformance, invariant violations,
+        scope creep, missing tests for invariant boundaries.
+        Output: markdown report with CRITICAL/HIGH/MEDIUM/LOW findings,
+        file:line citations, suggested fix per finding. End with verdict
+        {block-merge, request-changes, accept-with-followups, accept}.
+        If a category has no findings, state explicitly what was checked.
+        Under 1500 words.
+    budget_usd: 5.00  # PROB-050 A-29: default $1 too low for adversarial review
+    on_error: continue
+    timeout_seconds: 600
+
+  # 2. Code review — bugs, edge cases, error handling, idiom issues.
+  - id: code-review
+    delegate_to:
+      type: plugin
+      name: agents-core
+      target: code-reviewer
+    input:
+      task: |
+        Adversarial code review of the current feature branch.
+        Focus: error-path correctness, partial-failure recovery,
+        argument validation, ownership/lifetime, async/await safety,
+        test coverage gaps.
+        Same output format as architect-review.
+    budget_usd: 5.00  # PROB-050 A-29
+    on_error: continue
+    timeout_seconds: 600
+
+  # 3. Security review — TOCTOU, races, attack surface, CVE classes.
+  - id: security-review
+    delegate_to:
+      type: plugin
+      name: agents-pro
+      target: security-expert
+    input:
+      task: |
+        Adversarial security review of the current feature branch.
+        Focus: TOCTOU windows, atomic-write guarantees, race conditions,
+        path-traversal, command injection, MCP attack surface, secret
+        leakage, CVE-class vulnerabilities.
+        Same output format as architect-review.
+    budget_usd: 5.00  # PROB-050 A-29
+    on_error: continue
+    timeout_seconds: 600
+
+  # 4. Synthesis — fan-in three reports into a single checklist Note.
+  #    Captures findings by severity for the dev to address before push.
+  - id: synthesis
+    delegate_to:
+      type: forgeplan_core
+      target: new
+    input:
+      kind: note
+      title: "Audit findings checklist (architect + code + security)"
+    requires: [architect-review, code-review, security-review]
+    on_error: abort

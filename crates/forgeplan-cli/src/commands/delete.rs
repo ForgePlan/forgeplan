@@ -1,10 +1,11 @@
-use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::projection;
+use forgeplan_core::undo;
 
 use crate::commands::common;
 
 pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, _lock, store) = common::open_store_locked().await?;
 
     let record = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(
@@ -50,30 +51,44 @@ Fix: forgeplan list",
         .iter()
         .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
         .count();
+
+    // PRD-055 + audit follow-up 2026-05-01: capture soft-delete receipt
+    // BEFORE mutating store. Brings CLI into parity with MCP
+    // `forgeplan_delete` which has had soft-delete since release.
+    // Receipt holds full snapshot + relations so `forgeplan undo-last`
+    // and `forgeplan restore <id>` recover the artifact end-to-end.
+    let receipt_id = undo::soft_delete_capture(
+        &ws,
+        &store,
+        &record,
+        undo::DestructiveOp::Delete,
+        None,
+        None,
+    )
+    .await?;
+
+    // PRD-073 file-first: helper removes the projection file (likely no-op
+    // because soft_delete_capture already moved it to trash) then cascades
+    // relations and the LanceDB row. Failure mid-flow is recoverable via
+    // `forgeplan restore <id>` from the receipt above.
+    projection::delete_artifact_with_projection(&ws, &store, id).await?;
+
     if relation_count > 0 {
-        store.delete_relations_for_artifact(id).await?;
         eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
     }
 
-    // Delete from LanceDB
-    store.delete_artifact(id).await?;
+    println!(
+        "  Deleted: {} \"{}\" (receipt {receipt_id})",
+        record.id, record.title
+    );
 
-    // Remove markdown projection file
-    if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-        let slug = forgeplan_core::artifact::types::slugify(&record.title);
-        let filename = format!("{}-{}.md", record.id, slug);
-        let filepath = ws.join(kind.dir_name()).join(&filename);
-        if filepath.exists() {
-            tokio::fs::remove_file(&filepath).await.ok();
-        }
-    }
-
-    println!("  Deleted: {} \"{}\"", record.id, record.title);
-
-    // Terminal action: deletion can't be undone, but the operator usually
-    // wants to verify the workspace is consistent next.
-    let hint_list =
-        vec![Hint::info("Verify workspace integrity").with_action("forgeplan health".to_string())];
+    // Soft-deleted: surface the recovery path.
+    let hint_list = vec![
+        Hint::info(format!(
+            "Recoverable via `forgeplan restore {id}` (within 30 days)"
+        ))
+        .with_action(format!("forgeplan restore {id}")),
+    ];
     print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())

@@ -147,6 +147,27 @@ pub struct Step {
     /// Error handling policy — `abort` (default) or `continue`.
     #[serde(default)]
     pub on_error: OnError,
+    /// Per-step timeout override in seconds (PRD-072 FR-8 / SPEC-003 1.1).
+    /// When `None`, the dispatcher applies its delegate-type default
+    /// (300s general / 600s plugin / 180s command/skill). When `Some(n)`,
+    /// `n` overrides the default for this single step. Backward compat:
+    /// playbooks without this field load identically to schema 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u32>,
+    /// Per-step USD budget cap for `claude --print` invocations
+    /// (ADR-011 / SPEC-003 1.2). Plugin and Agent dispatchers translate
+    /// this to `--max-budget-usd <N>`; if `None`, the dispatcher applies
+    /// its `DEFAULT_BUDGET_USD` (1.00 typical). Other delegate kinds
+    /// (Skill, Command, ForgeplanCore) ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    /// Per-step tool allowlist for `claude --print` invocations
+    /// (ADR-011 / SPEC-003 1.2). Translated to `--allowedTools <T1> <T2> ...`
+    /// (variadic, separate args per tool). `None` means the dispatcher
+    /// applies its default allowlist (Read, Glob, Grep — least-privilege
+    /// for analytic agents). Other delegate kinds ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// Delegation target — strict 5-variant enum from SPEC-003 §"delegate_to".

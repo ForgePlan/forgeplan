@@ -9,7 +9,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
-    let (workspace, store) = common::open_store().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable.
     let llm_config = match common::require_llm_config() {
@@ -67,22 +67,8 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         tags: Vec::new(),
     };
 
-    store.create_artifact(&artifact).await?;
-
-    let filepath = projection::render_projection(
-        &workspace,
-        &id,
-        template_key,
-        &title,
-        "draft",
-        "tactical",
-        None,
-        None,
-        None,
-        &body,
-        &[],
-    )
-    .await?;
+    let filepath =
+        projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
 
     println!("  Captured: {}", filepath.display());
     println!("  ID:       {}", id);

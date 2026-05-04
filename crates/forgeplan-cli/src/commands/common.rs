@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use forgeplan_core::config::types::Config;
 use forgeplan_core::db::store::{ArtifactRecord, LanceStore};
 use forgeplan_core::session::{Phase, SessionState};
-use forgeplan_core::workspace;
+use forgeplan_core::workspace::{self, lock::WorkspaceLock};
 
 /// Open workspace store — shared boilerplate for all commands.
 /// Returns (workspace_path, store).
@@ -37,6 +37,55 @@ pub fn config() -> anyhow::Result<Config> {
 pub async fn store() -> anyhow::Result<LanceStore> {
     let (_, store) = open_store().await?;
     Ok(store)
+}
+
+/// Open workspace store AND acquire the exclusive workspace lock.
+/// **All CLI mutation handlers MUST use this** instead of `open_store`
+/// to prevent concurrent CLI invocations corrupting workspace state
+/// (audit 2026-05-01 H1 — confirmed live: 4 parallel `update PRD-001`
+/// processes left 4 different files on disk and a corrupted DB row).
+///
+/// The MCP server already wraps every mutation handler in
+/// `acquire_workspace_lock` via `_lock_guard`; this brings CLI in
+/// parity. Read-only commands (`list`, `get`, `search`, `health`,
+/// `journal`, etc.) should keep using `open_store` / `store`.
+///
+/// **Order matters**: lock is acquired BEFORE `LanceStore::open`. Two
+/// processes opening LanceStore concurrently each get a connection
+/// that snapshots the table state at open time; if the lock is taken
+/// AFTER open, process B's snapshot pre-dates process A's commit and
+/// `get_record` inside the lock returns stale data. Re-testing live
+/// 2026-05-01 with the fix: 4-way concurrent `update --title` collapses
+/// to a single final file (was 4 files before).
+///
+/// Default timeout is 30 s — a stuck sibling agent surfaces as a
+/// clean timeout error instead of an indefinite hang.
+///
+/// **Drop ordering matters for LOCAL bindings.** Local variables drop
+/// in *reverse* declaration order. The returned tuple is
+/// `(PathBuf, WorkspaceLock, LanceStore)` — by-design, so when callers
+/// destructure as `let (ws, _lock, store) = ...` the drop sequence is
+/// `store` → `_lock` → `ws`. This guarantees the LanceStore connection
+/// drops (potentially flushing any pending state) BEFORE the workspace
+/// lock is released. The previous tuple shape `(PathBuf, LanceStore,
+/// WorkspaceLock)` placed `_lock` last and dropped it FIRST — a window
+/// where a future LanceDB version that queues writes on Table::Drop
+/// would commit them outside the lock. Audit 2026-05-01 H-1.
+///
+/// IMPORTANT: bind the lock guard to a NAMED variable for the intended
+/// scope (`let (ws, _lock, store) = ...`). Pattern is `_lock` (with
+/// leading underscore) — that suppresses unused-warning while still
+/// preserving the binding for the function's lifetime.
+pub async fn open_store_locked() -> anyhow::Result<(PathBuf, WorkspaceLock, LanceStore)> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Acquire the lock BEFORE opening LanceStore so each process snapshots
+    // the table state under exclusive access (avoids stale-view reads).
+    let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    let _config = workspace::load_config(&ws)?;
+    let store = LanceStore::open(&ws).await?;
+    Ok((ws, lock, store))
 }
 
 /// Load session state from workspace.

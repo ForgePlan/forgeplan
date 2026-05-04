@@ -4,6 +4,7 @@ use forgeplan_core::fpf::core::adi::AdiRecord;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::reason;
 use forgeplan_core::llm::reason::ArtifactContext;
+use forgeplan_core::projection;
 
 use crate::commands::common;
 
@@ -31,6 +32,11 @@ fn load_architecture_hint() -> String {
 }
 
 pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<()> {
+    // Audit 2026-05-01 H4: do NOT hold the workspace lock across the LLM
+    // call (10–60 s). Open lock-free for the read + LLM phases; re-acquire
+    // only for the brief save block. Otherwise every concurrent CLI
+    // mutation in a multi-agent workspace would time out at the 30 s
+    // default lock timeout.
     let (_ws, store) = common::open_store().await?;
 
     // PRD-071 contract: when LLM is unavailable, emit a `Fix:` marker line so
@@ -183,6 +189,11 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     }
 
     if save {
+        // Re-open under the workspace lock for the brief write phase.
+        // Drops the lock-free `store` first, then acquires the locked
+        // store + lock guard scoped to this block only.
+        drop(store);
+        let (ws, _lock, store) = common::open_store_locked().await?;
         let note_id = store.next_id("NOTE").await?;
 
         // Convert LLM output to structured AdiRecord
@@ -239,8 +250,10 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             tags: Vec::new(),
         };
 
-        store.create_artifact(&new_artifact).await?;
-        store.add_relation(&note_id, &record.id, "informs").await?;
+        // PRD-073 file-first: helpers handle projection writes for both
+        // the new note and the bidirectional link rendering.
+        projection::create_artifact_with_projection(&ws, &store, &new_artifact).await?;
+        projection::add_link_with_projection(&ws, &store, &note_id, &record.id, "informs").await?;
         println!("  Saved as {} -> linked to {}", note_id, record.id);
     }
 

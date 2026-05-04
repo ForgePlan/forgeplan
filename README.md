@@ -132,7 +132,7 @@ $ forgeplan activate PRD-001
 | **🎯 Quality scoring** | `R_eff` (weakest-link evidence trust) and `F-G-R` (formality, granularity, reliability), automatic. |
 | **🧭 Smart routing** | Analyzes your task, picks the right depth and artifact pipeline. No over-documenting typo fixes. |
 | **🧠 ADI reasoning** | Abduction → Deduction → Induction. Forces 3+ hypotheses before every decision. |
-| **🤖 MCP-native** | 37 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
+| **🤖 MCP-native** | 63 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
 | **🔍 Local semantic search** | fastembed (BGE-M3, 1024 dims). No network, no API keys, no egress. |
 | **⏰ Evidence decay** | Expired `valid_until` → artifact goes stale. Trust decays honestly, nothing rots in the dark. |
 
@@ -196,10 +196,10 @@ Three entry points — pick the one that matches what you need right now.
 
 <table>
 <tr>
-<td align="center"><b>138</b><br>tracked artifacts</td>
-<td align="center"><b>728+</b><br>tests passing</td>
-<td align="center"><b>33</b><br>CLI commands</td>
-<td align="center"><b>37</b><br>MCP tools</td>
+<td align="center"><b>271</b><br>tracked artifacts</td>
+<td align="center"><b>1940</b><br>tests passing</td>
+<td align="center"><b>76</b><br>CLI commands</td>
+<td align="center"><b>63</b><br>MCP tools</td>
 </tr>
 </table>
 
@@ -219,6 +219,13 @@ git checkout -b feat/my-feature
 # cargo fmt + cargo test before every commit
 # PR → dev (main is touched only via release branches)
 ```
+
+### Cargo features
+
+| Feature | Default | Purpose |
+|---|---|---|
+| `semantic-search` | off | BGE-M3 vector search via `fastembed` (~150 MB model on first run) |
+| `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
 
 ## License
 

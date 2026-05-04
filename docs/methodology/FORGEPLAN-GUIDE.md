@@ -213,7 +213,7 @@ If MUST is empty -- activate. If not -- refine.
 forgeplan serve  # start MCP server (stdio transport)
 ```
 
-26 MCP tools -- all commands above are available via MCP protocol.
+63 MCP tools -- all commands above are available via MCP protocol.
 
 ---
 
@@ -530,7 +530,7 @@ In your project's `.mcp.json` (Claude Code, Cursor):
 6. forgeplan_activate   -> draft -> active
 ```
 
-28 MCP tools total. 6 core tools cover 90% of the workflow.
+63 MCP tools total. 6 core tools cover 90% of the workflow.
 
 ---
 

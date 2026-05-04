@@ -7,6 +7,231 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [Unreleased]
+
+_No changes yet for the next release._
+
+## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
+
+Bundles 14 merge-PRs (#224..#237) since v0.27.0 (2026-04-28). Three
+load-bearing themes: **(1) PRD-073 file-first invariant compile-enforced**
+(ADR-003 — `LanceStore::*` mutating methods are now `pub(crate)`,
+file-first projection wrappers are the only mutation surface), **(2)
+ADR-011 Phase B Wave 1** — Plugin and Agent dispatchers shell out to
+`claude --print` on the real `claude` 2.1.126 binary, replacing the
+fictional `task-tool` from ADR-010, **(3) Track 4-A8 canonical
+playbooks** — `release.yaml` + `brownfield-docs.yaml` ship as runnable
+templates for marketplace skill/mapping authors.
+
+Real-E2E verification of Phase B Wave 1 (PR 1 / 2026-05-03,
+NOTE-049 + EVID-097): 5 measured real `claude --print` invocations
+(3 happy-path success + 1 budget-error envelope decode + 1 retracted
+env-export attempt), byte-identical argv recording wrapper, validation
+guard reject in 0.01s. ADR-011 R_eff = 0.70 grade B (3 evidence packs,
+all CL3 supports).
+
+Dependabot: 16 of 18 open alerts auto-close on this `release/v0.28.0
+→ main` merge (lockfile in dev already at patch versions per round 2 +
+round 3 triage). 2 carry-forward (lru transitive via tantivy, uuid
+transitive via mermaid) с обоснованием в `docs/operations/dependabot-triage-2026-05-03.md`.
+
+Pre-conditions verified before cutting: cargo fmt clean, cargo clippy
+--workspace --all-targets --features test-helpers -- -D warnings clean,
+cargo test --workspace --features test-helpers all PASS (1614+ tests),
+forgeplan health clean.
+
+### Verification (PR 1 + PR 2.5 closures, 2026-05-03 / 2026-05-04)
+
+- **NOTE-049** + **EVID-097**: real-E2E closure of Phase B Wave 1.
+  Production `claude` 2.1.126 invoked through PluginDispatcher AND
+  AgentDispatcher with byte-identical argv recording wrapper.
+  Discovered 5 net-new findings (added to PROB-050 as A-21..A-26 + 1
+  A-22 retract via audit C-1 pipefail discipline lesson). Total spent:
+  ~$0.98 USD across 5 measured claude invocations.
+- **PROB-050 A-3 ✅ closes** with narrowed scope (happy + budget-error
+  envelope verified end-to-end on healthy CLI; failure-path JSON
+  decode coverage tracked in A-11 + A-16).
+- **PROB-050 A-14 wording tightened**: require `#[cfg(test)]` gate for
+  `FORGEPLAN_CLAUDE_BIN` (audit S-2 escalates env-injection vector
+  CWE-426 from documentation-only mitigation to compile-time gate).
+- **PROB-050 A-28 ✅ closes** via YAML rewrite (`Delegation::Agent` →
+  `Delegation::Plugin` split for colon-namespaced agent slugs in
+  `audit.yaml` steps 1-3). Real-E2E proof on 2026-05-04: all 3 parallel
+  agents successfully spawned, claude resolved bare slugs
+  (`architect-reviewer`, `code-reviewer`, `security-expert`), 502s
+  wall-clock real work + ~$3.50 spent — closing what would have been
+  a guaranteed `DispatchError::Transport` reject pre-spawn.
+- **PROB-050 A-29 NEW** (discovered during A-28 verification):
+  `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
+  adversarial-review playbooks. All 3 audit agents hit `error_max_budget_usd`
+  at $1.05-$1.25. Operational fix applied: `audit.yaml` steps 1-3 now
+  carry explicit `budget_usd: 5.00`. Methodology fix tracked as A-29
+  option (b) for next sprint (tier `DEFAULT_BUDGET_QUICK` /
+  `DEFAULT_BUDGET_REVIEW`).
+
+### Added (AI documentation discoverability)
+
+- `website/public/robots.txt`: explicit `Allow: /` for 18 named AI
+  crawlers (GPTBot, ClaudeBot, Google-Extended, CCBot, Applebot,
+  PerplexityBot, и т.д.) — Forgeplan документация specifically built
+  for agentic consumers, signal openness explicitly rather than rely
+  on absence of `Disallow`.
+- `website/public/llms.txt`: curated entry-point per emerging
+  Anthropic/Mintlify convention (https://llmstxt.org/). Provides
+  one-shot context for LLM agents discovering Forgeplan: methodology
+  links, CLI/MCP reference, getting-started anchor. Without this, AI
+  agents had to guess which paths matter.
+
+### Detail — PRD-073 file-first invariant (EVID-094 R_eff=0.80 grade A)
+
+Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
+(general / live-test / Rust-focused / final team-lead) closed
+7 CRITICAL + 13 HIGH findings. PROB-048 deprecated as resolved.
+
+### Added — file-first projection helpers (15 total)
+
+- 9 mutation helpers: `create_artifact_with_projection`,
+  `delete_artifact_with_projection`, `update_metadata_with_projection`,
+  `update_body_with_projection`, `update_depth_with_projection`,
+  `add_link_with_projection`, `delete_link_with_projection`,
+  `add_tags_with_projection`, `remove_tags_with_projection`. Each does
+  the {sync_before, mutate, render_after} triplet so callers can no
+  longer forget projection.
+- 6 sync-from-file helpers: `sync_artifact_from_file`,
+  `sync_body_from_file`, `sync_metadata_from_file`,
+  `sync_relation_from_file`, `delete_orphan_artifact`,
+  `delete_orphan_relation`. For reindex / git_sync / watch where the
+  file is already authoritative.
+- `add_links_batch_with_projection`: deduplicates pre-sync + post-render
+  per unique participant. 100-link bundle: ~600 LanceDB calls + 400 file
+  ops → 2×U + N where U is unique IDs.
+- `delete_artifact_after_soft_delete`: brief helper for the MCP
+  soft-delete pattern (file already in trash, only DB row to drop).
+- `MutationError` enum + `MutationResult<T>` alias introduced (typed
+  errors); helper signature migration deferred to PRD-073 Phase 3c.
+- `marketplace/playbooks/audit.yaml`: reference template for the
+  multi-agent adversarial audit pattern. Updated header to reflect
+  ADR-011 (claude --print via PluginDispatcher / AgentDispatcher);
+  current YAML uses colon-namespaced agent slugs (`agents-pro:architect-reviewer`)
+  which are pre-spawn-rejected by `validate_agent_name` until PROB-050 A-28
+  introduces a colon-aware slug strategy.
+
+### Changed (BREAKING for downstream library consumers)
+
+- **`LanceStore::*` mutating methods are now `pub(crate)`**: 11 methods
+  (`create_artifact`, `update_artifact`, `update_valid_until`,
+  `update_depth`, `update_body`, `add_tags`, `remove_tags`,
+  `delete_artifact`, `add_relation`, `delete_relation`,
+  `delete_relations_for_artifact`) are no longer accessible from
+  external crates. External callers must go through
+  `forgeplan_core::projection::*` helpers. **Migration**: replace
+  `store.create_artifact(&art)` with
+  `projection::create_artifact_with_projection(&ws, &store, &art)`.
+- **Slugify is now ASCII-only**: `is_ascii_alphanumeric` instead of
+  `is_alphanumeric`. Workspaces with cyrillic/CJK slugs require
+  `forgeplan reindex` after pulling this version; existing files
+  remain on disk but get a fresh ASCII slug on next render.
+- **`LanceStore::update_embedding` and `update_r_eff_score` stay `pub`**
+  (Class A derived data, ADR-003 Amendment 1).
+- **BREAKING (forgeplan-core lib only)**: 16 mutation helpers in
+  `projection::*` migrated from `anyhow::Result<T>` to `MutationResult<T>`
+  (PRD-073 Phase 3c, ADR-003 Amendment 2). CLI binary and MCP server
+  surfaces unaffected. Library consumers see the same `?` ergonomics via
+  anyhow's blanket `From<E: std::error::Error + Send + Sync + 'static>`
+  impl. Variant taxonomy: `InvalidId`, `InvalidKind`, `EmptyField`,
+  `FileNotFound`, `ProjectionMismatch`, `RowNotFound`, `StoreError`. Use
+  `MutationError::is_recoverable()` to drive retry / warn-and-continue
+  policy instead of string-matching on flattened error messages.
+  Concrete migration example for downstream library consumers:
+  ```rust
+  // Before (anyhow::Result):
+  let err = create_artifact_with_projection(...).await.unwrap_err();
+  if err.to_string().contains("invalid id") { /* ... */ }
+
+  // After (MutationResult):
+  match create_artifact_with_projection(...).await {
+      Err(MutationError::InvalidId(_)) => /* fatal input */,
+      Err(e) if e.is_recoverable()     => /* transient — retry ok */,
+      Err(_)                           => /* fatal — surface to user */,
+      Ok(path) => /* happy path */,
+  }
+  ```
+  See ADR-003 Amendment 2 (`.forgeplan/adrs/ADR-003-*.md`) for the full
+  before/after error matrix and Phase 3d reserved-variant notes.
+- **`sync_artifact_from_file` and `sync_body_from_file` signatures take
+  `workspace: &Path`** to enable `FileNotFound { id, path }` typed errors
+  with the actual on-disk location. CLI callers (`reindex`, `git_sync`,
+  `watch`) updated. (PRD-073 Phase 3c)
+- **`update_body_with_projection` now returns `RowNotFound`** (not
+  `StoreError`) for the missing-id case — fixes Wave 1A audit finding
+  where `is_recoverable() == true` would have mislabeled an
+  unrecoverable input error as a transient I/O failure.
+
+### Changed (behavioral — visible to CLI users)
+
+- **All 22 CLI mutation handlers now hold an exclusive workspace lock**
+  (30 s timeout) for the duration of the operation. Concurrent
+  `forgeplan update` invocations that previously raced now serialize
+  cleanly. Scripts using `&` or `xargs -P` against the same workspace
+  may see lock-contention errors that were previously silent races.
+- **`forgeplan delete` now creates a soft-delete receipt** (parity
+  with MCP). Recoverable via `forgeplan undo-last` or
+  `forgeplan restore <id>` within 30 days.
+- **All markdown writes are atomic** (tempfile + rename). Kill -9
+  mid-write no longer leaves zero-length projection files.
+- **File frontmatter `title:` now preserves non-ASCII titles verbatim**
+  (PRD-073 Phase 3c R2 audit M-R2-3 / security). Previously, an
+  artifact created with a Cyrillic / CJK / emoji title (anything that
+  slugifies to empty) was rendered with `title: untitled` in the file
+  frontmatter — losing the user's original title from the on-disk
+  representation while the DB row preserved it. The Phase 3c
+  `projection_slug` helper now applies the `untitled` fallback only
+  to the on-disk filename (e.g. `prds/PRD-001-untitled.md`), and the
+  frontmatter receives the original title. Operators with non-ASCII
+  confidential titles should be aware that the file frontmatter now
+  contains the full title verbatim (the slug filename already exposed
+  partial title information pre-fix; this aligns the two surfaces).
+- **`claude` CLI is now a runtime prereq for playbooks that use
+  `delegate_to: plugin` or `delegate_to: agent`** (ADR-011, Phase B).
+  Replaces the never-shipped `claude-code-plugin` / `task-tool` binaries
+  assumed by ADR-010. Plugin and agent steps invoke `claude --print
+  --agent <name>` directly via `tokio::process::Command`. Existing
+  Claude Code session is reused (no `ANTHROPIC_API_KEY` required for
+  interactive runs); CI runs need the env var. Missing binary surfaces
+  `DispatchError::DelegateMissing` with install hint pointing to
+  https://code.claude.com/docs/en/install. New per-step `Step.budget_usd`
+  (default $1.00) and `Step.allowed_tools` (default `[Read, Glob, Grep]`)
+  fields control invocation surface; SPEC-003 1.1 → 1.2 (additive).
+  Skill, Command, and ForgeplanCore dispatchers are unchanged.
+
+### Added (developer-facing)
+
+- New Cargo feature `forgeplan-core/test-helpers`: exposes
+  `*_for_test` escape hatches on `LanceStore` for downstream test
+  fixtures. **Gated on `debug_assertions`** so release builds with this
+  feature accidentally enabled still get the lockdown. Production
+  binaries MUST NOT enable this feature; release builds with both
+  feature on AND debug_assertions off compile-error out.
+
+### Fixed
+
+- Path-traversal CVE class on import: `id` field validation in every
+  projection helper that composes a filesystem path.
+- Multi-line ratchet test scanner: was missing 21 multi-line
+  `store\n.method(` invocations under the previous literal matcher.
+- `update --depth --title` orphan-file recreation: metadata mutation
+  now runs FIRST so subsequent depth/body renders see the new title.
+- `mem-foo` vs `mem-foo-bar` prefix collision: exact-path delete via
+  `remove_projection_at`.
+- 4-process concurrent `forgeplan update` race: workspace lock plus
+  lock-then-open ordering (LanceStore connections snapshot at open).
+- `add_link / delete_link` warn-and-continue semantics restored
+  (target sync + post-render are best-effort, source side fatal).
+- `update_body_with_projection` ordering inverted to file-first.
+- `forgeplan_import` no longer leaves DB-only state.
+- `forgeplan new` non-tty similar-title prompt: explicit `Error: ...
+  Fix: --allow-duplicate` instead of silent cancel.
+
 ## [0.27.0] — 2026-04-28 — Real subprocess dispatchers + init recommendation hints + greenfield playbook (EPIC-007 Phase 6)
 
 Phase 6 переводит engine layer из v0.26.0 в **user-facing activation**.

@@ -17,7 +17,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         )
     })?;
 
-    let (workspace, store) = common::open_store().await?;
+    let (workspace, _lock, store) = common::open_store_locked().await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable so the agent has a
     // deterministic remediation step.
@@ -77,26 +77,10 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         tags: Vec::new(),
     };
 
-    store
-        .create_artifact(&artifact)
+    // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
+    let filepath = projection::create_artifact_with_projection(&workspace, &store, &artifact)
         .await
-        .with_context(|| format!("Failed to create artifact {} in LanceDB", id))?;
-
-    let filepath = projection::render_projection(
-        &workspace,
-        &id,
-        template_key,
-        &title,
-        "draft",
-        "standard",
-        None,
-        None,
-        None,
-        &body,
-        &[],
-    )
-    .await
-    .with_context(|| format!("Failed to write projection for {}", id))?;
+        .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
 
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);

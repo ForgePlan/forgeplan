@@ -4,7 +4,7 @@ description: "Alias for `forgeplan serve` — starts the Forgeplan MCP server on
 ---
 
 `forgeplan mcp serve` is a thin alias for [`forgeplan serve`](/docs/cli/serve/). Both
-commands start the same MCP server (stdio transport, ~47 tools, one workspace) and exit
+commands start the same MCP server (stdio transport, 63 tools, one workspace) and exit
 on Ctrl-C. The alias exists so the `mcp` namespace is internally consistent — once you
 have run `forgeplan mcp install`, the obvious follow-up to debug it is `forgeplan mcp serve`.
 

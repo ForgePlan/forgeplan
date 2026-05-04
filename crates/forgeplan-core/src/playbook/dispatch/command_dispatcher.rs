@@ -146,12 +146,18 @@ impl Dispatcher for CommandDispatcher {
 
         // 4. Build subprocess spec. cwd = workspace_root so relative paths in
         //    the command resolve where the user expects.
+        // Per-step timeout (PRD-072 FR-8): step.timeout_seconds overrides
+        // the dispatcher default when set; otherwise default applies.
+        let timeout = step
+            .timeout_seconds
+            .map(|s| Duration::from_secs(u64::from(s)))
+            .unwrap_or(self.default_timeout);
         let spec = SubprocessSpec {
             program: &program,
             args: &args,
             env: &env,
             cwd: Some(&self.workspace_root),
-            timeout: self.default_timeout,
+            timeout,
             // No stdin_data — helper applies Stdio::null() (security invariant).
             stdin_data: None,
         };
@@ -199,6 +205,9 @@ mod tests {
             requires: None,
             fallback_hint: None,
             on_error: OnError::Abort,
+            timeout_seconds: None,
+            budget_usd: None,
+            allowed_tools: None,
         }
     }
 

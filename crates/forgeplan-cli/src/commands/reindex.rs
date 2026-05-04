@@ -1,3 +1,5 @@
+use forgeplan_core::projection;
+
 use crate::commands::common;
 
 /// Rebuild LanceDB index from .md files (files-first, RFC-004).
@@ -83,7 +85,15 @@ pub async fn run() -> anyhow::Result<()> {
                 Some(record) => {
                     // Compare body — sync if different
                     if record.body.trim() != body.trim() {
-                        store.update_body(&id, &body).await?;
+                        projection::sync_body_from_file(
+                            &ws,
+                            &store,
+                            &id,
+                            &record.kind,
+                            &record.title,
+                            &body,
+                        )
+                        .await?;
                         common::log_change(&store, &id, "update", "reindex").await;
                         println!("  SYNC {} — body updated from file", id);
                         synced += 1;
@@ -123,7 +133,7 @@ pub async fn run() -> anyhow::Result<()> {
                         tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                     };
 
-                    store.create_artifact(&artifact).await?;
+                    projection::sync_artifact_from_file(&ws, &store, &artifact).await?;
                     common::log_change(&store, &id, "create", "reindex").await;
                     println!("  NEW  {} — created from file", id);
                     synced += 1;
@@ -143,7 +153,9 @@ pub async fn run() -> anyhow::Result<()> {
                         let already_exists =
                             existing_relations.iter().any(|(et, er)| et == t && er == r);
                         if !already_exists {
-                            if let Err(e) = store.add_relation(&id, t, r).await {
+                            if let Err(e) =
+                                projection::sync_relation_from_file(&store, &id, t, r).await
+                            {
                                 eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
                             } else {
                                 println!("  LINK {} --{}--> {}", id, r, t);
@@ -212,7 +224,7 @@ pub async fn run() -> anyhow::Result<()> {
             };
 
         if let Some(reason) = orphan_reason {
-            store.delete_artifact(&record.id).await?;
+            projection::delete_orphan_artifact(&store, &record.id).await?;
             common::log_change(&store, &record.id, "delete", "reindex").await;
             let reason_label = match reason {
                 OrphanReason::CorruptKind => "corrupt kind field",
@@ -241,7 +253,9 @@ pub async fn run() -> anyhow::Result<()> {
             let source_exists = surviving_ids.contains(source);
             let target_exists = surviving_ids.contains(target);
             if !source_exists || !target_exists {
-                if let Err(e) = store.delete_relation(source, target, relation).await {
+                if let Err(e) =
+                    projection::delete_orphan_relation(&store, source, target, relation).await
+                {
                     eprintln!(
                         "  WARN orphan relation {source} --{relation}--> {target} delete failed: {e}"
                     );
