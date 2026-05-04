@@ -132,7 +132,7 @@ $ forgeplan activate PRD-001
 | **🎯 Quality scoring** | `R_eff` (weakest-link evidence trust) and `F-G-R` (formality, granularity, reliability), automatic. |
 | **🧭 Smart routing** | Analyzes your task, picks the right depth and artifact pipeline. No over-documenting typo fixes. |
 | **🧠 ADI reasoning** | Abduction → Deduction → Induction. Forces 3+ hypotheses before every decision. |
-| **🤖 MCP-native** | 37 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
+| **🤖 MCP-native** | 63 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
 | **🔍 Local semantic search** | fastembed (BGE-M3, 1024 dims). No network, no API keys, no egress. |
 | **⏰ Evidence decay** | Expired `valid_until` → artifact goes stale. Trust decays honestly, nothing rots in the dark. |
 
@@ -196,10 +196,10 @@ Three entry points — pick the one that matches what you need right now.
 
 <table>
 <tr>
-<td align="center"><b>138</b><br>tracked artifacts</td>
-<td align="center"><b>728+</b><br>tests passing</td>
-<td align="center"><b>33</b><br>CLI commands</td>
-<td align="center"><b>37</b><br>MCP tools</td>
+<td align="center"><b>271</b><br>tracked artifacts</td>
+<td align="center"><b>1940</b><br>tests passing</td>
+<td align="center"><b>58</b><br>CLI commands</td>
+<td align="center"><b>63</b><br>MCP tools</td>
 </tr>
 </table>
 

@@ -74,7 +74,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 - **v0.19.0** (2026-04-16) — `forgeplan mcp install`, website i18n RU (144 pages),
   Rust 1.95 clippy compliance, PRD-048/PROB-037 closed
-- **~58 CLI commands**, **~47 MCP tools**, **1194 tests**, **0 warnings** on both feature configs
+- **~58 CLI commands**, **63 MCP tools**, **1940 tests**, **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
@@ -396,7 +396,7 @@ crates/
 │   ├── journal/ lifecycle/ link/ llm/ progress/ projection/
 │   ├── routing/ scoring/ search/ stale/ template/ validation/ workspace/
 ├── forgeplan-cli/     ← clap derive, 33 commands
-└── forgeplan-mcp/     ← rmcp stdio, 26 tools
+└── forgeplan-mcp/     ← rmcp stdio, 63 tools
 ```
 
 **Project structure**: `docs/README.md` — map of all documentation. Reference repositories in `sources/` (read-only).

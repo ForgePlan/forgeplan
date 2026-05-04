@@ -49,7 +49,7 @@ export default function AISection() {
                 AI Amplifies,<br />Doesn't Replace
               </h2>
               <p className="text-sm text-forge-dim max-w-[400px]" style={{ opacity: fade(0.08) }}>
-                28 MCP tools let Claude, GPT, or any AI agent create, validate, and manage artifacts.
+                63 MCP tools let Claude, GPT, or any AI agent create, validate, and manage artifacts.
                 But decisions are yours. Structure + AI = force multiplier.
               </p>
             </div>
@@ -87,7 +87,7 @@ export default function AISection() {
           <div className="flex flex-col justify-between p-6 lg:p-10 h-full">
             <div>
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-4" style={{ opacity: fade(0.50) }}>
-                28 MCP TOOLS
+                63 MCP TOOLS
               </p>
               <p className="text-sm text-forge-dim mb-6" style={{ opacity: fade(0.52) }}>
                 Model Context Protocol — any AI assistant can manage your artifacts.
