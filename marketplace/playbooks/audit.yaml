@@ -11,20 +11,15 @@
 #   PluginDispatcher / AgentDispatcher (EVID-097 confirms the dispatch
 #   contract end-to-end на real `claude` 2.1.126).
 #
-#   **Current limitation (v0.28.0)**: agent slugs containing `:`
-#   (e.g. `agents-pro:architect-reviewer`) are rejected pre-spawn by the
-#   `validate_agent_name` argv-injection guard whose regex
-#   `^[A-Za-z][A-Za-z0-9_-]{0,63}$` does not allow the colon. Until
-#   PROB-050 A-28 lands a colon-aware slug strategy (likely splitting
-#   `pack:slug` into `Delegation::Plugin { name: "pack", target: "slug" }`),
-#   this playbook fails with `DispatchError::Transport(...rejected:
-#   must match ^[A-Za-z][A-Za-z0-9_-]{0,63}$...)` at step 1.
-#
-#   To run end-to-end today: rewrite the four `delegate_to` blocks to
-#   `type: plugin` with `name: agents-pro` + `target: architect-reviewer`
-#   form (etc). The forge-orchestrator team-lead pattern in
-#   /Users/explosovebit/.claude/teams/ remains the canonical runner;
-#   this YAML stays as the eventual contract once PROB-050 A-28 closes.
+#   **Resolution (v0.28.0, PROB-050 A-28 option a)**: each step uses the
+#   `Delegation::Plugin { name: "<pack>", target: "<slug>" }` form rather
+#   than `Delegation::Agent { name: "<pack>:<slug>" }`. PluginDispatcher
+#   validates `<pack>` and `<slug>` separately against the
+#   `validate_agent_name` argv-injection guard (both colon-free), then
+#   composes the canonical `claude --print --agent <slug>` call. This
+#   side-steps the regex restriction without weakening the security
+#   contract. Empirically verified end-to-end on real `claude` 2.1.126
+#   (EVID-098 + EVID-099).
 #
 # Purpose:
 #   Run three audit agents in parallel against a target branch / PR,
@@ -108,10 +103,13 @@ requires:
 steps:
 
   # 1. Architect review — design + ADR conformance + invariants.
+  # Plugin variant (PROB-050 A-28 option a): split pack:slug → name + target
+  # so validate_agent_name regex passes (colon-free segments).
   - id: architect-review
     delegate_to:
-      type: agent
-      name: agents-pro:architect-reviewer
+      type: plugin
+      name: agents-pro
+      target: architect-reviewer
     input:
       task: |
         Adversarial architecture review of the current feature branch.
@@ -122,14 +120,16 @@ steps:
         {block-merge, request-changes, accept-with-followups, accept}.
         If a category has no findings, state explicitly what was checked.
         Under 1500 words.
+    budget_usd: 5.00  # PROB-050 A-29: default $1 too low for adversarial review
     on_error: continue
     timeout_seconds: 600
 
   # 2. Code review — bugs, edge cases, error handling, idiom issues.
   - id: code-review
     delegate_to:
-      type: agent
-      name: agents-core:code-reviewer
+      type: plugin
+      name: agents-core
+      target: code-reviewer
     input:
       task: |
         Adversarial code review of the current feature branch.
@@ -137,14 +137,16 @@ steps:
         argument validation, ownership/lifetime, async/await safety,
         test coverage gaps.
         Same output format as architect-review.
+    budget_usd: 5.00  # PROB-050 A-29
     on_error: continue
     timeout_seconds: 600
 
   # 3. Security review — TOCTOU, races, attack surface, CVE classes.
   - id: security-review
     delegate_to:
-      type: agent
-      name: agents-pro:security-expert
+      type: plugin
+      name: agents-pro
+      target: security-expert
     input:
       task: |
         Adversarial security review of the current feature branch.
@@ -152,6 +154,7 @@ steps:
         path-traversal, command injection, MCP attack surface, secret
         leakage, CVE-class vulnerabilities.
         Same output format as architect-review.
+    budget_usd: 5.00  # PROB-050 A-29
     on_error: continue
     timeout_seconds: 600
 

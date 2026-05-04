@@ -223,29 +223,42 @@ This is the divergence A-14 calls out; ops doc F-RUNTIME-7 cross-references.
       should be audited the same way. Touch only headers, not steps —
       step semantics governed by SPEC-003 schema, not ADR.
 
-- [ ] **A-28 (NEW, 2026-05-03 release v0.28.0 deeper finding)**:
+- [x] **A-28 (RESOLVED 2026-05-04 via option a — YAML rewrite)**:
       `validate_agent_name` regex `^[A-Za-z][A-Za-z0-9_-]{0,63}$`
-      rejects colon-namespaced agent slugs (`agents-pro:architect-reviewer`,
-      `agents-core:code-reviewer`, `agents-pro:security-expert`) which
-      are the canonical Claude Code plugin-agent slug format.
-      Empirically: `audit.yaml` shipped в v0.27.0/v0.28.0 уже cannot run
-      end-to-end because step 1 fails pre-spawn с `DispatchError::Transport(...
-      rejected: must match ^[A-Za-z][A-Za-z0-9_-]{0,63}$...)`. Two
-      alternative fixes:
-      (a) **YAML rewrite** — playbook authors split `pack:slug` into
-          `Delegation::Plugin { name: "pack", target: "slug" }`. PluginDispatcher
-          then validates `pack` and `slug` separately (both colon-free). Existing
-          plugin path code already supports this. **Lower-risk**, no regex
-          changes.
-      (b) **Regex broadening** — extend `validate_agent_name` regex to allow
-          single colon `:` between two `[A-Za-z][A-Za-z0-9_-]+` segments
-          (`^[A-Za-z][A-Za-z0-9_-]{0,30}(:[A-Za-z][A-Za-z0-9_-]{0,30})?$`).
-          **Higher-risk** — colon doesn't have argv special meaning in
-          POSIX `execve`, но needs security review re: shell-eval contexts
-          (we don't shell-eval, but defense in depth).
-      Pick (a) as default, document (b) as optional alt. Audit S-1
-      escalation про SkillDispatcher v1 stub fail-safe redesign (A-23)
-      is orthogonal and stays as-is.
+      rejects colon-namespaced agent slugs. **Empirically resolved**
+      by rewriting `audit.yaml` step 1-3 from
+      `Delegation::Agent { name: "pack:slug" }` to
+      `Delegation::Plugin { name: "pack", target: "slug" }`. PluginDispatcher
+      validates `pack` and `slug` separately (both colon-free), then
+      composes canonical `claude --print --agent <slug>` call.
+      **Real-E2E proof (2026-05-04 audit run, 502s wall-clock,
+      $3.50 spent across 3 parallel agents)**: claude resolved bare slug
+      `architect-reviewer` / `code-reviewer` / `security-expert` (real
+      work + real cost — if slug-not-found, $0 immediate exit). Closure
+      surfaced new finding A-29 (default budget too low for adversarial
+      review — see below). Option (b) regex broadening не нужен; YAML
+      rewrite contract works cleanly без regex changes.
+
+- [ ] **A-29 (NEW, 2026-05-04 audit.yaml real-run discovery)**:
+      `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
+      adversarial-review playbooks. Real-E2E (audit.yaml on
+      release/v0.28.0 changeset, 2026-05-04): 3 parallel agents все
+      hit `subtype: error_max_budget_usd` at $1.05-$1.25 — that's the
+      F-RUNTIME-6 / A-25 post-hoc 1.05-1.25× overrun pattern at higher
+      absolute budgets. Honest minimum для adversarial review with
+      file-citation requirements ≈ $3-5 per agent. Two complementary
+      fixes:
+      (a) **Per-playbook budget_usd override** — already applied to
+          `audit.yaml` steps 1-3 with `budget_usd: 5.00`. Same
+          treatment indicated for any future review/audit playbooks.
+      (b) **Tier the DEFAULT_BUDGET_USD** в `claude_print.rs` — perhaps
+          two constants: `DEFAULT_BUDGET_QUICK = $1.00` (echo, classify,
+          summarize), `DEFAULT_BUDGET_REVIEW = $5.00` (audit, investigate,
+          adversarial). Dispatcher picks based on `Step` heuristic or
+          explicit `Step.budget_tier` field в schema 1.3.
+      (a) closes the operational gap для v0.28.0; (b) is a methodology
+      improvement for next sprint. CHANGELOG для v0.28.0 should note
+      the per-step budget_usd was added к canonical audit.yaml.
 
 ## Blast Radius
 

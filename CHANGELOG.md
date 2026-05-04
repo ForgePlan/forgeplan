@@ -40,7 +40,7 @@ Pre-conditions verified before cutting: cargo fmt clean, cargo clippy
 cargo test --workspace --features test-helpers all PASS (1614+ tests),
 forgeplan health clean.
 
-### Verification (PR 1 closures, 2026-05-03)
+### Verification (PR 1 + PR 2.5 closures, 2026-05-03 / 2026-05-04)
 
 - **NOTE-049** + **EVID-097**: real-E2E closure of Phase B Wave 1.
   Production `claude` 2.1.126 invoked through PluginDispatcher AND
@@ -54,6 +54,33 @@ forgeplan health clean.
 - **PROB-050 A-14 wording tightened**: require `#[cfg(test)]` gate for
   `FORGEPLAN_CLAUDE_BIN` (audit S-2 escalates env-injection vector
   CWE-426 from documentation-only mitigation to compile-time gate).
+- **PROB-050 A-28 ✅ closes** via YAML rewrite (`Delegation::Agent` →
+  `Delegation::Plugin` split for colon-namespaced agent slugs in
+  `audit.yaml` steps 1-3). Real-E2E proof on 2026-05-04: all 3 parallel
+  agents successfully spawned, claude resolved bare slugs
+  (`architect-reviewer`, `code-reviewer`, `security-expert`), 502s
+  wall-clock real work + ~$3.50 spent — closing what would have been
+  a guaranteed `DispatchError::Transport` reject pre-spawn.
+- **PROB-050 A-29 NEW** (discovered during A-28 verification):
+  `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
+  adversarial-review playbooks. All 3 audit agents hit `error_max_budget_usd`
+  at $1.05-$1.25. Operational fix applied: `audit.yaml` steps 1-3 now
+  carry explicit `budget_usd: 5.00`. Methodology fix tracked as A-29
+  option (b) for next sprint (tier `DEFAULT_BUDGET_QUICK` /
+  `DEFAULT_BUDGET_REVIEW`).
+
+### Added (AI documentation discoverability)
+
+- `website/public/robots.txt`: explicit `Allow: /` for 18 named AI
+  crawlers (GPTBot, ClaudeBot, Google-Extended, CCBot, Applebot,
+  PerplexityBot, и т.д.) — Forgeplan документация specifically built
+  for agentic consumers, signal openness explicitly rather than rely
+  on absence of `Disallow`.
+- `website/public/llms.txt`: curated entry-point per emerging
+  Anthropic/Mintlify convention (https://llmstxt.org/). Provides
+  one-shot context for LLM agents discovering Forgeplan: methodology
+  links, CLI/MCP reference, getting-started anchor. Without this, AI
+  agents had to guess which paths matter.
 
 ### Detail — PRD-073 file-first invariant (EVID-094 R_eff=0.80 grade A)
 

@@ -1,0 +1,108 @@
+# Forgeplan documentation — robots.txt
+# Forgeplan is built FOR agents. We explicitly invite AI crawlers to
+# index, learn from, and cite this documentation. Human search engines
+# remain welcome too.
+#
+# Strategy: opt-in by default; deny abusive scrapers individually if needed.
+
+# ---------------------------------------------------------------------
+# AI / LLM crawlers — explicit ALLOW
+# ---------------------------------------------------------------------
+
+# OpenAI ChatGPT (GPT-5+, o3, etc.)
+User-agent: GPTBot
+Allow: /
+
+# OpenAI ChatGPT-User (on-demand fetches when answering user queries)
+User-agent: ChatGPT-User
+Allow: /
+
+# OpenAI search/training crawler
+User-agent: OAI-SearchBot
+Allow: /
+
+# Anthropic Claude (training + on-demand citation)
+User-agent: ClaudeBot
+Allow: /
+
+# Anthropic on-demand fetcher (Claude tool-use, Claude Code)
+User-agent: Claude-User
+Allow: /
+
+# Anthropic search-and-cite
+User-agent: Claude-SearchBot
+Allow: /
+
+# Google AI training (Gemini, Bard) — separate from googlebot
+User-agent: Google-Extended
+Allow: /
+
+# Common Crawl (foundation dataset for many models)
+User-agent: CCBot
+Allow: /
+
+# Apple Intelligence
+User-agent: Applebot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+# Perplexity
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+# Meta AI training
+User-agent: Meta-ExternalAgent
+Allow: /
+
+# DuckDuckGo / DuckAssist
+User-agent: DuckAssistBot
+Allow: /
+
+# Brave Leo / Brave Search AI
+User-agent: BraveBot
+Allow: /
+
+# You.com
+User-agent: YouBot
+Allow: /
+
+# Cohere
+User-agent: cohere-ai
+Allow: /
+
+# Mistral
+User-agent: MistralAI-User
+Allow: /
+
+# Bytedance / Doubao (China LLMs)
+User-agent: Bytespider
+Allow: /
+
+# Diffbot (used by many AI products)
+User-agent: Diffbot
+Allow: /
+
+# Phind (developer-focused AI)
+User-agent: PhindBot
+Allow: /
+
+# ---------------------------------------------------------------------
+# Default — anything else allowed (we are documentation, not secrets)
+# ---------------------------------------------------------------------
+
+User-agent: *
+Allow: /
+
+# ---------------------------------------------------------------------
+# Sitemap — Astro Starlight auto-generates, but explicit ref helps
+# ---------------------------------------------------------------------
+
+Sitemap: https://forgeplan.dev/sitemap-index.xml
+
+# LLM-specific entry point — see /llms.txt
+# (Convention: https://llmstxt.org/)
