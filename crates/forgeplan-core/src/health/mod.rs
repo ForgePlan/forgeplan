@@ -17,6 +17,88 @@ use crate::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
 /// Maximum number of duplicate pairs to report.
 const DUPLICATE_PAIRS_LIMIT: usize = 10;
 
+/// Default thresholds at which a given warning class promotes the verdict
+/// to `Unhealthy`. Below the threshold (but > 0) → `NeedsAttention`.
+///
+/// PROB-029 AC-2: gradient verdict avoids the binary "healthy / unhealthy"
+/// trap that scared CI for a single stale evidence. Defaults are
+/// intentionally conservative so the upgrade path from pre-PRD-045
+/// workspaces does not flip every project to `Unhealthy` overnight.
+pub const DEFAULT_UNHEALTHY_ORPHANS: usize = 5;
+pub const DEFAULT_UNHEALTHY_BLIND_SPOTS: usize = 3;
+pub const DEFAULT_UNHEALTHY_ACTIVE_STUBS: usize = 3;
+pub const DEFAULT_UNHEALTHY_DUPLICATES: usize = 5;
+pub const DEFAULT_UNHEALTHY_PHASE_MISMATCHES: usize = 5;
+
+/// Tunable promotion thresholds for [`compute_verdict`]. When the count
+/// of a given warning class **strictly exceeds** the threshold, the
+/// verdict is promoted to `Unhealthy`. Counts in `1..=threshold` keep
+/// the verdict at `NeedsAttention` (gradient).
+///
+/// Exposed publicly so `--ci --fail-on` callers in the CLI layer can
+/// align their gates with the verdict aggregator if desired. Backward
+/// compatible: existing CI gates continue to read the raw counts; this
+/// struct is purely additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerdictThresholds {
+    pub orphans: usize,
+    pub blind_spots: usize,
+    pub active_stubs: usize,
+    pub duplicates: usize,
+    pub phase_mismatches: usize,
+}
+
+impl Default for VerdictThresholds {
+    fn default() -> Self {
+        Self {
+            orphans: DEFAULT_UNHEALTHY_ORPHANS,
+            blind_spots: DEFAULT_UNHEALTHY_BLIND_SPOTS,
+            active_stubs: DEFAULT_UNHEALTHY_ACTIVE_STUBS,
+            duplicates: DEFAULT_UNHEALTHY_DUPLICATES,
+            phase_mismatches: DEFAULT_UNHEALTHY_PHASE_MISMATCHES,
+        }
+    }
+}
+
+/// Three-level workspace verdict (PROB-029 AC-2).
+///
+/// - `Healthy`: zero warnings of any class.
+/// - `NeedsAttention`: at least one warning, none above CRITICAL threshold.
+/// - `Unhealthy`: at least one warning class above CRITICAL threshold.
+///
+/// Serialized as snake_case strings (`"healthy"`, `"needs_attention"`,
+/// `"unhealthy"`) to match the wire format already used by other
+/// `forgeplan` JSON outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Healthy,
+    NeedsAttention,
+    Unhealthy,
+}
+
+impl Verdict {
+    /// Stable, agent-readable label. Matches the serde wire format.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Healthy => "healthy",
+            Verdict::NeedsAttention => "needs_attention",
+            Verdict::Unhealthy => "unhealthy",
+        }
+    }
+
+    /// Human-friendly one-line summary for CLI rendering. Avoids the
+    /// pre-PROB-029 phrase "Project looks healthy" when the verdict is
+    /// not `Healthy` — that phrase was the original bug surface.
+    pub fn human_summary(self) -> &'static str {
+        match self {
+            Verdict::Healthy => "Project looks healthy.",
+            Verdict::NeedsAttention => "Project needs attention.",
+            Verdict::Unhealthy => "Project is unhealthy — multiple critical signals.",
+        }
+    }
+}
+
 /// Full health report for a Forgeplan workspace.
 #[derive(Debug, Clone)]
 pub struct HealthReport {
@@ -31,6 +113,35 @@ pub struct HealthReport {
     pub next_actions: Vec<String>,
     pub possible_duplicates: Vec<DuplicatePair>,
     pub active_stubs: Vec<ActiveStub>,
+    /// PROB-029 AC-2: aggregated verdict that reads ALL warning classes.
+    /// Pre-fix this didn't exist — `next_actions` was the only summary
+    /// and silently said "Project looks healthy" while stubs/dups were
+    /// printed above it (PRD-043 detection bypass).
+    pub verdict: Verdict,
+}
+
+impl HealthReport {
+    /// Compute the verdict using default thresholds. Reads `self`'s
+    /// signal counts; does not consult outside state. Pure function on
+    /// the report. Used internally by `health_report()` to populate
+    /// `self.verdict` and exposed publicly so callers that want to
+    /// re-evaluate after enriching the report (e.g. MCP server folding
+    /// in `advisory_phase_mismatches` from outside core) can do so.
+    pub fn compute_verdict(&self) -> Verdict {
+        compute_verdict(self, &VerdictThresholds::default(), 0)
+    }
+
+    /// Compute the verdict using explicit thresholds and an extra count
+    /// of phase mismatches injected by the caller. Returned value is
+    /// not stored; callers that want to mutate `self.verdict` must do
+    /// so explicitly. Keeps the report immutable except by intent.
+    pub fn compute_verdict_with(
+        &self,
+        thresholds: &VerdictThresholds,
+        phase_mismatches: usize,
+    ) -> Verdict {
+        compute_verdict(self, thresholds, phase_mismatches)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -132,6 +243,21 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         &orphans,
         &possible_duplicates,
         &active_stubs,
+        &at_risk,
+    );
+
+    // PROB-029 AC-2: compute aggregated verdict from ALL warning
+    // classes. Done after detection but before returning, so callers
+    // (CLI render, MCP JSON, scripts) all see the same value.
+    let verdict = compute_verdict_from_signals(
+        orphans.len(),
+        blind_spots.len(),
+        active_stubs.len(),
+        possible_duplicates.len(),
+        stale_count,
+        at_risk.len(),
+        0, // phase_mismatches injected by upstream callers via compute_verdict_with()
+        &VerdictThresholds::default(),
     );
 
     Ok(HealthReport {
@@ -146,7 +272,75 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         next_actions,
         possible_duplicates,
         active_stubs,
+        verdict,
     })
+}
+
+/// Pure verdict computation. Reads counts only — no I/O, no allocation.
+///
+/// Precedence:
+/// 1. Any class strictly exceeding its threshold → `Unhealthy`.
+/// 2. Else any non-zero count → `NeedsAttention`.
+/// 3. Else → `Healthy`.
+///
+/// PROB-029 AC-1: this guarantees a workspace with active stubs ≥ 1,
+/// duplicate pairs ≥ 1, blind spots ≥ 1, OR orphans ≥ 1 will NOT come
+/// back as `Healthy` — closing the bug where the human-readable
+/// "Project looks healthy" verdict directly contradicted the warnings
+/// printed above it.
+pub fn compute_verdict(
+    report: &HealthReport,
+    thresholds: &VerdictThresholds,
+    phase_mismatches: usize,
+) -> Verdict {
+    compute_verdict_from_signals(
+        report.orphans.len(),
+        report.blind_spots.len(),
+        report.active_stubs.len(),
+        report.possible_duplicates.len(),
+        report.stale_count,
+        report.at_risk.len(),
+        phase_mismatches,
+        thresholds,
+    )
+}
+
+/// Internal: shared verdict logic over raw counts. Lets `health_report`
+/// compute the verdict during construction (when fields are scalars,
+/// not yet packed into the struct) without re-allocating.
+#[allow(clippy::too_many_arguments)]
+fn compute_verdict_from_signals(
+    orphans: usize,
+    blind_spots: usize,
+    active_stubs: usize,
+    duplicates: usize,
+    stale: usize,
+    at_risk: usize,
+    phase_mismatches: usize,
+    t: &VerdictThresholds,
+) -> Verdict {
+    // Critical: any single class above its threshold → Unhealthy.
+    if orphans > t.orphans
+        || blind_spots > t.blind_spots
+        || active_stubs > t.active_stubs
+        || duplicates > t.duplicates
+        || phase_mismatches > t.phase_mismatches
+    {
+        return Verdict::Unhealthy;
+    }
+    // Non-zero anywhere → NeedsAttention.
+    let has_any_warning = orphans > 0
+        || blind_spots > 0
+        || active_stubs > 0
+        || duplicates > 0
+        || stale > 0
+        || at_risk > 0
+        || phase_mismatches > 0;
+    if has_any_warning {
+        Verdict::NeedsAttention
+    } else {
+        Verdict::Healthy
+    }
 }
 
 /// Find active artifacts that look like stubs (template-only content).
@@ -308,6 +502,7 @@ fn find_at_risk(
     at_risk
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_next_actions(
     total: usize,
     by_status: &BTreeMap<String, usize>,
@@ -316,6 +511,7 @@ fn generate_next_actions(
     orphans: &[String],
     possible_duplicates: &[DuplicatePair],
     active_stubs: &[ActiveStub],
+    at_risk: &[AtRiskArtifact],
 ) -> Vec<String> {
     let mut actions = Vec::new();
 
@@ -324,50 +520,76 @@ fn generate_next_actions(
         actions.push("All artifacts in Draft — review and activate ready ones".into());
     }
 
-    // PRD-045 FR-001: PRD-043 stub detection signal
-    if !active_stubs.is_empty() {
-        let first = &active_stubs[0];
+    // PRD-045 FR-001: PRD-043 stub detection signal.
+    // PROB-029 AC-3: include a concrete copy-pasteable command with a
+    // real id, not a placeholder, so agents can run it as-is.
+    if let Some(first) = active_stubs.first() {
         actions.push(format!(
-            "Fill or supersede {} active stub(s) — e.g. `forgeplan supersede {} --by <NEW>` or `forgeplan deprecate {} --reason \"abandoned\"`",
+            "Fill or supersede {} active stub(s) — `forgeplan supersede {} --by <NEW>` or `forgeplan deprecate {} --reason \"abandoned\"`",
             active_stubs.len(),
             first.id,
             first.id
         ));
     }
 
-    // PRD-045 FR-001: PRD-043 duplicate detection signal
-    if !possible_duplicates.is_empty() {
-        let first = &possible_duplicates[0];
+    // PRD-045 FR-001 + PROB-029 AC-3: concrete deprecate command for
+    // the first duplicate pair. Format matches what the PROB-029 body
+    // calls out as the desired remediation hint.
+    if let Some(first) = possible_duplicates.first() {
         actions.push(format!(
-            "Resolve {} duplicate pair(s) — e.g. `forgeplan deprecate {} --reason \"duplicate of {}\"`",
-            possible_duplicates.len(),
+            "Deprecate duplicate pair: `forgeplan deprecate {} --reason \"superseded by {}\"` ({} pair(s))",
             first.id_b,
-            first.id_a
+            first.id_a,
+            possible_duplicates.len()
         ));
     }
 
-    if !blind_spots.is_empty() {
+    // PROB-029 AC-3: include a concrete `forgeplan new evidence`
+    // suggestion targeting the first blind-spot id.
+    if let Some(first) = blind_spots.first() {
         actions.push(format!(
-            "Create evidence for {} artifact(s) without proof",
-            blind_spots.len()
+            "Create evidence for {} artifact(s) without proof — start with `forgeplan new evidence \"<title>\" --link {}`",
+            blind_spots.len(),
+            first.id,
         ));
     }
 
     if stale_count > 0 {
         actions.push(format!(
-            "Refresh {} stale evidence (expired valid_until)",
-            stale_count
+            "Refresh {stale_count} stale evidence (expired valid_until) — run `forgeplan stale` to list",
         ));
     }
 
-    if !orphans.is_empty() {
+    if let Some(first_orphan) = orphans.first() {
         actions.push(format!(
-            "Link {} orphan artifact(s) — isolated, no connections",
-            orphans.len()
+            "Link {} orphan artifact(s) — isolated, no connections — start with `forgeplan link {} based_on <other>`",
+            orphans.len(),
+            first_orphan,
         ));
     }
 
-    if actions.is_empty() && total > 0 {
+    // PROB-029 AC-3: surface at-risk decisions explicitly so agents
+    // see the R_eff problem, not just blind spots.
+    if let Some(first) = at_risk.first() {
+        actions.push(format!(
+            "{} at-risk artifact(s) (R_eff < threshold) — inspect `forgeplan score {}`",
+            at_risk.len(),
+            first.id,
+        ));
+    }
+
+    // PROB-029 AC-1: only emit the "looks healthy" line when EVERY
+    // warning class is empty. The previous implementation only checked
+    // the small subset (blind_spots, stale, orphans) and so silently
+    // lied with active stubs and duplicates printed above.
+    let zero_signals = active_stubs.is_empty()
+        && possible_duplicates.is_empty()
+        && blind_spots.is_empty()
+        && orphans.is_empty()
+        && at_risk.is_empty()
+        && stale_count == 0;
+
+    if actions.is_empty() && total > 0 && zero_signals {
         actions.push("Project looks healthy. Continue implementation.".into());
     }
 
@@ -798,8 +1020,17 @@ mod tests {
 
         let dups: Vec<DuplicatePair> = Vec::new();
         let stubs: Vec<ActiveStub> = Vec::new();
-        let actions =
-            generate_next_actions(5, &by_status, &blind_spots, 2, &orphans, &dups, &stubs);
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+        let actions = generate_next_actions(
+            5,
+            &by_status,
+            &blind_spots,
+            2,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
         assert!(actions.len() <= 3);
     }
 
@@ -817,8 +1048,17 @@ mod tests {
             markers_found: 6,
             message: "stub".into(),
         }];
-        let actions =
-            generate_next_actions(10, &by_status, &blind_spots, 0, &orphans, &dups, &stubs);
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+        let actions = generate_next_actions(
+            10,
+            &by_status,
+            &blind_spots,
+            0,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
         assert!(
             actions.iter().any(|a| a.contains("PRD-008")),
             "expected PRD-008 stub mentioned, got {actions:?}"
@@ -844,8 +1084,17 @@ mod tests {
             kind: "evidence".into(),
         }];
         let stubs: Vec<ActiveStub> = Vec::new();
-        let actions =
-            generate_next_actions(10, &by_status, &blind_spots, 0, &orphans, &dups, &stubs);
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+        let actions = generate_next_actions(
+            10,
+            &by_status,
+            &blind_spots,
+            0,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
         assert!(
             actions.iter().any(|a| a.contains("EVID-003")),
             "expected EVID-003 duplicate mentioned, got {actions:?}"
@@ -853,6 +1102,15 @@ mod tests {
         assert!(
             !actions.iter().any(|a| a.contains("looks healthy")),
             "should NOT say healthy when duplicates present"
+        );
+        // PROB-029 AC-3: format should match the body's example
+        // (`forgeplan deprecate EVID-003 --reason "superseded by EVID-001"`).
+        assert!(
+            actions
+                .iter()
+                .any(|a| a.contains("forgeplan deprecate EVID-003")
+                    && a.contains("superseded by EVID-001")),
+            "expected concrete deprecate command, got {actions:?}"
         );
     }
 
@@ -864,11 +1122,338 @@ mod tests {
         let orphans: Vec<String> = Vec::new();
         let dups: Vec<DuplicatePair> = Vec::new();
         let stubs: Vec<ActiveStub> = Vec::new();
-        let actions =
-            generate_next_actions(5, &by_status, &blind_spots, 0, &orphans, &dups, &stubs);
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+        let actions = generate_next_actions(
+            5,
+            &by_status,
+            &blind_spots,
+            0,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
         assert!(
             actions.iter().any(|a| a.contains("looks healthy")),
             "expected healthy message, got {actions:?}"
+        );
+    }
+
+    // ── PROB-029 verdict aggregator regression suite ──────────────
+
+    fn empty_report(total: usize) -> HealthReport {
+        HealthReport {
+            total,
+            by_kind: Vec::new(),
+            by_status: Vec::new(),
+            at_risk: Vec::new(),
+            blind_spots: Vec::new(),
+            stale_count: 0,
+            orphans: Vec::new(),
+            by_derived_status: Vec::new(),
+            next_actions: Vec::new(),
+            possible_duplicates: Vec::new(),
+            active_stubs: Vec::new(),
+            verdict: Verdict::Healthy,
+        }
+    }
+
+    fn stub(id: &str) -> ActiveStub {
+        ActiveStub {
+            id: id.into(),
+            kind: "prd".into(),
+            title: "Stub".into(),
+            markers_found: 5,
+            message: "looks like a stub".into(),
+        }
+    }
+
+    fn dup(id_a: &str, id_b: &str) -> DuplicatePair {
+        DuplicatePair {
+            id_a: id_a.into(),
+            id_b: id_b.into(),
+            similarity: 1.0,
+            title_a: "X".into(),
+            title_b: "X".into(),
+            kind: "evidence".into(),
+        }
+    }
+
+    fn spot(id: &str) -> BlindSpot {
+        BlindSpot {
+            id: id.into(),
+            title: "X".into(),
+            issue: "no evidence".into(),
+        }
+    }
+
+    // PROB-029 AC-2: empty workspace → Healthy.
+    #[test]
+    fn verdict_empty_workspace_is_healthy() {
+        let r = empty_report(0);
+        assert_eq!(r.compute_verdict(), Verdict::Healthy);
+    }
+
+    // PROB-029 AC-1: 1 active stub → NOT Healthy. This is the primary
+    // bug from the dogfood audit (8 stubs printed → "looks healthy").
+    #[test]
+    fn verdict_one_active_stub_is_needs_attention() {
+        let mut r = empty_report(10);
+        r.active_stubs = vec![stub("PRD-008")];
+        assert_eq!(r.compute_verdict(), Verdict::NeedsAttention);
+        assert_ne!(r.compute_verdict(), Verdict::Healthy);
+    }
+
+    // PROB-029 AC-1: 1 duplicate pair → NOT Healthy.
+    #[test]
+    fn verdict_one_duplicate_pair_is_needs_attention() {
+        let mut r = empty_report(10);
+        r.possible_duplicates = vec![dup("EVID-001", "EVID-003")];
+        assert_eq!(r.compute_verdict(), Verdict::NeedsAttention);
+    }
+
+    // PROB-029 AC-1: 1 blind spot → NOT Healthy.
+    #[test]
+    fn verdict_one_blind_spot_is_needs_attention() {
+        let mut r = empty_report(10);
+        r.blind_spots = vec![spot("ADR-011")];
+        assert_eq!(r.compute_verdict(), Verdict::NeedsAttention);
+    }
+
+    // PROB-029 AC-1: 1 orphan → NOT Healthy.
+    #[test]
+    fn verdict_one_orphan_is_needs_attention() {
+        let mut r = empty_report(10);
+        r.orphans = vec!["NOTE-099".into()];
+        assert_eq!(r.compute_verdict(), Verdict::NeedsAttention);
+    }
+
+    // PROB-029 AC-2: stale evidence alone is a soft signal — needs
+    // attention but not unhealthy. (Stale doesn't count toward the
+    // "unhealthy" critical-class threshold, only toward the "any
+    // warning" floor.)
+    #[test]
+    fn verdict_stale_only_is_needs_attention() {
+        let mut r = empty_report(10);
+        r.stale_count = 7;
+        assert_eq!(r.compute_verdict(), Verdict::NeedsAttention);
+    }
+
+    // PROB-029 AC-2: many active stubs above threshold → Unhealthy.
+    #[test]
+    fn verdict_many_stubs_promotes_to_unhealthy() {
+        let mut r = empty_report(50);
+        r.active_stubs = (0..8).map(|i| stub(&format!("PRD-{i:03}"))).collect();
+        assert_eq!(r.compute_verdict(), Verdict::Unhealthy);
+    }
+
+    // PROB-029 AC-2: many duplicates above threshold → Unhealthy. This
+    // mirrors the dogfood snapshot in the PROB-029 body (5 pairs → at
+    // limit, NOT promoted) — adjust threshold via VerdictThresholds.
+    #[test]
+    fn verdict_many_duplicates_promotes_to_unhealthy() {
+        let mut r = empty_report(50);
+        r.possible_duplicates = (0..6)
+            .map(|i| dup(&format!("EVID-{i:03}"), &format!("EVID-{:03}", i + 100)))
+            .collect();
+        assert_eq!(r.compute_verdict(), Verdict::Unhealthy);
+    }
+
+    // PROB-029: phase mismatches counted via compute_verdict_with so
+    // the MCP server can fold them in without a core-side workspace
+    // path. Below threshold → NeedsAttention. Above → Unhealthy.
+    #[test]
+    fn verdict_phase_mismatches_below_threshold_is_needs_attention() {
+        let r = empty_report(10);
+        let v = r.compute_verdict_with(&VerdictThresholds::default(), 1);
+        assert_eq!(v, Verdict::NeedsAttention);
+    }
+
+    #[test]
+    fn verdict_phase_mismatches_above_threshold_is_unhealthy() {
+        let r = empty_report(10);
+        let v = r.compute_verdict_with(&VerdictThresholds::default(), 100);
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-029 AC-2: respect custom thresholds. A team that wants
+    // unhealthy at 1+ duplicates must be able to set it.
+    #[test]
+    fn verdict_custom_thresholds_take_effect() {
+        let mut r = empty_report(10);
+        r.possible_duplicates = vec![dup("A", "B")];
+        let strict = VerdictThresholds {
+            duplicates: 0,
+            ..VerdictThresholds::default()
+        };
+        let v = r.compute_verdict_with(&strict, 0);
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-029 AC-1 regression: the exact dogfood snapshot from the
+    // PROB-029 body — 5 dup pairs + 8 stubs + 0 blind spots + 0
+    // orphans — must NOT come back as "Healthy". With defaults
+    // (stubs threshold = 3, dups threshold = 5) it goes Unhealthy
+    // because stubs (8 > 3) exceeds critical.
+    #[test]
+    fn verdict_dogfood_snapshot_from_prob029_body() {
+        let mut r = empty_report(80);
+        r.possible_duplicates = (0..5)
+            .map(|i| dup(&format!("EVID-{i:03}"), &format!("EVID-{:03}", i + 100)))
+            .collect();
+        r.active_stubs = (0..8).map(|i| stub(&format!("PRD-{i:03}"))).collect();
+        let v = r.compute_verdict();
+        assert_ne!(v, Verdict::Healthy, "must not say healthy");
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-029 AC-1 + AC-3: when verdict is not healthy, next_actions
+    // must NOT include the "looks healthy" line, and MUST include at
+    // least one concrete remediation command.
+    #[test]
+    fn next_actions_never_says_healthy_when_any_signal_present() {
+        let by_status = BTreeMap::new();
+        let blind_spots: Vec<BlindSpot> = Vec::new();
+        let orphans: Vec<String> = Vec::new();
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+
+        // 1 stale, no other signals — pre-fix this would be ambiguous.
+        let actions = generate_next_actions(
+            5,
+            &by_status,
+            &blind_spots,
+            1,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
+        assert!(
+            !actions.iter().any(|a| a.contains("looks healthy")),
+            "stale > 0 must suppress healthy line, got {actions:?}"
+        );
+        assert!(!actions.is_empty(), "must surface a concrete next step");
+    }
+
+    // PROB-029 AC-3: blind-spot remediation hint contains a
+    // copy-pasteable `forgeplan new evidence --link <id>` command.
+    #[test]
+    fn next_actions_blind_spot_hint_is_concrete_command() {
+        let by_status = BTreeMap::new();
+        let blind_spots = vec![spot("ADR-011")];
+        let orphans: Vec<String> = Vec::new();
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+        let actions = generate_next_actions(
+            5,
+            &by_status,
+            &blind_spots,
+            0,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| a.contains("forgeplan new evidence") && a.contains("ADR-011")),
+            "expected concrete evidence command for ADR-011, got {actions:?}"
+        );
+    }
+
+    // PROB-029 AC-3: orphan hint contains a `forgeplan link <id>` command.
+    #[test]
+    fn next_actions_orphan_hint_is_concrete_command() {
+        let by_status = BTreeMap::new();
+        let blind_spots: Vec<BlindSpot> = Vec::new();
+        let orphans = vec!["NOTE-099".into()];
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let at_risk: Vec<AtRiskArtifact> = Vec::new();
+        let actions = generate_next_actions(
+            5,
+            &by_status,
+            &blind_spots,
+            0,
+            &orphans,
+            &dups,
+            &stubs,
+            &at_risk,
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| a.contains("forgeplan link NOTE-099")),
+            "expected concrete link command for NOTE-099, got {actions:?}"
+        );
+    }
+
+    // PROB-029 AC-3: at-risk surface gets its own action. Pre-fix
+    // at-risk artifacts were silent in next_actions.
+    #[test]
+    fn next_actions_at_risk_surfaced() {
+        let by_status = BTreeMap::new();
+        let blind_spots: Vec<BlindSpot> = Vec::new();
+        let orphans: Vec<String> = Vec::new();
+        let dups: Vec<DuplicatePair> = Vec::new();
+        let stubs: Vec<ActiveStub> = Vec::new();
+        let at_risk = vec![AtRiskArtifact {
+            id: "ADR-007".into(),
+            title: "Risky decision".into(),
+            reason: "R_eff = 0.10".into(),
+        }];
+        let actions = generate_next_actions(
+            5,
+            &by_status,
+            &blind_spots,
+            0,
+            &Vec::<String>::new(),
+            &dups,
+            &stubs,
+            &at_risk,
+        );
+        let _ = orphans;
+        assert!(
+            actions
+                .iter()
+                .any(|a| a.contains("at-risk") && a.contains("ADR-007")),
+            "expected at-risk hint with ADR-007, got {actions:?}"
+        );
+    }
+
+    // PROB-029 sanity: Verdict::as_str matches the serde wire format.
+    #[test]
+    fn verdict_as_str_matches_serde_repr() {
+        for (v, s) in [
+            (Verdict::Healthy, "healthy"),
+            (Verdict::NeedsAttention, "needs_attention"),
+            (Verdict::Unhealthy, "unhealthy"),
+        ] {
+            assert_eq!(v.as_str(), s);
+            let json = serde_json::to_string(&v).unwrap();
+            assert_eq!(json, format!("\"{s}\""));
+        }
+    }
+
+    // PROB-029: human_summary never contains "Project looks healthy"
+    // for non-Healthy verdicts. Guards against accidental copy-paste
+    // of the legacy phrase that this whole task fixes.
+    #[test]
+    fn verdict_human_summary_never_lies() {
+        assert!(Verdict::Healthy.human_summary().contains("healthy"));
+        assert!(
+            !Verdict::NeedsAttention
+                .human_summary()
+                .contains("looks healthy"),
+            "NeedsAttention summary must not say 'looks healthy'"
+        );
+        assert!(
+            !Verdict::Unhealthy.human_summary().contains("looks healthy"),
+            "Unhealthy summary must not say 'looks healthy'"
         );
     }
 
