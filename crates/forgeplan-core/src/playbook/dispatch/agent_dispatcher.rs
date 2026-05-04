@@ -34,8 +34,13 @@
 //!
 //! # Invariants
 //!
-//! - `claude` must be discoverable on PATH (or via `$FORGEPLAN_CLAUDE_BIN`,
-//!   or an explicit override). Otherwise [`DispatchError::DelegateMissing`].
+//! - `claude` must be discoverable on PATH or via an explicit override
+//!   ([`AgentDispatcher::with_claude_binary`]). The `$FORGEPLAN_CLAUDE_BIN`
+//!   environment variable is honoured **only in test builds**
+//!   (`#[cfg(test)]`) — release binaries silently ignore it. This closes
+//!   CWE-426 (uncontrolled search path / binary substitution) per
+//!   PROB-050 A-14 (audit S-2 escalation 2026-05-03). Otherwise
+//!   [`DispatchError::DelegateMissing`].
 //! - Agent name is validated against `^[A-Za-z][A-Za-z0-9_-]{0,63}$` BEFORE
 //!   argv construction (argv-injection guard, ADR-011 §Security). Shared
 //!   validator lives in [`super::claude_print::validate_agent_name`].
@@ -87,8 +92,10 @@ pub struct AgentDispatcher {
     /// `produces_at` paths resolve correctly.
     pub workspace_root: PathBuf,
     /// Optional explicit path to the `claude` binary. When `None`, the
-    /// dispatcher resolves via `$FORGEPLAN_CLAUDE_BIN` env override or
-    /// `which claude` on `$PATH`.
+    /// dispatcher resolves via `which claude` on `$PATH`. In test builds
+    /// (`#[cfg(test)]`) the `$FORGEPLAN_CLAUDE_BIN` env override is also
+    /// consulted ahead of `PATH` — release builds silently ignore it
+    /// (CWE-426 hardening, PROB-050 A-14).
     pub claude_binary: Option<PathBuf>,
     /// Default timeout applied when `Step.timeout_seconds` is not set.
     pub default_timeout: Duration,
@@ -129,14 +136,25 @@ impl AgentDispatcher {
         self
     }
 
-    /// Resolve the `claude` binary: explicit override → `$FORGEPLAN_CLAUDE_BIN`
-    /// → `which claude`. Returns `None` if nothing on disk.
+    /// Resolve the `claude` binary: explicit override → `which claude` on
+    /// `$PATH`. Returns `None` if nothing on disk.
+    ///
+    /// In **test builds** (`#[cfg(test)]`) the `$FORGEPLAN_CLAUDE_BIN`
+    /// environment variable is consulted between the explicit override and
+    /// the `PATH` lookup, allowing test wiring to redirect spawn targets
+    /// without mutating `PATH`. Release builds silently ignore this env
+    /// var to close CWE-426 (binary-substitution attack surface) per
+    /// PROB-050 A-14.
     fn resolve_claude_binary(&self) -> Option<PathBuf> {
         if let Some(p) = &self.claude_binary
             && p.is_file()
         {
             return Some(p.clone());
         }
+        // PROB-050 A-14: removing or widening this `#[cfg(test)]` re-opens
+        // CWE-426 (binary substitution) in release builds. Do not change
+        // without re-evaluating the security boundary.
+        #[cfg(test)]
         if let Ok(override_path) = std::env::var("FORGEPLAN_CLAUDE_BIN") {
             let p = PathBuf::from(override_path);
             if p.is_file() {
@@ -570,6 +588,44 @@ mod tests {
             .resolve_claude_binary()
             .expect("explicit path must resolve");
         assert_eq!(resolved, cargo);
+    }
+
+    /// PROB-050 A-14 cfg-gate guard: in test builds the
+    /// `$FORGEPLAN_CLAUDE_BIN` env override is honoured ahead of `PATH`
+    /// when no explicit `with_claude_binary` is set. This pins the
+    /// behaviour so a future refactor that accidentally removes or widens
+    /// the `#[cfg(test)]` gate (or deletes the whole branch) breaks a test
+    /// rather than silently regressing the surface that tests rely on.
+    ///
+    /// Counterpart for the **release-build** half of the contract (env
+    /// MUST be ignored) is enforced compile-time by `#[cfg(test)]` itself
+    /// — there is no runtime test we can write that exercises a release
+    /// binary without orchestrating an external `cargo build --release`,
+    /// which is too expensive for unit tests.
+    #[tokio::test]
+    async fn resolve_claude_binary_honours_env_override_in_test_builds() {
+        let _guard = ENV_GUARD.lock().await;
+        let cargo_path = which_in_path("cargo");
+        let Some(cargo) = cargo_path else {
+            return; // CI without cargo on PATH — skip rather than fail.
+        };
+        // Isolate from any developer-shell-exported var, then set ours.
+        // SAFETY: ENV_GUARD serialises tests that mutate process-global env.
+        unsafe {
+            std::env::set_var("FORGEPLAN_CLAUDE_BIN", cargo.as_os_str());
+        }
+        let d = AgentDispatcher::new(PathBuf::from("."));
+        let resolved = d.resolve_claude_binary();
+        // SAFETY: cleanup before any other test runs; mirrors the pattern
+        // at lines ~502/~545 where remove_var defends against pollution.
+        unsafe {
+            std::env::remove_var("FORGEPLAN_CLAUDE_BIN");
+        }
+        assert_eq!(
+            resolved.as_deref(),
+            Some(cargo.as_path()),
+            "cfg(test) gate must keep env override reachable in test builds"
+        );
     }
 
     /// `Default::default` constructs without panicking.

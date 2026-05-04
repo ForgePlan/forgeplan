@@ -9,7 +9,21 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
-_No changes yet for the next release._
+### Security
+
+- **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**.
+  `AgentDispatcher::resolve_claude_binary` and the sibling
+  `helpers::resolve_forgeplan_binary` now gate their respective
+  `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` env-var overrides behind
+  `#[cfg(test)]`. Release binaries silently ignore both env vars; only
+  test builds honour them for fixture wiring. Restores parity with
+  `PluginDispatcher` (which never read these env vars) and closes the
+  v0.28.0 release-notes promise (audit S-2 escalation, see
+  [phase-b-real-e2e-2026-05-03.md](docs/operations/phase-b-real-e2e-2026-05-03.md#f-runtime-7)).
+  Operators who relied on the undocumented env-var path for production
+  override should switch to the supported
+  [`AgentDispatcher::with_claude_binary`](crates/forgeplan-core/src/playbook/dispatch/agent_dispatcher.rs)
+  builder hook (or pin via `PATH`).
 
 ## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
 

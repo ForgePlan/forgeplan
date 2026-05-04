@@ -105,14 +105,26 @@ architect, all carry `TODO(PROB-050)` markers in code where applicable):
       `Result<(), String>`.
 - [ ] **A-13 (rust L-1)**: add `since = "0.28.0"` to plugin
       `with_task_tool` deprecation; align with agent variant.
-- [ ] **A-14 (security H-6 + 2026-05-03 audit S-2)**: gate
+- [x] **A-14 ✅ RESOLVED 2026-05-04 (PR-B v0.29.0)**: `FORGEPLAN_CLAUDE_BIN`
+      env override now gated behind `#[cfg(test)]` in
+      `AgentDispatcher::resolve_claude_binary`. CWE-426 (uncontrolled search
+      path / binary substitution) closed in release builds — env var is
+      silently ignored outside test compilation. Symmetric fix applied to
+      `helpers::resolve_forgeplan_binary` `FORGEPLAN_BIN` (latent vector,
+      no production caller, but symmetric pattern established for future
+      contributors). Production override surface is now: explicit
+      `with_claude_binary(path)` → `which claude` on `$PATH` only —
+      identical to `PluginDispatcher`. Positive test
+      `resolve_claude_binary_honours_env_override_in_test_builds` pins
+      the cfg-gate against silent regression.
+      Original wording (preserved for traceability): «gate
       `FORGEPLAN_CLAUDE_BIN` env override behind `#[cfg(test)]` —
       **REQUIRED** (audit S-2 escalation: documentation alone is not a
       mitigation for an env-injection / binary-substitution vector
       CWE-426). Today: AgentDispatcher honors it in release builds;
       PluginDispatcher does not read it at all (mismatched surface
       empirically confirmed 2026-05-03). Fix: cfg-gate + restore parity by
-      removing env-var path entirely from production builds.
+      removing env-var path entirely from production builds.»
 - [ ] **A-15 (security M-3, code-review M-1)**: factor argv builder
       (`claude_print::build_argv(slug, step) -> Vec<String>`) so
       argv-shape tests live in `claude_print.rs` and don't need fake
@@ -312,3 +324,4 @@ hook).
 | PROB-049 | informs (sibling — Phase 3d typed-error follow-ups; same methodology pattern of audit-driven follow-up tracker) |
 | ADR-010 | informs (Amendment 1 work item — A-2) |
 | SPEC-003 | informs (schema bump work item — A-1) |
+

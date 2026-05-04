@@ -263,12 +263,23 @@ pub fn build_env_allowlist(
 
 /// Helper: resolve path to prebuilt forgeplan binary. Per ADR-010: never
 /// invoke `cargo run`. Tries:
-/// 1. `$FORGEPLAN_BIN` env override (test/dev injection)
+/// 1. `$FORGEPLAN_BIN` env override — **test builds only** (`#[cfg(test)]`);
+///    release binaries silently ignore it. Mirrors the
+///    `AgentDispatcher::resolve_claude_binary` cfg-gate that closed CWE-426
+///    (uncontrolled search path / binary substitution) per PROB-050 A-14.
+///    Both env-driven binary substitution surfaces in this module are
+///    therefore symmetric: production = explicit override → PATH → release
+///    fallback only.
 /// 2. `which forgeplan`
 /// 3. `target/release/forgeplan` relative to workspace root
 ///
 /// Returns `None` if not found — dispatcher должен emit `Fix:` hint.
 pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
+    // PROB-050 A-14 (symmetric fix): removing or widening this
+    // `#[cfg(test)]` would expose CWE-426 (binary substitution) in
+    // release builds, mirroring the AgentDispatcher gate. Do not change
+    // without re-evaluating the security boundary.
+    #[cfg(test)]
     if let Ok(override_path) = std::env::var("FORGEPLAN_BIN") {
         let p = PathBuf::from(override_path);
         if p.is_file() {
