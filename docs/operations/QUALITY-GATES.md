@@ -309,19 +309,15 @@ comment explaining why the historical number is preserved (e.g. CHANGELOG).
    grep -cE 'async fn forgeplan_' crates/forgeplan-mcp/src/server.rs
    ```
 
-2. Update all locations listed in the drift output:
-   ```bash
-   # Example: new count = 65
-   # Edit CLAUDE.md "## Current status" line:
-   # "63 MCP tools" → "65 MCP tools"
-   ```
+2. Update all locations listed in the drift output. Use the actual count
+   from step 1 (replace `<NEW>` with the value `grep` returned), and update
+   each line in CLAUDE.md, README.md, etc. that names the MCP tool count.
 
-3. If a specific location should preserve a historical count (e.g., "there were
-   37 tools before v0.22.0"), add a drift-ignore comment:
-   ```markdown
-   <!-- mcp-count-drift: ignore -->
-   there were 37 tools before v0.22.0, now 65
-   ```
+3. If a specific location must preserve a historical count (e.g., a
+   release-notes line referencing the count at a prior version), append a
+   drift-ignore comment to that exact line so the script skips it:
+   `... <!-- mcp-count-drift: ignore -->` (the marker MUST be on the same
+   line as the number; `grep -v` is line-anchored).
 
 4. Re-run the script:
    ```bash
