@@ -32,7 +32,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 - Multi-agent dispatch: file-overlap detection, skill-based routing, parallel/serial bucketing
 - Playbook runtime for orchestrating external plugin delegations
 - Ingest engine for mapping external plugin outputs to forge artifacts
-- CLI (58 commands, alias `fpl`)
+- CLI (76 commands, alias `fpl`)
 
 **Outside the system boundary:**
 - LLM inference (delegates to external providers via config)

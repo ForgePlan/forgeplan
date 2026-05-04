@@ -7,7 +7,7 @@
 
 - **v0.18.0** released (Production BM25 + Russian morphology + quality gates)
 - **193 artifacts**, 112 active, health: "Project looks healthy!"
-- **1940 tests**, 58 CLI commands, 63 MCP tools
+- **1940 tests**, 76 CLI commands, 63 MCP tools
 - **3 EPICs complete**: EPIC-001 (foundation), EPIC-002 (v2.0 vision), EPIC-003 (search+intelligence)
 
 ---

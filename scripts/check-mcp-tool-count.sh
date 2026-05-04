@@ -69,8 +69,9 @@ SEARCH_PATHS=(
 # Patterns that look like "<NUM> [MCP|tool|инструмент]" — extract ONLY
 # the number that immediately precedes a tool/MCP/инструмент keyword,
 # not any other number on the same line (avoid false-positive "1940 tests"
-# / "58 CLI commands").
-EXTRACT_RE='[0-9]+[[:space:]]*(MCP[[:space:]]*tool|tool[s]?|MCP[[:space:]]*инструмент|инструмент)'
+# / "76 CLI commands"). Word boundary anchored с trailing non-letter
+# чтобы не matchать `tooltip`/`toolbox`/`toolkit` (audit C-3 finding).
+EXTRACT_RE='[0-9]+[[:space:]]*(MCP[[:space:]]*tool[s]?([^a-zA-Z]|$)|tool[s]?([^a-zA-Z]|$)|MCP[[:space:]]*инструмент|инструмент)'
 
 DRIFT_FOUND=0
 DRIFT_OUTPUT=$(mktemp)
@@ -90,10 +91,15 @@ for path in "${SEARCH_PATHS[@]}"; do
         | grep -v changelog \
         | grep -v node_modules \
         | grep -v 'website/dist' \
-        | grep -v 'BROWNFIELD-ORCHESTRATOR-HANDOFF' \
         | grep -v 'TODO\.md.*Previous: v0\.' \
         | grep -v 'mcp-count-drift: ignore' \
         | while read -r line; do
+            # NOTE: DRIFT_FOUND is NOT assigned inside this while-pipe
+            # (subshell scoping: variable changes don't propagate to
+            # parent). We use a tempfile ($DRIFT_OUTPUT) и check
+            # `[[ -s "$DRIFT_OUTPUT" ]]` после loop exit. Don't refactor
+            # this в `DRIFT_FOUND=1` inside the loop — silent breakage.
+            # Audit C-5 lessons learned 2026-05-04.
             # Extract ONLY the number directly preceding tool/MCP/инструмент.
             # `grep -oE` returns the keyword match; we need the number too.
             # Capture: re-grep with full pattern and extract the leading [0-9]+.
