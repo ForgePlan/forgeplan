@@ -278,12 +278,11 @@ pub async fn run(
         }
     }
 
-    // Overall health summary
-    let has_issues = !report.at_risk.is_empty()
-        || !report.blind_spots.is_empty()
-        || !report.orphans.is_empty()
-        || report.stale_count > 0;
-    if !has_issues && report.total > 0 {
+    // Overall health summary — drive off the verdict aggregator so the CLI
+    // banner cannot disagree with `next_actions` (PROB-029 closure: previously
+    // `has_issues` here missed `active_stubs` + `possible_duplicates` and
+    // could print "Project looks healthy!" right after a list of warnings).
+    if report.verdict == health::Verdict::Healthy && report.total > 0 {
         println!();
         println!("  {}", style("Project looks healthy!").green().bold());
     }
