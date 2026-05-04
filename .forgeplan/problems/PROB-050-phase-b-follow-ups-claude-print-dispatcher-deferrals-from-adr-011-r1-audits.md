@@ -260,6 +260,28 @@ This is the divergence A-14 calls out; ops doc F-RUNTIME-7 cross-references.
       improvement for next sprint. CHANGELOG для v0.28.0 should note
       the per-step budget_usd was added к canonical audit.yaml.
 
+- [ ] **A-30 (NEW, 2026-05-04 v0.28.0 post-release follow-up)**: drift
+      detector (`scripts/check-mcp-tool-count.sh` + `.github/workflows/forgeplan-health.yml`
+      step) shipped в v0.28.0 без proper user-facing documentation.
+      Currently mentioned только в commit messages (1a01b17 + 970e76e),
+      EVID-099, и inline comments в script header + workflow step. Что
+      должно быть, но отсутствует:
+      (a) standalone doc типа `docs/operations/QUALITY-GATES.ru.md` —
+          описание всех CI gates (fmt, clippy, test, health, validate,
+          drift detector) в стиле других docs/operations entries;
+      (b) `### Added (CI infrastructure)` bullet в CHANGELOG `[0.28.0]`
+          (currently mentioned only в Verification subsection, не surfaced
+          как «new infrastructure»);
+      (c) cross-reference в CLAUDE.md — developers always read CLAUDE.md,
+          но quality gates / drift detection там не упомянуты;
+      (d) cross-reference в `docs/methodology/release-workflow.md` —
+          workflow uses health gate, должен упомянуть drift detector
+          как preventive control.
+      **Defer к v0.29.0** per user decision 2026-05-04. Discoverability
+      gap для AI agents (forgeplan позиционируется как «built for AI» —
+      AI читает CHANGELOG, не должен находить infrastructure только
+      через grep по commit history).
+
 ## Blast Radius
 
 - `forgeplan-core::playbook::dispatch::*` (PluginDispatcher,
