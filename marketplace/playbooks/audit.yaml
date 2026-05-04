@@ -2,22 +2,24 @@
 # audit.yaml — Multi-agent adversarial code review playbook (REFERENCE)
 # =====================================================================
 #
-# **Status: REFERENCE EXAMPLE, requires task-tool 1.x**
+# **Status: REFERENCE EXAMPLE — predates ADR-011 Phase B Wave 1.**
 #
-#   This playbook is provided as a runnable template for the multi-agent
-#   audit pattern used during PRD-073 (see EVID-094). The agent dispatcher
-#   resolves `agents-pro:architect-reviewer` / `agents-core:code-reviewer`
-#   / `agents-pro:security-expert` by spawning a `task-tool` subprocess
-#   and forwarding the agent name. **Without task-tool installed and
-#   recognising those names, this playbook fails with `DelegateMissing`
-#   at runtime.** No Forgeplan-side registry exists yet (planned in
-#   PRD-069 SkillDispatcher real registry).
+#   This playbook ships as a runnable template for the multi-agent audit
+#   pattern used during PRD-073 (see EVID-094). It originally targeted
+#   the never-shipped `task-tool 1.x` (ADR-010); v0.28.0 + ADR-011
+#   replaced that mechanism with `claude --print --agent <slug>` via
+#   PluginDispatcher / AgentDispatcher (EVID-097 confirms the dispatch
+#   contract end-to-end на real `claude` 2.1.126).
 #
-#   To run end-to-end today: install the agents-pro / agents-core plugin
-#   packs and a task-tool that recognises namespaced agent names. The
-#   forge-orchestrator team-lead pattern in /Users/explosovebit/.claude/
-#   teams/ is the canonical runner; this YAML mirrors that structure for
-#   playbook-based invocation when the dispatcher catches up.
+#   **Resolution (v0.28.0, PROB-050 A-28 option a)**: each step uses the
+#   `Delegation::Plugin { name: "<pack>", target: "<slug>" }` form rather
+#   than `Delegation::Agent { name: "<pack>:<slug>" }`. PluginDispatcher
+#   validates `<pack>` and `<slug>` separately against the
+#   `validate_agent_name` argv-injection guard (both colon-free), then
+#   composes the canonical `claude --print --agent <slug>` call. This
+#   side-steps the regex restriction without weakening the security
+#   contract. Empirically verified end-to-end on real `claude` 2.1.126
+#   (EVID-098 + EVID-099).
 #
 # Purpose:
 #   Run three audit agents in parallel against a target branch / PR,
@@ -101,10 +103,13 @@ requires:
 steps:
 
   # 1. Architect review — design + ADR conformance + invariants.
+  # Plugin variant (PROB-050 A-28 option a): split pack:slug → name + target
+  # so validate_agent_name regex passes (colon-free segments).
   - id: architect-review
     delegate_to:
-      type: agent
-      name: agents-pro:architect-reviewer
+      type: plugin
+      name: agents-pro
+      target: architect-reviewer
     input:
       task: |
         Adversarial architecture review of the current feature branch.
@@ -115,14 +120,16 @@ steps:
         {block-merge, request-changes, accept-with-followups, accept}.
         If a category has no findings, state explicitly what was checked.
         Under 1500 words.
+    budget_usd: 5.00  # PROB-050 A-29: default $1 too low for adversarial review
     on_error: continue
     timeout_seconds: 600
 
   # 2. Code review — bugs, edge cases, error handling, idiom issues.
   - id: code-review
     delegate_to:
-      type: agent
-      name: agents-core:code-reviewer
+      type: plugin
+      name: agents-core
+      target: code-reviewer
     input:
       task: |
         Adversarial code review of the current feature branch.
@@ -130,14 +137,16 @@ steps:
         argument validation, ownership/lifetime, async/await safety,
         test coverage gaps.
         Same output format as architect-review.
+    budget_usd: 5.00  # PROB-050 A-29
     on_error: continue
     timeout_seconds: 600
 
   # 3. Security review — TOCTOU, races, attack surface, CVE classes.
   - id: security-review
     delegate_to:
-      type: agent
-      name: agents-pro:security-expert
+      type: plugin
+      name: agents-pro
+      target: security-expert
     input:
       task: |
         Adversarial security review of the current feature branch.
@@ -145,6 +154,7 @@ steps:
         path-traversal, command injection, MCP attack surface, secret
         leakage, CVE-class vulnerabilities.
         Same output format as architect-review.
+    budget_usd: 5.00  # PROB-050 A-29
     on_error: continue
     timeout_seconds: 600
 

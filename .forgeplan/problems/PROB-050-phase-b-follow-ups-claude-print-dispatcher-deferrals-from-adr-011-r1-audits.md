@@ -213,6 +213,53 @@ This is the divergence A-14 calls out; ops doc F-RUNTIME-7 cross-references.
       Items (1)-(3) are methodology-doc only; item (4) overlaps with
       A-11 + A-16 and may be folded there.
 
+- [ ] **A-27 (NEW, 2026-05-03 release v0.28.0 architect audit A-1)**:
+      sweep `marketplace/playbooks/*.yaml` headers for stale ADR-010
+      references (`task-tool 1.x`, `claude-code-plugin`, `forge-docs-miner`
+      assumed-installed claims). Update each header to reflect ADR-011
+      reality. **Already partially done в release v0.28.0 для
+      `audit.yaml` + `brownfield-docs.yaml`**, but other playbooks
+      (`brownfield-code.yaml`, `greenfield-kickoff.yaml`, `release.yaml`)
+      should be audited the same way. Touch only headers, not steps —
+      step semantics governed by SPEC-003 schema, not ADR.
+
+- [x] **A-28 (RESOLVED 2026-05-04 via option a — YAML rewrite)**:
+      `validate_agent_name` regex `^[A-Za-z][A-Za-z0-9_-]{0,63}$`
+      rejects colon-namespaced agent slugs. **Empirically resolved**
+      by rewriting `audit.yaml` step 1-3 from
+      `Delegation::Agent { name: "pack:slug" }` to
+      `Delegation::Plugin { name: "pack", target: "slug" }`. PluginDispatcher
+      validates `pack` and `slug` separately (both colon-free), then
+      composes canonical `claude --print --agent <slug>` call.
+      **Real-E2E proof (2026-05-04 audit run, 502s wall-clock,
+      $3.50 spent across 3 parallel agents)**: claude resolved bare slug
+      `architect-reviewer` / `code-reviewer` / `security-expert` (real
+      work + real cost — if slug-not-found, $0 immediate exit). Closure
+      surfaced new finding A-29 (default budget too low for adversarial
+      review — see below). Option (b) regex broadening не нужен; YAML
+      rewrite contract works cleanly без regex changes.
+
+- [ ] **A-29 (NEW, 2026-05-04 audit.yaml real-run discovery)**:
+      `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
+      adversarial-review playbooks. Real-E2E (audit.yaml on
+      release/v0.28.0 changeset, 2026-05-04): 3 parallel agents все
+      hit `subtype: error_max_budget_usd` at $1.05-$1.25 — that's the
+      F-RUNTIME-6 / A-25 post-hoc 1.05-1.25× overrun pattern at higher
+      absolute budgets. Honest minimum для adversarial review with
+      file-citation requirements ≈ $3-5 per agent. Two complementary
+      fixes:
+      (a) **Per-playbook budget_usd override** — already applied to
+          `audit.yaml` steps 1-3 with `budget_usd: 5.00`. Same
+          treatment indicated for any future review/audit playbooks.
+      (b) **Tier the DEFAULT_BUDGET_USD** в `claude_print.rs` — perhaps
+          two constants: `DEFAULT_BUDGET_QUICK = $1.00` (echo, classify,
+          summarize), `DEFAULT_BUDGET_REVIEW = $5.00` (audit, investigate,
+          adversarial). Dispatcher picks based on `Step` heuristic or
+          explicit `Step.budget_tier` field в schema 1.3.
+      (a) closes the operational gap для v0.28.0; (b) is a methodology
+      improvement for next sprint. CHANGELOG для v0.28.0 should note
+      the per-step budget_usd was added к canonical audit.yaml.
+
 ## Blast Radius
 
 - `forgeplan-core::playbook::dispatch::*` (PluginDispatcher,

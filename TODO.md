@@ -3,7 +3,60 @@
 > **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
 > (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
 
-## Current: v0.27.0 — PRD-072 Phase 6 real dispatchers + init wiring + greenfield playbook
+## Current: v0.28.0 — file-first invariant compile-enforced + claude --print + canonical playbooks
+
+Bundles 14 merge-PR (#224..#237) since v0.27.0 (2026-04-28). Three load-bearing
+themes:
+
+1. **PRD-073 file-first invariant compile-enforced** (ADR-003) — `LanceStore::*`
+   mutating methods stали `pub(crate)`, file-first projection wrappers — единственная
+   mutation surface. EVID-094 R_eff=0.80 grade A. PROB-048 deprecated.
+2. **ADR-011 Phase B Wave 1** — Plugin/Agent dispatchers shell out to `claude --print`
+   на real `claude` 2.1.126. Replaces fictional task-tool из ADR-010. EVID-093 + EVID-096 + EVID-097, R_eff=0.70 grade B. Real-E2E verified.
+3. **Track 4-A8 canonical playbooks** — `release.yaml` + `brownfield-docs.yaml` ship
+   как REFERENCE templates для marketplace skill/mapping authors. `audit.yaml`
+   migrated к Plugin variant + budget_usd=$5 (PROB-050 A-28 closed).
+
+### PRD-073 — file-first invariant compile-enforced
+- [x] Phase 3a: 15 projection helpers
+- [x] Phase 3b: 16 mutation helpers migrated к `MutationResult<T>`
+- [x] Phase 3c: typed errors (R1 + R2 audit closures)
+- [x] Phase 4: `LanceStore::*` mutating methods → `pub(crate)` lockdown
+- [x] EVID-094 (PRD-073 closure) + EVID-095 (Phase 3c sprint closure)
+- [x] PROB-048 deprecated as resolved
+
+### ADR-011 — Phase B Wave 1 (claude --print dispatchers)
+- [x] PluginDispatcher + AgentDispatcher rewritten для `claude --print`
+- [x] Step.budget_usd + Step.allowed_tools fields (SPEC-003 1.2)
+- [x] R1 audit closure (4 CRITICAL + 18 HIGH/MEDIUM)
+- [x] EVID-093 spike + EVID-096 closure measurement
+- [x] PR 1 (NOTE-049 + EVID-097) — real-E2E на production binary, 5 invocations, ~$0.98
+- [x] A-28 closure (audit.yaml type:agent → type:plugin) + real chain run ~$3.50
+
+### Release v0.28.0 (this sprint)
+- [x] CHANGELOG `[Unreleased]` → `[0.28.0]` promotion
+- [x] Cargo.toml workspace 0.27.0 → 0.28.0 + 4 internal crate refs
+- [x] Pre-flight: cargo fmt + cargo clippy `-D warnings` + cargo test (1940 PASS)
+- [x] Audit (architect + code-analyzer adversarial): 11 findings closed inline
+- [x] Audit round 2 (security + code-analyzer на PR 1 verification): 11 findings closed
+- [x] Dependabot triage round 3 (18 alerts unchanged from round 2)
+- [x] EVID-098 readiness measurement (R_eff propagation to PRD-073 grade A)
+- [x] AI docs accessibility: robots.txt + llms.txt
+- [x] MCP tool count drift swept (63 canonical, 18 doc locations updated)
+- [ ] Push `release/v0.28.0 → main` (awaiting user approval)
+- [ ] Tag v0.28.0 + cargo-dist + brew publish (post-merge)
+- [ ] Post-release sync PR `chore/sync-main-to-dev-after-v0.28.0` (red line #9)
+
+### Follow-ups (deferred к PR 3 / PR 4)
+- [ ] PR 3: PROB-049 top-4 (StoreError split, # Errors rustdoc, MutationContext, let-else)
+- [ ] PR 4: PROB-050 top-5 (SPEC-003 1.2 doc, claude_print::invoke() extract,
+      cross-file ENV lock, API surface tighten, integration test gated by
+      CLAUDE_BIN_AVAILABLE)
+- [ ] PROB-050 A-21..A-29: real-E2E findings (discovery, exit codes already-OK,
+      version disambiguation, budget tier, audit.yaml budget=$5, methodology
+      hardening)
+
+## Previous: v0.27.0 — PRD-072 Phase 6 real dispatchers + init wiring + greenfield playbook
 
 EPIC-007 Phase 6 — engine layer (v0.26.0) переходит в **user-facing activation**.
 PRD-072 / RFC-007 / ADR-010 закрывают Phase 5 deferral: 5 production
@@ -177,7 +230,7 @@ PRD-071 unified 5-rule hint contract shipped. Audit coverage 0% → 100% (70/70 
 ## Previous: v0.17.0-rc — EPIC-003 complete, ready to tag
 
 ### Stats (v0.17.0)
-- ~56 CLI commands, ~47 MCP tools, **1109 tests** (+280 from v0.16)
+- ~56 CLI commands, ~47 MCP tools, **1109 tests** (+280 from v0.16) <!-- mcp-count-drift: ignore (historical v0.17.2 snapshot) -->
 - Workspace: 0 warnings on both default and `--features semantic-search`
 - ~13.8K LOC added across EPIC-003 (Sprints 13.0 → 13.7 + post-closeout hotfix)
 - PRs #141-#156

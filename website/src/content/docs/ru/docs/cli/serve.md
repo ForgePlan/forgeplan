@@ -20,7 +20,7 @@ forgeplan serve
 
 ## Что он предоставляет
 
-~47 MCP-инструментов, сопоставленных с основными операциями Forgeplan:
+63 MCP-инструмента, сопоставленных с основными операциями Forgeplan:
 
 - **Жизненный цикл артефактов** — `new`, `validate`, `review`, `activate`, `supersede`, `deprecate`, `stale`, `renew`, `reopen`
 - **Запросы + обнаружение** — `list`, `get`, `search`, `blocked`, `order`, `tree`, `discover`, `blindspots`, `gaps`

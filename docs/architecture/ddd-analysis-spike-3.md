@@ -120,7 +120,7 @@
 - → Persistence: **Conformist** (consumes existing records without requiring upstream changes).
 
 ### 1.9 Interface Contexts (CLI / MCP)
-**Responsibility**: Two adapter surfaces onto the domain core — `clap`-based CLI binary and `rmcp`-based stdio MCP server exposing ~47 tools.
+**Responsibility**: Two adapter surfaces onto the domain core — `clap`-based CLI binary and `rmcp`-based stdio MCP server exposing 63 tools.
 
 **Modules**:
 - `crates/forgeplan-cli/src/` (commands/, main.rs)
@@ -287,5 +287,5 @@ Published-language candidates: events 1–6 and 8 are stable enough to serialize
 
 This Spike-3 measurement directly validates three EPIC-008 Wave 1 claims:
 - **6 new kinds needed**: especially `glossary` (for §3), `invariant` (for §2 aggregate rules), `hypothesis` (for §6 category errors with confidence levels), `domain-model` (for §1 bounded-context canonical).
-- **12 MCP tools viable**: `forgeplan_hypothesis_*`, `forgeplan_contradictions`, `forgeplan_orphans` have concrete use cases proven here.
+- **12 MCP tools viable**: `forgeplan_hypothesis_*`, `forgeplan_contradictions`, `forgeplan_orphans` have concrete use cases proven here. <!-- mcp-count-drift: ignore (subset count из spike-3 viability analysis, не общий) -->
 - **Factum/Intent separation is real and enforceable**: §1-§5 are factum (100% code-derived, cite-able), §6 is intent (reasoning about *why* things are the way they are).

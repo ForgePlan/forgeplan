@@ -13,12 +13,13 @@
 # this playbook fails with `DispatchError::DelegateMissing` (step 1)
 # or "mapping file not found" (step 2) at runtime.
 #
-# Why ship as REFERENCE: same pattern as `audit.yaml`, which has
-# shipped on main since v0.27.0 as a runnable template that
-# requires `task-tool 1.x` to actually execute. The playbook YAML
-# IS the executable spec for what the skill + mapping must produce
-# — landing it now lets future skill/mapping authors target a
-# fixed contract.
+# Why ship as REFERENCE: same pattern as `audit.yaml`, which shipped
+# on main since v0.27.0. v0.28.0 + ADR-011 replaces the never-shipped
+# `task-tool 1.x` (ADR-010) with `claude --print` via PluginDispatcher /
+# AgentDispatcher; SkillDispatcher v1 remains an intentional stub
+# (Phase 6 Wave 5+, PROB-050 A-23). The playbook YAML IS the executable
+# spec for what the skill + mapping must produce — landing it now lets
+# future skill/mapping authors target a fixed contract.
 #
 # To run end-to-end today:
 #   1. Author `marketplace/skills/brownfield-docs-pack/forge-docs-miner.skill.md`

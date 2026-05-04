@@ -148,7 +148,7 @@ Route ──► Shape ──► Validate ──► Reason (ADI) ──► Code �
 
 - **v0.24.0** released (multi-agent dispatcher, PRD-057 EVID-077, R2+R3 audits закрыли 30 findings)
 - 1405 tests passing, 0 clippy warnings on Rust 1.95
-- ~58 CLI commands, ~47 MCP tools
+- ~58 CLI commands, ~47 MCP tools <!-- mcp-count-drift: ignore (historical v0.24.0 handoff snapshot 2026-04-21) -->
 
 ### Crates
 
@@ -160,7 +160,7 @@ crates/
 │   ├── routing/ scoring/ search/ stale/ template/ validation/ workspace/
 │   └── activity/ (new v0.24.0)
 ├── forgeplan-cli/     ← clap derive, ~58 commands
-└── forgeplan-mcp/     ← rmcp stdio, ~47 tools
+└── forgeplan-mcp/     ← rmcp stdio, ~47 tools  <!-- mcp-count-drift: ignore (handoff frozen 2026-04-21) -->
 ```
 
 ---
@@ -1424,7 +1424,7 @@ crates/forgeplan-cli/src/main.rs                 (load_workspace_env for .env fi
 
 **Что точно работает сейчас**:
 - Forgeplan v0.24.0 production-ready, 1405 tests passing
-- MCP server установлен, 47 tools available
+- MCP server установлен, 47 tools available <!-- mcp-count-drift: ignore (handoff frozen 2026-04-21) -->
 - scan-import хорошо работает на mainstream brownfield (после PRD-058 fix)
 - LLM providers: Anthropic Claude, OpenAI, OpenRouter, neuraldeep.ru (new)
 - Multi-agent dispatch работает (v0.24.0)
