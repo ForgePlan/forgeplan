@@ -9,6 +9,13 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added (CI infrastructure, methodology)
+
+- **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
+  documents all CI quality gates** (fmt, clippy, test, health, validate,
+  drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
+  and `docs/methodology/release-workflow.md §Pre-conditions`.
+
 ### Changed (forgeplan-core public API — additive, but downstream library consumers should rebuild)
 
 - **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
@@ -32,15 +39,14 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   with configurable `VerdictThresholds`. Both new public types are
   `#[non_exhaustive]`. CLI `forgeplan health` banner driven off the verdict
   (no longer disagrees with `next_actions`). `next_actions` rewritten to
-  emit concrete remediation commands (`forgeplan deprecate ... --reason
-  "superseded by ..."`, `forgeplan new evidence --link ...`, etc.).
-
-### Added (CI infrastructure, methodology)
-
-- **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
-  documents all CI quality gates** (fmt, clippy, test, health, validate,
-  drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
-  and `docs/methodology/release-workflow.md §Pre-conditions`.
+  emit concrete remediation commands. MCP `forgeplan_health` and CLI `--json`
+  both expose `verdict` + `verdict_summary` fields. **Round 5 audit closures
+  (HIGH Logic + Documentation)**: MCP `_next_action` ladder now checks
+  active_stubs + possible_duplicates + phase_mismatches before the "Project
+  healthy" fallthrough (eliminates contradiction-via-different-field);
+  uninitialized workspaces (`total == 0`) emit a distinct `verdict_summary`
+  ("Workspace has no artifacts ...") on both CLI and MCP surfaces; MCP tool
+  description advertises the `verdict` field for agent discovery.
 
 ### Security
 

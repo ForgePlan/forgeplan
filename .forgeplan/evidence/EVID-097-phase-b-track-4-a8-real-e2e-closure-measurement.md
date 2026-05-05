@@ -53,6 +53,17 @@ production binary `claude` 2.1.126 (`/Users/explosovebit/.local/bin/claude`).
   → wrapper used directly. PluginDispatcher does NOT (см. F-RUNTIME-7 /
   A-14) → PATH-prepended symlink trick used (`$WS/path-override/claude` →
   wrapper).
+  > **Forward-reference (added 2026-05-04, PR-B v0.29.0)**: this
+  > paragraph documents the v0.27.0/v0.28.0 release state at the time of
+  > the 2026-05-03 real-E2E run and is intentionally preserved as
+  > historical evidence. After PR-B (v0.29.0) lands, **release builds**
+  > of `AgentDispatcher` will silently ignore `$FORGEPLAN_CLAUDE_BIN` —
+  > only test builds keep the env override. The wrapper-via-env path
+  > described here will work only when running tests built from this
+  > crate; production override after v0.29.0 must use the explicit
+  > `with_claude_binary(path)` builder hook (or the PATH-prepend symlink
+  > trick already documented for Plugin). See PROB-050 A-14 closure for
+  > details.
 
 **Test playbooks** at `$WS/.forgeplan/playbooks/`:
 - `h1-agent-happy.yaml` — minimal Agent step, `budget_usd: 0.05`

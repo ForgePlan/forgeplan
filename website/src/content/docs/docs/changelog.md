@@ -21,7 +21,68 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
-_No changes yet for the next release._
+### Added (CI infrastructure, methodology)
+
+- **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
+  documents all CI quality gates** (fmt, clippy, test, health, validate,
+  drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
+  and `docs/methodology/release-workflow.md §Pre-conditions`.
+
+### Changed (forgeplan-core public API — additive, but downstream library consumers should rebuild)
+
+- **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
+  variants `StoreTransient` (recoverable) and `StoreFatal` (not recoverable).**
+  The legacy `StoreError(#[from] anyhow::Error)` collapse-everything variant is
+  removed. Categorisation logic (`MutationError::from_store_err`) inspects the
+  `anyhow::Error` chain (lancedb / std::io shapes) and routes between the two.
+  Default fallthrough is `StoreTransient` — strict refinement of legacy
+  recoverable=true. **Note**: `is_recoverable()` is exposed but not yet
+  consumed by MCP / CLI retry loops; the typed-error split is infrastructure
+  for forthcoming retry wiring (tracked under PROB-049 follow-ups).
+- **PROB-049 H-6 ✅ closes — `MutationContext` introduced for projection helpers.**
+  All 17 file-first mutation helpers in `forgeplan_core::projection` now take
+  `&MutationContext<'_>` instead of separate `(workspace, store)` arguments.
+  47 call sites updated across `forgeplan-cli` + `forgeplan-mcp`. The struct
+  is `#[non_exhaustive]` and constructed via `MutationContext::new(...)` —
+  external library consumers may not use a struct literal.
+- **PROB-049 H-4 ✅ closes — `# Errors` rustdoc on all 17 projection helpers.**
+- **PROB-029 ✅ closes — typed `Verdict` aggregator (`Healthy / NeedsAttention
+  / Unhealthy`) on `HealthReport`.** Pure `compute_verdict[_with]` functions
+  with configurable `VerdictThresholds`. Both new public types are
+  `#[non_exhaustive]`. CLI `forgeplan health` banner driven off the verdict
+  (no longer disagrees with `next_actions`). `next_actions` rewritten to
+  emit concrete remediation commands. MCP `forgeplan_health` and CLI `--json`
+  both expose `verdict` + `verdict_summary` fields. **Round 5 audit closures
+  (HIGH Logic + Documentation)**: MCP `_next_action` ladder now checks
+  active_stubs + possible_duplicates + phase_mismatches before the "Project
+  healthy" fallthrough (eliminates contradiction-via-different-field);
+  uninitialized workspaces (`total == 0`) emit a distinct `verdict_summary`
+  ("Workspace has no artifacts ...") on both CLI and MCP surfaces; MCP tool
+  description advertises the `verdict` field for agent discovery.
+
+### Security
+
+- **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**.
+  `AgentDispatcher::resolve_claude_binary` and the sibling
+  `helpers::resolve_forgeplan_binary` now gate their respective
+  `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` env-var overrides behind
+  `#[cfg(test)]`. Release binaries silently ignore both env vars; only
+  test builds honour them for fixture wiring. Restores parity with
+  `PluginDispatcher` (which never read these env vars) and closes the
+  v0.28.0 release-notes promise (audit S-2 escalation, see
+  [`docs/operations/phase-b-real-e2e-2026-05-03.md`](docs/operations/phase-b-real-e2e-2026-05-03.md)
+  F-RUNTIME-7).
+
+  **Migration for operators** (CLI / brew / binary distributions):
+  the env-var path was never a documented contract; operators relying on
+  it for production override should pin `claude` via `$PATH` — that is
+  the only supported binary-resolution surface at the CLI / playbook
+  layer. There is no per-invocation override at the YAML schema (SPEC-003)
+  today; tracked as PROB-050 A-31 if such a surface becomes needed.
+
+  **Library consumers** embedding `forgeplan-core` directly can use the
+  `AgentDispatcher::with_claude_binary(path)` builder hook for
+  fixture/spawn-target redirection.
 
 ## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
 
