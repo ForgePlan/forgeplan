@@ -191,6 +191,60 @@ If `claude --print` invocation pattern proves unviable (e.g. Anthropic ships `cl
 - RFC-007 (active): Phase 6 dispatcher architecture — `Dispatcher` trait surface unchanged; only invocation mechanism inside `dispatch()` differs
 - EVID-093 (TBD post-activation): formal evidence record
 
+## Amendment 1 — 2026-05-04 — env-var override gated to test builds (PROB-050 A-14, v0.29.0)
+
+**Context**: Phase B Wave 1 R1 audit (2026-05-03) escalated security
+finding S-2 to **REQUIRED**. The `AgentDispatcher::resolve_claude_binary`
+function read `$FORGEPLAN_CLAUDE_BIN` in release builds, allowing an
+attacker who controls the env to redirect the `claude` subprocess to an
+arbitrary binary (CWE-426 — Uncontrolled Search Path / binary
+substitution). PluginDispatcher never read this env var, creating an
+asymmetric attack surface.
+
+**Amendment**: the binary-resolution contract for `claude` subprocess
+invocation is hereby revised:
+
+| Build mode | Resolution order |
+|---|---|
+| **Release** (any non-test build) | explicit override (`with_claude_binary`) → `$PATH` |
+| **Test** (`#[cfg(test)]`) | explicit override → `$FORGEPLAN_CLAUDE_BIN` → `$PATH` |
+
+The env-var path is preserved in test builds for fixture wiring; release
+builds are now symmetric with PluginDispatcher (which never read env
+vars). The same gate is applied symmetrically to
+`helpers::resolve_forgeplan_binary` (`$FORGEPLAN_BIN`) — currently latent
+(no production caller) but ensures the pattern is established before
+Phase 7+ promotes any dispatcher to forgeplan self-invocation.
+
+**Implementation**: `#[cfg(test)]` attribute immediately above the
+`if let Ok(_) = std::env::var(...)` block in both
+`crates/forgeplan-core/src/playbook/dispatch/agent_dispatcher.rs` and
+`crates/forgeplan-core/src/playbook/dispatch/helpers.rs`. Inline grep-hint
+comments at both gate sites name PROB-050 A-14 + CWE-426 so the security
+boundary is discoverable without traversing this ADR.
+
+**Verification**: positive tests
+`resolve_claude_binary_honours_env_override_in_test_builds` (agent) and
+`resolve_forgeplan_binary_respects_env_override` (helpers, strengthened
+to isolate `$PATH` so the assertion exercises the env branch
+deterministically) pin the test-build half. Release-build half is
+enforced compile-time by Cargo's `#[cfg(test)]` semantics — unfalsifiable
+from `cargo test` but verified by the security-expert audit's
+case-by-case verification matrix (cargo build, `--release`, `--tests`,
+doctests, integration tests, downstream consumers all confirmed to
+exclude the env path).
+
+**Closure evidence**: EVID-102 (R_eff measurement, structured fields
+verdict: supports / CL3 / evidence_type: test). See PROB-050 A-14
+checkbox in `.forgeplan/problems/PROB-050-phase-b-follow-ups-claude-print-dispatcher-deferrals-from-adr-011-r1-audits.md`.
+
+**Reversibility**: high — the cfg-gate is a one-line attribute. To
+restore the v0.27.0/v0.28.0 contract, remove `#[cfg(test)]` from both
+gate sites and re-open A-14 with new audit cycle. Not recommended:
+there is no known production use case requiring env-var override at the
+binary-resolution layer (operators pin via `$PATH`; library consumers
+use `with_claude_binary`).
+
 ## Sources
 
 - `.local/spike-claude-print/findings.md` — full test matrix
