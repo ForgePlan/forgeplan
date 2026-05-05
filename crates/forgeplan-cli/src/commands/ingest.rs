@@ -561,7 +561,7 @@ async fn write_draft(
     // PRD-073 Phase 3b: file-first helper writes the markdown projection
     // FIRST then syncs to LanceDB. Previous DB-first order would have
     // stranded the artifact in DB-only state on a crash between the two.
-    projection::create_artifact_with_projection(ws, store, &new)
+    projection::create_artifact_with_projection(&projection::MutationContext::new(ws, store), &new)
         .await
         .with_context(|| format!("create_artifact_with_projection failed for {id}"))?;
 
@@ -579,9 +579,13 @@ async fn update_existing(
     draft: &IngestArtifactDraft,
 ) -> Result<()> {
     // PRD-073 Phase 3b: file-first body update — helper writes file then DB.
-    projection::update_body_with_projection(ws, store, &record.id, &draft.body)
-        .await
-        .with_context(|| format!("update_body_with_projection failed for {}", record.id))?;
+    projection::update_body_with_projection(
+        &projection::MutationContext::new(ws, store),
+        &record.id,
+        &draft.body,
+    )
+    .await
+    .with_context(|| format!("update_body_with_projection failed for {}", record.id))?;
     common::log_change(store, &record.id, "ingest_update", "cli").await;
     Ok(())
 }
@@ -611,8 +615,13 @@ async fn add_links(ws: &Path, store: &LanceStore, source_id: &str, links: &[Draf
             Err(_) => continue,
         };
         // PRD-073 Phase 3b: file-first link helper handles bidirectional render.
-        if let Err(e) =
-            projection::add_link_with_projection(ws, store, source_id, &lnk.target, &relation).await
+        if let Err(e) = projection::add_link_with_projection(
+            &projection::MutationContext::new(ws, store),
+            source_id,
+            &lnk.target,
+            &relation,
+        )
+        .await
         {
             match lnk.if_exists {
                 IfExists::Skip => {}

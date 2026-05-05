@@ -67,8 +67,11 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         tags: Vec::new(),
     };
 
-    let filepath =
-        projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
+    // PROB-049 H-6: helpers now take `&MutationContext` instead of
+    // `(workspace, store)` separately so the persistent dependencies
+    // funnel through one shape.
+    let ctx = projection::MutationContext::new(&workspace, &store);
+    let filepath = projection::create_artifact_with_projection(&ctx, &artifact).await?;
 
     println!("  Captured: {}", filepath.display());
     println!("  ID:       {}", id);

@@ -1211,9 +1211,12 @@ impl ForgeplanServer {
         };
 
         // PRD-073 audit: helper writes file FIRST then syncs to LanceDB.
-        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
-            .await
-            .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
+        let filepath = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &artifact,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
 
         // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
         // first modifier is attributable even without an update call.
@@ -1717,8 +1720,13 @@ impl ForgeplanServer {
         // sync_before/render_after are no-ops when the target is not local
         // (cross-workspace reference) so the previous warn-and-continue
         // behavior is preserved by the helper's natural laziness.
-        if let Err(e) =
-            projection::add_link_with_projection(&ws, &store, &p.source, &p.target, &relation).await
+        if let Err(e) = projection::add_link_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &p.source,
+            &p.target,
+            &relation,
+        )
+        .await
         {
             let safe_src = sanitize_for_hint(&p.source);
             let safe_tgt = sanitize_for_hint(&p.target);
@@ -1935,11 +1943,12 @@ impl ForgeplanServer {
 
         // PRD-073 audit: route metadata + body mutations through file-first
         // helpers. Each helper handles its own sync→mutate→render triplet.
+        // PROB-049 H-6: shared `MutationContext` flows into both helpers.
+        let ctx = projection::MutationContext::new(&ws, &store);
         if p.status.is_some() || p.title.is_some() {
             let status_str = p.status.as_ref().map(|s| s.as_str());
             projection::update_metadata_with_projection(
-                &ws,
-                &store,
+                &ctx,
                 &p.id,
                 status_str,
                 p.title.as_deref(),
@@ -1949,7 +1958,7 @@ impl ForgeplanServer {
         }
 
         if let Some(ref body) = p.body {
-            projection::update_body_with_projection(&ws, &store, &p.id, body)
+            projection::update_body_with_projection(&ctx, &p.id, body)
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
@@ -2050,9 +2059,12 @@ impl ForgeplanServer {
         // Safe to mutate store — receipt is on disk and file is in trash.
         // Helper exists so the LanceStore method can stay pub(crate) per
         // ADR-003 Phase 4 lockdown.
-        forgeplan_core::projection::delete_artifact_after_soft_delete(&store, &p.id)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        forgeplan_core::projection::delete_artifact_after_soft_delete(
+            &forgeplan_core::projection::MutationContext::new(&ws, &store),
+            &p.id,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         // Projection was already moved into trash by soft_delete_capture.
 
@@ -2875,9 +2887,12 @@ impl ForgeplanServer {
         };
 
         // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
-        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let filepath = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &artifact,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         // PRD-071: single primary — review the captured draft. Lifecycle
@@ -3892,9 +3907,12 @@ impl ForgeplanServer {
         };
 
         // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
-        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let filepath = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &artifact,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         let next_action = format!(
@@ -4096,7 +4114,11 @@ impl ForgeplanServer {
                 // PRD-073 audit H3: helper removes file + relations + DB row
                 // in lockstep so re-import via force=true doesn't strand
                 // the OLD markdown file.
-                let _ = projection::delete_artifact_with_projection(&ws, &store, id).await;
+                let _ = projection::delete_artifact_with_projection(
+                    &projection::MutationContext::new(&ws, &store),
+                    id,
+                )
+                .await;
             }
 
             let new_art = NewArtifact {
@@ -4116,7 +4138,11 @@ impl ForgeplanServer {
             // projection alongside the LanceDB row; previous direct
             // `store.create_artifact` left every imported artifact in
             // DB-only state (live-confirmed in audit testing).
-            if let Err(e) = projection::create_artifact_with_projection(&ws, &store, &new_art).await
+            if let Err(e) = projection::create_artifact_with_projection(
+                &projection::MutationContext::new(&ws, &store),
+                &new_art,
+            )
+            .await
             {
                 return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
             }
@@ -4142,10 +4168,12 @@ impl ForgeplanServer {
                     .collect()
             })
             .unwrap_or_default();
-        let relations_imported =
-            projection::add_links_batch_with_projection(&ws, &store, &link_triples)
-                .await
-                .unwrap_or(0);
+        let relations_imported = projection::add_links_batch_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &link_triples,
+        )
+        .await
+        .unwrap_or(0);
 
         // PRD-071: single primary action per state.
         let next_action = if imported == 0 && skipped == 0 {
@@ -5159,8 +5187,11 @@ impl ForgeplanServer {
         // PRD-073 file-first: helper writes the markdown projection FIRST,
         // then syncs to LanceDB. Failure mid-flow leaves an orphan file that
         // the next reindex reconciles.
-        if let Err(e) =
-            projection::create_artifact_with_projection(&ws, &store, &new_artifact).await
+        if let Err(e) = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &new_artifact,
+        )
+        .await
         {
             return Ok(err_result(&format!("Failed to create artifact: {e}")));
         }
