@@ -112,3 +112,4 @@ hardening — `IntegrityConfig`).
 | PROB-028 | sibling (sister bug found in same dogfood audit, both v0.17.1 hotfix candidates) |
 | EPIC-003 | context (found during v0.17.0 final dogfood audit 2026-04-08) |
 
+

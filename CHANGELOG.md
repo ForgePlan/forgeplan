@@ -9,6 +9,90 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
+
+Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five
+load-bearing themes:
+
+**(1) PROB-029 — typed `Verdict` aggregator on `HealthReport`** —
+`forgeplan health` теперь возвращает структурированный `Empty / Healthy /
+NeedsAttention / Unhealthy` verdict с configurable thresholds, MCP +
+CLI surfaces консистентны, banner driven off verdict (eliminates the
+pre-fix "Project healthy!" disagreeing with `next_actions` printed
+above it). Round 4 + Round 5 + Round 6 audit closures: `_next_action`
+ladder checks active_stubs + possible_duplicates + phase_mismatches
+before fallthrough; `Verdict::Empty` is now a proper 4th variant
+(was deferred at Round 5 via manual overrides; resolved by-construction
+in Round 6).
+
+**(2) PROB-049 — typed errors H-class** —
+`MutationError::StoreError` split into `StoreTransient` (recoverable) +
+`StoreFatal` (not recoverable). `MutationContext<'_>` introduced for
+all 17 projection helpers, replacing separate `(workspace, store)`
+arguments. `# Errors` rustdoc added to all 17 helpers. Both new public
+types are `#[non_exhaustive]`. **BREAKING for direct library consumers**
+of `forgeplan-core`; CLI/MCP surfaces unaffected. Round 6 audit honesty
+note: `is_recoverable()` is intentionally infrastructure-only in
+v0.29.0; first MCP retry-loop consumer wires in v0.30.0.
+
+**(3) PROB-050 — `claude --print` dispatch refactor (A-4..A-15)** —
+Single source of truth in `playbook::dispatch::claude_print`:
+`invoke()` (full 9-step orchestration), `build_argv()` (argv +
+both security gates inline), `parse_envelope()` (UTF-8-trimmed JSON
+decode — silent divergence закрыт), `format_timeout_msg()` (uniform
+second/millisecond rendering — Round 6 audit closure: sub-second
+durations now render `Nms` instead of truncating to "0s"). 
+`helpers::which_in_path` consolidated; 3 identical local copies
+removed. `DISPATCH_ENV_LOCK` (cfg(test)) closes cross-test PATH-
+mutation race. **Argv shape byte-identical pre/post**; agent diagnostic
+strings unified to plugin's pre-existing format (Round 6 audit
+honesty correction — pre-claim of "no behaviour change" was incorrect
+about diagnostic strings while correct about argv shape).
+
+**(4) PROB-050 A-14 — CWE-426 binary-substitution mitigation
+fully closed** (Round 6 broadens original mitigation):
+- **Env-var path**: `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` gated
+  behind `#[cfg(test)]` — release binaries do not contain the
+  symbol.
+- **Struct-API path** (Round 6 audit HIGH-1): `pub claude_binary` field
+  + `pub with_claude_binary` builder — equivalent compile-time injection
+  surface — demoted to private field; builder gated behind
+  `cfg(any(test, all(feature = "test-helpers", debug_assertions)))`.
+  Symmetric across `AgentDispatcher` + `PluginDispatcher`. Real E2E:
+  `strings target/release/forgeplan | grep -c FORGEPLAN_CLAUDE_BIN` →
+  `0` (symbol absent from release binary).
+
+**(5) PROB-051 — Wave-1 audit closures** (cherry-picked from
+`integration/w1-audit-v3`): EVID-103 documents Round 4 + Round 5
+audit on the integration branch (8 HIGH found+closed Round 4; 7 NEW
+HIGH found Round 5 — 4 closed inline, 3 architectural deferred to
+PROB-051 itself).
+
+### Pre-conditions verified before cutting
+
+- `cargo fmt --check` clean (0 diffs)
+- `cargo clippy --workspace --all-targets --features test-helpers
+  -- -D warnings` clean (0 warnings)
+- `cargo test --workspace --features test-helpers` все PASS
+  (1977 tests, 0 failed, 5 ignored, 38 suites)
+- `forgeplan health` clean — verdict `Healthy`, 0 blind spots,
+  0 orphans, 0 stale
+- Real E2E #1 (Verdict::Empty release binary) PASS
+- Real E2E #2 (CWE-426 strings binary check, 0 occurrences) PASS
+- Real E2E #3 (real workspace health smoke) PASS
+- Real E2E #4..#6 (format_timeout_msg, dispatch parity, validate) PASS
+
+### Security — Dependabot (Round 4 triage, 2026-05-05)
+
+- 17 of 18 alerts from v0.28.0 round 3 closed automatically with the
+  v0.28.0 → main merge (rust patches + npm audit fix cycle).
+- **1 alert remains open**: `lru 0.12.5` ([Alert #3], CVSS 0.0,
+  Miri-only stacked-borrows in `IterMut`). Transitive via
+  `tantivy → lance → lancedb`; no direct exploit surface. Carry-forward
+  to v0.30.0 — accepted-with-justification, re-evaluate on
+  tantivy 0.25 release. Full triage:
+  [`docs/operations/dependabot-triage-2026-05-05.md`](docs/operations/dependabot-triage-2026-05-05.md).
+
 ### Added (CI infrastructure, methodology)
 
 - **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
@@ -170,24 +254,24 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   `is_file()` follows symlinks, no `canonicalize`, no executable-bit
   check. Window between resolve and `Command::spawn` allows TOCTOU
   swap on a writable PATH dir. Pre-existing surface (existed before
-  PR-E refactor). Tracked as **PROB-TBD (v0.30.0 cycle)** — consider canonicalize +
+  PR-E refactor). Tracked as **PROB-052** — consider canonicalize +
   parent-dir ownership/mode check + path caching on dispatcher.
 - **`Delegation::Command` CWE-78 surface** (Sec MED-2):
   `Delegation::Command { command: Vec<String> }` parses directly from
   YAML with no allowlist / signing / user-facing warning. Real shell
   injection vector if playbooks loaded from network/marketplace.
-  Tracked as **PROB-TBD (v0.30.0 cycle)** — gate behind feature flag /
+  Tracked as **PROB-053** — gate behind feature flag /
   `--allow-shell` CLI flag, or require signing for marketplace.
 - **`assemble_prompt` produces_at injection** (Sec LOW-1):
   workspace-relative path is splice-formatted into natural-language
   prompt; backticks could close markdown code-fence and inject
   prompt-instructions to the agent. Pre-existing surface. Tracked
-  as **PROB-TBD (v0.30.0 cycle)** — validate `produces_at` against
+  as **PROB-054** — validate `produces_at` against
   `^[A-Za-z0-9._/-]+$` before splicing.
 - **`claude_print` god-module split** (Arch MED-2):
   module is 1066 LOC with ~9 responsibilities (argv, env, prompt,
   validators, byte-truncation, JSON parsing, failure rendering,
-  timeout formatting, test mutex). Tracked as **PROB-TBD (v0.30.0 cycle)** —
+  timeout formatting, test mutex). Tracked as **PROB-055** —
   refactor into `claude_print/{argv.rs, envelope.rs, validators.rs,
   invoke.rs, test_lock.rs}` keeping `mod.rs` as façade. Cosmetic /
   maintainability, not security.
@@ -195,7 +279,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   stored `HealthReport.verdict` may disagree with MCP-computed
   verdict (which folds in `phase_mismatches`). By-design today;
   consider removing stored field in v0.30.0 or renaming to
-  `partial_verdict`. Tracked as **PROB-TBD (v0.30.0 cycle)**.
+  `partial_verdict`. Tracked as **PROB-056**.
 
 ## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
 
