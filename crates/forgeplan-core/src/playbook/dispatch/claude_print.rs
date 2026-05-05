@@ -12,7 +12,7 @@
 //! - [`build_argv`] — argv construction with security gates
 //!   ([`validate_allowed_tools`] + [`add_dir_for_produces_at`]).
 //! - [`parse_envelope`] — UTF-8-trimmed JSON envelope decode.
-//! - [`format_timeout_msg`] — uniform `.as_secs()` rendering for
+//! - [`format_timeout_msg`] — uniform second/millisecond rendering for
 //!   timeout diagnostics.
 //! - [`DISPATCH_ENV_LOCK`] — `#[cfg(test)]` cross-dispatcher
 //!   serialization mutex (PR-E audit HIGH-1: now consumed by
@@ -360,19 +360,30 @@ pub(super) fn parse_envelope(stdout: &[u8]) -> Result<ClaudePrintResponse, serde
     serde_json::from_str(s.trim())
 }
 
-/// Format the dispatcher timeout-error message in seconds.
+/// Format the dispatcher timeout-error message.
 ///
 /// PROB-050 A-11 closure: pre-fix PluginDispatcher used `.as_secs()` →
 /// `"plugin `foo/bar` timed out after 300s"`. AgentDispatcher used `{:?}`
 /// (Debug repr) → `"agent `foo` timed out after 300s"` for whole seconds
 /// but `"300.500s"` for fractional — leaks Duration's internal layout into
-/// user-visible diagnostics. Single source of truth on `.as_secs()`
-/// format; both dispatchers consume this helper.
+/// user-visible diagnostics. Single source of truth, both dispatchers
+/// consume this helper.
+///
+/// **Sub-second handling (PR-E Round 6 audit HIGH fix)**: pure
+/// `.as_secs()` truncates `200ms → "0s"`, which confuses operators
+/// chasing a tight-loop timeout. We render `Ns` for whole-second + and
+/// `Nms` for sub-second; both branches preserve byte-stable output for
+/// the common `Step.timeout_seconds = u32 ≥ 1` case (production path).
 ///
 /// `label` is the dispatcher-specific prefix (e.g. `agent \`foo\``,
 /// `plugin \`foo/bar\``). Helper returns the full sentence.
 pub(super) fn format_timeout_msg(label: &str, duration: std::time::Duration) -> String {
-    format!("{label} timed out after {}s", duration.as_secs())
+    let secs = duration.as_secs();
+    if secs == 0 {
+        format!("{label} timed out after {}ms", duration.as_millis())
+    } else {
+        format!("{label} timed out after {secs}s")
+    }
 }
 
 /// Build the full argv for `claude --print` invocation, with all security
@@ -760,6 +771,40 @@ mod tests {
         assert!(prompt.contains("Make report"));
         assert!(prompt.contains("Write output to `reports/r.md`"));
         assert!(prompt.contains("Write tool"));
+    }
+
+    #[test]
+    fn format_timeout_msg_renders_seconds_for_whole_durations() {
+        // PR-E Round 6 audit HIGH fix: production path is u32 seconds,
+        // must keep "Ns" rendering byte-stable.
+        assert_eq!(
+            format_timeout_msg("agent `foo`", std::time::Duration::from_secs(300)),
+            "agent `foo` timed out after 300s"
+        );
+        assert_eq!(
+            format_timeout_msg("plugin `a/b`", std::time::Duration::from_secs(1)),
+            "plugin `a/b` timed out after 1s"
+        );
+    }
+
+    #[test]
+    fn format_timeout_msg_renders_milliseconds_for_sub_second() {
+        // PR-E Round 6 audit HIGH fix: pre-fix as_secs() truncated 200ms
+        // → "0s", confusing operators chasing tight-loop timeouts.
+        assert_eq!(
+            format_timeout_msg("agent `foo`", std::time::Duration::from_millis(200)),
+            "agent `foo` timed out after 200ms"
+        );
+        assert_eq!(
+            format_timeout_msg("plugin `a/b`", std::time::Duration::from_millis(750)),
+            "plugin `a/b` timed out after 750ms"
+        );
+        // Edge: exactly 0ms — unreachable in production (clamp at u32),
+        // but the helper must not panic.
+        assert_eq!(
+            format_timeout_msg("x", std::time::Duration::from_millis(0)),
+            "x timed out after 0ms"
+        );
     }
 
     #[test]

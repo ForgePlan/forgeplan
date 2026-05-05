@@ -85,15 +85,19 @@ const DEFAULT_AGENT_BINARY: &str = "claude";
 pub struct AgentDispatcher {
     /// Workspace root — passed to subprocess as `cwd` so relative
     /// `produces_at` paths resolve correctly.
-    pub workspace_root: PathBuf,
+    workspace_root: PathBuf,
     /// Optional explicit path to the `claude` binary. When `None`, the
     /// dispatcher resolves via `which claude` on `$PATH`. In test builds
-    /// (`#[cfg(test)]`) the `$FORGEPLAN_CLAUDE_BIN` env override is also
-    /// consulted ahead of `PATH` — release builds silently ignore it
-    /// (CWE-426 hardening, PROB-050 A-14).
-    pub claude_binary: Option<PathBuf>,
+    /// the `$FORGEPLAN_CLAUDE_BIN` env override is also consulted ahead of
+    /// `PATH` — release builds silently ignore it (CWE-426 hardening,
+    /// PROB-050 A-14). Field is private (PR-E Round 6 audit fix): the
+    /// only entry-point is [`Self::with_claude_binary`], itself gated to
+    /// `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`.
+    /// Without this private + cfg-gate combo a release-build caller could
+    /// write to the field directly, defeating the env-var hardening.
+    claude_binary: Option<PathBuf>,
     /// Default timeout applied when `Step.timeout_seconds` is not set.
-    pub default_timeout: Duration,
+    default_timeout: Duration,
 }
 
 impl AgentDispatcher {
@@ -108,6 +112,18 @@ impl AgentDispatcher {
     }
 
     /// Test/dev hook — inject explicit `claude` binary path (bypasses PATH lookup).
+    ///
+    /// **Security boundary (CWE-426 / PROB-050 A-14)**: this builder is
+    /// gated to `#[cfg(any(test, all(feature = "test-helpers",
+    /// debug_assertions)))]` so release binaries cannot be coerced into
+    /// invoking an attacker-supplied path. Pattern mirrors
+    /// `LanceStore` test-helper gating
+    /// (`crates/forgeplan-core/src/db/store.rs:361-384`):
+    /// `debug_assertions` in the cfg ensures that a downstream consumer
+    /// who accidentally enables the `test-helpers` feature in a release
+    /// (`--release`) build still gets a compile error, not a silent
+    /// activation of the bypass.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub fn with_claude_binary(mut self, path: PathBuf) -> Self {
         self.claude_binary = Some(path);
         self
@@ -116,7 +132,9 @@ impl AgentDispatcher {
     /// Deprecated alias for [`Self::with_claude_binary`]. Pre-Phase B name
     /// (`task-tool` did not actually exist — see ADR-011). Kept for one
     /// release cycle so downstream test wiring compiles unchanged; remove
-    /// in the post-Phase-B cleanup pass.
+    /// in the post-Phase-B cleanup pass. Same cfg gate as
+    /// `with_claude_binary` for the same security reason.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     #[deprecated(
         since = "0.27.0",
         note = "use `with_claude_binary`; ADR-011 replaces `task-tool` with `claude --print`"
