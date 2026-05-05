@@ -265,6 +265,8 @@ Hooks в `.claude/hooks/` блокируют нарушения методоло
 
 **Hooks — safety net, НЕ замена дисциплины**. LLM должен помнить правила во время работы, а не полагаться что hook остановит.
 
+CI также содержит **drift detector** (`scripts/check-mcp-tool-count.sh`) — блокирует PR если число MCP-инструментов в docs расходится с кодом. Полный CI-гейт reference: [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md).
+
 ---
 
 ## AI-agents (non-interactive hygiene)

@@ -74,6 +74,24 @@ Pre-conditions verified before cutting: cargo fmt clean, cargo clippy
 cargo test --workspace --features test-helpers all PASS (1614+ tests),
 forgeplan health clean.
 
+### Added (CI infrastructure)
+
+- **`scripts/check-mcp-tool-count.sh`** — drift detector: compares actual MCP
+  tool count in `crates/forgeplan-mcp/src/server.rs` against all documentation
+  locations (README, CLAUDE.md, website, docs). Introduced after a v0.28.0
+  release audit (external OpenAI agent) found 18 stale references across the
+  repo (counts 28 / 37 / 45 / 47 vs actual 63). Script exits 1 on any mismatch
+  so CI blocks PRs that add/remove tools without updating docs. Supports
+  `--warn` mode for local development and inline `# mcp-count-drift: ignore`
+  escape hatch for intentional historical counts.
+- **`.github/workflows/forgeplan-health.yml`** step `MCP tool count drift check`:
+  wires the drift detector as the final gate of the Architecture Health workflow
+  (after `forgeplan health` + `forgeplan validate`). Closes PROB-050 A-30
+  "preventive value theoretical" finding (was doc-only, now enforced in CI).
+- See [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md)
+  for full CI gate reference (fmt / clippy / test / health / validate /
+  drift-check), including how to run each gate locally and fix common failures.
+
 ### Verification (PR 1 + PR 2.5 closures, 2026-05-03 / 2026-05-04)
 
 - **NOTE-049** + **EVID-097**: real-E2E closure of Phase B Wave 1.
