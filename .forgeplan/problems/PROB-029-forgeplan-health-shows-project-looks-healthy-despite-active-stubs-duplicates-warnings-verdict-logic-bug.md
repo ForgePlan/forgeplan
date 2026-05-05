@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-029
 kind: problem
-status: draft
+status: active
 title: forgeplan health shows 'Project looks healthy' despite active stubs/duplicates warnings — verdict logic bug
 ---
 
@@ -111,3 +111,5 @@ hardening — `IntegrityConfig`).
 | EVID-058 | informs (Sprint 13.1 PRD-043 implementation evidence) |
 | PROB-028 | sibling (sister bug found in same dogfood audit, both v0.17.1 hotfix candidates) |
 | EPIC-003 | context (found during v0.17.0 final dogfood audit 2026-04-08) |
+
+

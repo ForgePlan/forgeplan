@@ -2,7 +2,7 @@
 depth: deep
 id: PROB-034
 kind: problem
-status: active
+status: deprecated
 title: Multi-line HTML comments in evidence template shadow real structured fields (CRITICAL)
 ---
 
@@ -170,4 +170,7 @@ for docs without multi-line comments.
 | PRD-043 | informs (methodology integrity assumed honest R_eff) |
 | PROB-031 | sibling (the visible symptom — CLI had its own duplicate parser too) |
 | NOTE-048 | informs (real-world verification gaps — this is exactly why) |
+
+
+
 

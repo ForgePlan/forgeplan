@@ -64,14 +64,15 @@ Fix: forgeplan list",
         })?;
     }
 
+    let ctx = projection::MutationContext::new(&ws, &store);
     // Update metadata (status, title) FIRST so subsequent renders see the new title.
     if status.is_some() || title.is_some() {
-        projection::update_metadata_with_projection(&ws, &store, id, status, title).await?;
+        projection::update_metadata_with_projection(&ctx, id, status, title).await?;
     }
 
     // Depth update — renders against the (possibly new) title from DB.
     if let Some(d) = depth {
-        projection::update_depth_with_projection(&ws, &store, id, d).await?;
+        projection::update_depth_with_projection(&ctx, id, d).await?;
     }
 
     // Update body
@@ -110,7 +111,7 @@ Fix: forgeplan list",
             );
         }
 
-        projection::update_body_with_projection(&ws, &store, id, &body_content).await?;
+        projection::update_body_with_projection(&ctx, id, &body_content).await?;
     }
 
     // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place

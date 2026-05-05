@@ -18,14 +18,21 @@ A release ships when **all** of the following are true on `dev`:
 - `cargo fmt -- --check` clean
 - `cargo check --workspace` 0 warnings
 - `cargo clippy --workspace --all-targets -- -D warnings` clean
-- `cargo test --workspace --features test-helpers` 0 failures (1940+ tests as of v0.28.0)
+- `cargo test --workspace --features test-helpers` 0 failures (1977+ tests as of v0.29.0)
 - Real E2E smoke on a fresh workspace covers the surfaces that changed
   in this minor (CLAUDE.md red line #5 — automated tests verify code
   correctness, not feature correctness)
 - `forgeplan health` reports 0 blind spots, 0 stale, no advisory phase
   mismatches
+- `./scripts/check-mcp-tool-count.sh` exits 0 — no drift between MCP tool
+  count in source and documentation (drift detector, v0.28.0+, PROB-050 A-30).
+  If the release adds or removes MCP tools, update all documentation locations
+  first, then run the script to verify.
 - `git log origin/main..origin/dev` shows a non-empty diff (no point
   releasing if dev hasn't diverged)
+
+Full CI gate reference (what each check does and how to fix failures):
+[`docs/operations/QUALITY-GATES.ru.md`](../operations/QUALITY-GATES.ru.md)
 
 **Canonical playbook (v0.28.0+)**: `marketplace/playbooks/release.yaml`
 кодифицирует pre-merge часть этого workflow как 12-step playbook

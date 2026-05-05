@@ -31,7 +31,10 @@ Fix: forgeplan list",
     // PRD-073 FR-005: helper handles sync→add_relation→render for BOTH sides
     // so target file's frontmatter stays in lockstep with LanceDB.
     forgeplan_core::projection::add_link_with_projection(
-        &ws, &store, source_id, target_id, &relation,
+        &forgeplan_core::projection::MutationContext::new(&ws, &store),
+        source_id,
+        target_id,
+        &relation,
     )
     .await?;
 
@@ -79,7 +82,10 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
 
     // PRD-073 FR-005: bidirectional render via helper.
     forgeplan_core::projection::delete_link_with_projection(
-        &ws, &store, source_id, target_id, &relation,
+        &forgeplan_core::projection::MutationContext::new(&ws, &store),
+        source_id,
+        target_id,
+        &relation,
     )
     .await?;
 

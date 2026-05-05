@@ -85,11 +85,12 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     };
     // PRD-073 file-first: helper writes the markdown projection first, then
     // syncs to LanceDB. If LanceDB insert fails, reindex recovers.
-    projection::create_artifact_with_projection(&workspace, &store, &artifact).await?;
+    let ctx = projection::MutationContext::new(&workspace, &store);
+    projection::create_artifact_with_projection(&ctx, &artifact).await?;
 
     // PRD-073 file-first: helper removes the memory's markdown file first,
     // then cascades relations and the LanceDB row.
-    projection::delete_artifact_with_projection(&workspace, &store, memory_id).await?;
+    projection::delete_artifact_with_projection(&ctx, memory_id).await?;
 
     println!(
         "  Promoted {} → {} ({})",

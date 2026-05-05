@@ -65,9 +65,24 @@ pub async fn run(
     // No hints → workspace healthy → render `Done.` terminal indicator.
 
     if json {
+        // PR-E Round 6 audit MED fix: `Verdict::Empty` now exists as a 4th
+        // enum variant. `human_summary()` returns the empty-workspace
+        // text directly, so the Round 5 manual `total == 0` branch is no
+        // longer needed — typed `verdict` and `verdict_summary` agree
+        // by construction (no consumer can read `verdict == "healthy"`
+        // for an empty workspace).
+        let verdict_summary = report.verdict.human_summary();
         let json_data = serde_json::json!({
             "project": config.project_name,
             "total": report.total,
+            // PROB-029 closure (Round 4 audit HIGH-1): expose the typed
+            // verdict + human-readable summary so programmatic consumers
+            // (CI scripts, agent-IDE plugins via `forgeplan health --json`)
+            // can branch on `verdict` directly. Without this, --json output
+            // had only raw counts and `next_actions` strings — re-implementing
+            // the verdict aggregation downstream would silently drift.
+            "verdict": report.verdict.as_str(),
+            "verdict_summary": verdict_summary,
             "by_kind": report.by_kind.iter().map(|(k, v)| serde_json::json!({"kind": k, "count": v})).collect::<Vec<_>>(),
             "by_status": report.by_status.iter().map(|(s, v)| serde_json::json!({"status": s, "count": v})).collect::<Vec<_>>(),
             "at_risk": report.at_risk.iter().map(|a| serde_json::json!({"id": a.id, "title": a.title, "reason": a.reason})).collect::<Vec<_>>(),
@@ -278,14 +293,32 @@ pub async fn run(
         }
     }
 
-    // Overall health summary
-    let has_issues = !report.at_risk.is_empty()
-        || !report.blind_spots.is_empty()
-        || !report.orphans.is_empty()
-        || report.stale_count > 0;
-    if !has_issues && report.total > 0 {
+    // Overall health summary — drive off the verdict aggregator so the CLI
+    // banner cannot disagree with `next_actions` (PROB-029 closure: previously
+    // `has_issues` here missed `active_stubs` + `possible_duplicates` and
+    // could print "Project looks healthy!" right after a list of warnings).
+    //
+    // Round 4 audit closures:
+    // - MED-2: drive the literal off `Verdict::human_summary()` so the
+    //   text only lives in one place (no more banner-vs-summary drift).
+    // - LOW-4: render the summary for ALL three verdict levels (Healthy /
+    //   NeedsAttention / Unhealthy), not only Healthy. Pre-Round-4 the
+    //   banner disappeared entirely on non-Healthy workspaces — silent
+    //   regression vs the pre-PR-C banner that was at least always
+    //   present (just sometimes wrong). Now: gradient signalling per
+    //   PROB-029 AC-2 spirit.
+    if report.total > 0 {
+        let summary = report.verdict.human_summary();
+        let styled = match report.verdict {
+            health::Verdict::Healthy => style(summary).green().bold(),
+            health::Verdict::NeedsAttention => style(summary).yellow().bold(),
+            health::Verdict::Unhealthy => style(summary).red().bold(),
+            // `#[non_exhaustive]` future-proofing: render new verdicts as
+            // dim cyan placeholder — better than crashing or hiding them.
+            _ => style(summary).cyan().dim(),
+        };
         println!();
-        println!("  {}", style("Project looks healthy!").green().bold());
+        println!("  {}", styled);
     }
 
     // PRD-071 contract: terminal Next:/Done line.

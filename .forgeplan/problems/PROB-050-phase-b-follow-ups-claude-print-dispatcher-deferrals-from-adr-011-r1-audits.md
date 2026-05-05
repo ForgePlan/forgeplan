@@ -105,14 +105,26 @@ architect, all carry `TODO(PROB-050)` markers in code where applicable):
       `Result<(), String>`.
 - [ ] **A-13 (rust L-1)**: add `since = "0.28.0"` to plugin
       `with_task_tool` deprecation; align with agent variant.
-- [ ] **A-14 (security H-6 + 2026-05-03 audit S-2)**: gate
+- [x] **A-14 ✅ RESOLVED 2026-05-04 (PR-B v0.29.0)**: `FORGEPLAN_CLAUDE_BIN`
+      env override now gated behind `#[cfg(test)]` in
+      `AgentDispatcher::resolve_claude_binary`. CWE-426 (uncontrolled search
+      path / binary substitution) closed in release builds — env var is
+      silently ignored outside test compilation. Symmetric fix applied to
+      `helpers::resolve_forgeplan_binary` `FORGEPLAN_BIN` (latent vector,
+      no production caller, but symmetric pattern established for future
+      contributors). Production override surface is now: explicit
+      `with_claude_binary(path)` → `which claude` on `$PATH` only —
+      identical to `PluginDispatcher`. Positive test
+      `resolve_claude_binary_honours_env_override_in_test_builds` pins
+      the cfg-gate against silent regression.
+      Original wording (preserved for traceability): «gate
       `FORGEPLAN_CLAUDE_BIN` env override behind `#[cfg(test)]` —
       **REQUIRED** (audit S-2 escalation: documentation alone is not a
       mitigation for an env-injection / binary-substitution vector
       CWE-426). Today: AgentDispatcher honors it in release builds;
       PluginDispatcher does not read it at all (mismatched surface
       empirically confirmed 2026-05-03). Fix: cfg-gate + restore parity by
-      removing env-var path entirely from production builds.
+      removing env-var path entirely from production builds.»
 - [ ] **A-15 (security M-3, code-review M-1)**: factor argv builder
       (`claude_print::build_argv(slug, step) -> Vec<String>`) so
       argv-shape tests live in `claude_print.rs` and don't need fake
@@ -260,6 +272,28 @@ This is the divergence A-14 calls out; ops doc F-RUNTIME-7 cross-references.
       improvement for next sprint. CHANGELOG для v0.28.0 should note
       the per-step budget_usd was added к canonical audit.yaml.
 
+- [ ] **A-30 (NEW, 2026-05-04 v0.28.0 post-release follow-up)**: drift
+      detector (`scripts/check-mcp-tool-count.sh` + `.github/workflows/forgeplan-health.yml`
+      step) shipped в v0.28.0 без proper user-facing documentation.
+      Currently mentioned только в commit messages (1a01b17 + 970e76e),
+      EVID-099, и inline comments в script header + workflow step. Что
+      должно быть, но отсутствует:
+      (a) standalone doc типа `docs/operations/QUALITY-GATES.ru.md` —
+          описание всех CI gates (fmt, clippy, test, health, validate,
+          drift detector) в стиле других docs/operations entries;
+      (b) `### Added (CI infrastructure)` bullet в CHANGELOG `[0.28.0]`
+          (currently mentioned only в Verification subsection, не surfaced
+          как «new infrastructure»);
+      (c) cross-reference в CLAUDE.md — developers always read CLAUDE.md,
+          но quality gates / drift detection там не упомянуты;
+      (d) cross-reference в `docs/methodology/release-workflow.md` —
+          workflow uses health gate, должен упомянуть drift detector
+          как preventive control.
+      **Defer к v0.29.0** per user decision 2026-05-04. Discoverability
+      gap для AI agents (forgeplan позиционируется как «built for AI» —
+      AI читает CHANGELOG, не должен находить infrastructure только
+      через grep по commit history).
+
 ## Blast Radius
 
 - `forgeplan-core::playbook::dispatch::*` (PluginDispatcher,
@@ -290,3 +324,9 @@ hook).
 | PROB-049 | informs (sibling — Phase 3d typed-error follow-ups; same methodology pattern of audit-driven follow-up tracker) |
 | ADR-010 | informs (Amendment 1 work item — A-2) |
 | SPEC-003 | informs (schema bump work item — A-1) |
+
+
+
+
+
+

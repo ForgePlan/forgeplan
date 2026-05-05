@@ -72,9 +72,11 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
-- **v0.19.0** (2026-04-16) — `forgeplan mcp install`, website i18n RU (144 pages),
-  Rust 1.95 clippy compliance, PRD-048/PROB-037 closed
-- **76 CLI commands**, **63 MCP tools**, **1940 tests**, **0 warnings** on both feature configs
+- **v0.29.0** (2026-05-05) — verdict aggregator (`Verdict::Empty`/Healthy/
+  NeedsAttention/Unhealthy), typed errors (PROB-049 H-class), claude --print
+  dispatch refactor (PROB-050 A-4..A-15), CWE-426 binary substitution closed
+  на двух surfaces (env + struct API)
+- **76 CLI commands**, **63 MCP tools**, **1977 tests**, **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
@@ -264,6 +266,8 @@ Hooks в `.claude/hooks/` блокируют нарушения методоло
 | `pr-todo-check.sh` | PR с незакрытыми P0 | pre-push |
 
 **Hooks — safety net, НЕ замена дисциплины**. LLM должен помнить правила во время работы, а не полагаться что hook остановит.
+
+CI также содержит **drift detector** (`scripts/check-mcp-tool-count.sh`) — блокирует PR если число MCP-инструментов в docs расходится с кодом. Полный CI-гейт reference: [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md).
 
 ---
 

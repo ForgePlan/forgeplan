@@ -1,13 +1,14 @@
 //! Typed error and result alias for file-first mutation helpers.
 //!
-//! Extracted from `projection/mod.rs` in PRD-073 Phase 3c (PR TBD).
+//! Extracted from `projection/mod.rs` in PRD-073 Phase 3c (PR #230).
 //! Living in its own module gives sub-agents a stable, low-conflict surface
 //! for adding new variants while migrating helpers from `anyhow::Result`.
 //!
 //! Audit context: `MutationError` was introduced as the canary contract
 //! for `update_metadata_with_projection` in PR #230 (PRD-073 Phase 3a/3b).
-//! Phase 3c migrates the remaining 14 helpers and finalises the variant
-//! taxonomy.
+//! Phase 3c migrated the remaining 14 helpers and finalised the variant
+//! taxonomy. PROB-049 H-1 (PR TBD) split `StoreError` into transient vs
+//! fatal so MCP retry loops do not hammer LanceDB on permanent failures.
 
 use std::path::PathBuf;
 
@@ -16,13 +17,18 @@ use std::path::PathBuf;
 /// Audit 2026-05-01 H3 (typescript-type-auditor): replacing the previous
 /// `anyhow::Result<()>` lets callers (especially MCP) decide per-variant
 /// how to react. The CLI today uses warn-and-continue inside the helpers;
-/// MCP will be able to enforce strict mode by matching on
-/// `recoverable: false` variants.
+/// MCP enforces strict mode by matching on `is_recoverable() == false`
+/// variants so retry loops bail out on permanent failures.
 ///
 /// Variants are added incrementally — additional variants are not a breaking
 /// change for downstream callers because every helper's return type is
-/// `MutationResult<T>` and `From` impls keep `?` propagation working.
+/// `MutationResult<T>` and the categorisation helper
+/// [`MutationError::from_store_err`] keeps `?` propagation working through
+/// a single `From<anyhow::Error>` shim. The `#[non_exhaustive]` attribute
+/// makes this contract compiler-enforced — external `match` arms MUST use
+/// `_ =>` to remain forward-compatible (Round 4 audit HIGH-2 closure).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MutationError {
     /// The artifact ID failed `validate_artifact_id` — likely an attempted
     /// path-traversal payload. Always fatal.
@@ -85,37 +91,240 @@ pub enum MutationError {
 
     /// The artifact id passed in does not correspond to an existing row.
     /// This is an input-side concern — caller passed an unknown id —
-    /// distinct from `StoreError` which signals transient I/O failure.
-    /// Wave 1A audit follow-up: previously misclassified as `StoreError`,
-    /// which let `is_recoverable() == true` mislead MCP strict mode.
+    /// distinct from `StoreTransient` / `StoreFatal` which signal DB-side
+    /// failures. Wave 1A audit follow-up: previously misclassified as
+    /// `StoreError`, which let `is_recoverable() == true` mislead MCP
+    /// strict mode.
     #[error("artifact '{id}' not found")]
     RowNotFound { id: String },
 
-    /// The underlying `LanceStore` mutation returned an error. Wrapped so
-    /// callers can distinguish DB errors from validation errors.
+    /// The underlying `LanceStore` mutation failed in a way that may
+    /// resolve on retry: lock contention, transient I/O, network blip,
+    /// EACCES that an operator can fix and re-run, etc.
     ///
-    /// TODO(PROB-049): split into `StoreTransient` (lock contention,
-    /// transient I/O — `is_recoverable() == true`) vs `StoreFatal` (schema
-    /// mismatch, missing-table, malformed predicate — `is_recoverable() ==
-    /// false`). Today every `?` from `LanceStore::*` collapses into this
-    /// recoverable bucket, which would mislead an MCP retry loop on
-    /// permanent failures (R1 audit H-1, architect+security flagged).
-    #[error("LanceStore mutation failed: {0}")]
-    StoreError(#[from] anyhow::Error),
+    /// PROB-049 H-1: split out of the legacy `StoreError` variant.
+    /// `is_recoverable() == true`.
+    ///
+    /// **Status (Round 4 audit HIGH-3 closure)**: this variant carries
+    /// the recoverability *intent* but is not yet consumed by any retry
+    /// loop in `forgeplan-mcp` or `forgeplan-cli` — the typed-error split
+    /// is infrastructure for forthcoming retry wiring (tracked under
+    /// PROB-049 follow-ups). Until that lands, the variant is purely
+    /// internal documentation: callers convert to `anyhow::Error` via
+    /// `?` at MCP / CLI boundaries and the recoverability flag is not
+    /// yet inspected. Maintainers extending the typed-error layer should
+    /// wire `is_recoverable()` into the retry path before adding new
+    /// variants that depend on its semantics.
+    ///
+    /// Categorisation lives in [`MutationError::from_store_err`] — that
+    /// helper inspects the `anyhow::Error` chain (looking for
+    /// `lancedb::Error` / `std::io::Error` shapes) and routes between
+    /// `StoreTransient` and `StoreFatal`. Cases that cannot be classified
+    /// fall through to `StoreTransient` — same default behaviour as the
+    /// legacy `StoreError`, so the split is a strict refinement, never a
+    /// regression. TODO(PROB-049): finer-grained categorisation as
+    /// LanceDB / Lance error taxonomies stabilise upstream.
+    #[error("LanceStore mutation failed (transient): {0}")]
+    StoreTransient(#[source] anyhow::Error),
+
+    /// The underlying `LanceStore` mutation failed in a way that retry
+    /// will not fix: schema corruption, missing table, malformed
+    /// predicate, invalid input that survived helper-level validation.
+    ///
+    /// PROB-049 H-1: split out of the legacy `StoreError` variant.
+    /// `is_recoverable() == false`.
+    ///
+    /// **Status (Round 4 audit HIGH-3 closure)**: as with `StoreTransient`,
+    /// this variant carries fatal-failure *intent* but is not yet consumed
+    /// by an MCP retry-loop guard. Today, the variant Display-formats with
+    /// the wrapped `anyhow::Error` chain verbatim — operators see "fatal"
+    /// in error messages but no automation acts on it differently. Future
+    /// retry-wiring PR should grow `is_recoverable()` consumers.
+    #[error("LanceStore mutation failed (fatal): {0}")]
+    StoreFatal(#[source] anyhow::Error),
 }
 
 /// Convenience alias mirroring `anyhow::Result` for helpers.
 pub type MutationResult<T> = std::result::Result<T, MutationError>;
 
+/// Auto-conversion so `?` keeps working at call sites. PROB-049 H-1: the
+/// previous `#[from] anyhow::Error` on the legacy `StoreError` variant
+/// collapsed every I/O / DB error into a single recoverable bucket. The
+/// new `From` impl routes through [`MutationError::from_store_err`] so
+/// the chain is inspected and the resulting variant carries accurate
+/// recoverability semantics. Call sites that need to override the
+/// categorisation can still construct `MutationError::StoreFatal(_)` /
+/// `MutationError::StoreTransient(_)` directly.
+impl From<anyhow::Error> for MutationError {
+    fn from(e: anyhow::Error) -> Self {
+        MutationError::from_store_err(e)
+    }
+}
+
 impl MutationError {
     /// Whether the error is potentially recoverable by retry / fallback.
     /// `false` means the workspace state is wedged or the input is invalid;
-    /// `true` means a transient failure (mostly `StoreError` — LanceDB
-    /// transient I/O).
+    /// `true` means a transient failure that retry / re-run / operator
+    /// intervention can resolve.
+    ///
+    /// Exhaustive match on every variant — no fallthrough — so future
+    /// variants force the maintainer to make an explicit choice (PROB-049
+    /// H-1 R1 reviewer concern: silent default makes new variants
+    /// retry-loop targets by accident).
     pub fn is_recoverable(&self) -> bool {
-        matches!(self, MutationError::StoreError(_))
+        match self {
+            // Input / workspace state — not recoverable by retry.
+            MutationError::InvalidId(_) => false,
+            MutationError::InvalidKind { .. } => false,
+            MutationError::EmptyField { .. } => false,
+            MutationError::FileNotFound { .. } => false,
+            MutationError::ProjectionMismatch { .. } => false,
+            MutationError::RowNotFound { .. } => false,
+            // Store-side: split per PROB-049 H-1.
+            MutationError::StoreTransient(_) => true,
+            MutationError::StoreFatal(_) => false,
+        }
+    }
+
+    /// Categorise an `anyhow::Error` produced by a `LanceStore::*` call
+    /// into [`MutationError::StoreTransient`] vs [`MutationError::StoreFatal`].
+    ///
+    /// Heuristic — walks `e.chain()` looking for known sentinel errors:
+    ///
+    /// Routed to [`MutationError::StoreFatal`] (not recoverable):
+    /// - `lancedb::Error::Schema { .. }`
+    /// - `lancedb::Error::InvalidInput { .. }`
+    /// - `lancedb::Error::InvalidTableName { .. }`
+    /// - `lancedb::Error::TableNotFound { .. }` / `IndexNotFound { .. }` /
+    ///   `EmbeddingFunctionNotFound { .. }` / `DatabaseNotFound { .. }` /
+    ///   `NotSupported { .. }` / `TableAlreadyExists { .. }` /
+    ///   `DatabaseAlreadyExists { .. }`
+    /// - `std::io::ErrorKind::NotFound` *only* when no enclosing lancedb
+    ///   transient is present (raw file vanished — caller must reconcile,
+    ///   not retry).
+    ///
+    /// Routed to [`MutationError::StoreTransient`] (recoverable):
+    /// - `lancedb::Error::Runtime { .. }` / `Timeout { .. }` / `Other { .. }`
+    /// - `lancedb::Error::ObjectStore { .. }` (object-store transient I/O)
+    /// - `lancedb::Error::Lance { .. }` (we treat the wrapped lance-core
+    ///   error as transient by default — adding `lance` as a direct dep
+    ///   solely for categorisation would be net-negative; the truly fatal
+    ///   shapes are surfaced at the lancedb layer)
+    /// - `std::io::ErrorKind::WouldBlock` / `Interrupted` / `TimedOut`
+    /// - `std::io::ErrorKind::PermissionDenied` (EACCES — operator can
+    ///   fix perms and retry, matches existing test contract)
+    /// - **Default**: anything we cannot categorise → `StoreTransient`
+    ///   (safe default — preserves the legacy `StoreError` recoverable=true
+    ///   semantics so the split is a strict refinement).
+    ///
+    /// TODO(PROB-049): tighten the default once LanceDB / Lance error
+    /// taxonomies stabilise. Today the upstream `Other` / `External`
+    /// catch-alls force us to lean toward retry; once the surface area is
+    /// classified upstream we can flip the default to `StoreFatal` for
+    /// truly unknown causes.
+    ///
+    /// # Security
+    ///
+    /// The `lancedb::Error::Lance { source }` arm defaults to **transient**
+    /// (recoverable) — see TODO above for rationale. Round 4 audit MED-2
+    /// (security) noted that an attacker with write access to
+    /// `.forgeplan/lance/` could craft a corrupted Lance file producing a
+    /// `lance::Error::Schema` (truly permanent) that this categoriser
+    /// misroutes as transient → MCP retry loops would hammer the DB on
+    /// what is in fact corruption (DoS amplifier).
+    ///
+    /// **Mitigations** (defence in depth):
+    /// 1. Threat model accepts trusted-local-user workspaces — the attack
+    ///    requires filesystem write access to `.forgeplan/lance/` which
+    ///    is already a workspace-trust boundary.
+    /// 2. Future MCP retry-wiring (see [`MutationError::is_recoverable`]
+    ///    consumer story) MUST cap retry attempts — a misclassified-fatal
+    ///    cannot induce an unbounded loop.
+    /// 3. Adding `lance` as a direct dep just for inner categorisation
+    ///    would be net-negative (forces the `lance` major version upgrade
+    ///    cadence onto every consumer of `forgeplan-core`); accepted with
+    ///    justification per audit MED-2.
+    pub fn from_store_err(e: anyhow::Error) -> Self {
+        if classify_anyhow_as_fatal(&e) {
+            MutationError::StoreFatal(e)
+        } else {
+            MutationError::StoreTransient(e)
+        }
     }
 }
+
+/// Walk the `anyhow::Error` chain and decide whether the cause is fatal.
+///
+/// Returns `true` only for shapes we can confidently classify as
+/// non-recoverable. Everything else (including unknown errors) returns
+/// `false` so the caller defaults to `StoreTransient` — preserving the
+/// legacy `StoreError::is_recoverable() == true` behaviour for unclassified
+/// errors. See [`MutationError::from_store_err`] for the full taxonomy.
+fn classify_anyhow_as_fatal(e: &anyhow::Error) -> bool {
+    // First pass: look for a `lancedb::Error` anywhere in the chain.
+    for cause in e.chain() {
+        if let Some(lance_err) = cause.downcast_ref::<lancedb::Error>() {
+            return classify_lancedb_as_fatal(lance_err);
+        }
+    }
+    // Second pass: bare `std::io::Error` (e.g. when a helper returns an
+    // `io::Error` wrapped by `anyhow!`). NotFound is fatal (file vanished —
+    // reconcile, not retry); permission-denied / would-block / interrupted /
+    // timed-out are all transient.
+    for cause in e.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            return matches!(io_err.kind(), std::io::ErrorKind::NotFound);
+        }
+    }
+    false
+}
+
+/// Classify a `lancedb::Error` as fatal (not recoverable) or transient.
+///
+/// Kept private so `MutationError::from_store_err` is the single public
+/// entry point — callers should not be writing their own categorisation.
+fn classify_lancedb_as_fatal(err: &lancedb::Error) -> bool {
+    use lancedb::Error as L;
+    match err {
+        // Schema / catalog / input — operator must fix the workspace or
+        // the request, retry will not help.
+        L::Schema { .. }
+        | L::InvalidInput { .. }
+        | L::InvalidTableName { .. }
+        | L::TableNotFound { .. }
+        | L::TableAlreadyExists { .. }
+        | L::DatabaseNotFound { .. }
+        | L::DatabaseAlreadyExists { .. }
+        | L::IndexNotFound { .. }
+        | L::EmbeddingFunctionNotFound { .. }
+        | L::NotSupported { .. } => true,
+        // CreateDir wraps a `std::io::Error` — defer to its kind.
+        L::CreateDir { source, .. } => matches!(source.kind(), std::io::ErrorKind::NotFound),
+        // Forwarded lance::Error — without a direct `lance` dep we cannot
+        // discriminate the inner variants; default to transient (the
+        // common cases — IO, Internal — are transient anyway). If a
+        // future audit shows operator-actionable lance-core errors
+        // surfacing through this path, add `lance` as a direct dep and
+        // recurse into a `classify_lance_core_as_fatal` helper.
+        L::Lance { .. } => false,
+        // Object-store / Arrow / Runtime / Timeout / Other / External —
+        // leave as transient by default. Object-store / runtime / timeout
+        // are paradigmatic transients; Arrow / External / Other we cannot
+        // classify confidently so we keep the safe (= retry) default.
+        L::ObjectStore { .. }
+        | L::Arrow { .. }
+        | L::Runtime { .. }
+        | L::Timeout { .. }
+        | L::External { .. }
+        | L::Other { .. } => false,
+    }
+}
+
+// `lancedb::Error` exposes additional `Http { .. }` / `Retry { .. }`
+// variants under its own `remote` feature. We do not enable that feature,
+// but a non-exhaustive match would let future upstream variants
+// silently misclassify — the impl above lists every variant currently
+// visible in our build.
 
 #[cfg(test)]
 mod tests {
@@ -128,9 +337,15 @@ mod tests {
     }
 
     #[test]
-    fn store_error_is_recoverable() {
-        let e = MutationError::StoreError(anyhow::anyhow!("transient"));
+    fn store_transient_is_recoverable() {
+        let e = MutationError::StoreTransient(anyhow::anyhow!("transient"));
         assert!(e.is_recoverable());
+    }
+
+    #[test]
+    fn store_fatal_is_not_recoverable() {
+        let e = MutationError::StoreFatal(anyhow::anyhow!("schema corrupt"));
+        assert!(!e.is_recoverable());
     }
 
     #[test]
@@ -190,5 +405,122 @@ mod tests {
         let msg = format!("{e}");
         assert!(msg.contains("PRD-007"));
         assert!(msg.contains("/work/.forgeplan/prds/missing.md"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // PROB-049 H-1: from_store_err categorisation contract
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_store_err_unknown_defaults_to_transient() {
+        // Plain anyhow::Error with no recognisable cause — must default to
+        // transient (preserves legacy `StoreError::is_recoverable() == true`).
+        let e = MutationError::from_store_err(anyhow::anyhow!("mystery wrapper"));
+        assert!(matches!(e, MutationError::StoreTransient(_)));
+        assert!(e.is_recoverable());
+    }
+
+    #[test]
+    fn from_store_err_lancedb_schema_is_fatal() {
+        let lance_err = lancedb::Error::Schema {
+            message: "missing column".to_string(),
+        };
+        let any: anyhow::Error = lance_err.into();
+        let e = MutationError::from_store_err(any);
+        assert!(
+            matches!(e, MutationError::StoreFatal(_)),
+            "schema error must be fatal"
+        );
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn from_store_err_lancedb_invalid_input_is_fatal() {
+        let lance_err = lancedb::Error::InvalidInput {
+            message: "malformed predicate".to_string(),
+        };
+        let e = MutationError::from_store_err(lance_err.into());
+        assert!(matches!(e, MutationError::StoreFatal(_)));
+    }
+
+    #[test]
+    fn from_store_err_lancedb_table_not_found_is_fatal() {
+        let lance_err = lancedb::Error::TableNotFound {
+            name: "artifacts".to_string(),
+            source: "missing".into(),
+        };
+        let e = MutationError::from_store_err(lance_err.into());
+        assert!(matches!(e, MutationError::StoreFatal(_)));
+    }
+
+    #[test]
+    fn from_store_err_lancedb_runtime_is_transient() {
+        let lance_err = lancedb::Error::Runtime {
+            message: "lock contention".to_string(),
+        };
+        let e = MutationError::from_store_err(lance_err.into());
+        assert!(matches!(e, MutationError::StoreTransient(_)));
+        assert!(e.is_recoverable());
+    }
+
+    #[test]
+    fn from_store_err_lancedb_timeout_is_transient() {
+        let lance_err = lancedb::Error::Timeout {
+            message: "10s".to_string(),
+        };
+        let e = MutationError::from_store_err(lance_err.into());
+        assert!(matches!(e, MutationError::StoreTransient(_)));
+    }
+
+    #[test]
+    fn from_store_err_io_permission_denied_is_transient() {
+        // EACCES — operator can fix perms and retry. Pinned by the existing
+        // sync_artifact_returns_storeerror_for_permission_denied test in
+        // mod.rs — preserve that contract here at the unit-test layer.
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let any = anyhow::Error::new(io_err);
+        let e = MutationError::from_store_err(any);
+        assert!(
+            matches!(e, MutationError::StoreTransient(_)),
+            "EACCES must be transient (operator can fix perms and retry)"
+        );
+        assert!(e.is_recoverable());
+    }
+
+    #[test]
+    fn from_store_err_io_not_found_is_fatal() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let e = MutationError::from_store_err(anyhow::Error::new(io_err));
+        assert!(
+            matches!(e, MutationError::StoreFatal(_)),
+            "ENOENT bubbling from store must be fatal — caller must reconcile"
+        );
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn from_store_err_io_would_block_is_transient() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let e = MutationError::from_store_err(anyhow::Error::new(io_err));
+        assert!(matches!(e, MutationError::StoreTransient(_)));
+    }
+
+    #[test]
+    fn from_anyhow_via_questionmark_routes_through_categoriser() {
+        // Confirm `From<anyhow::Error>` (used by `?`) goes through the
+        // categoriser instead of fixing a single variant. PROB-049 H-1
+        // R1 architect concern: a future contributor writing
+        // `Err(some_anyhow.into())` must get the same routing as an
+        // explicit `from_store_err` call.
+        fn boom() -> MutationResult<()> {
+            let lance_err = lancedb::Error::Schema {
+                message: "shape drift".to_string(),
+            };
+            let any: anyhow::Error = lance_err.into();
+            Err(any)? // `?` uses `From<anyhow::Error>`.
+        }
+        let err = boom().expect_err("should error");
+        assert!(matches!(err, MutationError::StoreFatal(_)));
+        assert!(!err.is_recoverable());
     }
 }

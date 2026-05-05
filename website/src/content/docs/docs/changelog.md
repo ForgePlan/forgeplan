@@ -19,6 +19,761 @@ with pre-1.0 minor bumps for breaking changes.
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
+## [Unreleased]
+
+## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
+
+Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five
+load-bearing themes:
+
+**(1) PROB-029 — typed `Verdict` aggregator on `HealthReport`** —
+`forgeplan health` теперь возвращает структурированный `Empty / Healthy /
+NeedsAttention / Unhealthy` verdict с configurable thresholds, MCP +
+CLI surfaces консистентны, banner driven off verdict (eliminates the
+pre-fix "Project healthy!" disagreeing with `next_actions` printed
+above it). Round 4 + Round 5 + Round 6 audit closures: `_next_action`
+ladder checks active_stubs + possible_duplicates + phase_mismatches
+before fallthrough; `Verdict::Empty` is now a proper 4th variant
+(was deferred at Round 5 via manual overrides; resolved by-construction
+in Round 6).
+
+**(2) PROB-049 — typed errors H-class** —
+`MutationError::StoreError` split into `StoreTransient` (recoverable) +
+`StoreFatal` (not recoverable). `MutationContext<'_>` introduced for
+all 17 projection helpers, replacing separate `(workspace, store)`
+arguments. `# Errors` rustdoc added to all 17 helpers. Both new public
+types are `#[non_exhaustive]`. **BREAKING for direct library consumers**
+of `forgeplan-core`; CLI/MCP surfaces unaffected. Round 6 audit honesty
+note: `is_recoverable()` is intentionally infrastructure-only in
+v0.29.0; first MCP retry-loop consumer wires in v0.30.0.
+
+**(3) PROB-050 — `claude --print` dispatch refactor (A-4..A-15)** —
+Single source of truth in `playbook::dispatch::claude_print`:
+`invoke()` (full 9-step orchestration), `build_argv()` (argv +
+both security gates inline), `parse_envelope()` (UTF-8-trimmed JSON
+decode — silent divergence закрыт), `format_timeout_msg()` (uniform
+second/millisecond rendering — Round 6 audit closure: sub-second
+durations now render `Nms` instead of truncating to "0s"). 
+`helpers::which_in_path` consolidated; 3 identical local copies
+removed. `DISPATCH_ENV_LOCK` (cfg(test)) closes cross-test PATH-
+mutation race. **Argv shape byte-identical pre/post**; agent diagnostic
+strings unified to plugin's pre-existing format (Round 6 audit
+honesty correction — pre-claim of "no behaviour change" was incorrect
+about diagnostic strings while correct about argv shape).
+
+**(4) PROB-050 A-14 — CWE-426 binary-substitution mitigation
+fully closed** (Round 6 broadens original mitigation):
+- **Env-var path**: `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` gated
+  behind `#[cfg(test)]` — release binaries do not contain the
+  symbol.
+- **Struct-API path** (Round 6 audit HIGH-1): `pub claude_binary` field
+  + `pub with_claude_binary` builder — equivalent compile-time injection
+  surface — demoted to private field; builder gated behind
+  `cfg(any(test, all(feature = "test-helpers", debug_assertions)))`.
+  Symmetric across `AgentDispatcher` + `PluginDispatcher`. Real E2E:
+  `strings target/release/forgeplan | grep -c FORGEPLAN_CLAUDE_BIN` →
+  `0` (symbol absent from release binary).
+
+**(5) PROB-051 — Wave-1 audit closures** (cherry-picked from
+`integration/w1-audit-v3`): EVID-103 documents Round 4 + Round 5
+audit on the integration branch (8 HIGH found+closed Round 4; 7 NEW
+HIGH found Round 5 — 4 closed inline, 3 architectural deferred to
+PROB-051 itself).
+
+### Pre-conditions verified before cutting
+
+- `cargo fmt --check` clean (0 diffs)
+- `cargo clippy --workspace --all-targets --features test-helpers
+  -- -D warnings` clean (0 warnings)
+- `cargo test --workspace --features test-helpers` все PASS
+  (1977 tests, 0 failed, 5 ignored, 38 suites)
+- `forgeplan health` clean — verdict `Healthy`, 0 blind spots,
+  0 orphans, 0 stale
+- Real E2E #1 (Verdict::Empty release binary) PASS
+- Real E2E #2 (CWE-426 strings binary check, 0 occurrences) PASS
+- Real E2E #3 (real workspace health smoke) PASS
+- Real E2E #4..#6 (format_timeout_msg, dispatch parity, validate) PASS
+
+### Security — Dependabot (Round 4 triage, 2026-05-05)
+
+- 17 of 18 alerts from v0.28.0 round 3 closed automatically with the
+  v0.28.0 → main merge (rust patches + npm audit fix cycle).
+- **1 alert remains open**: `lru 0.12.5` ([Alert #3], CVSS 0.0,
+  Miri-only stacked-borrows in `IterMut`). Transitive via
+  `tantivy → lance → lancedb`; no direct exploit surface. Carry-forward
+  to v0.30.0 — accepted-with-justification, re-evaluate on
+  tantivy 0.25 release. Full triage:
+  [`docs/operations/dependabot-triage-2026-05-05.md`](docs/operations/dependabot-triage-2026-05-05.md).
+
+### Added (CI infrastructure, methodology)
+
+- **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
+  documents all CI quality gates** (fmt, clippy, test, health, validate,
+  drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
+  and `docs/methodology/release-workflow.md §Pre-conditions`.
+
+### Changed (forgeplan-core public API — BREAKING for direct library consumers)
+
+- **PROB-050 A-7 ✅ closes — `playbook::dispatch::claude_print` symbol
+  visibility tightened**. Following empirical verification (`rg <name>
+  crates/`) that no in-tree consumer outside the dispatch module reads
+  these symbols, the following `pub` items were tightened:
+  - `DEFAULT_BUDGET_USD`, `DEFAULT_ALLOWED_TOOLS` → `pub(crate)`
+  - `helpers::DEFAULT_TIMEOUT_SECS`, `helpers::MAX_OUTPUT_BYTES`,
+    `plugin_dispatcher::DEFAULT_PLUGIN_TIMEOUT_SECS` → `pub(crate)`
+  - `ClaudePrintResponse` (struct) + its methods → `pub(super)`
+  - `assemble_prompt`, `add_dir_for_produces_at`,
+    `effective_allowed_tools`, `effective_budget_usd` → `pub(super)`
+
+  External crates that imported these symbols will fail to compile against
+  v0.29.0. Recommended migration: invoke the dispatch module through its
+  public surface (`AgentDispatcher` / `PluginDispatcher`) rather than
+  reaching into helpers. If a use case requires a tightened symbol, open
+  a PROB issue justifying the public contract.
+
+### Changed (forgeplan-core public API — additive, but downstream library consumers should rebuild)
+
+- **PROB-050 A-4 + A-5 + A-6 + A-11 + A-15 ✅ close — `claude --print`
+  dispatch refactor**. Single source of truth in
+  `playbook::dispatch::claude_print`:
+  - `claude_print::invoke()` — full 9-step orchestration
+    (argv + env + prompt + spawn + timeout + parse + render).
+    AgentDispatcher and PluginDispatcher reduce to (a) variant unpack,
+    (b) name validation, (c) binary resolution, (d) call invoke.
+  - `claude_print::build_argv()` — argv construction with both security
+    gates inline (`validate_allowed_tools` + `add_dir_for_produces_at`).
+    Argv-shape parity between dispatchers now enforced by construction.
+  - `claude_print::parse_envelope()` — UTF-8-trimmed JSON envelope decode.
+    Plugin dispatcher previously had no `.trim()` — silent divergence
+    from agent path closed.
+  - `claude_print::format_timeout_msg()` — uniform second/millisecond
+    rendering. Agent dispatcher previously leaked `Duration` Debug repr;
+    plugin dispatcher used `.as_secs()` only. PR-E Round 6 audit closure:
+    sub-second durations now render `Nms` (was: `0s` for any
+    `< 1s` timeout, which confused operators chasing tight-loop timeouts).
+    Production path is `Step.timeout_seconds: u32 ≥ 1`, so the
+    common-case `Ns` rendering is byte-stable.
+  - `helpers::which_in_path` promoted from `fn` to `pub(super) fn`;
+    3 identical local copies removed from the dispatchers.
+  - `claude_print::DISPATCH_ENV_LOCK` — `#[cfg(test)] pub(super) static
+    tokio::sync::Mutex<()>` shared by `agent_dispatcher::tests`,
+    `plugin_dispatcher::tests`, and `helpers::tests` (Round 5 audit
+    Logic LOW-1 + PR-E audit HIGH-1: cross-test PATH-mutation race
+    fully closed).
+  - **Behaviour delta** (corrected from earlier honesty-of-claim audit):
+    argv shape IS byte-identical pre/post; agent-side diagnostic strings
+    were unified to plugin's pre-existing format — specifically
+    `"failed to decode claude --print JSON envelope"` (was "produced
+    unparseable JSON envelope" agent-side), `format_timeout_msg`
+    output (was `Duration` Debug repr agent-side), and the new
+    `stdout_preview=` failure-context block (added on agent path; plugin
+    path always had it). Operators / scripts / log-grep regexes that
+    matched the old agent-only strings need a one-line update.
+
+- **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
+  variants `StoreTransient` (recoverable) and `StoreFatal` (not recoverable).**
+  The legacy `StoreError(#[from] anyhow::Error)` collapse-everything variant is
+  removed. Categorisation logic (`MutationError::from_store_err`) inspects the
+  `anyhow::Error` chain (lancedb / std::io shapes) and routes between the two.
+  Default fallthrough is `StoreTransient` — strict refinement of legacy
+  recoverable=true. **Honesty note** (PR-E Round 6 audit HIGH-2):
+  `is_recoverable()` is intentionally infrastructure-only in v0.29.0 —
+  no MCP / CLI retry loop currently consumes it. The audit flagged this
+  as a risk (variants drifting from real failure modes without a
+  consumer). Mitigation: this CHANGELOG block is the load-bearing
+  contract; the first MCP retry wiring (tracked as PROB-049 follow-up
+  for v0.30.0, candidate: `forgeplan_health` cold-start LanceDB lock
+  contention) will close the loop. Until then, downstream library
+  consumers calling `is_recoverable()` should treat the boolean as a
+  *hint* rather than a stable contract.
+- **PROB-049 H-6 ✅ closes — `MutationContext` introduced for projection helpers.**
+  All 17 file-first mutation helpers in `forgeplan_core::projection` now take
+  `&MutationContext<'_>` instead of separate `(workspace, store)` arguments.
+  47 call sites updated across `forgeplan-cli` + `forgeplan-mcp`. The struct
+  is `#[non_exhaustive]` and constructed via `MutationContext::new(...)` —
+  external library consumers may not use a struct literal.
+- **PROB-049 H-4 ✅ closes — `# Errors` rustdoc on all 17 projection helpers.**
+- **PROB-029 ✅ closes — typed `Verdict` aggregator (`Empty / Healthy /
+  NeedsAttention / Unhealthy`) on `HealthReport`.** Pure
+  `compute_verdict[_with]` functions with configurable
+  `VerdictThresholds`. Both new public types are `#[non_exhaustive]`. CLI
+  `forgeplan health` banner driven off the verdict (no longer disagrees
+  with `next_actions`). `next_actions` rewritten to emit concrete
+  remediation commands. MCP `forgeplan_health` and CLI `--json` both
+  expose `verdict` + `verdict_summary` fields. **PR-E Round 6 audit MED
+  closure**: `Verdict::Empty` is now a proper 4th variant (was deferred
+  at Round 5 via manual `verdict_summary` overrides on CLI + MCP
+  surfaces; both overrides removed in this release because
+  `human_summary()` for `Empty` carries the right text by construction).
+  CI gates that auto-promoted on `verdict == "healthy"` no longer
+  promote uninitialized projects. **Round 5 audit closures (HIGH Logic +
+  Documentation)**: MCP `_next_action` ladder now checks active_stubs +
+  possible_duplicates + phase_mismatches before the "Project healthy"
+  fallthrough (eliminates contradiction-via-different-field); MCP tool
+  description advertises the `verdict` field for agent discovery.
+
+### Security
+
+- **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**
+  (PR-E Round 6 audit HIGH closure broadens the original mitigation).
+  Two equivalent injection surfaces are now both closed:
+
+  1. **Env-var path**:
+     `AgentDispatcher::resolve_claude_binary` and the sibling
+     `helpers::resolve_forgeplan_binary` gate their respective
+     `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` env-var overrides behind
+     `#[cfg(test)]`. Release binaries silently ignore both env vars;
+     only test builds honour them for fixture wiring. Closes the
+     v0.28.0 release-notes promise (audit S-2 escalation, see
+     [`docs/operations/phase-b-real-e2e-2026-05-03.md`](docs/operations/phase-b-real-e2e-2026-05-03.md)
+     F-RUNTIME-7).
+
+  2. **Struct-API path** (PR-E Round 6 audit HIGH-1, found by
+     adversarial security review): `AgentDispatcher::claude_binary` was
+     a `pub` field; `with_claude_binary` was a `pub` builder, both
+     un-gated. A release-build caller could write attacker-controlled
+     paths directly via the struct API, defeating the env-var
+     hardening. Both `AgentDispatcher` and `PluginDispatcher` now:
+     (a) keep `claude_binary` as a private field (only `new()` writes
+     `None`), and (b) gate `with_claude_binary` (and the deprecated
+     aliases `with_task_tool` / `with_task_tool_path`) behind
+     `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`.
+     Pattern mirrors `LanceStore` test-helper gating in
+     `crates/forgeplan-core/src/db/store.rs:361-384` —
+     `debug_assertions` ensures a downstream consumer who accidentally
+     enables `test-helpers` in a `--release` build still gets a
+     compile error, not a silent activation. Both surfaces now
+     symmetric (architectural audit HIGH-1: pre-fix PluginDispatcher
+     had no env path while AgentDispatcher had both, asymmetric
+     hardening).
+
+  **Migration for operators** (CLI / brew / binary distributions):
+  the env-var path was never a documented contract; operators relying on
+  it for production override should pin `claude` via `$PATH` — that is
+  the only supported binary-resolution surface at the CLI / playbook
+  layer. There is no per-invocation override at the YAML schema (SPEC-003)
+  today; tracked as PROB-050 A-31 if such a surface becomes needed.
+
+  **Library consumers** embedding `forgeplan-core` directly: the
+  `with_claude_binary(path)` builder is now feature-gated. For test
+  wiring, build with `--features test-helpers` (and run in debug
+  profile, or unit-test cfg). For production wiring, use `new()` and
+  rely on `$PATH` resolution.
+
+### Deferred to v0.30.0 (PR-E Round 6 audit findings — pre-existing surfaces, not v0.29.0 regressions)
+
+- **TOCTOU + symlink-follow in `which_in_path`** (Sec MED-1):
+  `is_file()` follows symlinks, no `canonicalize`, no executable-bit
+  check. Window between resolve and `Command::spawn` allows TOCTOU
+  swap on a writable PATH dir. Pre-existing surface (existed before
+  PR-E refactor). Tracked as **PROB-052** — consider canonicalize +
+  parent-dir ownership/mode check + path caching on dispatcher.
+- **`Delegation::Command` CWE-78 surface** (Sec MED-2):
+  `Delegation::Command { command: Vec<String> }` parses directly from
+  YAML with no allowlist / signing / user-facing warning. Real shell
+  injection vector if playbooks loaded from network/marketplace.
+  Tracked as **PROB-053** — gate behind feature flag /
+  `--allow-shell` CLI flag, or require signing for marketplace.
+- **`assemble_prompt` produces_at injection** (Sec LOW-1):
+  workspace-relative path is splice-formatted into natural-language
+  prompt; backticks could close markdown code-fence and inject
+  prompt-instructions to the agent. Pre-existing surface. Tracked
+  as **PROB-054** — validate `produces_at` against
+  `^[A-Za-z0-9._/-]+$` before splicing.
+- **`claude_print` god-module split** (Arch MED-2):
+  module is 1066 LOC with ~9 responsibilities (argv, env, prompt,
+  validators, byte-truncation, JSON parsing, failure rendering,
+  timeout formatting, test mutex). Tracked as **PROB-055** —
+  refactor into `claude_print/{argv.rs, envelope.rs, validators.rs,
+  invoke.rs, test_lock.rs}` keeping `mod.rs` as façade. Cosmetic /
+  maintainability, not security.
+- **MED-1 leaky-abstraction in `compute_verdict_with`** (Arch MED-1):
+  stored `HealthReport.verdict` may disagree with MCP-computed
+  verdict (which folds in `phase_mismatches`). By-design today;
+  consider removing stored field in v0.30.0 or renaming to
+  `partial_verdict`. Tracked as **PROB-056**.
+
+## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
+
+Bundles 14 merge-PRs (#224..#237) since v0.27.0 (2026-04-28). Three
+load-bearing themes: **(1) PRD-073 file-first invariant compile-enforced**
+(ADR-003 — `LanceStore::*` mutating methods are now `pub(crate)`,
+file-first projection wrappers are the only mutation surface), **(2)
+ADR-011 Phase B Wave 1** — Plugin and Agent dispatchers shell out to
+`claude --print` on the real `claude` 2.1.126 binary, replacing the
+fictional `task-tool` from ADR-010, **(3) Track 4-A8 canonical
+playbooks** — `release.yaml` + `brownfield-docs.yaml` ship as runnable
+templates for marketplace skill/mapping authors.
+
+Real-E2E verification of Phase B Wave 1 (PR 1 / 2026-05-03,
+NOTE-049 + EVID-097): 5 measured real `claude --print` invocations
+(3 happy-path success + 1 budget-error envelope decode + 1 retracted
+env-export attempt), byte-identical argv recording wrapper, validation
+guard reject in 0.01s. ADR-011 R_eff = 0.70 grade B (3 evidence packs,
+all CL3 supports).
+
+Dependabot: 16 of 18 open alerts auto-close on this `release/v0.28.0
+→ main` merge (lockfile in dev already at patch versions per round 2 +
+round 3 triage). 2 carry-forward (lru transitive via tantivy, uuid
+transitive via mermaid) с обоснованием в `docs/operations/dependabot-triage-2026-05-03.md`.
+
+Pre-conditions verified before cutting: cargo fmt clean, cargo clippy
+--workspace --all-targets --features test-helpers -- -D warnings clean,
+cargo test --workspace --features test-helpers all PASS (1614+ tests),
+forgeplan health clean.
+
+### Added (CI infrastructure)
+
+- **`scripts/check-mcp-tool-count.sh`** — drift detector: compares actual MCP
+  tool count in `crates/forgeplan-mcp/src/server.rs` against all documentation
+  locations (README, CLAUDE.md, website, docs). Introduced after a v0.28.0
+  release audit (external OpenAI agent) found 18 stale references across the
+  repo (counts 28 / 37 / 45 / 47 vs actual 63). Script exits 1 on any mismatch
+  so CI blocks PRs that add/remove tools without updating docs. Supports
+  `--warn` mode for local development and inline `# mcp-count-drift: ignore`
+  escape hatch for intentional historical counts.
+- **`.github/workflows/forgeplan-health.yml`** step `MCP tool count drift check`:
+  wires the drift detector as the final gate of the Architecture Health workflow
+  (after `forgeplan health` + `forgeplan validate`). Closes PROB-050 A-30
+  "preventive value theoretical" finding (was doc-only, now enforced in CI).
+- See [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md)
+  for full CI gate reference (fmt / clippy / test / health / validate /
+  drift-check), including how to run each gate locally and fix common failures.
+
+### Verification (PR 1 + PR 2.5 closures, 2026-05-03 / 2026-05-04)
+
+- **NOTE-049** + **EVID-097**: real-E2E closure of Phase B Wave 1.
+  Production `claude` 2.1.126 invoked through PluginDispatcher AND
+  AgentDispatcher with byte-identical argv recording wrapper.
+  Discovered 5 net-new findings (added to PROB-050 as A-21..A-26 + 1
+  A-22 retract via audit C-1 pipefail discipline lesson). Total spent:
+  ~$0.98 USD across 5 measured claude invocations.
+- **PROB-050 A-3 ✅ closes** with narrowed scope (happy + budget-error
+  envelope verified end-to-end on healthy CLI; failure-path JSON
+  decode coverage tracked in A-11 + A-16).
+- **PROB-050 A-14 wording tightened**: require `#[cfg(test)]` gate for
+  `FORGEPLAN_CLAUDE_BIN` (audit S-2 escalates env-injection vector
+  CWE-426 from documentation-only mitigation to compile-time gate).
+- **PROB-050 A-28 ✅ closes** via YAML rewrite (`Delegation::Agent` →
+  `Delegation::Plugin` split for colon-namespaced agent slugs in
+  `audit.yaml` steps 1-3). Real-E2E proof on 2026-05-04: all 3 parallel
+  agents successfully spawned, claude resolved bare slugs
+  (`architect-reviewer`, `code-reviewer`, `security-expert`), 502s
+  wall-clock real work + ~$3.50 spent — closing what would have been
+  a guaranteed `DispatchError::Transport` reject pre-spawn.
+- **PROB-050 A-29 NEW** (discovered during A-28 verification):
+  `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
+  adversarial-review playbooks. All 3 audit agents hit `error_max_budget_usd`
+  at $1.05-$1.25. Operational fix applied: `audit.yaml` steps 1-3 now
+  carry explicit `budget_usd: 5.00`. Methodology fix tracked as A-29
+  option (b) for next sprint (tier `DEFAULT_BUDGET_QUICK` /
+  `DEFAULT_BUDGET_REVIEW`).
+
+### Added (AI documentation discoverability)
+
+- `website/public/robots.txt`: explicit `Allow: /` for 18 named AI
+  crawlers (GPTBot, ClaudeBot, Google-Extended, CCBot, Applebot,
+  PerplexityBot, и т.д.) — Forgeplan документация specifically built
+  for agentic consumers, signal openness explicitly rather than rely
+  on absence of `Disallow`.
+- `website/public/llms.txt`: curated entry-point per emerging
+  Anthropic/Mintlify convention (https://llmstxt.org/). Provides
+  one-shot context for LLM agents discovering Forgeplan: methodology
+  links, CLI/MCP reference, getting-started anchor. Without this, AI
+  agents had to guess which paths matter.
+
+### Detail — PRD-073 file-first invariant (EVID-094 R_eff=0.80 grade A)
+
+Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
+(general / live-test / Rust-focused / final team-lead) closed
+7 CRITICAL + 13 HIGH findings. PROB-048 deprecated as resolved.
+
+### Added — file-first projection helpers (15 total)
+
+- 9 mutation helpers: `create_artifact_with_projection`,
+  `delete_artifact_with_projection`, `update_metadata_with_projection`,
+  `update_body_with_projection`, `update_depth_with_projection`,
+  `add_link_with_projection`, `delete_link_with_projection`,
+  `add_tags_with_projection`, `remove_tags_with_projection`. Each does
+  the {sync_before, mutate, render_after} triplet so callers can no
+  longer forget projection.
+- 6 sync-from-file helpers: `sync_artifact_from_file`,
+  `sync_body_from_file`, `sync_metadata_from_file`,
+  `sync_relation_from_file`, `delete_orphan_artifact`,
+  `delete_orphan_relation`. For reindex / git_sync / watch where the
+  file is already authoritative.
+- `add_links_batch_with_projection`: deduplicates pre-sync + post-render
+  per unique participant. 100-link bundle: ~600 LanceDB calls + 400 file
+  ops → 2×U + N where U is unique IDs.
+- `delete_artifact_after_soft_delete`: brief helper for the MCP
+  soft-delete pattern (file already in trash, only DB row to drop).
+- `MutationError` enum + `MutationResult<T>` alias introduced (typed
+  errors); helper signature migration deferred to PRD-073 Phase 3c.
+- `marketplace/playbooks/audit.yaml`: reference template for the
+  multi-agent adversarial audit pattern. Updated header to reflect
+  ADR-011 (claude --print via PluginDispatcher / AgentDispatcher);
+  current YAML uses colon-namespaced agent slugs (`agents-pro:architect-reviewer`)
+  which are pre-spawn-rejected by `validate_agent_name` until PROB-050 A-28
+  introduces a colon-aware slug strategy.
+
+### Changed (BREAKING for downstream library consumers)
+
+- **`LanceStore::*` mutating methods are now `pub(crate)`**: 11 methods
+  (`create_artifact`, `update_artifact`, `update_valid_until`,
+  `update_depth`, `update_body`, `add_tags`, `remove_tags`,
+  `delete_artifact`, `add_relation`, `delete_relation`,
+  `delete_relations_for_artifact`) are no longer accessible from
+  external crates. External callers must go through
+  `forgeplan_core::projection::*` helpers. **Migration**: replace
+  `store.create_artifact(&art)` with
+  `projection::create_artifact_with_projection(&ws, &store, &art)`.
+- **Slugify is now ASCII-only**: `is_ascii_alphanumeric` instead of
+  `is_alphanumeric`. Workspaces with cyrillic/CJK slugs require
+  `forgeplan reindex` after pulling this version; existing files
+  remain on disk but get a fresh ASCII slug on next render.
+- **`LanceStore::update_embedding` and `update_r_eff_score` stay `pub`**
+  (Class A derived data, ADR-003 Amendment 1).
+- **BREAKING (forgeplan-core lib only)**: 16 mutation helpers in
+  `projection::*` migrated from `anyhow::Result<T>` to `MutationResult<T>`
+  (PRD-073 Phase 3c, ADR-003 Amendment 2). CLI binary and MCP server
+  surfaces unaffected. Library consumers see the same `?` ergonomics via
+  anyhow's blanket `From<E: std::error::Error + Send + Sync + 'static>`
+  impl. Variant taxonomy: `InvalidId`, `InvalidKind`, `EmptyField`,
+  `FileNotFound`, `ProjectionMismatch`, `RowNotFound`, `StoreError`. Use
+  `MutationError::is_recoverable()` to drive retry / warn-and-continue
+  policy instead of string-matching on flattened error messages.
+  Concrete migration example for downstream library consumers:
+  ```rust
+  // Before (anyhow::Result):
+  let err = create_artifact_with_projection(...).await.unwrap_err();
+  if err.to_string().contains("invalid id") { /* ... */ }
+
+  // After (MutationResult):
+  match create_artifact_with_projection(...).await {
+      Err(MutationError::InvalidId(_)) => /* fatal input */,
+      Err(e) if e.is_recoverable()     => /* transient — retry ok */,
+      Err(_)                           => /* fatal — surface to user */,
+      Ok(path) => /* happy path */,
+  }
+  ```
+  See ADR-003 Amendment 2 (`.forgeplan/adrs/ADR-003-*.md`) for the full
+  before/after error matrix and Phase 3d reserved-variant notes.
+- **`sync_artifact_from_file` and `sync_body_from_file` signatures take
+  `workspace: &Path`** to enable `FileNotFound { id, path }` typed errors
+  with the actual on-disk location. CLI callers (`reindex`, `git_sync`,
+  `watch`) updated. (PRD-073 Phase 3c)
+- **`update_body_with_projection` now returns `RowNotFound`** (not
+  `StoreError`) for the missing-id case — fixes Wave 1A audit finding
+  where `is_recoverable() == true` would have mislabeled an
+  unrecoverable input error as a transient I/O failure.
+
+### Changed (behavioral — visible to CLI users)
+
+- **All 22 CLI mutation handlers now hold an exclusive workspace lock**
+  (30 s timeout) for the duration of the operation. Concurrent
+  `forgeplan update` invocations that previously raced now serialize
+  cleanly. Scripts using `&` or `xargs -P` against the same workspace
+  may see lock-contention errors that were previously silent races.
+- **`forgeplan delete` now creates a soft-delete receipt** (parity
+  with MCP). Recoverable via `forgeplan undo-last` or
+  `forgeplan restore <id>` within 30 days.
+- **All markdown writes are atomic** (tempfile + rename). Kill -9
+  mid-write no longer leaves zero-length projection files.
+- **File frontmatter `title:` now preserves non-ASCII titles verbatim**
+  (PRD-073 Phase 3c R2 audit M-R2-3 / security). Previously, an
+  artifact created with a Cyrillic / CJK / emoji title (anything that
+  slugifies to empty) was rendered with `title: untitled` in the file
+  frontmatter — losing the user's original title from the on-disk
+  representation while the DB row preserved it. The Phase 3c
+  `projection_slug` helper now applies the `untitled` fallback only
+  to the on-disk filename (e.g. `prds/PRD-001-untitled.md`), and the
+  frontmatter receives the original title. Operators with non-ASCII
+  confidential titles should be aware that the file frontmatter now
+  contains the full title verbatim (the slug filename already exposed
+  partial title information pre-fix; this aligns the two surfaces).
+- **`claude` CLI is now a runtime prereq for playbooks that use
+  `delegate_to: plugin` or `delegate_to: agent`** (ADR-011, Phase B).
+  Replaces the never-shipped `claude-code-plugin` / `task-tool` binaries
+  assumed by ADR-010. Plugin and agent steps invoke `claude --print
+  --agent <name>` directly via `tokio::process::Command`. Existing
+  Claude Code session is reused (no `ANTHROPIC_API_KEY` required for
+  interactive runs); CI runs need the env var. Missing binary surfaces
+  `DispatchError::DelegateMissing` with install hint pointing to
+  https://code.claude.com/docs/en/install. New per-step `Step.budget_usd`
+  (default $1.00) and `Step.allowed_tools` (default `[Read, Glob, Grep]`)
+  fields control invocation surface; SPEC-003 1.1 → 1.2 (additive).
+  Skill, Command, and ForgeplanCore dispatchers are unchanged.
+
+### Added (developer-facing)
+
+- New Cargo feature `forgeplan-core/test-helpers`: exposes
+  `*_for_test` escape hatches on `LanceStore` for downstream test
+  fixtures. **Gated on `debug_assertions`** so release builds with this
+  feature accidentally enabled still get the lockdown. Production
+  binaries MUST NOT enable this feature; release builds with both
+  feature on AND debug_assertions off compile-error out.
+
+### Fixed
+
+- Path-traversal CVE class on import: `id` field validation in every
+  projection helper that composes a filesystem path.
+- Multi-line ratchet test scanner: was missing 21 multi-line
+  `store\n.method(` invocations under the previous literal matcher.
+- `update --depth --title` orphan-file recreation: metadata mutation
+  now runs FIRST so subsequent depth/body renders see the new title.
+- `mem-foo` vs `mem-foo-bar` prefix collision: exact-path delete via
+  `remove_projection_at`.
+- 4-process concurrent `forgeplan update` race: workspace lock plus
+  lock-then-open ordering (LanceStore connections snapshot at open).
+- `add_link / delete_link` warn-and-continue semantics restored
+  (target sync + post-render are best-effort, source side fatal).
+- `update_body_with_projection` ordering inverted to file-first.
+- `forgeplan_import` no longer leaves DB-only state.
+- `forgeplan new` non-tty similar-title prompt: explicit `Error: ...
+  Fix: --allow-duplicate` instead of silent cancel.
+
+## [0.27.0] — 2026-04-28 — Real subprocess dispatchers + init recommendation hints + greenfield playbook (EPIC-007 Phase 6)
+
+Phase 6 переводит engine layer из v0.26.0 в **user-facing activation**.
+PRD-072 / RFC-007 / ADR-010 закрывают Phase 5 deferral: 5 production
+`Dispatcher` impls (real subprocess через `tokio::process` + ForgeplanCore
+direct call), `forgeplan init` теперь эмитит recommendation hints, и
+канонический `greenfield-kickoff.yaml` доступен в marketplace.
+
+### Added — Real subprocess dispatchers (PRD-072 / RFC-007 / ADR-010)
+
+- **`forgeplan-core::playbook::dispatch::{plugin,agent,skill,command,forgeplan_core}_dispatcher`** —
+  5 production реализаций trait `Dispatcher`. Замена `MockDispatcher::AlwaysOk`
+  в `playbook run --yes` и MCP `forgeplan_playbook_run`.
+- **`PluginDispatcher` (FR-1)** — claude-code-plugin subprocess invocation,
+  default 600s timeout, fallback_hint surfacing на missing-install.
+- **`AgentDispatcher` (FR-2)** — task-tool agent-invoke, default 300s timeout,
+  symmetric к plugin path.
+- **`SkillDispatcher` (FR-3)** — in-process v1 stub (trace-only). Real registry
+  resolution отложена в Wave 5.
+- **`CommandDispatcher` (FR-4)** — security-hardened: `env_clear` + allow-list,
+  no shell expansion, `--yes` gate trust upstream. Default 180s.
+- **`ForgeplanCoreDispatcher` (FR-5)** — direct internal call (no subprocess)
+  для `ingest`/`new`/`validate`/`activate`/`search`. Замена Phase 5 CLI
+  shell-out — теперь делегация выполняется в том же процессе.
+- **`dispatch::helpers::run_subprocess`** — общая обёртка `tokio::process::Command`
+  с `kill_on_drop(true)`, `Stdio::piped` для stdout/stderr, `Stdio::null` для stdin,
+  concurrent drain через `tokio::join!`, 10 MiB cap, timeout с child kill.
+- **Pre-Wave 0 split**: `dispatch.rs` (single 466 LOC) → `dispatch/` directory
+  с per-delegate modules. `mod.rs` сохраняет trait + Mock/Recording stubs +
+  DispatchError + SecurityError без изменения публичного API.
+
+### Added — Init recommendation wiring (PRD-067 AC-3/4/5/7 closed)
+
+- **`commands::init::run` extension (FR-6)** — после workspace creation
+  собирает project signals (`detect_signals`) + installed plugins
+  (`detect_plugins(extended_registry)`) + `build_recommendations` +
+  `format_recommendations` → emit на stderr.
+- **3 bundled `KnownPlaybook` descriptors** — `greenfield-kickoff`,
+  `brownfield-docs`, `brownfield-code` — для recommendation engine
+  до момента когда полные marketplace YAML файлы land.
+- **Backward compat**: `FORGEPLAN_HINTS=0` или non-TTY stderr → no
+  recommendation emission (PRD-067 AC-7).
+- **Non-fatal degradation**: signal/plugin detection failure → warning
+  на stderr + продолжение init (no abort).
+
+### Added — Canonical greenfield playbook (PRD-072 FR-7)
+
+- **`marketplace/playbooks/greenfield-kickoff.yaml`** — 7 шагов через
+  `ForgeplanCore` + 1 optional `Skill` step. Все мандатные шаги без
+  внешних плагинов: `capture-vision` (note) → `stack-decision` (adr) →
+  `kickoff-epic` (epic) → 3× `prd-feature` (parallel after epic) →
+  `scaffold-docs` (skill, `on_error: continue`).
+- **`forgeplan playbook validate`** проходит: `OK: greenfield-kickoff
+  (7 steps)` + `Done.` hint.
+- **Documentation footer в YAML** — purpose, expected duration, fit
+  в methodology.
+
+### Changed — Schema 1.0 → 1.1 (additive)
+
+- **`Step.timeout_seconds: Option<u32>`** (FR-8) — backward compat:
+  старые playbook'и без поля грузятся OK с дефолтом per-delegate
+  type (300s general / 600s plugin / 180s command/skill).
+- **`SPEC-003 schema_version`** bumped 1.0 → 1.1. Loader принимает
+  оба значения (semver-range minor bump).
+
+### Fixed — Phase 6 real-world bugs (PR #220, commit 69ea571)
+
+После merge'а Phase 6 в dev manual smoke testing на release binary
+обнаружил 4 production bugs, которые 1834 automated тестов пропустили:
+
+- **HIGH `playbook show <name>`** — name lookup НЕ находил
+  `marketplace/playbooks/`. Discovery roots расширены до workspace
+  marketplace, не только `.forgeplan/playbooks/` + `~/.claude/plugins/*/playbooks/`.
+  Теперь shipping playbooks доступны через name lookup, не только absolute path.
+- **HIGH `plugins doctor`** — exit 0 при missing plugins (документировано
+  exit 1). Fixed: `if !missing.is_empty() || !outdated.is_empty() { exit(1) }`.
+  CI gate теперь работает.
+- **HIGH `marketplace/playbooks/brownfield-code.yaml`** — `detect-c4-need`
+  step missing `input.id`, validate fails на step 1. Removed broken step,
+  playbook reduced 5 → 4 steps, validate clean.
+- **CRITICAL systemic** — все error paths возвращали `exit 0`
+  (`eprintln!("Error:..."); return Ok(())`). Fixed ~10 sites в
+  `commands/playbook.rs` + `ingest.rs`: explicit `std::process::exit(1)`.
+  Real CI integration теперь catches all CLI failures.
+- **BONUS dev profile fix (commit 0acf884)** — `[profile.dev] debug =
+  "line-tables-only"` снижает linker memory ~50%. Закрыт recurring
+  `collect2: ld signal 7 [Bus error]` OOM на ubuntu-latest 16GB
+  который преследовал PR #217+ Phase 5/6 PRs. Universal CI speedup.
+
+### Fixed — PROB-047 mitigation 1 (PR #221, commit 80f458c)
+
+`scan-import` classifier (`crates/forgeplan-core/src/scan/detect.rs`)
+ошибочно классифицировал product guides и instruction files как
+PRD-артефакты через **Tier 3 content heuristics** (`## Goals`,
+`## Problem`, `## Decision` headings). PR #218 был symptom-only
+cleanup — false-positives recurred при следующем scan-import.
+
+- **`is_doc_path(relative_path: &Path) -> bool`** — blacklist для:
+  recursive `docs/`, `marketplace/`, plus root-level meta-files
+  (`CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`,
+  `CONTRIBUTING.md`, `TODO.md`, `ROADMAP.md`, `LICENSE.md`,
+  `SECURITY.md`, plus `.ru.md` localized variants).
+- **`detect_kind_with_path(filename, relative_path, content)`** —
+  path-aware variant suppresses Tier 3 ONLY. Tier 1 (frontmatter
+  `kind:`) и Tier 2 (filename pattern PRD-XXX/RFC-XXX) остаются
+  authoritative — explicit signals always win.
+- **`detect_kind`** retained as wrapper passing `None` for path
+  — backward compat with all 15 existing tests.
+- **+11 unit tests**: `is_doc_path` matrix coverage + path-aware
+  Tier 3 suppression + Tier 1/Tier 2 precedence under docs.
+- **EVID-092** (verdict: supports, congruence_level: 3, evidence_type:
+  test) — same-context measurement linked to PROB-047. R_eff: 0.0 → 0.71 (B).
+- **Mitigations 2-5 deferred to Phase 7+** sprint (frontmatter precedence
+  formalization, scan-import default `--dry-run` + opt-in `--apply`,
+  content_hash idempotency, brownfield test fixtures).
+
+### Workspace hygiene (PR #221)
+
+- `.forgeplan/journal/` (PRD-065 playbook runtime per-run JSONL) → gitignore.
+- PROB-046 deprecated — resolved via PRD-071 hint contract (shipped v0.25.0).
+- EPIC-007 advisory phase advanced to evidence (children 4/5 shipped).
+- 9 untracked scan-import false-positives removed via `forgeplan reindex`.
+- `forgeplan health`: "Project looks healthy" — 0 blind spots, 0 orphans,
+  0 phase mismatches, 0 duplicate pairs.
+
+### Stats
+
+- **+5000 LOC** across `forgeplan-core::playbook::dispatch` (5 dispatchers
+  + helpers) + `commands::init::run` extension + canonical YAML.
+- **+60 unit tests** (Wave 1: 44 unit tests распределены по dispatchers + helpers).
+- **+5 integration tests** в `integration_phase6_init.rs` (empty repo,
+  `.obsidian` vault, legacy code with >100 commits, `FORGEPLAN_HINTS=0`,
+  signal failure path).
+- **Workspace test count**: 1384+ lib + 372+ integration, all PASS.
+- **Code quality**: 0 fmt diffs, 0 check warnings, 0 clippy warnings
+  (rust 1.91 strict).
+- **3 waves × 8 unique agents** через TeamCreate Mode A:
+  - Pre-Wave 0: dispatch.rs split + Spike-2 manual c4-architecture run + EVID-090 (CL3)
+  - Wave 1: 6 parallel agents (helpers + 5 dispatchers, strict file ownership)
+  - Wave 2: 1 agent (init wiring + integration tests)
+  - Wave 3: 1 agent (greenfield-kickoff.yaml + validate)
+  - Wave 4: 1 agent (this — docs + EVID-091 + CHANGELOG + TODO)
+
+### Deferred to follow-up sprint
+
+- **`Step.timeout_seconds` per-step override (FR-8 wiring)** — schema field
+  landed, executor wiring partial; full per-step override через
+  `dispatch::helpers::run_subprocess` parameter — Wave 5.
+- **Real `SkillDispatcher` registry** — текущий impl = trace-only stub
+  (loggable invariants + fallback_hint). Wave 5 = real skill resolution
+  через agent-skills capability registry.
+- **Per-step env allow-list extension** — сейчас allow-list захардкожен
+  в helpers (`PATH`, `HOME`, `FORGEPLAN_WORKSPACE`). PRD-076 (TBD) —
+  декларативный `step.env:` override с whitelist через mapping.
+- **MCP `forgeplan_ingest`** wrapper — pure CLI command в v0.27.0
+  (still); MCP wrapper remains deferred (CLI cover via `forgeplan serve`).
+- **3 canonical playbooks** — `brownfield-docs.yaml`, `audit.yaml`,
+  `release.yaml` — backlog (greenfield + brownfield-code published).
+- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals.
+
+### References
+
+- ADR-010 `.forgeplan/adrs/ADR-010-*.md` — subprocess invocation strategy
+- RFC-007 `.forgeplan/rfcs/RFC-007-*.md` — Phase 6 dispatcher architecture
+- PRD-072 `.forgeplan/prds/PRD-072-*.md` — Phase 6 PRD (FR-1..FR-10)
+- EVID-090 — Spike-2 tokio::process measurement (CL3 same-context)
+- EVID-091 — Phase 6 closure evidence pack (this release)
+- EPIC-007 — Playbook Runtime + Pack Marketplace (parent)
+
+## [0.26.0] — 2026-04-28 — Playbook runtime + Ingest engine + Plugin detection (EPIC-007 Phase 2)
+
+Forgeplan становится **оркестратором**. Три новых core capabilities (PRD-065 / PRD-066 / PRD-067) воплощают ADR-009: сам forgeplan-core не генерирует документы — он **знает когда какой playbook запускать**, **кому делегировать каждый шаг**, и **как ингестить output в forge-граф** с обязательной `## Sources` секцией (hallucination-proof invariant). Реализация — четырёхволновой sprint, 9 параллельных агентов, ~9000 LOC, +168 unit tests, plus integration E2E из Wave 4.
+
+### Added — Playbook runtime (PRD-065 / SPEC-003)
+
+- **`forgeplan-core::playbook::{types,loader,executor,dispatch,journal}`** — декларативная YAML-схема + runtime executor.
+- **5 типов делегации** (strict typed, no arbitrary shell): `plugin` (Claude Code plugin via Task tool), `agent` (subagent via Task tool), `skill` (agent-skills capability), `command` (opt-in shell), `forgeplan_core` (internal op: `ingest`/`new`/`validate`/`activate`/`search`).
+- **DAG-ordering** через `requires:` (step IDs), цикл-detection, unknown-ref detection в loader.
+- **`fallback_hint`** — точная install-команда, эмитится если plugin/skill не установлен (AC-4 PRD-065).
+- **Journal** в `.forgeplan/journal/playbook-runs.jsonl` — resumable partial failures.
+- **JSON Schema** опубликована в `docs/schemas/playbook.schema.yaml` (FR-2).
+
+### Added — Ingest engine (PRD-066 / SPEC-004)
+
+- **`forgeplan-core::ingest::{types,sources,template,engine,idempotency}`** — declarative mapping engine.
+- **Tera-style шаблоны** с **whitelist filters** (10): `trim`, `lower`, `upper`, `bullet_list`, `comma_list`, `slugify`, `truncate`, `default(value=...)`, `replace`, `table`. Любой не-whitelisted filter → load error (security boundary, ADR-009).
+- **`## Sources` invariant** — `sources_section.include: false` отвергается deserialization, артефакт без Sources не создаётся.
+- **`compat_spec_version`** per mapping — semver-pinning upstream plugin output, fail-fast при upstream breaking change.
+- **5 source kinds**: `c4-documentation`, `autoresearch`, `git-log`, `ddd-model`, `sparc-spec`.
+- **6 target artifact kinds**: `prd`, `adr`, `epic`, `note`, `spec`, `problem`.
+- **Idempotency** через `source_hash` — re-run = update existing, не дубликаты (AC-3 PRD-066).
+- **JSON Schema** опубликована в `docs/schemas/mapping.schema.yaml` (FR-2).
+
+### Added — Plugin detection + self-describing hints (PRD-067)
+
+- **`forgeplan-core::plugins::{detection,registry,hints}`** — детектит installed plugins.
+- **Detection paths**: `~/.claude/plugins/cache/`, `.claude/plugins/`, `.agentskills/`, `.cursor/skills/`.
+- **Project signals**: `empty_repo`, `legacy_code_no_docs`, `docs_vault_present`, `has_package_json`, `has_cargo_toml`, `git_commit_count`.
+- **Recommendation engine** — signals × installed_plugins → applicable playbooks; emitted в init hint.
+- **CLI**: `forgeplan plugins {list|doctor|info <name>}`.
+
+### Added — CLI / MCP surface
+
+- **5 new CLI commands**: `forgeplan playbook {list|show|run|validate}`, `forgeplan ingest`, `forgeplan plugins {list|doctor|info}`.
+- **8 new MCP tools** wrapping the same surface for agent integration.
+- All новые команды эмитят PRD-071 hint markers (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — coverage 100% по drift-prevention audit script.
+
+### Added — Canonical marketplace assets
+
+- **`marketplace/mappings/c4-to-forge.yaml`** — production-ready mapping для c4-architecture plugin output. Per EVID-088 (Spike-1 measurement): target=`note` по умолчанию (не `prd`/`spec`) — code-derived артефакты не имеют product-context для PRD/SPEC validation gate.
+- **`marketplace/playbooks/brownfield-code.yaml`** — 5-step canonical playbook: `detect-c4-need` → `run-c4-architecture` (Plugin) → `ingest-c4` (ForgeplanCore + mapping) → `run-history-miner` (Skill) → `summary-note` (ForgeplanCore). `triggered_by: { has_git: true, commit_count_min: 50, has_docs: false }`.
+
+### Added — Documentation
+
+- **`docs/operations/PLAYBOOK-AUTHORING.ru.md`** — guide для авторов playbook'ов: 5 типов делегации, DAG, fallback hints, conventions.
+- **`docs/operations/INGEST-MAPPINGS.ru.md`** — guide для авторов mapping'ов: Tera caveat (`default(value="...")`), whitelist, hallucination-proof invariant, target=note default per EVID-088.
+- **`docs/README.md` + `docs/README.ru.md`** — index updates.
+
+### Stats
+
+- **+9000 LOC** across 3 new modules + CLI + MCP.
+- **+168 unit tests** (W1: 39 / W2: 110 / W3: 58, including 16 dogfood E2E from Wave 3) + Wave 4 integration E2E.
+- **0 fmt diffs / 0 clippy warnings** on default and `--features semantic-search`.
+- 4 waves × 9 unique agents (1 architect + 3 W1 + 5 W2 + 4 W3 + 2 W4) с gate checks per wave.
+
+### Deferred to follow-up sprint
+
+- **Real Plugin / Agent / Skill dispatchers** — Wave 3 экзекутор делегирует через mocked Task tool subprocess в этом релизе. Production wiring (через runtime Task tool API) — следующий sprint.
+- **MCP `forgeplan_ingest`** — pure CLI command в v0.26.0; MCP wrapper отложен (CLI cover тех же scenarios через `forgeplan serve`).
+- **`brownfield-docs-pack` / `greenfield-pack`** — only `brownfield-code.yaml` published canonical в этом релизе.
+- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals; parallelizable DAG planner — v2.
+
+### References
+
+- ADR-009 `.forgeplan/adrs/ADR-009-*.md` — orchestrator pivot decision
+- EPIC-007 — Playbook runtime + Pack marketplace (parent)
+- PRD-065 / SPEC-003 — Playbook runtime + schema
+- PRD-066 / SPEC-004 — Ingest engine + mapping schema
+- PRD-067 — Plugin detection + hints
+- EVID-088 — Spike-1 c4-to-forge concept validation (CL3)
+- EVID-089 — Phase 5 implementation evidence pack
+
 ## [0.25.0] — 2026-04-27 — Unified hint contract across CLI + MCP (PRD-071 complete)
 
 Forgeplan теперь говорит агентам что делать дальше. Каждый CLI и MCP вывод эмитит **один** контрактный маркер (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — никаких больше «agent reads no-hint output → re-reads CLAUDE.md → guesses → loops». 5-rule контракт (PRESENCE / ACTIONABILITY / DETERMINISM / CONDITIONALITY / CONSISTENCY) реализован за 5 циклов multi-agent sprint, audit coverage 0% → **100% (70/70)**.

@@ -1211,9 +1211,12 @@ impl ForgeplanServer {
         };
 
         // PRD-073 audit: helper writes file FIRST then syncs to LanceDB.
-        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
-            .await
-            .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
+        let filepath = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &artifact,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
 
         // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
         // first modifier is attributable even without an update call.
@@ -1717,8 +1720,13 @@ impl ForgeplanServer {
         // sync_before/render_after are no-ops when the target is not local
         // (cross-workspace reference) so the previous warn-and-continue
         // behavior is preserved by the helper's natural laziness.
-        if let Err(e) =
-            projection::add_link_with_projection(&ws, &store, &p.source, &p.target, &relation).await
+        if let Err(e) = projection::add_link_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &p.source,
+            &p.target,
+            &relation,
+        )
+        .await
         {
             let safe_src = sanitize_for_hint(&p.source);
             let safe_tgt = sanitize_for_hint(&p.target);
@@ -1935,11 +1943,12 @@ impl ForgeplanServer {
 
         // PRD-073 audit: route metadata + body mutations through file-first
         // helpers. Each helper handles its own sync→mutate→render triplet.
+        // PROB-049 H-6: shared `MutationContext` flows into both helpers.
+        let ctx = projection::MutationContext::new(&ws, &store);
         if p.status.is_some() || p.title.is_some() {
             let status_str = p.status.as_ref().map(|s| s.as_str());
             projection::update_metadata_with_projection(
-                &ws,
-                &store,
+                &ctx,
                 &p.id,
                 status_str,
                 p.title.as_deref(),
@@ -1949,7 +1958,7 @@ impl ForgeplanServer {
         }
 
         if let Some(ref body) = p.body {
-            projection::update_body_with_projection(&ws, &store, &p.id, body)
+            projection::update_body_with_projection(&ctx, &p.id, body)
                 .await
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         }
@@ -2050,9 +2059,12 @@ impl ForgeplanServer {
         // Safe to mutate store — receipt is on disk and file is in trash.
         // Helper exists so the LanceStore method can stay pub(crate) per
         // ADR-003 Phase 4 lockdown.
-        forgeplan_core::projection::delete_artifact_after_soft_delete(&store, &p.id)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        forgeplan_core::projection::delete_artifact_after_soft_delete(
+            &forgeplan_core::projection::MutationContext::new(&ws, &store),
+            &p.id,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         // Projection was already moved into trash by soft_delete_capture.
 
@@ -2552,7 +2564,12 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed.",
+        description = "Show project health dashboard — gaps, risks, blind spots, orphans, \
+                       stale evidence, and recommended next actions. Returns aggregate \
+                       `verdict` field (\"healthy\" | \"needs_attention\" | \"unhealthy\") \
+                       + `verdict_summary` for one-line human rendering. \
+                       Branch on `verdict` for CI gates and agent decision logic. \
+                       No LLM needed.",
         annotations(
             title = "Health Dashboard",
             read_only_hint = true,
@@ -2608,11 +2625,31 @@ impl ForgeplanServer {
         // PRD-071: deterministic single primary, real IDs (not <id>).
         // The first blind-spot/orphan/at-risk/stale gives the agent a
         // concrete starting target.
+        //
+        // Round 5 audit closure HIGH-1 (Logic): the ladder MUST also check
+        // active_stubs / possible_duplicates / phase_mismatches before
+        // emitting the "Project healthy" fallthrough — otherwise an MCP
+        // response can carry `verdict: "unhealthy"` AND `_next_action:
+        // "Project healthy ..."` simultaneously when the only signals are
+        // stubs / duplicates / phase mismatches. Same PROB-029 contradiction
+        // shape, just relocated to a different field.
         let next_action = if let Some(b) = report.blind_spots.first() {
             let id = sanitize_for_hint(&b.id);
             format!(
                 "{} blind spot(s). Inspect first: `forgeplan_score {id}`.",
                 report.blind_spots.len()
+            )
+        } else if let Some(s) = report.active_stubs.first() {
+            let id = sanitize_for_hint(&s.id);
+            format!(
+                "{} active stub(s) — fill or deprecate. First: `forgeplan_get {id}`.",
+                report.active_stubs.len()
+            )
+        } else if let Some(d) = report.possible_duplicates.first() {
+            let id = sanitize_for_hint(&d.id_a);
+            format!(
+                "{} possible duplicate pair(s). Review first: `forgeplan_get {id}`.",
+                report.possible_duplicates.len()
             )
         } else if let Some(o) = report.orphans.first() {
             let id = sanitize_for_hint(o);
@@ -2631,6 +2668,19 @@ impl ForgeplanServer {
                 "{} stale artifact(s). List them: `forgeplan_stale`.",
                 report.stale_count
             )
+        } else if let Some(p) = phase_mismatches.first() {
+            // Use sanitised id from the json! payload above (already sanitised).
+            let id = p
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(sanitize_for_hint)
+                .unwrap_or_else(|| "<id>".to_string());
+            format!(
+                "{} advisory phase mismatch(es). Inspect first: `forgeplan_get {id}`.",
+                phase_mismatches.len()
+            )
+        } else if report.total == 0 {
+            "Workspace has no artifacts. Start: `forgeplan_new kind=prd title=...`.".to_string()
         } else {
             "Project healthy. List pending drafts: `forgeplan_list status=draft`.".to_string()
         };
@@ -2659,10 +2709,33 @@ impl ForgeplanServer {
             })
             .collect();
 
+        // PROB-029 closure: fold the MCP-side `advisory_phase_mismatches`
+        // count into the verdict so MCP consumers (Claude Desktop, agent
+        // IDE plugins) see a consistent `verdict` that reflects ALL signals,
+        // not just the ones the core `health_report` knows about. Without
+        // this, the JSON `verdict` field would say "healthy" while
+        // `advisory_phase_mismatches` printed warnings — the very contradiction
+        // PROB-029 was filed to prevent.
+        let verdict = report.compute_verdict_with(
+            &forgeplan_core::health::VerdictThresholds::default(),
+            phase_mismatches.len(),
+        );
+
+        // PR-E Round 6 audit MED fix: `Verdict::Empty` is now a 4th enum
+        // variant (was deferred at Round 5). `human_summary()` already
+        // emits the empty-workspace message for `Verdict::Empty`, so the
+        // Round 5 manual override below is no longer necessary —
+        // typed `verdict` field and `verdict_summary` text now agree
+        // by construction (no consumer can read `verdict == "healthy"`
+        // for an empty workspace).
+        let verdict_summary = verdict.human_summary();
+
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
             "by_status": report.by_status,
+            "verdict": verdict.as_str(),
+            "verdict_summary": verdict_summary,
             "at_risk": report.at_risk.iter().map(|a| serde_json::json!({
                 "id": a.id, "title": a.title, "reason": a.reason
             })).collect::<Vec<_>>(),
@@ -2875,9 +2948,12 @@ impl ForgeplanServer {
         };
 
         // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
-        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let filepath = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &artifact,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         // PRD-071: single primary — review the captured draft. Lifecycle
@@ -3892,9 +3968,12 @@ impl ForgeplanServer {
         };
 
         // PRD-073 audit: helper writes file FIRST then syncs LanceDB.
-        let filepath = projection::create_artifact_with_projection(&ws, &store, &artifact)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let filepath = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &artifact,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
         let safe_id = sanitize_for_hint(&id);
         let next_action = format!(
@@ -4096,7 +4175,11 @@ impl ForgeplanServer {
                 // PRD-073 audit H3: helper removes file + relations + DB row
                 // in lockstep so re-import via force=true doesn't strand
                 // the OLD markdown file.
-                let _ = projection::delete_artifact_with_projection(&ws, &store, id).await;
+                let _ = projection::delete_artifact_with_projection(
+                    &projection::MutationContext::new(&ws, &store),
+                    id,
+                )
+                .await;
             }
 
             let new_art = NewArtifact {
@@ -4116,7 +4199,11 @@ impl ForgeplanServer {
             // projection alongside the LanceDB row; previous direct
             // `store.create_artifact` left every imported artifact in
             // DB-only state (live-confirmed in audit testing).
-            if let Err(e) = projection::create_artifact_with_projection(&ws, &store, &new_art).await
+            if let Err(e) = projection::create_artifact_with_projection(
+                &projection::MutationContext::new(&ws, &store),
+                &new_art,
+            )
+            .await
             {
                 return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
             }
@@ -4142,10 +4229,12 @@ impl ForgeplanServer {
                     .collect()
             })
             .unwrap_or_default();
-        let relations_imported =
-            projection::add_links_batch_with_projection(&ws, &store, &link_triples)
-                .await
-                .unwrap_or(0);
+        let relations_imported = projection::add_links_batch_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &link_triples,
+        )
+        .await
+        .unwrap_or(0);
 
         // PRD-071: single primary action per state.
         let next_action = if imported == 0 && skipped == 0 {
@@ -5159,8 +5248,11 @@ impl ForgeplanServer {
         // PRD-073 file-first: helper writes the markdown projection FIRST,
         // then syncs to LanceDB. Failure mid-flow leaves an orphan file that
         // the next reindex reconciles.
-        if let Err(e) =
-            projection::create_artifact_with_projection(&ws, &store, &new_artifact).await
+        if let Err(e) = projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &new_artifact,
+        )
+        .await
         {
             return Ok(err_result(&format!("Failed to create artifact: {e}")));
         }
