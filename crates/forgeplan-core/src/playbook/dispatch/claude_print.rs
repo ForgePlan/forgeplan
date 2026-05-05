@@ -1,10 +1,32 @@
-//! Helpers for invoking `claude --print` from PluginDispatcher / AgentDispatcher
-//! (ADR-011 / EVID-093). Phase B Pre-Wave 0 skeleton — Wave 1 sub-agents fill
-//! in implementations.
+//! Production helpers for invoking `claude --print` from
+//! [`super::PluginDispatcher`] and [`super::AgentDispatcher`]
+//! (ADR-011 / EVID-093). Single source of truth for the 9-step recipe:
+//! argv build → env allowlist → prompt-via-stdin → spawn → timeout
+//! → parse → render. PR-E (PROB-050 A-4..A-15) consolidated all
+//! orchestration here; both dispatchers reduce to (a) variant unpack,
+//! (b) name validation, (c) binary resolution, (d) call [`invoke`].
 //!
-//! # Design
+//! # Public surface (intra-module only — `pub(super)` / `pub(crate)`)
 //!
-//! `claude --print` is the headless invocation mode of the Claude Code CLI:
+//! - [`invoke`] — full orchestration, called by both dispatchers.
+//! - [`build_argv`] — argv construction with security gates
+//!   ([`validate_allowed_tools`] + [`add_dir_for_produces_at`]).
+//! - [`parse_envelope`] — UTF-8-trimmed JSON envelope decode.
+//! - [`format_timeout_msg`] — uniform `.as_secs()` rendering for
+//!   timeout diagnostics.
+//! - [`DISPATCH_ENV_LOCK`] — `#[cfg(test)]` cross-dispatcher
+//!   serialization mutex (PR-E audit HIGH-1: now consumed by
+//!   `agent_dispatcher::tests`, `plugin_dispatcher::tests`,
+//!   `helpers::tests`).
+//!
+//! Visibility tightened in PR-E A-7: `DEFAULT_BUDGET_USD`,
+//! `DEFAULT_ALLOWED_TOOLS` are `pub(crate)`; `ClaudePrintResponse`,
+//! `assemble_prompt`, `add_dir_for_produces_at`, `effective_*` are
+//! `pub(super)`. External library consumers of the dispatch internals
+//! must go through `AgentDispatcher` / `PluginDispatcher`.
+//!
+//! # `claude --print` argv contract
+//!
 //! - `--agent <name>` resolves the agent (plugin or top-level) by name
 //! - `--print` disables the TUI; output goes to stdout
 //! - `--output-format json` emits a structured envelope (cost, duration, errors)
@@ -127,7 +149,13 @@ pub(super) struct ClaudePrintResponse {
 impl ClaudePrintResponse {
     /// Whether the invocation succeeded for dispatch purposes:
     /// `is_error == false` AND no `api_error_status`.
-    pub fn is_success(&self) -> bool {
+    ///
+    /// PR-E audit LOW-2 (architect): tightened to `pub(super)` to match
+    /// the parent struct visibility — Rust min-clamps method visibility
+    /// to struct visibility so this is a no-op functionally, but the
+    /// explicit attribute prevents future widening of the struct from
+    /// silently re-exposing the methods.
+    pub(super) fn is_success(&self) -> bool {
         !self.is_error && self.api_error_status.is_none()
     }
 
@@ -140,7 +168,9 @@ impl ClaudePrintResponse {
     /// surfaced in queries). Bounded at `MAX_PREVIEW_BYTES` (500 bytes,
     /// UTF-8-safe) to limit info-leak surface flowing through MCP error
     /// JSON / Claude Desktop transcripts.
-    pub fn render_failure_context(&self) -> String {
+    /// PR-E audit LOW-2: tightened to `pub(super)` (same rationale as
+    /// `is_success`).
+    pub(super) fn render_failure_context(&self) -> String {
         let mut parts = Vec::new();
         if let Some(api_err) = &self.api_error_status {
             parts.push(format!(
@@ -164,12 +194,8 @@ impl ClaudePrintResponse {
     }
 }
 
-/// Assemble the prompt body sent on stdin. Wave 1 fills in details based on
-/// `Step.input` shape and `produces_at` convention from ADR-011 §Decision
-/// point 5.
+/// Assemble the prompt body sent on stdin (per ADR-011 §Decision point 5).
 ///
-/// Current stub returns a placeholder so type-checks pass for Wave 1
-/// dispatcher rewrites. The real implementation:
 /// 1. Pulls `step.input.task` (or sensible default) as the user-visible prompt body.
 /// 2. If `step.produces_at` is set, appends:
 ///    `Write output to \`<produces_at>\` using the Write tool.`
@@ -562,8 +588,15 @@ pub(super) async fn invoke(
                 diag.push_str(stderr_str.trim_end());
             }
             if !outcome.stdout.is_empty() {
+                // PR-E audit MED-2 (security + logic): pre-fix used
+                // `chars().take(MAX_PREVIEW_BYTES)` which silently became a
+                // CHAR count, not bytes — multi-byte UTF-8 (CJK/emoji) could
+                // inflate preview to ~2KB despite the 500-name. Use the
+                // shared byte-bounded UTF-8-safe helper that
+                // `render_failure_context` already uses for identical
+                // info-disclosure surface across both rendering paths.
                 let stdout_str = String::from_utf8_lossy(&outcome.stdout);
-                let preview: String = stdout_str.chars().take(MAX_PREVIEW_BYTES).collect();
+                let preview = truncate_for_log(&stdout_str, MAX_PREVIEW_BYTES);
                 diag.push_str(" | stdout_preview=");
                 diag.push_str(preview.trim_end());
             }

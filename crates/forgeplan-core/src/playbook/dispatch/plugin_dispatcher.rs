@@ -66,7 +66,12 @@ const DEFAULT_CLAUDE_BINARY: &str = "claude";
 /// Default per-step timeout for plugins. Plugins are typically slower than
 /// agents/skills — bumped to 600s vs the helper default of 300s
 /// ([`super::helpers::DEFAULT_TIMEOUT_SECS`]).
-pub const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 600;
+///
+/// PR-E audit MED-1 (architect): tightened from `pub` to `pub(crate)` for
+/// symmetry with PR-E's other lockdown sweep on `claude_print::DEFAULT_*`.
+/// No external library consumer reads this; restricting protects from
+/// being accidentally pinned as a stability contract.
+pub(crate) const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 600;
 
 /// Validate an agent slug before passing it to `claude --agent`. Wraps the
 /// shared [`claude_print::validate_agent_name`] helper into the dispatcher
@@ -222,16 +227,19 @@ mod tests {
     use crate::playbook::types::{Delegation, OnError, Step};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use tokio::sync::Mutex;
 
-    /// Serialize tests that mutate process-global state (`PATH`,
-    /// `FORGEPLAN_BIN`). `cargo test` runs cases on multiple threads, so
-    /// without this guard concurrent env mutations race and produce
-    /// flaky results.
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    /// PROB-050 A-6 closure (HIGH-1 audit fix on PR-E):
+    /// previously `plugin_dispatcher::tests` had its OWN local ENV_LOCK
+    /// while `agent_dispatcher::tests` and `helpers::tests` shared
+    /// `claude_print::DISPATCH_ENV_LOCK`. The PR-E commit message claimed
+    /// the cross-dispatcher race was closed; actually only agent ↔ helpers
+    /// were unified, leaving plugin tests racing against the other two.
+    /// All three now share the SAME mutex — true cross-dispatcher
+    /// serialization, not three private cliques.
+    use super::claude_print::DISPATCH_ENV_LOCK as ENV_GUARD;
 
     async fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().await
+        ENV_GUARD.lock().await
     }
 
     fn plugin_step(id: &str, name: &str, target: &str) -> Step {

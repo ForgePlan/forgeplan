@@ -87,10 +87,20 @@ pub struct SubprocessOutcome {
 
 /// Maximum captured output per stream (per ADR-010 Negative Trade-offs).
 /// Prevents OOM на runaway subprocess writing GB to stdout.
-pub const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
+///
+/// PR-E audit MED-1: tightened to `pub(crate)` (no external consumer).
+pub(crate) const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Default subprocess timeout if `Step.timeout_seconds` is not set (FR-8 default).
-pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+///
+/// PR-E audit MED-1: tightened to `pub(crate)` (no external consumer).
+/// `#[allow(dead_code)]` because the constant is referenced only by
+/// rustdoc cross-link in `plugin_dispatcher.rs::DEFAULT_PLUGIN_TIMEOUT_SECS`,
+/// not by any code path. Kept rather than deleted because the cross-link
+/// is load-bearing documentation (operators consult to understand the
+/// 300s helper baseline vs 600s plugin override).
+#[allow(dead_code)]
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 /// Spawn `spec.program` as a subprocess, drain stdout/stderr concurrently,
 /// enforce the timeout, and return a [`SubprocessOutcome`].

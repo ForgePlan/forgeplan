@@ -28,7 +28,53 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
   and `docs/methodology/release-workflow.md §Pre-conditions`.
 
+### Changed (forgeplan-core public API — BREAKING for direct library consumers)
+
+- **PROB-050 A-7 ✅ closes — `playbook::dispatch::claude_print` symbol
+  visibility tightened**. Following empirical verification (`rg <name>
+  crates/`) that no in-tree consumer outside the dispatch module reads
+  these symbols, the following `pub` items were tightened:
+  - `DEFAULT_BUDGET_USD`, `DEFAULT_ALLOWED_TOOLS` → `pub(crate)`
+  - `helpers::DEFAULT_TIMEOUT_SECS`, `helpers::MAX_OUTPUT_BYTES`,
+    `plugin_dispatcher::DEFAULT_PLUGIN_TIMEOUT_SECS` → `pub(crate)`
+  - `ClaudePrintResponse` (struct) + its methods → `pub(super)`
+  - `assemble_prompt`, `add_dir_for_produces_at`,
+    `effective_allowed_tools`, `effective_budget_usd` → `pub(super)`
+
+  External crates that imported these symbols will fail to compile against
+  v0.29.0. Recommended migration: invoke the dispatch module through its
+  public surface (`AgentDispatcher` / `PluginDispatcher`) rather than
+  reaching into helpers. If a use case requires a tightened symbol, open
+  a PROB issue justifying the public contract.
+
 ### Changed (forgeplan-core public API — additive, but downstream library consumers should rebuild)
+
+- **PROB-050 A-4 + A-5 + A-6 + A-11 + A-15 ✅ close — `claude --print`
+  dispatch refactor**. Single source of truth in
+  `playbook::dispatch::claude_print`:
+  - `claude_print::invoke()` — full 9-step orchestration
+    (argv + env + prompt + spawn + timeout + parse + render).
+    AgentDispatcher and PluginDispatcher reduce to (a) variant unpack,
+    (b) name validation, (c) binary resolution, (d) call invoke.
+  - `claude_print::build_argv()` — argv construction with both security
+    gates inline (`validate_allowed_tools` + `add_dir_for_produces_at`).
+    Argv-shape parity between dispatchers now enforced by construction.
+  - `claude_print::parse_envelope()` — UTF-8-trimmed JSON envelope decode.
+    Plugin dispatcher previously had no `.trim()` — silent divergence
+    from agent path closed.
+  - `claude_print::format_timeout_msg()` — uniform `.as_secs()` rendering.
+    Agent dispatcher previously leaked `Duration` Debug repr — closed.
+  - `helpers::which_in_path` promoted from `fn` to `pub(super) fn`;
+    3 identical local copies removed from the dispatchers.
+  - `claude_print::DISPATCH_ENV_LOCK` — `#[cfg(test)] pub(super) static
+    tokio::sync::Mutex<()>` shared by `agent_dispatcher::tests`,
+    `plugin_dispatcher::tests`, and `helpers::tests` (Round 5 audit
+    Logic LOW-1 + PR-E audit HIGH-1: cross-test PATH-mutation race
+    fully closed).
+  - **No behaviour change**: argv shape byte-identical pre/post; error
+    messages preserved where tests assert on them; the silent fixes
+    (parse-envelope `.trim()`, timeout `.as_secs()`) tighten consistency
+    without changing observable contracts.
 
 - **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
   variants `StoreTransient` (recoverable) and `StoreFatal` (not recoverable).**
