@@ -100,7 +100,11 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             // projection is removed in lockstep with the LanceDB row.
             // Fixes the previous bypass where re-import via `--force`
             // left the OLD file on disk while the OLD row was deleted.
-            projection::delete_artifact_with_projection(&ws, &store, id).await?;
+            projection::delete_artifact_with_projection(
+                &projection::MutationContext::new(&ws, &store),
+                id,
+            )
+            .await?;
         }
 
         // Validate kind against known types
@@ -184,7 +188,11 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         // call left every imported artifact in DB-only state with no
         // markdown file backing — breaking ADR-003 invariant the moment
         // import completed.
-        projection::create_artifact_with_projection(&ws, &store, &new_artifact).await?;
+        projection::create_artifact_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &new_artifact,
+        )
+        .await?;
         imported += 1;
     }
 
@@ -209,10 +217,12 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         })
         .unwrap_or_default();
     let relations_attempted = link_triples.len();
-    let relations_imported =
-        projection::add_links_batch_with_projection(&ws, &store, &link_triples)
-            .await
-            .unwrap_or(0);
+    let relations_imported = projection::add_links_batch_with_projection(
+        &projection::MutationContext::new(&ws, &store),
+        &link_triples,
+    )
+    .await
+    .unwrap_or(0);
 
     println!(
         "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} of {} relations applied",

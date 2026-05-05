@@ -69,7 +69,11 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 if let Some(id) = extract_id_from_path(&file.path)
                     && store.get_record(&id).await?.is_some()
                 {
-                    projection::delete_orphan_artifact(&store, &id).await?;
+                    projection::delete_orphan_artifact(
+                        &projection::MutationContext::new(&ws, &store),
+                        &id,
+                    )
+                    .await?;
                     let entry =
                         forgeplan_core::changelog::ChangeLogEntry::new(&id, "delete", "git_sync")
                             .with_commit(&commit_hash);
@@ -120,8 +124,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         // Existing artifact — update body if changed
                         if record.body.trim() != body.trim() {
                             projection::sync_body_from_file(
-                                &ws,
-                                &store,
+                                &projection::MutationContext::new(&ws, &store),
                                 &id,
                                 &record.kind,
                                 &record.title,
@@ -133,7 +136,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                 let status_lower = status.to_lowercase();
                                 if record.status != status_lower {
                                     projection::sync_metadata_from_file(
-                                        &store,
+                                        &projection::MutationContext::new(&ws, &store),
                                         &id,
                                         Some(&status_lower),
                                         None,
@@ -175,7 +178,11 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                             tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                         };
 
-                        projection::sync_artifact_from_file(&ws, &store, &artifact).await?;
+                        projection::sync_artifact_from_file(
+                            &projection::MutationContext::new(&ws, &store),
+                            &artifact,
+                        )
+                        .await?;
                         "create"
                     }
                 };
@@ -191,7 +198,13 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         if let (Some(t), Some(r)) = (target, relation)
                             && !existing.iter().any(|(et, er)| et == t && er == r)
                         {
-                            let _ = projection::sync_relation_from_file(&store, &id, t, r).await;
+                            let _ = projection::sync_relation_from_file(
+                                &projection::MutationContext::new(&ws, &store),
+                                &id,
+                                t,
+                                r,
+                            )
+                            .await;
                         }
                     }
                 }

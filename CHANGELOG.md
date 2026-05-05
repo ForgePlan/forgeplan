@@ -9,6 +9,45 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added (CI infrastructure, methodology)
+
+- **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
+  documents all CI quality gates** (fmt, clippy, test, health, validate,
+  drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
+  and `docs/methodology/release-workflow.md §Pre-conditions`.
+
+### Changed (forgeplan-core public API — additive, but downstream library consumers should rebuild)
+
+- **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
+  variants `StoreTransient` (recoverable) and `StoreFatal` (not recoverable).**
+  The legacy `StoreError(#[from] anyhow::Error)` collapse-everything variant is
+  removed. Categorisation logic (`MutationError::from_store_err`) inspects the
+  `anyhow::Error` chain (lancedb / std::io shapes) and routes between the two.
+  Default fallthrough is `StoreTransient` — strict refinement of legacy
+  recoverable=true. **Note**: `is_recoverable()` is exposed but not yet
+  consumed by MCP / CLI retry loops; the typed-error split is infrastructure
+  for forthcoming retry wiring (tracked under PROB-049 follow-ups).
+- **PROB-049 H-6 ✅ closes — `MutationContext` introduced for projection helpers.**
+  All 17 file-first mutation helpers in `forgeplan_core::projection` now take
+  `&MutationContext<'_>` instead of separate `(workspace, store)` arguments.
+  47 call sites updated across `forgeplan-cli` + `forgeplan-mcp`. The struct
+  is `#[non_exhaustive]` and constructed via `MutationContext::new(...)` —
+  external library consumers may not use a struct literal.
+- **PROB-049 H-4 ✅ closes — `# Errors` rustdoc on all 17 projection helpers.**
+- **PROB-029 ✅ closes — typed `Verdict` aggregator (`Healthy / NeedsAttention
+  / Unhealthy`) on `HealthReport`.** Pure `compute_verdict[_with]` functions
+  with configurable `VerdictThresholds`. Both new public types are
+  `#[non_exhaustive]`. CLI `forgeplan health` banner driven off the verdict
+  (no longer disagrees with `next_actions`). `next_actions` rewritten to
+  emit concrete remediation commands. MCP `forgeplan_health` and CLI `--json`
+  both expose `verdict` + `verdict_summary` fields. **Round 5 audit closures
+  (HIGH Logic + Documentation)**: MCP `_next_action` ladder now checks
+  active_stubs + possible_duplicates + phase_mismatches before the "Project
+  healthy" fallthrough (eliminates contradiction-via-different-field);
+  uninitialized workspaces (`total == 0`) emit a distinct `verdict_summary`
+  ("Workspace has no artifacts ...") on both CLI and MCP surfaces; MCP tool
+  description advertises the `verdict` field for agent discovery.
+
 ### Security
 
 - **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**.

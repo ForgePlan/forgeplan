@@ -252,8 +252,9 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
 
         // PRD-073 file-first: helpers handle projection writes for both
         // the new note and the bidirectional link rendering.
-        projection::create_artifact_with_projection(&ws, &store, &new_artifact).await?;
-        projection::add_link_with_projection(&ws, &store, &note_id, &record.id, "informs").await?;
+        let ctx = projection::MutationContext::new(&ws, &store);
+        projection::create_artifact_with_projection(&ctx, &new_artifact).await?;
+        projection::add_link_with_projection(&ctx, &note_id, &record.id, "informs").await?;
         println!("  Saved as {} -> linked to {}", note_id, record.id);
     }
 

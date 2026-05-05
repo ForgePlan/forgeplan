@@ -71,7 +71,8 @@ Fix: forgeplan list",
     // because soft_delete_capture already moved it to trash) then cascades
     // relations and the LanceDB row. Failure mid-flow is recoverable via
     // `forgeplan restore <id>` from the receipt above.
-    projection::delete_artifact_with_projection(&ws, &store, id).await?;
+    projection::delete_artifact_with_projection(&projection::MutationContext::new(&ws, &store), id)
+        .await?;
 
     if relation_count > 0 {
         eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
