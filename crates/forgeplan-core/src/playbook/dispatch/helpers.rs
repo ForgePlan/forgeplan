@@ -299,8 +299,12 @@ pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// `which forgeplan` minimal impl — searches `$PATH`, returns first hit.
-fn which_in_path(program: &str) -> Option<PathBuf> {
+/// `which <program>` minimal impl — searches `$PATH`, returns first hit.
+///
+/// PROB-050 A-5 closure: promoted from `fn` (helpers-private) to
+/// `pub(super) fn` so AgentDispatcher and PluginDispatcher can drop their
+/// duplicate copies and consume the single source of truth here.
+pub(super) fn which_in_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(program);
@@ -339,8 +343,9 @@ mod tests {
         assert_eq!(env.get("CARGO_HOME"), Some(&"/home/x/.cargo".to_string()));
     }
 
-    #[test]
-    fn resolve_forgeplan_binary_respects_env_override() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // DISPATCH_ENV_LOCK pins env vars across spawn for test isolation
+    async fn resolve_forgeplan_binary_respects_env_override() {
         // PROB-050 A-14 strengthen (Round 3 audit, test-coverage HIGH-1):
         // pre-PR-B this test asserted only `is_some()`, which any host with
         // `forgeplan` on PATH would satisfy via the `which_in_path` fallback
@@ -349,6 +354,13 @@ mod tests {
         // the assertion, and (b) compare exact PathBuf so removing or
         // widening the `#[cfg(test)]` gate breaks the test. Mirrors the
         // pattern in `agent_dispatcher::tests::dispatch_emits_delegate_missing_when_tool_absent`.
+        //
+        // PROB-050 A-6 closure (Round 5 LOW-1 race fix): now serialises against
+        // peer dispatcher tests via the shared `DISPATCH_ENV_LOCK` instead of
+        // relying on the (false) assumption that `helpers::tests` has no peer
+        // mutating env. `agent_dispatcher::tests` and `plugin_dispatcher::tests`
+        // share the same lock, eliminating cross-file PATH-mutation flakiness.
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
         let cargo_path = which_in_path("cargo");
         let Some(cargo) = cargo_path else {
             return;
@@ -356,10 +368,7 @@ mod tests {
         let original_path = std::env::var_os("PATH");
         // SAFETY: test-local env var manipulation; PATH save/restore guards
         // against leaking the broken PATH to subsequent tests in the same
-        // `cargo test` process. PROB-050 A-31 tracks promoting all
-        // dispatch-test env mutations to a shared static lock; today
-        // `helpers::tests` has no peer test mutating env, so the local
-        // pattern stays defensive-only.
+        // `cargo test` process.
         unsafe {
             std::env::set_var("PATH", "/nonexistent-dir-prob-050-a14-helpers-test");
             std::env::set_var("FORGEPLAN_BIN", &cargo);
