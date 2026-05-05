@@ -2721,19 +2721,14 @@ impl ForgeplanServer {
             phase_mismatches.len(),
         );
 
-        // Round 5 audit closure HIGH-2 (Logic): an uninitialized workspace
-        // (`total == 0`) was reporting `verdict_summary: "Project looks
-        // healthy."` — the literal pre-PROB-029 phrase the entire feature
-        // exists to eliminate. Override the summary text for the empty
-        // case while keeping the typed `verdict: healthy` (objectively
-        // there ARE no warnings — no false-positive promotion to
-        // NeedsAttention/Unhealthy). Adding `Verdict::Uninitialized` as a
-        // 4th enum variant deferred to v0.30.0 (API stability decision).
-        let verdict_summary = if report.total == 0 {
-            "Workspace has no artifacts. Run `forgeplan_new kind=prd title=...` to start."
-        } else {
-            verdict.human_summary()
-        };
+        // PR-E Round 6 audit MED fix: `Verdict::Empty` is now a 4th enum
+        // variant (was deferred at Round 5). `human_summary()` already
+        // emits the empty-workspace message for `Verdict::Empty`, so the
+        // Round 5 manual override below is no longer necessary —
+        // typed `verdict` field and `verdict_summary` text now agree
+        // by construction (no consumer can read `verdict == "healthy"`
+        // for an empty workspace).
+        let verdict_summary = verdict.human_summary();
 
         Ok(json_result(&serde_json::json!({
             "total": report.total,

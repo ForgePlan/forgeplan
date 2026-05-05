@@ -112,10 +112,12 @@ async fn health_verdict_not_healthy_when_one_active_stub_present() {
 }
 
 // PROB-029: empty workspace stays Healthy. Anti-Goodhart: don't flip
-// every project to "unhealthy" the minute the verdict aggregator
-// learns more signals.
+// PR-E Round 6 audit MED fix: empty workspace now reports
+// `Verdict::Empty`, NOT `Verdict::Healthy`. The pre-fix behavior broke
+// CI gates that auto-promoted on `verdict == "healthy"` for an
+// uninitialized project. Test renamed to reflect new semantic.
 #[tokio::test]
-async fn health_verdict_is_healthy_for_empty_workspace() {
+async fn health_verdict_is_empty_for_empty_workspace() {
     let tmp = TempDir::new().unwrap();
     let store = make_store(&tmp).await;
 
@@ -124,8 +126,14 @@ async fn health_verdict_is_healthy_for_empty_workspace() {
     assert_eq!(report.total, 0);
     assert_eq!(
         report.verdict,
+        Verdict::Empty,
+        "empty workspace must be Verdict::Empty, NOT Healthy — \
+         CI gates would auto-promote uninitialized projects",
+    );
+    assert_ne!(
+        report.verdict,
         Verdict::Healthy,
-        "empty workspace must be Healthy",
+        "explicit guard against regression to pre-Round-6 Healthy verdict",
     );
 }
 

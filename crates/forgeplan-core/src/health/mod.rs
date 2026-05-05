@@ -66,15 +66,19 @@ impl Default for VerdictThresholds {
     }
 }
 
-/// Three-level workspace verdict (PROB-029 AC-2).
+/// Four-level workspace verdict (PROB-029 AC-2 + PR-E Round 6 audit).
 ///
-/// - `Healthy`: zero warnings of any class.
+/// - `Empty`: workspace has zero artifacts (uninitialized / fresh init).
+///   Distinct from `Healthy` because consumers that gate on
+///   `verdict == "healthy"` would otherwise treat an empty project as
+///   ready-to-ship.
+/// - `Healthy`: zero warnings of any class on a non-empty workspace.
 /// - `NeedsAttention`: at least one warning, none above CRITICAL threshold.
 /// - `Unhealthy`: at least one warning class above CRITICAL threshold.
 ///
-/// Serialized as snake_case strings (`"healthy"`, `"needs_attention"`,
-/// `"unhealthy"`) to match the wire format already used by other
-/// `forgeplan` JSON outputs.
+/// Serialized as snake_case strings (`"empty"`, `"healthy"`,
+/// `"needs_attention"`, `"unhealthy"`) to match the wire format already
+/// used by other `forgeplan` JSON outputs.
 ///
 /// `#[non_exhaustive]` (Round 4 audit HIGH-2) — additional verdict levels
 /// (e.g. `Degraded` for partial-outage signals) may be added in future
@@ -84,6 +88,7 @@ impl Default for VerdictThresholds {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Verdict {
+    Empty,
     Healthy,
     NeedsAttention,
     Unhealthy,
@@ -93,6 +98,7 @@ impl Verdict {
     /// Stable, agent-readable label. Matches the serde wire format.
     pub fn as_str(self) -> &'static str {
         match self {
+            Verdict::Empty => "empty",
             Verdict::Healthy => "healthy",
             Verdict::NeedsAttention => "needs_attention",
             Verdict::Unhealthy => "unhealthy",
@@ -104,6 +110,7 @@ impl Verdict {
     /// not `Healthy` — that phrase was the original bug surface.
     pub fn human_summary(self) -> &'static str {
         match self {
+            Verdict::Empty => "Workspace has no artifacts — run `forgeplan new` to start.",
             Verdict::Healthy => "Project looks healthy.",
             Verdict::NeedsAttention => "Project needs attention.",
             Verdict::Unhealthy => "Project is unhealthy — multiple critical signals.",
@@ -262,6 +269,7 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     // classes. Done after detection but before returning, so callers
     // (CLI render, MCP JSON, scripts) all see the same value.
     let verdict = compute_verdict_from_signals(
+        total,
         orphans.len(),
         blind_spots.len(),
         active_stubs.len(),
@@ -306,6 +314,7 @@ pub fn compute_verdict(
     phase_mismatches: usize,
 ) -> Verdict {
     compute_verdict_from_signals(
+        report.total,
         report.orphans.len(),
         report.blind_spots.len(),
         report.active_stubs.len(),
@@ -320,8 +329,14 @@ pub fn compute_verdict(
 /// Internal: shared verdict logic over raw counts. Lets `health_report`
 /// compute the verdict during construction (when fields are scalars,
 /// not yet packed into the struct) without re-allocating.
+///
+/// PR-E Round 6 audit MED fix: `total == 0` short-circuits to
+/// `Verdict::Empty` BEFORE warning-class checks, so an uninitialized
+/// workspace cannot return `Healthy` (the pre-fix path which broke
+/// JSON consumers that gated on `verdict == "healthy"`).
 #[allow(clippy::too_many_arguments)]
 fn compute_verdict_from_signals(
+    total: usize,
     orphans: usize,
     blind_spots: usize,
     active_stubs: usize,
@@ -331,6 +346,12 @@ fn compute_verdict_from_signals(
     phase_mismatches: usize,
     t: &VerdictThresholds,
 ) -> Verdict {
+    // Empty workspace short-circuit (Round 6 audit MED): zero artifacts is
+    // distinct from "healthy non-empty" — a CI gate that auto-promotes on
+    // `verdict == "healthy"` must NOT promote an empty project.
+    if total == 0 {
+        return Verdict::Empty;
+    }
     // Critical: any single class above its threshold → Unhealthy.
     if orphans > t.orphans
         || blind_spots > t.blind_spots
@@ -1204,10 +1225,24 @@ mod tests {
         }
     }
 
-    // PROB-029 AC-2: empty workspace → Healthy.
+    // PR-E Round 6 audit MED fix (was PROB-029 AC-2 — superseded):
+    // empty workspace → Verdict::Empty, NOT Healthy. The pre-fix behavior
+    // broke CI gates that auto-promoted on `verdict == "healthy"`.
     #[test]
-    fn verdict_empty_workspace_is_healthy() {
+    fn verdict_empty_workspace_is_empty_not_healthy() {
         let r = empty_report(0);
+        assert_eq!(r.compute_verdict(), Verdict::Empty);
+        assert_ne!(
+            r.compute_verdict(),
+            Verdict::Healthy,
+            "empty workspace must NOT report healthy — CI gates would auto-promote uninitialized projects"
+        );
+    }
+
+    // Companion: a non-empty workspace with no warnings IS Healthy.
+    #[test]
+    fn verdict_populated_workspace_with_no_warnings_is_healthy() {
+        let r = empty_report(10);
         assert_eq!(r.compute_verdict(), Verdict::Healthy);
     }
 
