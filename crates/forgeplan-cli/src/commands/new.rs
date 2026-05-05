@@ -161,9 +161,12 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         tags: Vec::new(),
     };
     // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
-    let filepath = projection::create_artifact_with_projection(&workspace, &store, &artifact)
-        .await
-        .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
+    let filepath = projection::create_artifact_with_projection(
+        &projection::MutationContext::new(&workspace, &store),
+        &artifact,
+    )
+    .await
+    .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
 
     // Log creation in change_log
     common::log_change(&store, &id, "create", "cli").await;

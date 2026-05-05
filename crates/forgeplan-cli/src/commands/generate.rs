@@ -78,9 +78,13 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
     };
 
     // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
-    let filepath = projection::create_artifact_with_projection(&workspace, &store, &artifact)
-        .await
-        .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
+    // PROB-049 H-6: persistent deps now flow through `MutationContext`.
+    let filepath = projection::create_artifact_with_projection(
+        &projection::MutationContext::new(&workspace, &store),
+        &artifact,
+    )
+    .await
+    .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
 
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);
