@@ -2564,7 +2564,12 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed.",
+        description = "Show project health dashboard — gaps, risks, blind spots, orphans, \
+                       stale evidence, and recommended next actions. Returns aggregate \
+                       `verdict` field (\"healthy\" | \"needs_attention\" | \"unhealthy\") \
+                       + `verdict_summary` for one-line human rendering. \
+                       Branch on `verdict` for CI gates and agent decision logic. \
+                       No LLM needed.",
         annotations(
             title = "Health Dashboard",
             read_only_hint = true,
@@ -2620,11 +2625,31 @@ impl ForgeplanServer {
         // PRD-071: deterministic single primary, real IDs (not <id>).
         // The first blind-spot/orphan/at-risk/stale gives the agent a
         // concrete starting target.
+        //
+        // Round 5 audit closure HIGH-1 (Logic): the ladder MUST also check
+        // active_stubs / possible_duplicates / phase_mismatches before
+        // emitting the "Project healthy" fallthrough — otherwise an MCP
+        // response can carry `verdict: "unhealthy"` AND `_next_action:
+        // "Project healthy ..."` simultaneously when the only signals are
+        // stubs / duplicates / phase mismatches. Same PROB-029 contradiction
+        // shape, just relocated to a different field.
         let next_action = if let Some(b) = report.blind_spots.first() {
             let id = sanitize_for_hint(&b.id);
             format!(
                 "{} blind spot(s). Inspect first: `forgeplan_score {id}`.",
                 report.blind_spots.len()
+            )
+        } else if let Some(s) = report.active_stubs.first() {
+            let id = sanitize_for_hint(&s.id);
+            format!(
+                "{} active stub(s) — fill or deprecate. First: `forgeplan_get {id}`.",
+                report.active_stubs.len()
+            )
+        } else if let Some(d) = report.possible_duplicates.first() {
+            let id = sanitize_for_hint(&d.id_a);
+            format!(
+                "{} possible duplicate pair(s). Review first: `forgeplan_get {id}`.",
+                report.possible_duplicates.len()
             )
         } else if let Some(o) = report.orphans.first() {
             let id = sanitize_for_hint(o);
@@ -2643,6 +2668,19 @@ impl ForgeplanServer {
                 "{} stale artifact(s). List them: `forgeplan_stale`.",
                 report.stale_count
             )
+        } else if let Some(p) = phase_mismatches.first() {
+            // Use sanitised id from the json! payload above (already sanitised).
+            let id = p
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(sanitize_for_hint)
+                .unwrap_or_else(|| "<id>".to_string());
+            format!(
+                "{} advisory phase mismatch(es). Inspect first: `forgeplan_get {id}`.",
+                phase_mismatches.len()
+            )
+        } else if report.total == 0 {
+            "Workspace has no artifacts. Start: `forgeplan_new kind=prd title=...`.".to_string()
         } else {
             "Project healthy. List pending drafts: `forgeplan_list status=draft`.".to_string()
         };
@@ -2671,10 +2709,38 @@ impl ForgeplanServer {
             })
             .collect();
 
+        // PROB-029 closure: fold the MCP-side `advisory_phase_mismatches`
+        // count into the verdict so MCP consumers (Claude Desktop, agent
+        // IDE plugins) see a consistent `verdict` that reflects ALL signals,
+        // not just the ones the core `health_report` knows about. Without
+        // this, the JSON `verdict` field would say "healthy" while
+        // `advisory_phase_mismatches` printed warnings — the very contradiction
+        // PROB-029 was filed to prevent.
+        let verdict = report.compute_verdict_with(
+            &forgeplan_core::health::VerdictThresholds::default(),
+            phase_mismatches.len(),
+        );
+
+        // Round 5 audit closure HIGH-2 (Logic): an uninitialized workspace
+        // (`total == 0`) was reporting `verdict_summary: "Project looks
+        // healthy."` — the literal pre-PROB-029 phrase the entire feature
+        // exists to eliminate. Override the summary text for the empty
+        // case while keeping the typed `verdict: healthy` (objectively
+        // there ARE no warnings — no false-positive promotion to
+        // NeedsAttention/Unhealthy). Adding `Verdict::Uninitialized` as a
+        // 4th enum variant deferred to v0.30.0 (API stability decision).
+        let verdict_summary = if report.total == 0 {
+            "Workspace has no artifacts. Run `forgeplan_new kind=prd title=...` to start."
+        } else {
+            verdict.human_summary()
+        };
+
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
             "by_status": report.by_status,
+            "verdict": verdict.as_str(),
+            "verdict_summary": verdict_summary,
             "at_risk": report.at_risk.iter().map(|a| serde_json::json!({
                 "id": a.id, "title": a.title, "reason": a.reason
             })).collect::<Vec<_>>(),
