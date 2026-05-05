@@ -24,8 +24,15 @@ A release ships when **all** of the following are true on `dev`:
   correctness, not feature correctness)
 - `forgeplan health` reports 0 blind spots, 0 stale, no advisory phase
   mismatches
+- `./scripts/check-mcp-tool-count.sh` exits 0 — no drift between MCP tool
+  count in source and documentation (drift detector, v0.28.0+, PROB-050 A-30).
+  If the release adds or removes MCP tools, update all documentation locations
+  first, then run the script to verify.
 - `git log origin/main..origin/dev` shows a non-empty diff (no point
   releasing if dev hasn't diverged)
+
+Full CI gate reference (what each check does and how to fix failures):
+[`docs/operations/QUALITY-GATES.ru.md`](../operations/QUALITY-GATES.ru.md)
 
 **Canonical playbook (v0.28.0+)**: `marketplace/playbooks/release.yaml`
 кодифицирует pre-merge часть этого workflow как 12-step playbook
