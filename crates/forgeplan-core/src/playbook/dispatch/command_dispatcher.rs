@@ -162,10 +162,26 @@ impl Dispatcher for CommandDispatcher {
             stdin_data: None,
         };
 
-        // 5. Execute. Helper translates lifecycle into outcome / Transport.
+        // 5. PROB-053 FR-3: emit user-visible stderr warning BEFORE spawning.
+        //    The pre-existing executor-level `--yes` gate (ADR-009) is silent;
+        //    PR-E Round 6 audit MED-2 flagged the absence of a visible warning
+        //    as a CWE-78 / CWE-94 surface. We print to stderr (eprintln, NOT
+        //    tracing::warn) so the operator sees it regardless of `RUST_LOG`.
+        //
+        //    PROB-053 audit Round 7 HIGH-F + MED-D fixes:
+        //    - HIGH-F (CWE-117 / CWE-150): sanitize `program` and each arg
+        //      via `escape_debug` so YAML cannot smuggle ANSI escapes /
+        //      control characters that would forge or hide the warning line.
+        //    - MED-D: print FULL argv (was: `[N args]` truncated) so the
+        //      forensic value of the warning is preserved. Cap total
+        //      rendered length at 4 KiB to bound pathological cases.
+        let warning = format_shell_exec_warning(&program, &args);
+        eprintln!("{warning}");
+
+        // 6. Execute. Helper translates lifecycle into outcome / Transport.
         let outcome = helpers::run_subprocess(spec).await?;
 
-        // 6. Map subprocess outcome → DispatchOutcome.
+        // 7. Map subprocess outcome → DispatchOutcome.
         let success = !outcome.timed_out && outcome.exit_code == Some(0);
         let stderr = if outcome.stderr.is_empty() {
             None
@@ -186,6 +202,52 @@ impl Dispatcher for CommandDispatcher {
     }
 }
 
+/// Maximum total length of the rendered `! shell-exec:` warning line.
+/// Bounds pathological argv ("16 KiB curl payload as one arg") without
+/// truncating typical commands (`cargo build --release` ~25 chars).
+const SHELL_EXEC_WARNING_MAX_LEN: usize = 4 * 1024;
+
+/// Format the user-visible `! shell-exec:` warning emitted before each
+/// `Delegation::Command` spawn.
+///
+/// PROB-053 audit Round 7 fixes:
+/// - **HIGH-F (CWE-117 / CWE-150)**: every `program` and arg is rendered
+///   via `escape_debug` so YAML cannot smuggle ANSI escapes / control
+///   characters that would forge the warning line или disguise the real
+///   command.
+/// - **MED-D**: full argv is rendered (not truncated to `[N args]`) so
+///   the forensic value of the warning is preserved. If the rendered
+///   length exceeds [`SHELL_EXEC_WARNING_MAX_LEN`], it is truncated with
+///   a trailing `… (truncated, original argv N args)` marker.
+///
+/// The `pub(super)` visibility is for the unit test module (collocated)
+/// to assert the format directly without going through `dispatch()`.
+pub(super) fn format_shell_exec_warning(program: &str, args: &[String]) -> String {
+    let mut out = String::from("! shell-exec: ");
+    // escape_debug: replaces control chars и ANSI escapes with \u{...}
+    // sequences — terminal-safe.
+    out.push_str(&program.escape_debug().to_string());
+    for a in args {
+        out.push(' ');
+        out.push_str(&a.escape_debug().to_string());
+    }
+    if out.len() > SHELL_EXEC_WARNING_MAX_LEN {
+        let cap = SHELL_EXEC_WARNING_MAX_LEN.saturating_sub(64);
+        out.truncate(cap);
+        // Find a UTF-8-safe boundary (escape_debug produces ASCII so this
+        // is normally a no-op, но defensive against future change).
+        while !out.is_char_boundary(out.len()) {
+            out.pop();
+        }
+        out.push_str(&format!(
+            "… (truncated, original argv {} arg{})",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" }
+        ));
+    }
+    out
+}
+
 // =====================================================================
 // Tests
 // =====================================================================
@@ -194,6 +256,89 @@ impl Dispatcher for CommandDispatcher {
 mod tests {
     use super::*;
     use crate::playbook::types::{Delegation, OnError};
+
+    // ----- PROB-053 audit Round 7 HIGH-F + MED-D regression tests -----
+
+    /// CWE-117 / CWE-150 regression guard: ANSI escape в `program` is
+    /// rendered как `\u{1b}` (escape_debug), не raw byte. Without this
+    /// guard, a malicious YAML с `command: ["\x1b[2K/usr/bin/curl"]`
+    /// would clear the warning line — defeating FR-3 visibility.
+    #[test]
+    fn shell_exec_warning_escapes_ansi_in_program() {
+        let warning = format_shell_exec_warning("\x1b[2K/usr/bin/curl", &[]);
+        assert!(
+            !warning.contains('\x1b'),
+            "raw ESC byte must not reach stderr: {warning:?}"
+        );
+        assert!(
+            warning.contains("\\u{1b}") || warning.contains("\\x1b"),
+            "ESC must be escape-debug rendered: {warning:?}"
+        );
+    }
+
+    /// CWE-117 regression guard: control characters в args are escaped.
+    #[test]
+    fn shell_exec_warning_escapes_control_chars_in_args() {
+        let warning = format_shell_exec_warning(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                "echo \x1b[31mfake\x1b[0m".into(),
+                "\nrm -rf /".into(),
+            ],
+        );
+        assert!(
+            !warning.contains('\x1b'),
+            "ESC sequences must be escaped: {warning:?}"
+        );
+        assert!(
+            warning.lines().nth(1).is_none(),
+            "warning must remain single-line: {warning:?}"
+        );
+    }
+
+    /// MED-D regression guard: full argv rendered (was: `[N args]`
+    /// truncated, hiding forensic value).
+    #[test]
+    fn shell_exec_warning_renders_full_argv() {
+        let warning = format_shell_exec_warning(
+            "cargo",
+            &[
+                "build".into(),
+                "--release".into(),
+                "-p".into(),
+                "evil".into(),
+            ],
+        );
+        assert!(warning.contains("cargo"), "program present: {warning}");
+        assert!(warning.contains("build"), "first arg present: {warning}");
+        assert!(
+            warning.contains("--release"),
+            "second arg present: {warning}"
+        );
+        assert!(warning.contains("evil"), "all args present: {warning}");
+        assert!(
+            warning.starts_with("! shell-exec: "),
+            "stable prefix: {warning}"
+        );
+    }
+
+    /// MED-D bound: pathological argv truncated с marker, не unbounded.
+    #[test]
+    fn shell_exec_warning_truncates_pathological_argv() {
+        let huge_arg = "x".repeat(8 * 1024);
+        let warning = format_shell_exec_warning("/bin/sh", &["-c".into(), huge_arg]);
+        assert!(
+            warning.len() <= SHELL_EXEC_WARNING_MAX_LEN,
+            "truncation respected MAX_LEN: rendered {} bytes, max {}",
+            warning.len(),
+            SHELL_EXEC_WARNING_MAX_LEN
+        );
+        assert!(
+            warning.contains("truncated"),
+            "truncation marker present: {warning}"
+        );
+    }
 
     fn make_step(id: &str, delegation: Delegation) -> Step {
         Step {

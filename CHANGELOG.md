@@ -9,6 +9,83 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added (Security — PROB-053 / PRD-074 closure)
+
+- **PROB-053 / PRD-074 ✅ — `Delegation::Command` shell-execution gate**
+  (CWE-78 / CWE-94 default-deny). The dispatcher refuses
+  `delegate_to: command` steps unless ONE of the two opt-ins is present:
+  - **CLI flag `--allow-shell`** on `forgeplan playbook run` (per
+    invocation, dedicated shell-exec gate; independent от existing
+    `--yes` ADR-009 confirmation).
+  - **Workspace config** `[playbook] allow_shell = true` в
+    `.forgeplan/config.yaml` (trusted-local pre-approval; do NOT set
+    в repos that fetch playbooks from network/marketplace).
+
+  **User-visible warning**: every `Delegation::Command` step prints
+  `! shell-exec: <argv...>` to stderr (eprintln, NOT tracing::warn) с
+  full argv (escape_debug-sanitized to bound CWE-117 / CWE-150 terminal
+  injection) перед spawning. Operator-readable regardless of
+  `RUST_LOG`. Bound at 4 KiB renders pathological argv с
+  `(truncated, original argv N args)` marker.
+
+  **Config-only auto-approval banner**: when the gate opens via config
+  opt-in (CLI flag absent), an additional `!! shell-exec: AUTO-APPROVED
+  via [playbook] allow_shell=true` banner fires once at run start,
+  surfacing post-hoc that the run inherited shell-exec permission from
+  a checked-in dotfile rather than this invocation.
+
+  **MCP parity**: `forgeplan_playbook_run` learns `allow_shell: bool`
+  parameter (default `false`); tool description documents the
+  requirement so agent integrations discover the gate by reading
+  `tools/list` rather than by trial-and-error.
+
+  **Config parse errors are no longer silent**: pre-Round-7 a malformed
+  `.forgeplan/config.yaml` would silently cause `workspace_allow_shell`
+  to default к `false`, regressing trusted-local workflows без warning
+  (same failure-mode class as PROB-035 / PROB-039). Now CLI emits
+  `Warning: failed to read workspace config ...` to stderr; MCP emits
+  `tracing::warn!` with structured `error` field.
+
+  **Reference playbooks**: `marketplace/playbooks/release.yaml` header
+  documents the `--allow-shell` requirement. `audit.yaml` + `brownfield-docs.yaml`
+  use Plugin/Skill dispatchers (not Command) и не affected.
+
+  **Migration for operators**: existing CI scripts using
+  `forgeplan playbook run X --yes` для shell playbooks must add
+  `--allow-shell` (or set `[playbook] allow_shell = true` once в
+  workspace config). The error path emits a `Fix:` hint pointing к the
+  flag.
+
+  **BREAKING (forgeplan-core lib only)**:
+  - `validate_command_delegate_security(step, allow_shell)` parameter
+    renamed from `yes_flag` (semantics changed — now a dedicated
+    shell-exec opt-in, not the blanket --yes).
+  - `SecurityError::ShellRequiresYes` renamed →
+    `SecurityError::ShellRequiresAllowShell` (variant tag matches the
+    flag name; `#[non_exhaustive]` already required `_ =>` arms).
+    Deprecated `pub const ShellRequiresYes` placeholder shim allows
+    one-release migration window.
+  - `ExecutorConfig` gained `allow_shell: bool` field (separate from
+    existing `yes_flag`; defaults к `false`). Library consumers
+    constructing `ExecutorConfig` directly must add the field.
+  - `Config` struct gained `playbook: Option<PlaybookConfig>` field
+    (defaults к `None` — existing workspaces parse identically).
+
+  **Quality gates**: cargo fmt clean, clippy
+  `--workspace --all-targets --features test-helpers -- -D warnings`
+  clean, **1985 tests pass / 0 fail** (+8 от Round 7 audit closures:
+  shell-exec warning escape, full-argv render, pathological truncation,
+  PlaybookConfig serde round-trip).
+
+  **Audit Round 7** (3 parallel adversarial agents — architect, code-reviewer,
+  security): 9+ findings closed in this PR (HIGH-A: yes-shadow + bad
+  hint, HIGH-B: config-only banner, HIGH-D: silent config swallow,
+  HIGH-E: MCP description, HIGH-F: terminal-injection sanitization,
+  HIGH-C: 4-cell test matrix, MED-C: variant rename, MED-D: full argv).
+  Deferred to follow-up PROBs: F3 ForgeplanCore::Ingest path-traversal,
+  F4 MCP stderr trust asymmetry, MED-E `ExecutorConfig` field coupling,
+  MED-1 ExecutorConfig invariant, plus LOW-1..LOW-4 cosmetic.
+
 ## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
 
 Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five

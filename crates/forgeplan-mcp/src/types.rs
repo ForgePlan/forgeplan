@@ -528,10 +528,16 @@ pub struct PlaybookRunParams {
     /// Optional 1-indexed start step (skip earlier steps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<usize>,
-    /// Required to consent to opt-in shell execution (ADR-009 / SPEC-003).
-    /// Without `yes: true` the tool refuses to run.
+    /// Required to consent to playbook execution (blanket "are you sure?",
+    /// ADR-009 / SPEC-003). Without `yes: true` the tool refuses to run.
     #[serde(default)]
     pub yes: bool,
+    /// Required ALONGSIDE `yes` when the playbook contains
+    /// `Delegation::Command` (shell-exec) steps — PRD-074 §FR-1+§FR-6,
+    /// PROB-053 closure. Workspaces can pre-approve via
+    /// `[playbook] allow_shell = true` in `.forgeplan/config.yaml`.
+    #[serde(default)]
+    pub allow_shell: bool,
 }
 
 /// Params for `forgeplan_ingest`.
