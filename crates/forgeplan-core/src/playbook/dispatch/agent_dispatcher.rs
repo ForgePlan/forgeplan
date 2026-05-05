@@ -50,17 +50,12 @@
 //!   [`super::claude_print::DEFAULT_BUDGET_USD`]).
 //! - Default per-step timeout is 300s (subagents shorter-lived than plugins).
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::claude_print::{
-    self, ClaudePrintResponse, add_dir_for_produces_at, assemble_prompt, effective_allowed_tools,
-    effective_budget_usd,
-};
-use super::helpers::{self, SubprocessSpec};
+use super::claude_print;
 use super::{DispatchError, DispatchOutcome, Dispatcher};
 use crate::playbook::types::{Delegation, Step};
 
@@ -161,7 +156,7 @@ impl AgentDispatcher {
                 return Some(p);
             }
         }
-        which_in_path(DEFAULT_AGENT_BINARY)
+        super::helpers::which_in_path(DEFAULT_AGENT_BINARY)
     }
 }
 
@@ -205,177 +200,31 @@ impl Dispatcher for AgentDispatcher {
             }
         };
 
-        // 4. Build argv per ADR-011 §Decision. Order matters only insofar as
-        //    `--allowedTools` is variadic and MUST be the last flag block —
-        //    we keep it last so a future positional prompt arg won't be
-        //    accidentally consumed (we use stdin, not positional, but the
-        //    rule still protects against future drift).
-        let budget = effective_budget_usd(step);
-        let tools = effective_allowed_tools(step);
-
-        // R1 audit CRITICAL — security-expert C-2: validate every
-        // allowed_tools entry before argv construction (flag-injection
-        // surface).
-        crate::playbook::dispatch::claude_print::validate_allowed_tools(&tools).map_err(
-            |reason| DispatchError::Transport(format!("agent step `{}`: {reason}", step.id)),
-        )?;
-
-        // R1 audit CRITICAL — security-expert C-1: canonicalise produces_at,
-        // reject `..` and absolute paths to prevent workspace escape via
-        // `--add-dir`.
-        let add_dir = add_dir_for_produces_at(step, &self.workspace_root).map_err(|reason| {
-            DispatchError::Transport(format!("agent step `{}`: {reason}", step.id))
-        })?;
-
-        let mut args: Vec<String> = Vec::with_capacity(11 + tools.len());
-        args.push("--print".to_string());
-        args.push("--agent".to_string());
-        args.push(agent_name.clone());
-        args.push("--output-format".to_string());
-        args.push("json".to_string());
-        args.push("--max-budget-usd".to_string());
-        // R1 audit CRITICAL (rust+code-review C-1): shared format_budget
-        // for argv-shape parity with PluginDispatcher (pre-fix Plugin emitted
-        // "1.00" while Agent emitted "1" for default budget).
-        args.push(crate::playbook::dispatch::claude_print::format_budget(
-            budget,
-        ));
-        if let Some(dir) = &add_dir {
-            args.push("--add-dir".to_string());
-            args.push(dir.to_string_lossy().into_owned());
-        }
-        // `--allowedTools` is variadic: each tool is its own argv slot,
-        // matching the contract pinned in EVID-093 + claude_print.rs docs.
-        if !tools.is_empty() {
-            args.push("--allowedTools".to_string());
-            for tool in &tools {
-                args.push(tool.clone());
-            }
-        }
-
-        // 5. Compose env allow-list — base PATH/HOME/USER only. We
-        //    deliberately do NOT forward `ANTHROPIC_API_KEY` etc. — `claude`
-        //    relies on its existing keychain session.
-        let base_env: HashMap<String, String> = std::env::vars().collect();
-        let env = helpers::build_env_allowlist(&[], &base_env);
-
-        // 6. Assemble prompt for stdin. produces_at hint is appended by
-        //    `assemble_prompt` itself (claude_print.rs contract).
-        let prompt = assemble_prompt(step);
-        let stdin_bytes = prompt.into_bytes();
-
-        // 7. Build subprocess spec. cwd = workspace_root so relative
-        //    `produces_at` paths land where the executor expects.
-        // Per-step timeout (PRD-072 FR-8): step.timeout_seconds overrides
-        // the dispatcher default when set.
+        // 4-9: Resolve timeout + delegate to shared invoke().
+        // PROB-050 A-4 closure: argv build + env + prompt + spawn + parse
+        // + render is the same 9-step recipe both dispatchers ran. Lives
+        // in `claude_print::invoke` now — see that function for the full
+        // sequence. Per-step timeout override (PRD-072 FR-8) is computed
+        // here because it depends on the dispatcher's own default.
         let timeout = step
             .timeout_seconds
             .map(|s| Duration::from_secs(u64::from(s)))
             .unwrap_or(self.default_timeout);
-        let program_str = program.to_string_lossy().into_owned();
-        let spec = SubprocessSpec {
-            program: &program_str,
-            args: &args,
-            env: &env,
-            cwd: Some(&self.workspace_root),
+        claude_print::invoke(
+            &format!("agent `{agent_name}`"),
+            &agent_name,
+            step,
+            &self.workspace_root,
+            &program,
             timeout,
-            stdin_data: Some(&stdin_bytes),
-        };
-
-        // 8. Execute. Helper translates lifecycle into outcome / Transport.
-        let outcome = helpers::run_subprocess(spec).await?;
-
-        // 9. Map subprocess outcome → DispatchOutcome.
-        //    Decision tree per ADR-011 / EVID-093:
-        //    - timed_out → failure with stderr noting timeout
-        //    - exit_code != Some(0) and stdout NOT parseable JSON →
-        //      failure with raw stderr
-        //    - JSON parsed and is_success() true → success
-        //    - JSON parsed and is_success() false → failure with rendered
-        //      failure context (api_error_status / cost / partial result)
-        if outcome.timed_out {
-            return Ok(DispatchOutcome {
-                success: false,
-                output_path: None,
-                stderr: Some(format!(
-                    "agent `{agent_name}` timed out after {:?}",
-                    outcome.duration
-                )),
-            });
-        }
-
-        let stdout_str = String::from_utf8_lossy(&outcome.stdout);
-        let stderr_str = if outcome.stderr.is_empty() {
-            String::new()
-        } else {
-            String::from_utf8_lossy(&outcome.stderr).into_owned()
-        };
-
-        match serde_json::from_str::<ClaudePrintResponse>(stdout_str.trim()) {
-            Ok(response) => {
-                let success = response.is_success();
-                let stderr = if success {
-                    if stderr_str.is_empty() {
-                        None
-                    } else {
-                        Some(stderr_str)
-                    }
-                } else {
-                    let mut combined = response.render_failure_context();
-                    if !stderr_str.is_empty() {
-                        combined.push_str(" | stderr=");
-                        combined.push_str(&stderr_str);
-                    }
-                    Some(combined)
-                };
-                let output_path = if success {
-                    step.produces_at.clone()
-                } else {
-                    None
-                };
-                Ok(DispatchOutcome {
-                    success,
-                    output_path,
-                    stderr,
-                })
-            }
-            Err(parse_err) => {
-                // Unparseable stdout: treat exit_code==Some(0) AND empty
-                // stderr as a malformed-success edge case (still failure
-                // because the JSON envelope is mandatory per ADR-011), but
-                // surface a readable diagnostic.
-                let mut diag =
-                    format!("agent `{agent_name}` produced unparseable JSON envelope: {parse_err}");
-                if let Some(code) = outcome.exit_code {
-                    diag.push_str(&format!(" | exit_code={code}"));
-                }
-                if !stderr_str.is_empty() {
-                    diag.push_str(" | stderr=");
-                    diag.push_str(&stderr_str);
-                }
-                Ok(DispatchOutcome {
-                    success: false,
-                    output_path: None,
-                    stderr: Some(diag),
-                })
-            }
-        }
+        )
+        .await
     }
 }
 
-/// Local copy of `which_in_path` — helpers::which_in_path is private. Kept
-/// minimal: searches `$PATH`, returns first hit. If a third dispatcher
-/// needs this we promote it to `helpers` (coordinate with helpers-author).
-fn which_in_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(program);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
+// PROB-050 A-5 closure: `which_in_path` consolidated into
+// `super::helpers::which_in_path` (was: 3 identical copies, one per
+// dispatcher). All call sites now use the shared `pub(super) fn`.
 
 // =====================================================================
 // Tests
@@ -386,14 +235,12 @@ mod tests {
     use super::*;
     use crate::playbook::types::{Delegation, OnError};
 
-    /// Serializes tests that mutate process-global PATH / FORGEPLAN_CLAUDE_BIN.
-    /// Without this, fake-claude scripts in concurrently-running tests can see
-    /// the temporarily-broken PATH set by `*_when_tool_absent` cases and lose
-    /// their ability to locate `/bin/sh` for shebang exec, producing flakiness
-    /// (~1 in 5 runs). Uses `tokio::sync::Mutex` because the guard is held
-    /// across `await` points (clippy::await_holding_lock would fire on
-    /// `std::sync::Mutex`).
-    static ENV_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    /// PROB-050 A-6 closure: serialization lock moved to
+    /// `super::claude_print::DISPATCH_ENV_LOCK` so `helpers::tests` and
+    /// `plugin_dispatcher::tests` share the same guard. This alias keeps
+    /// existing test bodies (`ENV_GUARD.lock().await`) compiling without
+    /// rewrite.
+    use super::claude_print::DISPATCH_ENV_LOCK as ENV_GUARD;
 
     fn make_step(id: &str, delegation: Delegation) -> Step {
         Step {
@@ -473,7 +320,8 @@ mod tests {
         // Point claude_binary at a real file so resolve_claude_binary
         // would succeed if we got that far — proves the validator fires
         // ahead of resolution.
-        let cargo = which_in_path("cargo").unwrap_or_else(|| PathBuf::from("/bin/sh"));
+        let cargo = super::super::helpers::which_in_path("cargo")
+            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
         let d = AgentDispatcher::new(PathBuf::from(".")).with_claude_binary(cargo);
         let step = make_step(
             "evil",
@@ -579,7 +427,7 @@ mod tests {
     /// Resolution prefers the explicit `claude_binary` when it exists on disk.
     #[test]
     fn resolve_claude_binary_prefers_explicit_path() {
-        let cargo_path = which_in_path("cargo");
+        let cargo_path = super::super::helpers::which_in_path("cargo");
         let Some(cargo) = cargo_path else {
             return;
         };
@@ -605,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_claude_binary_honours_env_override_in_test_builds() {
         let _guard = ENV_GUARD.lock().await;
-        let cargo_path = which_in_path("cargo");
+        let cargo_path = super::super::helpers::which_in_path("cargo");
         let Some(cargo) = cargo_path else {
             return; // CI without cargo on PATH — skip rather than fail.
         };

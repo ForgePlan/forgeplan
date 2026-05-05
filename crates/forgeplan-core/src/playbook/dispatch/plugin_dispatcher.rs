@@ -50,17 +50,12 @@
 //! - timeout via `tokio::time::timeout`; default 600s (plugins regularly take
 //!   5+ minutes; cheaper than re-running on a tight cap).
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::claude_print::{
-    self, ClaudePrintResponse, add_dir_for_produces_at, assemble_prompt, effective_allowed_tools,
-    effective_budget_usd, format_budget, validate_allowed_tools,
-};
-use super::helpers::{self, SubprocessSpec, build_env_allowlist};
+use super::claude_print;
 use super::{DispatchError, DispatchOutcome, Dispatcher};
 use crate::playbook::types::{Delegation, Step};
 
@@ -71,7 +66,12 @@ const DEFAULT_CLAUDE_BINARY: &str = "claude";
 /// Default per-step timeout for plugins. Plugins are typically slower than
 /// agents/skills — bumped to 600s vs the helper default of 300s
 /// ([`super::helpers::DEFAULT_TIMEOUT_SECS`]).
-pub const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 600;
+///
+/// PR-E audit MED-1 (architect): tightened from `pub` to `pub(crate)` for
+/// symmetry with PR-E's other lockdown sweep on `claude_print::DEFAULT_*`.
+/// No external library consumer reads this; restricting protects from
+/// being accidentally pinned as a stability contract.
+pub(crate) const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 600;
 
 /// Validate an agent slug before passing it to `claude --agent`. Wraps the
 /// shared [`claude_print::validate_agent_name`] helper into the dispatcher
@@ -142,7 +142,7 @@ impl PluginDispatcher {
         if let Some(path) = &self.claude_binary {
             return Some(path.clone());
         }
-        which_in_path(DEFAULT_CLAUDE_BINARY)
+        super::helpers::which_in_path(DEFAULT_CLAUDE_BINARY)
     }
 }
 
@@ -193,143 +193,29 @@ impl Dispatcher for PluginDispatcher {
             }
         })?;
 
-        // Compute helper-derived inputs once.
-        let prompt = assemble_prompt(step);
-        let allowed_tools = effective_allowed_tools(step);
-        let budget = effective_budget_usd(step);
-
-        // R1 audit CRITICAL — security-expert C-2: validate every
-        // allowed_tools entry against the tool-name regex BEFORE argv
-        // construction, blocking flag-injection like `--debug-flag-x`
-        // smuggled through `Step.allowed_tools`.
-        validate_allowed_tools(&allowed_tools).map_err(|reason| {
-            DispatchError::Transport(format!("plugin step `{}`: {reason}", step.id))
-        })?;
-
-        // R1 audit CRITICAL — security-expert C-1: canonicalise produces_at
-        // and reject `..` / absolute paths to prevent workspace escape
-        // through `--add-dir`. Returns Result now.
-        let add_dir = add_dir_for_produces_at(step, &self.workspace_root).map_err(|reason| {
-            DispatchError::Transport(format!("plugin step `{}`: {reason}", step.id))
-        })?;
-
-        // Assemble argv per ADR-011 §Decision. Order matters: `--add-dir`
-        // MUST precede `--allowedTools` because the latter is variadic and
-        // would consume the `--add-dir <path>` pair as additional tool
-        // names. R1 audit CRITICAL (code-review C-1) for plugin path —
-        // pre-fix order put --allowedTools first, breaking --add-dir.
-        let mut args: Vec<String> = Vec::with_capacity(11 + allowed_tools.len());
-        args.push("--print".to_string());
-        args.push("--agent".to_string());
-        args.push(agent_slug.to_string());
-        args.push("--output-format".to_string());
-        args.push("json".to_string());
-        args.push("--max-budget-usd".to_string());
-        // R1 audit CRITICAL (rust+code-review C-1/C-2): shared
-        // format_budget for argv-shape parity between Plugin and Agent.
-        args.push(format_budget(budget));
-        if let Some(dir) = &add_dir {
-            args.push("--add-dir".to_string());
-            args.push(dir.to_string_lossy().into_owned());
-        }
-        if !allowed_tools.is_empty() {
-            args.push("--allowedTools".to_string());
-            for tool in &allowed_tools {
-                args.push(tool.clone());
-            }
-        }
-
-        // Env: explicit allow-list per ADR-010 (PATH/HOME/USER only).
-        // We deliberately do NOT add ANTHROPIC_API_KEY: `claude` reuses
-        // the user's logged-in session by default, and propagating the
-        // key creates an unnecessary secret-handling surface.
-        let base_env: HashMap<String, String> = std::env::vars().collect();
-        let env = build_env_allowlist(&[], &base_env);
-
+        // PROB-050 A-4 closure: argv build + env + prompt + spawn + parse
+        // + render delegated to shared `claude_print::invoke`. Per-step
+        // timeout override (PRD-072 FR-8) computed here because it depends
+        // on the dispatcher's own default.
         let timeout = step
             .timeout_seconds
             .map(|s| Duration::from_secs(u64::from(s)))
             .unwrap_or(self.default_timeout);
-
-        let program_str = binary.to_string_lossy().into_owned();
-        let prompt_bytes = prompt.into_bytes();
-        let spec = SubprocessSpec {
-            program: &program_str,
-            args: &args,
-            env: &env,
-            cwd: Some(self.workspace_root.as_path()),
+        claude_print::invoke(
+            &format!("plugin `{name}/{target}`"),
+            agent_slug,
+            step,
+            &self.workspace_root,
+            &binary,
             timeout,
-            stdin_data: Some(&prompt_bytes),
-        };
-
-        let outcome = helpers::run_subprocess(spec).await?;
-
-        // Decode the structured envelope. If decoding fails (non-JSON
-        // stdout — e.g. test fixture with `/bin/echo`), surface the raw
-        // bytes via stderr-style diagnostics so the user sees what was
-        // actually emitted.
-        let stdout_text = String::from_utf8_lossy(&outcome.stdout).into_owned();
-        let stderr_text_raw = String::from_utf8_lossy(&outcome.stderr).into_owned();
-
-        if outcome.timed_out {
-            return Ok(DispatchOutcome {
-                success: false,
-                output_path: None,
-                stderr: Some(format!(
-                    "plugin `{name}/{target}` timed out after {}s",
-                    timeout.as_secs()
-                )),
-            });
-        }
-
-        match serde_json::from_str::<ClaudePrintResponse>(&stdout_text) {
-            Ok(response) if response.is_success() => Ok(DispatchOutcome {
-                success: true,
-                output_path: step.produces_at.clone(),
-                stderr: None,
-            }),
-            Ok(response) => Ok(DispatchOutcome {
-                success: false,
-                output_path: None,
-                stderr: Some(response.render_failure_context()),
-            }),
-            Err(err) => {
-                // Non-JSON stdout. Could be: legacy binary, test fixture,
-                // or a `claude` invocation that failed before producing
-                // structured output. Combine stderr + parse error for the
-                // diagnostic so the user sees both.
-                let mut diag = format!("failed to decode claude --print JSON envelope: {err}");
-                if !stderr_text_raw.is_empty() {
-                    diag.push_str(" | stderr=");
-                    diag.push_str(stderr_text_raw.trim_end());
-                }
-                if !stdout_text.is_empty() {
-                    let preview: String = stdout_text.chars().take(200).collect();
-                    diag.push_str(" | stdout_preview=");
-                    diag.push_str(preview.trim_end());
-                }
-                Ok(DispatchOutcome {
-                    success: false,
-                    output_path: None,
-                    stderr: Some(diag),
-                })
-            }
-        }
+        )
+        .await
     }
 }
 
-/// Local `which` re-implementation — kept private to avoid importing the
-/// helpers module's private fn. Searches `$PATH` for `program`.
-fn which_in_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(program);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
+// PROB-050 A-5 closure: `which_in_path` consolidated into
+// `super::helpers::which_in_path`. The local copy was added when helpers'
+// version was private; now `pub(super)`, both dispatchers share it.
 
 // =====================================================================
 // Tests
@@ -341,16 +227,19 @@ mod tests {
     use crate::playbook::types::{Delegation, OnError, Step};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use tokio::sync::Mutex;
 
-    /// Serialize tests that mutate process-global state (`PATH`,
-    /// `FORGEPLAN_BIN`). `cargo test` runs cases on multiple threads, so
-    /// without this guard concurrent env mutations race and produce
-    /// flaky results.
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    /// PROB-050 A-6 closure (HIGH-1 audit fix on PR-E):
+    /// previously `plugin_dispatcher::tests` had its OWN local ENV_LOCK
+    /// while `agent_dispatcher::tests` and `helpers::tests` shared
+    /// `claude_print::DISPATCH_ENV_LOCK`. The PR-E commit message claimed
+    /// the cross-dispatcher race was closed; actually only agent ↔ helpers
+    /// were unified, leaving plugin tests racing against the other two.
+    /// All three now share the SAME mutex — true cross-dispatcher
+    /// serialization, not three private cliques.
+    use super::claude_print::DISPATCH_ENV_LOCK as ENV_GUARD;
 
     async fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().await
+        ENV_GUARD.lock().await
     }
 
     fn plugin_step(id: &str, name: &str, target: &str) -> Step {

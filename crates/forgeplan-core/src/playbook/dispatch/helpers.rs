@@ -87,10 +87,20 @@ pub struct SubprocessOutcome {
 
 /// Maximum captured output per stream (per ADR-010 Negative Trade-offs).
 /// Prevents OOM на runaway subprocess writing GB to stdout.
-pub const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
+///
+/// PR-E audit MED-1: tightened to `pub(crate)` (no external consumer).
+pub(crate) const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Default subprocess timeout if `Step.timeout_seconds` is not set (FR-8 default).
-pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+///
+/// PR-E audit MED-1: tightened to `pub(crate)` (no external consumer).
+/// `#[allow(dead_code)]` because the constant is referenced only by
+/// rustdoc cross-link in `plugin_dispatcher.rs::DEFAULT_PLUGIN_TIMEOUT_SECS`,
+/// not by any code path. Kept rather than deleted because the cross-link
+/// is load-bearing documentation (operators consult to understand the
+/// 300s helper baseline vs 600s plugin override).
+#[allow(dead_code)]
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 /// Spawn `spec.program` as a subprocess, drain stdout/stderr concurrently,
 /// enforce the timeout, and return a [`SubprocessOutcome`].
@@ -299,8 +309,12 @@ pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// `which forgeplan` minimal impl — searches `$PATH`, returns first hit.
-fn which_in_path(program: &str) -> Option<PathBuf> {
+/// `which <program>` minimal impl — searches `$PATH`, returns first hit.
+///
+/// PROB-050 A-5 closure: promoted from `fn` (helpers-private) to
+/// `pub(super) fn` so AgentDispatcher and PluginDispatcher can drop their
+/// duplicate copies and consume the single source of truth here.
+pub(super) fn which_in_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(program);
@@ -339,8 +353,9 @@ mod tests {
         assert_eq!(env.get("CARGO_HOME"), Some(&"/home/x/.cargo".to_string()));
     }
 
-    #[test]
-    fn resolve_forgeplan_binary_respects_env_override() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // DISPATCH_ENV_LOCK pins env vars across spawn for test isolation
+    async fn resolve_forgeplan_binary_respects_env_override() {
         // PROB-050 A-14 strengthen (Round 3 audit, test-coverage HIGH-1):
         // pre-PR-B this test asserted only `is_some()`, which any host with
         // `forgeplan` on PATH would satisfy via the `which_in_path` fallback
@@ -349,6 +364,13 @@ mod tests {
         // the assertion, and (b) compare exact PathBuf so removing or
         // widening the `#[cfg(test)]` gate breaks the test. Mirrors the
         // pattern in `agent_dispatcher::tests::dispatch_emits_delegate_missing_when_tool_absent`.
+        //
+        // PROB-050 A-6 closure (Round 5 LOW-1 race fix): now serialises against
+        // peer dispatcher tests via the shared `DISPATCH_ENV_LOCK` instead of
+        // relying on the (false) assumption that `helpers::tests` has no peer
+        // mutating env. `agent_dispatcher::tests` and `plugin_dispatcher::tests`
+        // share the same lock, eliminating cross-file PATH-mutation flakiness.
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
         let cargo_path = which_in_path("cargo");
         let Some(cargo) = cargo_path else {
             return;
@@ -356,10 +378,7 @@ mod tests {
         let original_path = std::env::var_os("PATH");
         // SAFETY: test-local env var manipulation; PATH save/restore guards
         // against leaking the broken PATH to subsequent tests in the same
-        // `cargo test` process. PROB-050 A-31 tracks promoting all
-        // dispatch-test env mutations to a shared static lock; today
-        // `helpers::tests` has no peer test mutating env, so the local
-        // pattern stays defensive-only.
+        // `cargo test` process.
         unsafe {
             std::env::set_var("PATH", "/nonexistent-dir-prob-050-a14-helpers-test");
             std::env::set_var("FORGEPLAN_BIN", &cargo);
