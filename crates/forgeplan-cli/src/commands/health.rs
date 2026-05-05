@@ -65,6 +65,14 @@ pub async fn run(
     // No hints → workspace healthy → render `Done.` terminal indicator.
 
     if json {
+        // Round 5 audit closure HIGH-2 (Logic): match MCP `forgeplan_health`
+        // override for `total == 0` workspaces — same "uninitialized"
+        // text on both surfaces so jq filters work the same way.
+        let verdict_summary = if report.total == 0 {
+            "Workspace has no artifacts. Run `forgeplan new prd \"<title>\"` to start."
+        } else {
+            report.verdict.human_summary()
+        };
         let json_data = serde_json::json!({
             "project": config.project_name,
             "total": report.total,
@@ -75,7 +83,7 @@ pub async fn run(
             // had only raw counts and `next_actions` strings — re-implementing
             // the verdict aggregation downstream would silently drift.
             "verdict": report.verdict.as_str(),
-            "verdict_summary": report.verdict.human_summary(),
+            "verdict_summary": verdict_summary,
             "by_kind": report.by_kind.iter().map(|(k, v)| serde_json::json!({"kind": k, "count": v})).collect::<Vec<_>>(),
             "by_status": report.by_status.iter().map(|(s, v)| serde_json::json!({"status": s, "count": v})).collect::<Vec<_>>(),
             "at_risk": report.at_risk.iter().map(|a| serde_json::json!({"id": a.id, "title": a.title, "reason": a.reason})).collect::<Vec<_>>(),
