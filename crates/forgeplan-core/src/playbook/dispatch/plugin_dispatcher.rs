@@ -112,6 +112,13 @@ impl PluginDispatcher {
 
     /// Override the `claude` binary path. Used by tests (point at
     /// `/bin/echo`, fake JSON-emitting scripts, etc.).
+    ///
+    /// **Security boundary (CWE-426 / PROB-050 A-14, PR-E Round 6 audit)**:
+    /// gated to `#[cfg(any(test, all(feature = "test-helpers",
+    /// debug_assertions)))]` so release binaries cannot inject an
+    /// attacker-supplied binary path. Symmetric with
+    /// [`AgentDispatcher::with_claude_binary`].
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub fn with_claude_binary(mut self, path: PathBuf) -> Self {
         self.claude_binary = Some(path);
         self
@@ -119,7 +126,9 @@ impl PluginDispatcher {
 
     /// Deprecated alias for [`Self::with_claude_binary`]. Retained so that
     /// existing call sites compile during the ADR-011 migration; will be
-    /// removed once Wave 1B+ are merged.
+    /// removed once Wave 1B+ are merged. Same cfg gate as
+    /// `with_claude_binary` for the same security reason.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     #[deprecated(note = "renamed to `with_claude_binary` per ADR-011")]
     pub fn with_task_tool(self, path: PathBuf) -> Self {
         self.with_claude_binary(path)

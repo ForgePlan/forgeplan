@@ -50,8 +50,13 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   - `claude_print::parse_envelope()` — UTF-8-trimmed JSON envelope decode.
     Plugin dispatcher previously had no `.trim()` — silent divergence
     from agent path closed.
-  - `claude_print::format_timeout_msg()` — uniform `.as_secs()` rendering.
-    Agent dispatcher previously leaked `Duration` Debug repr — closed.
+  - `claude_print::format_timeout_msg()` — uniform second/millisecond
+    rendering. Agent dispatcher previously leaked `Duration` Debug repr;
+    plugin dispatcher used `.as_secs()` only. PR-E Round 6 audit closure:
+    sub-second durations now render `Nms` (was: `0s` for any
+    `< 1s` timeout, which confused operators chasing tight-loop timeouts).
+    Production path is `Step.timeout_seconds: u32 ≥ 1`, so the
+    common-case `Ns` rendering is byte-stable.
   - `helpers::which_in_path` promoted from `fn` to `pub(super) fn`;
     3 identical local copies removed from the dispatchers.
   - `claude_print::DISPATCH_ENV_LOCK` — `#[cfg(test)] pub(super) static
@@ -59,10 +64,15 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
     `plugin_dispatcher::tests`, and `helpers::tests` (Round 5 audit
     Logic LOW-1 + PR-E audit HIGH-1: cross-test PATH-mutation race
     fully closed).
-  - **No behaviour change**: argv shape byte-identical pre/post; error
-    messages preserved where tests assert on them; the silent fixes
-    (parse-envelope `.trim()`, timeout `.as_secs()`) tighten consistency
-    without changing observable contracts.
+  - **Behaviour delta** (corrected from earlier honesty-of-claim audit):
+    argv shape IS byte-identical pre/post; agent-side diagnostic strings
+    were unified to plugin's pre-existing format — specifically
+    `"failed to decode claude --print JSON envelope"` (was "produced
+    unparseable JSON envelope" agent-side), `format_timeout_msg`
+    output (was `Duration` Debug repr agent-side), and the new
+    `stdout_preview=` failure-context block (added on agent path; plugin
+    path always had it). Operators / scripts / log-grep regexes that
+    matched the old agent-only strings need a one-line update.
 
 - **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
   variants `StoreTransient` (recoverable) and `StoreFatal` (not recoverable).**
@@ -70,9 +80,16 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   removed. Categorisation logic (`MutationError::from_store_err`) inspects the
   `anyhow::Error` chain (lancedb / std::io shapes) and routes between the two.
   Default fallthrough is `StoreTransient` — strict refinement of legacy
-  recoverable=true. **Note**: `is_recoverable()` is exposed but not yet
-  consumed by MCP / CLI retry loops; the typed-error split is infrastructure
-  for forthcoming retry wiring (tracked under PROB-049 follow-ups).
+  recoverable=true. **Honesty note** (PR-E Round 6 audit HIGH-2):
+  `is_recoverable()` is intentionally infrastructure-only in v0.29.0 —
+  no MCP / CLI retry loop currently consumes it. The audit flagged this
+  as a risk (variants drifting from real failure modes without a
+  consumer). Mitigation: this CHANGELOG block is the load-bearing
+  contract; the first MCP retry wiring (tracked as PROB-049 follow-up
+  for v0.30.0, candidate: `forgeplan_health` cold-start LanceDB lock
+  contention) will close the loop. Until then, downstream library
+  consumers calling `is_recoverable()` should treat the boolean as a
+  *hint* rather than a stable contract.
 - **PROB-049 H-6 ✅ closes — `MutationContext` introduced for projection helpers.**
   All 17 file-first mutation helpers in `forgeplan_core::projection` now take
   `&MutationContext<'_>` instead of separate `(workspace, store)` arguments.
@@ -80,32 +97,59 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   is `#[non_exhaustive]` and constructed via `MutationContext::new(...)` —
   external library consumers may not use a struct literal.
 - **PROB-049 H-4 ✅ closes — `# Errors` rustdoc on all 17 projection helpers.**
-- **PROB-029 ✅ closes — typed `Verdict` aggregator (`Healthy / NeedsAttention
-  / Unhealthy`) on `HealthReport`.** Pure `compute_verdict[_with]` functions
-  with configurable `VerdictThresholds`. Both new public types are
-  `#[non_exhaustive]`. CLI `forgeplan health` banner driven off the verdict
-  (no longer disagrees with `next_actions`). `next_actions` rewritten to
-  emit concrete remediation commands. MCP `forgeplan_health` and CLI `--json`
-  both expose `verdict` + `verdict_summary` fields. **Round 5 audit closures
-  (HIGH Logic + Documentation)**: MCP `_next_action` ladder now checks
-  active_stubs + possible_duplicates + phase_mismatches before the "Project
-  healthy" fallthrough (eliminates contradiction-via-different-field);
-  uninitialized workspaces (`total == 0`) emit a distinct `verdict_summary`
-  ("Workspace has no artifacts ...") on both CLI and MCP surfaces; MCP tool
+- **PROB-029 ✅ closes — typed `Verdict` aggregator (`Empty / Healthy /
+  NeedsAttention / Unhealthy`) on `HealthReport`.** Pure
+  `compute_verdict[_with]` functions with configurable
+  `VerdictThresholds`. Both new public types are `#[non_exhaustive]`. CLI
+  `forgeplan health` banner driven off the verdict (no longer disagrees
+  with `next_actions`). `next_actions` rewritten to emit concrete
+  remediation commands. MCP `forgeplan_health` and CLI `--json` both
+  expose `verdict` + `verdict_summary` fields. **PR-E Round 6 audit MED
+  closure**: `Verdict::Empty` is now a proper 4th variant (was deferred
+  at Round 5 via manual `verdict_summary` overrides on CLI + MCP
+  surfaces; both overrides removed in this release because
+  `human_summary()` for `Empty` carries the right text by construction).
+  CI gates that auto-promoted on `verdict == "healthy"` no longer
+  promote uninitialized projects. **Round 5 audit closures (HIGH Logic +
+  Documentation)**: MCP `_next_action` ladder now checks active_stubs +
+  possible_duplicates + phase_mismatches before the "Project healthy"
+  fallthrough (eliminates contradiction-via-different-field); MCP tool
   description advertises the `verdict` field for agent discovery.
 
 ### Security
 
-- **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**.
-  `AgentDispatcher::resolve_claude_binary` and the sibling
-  `helpers::resolve_forgeplan_binary` now gate their respective
-  `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` env-var overrides behind
-  `#[cfg(test)]`. Release binaries silently ignore both env vars; only
-  test builds honour them for fixture wiring. Restores parity with
-  `PluginDispatcher` (which never read these env vars) and closes the
-  v0.28.0 release-notes promise (audit S-2 escalation, see
-  [`docs/operations/phase-b-real-e2e-2026-05-03.md`](docs/operations/phase-b-real-e2e-2026-05-03.md)
-  F-RUNTIME-7).
+- **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**
+  (PR-E Round 6 audit HIGH closure broadens the original mitigation).
+  Two equivalent injection surfaces are now both closed:
+
+  1. **Env-var path**:
+     `AgentDispatcher::resolve_claude_binary` and the sibling
+     `helpers::resolve_forgeplan_binary` gate their respective
+     `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` env-var overrides behind
+     `#[cfg(test)]`. Release binaries silently ignore both env vars;
+     only test builds honour them for fixture wiring. Closes the
+     v0.28.0 release-notes promise (audit S-2 escalation, see
+     [`docs/operations/phase-b-real-e2e-2026-05-03.md`](docs/operations/phase-b-real-e2e-2026-05-03.md)
+     F-RUNTIME-7).
+
+  2. **Struct-API path** (PR-E Round 6 audit HIGH-1, found by
+     adversarial security review): `AgentDispatcher::claude_binary` was
+     a `pub` field; `with_claude_binary` was a `pub` builder, both
+     un-gated. A release-build caller could write attacker-controlled
+     paths directly via the struct API, defeating the env-var
+     hardening. Both `AgentDispatcher` and `PluginDispatcher` now:
+     (a) keep `claude_binary` as a private field (only `new()` writes
+     `None`), and (b) gate `with_claude_binary` (and the deprecated
+     aliases `with_task_tool` / `with_task_tool_path`) behind
+     `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`.
+     Pattern mirrors `LanceStore` test-helper gating in
+     `crates/forgeplan-core/src/db/store.rs:361-384` —
+     `debug_assertions` ensures a downstream consumer who accidentally
+     enables `test-helpers` in a `--release` build still gets a
+     compile error, not a silent activation. Both surfaces now
+     symmetric (architectural audit HIGH-1: pre-fix PluginDispatcher
+     had no env path while AgentDispatcher had both, asymmetric
+     hardening).
 
   **Migration for operators** (CLI / brew / binary distributions):
   the env-var path was never a documented contract; operators relying on
@@ -114,9 +158,44 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   layer. There is no per-invocation override at the YAML schema (SPEC-003)
   today; tracked as PROB-050 A-31 if such a surface becomes needed.
 
-  **Library consumers** embedding `forgeplan-core` directly can use the
-  `AgentDispatcher::with_claude_binary(path)` builder hook for
-  fixture/spawn-target redirection.
+  **Library consumers** embedding `forgeplan-core` directly: the
+  `with_claude_binary(path)` builder is now feature-gated. For test
+  wiring, build with `--features test-helpers` (and run in debug
+  profile, or unit-test cfg). For production wiring, use `new()` and
+  rely on `$PATH` resolution.
+
+### Deferred to v0.30.0 (PR-E Round 6 audit findings — pre-existing surfaces, not v0.29.0 regressions)
+
+- **TOCTOU + symlink-follow in `which_in_path`** (Sec MED-1):
+  `is_file()` follows symlinks, no `canonicalize`, no executable-bit
+  check. Window between resolve and `Command::spawn` allows TOCTOU
+  swap on a writable PATH dir. Pre-existing surface (existed before
+  PR-E refactor). Tracked as **PROB-TBD (v0.30.0 cycle)** — consider canonicalize +
+  parent-dir ownership/mode check + path caching on dispatcher.
+- **`Delegation::Command` CWE-78 surface** (Sec MED-2):
+  `Delegation::Command { command: Vec<String> }` parses directly from
+  YAML with no allowlist / signing / user-facing warning. Real shell
+  injection vector if playbooks loaded from network/marketplace.
+  Tracked as **PROB-TBD (v0.30.0 cycle)** — gate behind feature flag /
+  `--allow-shell` CLI flag, or require signing for marketplace.
+- **`assemble_prompt` produces_at injection** (Sec LOW-1):
+  workspace-relative path is splice-formatted into natural-language
+  prompt; backticks could close markdown code-fence and inject
+  prompt-instructions to the agent. Pre-existing surface. Tracked
+  as **PROB-TBD (v0.30.0 cycle)** — validate `produces_at` against
+  `^[A-Za-z0-9._/-]+$` before splicing.
+- **`claude_print` god-module split** (Arch MED-2):
+  module is 1066 LOC with ~9 responsibilities (argv, env, prompt,
+  validators, byte-truncation, JSON parsing, failure rendering,
+  timeout formatting, test mutex). Tracked as **PROB-TBD (v0.30.0 cycle)** —
+  refactor into `claude_print/{argv.rs, envelope.rs, validators.rs,
+  invoke.rs, test_lock.rs}` keeping `mod.rs` as façade. Cosmetic /
+  maintainability, not security.
+- **MED-1 leaky-abstraction in `compute_verdict_with`** (Arch MED-1):
+  stored `HealthReport.verdict` may disagree with MCP-computed
+  verdict (which folds in `phase_mismatches`). By-design today;
+  consider removing stored field in v0.30.0 or renaming to
+  `partial_verdict`. Tracked as **PROB-TBD (v0.30.0 cycle)**.
 
 ## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
 

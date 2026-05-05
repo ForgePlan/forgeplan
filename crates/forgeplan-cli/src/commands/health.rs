@@ -65,14 +65,13 @@ pub async fn run(
     // No hints → workspace healthy → render `Done.` terminal indicator.
 
     if json {
-        // Round 5 audit closure HIGH-2 (Logic): match MCP `forgeplan_health`
-        // override for `total == 0` workspaces — same "uninitialized"
-        // text on both surfaces so jq filters work the same way.
-        let verdict_summary = if report.total == 0 {
-            "Workspace has no artifacts. Run `forgeplan new prd \"<title>\"` to start."
-        } else {
-            report.verdict.human_summary()
-        };
+        // PR-E Round 6 audit MED fix: `Verdict::Empty` now exists as a 4th
+        // enum variant. `human_summary()` returns the empty-workspace
+        // text directly, so the Round 5 manual `total == 0` branch is no
+        // longer needed — typed `verdict` and `verdict_summary` agree
+        // by construction (no consumer can read `verdict == "healthy"`
+        // for an empty workspace).
+        let verdict_summary = report.verdict.human_summary();
         let json_data = serde_json::json!({
             "project": config.project_name,
             "total": report.total,
