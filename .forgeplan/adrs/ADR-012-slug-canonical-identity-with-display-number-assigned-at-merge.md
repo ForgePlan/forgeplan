@@ -85,7 +85,7 @@ Trilemma: cannot have all three of {zero-coordination assignment, stable human h
 - Маркер `?` в `PRD-74?` нужно поддерживать на всех rendering surfaces (CLI, Web, MCP responses)
 
 ### Risks
-- **R-1 (medium impact, low probability)**: CI-бот реализация окажется сложнее ожидаемого (>800 LOC). Mitigation: prototype спайк до GA. Reversal: переключение на Option C (pure ULID) — простейший fallback.
+- **R-1 (high impact, low probability)**: GitHub Actions `concurrency: cancel-in-progress: false` не сериализует параллельные merges как документировано ИЛИ multi-agent dispatch deadlock'ится. Mitigation: stress-test 10×concurrent-merge в Phase 0 (EVID-A). Reversal: alternative serialization mechanism (push hooks или maintainer-only assignment role) — не Option C, потому что C проиграл по UX в FPF evaluation.
 - **R-2 (high impact, low probability)**: AI-агенты не научатся использовать slug в коммитах до merge — будут писать предсказанный номер, refs rot. Mitigation: явный `hint:` в MCP responses + section в CLAUDE.md + skill update.
 - **R-3 (medium impact, medium probability)**: Migration cutoff попадёт на момент когда есть открытые PR со старой схемой. Mitigation: grandfather политика для open PRs at cutoff.
 
@@ -104,7 +104,7 @@ Trilemma: cannot have all three of {zero-coordination assignment, stable human h
 
 Что измерить/доказать для подтверждения решения:
 
-- **EVID-A**: Прототип CI-бота на 50-артефактном fixture — реальный LOC ≤ 800, без external state requirements (только git + GitHub API)
+- **EVID-A**: Прототип CI-бота на 50-артефактном fixture + **stress-test 10×concurrent-merge** — 0 race conditions on assigned_number; `concurrency` primitive serializes как документировано; no external state beyond git + GitHub API. **Outcome-based**: meas correctness, не размер.
 - **EVID-B**: Multi-agent dispatch benchmark — 10 параллельных запусков `forgeplan_dispatch` с 5 агентами каждый, 0 slug collisions при разных task titles
 - **EVID-C**: Migration dry-run — script проходит по всем 298 артефактам и виртуально присваивает им slug + assigned_number, проверяет что нет конфликтов с future numbers
 - **EVID-D**: AI-agent compliance — benchmark на 50 reasoning-prompts с MCP, агент использует slug в `Refs:` до merge в ≥ 95% случаев
@@ -159,10 +159,11 @@ Trilemma: cannot have all three of {zero-coordination assignment, stable human h
 
 ## Rollback Plan
 
-**Triggers** (когда откатывать):
-- EVID-A провалился: CI-бот сложнее 800 LOC ИЛИ требует non-trivial state в `.forgeplan/lance/`
-- В первые 4 недели после rollout: >5 production-incidents с identity coherence
-- Multi-agent dispatch deadlock или starvation на CI-боте
+**Triggers** (когда откатывать — outcome-based):
+- EVID-A провалился: stress-test 10×concurrent-merge показывает race conditions ИЛИ `concurrency` primitive не serializes как документировано
+- Multi-agent dispatch deadlock'ится при ≥5 параллельных агентах
+- В первые 4 недели после rollout: >5 production-incidents с identity coherence (slug collisions, ref rot, duplicate assigned_numbers)
+- AI-agent compliance с slug-refs <85% (вместо target ≥95%)
 
 **Steps** (шаги отката):
 1. Объявить freeze на создание новых артефактов через MCP/CLI
@@ -209,7 +210,7 @@ R_eff = min(F=0.67, G=0.67, R=0.7) × CL2(0.95) = **0.665** (per FPF B.3 — wea
 ## Implementation Plan
 
 ### Phase 0: Foundation (week 1)
-- [ ] **0.1** EVID-A: prototype CI-бота на 50-артефактном fixture (LOC measurement)
+- [ ] **0.1** EVID-A: prototype CI-бота на 50-артефактном fixture + stress-test 10×concurrent-merge (atomicity verification)
 - [ ] **0.2** EVID-C: migration dry-run на 298 существующих артефактов
 - [ ] **0.3** ID-ASSIGNMENT.ru.md написан и проревьюен
 - [ ] **0.4** CLAUDE.md обновлён с новой секцией

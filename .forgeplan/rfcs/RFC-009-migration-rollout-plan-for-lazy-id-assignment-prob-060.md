@@ -124,7 +124,7 @@ ADR-012 фиксирует решение (Option A с двухслойной id
 ## Risks & Open Questions
 
 ### Risks
-- **R-1**: Phase 2 CI-бот окажется > 800 LOC. **Mitigation**: EVID-A прототип в Phase 0 закроет это до commit на полный путь.
+- **R-1**: GitHub Actions `concurrency: cancel-in-progress: false` не сериализует параллельные merges как документировано ИЛИ multi-agent dispatch deadlock'ится при ≥5 параллельных агентах. **Mitigation**: stress-test 10×concurrent-merge в Phase 0 (EVID-A). **Reversal**: alternative serialization mechanism (push hooks или maintainer-only assignment role).
 - **R-2**: ForgePlanWeb team задержит Phase 3. **Mitigation**: Phase 3 отделён от Phase 2 — core может GA без Web; Web догоняет в течение 2 недель.
 - **R-3**: Legacy migration найдёт duplicate slugs (два PRD с одинаковым title). **Mitigation**: dry-run в Phase 0 (EVID-C) выявит проблему до Phase 4.
 - **R-4**: Open PRs на момент cutoff содержат старую схему. **Mitigation**: grandfather rules + cutoff на момент когда open PRs минимизированы.
@@ -143,12 +143,12 @@ ADR-012 фиксирует решение (Option A с двухслойной id
 
 Закрыть evidence gaps до коммита на полный путь.
 
-- [ ] **0.1** EVID-A: prototype CI-бота на 50-артефактном fixture. Measure LOC + state requirements. Reverse condition check.
+- [ ] **0.1** EVID-A: prototype CI-бота на 50-артефактном fixture + stress-test 10×concurrent-merge. Verify atomicity. Reverse condition check (race conditions detected → switch to alternative serialization mechanism).
 - [ ] **0.2** EVID-C: migration dry-run на 298 существующих артефактов. Detect potential slug collisions in legacy.
 - [ ] **0.3** Документ `docs/methodology/ID-ASSIGNMENT.ru.md` написан и проревьюен — single source of truth для людей и AI-agents.
 - [ ] **0.4** CLAUDE.md обновлён с секцией "Working with artifact IDs": правила refs, slug в коммитах до merge, оба формата после.
 
-**Exit criteria**: EVID-A показывает CI-bot ≤ 800 LOC; EVID-C показывает 0 unresolved legacy collisions; documents в PR review.
+**Exit criteria**: EVID-A показывает 0 race conditions on 10×concurrent-merge stress-test; EVID-C показывает 0 unresolved legacy collisions; documents в PR review.
 
 ### Phase 1: Core schema + CLI (week 2-3)
 

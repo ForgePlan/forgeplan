@@ -85,7 +85,7 @@ Forgeplan создаёт артефакты с slug-каноническим и�
 | ID | Criterion | Metric | Current | Target | Timeframe | How to Measure |
 |----|-----------|--------|---------|--------|-----------|----------------|
 | SC-1 | Multi-agent dispatch без коллизий | Slug collisions per 100 dispatched tasks | unmeasured (race-window 100%) | 0 collisions при разных titles, ≤5% при одинаковых titles | Post-Phase-2 GA | EVID-B: 10×5-agent dispatch runs |
-| SC-2 | CI-bot реализация ≤ 800 LOC | Lines of Rust + YAML | n/a | ≤ 800 LOC | Post-Phase-0 | EVID-A: prototype LOC count |
+| SC-2 | CI-bot обеспечивает атомарность параллельных merges | Race conditions per stress-test | unmeasured (race-window 100%) | 0 (100% serialization on 10×concurrent-merge) | Post-Phase-0 | EVID-A: stress-test 10 simultaneous PR merges |
 | SC-3 | AI-agent compliance с slug-refs | % коммитов с правильным slug в `Refs:` до merge | n/a | ≥ 95% | Post-Phase-4 | EVID-D: 50 reasoning-prompts benchmark |
 | SC-4 | Backward compat для 73 legacy | Number of legacy artifacts с broken refs после migration | 0 | 0 | Phase-4 dry-run | EVID-C: migration dry-run script |
 | SC-5 | Web rendering correctness | % виджетов корректно показывающих `?` marker для draft | 0% | 100% | Phase-3 | Visual regression suite ForgePlanWeb |
@@ -218,7 +218,7 @@ Forgeplan создаёт артефакты с slug-каноническим и�
 | NFR-002 | Performance | CI bot ID assignment shall complete | ≤ 30s p95 | Per merge | GitHub Actions metrics |
 | NFR-003 | Reliability | Atomic merge serialization | 100% | All concurrent PR merges | GitHub `concurrency` group |
 | NFR-004 | Compatibility | Backward compat for 73 legacy IDs | 100% (zero broken refs) | All existing `Refs:` continue resolving | EVID-C migration dry-run |
-| NFR-005 | Maintainability | CI bot implementation | ≤ 800 LOC (Rust + YAML) | Production version | EVID-A prototype |
+| NFR-005 | Reliability | CI bot serialization | 100% atomic (0 race conditions) | 10 simultaneous PR merges via `concurrency` group | EVID-A stress-test |
 | NFR-006 | Security | Reject PRs with manually-set `assigned_number` | 100% block rate | Pre-merge CI gate | CI workflow rule |
 | NFR-007 | Observability | Migration script emits structured log | One JSON line per artifact migrated | Phase 4 execution | Log inspection |
 | NFR-008 | Tooling | CLI/MCP/Web rendering tests | 100% pass | Pre-Phase-3 sign-off | Test suite |
@@ -318,7 +318,7 @@ And on merge, CI bot assigns final number without breaking any refs
 
 | ID | Risk | Probability | Impact | Mitigation | Owner |
 |----|------|-------------|--------|------------|-------|
-| R-1 | CI-бот окажется > 800 LOC ИЛИ требует non-trivial state | Low | Medium | Prototype спайк (EVID-A) до Phase 1. Reversal: переключение на pure ULID (Option C) | impl |
+| R-1 | `concurrency` primitive не сериализует параллельные merges ИЛИ multi-agent dispatch deadlock'ится | Low | High | Stress-test 10×concurrent-merge (EVID-A) в Phase 0. Reversal: alternative serialization (push hooks или maintainer-only assignment role) | impl |
 | R-2 | AI-agents не используют slug в `Refs:` корректно (>5% non-compliance) | Medium | High | Explicit `hint:` в MCP responses. Section в CLAUDE.md. Skill update с примерами. EVID-D benchmark | mcp + docs |
 | R-3 | Migration cutoff попадёт на open PRs со старой схемой | Medium | Medium | Grandfather rules для PRs открытых до cutoff. Choose cutoff на момент когда open PRs ≤ 3 | release |
 | R-4 | Slug collision rate higher than expected (>5%) при одинаковых titles | Low | Low | Auto-suffix mechanism. ML-based slug suggestion в Growth Vision | impl |
