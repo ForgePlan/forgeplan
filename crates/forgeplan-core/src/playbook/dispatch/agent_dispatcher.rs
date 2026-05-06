@@ -159,20 +159,25 @@ impl AgentDispatcher {
     /// var to close CWE-426 (binary-substitution attack surface) per
     /// PROB-050 A-14.
     fn resolve_claude_binary(&self) -> Option<PathBuf> {
+        // PROB-052 Round 7 audit HIGH-1 closure: explicit `claude_binary`
+        // override field MUST go through `resolve_safe_path` so the same
+        // canonicalize + perm gate that closed PATH-search applies here too.
+        // Pre-Round-7 a bare `is_file()` left CWE-426 hijack exploitable
+        // through this branch — operator config supplied a symlink in
+        // group-writable Homebrew dir → bypass.
         if let Some(p) = &self.claude_binary
-            && p.is_file()
+            && let Ok(Some(real)) = super::helpers::resolve_safe_path(p)
         {
-            return Some(p.clone());
+            return Some(real);
         }
-        // PROB-050 A-14: removing or widening this `#[cfg(test)]` re-opens
-        // CWE-426 (binary substitution) in release builds. Do not change
-        // without re-evaluating the security boundary.
+        // PROB-050 A-14 + PROB-052 HIGH-2: test-only env override also
+        // routes through resolve_safe_path so the test surface mirrors
+        // production validation.
         #[cfg(test)]
-        if let Ok(override_path) = std::env::var("FORGEPLAN_CLAUDE_BIN") {
-            let p = PathBuf::from(override_path);
-            if p.is_file() {
-                return Some(p);
-            }
+        if let Ok(override_path) = std::env::var("FORGEPLAN_CLAUDE_BIN")
+            && let Ok(Some(p)) = super::helpers::resolve_safe_path(&PathBuf::from(override_path))
+        {
+            return Some(p);
         }
         super::helpers::which_in_path(DEFAULT_AGENT_BINARY)
     }

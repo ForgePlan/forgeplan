@@ -148,8 +148,15 @@ impl PluginDispatcher {
     /// Returns `None` if neither resolves — caller maps this to
     /// [`DispatchError::DelegateMissing`].
     fn resolve_binary(&self) -> Option<PathBuf> {
-        if let Some(path) = &self.claude_binary {
-            return Some(path.clone());
+        // PROB-052 Round 7 audit HIGH-1 closure: route explicit override
+        // through `resolve_safe_path` (canonicalize + Unix perm gate) so
+        // the symmetric AgentDispatcher hardening applies here too.
+        // Pre-Round-7 PluginDispatcher was even thinner than AgentDispatcher
+        // — it returned the override unconditionally без even is_file().
+        if let Some(path) = &self.claude_binary
+            && let Ok(Some(real)) = super::helpers::resolve_safe_path(path)
+        {
+            return Some(real);
         }
         super::helpers::which_in_path(DEFAULT_CLAUDE_BINARY)
     }
