@@ -200,6 +200,13 @@ impl ClaudePrintResponse {
 /// 2. If `step.produces_at` is set, appends:
 ///    `Write output to \`<produces_at>\` using the Write tool.`
 /// 3. Returns the assembled string ready for stdin pipe.
+///
+/// PROB-054 closure: `produces_at` is character-validated via
+/// [`validate_produces_at_chars`] BEFORE splicing. If validation fails,
+/// the path is omitted from the prompt body (caller's
+/// [`add_dir_for_produces_at`] returns the same error и aborts the
+/// dispatch via `DispatchError::Transport`, so the prompt body is never
+/// actually consumed by claude).
 pub(super) fn assemble_prompt(step: &Step) -> String {
     let task = step
         .input
@@ -212,12 +219,62 @@ pub(super) fn assemble_prompt(step: &Step) -> String {
     out.push_str(task);
 
     if let Some(path) = &step.produces_at {
-        out.push_str("\n\nWrite output to `");
-        out.push_str(&path.to_string_lossy());
-        out.push_str("` using the Write tool.\n");
+        // PROB-054: char-set validate BEFORE splicing to defend against
+        // prompt-injection-via-filesystem (backtick closes the markdown
+        // code-fence and turns the tail of the prompt into instructions
+        // the agent treats as authoritative). Validation failure → omit
+        // от prompt; the symmetric `add_dir_for_produces_at` returns
+        // Err и the dispatcher aborts before claude runs.
+        if validate_produces_at_chars(path).is_ok() {
+            out.push_str("\n\nWrite output to `");
+            out.push_str(&path.to_string_lossy());
+            out.push_str("` using the Write tool.\n");
+        }
     }
 
     out
+}
+
+/// PROB-054 closure — character-set validator for `Step.produces_at`.
+///
+/// Defends against prompt-injection-via-filesystem (CWE-94 / OWASP A03).
+/// Pre-PROB-054 the path was spliced into the natural-language prompt
+/// body via `to_string_lossy()` без character validation:
+///
+/// ```text
+/// Write output to `<produces_at>` using the Write tool.
+/// ```
+///
+/// A path containing a backtick (`reports/`backdoor`.md`) closed the
+/// markdown code-fence и turned everything after into prompt content
+/// the agent treated as authoritative instruction. Same class for `$`
+/// (variable expansion in some agent shells), `;` (command separator
+/// hint), `\n` / `\r` (line-break injection).
+///
+/// The conservative allowlist is `^[A-Za-z0-9._/-]+$` — alphanumeric,
+/// dot, underscore, forward slash, hyphen. Symmetric with
+/// `add_dir_for_produces_at` так что the prompt-body splice и the
+/// `--add-dir` argv splice fail-fast on the same input.
+///
+/// Out of scope: `to_string_lossy()` semantics for non-UTF-8 boundaries
+/// — paths containing invalid UTF-8 are rendered as `U+FFFD` replacement
+/// characters which the regex rejects (defense-in-depth, not the primary
+/// guarantee — Forgeplan workspaces are UTF-8 by convention).
+pub(super) fn validate_produces_at_chars(path: &Path) -> Result<(), String> {
+    let s = path.to_string_lossy();
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"^[A-Za-z0-9._/-]+$").expect("produces_at allowlist regex is valid")
+    });
+    if re.is_match(&s) {
+        Ok(())
+    } else {
+        Err(format!(
+            "produces_at contains disallowed characters; allowed set is \
+             [A-Za-z0-9._/-]+, got `{}`",
+            s.escape_debug()
+        ))
+    }
 }
 
 /// Build the `--add-dir` argument from `Step.produces_at`. Returns the parent
@@ -265,6 +322,12 @@ pub(super) fn add_dir_for_produces_at(
             rel.display()
         ));
     }
+    // PROB-054: same character validation that `assemble_prompt` applies
+    // to the prompt body so the argv splice and the prompt body splice
+    // fail-fast on the same input. Defense-in-depth — argv has its own
+    // hardening (PROB-050 A-15) but the symmetric guard makes the
+    // contract explicit.
+    validate_produces_at_chars(rel)?;
     let abs = workspace_root.join(rel);
     Ok(abs.parent().map(|p| p.to_path_buf()))
 }
@@ -1106,5 +1169,101 @@ mod tests {
         assert_eq!(format_budget(0.5), "0.50");
         assert_eq!(format_budget(2.345), "2.35"); // 4 -> 5 round half-up via std
         assert_eq!(format_budget(10.999), "11.00");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PROB-054 produces_at character-set validator tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// PROB-054 happy path — typical workspace-relative path with slashes,
+    /// dots, hyphens, underscores must validate cleanly.
+    #[test]
+    fn validate_produces_at_chars_accepts_typical_path() {
+        let p = std::path::Path::new("reports/audit-2026-05-06.md");
+        assert!(validate_produces_at_chars(p).is_ok());
+        let p = std::path::Path::new("docs/operations/QUALITY-GATES.ru.md");
+        assert!(validate_produces_at_chars(p).is_ok());
+        let p = std::path::Path::new("a_b_c.txt");
+        assert!(validate_produces_at_chars(p).is_ok());
+    }
+
+    /// PROB-054 main attack — backtick closes the markdown code-fence
+    /// in the prompt body and turns the tail into agent instructions.
+    /// MUST be rejected.
+    #[test]
+    fn validate_produces_at_chars_rejects_backtick() {
+        let p = std::path::Path::new("reports/`backdoor`.md");
+        let err = validate_produces_at_chars(p).expect_err("backtick must reject");
+        assert!(
+            err.contains("disallowed characters"),
+            "error must explain disallowed chars: {err}"
+        );
+        // escape_debug renders backtick as-is (it's printable ASCII), but
+        // the assert verifies the offending input is reflected for ops debug
+        assert!(err.contains("backdoor"), "error must reflect input: {err}");
+    }
+
+    /// PROB-054 — dollar sign is reserved in some agent shells / template
+    /// renderers (`$VAR`, `$(cmd)` substitution); reject for symmetry
+    /// with the threat model described in the PROB body.
+    #[test]
+    fn validate_produces_at_chars_rejects_dollar_sign() {
+        let p = std::path::Path::new("reports/$(whoami).md");
+        let err = validate_produces_at_chars(p).expect_err("dollar must reject");
+        assert!(err.contains("disallowed characters"));
+    }
+
+    /// PROB-054 — semicolon ranges from "command separator hint" to
+    /// nothing depending on agent rendering; conservative reject.
+    #[test]
+    fn validate_produces_at_chars_rejects_semicolon() {
+        let p = std::path::Path::new("reports/file;rm -rf.md");
+        let err = validate_produces_at_chars(p).expect_err("semicolon must reject");
+        assert!(err.contains("disallowed characters"));
+    }
+
+    /// PROB-054 — newline / carriage-return inject literal line breaks
+    /// into the prompt body; the agent reads multiple "instructions"
+    /// where one was intended. Reject.
+    #[test]
+    fn validate_produces_at_chars_rejects_newline() {
+        let p = std::path::Path::new("reports/inject\nLine.md");
+        let err = validate_produces_at_chars(p).expect_err("newline must reject");
+        assert!(err.contains("disallowed characters"));
+    }
+
+    /// PROB-054 — `add_dir_for_produces_at` MUST surface the same
+    /// validator failure path so the dispatcher aborts before claude
+    /// runs (symmetric guard with assemble_prompt).
+    #[test]
+    fn add_dir_for_produces_at_rejects_disallowed_chars() {
+        let mut step = make_step_for_test();
+        step.produces_at = Some(std::path::PathBuf::from("reports/`evil`.md"));
+        let err = add_dir_for_produces_at(&step, std::path::Path::new("/tmp/ws"))
+            .expect_err("disallowed chars must reject");
+        assert!(
+            err.contains("disallowed characters"),
+            "error must come from the validator: {err}"
+        );
+    }
+
+    /// Helper: build a minimal Step fixture for produces_at tests.
+    fn make_step_for_test() -> super::super::super::types::Step {
+        use super::super::super::types::{Delegation, Step};
+        Step {
+            id: "test-step".to_string(),
+            delegate_to: Delegation::Agent {
+                name: "test-agent".to_string(),
+            },
+            input: None,
+            produces_at: None,
+            mapping: None,
+            requires: None,
+            fallback_hint: None,
+            on_error: Default::default(),
+            timeout_seconds: None,
+            budget_usd: None,
+            allowed_tools: None,
+        }
     }
 }
