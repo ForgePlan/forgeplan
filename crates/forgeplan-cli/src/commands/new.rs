@@ -7,6 +7,7 @@ use forgeplan_core::artifact::store::ArtifactSummary;
 use forgeplan_core::artifact::types::{ArtifactKind, slug_from_kind_title};
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+use forgeplan_core::git::{artifact_filenames_in_origin_dev, slug_exists_in_filenames};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
@@ -152,6 +153,56 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     })?;
     let slug = slug_from_kind_title(&kind, title)
         .with_context(|| format!("failed to build canonical slug from title {:?}", title))?;
+
+    // PROB-060 / SPEC-005 Phase 1.3 — pre-create remote slug uniqueness check.
+    //
+    // Best-effort: fetch origin/dev and check if the slug already exists upstream.
+    // Soft-fail by design — offline / non-git / no remote workspaces continue
+    // without warning. The remote check IS the value-add of Phase 1.3 (workspace-
+    // local uniqueness was already implicit via filesystem).
+    //
+    // Skip the check when --allow-duplicate is set (caller has already accepted
+    // the risk of similar artifacts) — saves the network round-trip.
+    if !allow_duplicate {
+        let remote_files = artifact_filenames_in_origin_dev(&workspace, kind.dir_name());
+        if slug_exists_in_filenames(&slug, &remote_files) {
+            // **Advisory** check — between the fetch above and the actual merge a
+            // teammate can push a colliding slug (TOCTOU). True atomic guarantee
+            // arrives in Phase 2 with the CI bot. Audit C1: phrase accordingly.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                // Non-tty: single canonical message via bail (no separate
+                // eprintln, audit L2). Suppress the warning duplicate.
+                anyhow::bail!(
+                    "Advisory: slug {:?} appears to exist in origin/dev — \
+                         it may collide at merge. \
+                         Non-interactive shell cannot prompt.\n\
+                         Fix: forgeplan new {} \"{}\" --allow-duplicate",
+                    slug,
+                    kind_str,
+                    title
+                );
+            }
+            // Interactive shell: warn + prompt to confirm.
+            eprintln!(
+                "advisory: slug {:?} appears in origin/dev — may collide at merge \
+                     (Phase 2 CI bot will resolve definitively).",
+                slug
+            );
+            let proceed = cliclack::confirm(format!(
+                "Continue creating slug {:?} despite advisory?",
+                slug
+            ))
+            .initial_value(false)
+            .interact()
+            .unwrap_or(false);
+            if !proceed {
+                println!("Cancelled");
+                return Ok(());
+            }
+        }
+    }
+
     rendered = augment_frontmatter_with_id_fields(&rendered, &slug, predicted_number)
         .with_context(|| format!("failed to augment frontmatter for {}", id))?;
 
