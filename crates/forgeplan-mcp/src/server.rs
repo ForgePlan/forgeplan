@@ -2664,39 +2664,30 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let report = forgeplan_core::health::health_report(&store)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        // PROB-051 L-H3 + P-H1 + P-H2 closure: route through
+        // `health_report_with_phase` so (a) `list_records` runs once
+        // (was twice — duplicate scan), (b) phase reads parallelise via
+        // `buffer_unordered(16)` (was sequential per-artifact), и
+        // (c) the returned verdict folds phase mismatches the same way
+        // the CLI does — eliminating the cross-surface verdict drift.
+        let (report, phase_mismatch_records) =
+            forgeplan_core::health::health_report_with_phase(&store, &ws)
+                .await
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
-        // PRD-056 FR-008: advisory phase-status mismatch surface.
-        // Active artifacts whose recorded phase is still in the early cycle
-        // (shape/validate/adi) likely skipped code/evidence — worth looking
-        // at, but strictly advisory. Never fails the health call.
-        let mut phase_mismatches: Vec<serde_json::Value> = Vec::new();
-        if phase_tracking_enabled(&ws)
-            && let Ok(all_records) = store.list_records(None).await
-        {
-            use forgeplan_core::phase::Phase;
-            for r in &all_records {
-                if r.status != "active" {
-                    continue;
-                }
-                if let Ok(Some(s)) = forgeplan_core::phase::store::read_phase(&ws, &r.id).await {
-                    let early =
-                        matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
-                    if early {
-                        phase_mismatches.push(serde_json::json!({
-                            "id": r.id,
-                            "title": sanitize_for_hint(&r.title),
-                            "status": r.status,
-                            "current_phase": s.current_phase.as_str(),
-                            "advisory": "status=active but phase is early-cycle — \
-                                         Code/Evidence likely skipped",
-                        }));
-                    }
-                }
-            }
-        }
+        // Render as JSON-friendly payload (sanitize titles for hint output).
+        let phase_mismatches: Vec<serde_json::Value> = phase_mismatch_records
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "title": sanitize_for_hint(&m.title),
+                    "status": m.status,
+                    "current_phase": m.current_phase,
+                    "advisory": m.advisory,
+                })
+            })
+            .collect();
 
         // PRD-071: deterministic single primary, real IDs (not <id>).
         // The first blind-spot/orphan/at-risk/stale gives the agent a

@@ -9,6 +9,60 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed (Trust calculus + Performance — PROB-051 partial closure, Wave-1 Round 5 audit deferred)
+
+- **PROB-051 partial ✅ — phase-fold unification + perf scans + module
+  docs** (Roadmap Tier 2 v0.30.0 Wave 1.3). Closes 4 of 7 deferred Round 5
+  audit items in single sprint:
+
+  - **L-H3 phase-fold unification**: pre-PROB-051 the MCP
+    `forgeplan_health` handler computed phase mismatches inline (читая
+    `read_phase` для each active artifact) и folded the count into the
+    verdict, while CLI `forgeplan health` ignored phase tracking entirely
+    — same workspace could return DIFFERENT verdicts через CLI vs MCP.
+    New `forgeplan_core::health::health_report_with_phase(store, ws)`
+    folds the mismatch count via `compute_verdict_with` and is consumed
+    by both CLI и MCP, guaranteeing identical verdicts.
+
+  - **P-H1 single-scan**: pre-PROB-051 MCP forgeplan_health called
+    `store.list_records(None)` twice (once inside `health_report`, once
+    again for phase mismatch loop). Post-PROB-051 the new function does
+    a single scan и passes records через to both consumers — eliminates
+    the duplicate query on every MCP health call.
+
+  - **P-H2 parallel `read_phase`**: pre-PROB-051 phase reads ran
+    sequentially per active artifact (~1ms each on disk-cached fs).
+    Post-PROB-051 uses `futures::stream::iter().buffer_unordered(16)` so
+    a 200-active-artifact workspace doesn't pay 200 sequential syscalls.
+
+  - **D-H1 `projection/mod.rs` module docs**: 50+ line `//!` block
+    introducing ADR-003 file-first invariant, helper categories
+    (Create/Update/Delete/Link/Re-render), MutationContext rationale,
+    typed-error semantics. Closes the discoverability gap surfaced by
+    documentation auditor.
+
+  - **D-H2 `health/mod.rs` module docs**: 60+ line `//!` block describing
+    public surface (legacy `health_report` vs phase-aware
+    `health_report_with_phase`), 4-level `Verdict` aggregator, performance
+    posture, file layout. Includes `Verdict::Empty` rationale (PR-E
+    Round 6 closure context).
+
+  **Side benefit**: CLI `forgeplan health` now renders a `Phase
+  mismatches (N)` advisory section in text mode and `phase_mismatches[]`
+  array в `--json` output — operators using CLI no longer have to switch
+  to MCP to see this advisory data.
+
+  **Tests**: +2 lib unit tests
+  (`health_report_with_phase_matches_legacy_for_empty_workspace`,
+  `health_report_with_phase_matches_legacy_when_no_mismatches`) — guard
+  against future drift between the two folding paths. Suite: lib 1467 →
+  **1469** PASS, 0 failures across 38 suites.
+
+  **Deferred to follow-up** (PROB-051 backlog): L-M1 (at_risk in
+  VerdictThresholds), L-M2 (truncation order), L-M3 (boundary tests),
+  P-M1/M2 (perf items needing benchmark scaffold first), P-L5 (config
+  caching), D-LOW-2/4 (doc cleanup), Round 4 M1 (typed-error sanitisation).
+
 ### Fixed (Security — PROB-052 closure, Round 7 audit)
 
 - **PROB-052 ✅ — `which_in_path` TOCTOU + symlink-follow + perm gate
