@@ -17,7 +17,10 @@ use crate::ui;
 pub async fn run_all(json: bool) -> anyhow::Result<()> {
     use forgeplan_core::artifact::types::DECISION_KINDS_EVIDENCE;
 
-    let store = common::store().await?;
+    // PROB-058 AC-2: acquire workspace lock so concurrent CLI invocations
+    // (operator running `score-all` while a multi-agent dispatch runs `link`
+    // в parallel — PRD-057) cannot race on `update_r_eff_score` writes.
+    let (_ws, _lock, store) = common::open_store_locked().await?;
     let records = store.list_records(None).await?;
 
     let decision_records: Vec<_> = records
@@ -101,7 +104,10 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let target_id = id.ok_or_else(|| anyhow::anyhow!("Usage: forgeplan score <ID>"))?;
 
-    let store = common::store().await?;
+    // PROB-058 AC-2: acquire workspace lock — `score` writes `r_eff_score` and
+    // must serialize against concurrent `link` / `activate` to avoid
+    // latest-writer-wins data loss.
+    let (_ws, _lock, store) = common::open_store_locked().await?;
 
     // Get the target artifact
     let target = store.get_record(target_id).await?.ok_or_else(|| {

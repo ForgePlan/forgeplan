@@ -17,20 +17,44 @@ use crate::db::store::{LanceStore, validate_artifact_id};
 /// and activate previously emitted a hint suggesting `forgeplan score <ID>`
 /// but never invoked the recompute, leaving cached `r_eff_score` stale until a
 /// later manual run. Calling this helper from mutation paths makes the cache
-/// self-healing for the immediate target while leaving `score-all` as the
-/// surface for full-tree reconciliation up the parent chain.
+/// self-healing for the immediate target.
 ///
 /// Input is validated via [`validate_artifact_id`] before the recursive walk
 /// starts — defense-in-depth against malformed IDs landing in
 /// [`reff::r_eff_recursive`] from `forgeplan scan-import` or hand-edited
 /// frontmatter (Round 8 audit MED-2).
 ///
-/// Scope: target artifact only. Parent / ancestor walk is intentionally out of
-/// scope (PRD-075 §Non-Goals) — the recursive descent is performed by
-/// [`reff::r_eff_recursive`] *within* the target's own assurance report, but
-/// the persisted cache update is restricted to `id` to keep mutator latency
-/// bounded. `forgeplan score-all` remains the authoritative surface for
-/// full-tree reconciliation.
+/// # Scope (PROB-058 AC-6 + Round 9 audit HIGH-3 clarification)
+///
+/// Three distinct concerns must not be conflated:
+///
+/// 1. **Evidence collection (in scope, bidirectional)** — `r_eff_recursive`
+///    reads BOTH outgoing relations from `id` (e.g. `PRD --informs--> EVID`)
+///    AND incoming relations to `id` (e.g. `EVID --informs--> PRD`) when
+///    harvesting linked evidence for the self-score. This is intentional —
+///    the canonical link direction in this codebase puts evidence sources
+///    pointing INTO the artifact they support, so an outgoing-only walk
+///    would miss most evidence.
+/// 2. **Dependency recursion (in scope, descendant-only)** — after the
+///    self-score is built, `r_eff_recursive` follows OUTGOING `informs`,
+///    `based_on`, `refines`, `depends_on` edges to recursively score `id`'s
+///    own dependencies. This walk is unbounded in graph depth; PRD-075 FR-005
+///    sets a 100 ms budget; PROB-058 AC-3 tracks the deferred bound (split
+///    into `r_eff_local` for mutator paths if perf measurements demand it).
+/// 3. **Transitive parent rescore (OUT of scope, NOT performed)** — the
+///    cached `r_eff_score` columns of artifacts that *consume* `id` (parents
+///    up the chain whose own R_eff depends on `id`'s value) are NOT
+///    recomputed by this helper. Only `id`'s own cache row is written. Use
+///    `forgeplan score-all` for full-tree reconciliation.
+///
+/// Cycle detection at [`reff::r_eff_recursive`] returns a neutral 1.0 for
+/// revisits, so self-references and circular dependency graphs terminate
+/// cleanly with `r_eff` ∈ [0, 1].
+///
+/// On error the helper returns `Err` rather than persisting a half-computed
+/// score; callers in CLI mutator paths wrap this via
+/// `common::sync_score_target_or_warn` which emits a `Fix:` marker per
+/// PRD-071 Hint Protocol so operators / agents see the recovery path.
 pub async fn sync_score_target(
     store: &LanceStore,
     id: &str,

@@ -42,12 +42,22 @@ PROB-058 also tracks the **MED side-channel finding** (timing oracle on `forgepl
 
 ## Acceptance Criteria
 
-- [ ] **AC-1**: `sync_score_target` re-typed against `StorageDriver` trait (or split into trait-bound + LanceStore convenience wrapper). InMemoryStore test exercises the helper end-to-end.
-- [ ] **AC-2**: `forgeplan score` (single id) and `score-all` switch from `common::store()` to `common::open_store_locked()`. Regression test: two concurrent `score-all` invocations in parallel via `tokio::join!` — second blocks until first completes; final state matches sequential execution.
-- [ ] **AC-3**: New `r_eff_local(id, store)` variant computes own_evidence + immediate deps only (no recursion). `sync_score_target` (mutator path) calls `r_eff_local`. `score-all` continues calling `r_eff_recursive`. Performance test: mutator p95 < 50 ms на synthetic graph depth 50, fanout 200.
-- [ ] **AC-4**: Negative `hint_contract` test asserts `forgeplan link <args>` output does NOT contain `Next: forgeplan score <ID>` (FR-009 enforcement against drift).
-- [ ] **AC-5**: Side-channel mitigation documented — either constant-time wrapper around mutator recompute (likely infeasible without major refactor) OR explicit `## Out of Scope` paragraph in PRD-075 / PROB-058 acknowledging the threat model.
-- [ ] **AC-6**: `sync_score_target` docstring clarifies the actual scope (recursive descent for own assurance report, но no parent ascent) — closes Round 8 LOW-2.
+- [ ] **AC-1**: `sync_score_target` re-typed against `StorageDriver` trait. **Status**: deferred — требует rework `r_eff_recursive` signature too (entire scoring pipeline currently `&LanceStore`-bound), separate sprint. Will be addressed when driver-trait scope is opened (RFC pending).
+- [x] **AC-2**: `forgeplan score` (single id) and `score-all` switch from `common::store()` to `common::open_store_locked()`. **Closed** in PROB-057 sprint extension commit (2026-05-06). `score::run` and `score::run_all` now use `common::open_store_locked()`. **Round 9 audit MED-3 closure**: real concurrent-writer regression test added — `parallel_score_all_invocations_serialize_via_workspace_lock` in `cli_reff_cache_invalidation.rs` spawns two `forgeplan score --all` processes against the same workspace via `std::thread::spawn` + `Command::new`, asserts both succeed and the post-condition R_eff matches sequential expectation для 3 PRDs × 1 evidence each. Test exercises the OS-level fs2 advisory lock that `acquire_workspace_lock` wraps.
+- [ ] **AC-3**: New `r_eff_local(id, store)` variant computes own_evidence + immediate deps only. **Status**: deferred — performance benchmark scaffold + variant function are non-trivial; current FR-005 budget held in practice (typical workspace ≤ 300 artifacts). Revisit when measurements show p95 > 100 ms. **Round 9 audit MED-1 caveat**: `score-all` now holds the workspace lock for the entire batch; on dense graphs (>200 artifacts × deep dep chains) this can starve concurrent CLI/MCP callers past the 30 s lock timeout. Closing AC-3 reduces the window incidentally; until then, operators are advised to schedule `score-all` outside batch-mutation windows.
+- [x] **AC-4**: Negative `hint_contract` test asserts mutators do NOT emit `Next: forgeplan score <ID>` (FR-009 enforcement against drift). **Closed + Round 9 hardening** — `cli_reff_cache_invalidation.rs` now has 3 negative tests (`link_does_not_emit_per_target_score_hint`, `unlink_does_not_emit_per_target_score_hint`, `activate_does_not_emit_per_target_score_hint`) using line-shape match (`assert_reconcile_parents_hint_line` helper) instead of substring containment so concatenated drift `score-all && score <ID>` still trips the negative.
+- [x] **AC-5**: Side-channel mitigation documented. **Closed** — PRD-075 §"Threat Model — Mutation Latency Side-Channel" describes mitigation posture + trigger-to-revisit conditions.
+- [x] **AC-6**: `sync_score_target` docstring clarifies the actual scope. **Closed + Round 9 HIGH-3 fix** — docstring rewritten to distinguish three concerns: (1) evidence collection (in scope, **bidirectional** — outgoing AND incoming relations, since canonical link direction puts evidence sources pointing INTO their target), (2) dependency recursion (in scope, **descendant-only**), (3) transitive parent rescore (OUT of scope). Pre-Round-9 docstring conflated #1 with #2 by claiming "descendant only" for both, which contradicted the implementation at `reff.rs:252-253`.
+
+## Round 9 Audit — MCP Transport Parity (HIGH-1)
+
+Round 9 adversarial audit (2 parallel agents, 2026-05-06) flagged **HIGH-1 transport asymmetry**: PROB-057 closure landed CLI auto-recompute, but MCP `forgeplan_link` / `forgeplan_activate` / `forgeplan_score` still bypassed both the workspace lock and the `sync_score_target` helper. Multi-agent dispatch (PRD-057) routes through MCP, so the CLI fix alone left the production path exposed. Closed in the same sprint extension commit:
+
+- **MCP `forgeplan_link`** (`crates/forgeplan-mcp/src/server.rs:1683`) now acquires `acquire_workspace_lock` before mutation, calls `sync_score_target` after `add_link_with_projection`, and emits `Next: forgeplan_score_all` instead of the pre-Round-9 `forgeplan_score {target}` per-target hint (FR-009 parity).
+- **MCP `forgeplan_activate`** (`server.rs:2219`) now acquires the lock and calls `sync_score_target` BEFORE `render_after_mutation` so the rendered markdown reflects post-activation R_eff (mirroring CLI activate ordering — Round 8 MED-3 lesson).
+- **MCP `forgeplan_score`** (`server.rs:1499`) — pre-Round-9 this tool computed `r_eff_recursive` for display but **never called `update_r_eff_score`**, so cached values stayed stale forever through the MCP transport. Now routes through `sync_score_target` to persist (with a graceful fallback if persist fails — display continues with a fresh recompute).
+
+These three changes restore CLI/MCP parity for the PROB-057 closure invariant.
 
 ## Blast Radius
 
@@ -76,6 +86,7 @@ PROB-058 also tracks the **MED side-channel finding** (timing oracle on `forgepl
 ## Notes
 
 This PROB intentionally batches **3 HIGH + 1 MED + 2 LOW** because they share the architectural surface (`sync_score_target` API + scoring entry points). Splitting per-finding would lose the coupling. ETA estimate: 4-6 h for AC-1 + AC-2 (single PR), separate 2-4 h for AC-3 (performance work). AC-4..6 can ride along in either.
+
 
 
 

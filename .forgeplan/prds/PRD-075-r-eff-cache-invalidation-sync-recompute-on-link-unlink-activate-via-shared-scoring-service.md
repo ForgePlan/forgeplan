@@ -86,12 +86,26 @@ title: R_eff cache invalidation — sync recompute on link/unlink/activate via s
 - Каскадная invalidation parents up the chain (deferred — see Non-Goals)
 - Live computation в `get` (Option B rejected by ADI)
 - Schema-level dirty flag (Option C — over-engineered)
-- **StorageDriver trait parity** для `sync_score_target` — deferred to PROB-058 AC-1
-- **Workspace lock policy для `forgeplan score` / `score-all`** — deferred to PROB-058 AC-2
-- **Bounded recursive walk in mutator path** (DoS hardening на deep graphs) — deferred to PROB-058 AC-3
-- **Side-channel mitigation** (mutation latency leaks graph topology) — documented in PROB-058 AC-5
+- **StorageDriver trait parity** для `sync_score_target` — deferred to PROB-058 AC-1 (требует rework `r_eff_recursive` signature; not in this sprint)
+- **Workspace lock policy для `forgeplan score` / `score-all`** — closed in PROB-058 AC-2 (extended fix in same sprint)
+- **Bounded recursive walk in mutator path** (DoS hardening на deep graphs) — deferred to PROB-058 AC-3 (требует separate `r_eff_local` variant + perf benchmark scaffold)
+- **Side-channel mitigation** (mutation latency leaks graph topology) — accepted residual risk, see threat model below
 - `r_eff_updated_at` timestamp field (Option D — partial fix только для UI)
 - Multi-process / multi-agent concurrent recompute (uses existing claim/release contract)
+
+## Threat Model — Mutation Latency Side-Channel (PROB-058 AC-5)
+
+`sync_score_target` invokes `r_eff_recursive` synchronously inside the workspace lock window during `link` / `unlink` / `activate`. The recursive walk's runtime is roughly `O(D × E)` (depth × evidence-per-node). An adversary with `forgeplan link` permission can probe the graph by timing link operations to different targets и infer dense vs sparse evidence chains.
+
+**Mitigation posture**: Forgeplan не targets the multi-tenant adversarial deployment где this attack matters. `link` permission is held by the workspace owner; PRD-057 multi-agent dispatch shares the owner's permission already. Constant-time mutation paths would require a major architectural refactor (background recompute queue, async cache invalidation) without proportional benefit at the current trust model. PROB-058 AC-3 (bounded recursive walk) when closed will reduce the variance window incidentally.
+
+**Trigger to revisit** (escalates residual to actionable):
+
+- `link` permission scope expands beyond workspace owner.
+- Multi-tenant deployment (single Forgeplan instance shared by independent organizations).
+- Public-facing forge service exposing `forgeplan_link` MCP tool to untrusted callers.
+
+Until any trigger fires, this is documented и accepted.
 
 
 

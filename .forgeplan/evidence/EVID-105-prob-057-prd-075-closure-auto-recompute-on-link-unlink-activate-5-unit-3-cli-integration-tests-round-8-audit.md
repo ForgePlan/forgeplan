@@ -7,6 +7,8 @@ links:
   relation: informs
 - target: PRD-075
   relation: informs
+- target: PROB-058
+  relation: informs
 status: active
 title: PROB-057 / PRD-075 closure — auto-recompute on link/unlink/activate, 5 unit + 3 CLI integration tests, Round 8 audit
 ---
@@ -125,14 +127,43 @@ PROB-057 was discovered **incidentally** during PROB-053 PR review — the user 
 
 The fix shape (push-model auto-recompute) was selected through ADI/abduction (`forgeplan reason PROB-057`) which evaluated 4 options (auto-recompute on link, live computation in `get`, dirty flag schema bump, UX-indicator only) and recommended Option A с rationale "minimal scope, easy to test, reversible". Round 8 audit validated the choice but flagged 3 architectural follow-ups (PROB-058) which need separate scope.
 
+## Round 9 Audit (2026-05-06) — MCP transport parity + AC-2/4/5/6 closure
+
+After Round 8 closure, a Round 9 strict pre-PR audit (2 parallel adversarial agents — security + code-reviewer) caught a **HIGH-1 transport asymmetry**: PROB-057 closure landed on CLI but MCP `forgeplan_link` / `forgeplan_activate` / `forgeplan_score` still bypassed both the workspace lock and `sync_score_target`. Multi-agent dispatch (PRD-057) routes through MCP, so the CLI fix alone left the production path exposed. Closed in same sprint extension:
+
+- MCP `forgeplan_link` / `forgeplan_activate` now acquire `acquire_workspace_lock` AND call `sync_score_target` after mutation. Hints updated к `forgeplan_score_all` per FR-009.
+- MCP `forgeplan_score` — pre-Round-9 it computed `r_eff_recursive` for display but **never persisted** the recomputed value (latent bug since MCP launch). Now routes through `sync_score_target` (with graceful display fallback if persist fails).
+- `forgeplan score` / `score --all` switched to `open_store_locked()` mirroring `link/activate`. Trade-off: `score --all` holds lock for entire batch — на dense graphs deferred AC-3 (`r_eff_local`) tracks the bound.
+- AC-2 closed with **real concurrent-writer regression test** (`parallel_score_all_invocations_serialize_via_workspace_lock`) — spawns two `forgeplan score --all` processes via OS-level fs2 advisory lock; асserts both succeed and post-condition R_eff matches sequential expectation.
+- AC-4 hint contract hardened — line-shape match (`assert_reconcile_parents_hint_line` helper) instead of substring contains; covers link / unlink / activate negative paths.
+- AC-5 PRD-075 §"Threat Model — Mutation Latency Side-Channel" written with mitigation posture + trigger-to-revisit conditions.
+- AC-6 docstring corrected — Round 9 found pre-Round-9 wording falsely claimed "descendant only" for evidence collection while implementation reads BOTH directions. Now distinguishes 3 concerns: evidence collection (bidirectional, in scope), dependency recursion (descendant-only, in scope), transitive parent rescore (out of scope).
+
+**Real E2E на target/release/forgeplan after Round 9 (fresh tempdir, 2026-05-06)**:
+
+```
+new prd PRD-001                     → R_eff=0.0
+new evidence EVID-001
+link PRD-001 EVID-001 informs       → Linked + Next: forgeplan score-all
+get PRD-001 --json                  → R_eff=1.0  ✅ FR-001 (CLI)
+unlink                              → Next: forgeplan score-all  ✅ FR-002+FR-009
+link + activate --force             → status=active + R_eff=1.0  ✅ FR-003
+score --all                         → R_eff=1.00 (ran under workspace lock)
+```
+
+All 7 CLI integration tests pass (3 cache-invalidation + 3 hint-contract negative + 1 concurrent-writer regression). Full workspace test suite stays green: 0 failures across all 38 suites.
+
+**PROB-058 closure status**: 4 of 6 ACs closed in this sprint (AC-2 / AC-4 / AC-5 / AC-6). AC-1 (driver-trait parity) и AC-3 (`r_eff_local` perf-bound variant) deferred to follow-up sprint — both require `r_eff_recursive` signature rework + benchmark scaffold respectively.
+
 ## Related Artifacts
 
 | Artifact | Relation |
 |---|---|
 | PROB-057 | informs (this evidence demonstrates closure) |
 | PRD-075 | based_on (this evidence backs the PRD's acceptance criteria) |
-| PROB-058 | informs (deferred Round 8 audit findings tracked separately) |
+| PROB-058 | informs (deferred Round 8 + Round 9 audit findings tracked separately; AC-2/4/5/6 closed in same sprint) |
 | EVID-104 | informs (PROB-053 closure — discovery context for PROB-057) |
+
 
 
 
