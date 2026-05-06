@@ -515,6 +515,9 @@ mod tests {
 
     /// Backwards-compat alias `with_task_tool` still compiles (deprecated
     /// shim for in-flight callers during the ADR-011 migration).
+    /// Post-PROB-052 the override path is canonicalized — see sibling
+    /// `plugin_dispatcher_resolve_binary_prefers_explicit_override` for
+    /// the same cross-distro adaptation.
     #[test]
     #[allow(deprecated)]
     fn plugin_dispatcher_with_task_tool_alias_still_works() {
@@ -522,8 +525,12 @@ mod tests {
         if !echo.is_file() {
             return;
         }
+        let echo_canonical = match std::fs::canonicalize(&echo) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
         let dispatcher = PluginDispatcher::new(PathBuf::from("/tmp")).with_task_tool(echo.clone());
-        assert_eq!(dispatcher.resolve_binary(), Some(echo));
+        assert_eq!(dispatcher.resolve_binary(), Some(echo_canonical));
     }
 
     // -----------------------------------------------------------------
