@@ -86,6 +86,44 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   F4 MCP stderr trust asymmetry, MED-E `ExecutorConfig` field coupling,
   MED-1 ExecutorConfig invariant, plus LOW-1..LOW-4 cosmetic.
 
+### Fixed (Trust calculus — PROB-057 / PRD-075 closure)
+
+- **PROB-057 / PRD-075 ✅ — R_eff cache self-healing on link/unlink/activate**.
+  Discovered during the PROB-053 PR review session: `forgeplan link` /
+  `forgeplan activate` previously emitted a `Hint::info("verify R_eff")`
+  pointing at `forgeplan score <ID>` but never invoked the recompute.
+  Cached `r_eff_score` in LanceDB stayed stale until a manual `score`
+  / `score-all` run, leaking stale values to **four** downstream
+  consumers — `forgeplan get` UI (`get.rs:80`), search filter
+  `--has-evidence` (`search/filter.rs:93-94`), F-G-R quality grading
+  (`scoring/fgr.rs:150`) и LLM ADI prompt context
+  (`llm/reason.rs:218`). User-observed reproducer: PRD-074 reported
+  `R_eff: 0.00` from `get` while `score` returned 1.00 Adequate against
+  the same EVID-104 link.
+
+  **Fix**: new shared helper
+  `forgeplan_core::scoring::sync_score_target(store, id) -> f64`
+  encapsulates `r_eff_recursive` + `update_r_eff_score` and is called
+  synchronously after each `link`, `unlink`, `activate` mutation.
+  `score` / `score-all` route through the same helper to keep one
+  canonical "recompute + persist" path. Failure during auto-recompute
+  is non-fatal — the mutation succeeded, and `forgeplan score-all`
+  remains the authoritative full-tree reconciliation surface.
+
+  **Scope**: target artifact only. Parent / ancestor walk left to
+  `score-all` (PRD-075 §Non-Goals — bounded mutator latency). Schema
+  unchanged: workspaces from v0.29 read identically. `r_eff_recursive`
+  signature preserved for downstream callers.
+
+  **Hints updated**: post-mutation hints now point to
+  `forgeplan score-all` (parent reconciliation) instead of the
+  now-redundant `forgeplan score <ID>` per-target rescore.
+
+  **Tests**: 3 new unit tests cover persistence on no-evidence path,
+  stale-cache overwrite (regression guard for PROB-057), and
+  unknown-id error surfacing. Full workspace test suite stays green
+  (no regressions across the 1985-test baseline).
+
 ## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
 
 Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five

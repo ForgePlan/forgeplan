@@ -243,6 +243,21 @@ pub async fn open_driver()
     forgeplan_core::driver::factory::create_storage(&storage_config, &ws).await
 }
 
+/// PRD-075 FR-001..FR-003 — invoke the shared scoring helper after a successful
+/// mutation, surfacing failures via stderr without aborting the command.
+///
+/// The mutation itself (link / unlink / activate) has already succeeded by the
+/// time this is called; an auto-recompute failure does not invalidate the
+/// mutation, so we degrade gracefully by warning + suggesting the
+/// `forgeplan score-all` recovery path. This wraps Round 8 audit HIGH-3 (DRY)
+/// and HIGH-3 security (actionable Fix: marker) into a single contract.
+pub async fn sync_score_target_or_warn(store: &LanceStore, id: &str) {
+    if let Err(e) = forgeplan_core::scoring::sync_score_target(store, id).await {
+        eprintln!("  Warning: could not auto-recompute R_eff for {id}: {e}");
+        eprintln!("Fix: forgeplan score-all");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

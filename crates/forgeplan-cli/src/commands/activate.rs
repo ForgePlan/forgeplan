@@ -23,7 +23,17 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
 
-    // Re-render projection with updated status
+    // PRD-075 FR-003 (Round 8 audit MED-3): recompute the cached R_eff BEFORE
+    // re-rendering the markdown so that if the process crashes between the
+    // status flip and the file write, the on-disk source-of-truth still
+    // reflects the freshly recomputed score (ADR-003 — markdown is the source
+    // of truth and `scan-import` later re-imports it). Doing it AFTER render
+    // would leave a stale-r_eff "active" markdown on disk on crash, which is
+    // exactly the leak PROB-057 closes.
+    common::sync_score_target_or_warn(&store, id).await;
+
+    // Re-render projection with updated status (now picks up fresh R_eff via
+    // the record reload).
     if let Some(record) = store.get_record(id).await? {
         let links = store.get_relations(id).await.unwrap_or_default();
         projection::render_projection(
@@ -68,7 +78,7 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         println!("  Activated {id} ({old_status} → active)");
     }
 
-    // Hints: suggest evidence if not linked, then verify R_eff
+    // Hints: suggest evidence if not linked, then reconcile parents.
     let mut emitted: Vec<Hint> = Vec::new();
     if let Some(record) = store.get_record(id).await? {
         let rels = store.get_relations(id).await.unwrap_or_default();
@@ -87,13 +97,14 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         }
     }
 
-    // Primary next-action: verify R_eff after activation (always actionable
-    // unless the activate_hints already suggested adding evidence first).
+    // PRD-075 FR-009: per-target rescore is already done; the next sensible
+    // action is parent reconciliation (or whatever activate_hints surfaced
+    // as more specific).
     let mut next_hints: Vec<Hint> = Vec::new();
     if let Some(action) = hints::primary_action(&emitted) {
         next_hints.push(Hint::info("activation hint").with_action(action));
     } else {
-        next_hints.push(Hint::info("verify R_eff").with_action(format!("forgeplan score {}", id)));
+        next_hints.push(hints::reconcile_parents_hint());
     }
     print!("{}", hints::render_next_action_line(&next_hints));
 

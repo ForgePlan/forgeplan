@@ -158,6 +158,28 @@ CHANGELOG release notes will surface this prominently. Existing CI scripts using
 - Should the `eprintln` line include a hash / fingerprint of the playbook source (file path + sha256)? Useful for forensic logs but adds dependency. **Default**: no, keep simple; revisit if marketplace ships with a `--source` provenance field.
 - Should `forgeplan playbook run --dry-run` print the `! shell-exec:` warning even if not executing? **Default**: yes — dry-run is for safety review, the warning is exactly what the operator wants to see.
 
+## Invariants
+
+These properties MUST NEVER be violated by any future change to the shell-execution gate:
+
+- **Default deny**: `Delegation::Command` execution NEVER proceeds when both the CLI flag and workspace config opt-in are absent. Default state of a fresh workspace MUST refuse shell execution. Regression here = CWE-78 reopened.
+- **User-visible warning**: every permitted shell exec MUST emit a stderr line with the full argv (escape_debug-sanitized) BEFORE spawning the subprocess. Warning MUST be visible regardless of `RUST_LOG` / `tracing` configuration. `tracing::warn!` alone is INSUFFICIENT (silent unless explicitly enabled).
+- **Refuse path emits typed error**: refuse path returns `DispatchError::Transport` (not `anyhow::Error::msg`) with a `Fix:` hint per PRD-071 Hint Protocol. Bare `bail!` or untyped `Err` is forbidden.
+- **CLI/MCP parity**: every change to `--allow-shell` semantics MUST be mirrored on the MCP `forgeplan_playbook_run.allow_shell` parameter. Drift between surfaces = bypass surface for marketplace consumers.
+- **Flag independence from `--yes`**: `--allow-shell` does NOT imply `--yes` (Round 7 HIGH-A). Each consent flag stands alone — combining them silently would conflate "I trust the playbook" with "I authorize shell execution".
+- **No per-command allowlist creep without explicit RFC**: keeping the gate boolean preserves test simplicity and reasoning. Any future "allow `git` but not `curl`" feature requires a new RFC, not a back-door flag.
+
+## Rollback Plan
+
+If the gate ships and causes unexpected blast radius, the rollback path is staged from cheapest to heaviest:
+
+1. **Operator-side workaround (zero code change)**: affected operators set `[playbook] allow_shell = true` in their workspace `.forgeplan/config.yaml`. One-line config change restores pre-gate behavior for that workspace. CI/CD pipelines add `--allow-shell` to their `forgeplan playbook run` invocations.
+2. **Warning emission noise** (если `eprintln` pollutes test fixtures across the ecosystem): tests capture stderr explicitly (existing pattern in `integration_phase6_e2e.rs`); document the capture pattern в test guide. No code revert needed.
+3. **Single-commit revert** (if gate logic itself is broken): branch `feat/prob-053-allow-shell-gate` is a single feature commit (`4784f5a`); `git revert 4784f5a` restores pre-gate behavior. No schema migration, no LanceDB changes, no artifact backfill. Workspace configs with `allow_shell = true` continue parsing (forward-compatible serde). Reapply via cherry-pick after fix.
+4. **Last resort — disable via config schema bump**: if revert is impossible (e.g. dependent features ship after), add `[playbook] gate_disabled = true` escape hatch behind a CHANGELOG warning. This MUST be temporary and tracked as PROB.
+
+Recovery time estimates: workaround #1 = minutes (operator config edit); revert #3 = single PR (~30 minutes); escape hatch #4 = single PR + CHANGELOG (~1 hour).
+
 ## Success Criteria
 
 - 4-cell test matrix all pass (flag=t/f × config=t/f)

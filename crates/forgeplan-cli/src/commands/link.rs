@@ -1,4 +1,4 @@
-use forgeplan_core::hints::{self, Hint};
+use forgeplan_core::hints;
 use forgeplan_core::link;
 
 use crate::commands::common;
@@ -51,12 +51,14 @@ Fix: forgeplan list",
 
     println!("Linked: {} --{}--> {}", source_id, relation, target_id);
 
-    // PRD-071 contract: after linking evidence/refines/based_on, the natural
-    // next step is to re-score the source so R_eff updates.
-    let hints_vec = vec![
-        Hint::info("Recompute R_eff after linking")
-            .with_action(format!("forgeplan score {}", source_id)),
-    ];
+    // PRD-075 FR-001: sync recompute closes stale-cache window. Failure is
+    // non-fatal (mutation succeeded) — the wrapper surfaces a Fix: marker so
+    // agents/operators see the score-all recovery path.
+    common::sync_score_target_or_warn(&store, source_id).await;
+
+    // PRD-075 FR-009: hint string lives in core (forgeplan_core::hints) so
+    // mutator call sites cannot drift independently.
+    let hints_vec = vec![hints::reconcile_parents_hint()];
     print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }
@@ -102,11 +104,10 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
 
     println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
 
-    // PRD-071 contract: rescoring is the right follow-up after unlinking too.
-    let hints_vec = vec![
-        Hint::info("Recompute R_eff after unlink")
-            .with_action(format!("forgeplan score {}", source_id)),
-    ];
+    // PRD-075 FR-002: sync recompute after unlink mirrors the link path.
+    common::sync_score_target_or_warn(&store, source_id).await;
+
+    let hints_vec = vec![hints::reconcile_parents_hint()];
     print!("{}", hints::render_next_action_line(&hints_vec));
     Ok(())
 }

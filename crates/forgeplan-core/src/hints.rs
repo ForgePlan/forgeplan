@@ -103,6 +103,21 @@ pub fn format_hints(hints: &[Hint]) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PRD-075 FR-009 — single canonical "reconcile parents" hint used after every
+// mutator that auto-recomputes the local target. Centralizing prevents the
+// hint string from drifting between mutator call sites.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Standard hint emitted by `link` / `unlink` / `activate` after the local
+/// target's R_eff has already been recomputed inline via
+/// [`crate::scoring::sync_score_target`]. The remaining work is parent
+/// reconciliation up the dependency chain, which is `forgeplan score-all`'s
+/// responsibility (PRD-075 §Non-Goals — bounded mutator latency).
+pub fn reconcile_parents_hint() -> Hint {
+    Hint::info("Reconcile parents up the chain").with_action("forgeplan score-all".to_string())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Domain-specific hint collectors
 // ─────────────────────────────────────────────────────────────────────────────
 
