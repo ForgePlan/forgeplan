@@ -9,6 +9,27 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-05-06 — defensive sprint: security trio + cache self-healing + MCP transport parity + Wave 3 paper cuts
+
+**Highlights** (11 PROBs closed in single defensive sprint):
+
+- **Security**: PROB-053 shell-execution gate (CWE-78/94 default-deny + escape_debug warning), PROB-052 `which_in_path` TOCTOU/CWE-426 hardening (canonicalize + perm gate + symmetric override paths), PROB-054 `produces_at` prompt-injection-via-filesystem validator (CWE-94/OWASP A03)
+- **Trust calculus**: PROB-057 R_eff cache self-healing on link/unlink/activate (closes 4-consumer stale-state leak), PROB-058 (4/6 ACs) MCP transport parity для cache invalidation + score lock + concurrent-writer regression test
+- **Quality**: PROB-051 (4/7 items) phase-fold unification + perf scans + module rustdocs, PROB-056 `partial_verdict` field surfaces phase-fold contract в type system, PROB-032 search score breakdown coherent с total
+- **Paper cuts**: PROB-027/030/033 verified-already-closed via E2E + PROB-038 NEW validator strip pipeline (HTML comments + fenced code + inline backticks), PROB-028 reindex resilience против Phase-1 abort, **PROB-059** body↔links drift validate warning (strict `## Related Artifacts` parser)
+
+**Cross-surface symmetry pattern emerged 7×** в этом sprint — fixing security primitive on primary path while leaving symmetric override paths unguarded. Now baseline audit prompt asks "grep ALL consumers" before declaring closure.
+
+**Test count**: 1977 → **1489 lib + integration suites = ~1995 tests** (+ regression coverage по каждому PROB).
+
+**Quality gates**: `cargo fmt --check`, `cargo clippy --workspace --all-targets --features test-helpers -- -D warnings`, `cargo test --workspace --features test-helpers` — all clean across all 38 suites, 0 failures.
+
+**Deferred to v0.31.0+**:
+- PROB-049 follow-up retry-loop (typed-error refactor через scoring path)
+- PROB-051 MEDIUM/LOW deferred items (L-M1/M2/M3, P-M1/M2, P-L5, D-LOW-2/4)
+- PROB-058 deferred ACs (driver-trait parity, r_eff_local perf bound)
+- PROB-059 follow-ups: `forgeplan reconcile` interactive command, workspace-wide drift cleanup
+
 ### Added (Validation — PROB-059 closure, body↔links drift warning)
 
 - **PROB-059 ✅ — `body-links-drift` validate warning** (SHOULD-level).
