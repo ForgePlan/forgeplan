@@ -191,11 +191,33 @@ pub struct HealthReport {
     pub next_actions: Vec<String>,
     pub possible_duplicates: Vec<DuplicatePair>,
     pub active_stubs: Vec<ActiveStub>,
-    /// PROB-029 AC-2: aggregated verdict that reads ALL warning classes.
-    /// Pre-fix this didn't exist — `next_actions` was the only summary
-    /// and silently said "Project looks healthy" while stubs/dups were
-    /// printed above it (PRD-043 detection bypass).
+    /// **Best-known verdict for user-facing display.** Aggregates all
+    /// warning classes Forgeplan currently understands. Equals
+    /// [`HealthReport::partial_verdict`] when this report comes из
+    /// [`health_report`] (legacy / no phase context); equals the
+    /// post-fold value (включая `phase_mismatches.len()`) when this
+    /// report comes from [`health_report_with_phase`].
+    ///
+    /// PROB-029 AC-2 origin: aggregated verdict that reads ALL warning
+    /// classes. Pre-fix this didn't exist — `next_actions` was the only
+    /// summary и silently said "Project looks healthy" while stubs/dups
+    /// были printed above it (PRD-043 detection bypass).
     pub verdict: Verdict,
+    /// PROB-056 closure — verdict computed using ONLY the warning
+    /// classes the `forgeplan-core` crate tracks (phase_mismatches=0).
+    ///
+    /// External library consumers tracking additional context (extra
+    /// phase data, custom signals from a downstream crate) MUST consume
+    /// this field as the base for their own [`compute_verdict_with`]
+    /// recomputation rather than rely on [`HealthReport::verdict`] —
+    /// the latter equals `partial_verdict` only когда the report came
+    /// from [`health_report`]. After [`health_report_with_phase`] the
+    /// two diverge if any phase mismatches были detected.
+    ///
+    /// Pre-PROB-056 there was a single `verdict` field that silently
+    /// switched semantic between callers (Round 6 audit MED-1 — leaky
+    /// abstraction). The split surfaces the contract в the type system.
+    pub partial_verdict: Verdict,
 }
 
 impl HealthReport {
@@ -469,6 +491,11 @@ async fn health_report_inner(
         &VerdictThresholds::default(),
     );
 
+    // PROB-056 closure: from `health_report` (no phase context) the
+    // verdict equals partial_verdict — both are computed with
+    // phase_mismatches=0. They diverge only after `health_report_with_phase`
+    // overwrites `verdict` с the folded value. `partial_verdict` always
+    // reflects the "core knows about" subset.
     Ok(HealthReport {
         total,
         by_kind: by_kind.into_iter().collect(),
@@ -482,6 +509,7 @@ async fn health_report_inner(
         possible_duplicates,
         active_stubs,
         verdict,
+        partial_verdict: verdict,
     })
 }
 
@@ -1382,6 +1410,7 @@ mod tests {
             possible_duplicates: Vec::new(),
             active_stubs: Vec::new(),
             verdict: Verdict::Healthy,
+            partial_verdict: Verdict::Healthy,
         }
     }
 
@@ -1759,6 +1788,50 @@ mod tests {
         assert!(
             mismatches.is_empty(),
             "empty workspace has no active records → no phase mismatches possible"
+        );
+    }
+
+    /// PROB-056 closure — `partial_verdict` equals `verdict` for the
+    /// `health_report` legacy path (both computed с phase_mismatches=0).
+    /// Regression guard для the contract documented on the field.
+    #[tokio::test]
+    async fn health_report_partial_verdict_equals_verdict_when_no_phase() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let report = health_report(&store).await.unwrap();
+        assert_eq!(
+            report.verdict, report.partial_verdict,
+            "PROB-056: legacy health_report has no phase context — verdict must == partial_verdict"
+        );
+    }
+
+    /// PROB-056 closure — `partial_verdict` and `verdict` may diverge
+    /// after `health_report_with_phase` if any phase mismatches were
+    /// folded. With zero mismatches they remain equal (regression guard
+    /// для the typical-case fast path).
+    #[tokio::test]
+    async fn health_report_with_phase_partial_verdict_invariant() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let (report, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+        if mismatches.is_empty() {
+            assert_eq!(
+                report.verdict, report.partial_verdict,
+                "PROB-056: zero phase mismatches → verdict == partial_verdict"
+            );
+        }
+        // partial_verdict MUST always equal the legacy compute even when
+        // verdict диverges due to folded phase context.
+        let legacy = health_report(&store).await.unwrap();
+        assert_eq!(
+            report.partial_verdict, legacy.verdict,
+            "PROB-056: partial_verdict on with_phase == verdict on legacy (same input → same partial)"
         );
     }
 
