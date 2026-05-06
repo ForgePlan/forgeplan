@@ -9,6 +9,47 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Refactor (Architecture — PROB-056 closure, leaky verdict abstraction)
+
+- **PROB-056 ✅ — `HealthReport.partial_verdict` field surfaces
+  phase-fold contract в the type system**. Pre-PROB-056 the single
+  `verdict` field silently switched semantic between callers:
+  `health_report()` populated it as partial (phase_mismatches=0),
+  `health_report_with_phase()` populated it as folded (PROB-051
+  closure). External library consumers calling `health_report`
+  directly couldn't tell от the type signature что their `verdict`
+  was partial.
+
+  **Fix**: new `partial_verdict: Verdict` field on `HealthReport` always
+  carries the value computed с phase_mismatches=0. `verdict` continues
+  carry the "best-known" value (folded когда available via
+  `health_report_with_phase`, partial otherwise). External library
+  consumers tracking additional context MUST consume `partial_verdict`
+  as base для their own `compute_verdict_with()` recomputation.
+
+  **Wire format**: `verdict` JSON field unchanged. New `partial_verdict`
+  appears in `--json` output (additive — non-breaking). CLI/MCP code
+  paths unchanged — both already route through `health_report_with_phase`
+  (PROB-051 closure) so `verdict` is the right value to consume.
+
+  **Tests**: +2 unit tests validating invariants:
+  - `health_report_partial_verdict_equals_verdict_when_no_phase` —
+    legacy path both fields equal
+  - `health_report_with_phase_partial_verdict_invariant` —
+    `partial_verdict` ALWAYS equals legacy `verdict` для same workspace,
+    even when post-fold `verdict` diverges
+
+  **Design choice**: additive (new field) vs hard rename (`verdict` →
+  `partial_verdict`). Picked additive — hard rename would force all
+  CLI/MCP/external code to migrate while still leaving the dual-semantic
+  foot-gun on the JSON wire field name. Additive split lets `verdict`
+  keep "best-known" user-facing semantic (= what consumers actually
+  want) и `partial_verdict` becomes explicit advanced-case access.
+  Mirror of PROB-049 typed-errors lineage (typed alternative alongside
+  legacy surface, incremental migration).
+
+  Suite: lib 1475 → **1477** PASS, 0 failures across 38 suites.
+
 ### Fixed (Security — PROB-054 closure, prompt-injection-via-filesystem)
 
 - **PROB-054 ✅ — `produces_at` prompt-injection validator** (CWE-94
