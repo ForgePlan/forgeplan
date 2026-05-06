@@ -16,10 +16,19 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
     }
 
     let to_validate: Vec<_> = if let Some(target_id) = id {
-        let upper = target_id.to_uppercase();
+        // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id.
+        // Resolver returns the canonical DB id when input matches a slug;
+        // for display-id input it normalises case+padding. Fall back to
+        // the legacy uppercase-match if resolver returns None (covers edge
+        // case where DB id differs from any resolve path).
+        let canonical = store.resolve_id(target_id).await?;
+        let upper_input = target_id.to_uppercase();
         all_records
             .into_iter()
-            .filter(|r| r.id.to_uppercase() == upper)
+            .filter(|r| match &canonical {
+                Some(c) => r.id == *c,
+                None => r.id.to_uppercase() == upper_input,
+            })
             .collect()
     } else if ci {
         // CI mode: validate active + stale (stale = expired but still live decisions)

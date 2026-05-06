@@ -102,12 +102,18 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
 }
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let target_id = id.ok_or_else(|| anyhow::anyhow!("Usage: forgeplan score <ID>"))?;
+    let target_id_input = id.ok_or_else(|| anyhow::anyhow!("Usage: forgeplan score <ID>"))?;
 
     // PROB-058 AC-2: acquire workspace lock — `score` writes `r_eff_score` and
     // must serialize against concurrent `link` / `activate` to avoid
     // latest-writer-wins data loss.
     let (_ws, _lock, store) = common::open_store_locked().await?;
+
+    // PROB-060 / SPEC-005 Phase 1.5b — slug-aware lookup.
+    let target_id_owned = store.resolve_id(target_id_input).await?.ok_or_else(|| {
+        anyhow::anyhow!("Artifact '{target_id_input}' not found\nFix: forgeplan list")
+    })?;
+    let target_id = target_id_owned.as_str();
 
     // Get the target artifact
     let target = store.get_record(target_id).await?.ok_or_else(|| {

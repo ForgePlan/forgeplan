@@ -7,6 +7,16 @@ use crate::commands::common;
 pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id.
+    // Resolve once at the top; propagate canonical id throughout so
+    // lifecycle, relations, projection, and log_change all see the same
+    // value regardless of whether user passed slug or display form.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Capture old status before transition
     let old_status = store
         .get_record(id)
