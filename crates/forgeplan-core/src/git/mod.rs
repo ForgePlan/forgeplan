@@ -123,16 +123,16 @@ pub fn changed_artifact_files(
 /// Vector of basenames (no path component) for `.md` files only.
 /// Example: `["PRD-074-auth-system.md", "prd-rate-limit.md"]`
 ///
-/// # Panics
-/// Debug builds: panics if `kind_dir` contains `/` or `..` (audit H3 — the
-/// arg is interpolated into a path passed to `git ls-tree`; current callers
-/// pass `ArtifactKind::dir_name()` which is a static enum-derived string,
-/// so this is defense-in-depth against future misuse).
+/// # Path traversal guard (cross-phase audit security L1)
+/// Returns empty `Vec` immediately if `kind_dir` contains `/`, `..`, or is
+/// empty — defense-in-depth against future callers passing user input.
+/// Replaces previous `debug_assert!` which was stripped from release
+/// builds (CWE-22 path traversal — strict deny over assert).
 pub fn artifact_filenames_in_origin_dev(repo_root: &Path, kind_dir: &str) -> Vec<String> {
-    debug_assert!(
-        !kind_dir.contains('/') && !kind_dir.contains(".."),
-        "kind_dir must be a single path segment (no slashes, no dot-dot), got {kind_dir:?}"
-    );
+    if kind_dir.is_empty() || kind_dir.contains('/') || kind_dir.contains("..") {
+        // Reject path-traversal attempts at runtime, not just debug builds.
+        return Vec::new();
+    }
 
     // Bound network hangs — abort if average bandwidth drops below 1000 B/s
     // for 5 seconds. Best-effort fetch; output and exit code ignored.
@@ -203,11 +203,10 @@ pub fn artifact_filenames_in_origin_dev(repo_root: &Path, kind_dir: &str) -> Vec
 ///    where `<kind>` is the kind prefix and `<suffix>` is the slug minus the
 ///    kind prefix. Example: slug `prd-auth-system` matches `PRD-074-auth-system.md`.
 ///
-/// # Case sensitivity (audit M2/H3 — fixed)
-/// Both pre-merge and post-merge matches are now case-**insensitive** —
-/// each filename is lowercased once and compared against lowercase patterns.
-/// This handles legitimate cross-platform variation: macOS HFS+/APFS default
-/// case-insensitive, Windows NTFS case-insensitive, Linux case-sensitive.
+/// # Case sensitivity (audit M2/H3 — fixed; perf-optimized in cross-phase audit)
+/// Both pre-merge and post-merge matches are case-**insensitive** via
+/// `eq_ignore_ascii_case` — no per-iteration allocation. Slugs are
+/// ASCII-only by SPEC-005, so ASCII case-folding has full coverage.
 ///
 /// # Edge cases
 /// Returns `false` if the slug has no `-` separator or has empty kind/suffix
@@ -230,23 +229,26 @@ pub fn slug_exists_in_filenames(slug: &str, filenames: &[String]) -> bool {
     let post_suffix_lower = format!("-{suffix}.md");
 
     filenames.iter().any(|filename| {
-        let lower = filename.to_ascii_lowercase();
-        // Pre-merge form.
-        if lower == pre_merge_basename {
+        // Pre-merge form: full filename eq_ignore_ascii_case.
+        if filename.eq_ignore_ascii_case(&pre_merge_basename) {
             return true;
         }
-        // Post-merge form: <kind>-<digits>-<suffix>.md (all lowercase here).
-        if lower.starts_with(&post_prefix_lower) && lower.ends_with(&post_suffix_lower) {
-            let middle_start = post_prefix_lower.len();
-            let middle_end = lower.len() - post_suffix_lower.len();
-            if middle_start < middle_end {
-                let middle = &lower[middle_start..middle_end];
-                if !middle.is_empty() && middle.chars().all(|c| c.is_ascii_digit()) {
-                    return true;
-                }
-            }
+        // Post-merge form: <kind>-<digits>-<suffix>.md
+        // Cross-phase audit code-analyzer #5: avoid per-call allocation
+        // by using ASCII-aware substring case-insensitive compare.
+        let bytes = filename.as_bytes();
+        let pfx = post_prefix_lower.as_bytes();
+        let sfx = post_suffix_lower.as_bytes();
+        if bytes.len() < pfx.len() + sfx.len() {
+            return false;
         }
-        false
+        let starts_ok = bytes[..pfx.len()].eq_ignore_ascii_case(pfx);
+        let ends_ok = bytes[bytes.len() - sfx.len()..].eq_ignore_ascii_case(sfx);
+        if !starts_ok || !ends_ok {
+            return false;
+        }
+        let middle = &bytes[pfx.len()..bytes.len() - sfx.len()];
+        !middle.is_empty() && middle.iter().all(|c| c.is_ascii_digit())
     })
 }
 
@@ -499,5 +501,31 @@ mod tests {
         // match against post_prefix "PRD-".
         let files = vec!["prd-074-auth-system.md".to_string()];
         assert!(slug_exists_in_filenames("prd-auth-system", &files));
+    }
+
+    // Cross-phase security audit L1 — runtime path-traversal guard
+    // (replacing previous debug_assert! which was stripped from release).
+
+    #[test]
+    fn audit_l1_kind_dir_with_slash_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let result = artifact_filenames_in_origin_dev(tmp.path(), "../etc");
+        assert!(result.is_empty(), "path-traversal must be rejected");
+    }
+
+    #[test]
+    fn audit_l1_kind_dir_with_dotdot_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let result = artifact_filenames_in_origin_dev(tmp.path(), "..");
+        assert!(result.is_empty());
+        let result = artifact_filenames_in_origin_dev(tmp.path(), "prds/..");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn audit_l1_kind_dir_empty_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let result = artifact_filenames_in_origin_dev(tmp.path(), "");
+        assert!(result.is_empty());
     }
 }

@@ -101,6 +101,60 @@ pub fn assigned_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
         .and_then(|n| u32::try_from(n).ok())
 }
 
+/// Augment rendered frontmatter with PROB-060 / SPEC-005 / ADR-012 identity fields.
+///
+/// Inserts three fields with these semantics:
+/// - `slug` — canonical identity (per ADR-012 invariant I-1).
+///   **Always overwritten** with the canonical computed value. Templates
+///   are not authoritative for slug content.
+/// - `predicted_number` — local prediction at create time. **Always set**
+///   to the supplied value.
+/// - `assigned_number` — Phase 1.x: equals `predicted_number` (current
+///   immediate-assignment behavior). **Audit M1a fix**: if the template
+///   provides an explicit `assigned_number: null` (Phase 2 forward-compat),
+///   the null is **preserved** — write-once semantics per invariant I-2
+///   forbid overwriting a deliberate null with a value.
+///
+/// Body content is preserved byte-for-byte. Other existing frontmatter
+/// fields are preserved.
+///
+/// # Errors
+/// Returns an error if the input has no parseable YAML frontmatter — should
+/// not happen for template-rendered content but surfaces as a clear failure
+/// rather than silent corruption.
+pub fn augment_frontmatter_with_id_fields(
+    content: &str,
+    slug: &str,
+    predicted_number: u32,
+) -> anyhow::Result<String> {
+    let (mut fm, body) =
+        parse_frontmatter(content).map_err(|e| anyhow::anyhow!("frontmatter parse: {e}"))?;
+    fm.insert(
+        "slug".to_string(),
+        serde_yaml::Value::String(slug.to_string()),
+    );
+    fm.insert(
+        "predicted_number".to_string(),
+        serde_yaml::Value::Number(serde_yaml::Number::from(predicted_number)),
+    );
+    // Audit M1a: preserve explicit null. Only insert assigned_number when
+    // either (a) the field is absent OR (b) the field carries a non-null
+    // value (a template-provided initial assignment, which we still
+    // overwrite in Phase 1.x to keep `id`/`predicted`/`assigned` consistent).
+    // An explicit `assigned_number: null` is a Phase 2 lazy-assignment
+    // marker and must not be overwritten by Phase 1.x callers.
+    let assigned_explicitly_null = fm
+        .get("assigned_number")
+        .is_some_and(serde_yaml::Value::is_null);
+    if !assigned_explicitly_null {
+        fm.insert(
+            "assigned_number".to_string(),
+            serde_yaml::Value::Number(serde_yaml::Number::from(predicted_number)),
+        );
+    }
+    render_frontmatter(&fm, &body).map_err(|e| anyhow::anyhow!("re-render frontmatter: {e}"))
+}
+
 /// Check whether a tag list contains a given key/value match.
 ///
 /// Thin wrapper around [`crate::search::filter::has_tag_predicate`] — the
@@ -243,5 +297,105 @@ mod tests {
         assert_eq!(slug_from_frontmatter(&fm), Some("prd-auth-system"));
         assert_eq!(predicted_number_from_frontmatter(&fm), Some(74));
         assert_eq!(assigned_number_from_frontmatter(&fm), Some(74));
+    }
+
+    // PROB-060 / SPEC-005 — augment_frontmatter_with_id_fields tests
+    // (relocated from forgeplan-cli/src/commands/new.rs per cross-phase
+    // audit code-analyzer #1: pure frontmatter logic belongs in core).
+
+    fn template_sample(id: &str, title: &str) -> String {
+        format!(
+            "---\nid: {id}\nstatus: draft\ntitle: {title}\n---\n\n# {id}: {title}\n\nBody content.\n"
+        )
+    }
+
+    #[test]
+    fn augment_inserts_all_three_id_fields() {
+        let content = template_sample("PRD-074", "Auth System");
+        let augmented =
+            augment_frontmatter_with_id_fields(&content, "prd-auth-system", 74).unwrap();
+        assert!(augmented.contains("slug: prd-auth-system"));
+        assert!(augmented.contains("predicted_number: 74"));
+        assert!(augmented.contains("assigned_number: 74"));
+    }
+
+    #[test]
+    fn augment_preserves_body_content() {
+        let content = template_sample("PRD-074", "Auth");
+        let augmented = augment_frontmatter_with_id_fields(&content, "prd-auth", 74).unwrap();
+        assert!(augmented.contains("# PRD-074: Auth"));
+        assert!(augmented.contains("Body content."));
+    }
+
+    #[test]
+    fn augment_preserves_existing_frontmatter_fields() {
+        let content = template_sample("PRD-074", "Auth");
+        let augmented = augment_frontmatter_with_id_fields(&content, "prd-auth", 74).unwrap();
+        assert!(augmented.contains("id: PRD-074"));
+        assert!(augmented.contains("status: draft"));
+        assert!(augmented.contains("title: Auth"));
+    }
+
+    #[test]
+    fn augment_overwrites_existing_slug_field() {
+        let content =
+            "---\nid: PRD-074\nstatus: draft\nslug: stale-slug\ntitle: Auth\n---\n\nBody.\n";
+        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
+        assert!(augmented.contains("slug: prd-auth"));
+        assert!(!augmented.contains("stale-slug"));
+    }
+
+    #[test]
+    fn augment_round_trip_via_parse() {
+        let content = template_sample("RFC-009", "Migration");
+        let augmented = augment_frontmatter_with_id_fields(&content, "rfc-migration", 9).unwrap();
+        let (fm, body) = parse_frontmatter(&augmented).unwrap();
+        assert_eq!(
+            fm.get("slug").and_then(|v| v.as_str()),
+            Some("rfc-migration")
+        );
+        assert_eq!(fm.get("predicted_number").and_then(|v| v.as_u64()), Some(9));
+        assert_eq!(fm.get("assigned_number").and_then(|v| v.as_u64()), Some(9));
+        assert!(body.contains("Body content."));
+    }
+
+    #[test]
+    fn augment_fails_on_no_frontmatter() {
+        let content = "# RFC-009: Migration\n\nNo frontmatter here.\n";
+        let result = augment_frontmatter_with_id_fields(content, "rfc-migration", 9);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn audit_m1a_augment_preserves_explicit_null_assigned_number() {
+        // Phase 2 forward-compat: explicit `assigned_number: null` template
+        // must NOT be overwritten by Phase 1.x callers (write-once I-2).
+        let content =
+            "---\nid: PRD-074\nstatus: draft\ntitle: Auth\nassigned_number: null\n---\n\nBody.\n";
+        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
+        let (fm, _body) = parse_frontmatter(&augmented).unwrap();
+        let value = fm.get("assigned_number").expect("field must exist");
+        assert!(value.is_null(), "expected null preserved, got {value:?}");
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some("prd-auth"));
+        assert_eq!(
+            fm.get("predicted_number").and_then(|v| v.as_u64()),
+            Some(74)
+        );
+    }
+
+    #[test]
+    fn augment_overwrites_assigned_number_when_field_absent() {
+        let content = "---\nid: PRD-074\nstatus: draft\ntitle: Auth\n---\n\nBody.\n";
+        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
+        assert!(augmented.contains("assigned_number: 74"));
+    }
+
+    #[test]
+    fn augment_overwrites_assigned_number_when_template_has_value() {
+        let content =
+            "---\nid: PRD-074\nstatus: draft\ntitle: Auth\nassigned_number: 0\n---\n\nBody.\n";
+        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
+        assert!(augmented.contains("assigned_number: 74"));
+        assert!(!augmented.contains("assigned_number: 0"));
     }
 }

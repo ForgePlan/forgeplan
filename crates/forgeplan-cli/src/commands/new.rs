@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
-use forgeplan_core::artifact::frontmatter::{parse_frontmatter, render_frontmatter};
+use forgeplan_core::artifact::frontmatter::augment_frontmatter_with_id_fields;
 use forgeplan_core::artifact::store::ArtifactSummary;
 use forgeplan_core::artifact::types::{ArtifactKind, slug_from_kind_title};
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
@@ -23,9 +23,17 @@ pub const MAX_TITLE_LEN: usize = 128;
 
 /// Validate an artifact title before any DB or filesystem writes.
 ///
-/// Rejects empty titles (including whitespace-only) and titles longer than
-/// [`MAX_TITLE_LEN`] characters. Called at the very start of `run` so that
-/// invalid input never produces orphan DB rows.
+/// Rejects:
+/// - Empty / whitespace-only titles
+/// - Titles longer than [`MAX_TITLE_LEN`] characters
+/// - **Control characters** (CWE-176) — would corrupt rendered headings
+///   and MCP responses passed to LLM agents
+/// - **BIDI override codepoints** (CWE-1007 / Trojan Source) —
+///   `U+202A..U+202E` and `U+2066..U+2069` can spoof displayed `Next:`
+///   commands suggested back to AI agents
+///
+/// Called at the very start of `run` so that invalid input never produces
+/// orphan DB rows. Per cross-phase security audit L3.
 pub fn validate_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Title cannot be empty. Provide a non-empty title.");
@@ -37,6 +45,26 @@ pub fn validate_title(title: &str) -> Result<()> {
             len,
             MAX_TITLE_LEN
         );
+    }
+    // Reject control chars and BIDI overrides. We allow newline-as-control
+    // (\n, \r, \t) is rejected because titles are single-line user input
+    // and embedded newlines break frontmatter rendering and CLI output.
+    for c in title.chars() {
+        if c.is_control() {
+            anyhow::bail!(
+                "Title contains control character (U+{:04X}). \
+                 Use plain printable text only.",
+                c as u32
+            );
+        }
+        // BIDI override / isolate codepoints (Trojan Source class).
+        if matches!(c as u32, 0x202A..=0x202E | 0x2066..=0x2069) {
+            anyhow::bail!(
+                "Title contains BIDI override character (U+{:04X}). \
+                 These can spoof rendered output — rejected for security.",
+                c as u32
+            );
+        }
     }
     Ok(())
 }
@@ -304,60 +332,6 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     Ok(())
 }
 
-/// Augment rendered frontmatter with PROB-060 / SPEC-005 identity fields.
-///
-/// Inserts three fields with these semantics:
-/// - `slug` — canonical identity (per ADR-012 invariant I-1).
-///   **Always overwritten** with the canonical computed value. Templates
-///   are not authoritative for slug content.
-/// - `predicted_number` — local prediction at create time. **Always set**
-///   to the supplied value.
-/// - `assigned_number` — Phase 1.x: equals `predicted_number` (current
-///   immediate-assignment behavior). **Audit M1a fix**: if the template
-///   provides an explicit `assigned_number: null` (Phase 2 forward-compat),
-///   the null is **preserved** — write-once semantics per invariant I-2
-///   forbid overwriting a deliberate null with a value.
-///
-/// Body content is preserved byte-for-byte. Other existing frontmatter
-/// fields are preserved.
-///
-/// # Errors
-/// Returns an error if the input has no parseable YAML frontmatter — should
-/// not happen for template-rendered content but surfaces as a clear failure
-/// rather than silent corruption.
-pub fn augment_frontmatter_with_id_fields(
-    content: &str,
-    slug: &str,
-    predicted_number: u32,
-) -> Result<String> {
-    let (mut fm, body) = parse_frontmatter(content)
-        .with_context(|| "rendered template has no parseable YAML frontmatter")?;
-    fm.insert(
-        "slug".to_string(),
-        serde_yaml::Value::String(slug.to_string()),
-    );
-    fm.insert(
-        "predicted_number".to_string(),
-        serde_yaml::Value::Number(serde_yaml::Number::from(predicted_number)),
-    );
-    // Audit M1a: preserve explicit null. Only insert assigned_number when
-    // either (a) the field is absent OR (b) the field carries a non-null
-    // value (ie a template-provided initial assignment, which we still
-    // overwrite in Phase 1.x to keep `id`/`predicted`/`assigned` consistent).
-    // An explicit `assigned_number: null` is a Phase 2 lazy-assignment
-    // marker and must not be overwritten by Phase 1.x callers.
-    let assigned_explicitly_null = fm
-        .get("assigned_number")
-        .is_some_and(serde_yaml::Value::is_null);
-    if !assigned_explicitly_null {
-        fm.insert(
-            "assigned_number".to_string(),
-            serde_yaml::Value::Number(serde_yaml::Number::from(predicted_number)),
-        );
-    }
-    render_frontmatter(&fm, &body).map_err(|e| anyhow::anyhow!("re-render frontmatter: {e}"))
-}
-
 /// Find the closest duplicate among `existing` for the given title.
 ///
 /// Returns `Some((id, title, similarity))` when the best match has similarity
@@ -458,6 +432,52 @@ mod tests {
         assert!(validate_title(&t2).is_err());
     }
 
+    // Cross-phase security audit L3 — control char + BIDI override rejection.
+
+    #[test]
+    fn audit_l3_validate_title_rejects_control_chars() {
+        // Embedded newline / tab / NUL must be rejected.
+        let cases = [
+            "Auth\nSystem",
+            "Auth\tSystem",
+            "Auth\0System",
+            "Auth\rSystem",
+        ];
+        for case in cases {
+            let err = validate_title(case).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("control"),
+                "expected 'control' in error for {case:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_l3_validate_title_rejects_bidi_overrides() {
+        // U+202E (RTL override) is the canonical Trojan Source attack char.
+        let cases = [
+            "Auth\u{202E}System", // RTL override
+            "Auth\u{202A}System", // LTR embedding
+            "Auth\u{2066}System", // LTR isolate
+            "Auth\u{2069}System", // pop directional isolate
+        ];
+        for case in cases {
+            let err = validate_title(case).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("bidi") || err.contains("control"),
+                "expected 'bidi' in error for {case:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_l3_validate_title_accepts_unicode_letters() {
+        // Make sure we don't over-reject legitimate non-ASCII content.
+        assert!(validate_title("Тестовая система").is_ok());
+        assert!(validate_title("システム認証").is_ok());
+        assert!(validate_title("Système d'auth").is_ok());
+    }
+
     #[test]
     fn find_duplicate_picks_exact_over_substring() {
         let existing = vec![
@@ -470,150 +490,7 @@ mod tests {
         assert!((score - 1.0).abs() < 1e-9);
     }
 
-    // PROB-060 / SPEC-005 — augment_frontmatter_with_id_fields.
-
-    fn template_sample(id: &str, title: &str) -> String {
-        format!(
-            "---\nid: {id}\nstatus: draft\ntitle: {title}\n---\n\n# {id}: {title}\n\nBody content.\n"
-        )
-    }
-
-    #[test]
-    fn augment_inserts_all_three_id_fields() {
-        let content = template_sample("PRD-074", "Auth System");
-        let augmented =
-            augment_frontmatter_with_id_fields(&content, "prd-auth-system", 74).unwrap();
-        assert!(augmented.contains("slug: prd-auth-system"));
-        assert!(augmented.contains("predicted_number: 74"));
-        assert!(augmented.contains("assigned_number: 74"));
-    }
-
-    #[test]
-    fn augment_preserves_body_content() {
-        let content = template_sample("PRD-074", "Auth");
-        let augmented = augment_frontmatter_with_id_fields(&content, "prd-auth", 74).unwrap();
-        assert!(augmented.contains("# PRD-074: Auth"));
-        assert!(augmented.contains("Body content."));
-    }
-
-    #[test]
-    fn augment_preserves_existing_frontmatter_fields() {
-        let content = template_sample("PRD-074", "Auth");
-        let augmented = augment_frontmatter_with_id_fields(&content, "prd-auth", 74).unwrap();
-        // Original fields stay
-        assert!(augmented.contains("id: PRD-074"));
-        assert!(augmented.contains("status: draft"));
-        assert!(augmented.contains("title: Auth"));
-    }
-
-    #[test]
-    fn augment_assigned_equals_predicted_in_phase_1x() {
-        // Phase 1.x contract: assigned mirrors predicted (immediate assignment).
-        // Phase 2 will change this — at that point the test will need updating.
-        let content = template_sample("PRD-074", "Auth");
-        let augmented = augment_frontmatter_with_id_fields(&content, "prd-auth", 74).unwrap();
-
-        // Re-parse and assert structural equality of the two numbers.
-        let (fm, _body) = parse_frontmatter(&augmented).unwrap();
-        let predicted = fm.get("predicted_number").and_then(|v| v.as_u64());
-        let assigned = fm.get("assigned_number").and_then(|v| v.as_u64());
-        assert_eq!(predicted, Some(74));
-        assert_eq!(assigned, Some(74));
-        assert_eq!(predicted, assigned);
-    }
-
-    #[test]
-    fn augment_overwrites_existing_slug_field() {
-        // If the template already has a slug field (from migration or hand-edit),
-        // augment overwrites with the canonical computed slug.
-        let content =
-            "---\nid: PRD-074\nstatus: draft\nslug: stale-slug\ntitle: Auth\n---\n\nBody.\n";
-        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
-        assert!(augmented.contains("slug: prd-auth"));
-        assert!(!augmented.contains("stale-slug"));
-    }
-
-    #[test]
-    fn augment_round_trip_via_parse() {
-        let content = template_sample("RFC-009", "Migration");
-        let augmented = augment_frontmatter_with_id_fields(&content, "rfc-migration", 9).unwrap();
-        let (fm, body) = parse_frontmatter(&augmented).unwrap();
-
-        assert_eq!(
-            fm.get("slug").and_then(|v| v.as_str()),
-            Some("rfc-migration")
-        );
-        assert_eq!(fm.get("predicted_number").and_then(|v| v.as_u64()), Some(9));
-        assert_eq!(fm.get("assigned_number").and_then(|v| v.as_u64()), Some(9));
-        assert!(body.contains("Body content."));
-    }
-
-    #[test]
-    fn augment_fails_on_no_frontmatter() {
-        // Defense: if template render somehow loses frontmatter, surface as clear
-        // failure rather than silent corruption.
-        let content = "# RFC-009: Migration\n\nNo frontmatter here.\n";
-        let result = augment_frontmatter_with_id_fields(content, "rfc-migration", 9);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn augment_handles_high_numbers() {
-        let content = template_sample("PRD-999", "Far Future");
-        let augmented =
-            augment_frontmatter_with_id_fields(&content, "prd-far-future", 999).unwrap();
-        assert!(augmented.contains("predicted_number: 999"));
-        assert!(augmented.contains("assigned_number: 999"));
-    }
-
-    // Audit 2026-05-06 M1a regression — preserve explicit `assigned_number: null`.
-
-    #[test]
-    fn augment_preserves_explicit_null_assigned_number() {
-        // Phase 2 forward-compat: if a template ships with `assigned_number: null`,
-        // augment must NOT overwrite the null with the predicted value (write-once
-        // invariant I-2). This unblocks the CI bot taking over assignment later.
-        let content =
-            "---\nid: PRD-074\nstatus: draft\ntitle: Auth\nassigned_number: null\n---\n\nBody.\n";
-        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
-        let (fm, _body) = parse_frontmatter(&augmented).unwrap();
-
-        // assigned_number stays null.
-        let value = fm.get("assigned_number").expect("field must exist");
-        assert!(
-            value.is_null(),
-            "expected assigned_number to remain null, got {value:?}"
-        );
-
-        // But slug and predicted_number ARE set (only assigned_number has write-once semantics).
-        assert_eq!(
-            fm.get("slug").and_then(|v| v.as_str()),
-            Some("prd-auth"),
-            "slug must always be set"
-        );
-        assert_eq!(
-            fm.get("predicted_number").and_then(|v| v.as_u64()),
-            Some(74),
-            "predicted_number must always be set"
-        );
-    }
-
-    #[test]
-    fn augment_overwrites_assigned_number_when_field_absent() {
-        // When template doesn't provide assigned_number at all, augment writes it.
-        let content = "---\nid: PRD-074\nstatus: draft\ntitle: Auth\n---\n\nBody.\n";
-        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
-        assert!(augmented.contains("assigned_number: 74"));
-    }
-
-    #[test]
-    fn augment_overwrites_assigned_number_when_template_has_value() {
-        // When template has a non-null value (e.g. legacy 0 or stale stub),
-        // augment overwrites — only explicit null is preserved.
-        let content =
-            "---\nid: PRD-074\nstatus: draft\ntitle: Auth\nassigned_number: 0\n---\n\nBody.\n";
-        let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
-        assert!(augmented.contains("assigned_number: 74"));
-        assert!(!augmented.contains("assigned_number: 0"));
-    }
+    // augment_frontmatter_with_id_fields tests live in
+    // crates/forgeplan-core/src/artifact/frontmatter.rs (cross-phase audit
+    // code-analyzer #1: pure frontmatter logic relocated to core).
 }

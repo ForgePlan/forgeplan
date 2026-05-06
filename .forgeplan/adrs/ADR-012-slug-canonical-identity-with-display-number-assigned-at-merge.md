@@ -91,6 +91,19 @@ Trilemma: cannot have all three of {zero-coordination assignment, stable human h
 
 ## Invariants
 
+### Phase 1.x current enforcement matrix (cross-phase audit 2026-05-06)
+
+| Invariant | Enforced by code today? | Enforcement mechanism |
+|---|:-:|---|
+| **I-1** slug immutable after create | ⚠️ partial | `validate_slug` regex enforces format on every create; nothing prevents post-create rename — needs `assert_slug_immutable` helper in projection (Phase 1.5) |
+| **I-2** assigned_number write-once | ⚠️ partial | `augment_frontmatter_with_id_fields` preserves explicit `null`; `validate` does NOT yet block PR-diff change of non-null→non-null (Phase 2 CI gate) |
+| **I-3** slug refs valid forever | ❌ not yet | requires slug-resolver in `get/search/list/link` — Phase 1.5 |
+| **I-4** lookup accepts both formats | ❌ not yet | requires same slug-resolver — Phase 1.5 |
+| **I-5** legacy 73 keep their IDs | ✅ trivially | no migration ran yet → legacy untouched. Migration safety verified by EVID-C (Phase 0/4) |
+| **I-6** GitHub Actions concurrency serializes | ❌ not yet | `.github/workflows/assign-id.yml` is Phase 2.1 |
+
+Текст ниже описывает **target end-state**; matrix above tracks delivery.
+
 Должны выполняться независимо от реализации:
 
 - **I-1**: `slug` никогда не меняется после create. Любая операция модификации артефакта сохраняет `slug`.

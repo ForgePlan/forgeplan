@@ -27,6 +27,25 @@ depth: deep
 
 Спецификация frontmatter полей `slug`, `predicted_number`, `assigned_number` для двухслойной identity модели Forgeplan-артефактов (PROB-060, PRD-076, ADR-012). Slug — каноничный идентификатор, не меняется. Number — display layer, присваивается на merge.
 
+## Phase Status (cross-phase audit 2026-05-06)
+
+**This SPEC describes the target end-state across all RFC-009 phases.** What is *normative now* vs *target Phase N*:
+
+| SPEC section | Phase 1.x current state | Phase 2+ target |
+|---|---|---|
+| Frontmatter schema (`slug`, `predicted_number`, `assigned_number`) | ✅ implemented + tested | unchanged |
+| Slug regex / validation rules | ✅ enforced via `validate_slug` | unchanged |
+| Filename format — pre-merge (`<slug>.md`) | ❌ not yet — Phase 1.x keeps legacy `<KIND>-<NNN>-<suffix>.md` form | Phase 2 (CI bot rename) |
+| Filename format — post-merge (`<KIND>-<NNN>-<suffix>.md`) | ✅ identical to legacy form (no change yet) | unchanged |
+| `assigned_number = null` write-once contract | ⚠️ accepted by augmenter (preserves explicit null) but not produced by `forgeplan new` | Phase 2 (CI bot null-then-fill) |
+| MCP `forgeplan_new` response shape (slug + predicted + hint + _next_action) | ❌ not implemented — current returns legacy shape | Phase 2.5 |
+| MCP `forgeplan_get` accepts both formats | ❌ not implemented — only display id today | Phase 1.5 |
+| Slug collision auto-suffix (`prd-auth-2`) | ❌ not implemented — relies on CI bot | Phase 2 |
+| Migration of 73 legacy artifacts (additive frontmatter fields) | ❌ not yet — migration script is Phase 4 | Phase 4 |
+| GitHub Actions `assign-id.yml` workflow (concurrency group) | ❌ not yet — workflow file is Phase 2.1 | Phase 2 |
+
+**Implication for readers:** sections below describe the *end-state contract*. If you implement against this SPEC today, target Phase 2+ behavior. Phase 1.x ships only the parts marked ✅.
+
 ## Scope
 
 Этот SPEC описывает:

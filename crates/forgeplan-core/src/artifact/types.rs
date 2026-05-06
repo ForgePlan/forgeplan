@@ -142,6 +142,23 @@ pub fn slugify(title: &str) -> String {
         .join("-")
 }
 
+/// Minimum allowed slug length (kind prefix + dash + at least 1 suffix char).
+///
+/// Cross-phase audit (code-analyzer #3): named const replacing the magic
+/// `3` previously inlined in `validate_slug`. Single source of truth.
+pub const MIN_SLUG_LEN: usize = 3;
+
+/// Maximum allowed slug length (chosen for filesystem-path headroom across
+/// platforms; macOS HFS+/APFS, Windows NTFS, Linux ext4 all support ≥255
+/// chars but we leave room for the trailing `.md` extension and post-merge
+/// `<KIND>-<NNN>-` prefix expansion).
+///
+/// Cross-phase audit (code-analyzer #3): named const replacing the magic
+/// `80` previously inlined in `validate_slug` AND `slug_from_kind_title`
+/// truncation logic — silent coupling that would have drifted if changed
+/// in only one place.
+pub const MAX_SLUG_LEN: usize = 80;
+
 /// Valid kind prefixes for slug parsing (lowercase, without trailing `-`).
 /// Mirrors `ArtifactKind::prefix()` minus the dash. **Sync invariant**: see
 /// `kind_prefixes_in_sync_with_artifact_kind` test which enforces equality
@@ -200,9 +217,9 @@ pub fn validate_slug(slug: &str) -> std::result::Result<(), crate::error::Forgep
         )));
     }
 
-    if slug.len() < 3 || slug.len() > 80 {
+    if slug.len() < MIN_SLUG_LEN || slug.len() > MAX_SLUG_LEN {
         return Err(ForgeplanError::InvalidSlug(format!(
-            "length must be 3..=80 chars, got {}",
+            "length must be {MIN_SLUG_LEN}..={MAX_SLUG_LEN} chars, got {}",
             slug.len()
         )));
     }
@@ -289,7 +306,7 @@ pub fn slug_from_kind_title(
     // non-ASCII (contract change), this would panic on non-char-boundary cuts.
     // The doc on `slugify` (line 116-143) and the ASCII guard in `validate_slug`
     // jointly enforce the invariant; a future relax requires re-auditing here.
-    let max_title_len = 80usize.saturating_sub(prefix.len() + 1);
+    let max_title_len = MAX_SLUG_LEN.saturating_sub(prefix.len() + 1);
     let truncated = if title_slug.len() > max_title_len {
         let cut = title_slug[..max_title_len]
             .rfind('-')

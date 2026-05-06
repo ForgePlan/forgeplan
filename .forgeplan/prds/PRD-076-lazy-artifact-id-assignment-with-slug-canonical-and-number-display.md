@@ -29,14 +29,16 @@ stepsCompleted: []
 ## Progress
 
 ```
-Phase 0  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Foundation
-Phase 1  ░░░░░░░░░░░░░░░░░░░░░░░░  0/6   (  0%)  Core schema + CLI
+Phase 0  ████░░░░░░░░░░░░░░░░░░░░  1/4   ( 25%)  Foundation (0.3 done; 0.1, 0.2, 0.4 pending)
+Phase 1  ████████████░░░░░░░░░░░░  3/6   ( 50%)  Core schema + CLI (1.1, 1.2, 1.3 done)
 Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Web + Skills
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  Migration + activation
 ─────────────────────────────────────────────────
-TOTAL                               0/24  (  0%)
+TOTAL                               4/24  ( 17%)
 ```
+
+**Cross-phase audit 2026-05-06 update:** Phase 1.1, 1.2, 1.3 landed на feat/prob-060-id-assignment branch; Phase 0 EVID-A (CI-bot prototype + stress-test) и EVID-C (migration dry-run) — pending; Phase 0.4 (CLAUDE.md update) — pending.
 
 ---
 
@@ -226,6 +228,19 @@ Forgeplan создаёт артефакты с slug-каноническим и�
 ---
 
 ## Acceptance Criteria
+
+### Phase delivery matrix (cross-phase audit 2026-05-06)
+
+| AC | Description | Delivered by Phase | Testable today? |
+|---|---|:-:|:-:|
+| AC-1 | 2 parallel branches different titles → no collision; final assigned_numbers sequential | **Phase 2** (CI bot) | partial — slugs already orthogonal; assigned_number requires CI bot |
+| AC-2 | 5-agent dispatch with pre-allocated unique slugs | **Phase 2** (dispatcher integration) | no |
+| AC-3 | Slug auto-suffix on collision at merge | **Phase 2** (CI bot) | no |
+| AC-4 | Backward compat — legacy `Refs: PRD-018` still resolve | **Phase 4** (migration + slug-resolver Phase 1.5) | no |
+| AC-5 | Web rendering with `?` marker for draft | **Phase 3** (ForgePlanWeb) | no |
+| AC-6 | AI-agent uses slug in commit refs (compliance ≥ 95%) | **Phase 0/3** (docs + skills) | partial — guide written, agent training Phase 3 |
+
+**Phase 1.x reality:** assigned_number = predicted_number (immediate via counter). True lazy assignment requires Phase 2 CI bot. ACs above describe **end-state target**; activation gate at end of Phase 4 verifies.
 
 ### AC-1: Two parallel branches create unrelated artifacts
 

@@ -143,10 +143,12 @@ ADR-012 фиксирует решение (Option A с двухслойной id
 
 Закрыть evidence gaps до коммита на полный путь.
 
-- [ ] **0.1** EVID-A: prototype CI-бота на 50-артефактном fixture + stress-test 10×concurrent-merge. Verify atomicity. Reverse condition check (race conditions detected → switch to alternative serialization mechanism).
-- [ ] **0.2** EVID-C: migration dry-run на 298 существующих артефактов. Detect potential slug collisions in legacy.
-- [ ] **0.3** Документ `docs/methodology/ID-ASSIGNMENT.ru.md` написан и проревьюен — single source of truth для людей и AI-agents.
-- [ ] **0.4** CLAUDE.md обновлён с секцией "Working with artifact IDs": правила refs, slug в коммитах до merge, оба формата после.
+**Status (cross-phase audit 2026-05-06):** Phase 0 was split mid-flight — 0.3 delivered with shape commit (`d375958`), но 0.1/0.2/0.4 не сделаны до старта Phase 1. Это **методологический breach** (CLAUDE.md red-line #7 — нет evidence до code), исправляется через Phase 0b в конце Phase 1.
+
+- [x] **0.3** Документ `docs/methodology/ID-ASSIGNMENT.ru.md` написан и проревьюен — single source of truth для людей и AI-agents. **Done in commit d375958.**
+- [ ] **0.1** EVID-A: prototype CI-бота на 50-артефактном fixture + stress-test 10×concurrent-merge. Verify atomicity. Reverse condition check (race conditions detected → switch to alternative serialization mechanism). **Pending — required before Phase 2 starts.**
+- [ ] **0.2** EVID-C: migration dry-run на 298 существующих артефактов. Detect potential slug collisions in legacy. **Pending — required before Phase 4 starts.**
+- [ ] **0.4** CLAUDE.md обновлён с секцией "Working with artifact IDs": правила refs, slug в коммитах до merge, оба формата после. **Pending.**
 
 **Exit criteria**: EVID-A показывает 0 race conditions on 10×concurrent-merge stress-test; EVID-C показывает 0 unresolved legacy collisions; documents в PR review.
 
