@@ -9,6 +9,41 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed (Security — PROB-054 closure, prompt-injection-via-filesystem)
+
+- **PROB-054 ✅ — `produces_at` prompt-injection validator** (CWE-94
+  / OWASP A03). Pre-PROB-054 `Step.produces_at` path was spliced into
+  the `claude --print` natural-language prompt body via
+  `to_string_lossy()` без character validation:
+
+  ```text
+  Write output to `<produces_at>` using the Write tool.
+  ```
+
+  A path containing a backtick (`reports/`backdoor`.md`) closed the
+  markdown code-fence и turned everything after into prompt content
+  the agent treated as authoritative instruction. Same class for `$`
+  (variable expansion), `;` (command separator hint), `\n` / `\r`
+  (line-break injection).
+
+  This was a **separate attack surface** от argv injection (PROB-050
+  A-15 closure). The argv guard и the prompt-body guard are independent
+  concerns even when validating the same field.
+
+  **Fix**: new `validate_produces_at_chars(&Path) -> Result<(), String>`
+  helper in `claude_print.rs` with conservative allowlist regex
+  `^[A-Za-z0-9._/-]+$` (alphanumeric, dot, underscore, forward slash,
+  hyphen). Wired into both:
+  - `assemble_prompt()` — validates BEFORE splicing into prompt body
+  - `add_dir_for_produces_at()` — symmetric guard so argv splice fails
+    on the same input
+
+  Error messages use `escape_debug` for log-injection defense-in-depth
+  (mirrors PROB-053 shell-exec warning pattern).
+
+  **Tests**: +6 unit tests (5 char-class + 1 symmetric add_dir guard;
+  mandate was 3). Suite: lib 1469 → 1475 PASS.
+
 ### Fixed (Trust calculus + Performance — PROB-051 partial closure, Wave-1 Round 5 audit deferred)
 
 - **PROB-051 partial ✅ — phase-fold unification + perf scans + module
