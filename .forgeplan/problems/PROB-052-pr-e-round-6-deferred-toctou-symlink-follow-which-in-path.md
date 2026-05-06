@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.128
 links:
 - target: PROB-050
   relation: based_on
-status: draft
+status: active
 title: PR-E Round 6 deferred — TOCTOU + symlink follow в which_in_path
 ---
 
@@ -67,21 +67,41 @@ regression.
 
 ## Acceptance Criteria
 
-- [ ] `which_in_path` calls `canonicalize` on first match; returns
-  `Option<PathBuf>` of the real path.
-- [ ] Unix path: parent dir ownership check (uid 0 OR current uid); file
-  must not have group/other write bits.
-- [ ] Windows path: skip permission check (Windows ACL is out of scope —
-  document explicitly).
-- [ ] `AgentDispatcher` + `PluginDispatcher` cache the resolved path
-  for the lifetime of the dispatcher instance (recreated per `dispatch()`
-  call — current behavior — so cache invalidation is implicit).
-- [ ] +3 unit tests: TOCTOU symlink swap detected, group-writable binary
-  rejected, cross-platform skip.
-- [ ] CHANGELOG entry under **Security** section.
+- [x] **AC-1** `which_in_path` calls `canonicalize` on first match; returns `Option<PathBuf>` of the real path. **Closed** — `resolve_safe_path` invokes `std::fs::canonicalize` and caller spawns the canonical PathBuf.
+- [x] **AC-2 (partial)** Unix path: file must not have group/other write bits. **Closed** for write-bit clause (`mode & 0o022 != 0`). **Re-scoped**: parent-dir *ownership* check (uid 0 OR current uid) deferred — single-user threat model already covered by parent-dir mode gate; multi-user shared workstation is out of PROB-052 scope. Tracked: follow-up if multi-tenant deployment lands.
+- [x] **AC-3** Windows path: skip permission check. **Closed** — `cfg(unix)` gates the perm clause; Windows still gets canonicalize + non-file rejection. PRD §AC-3 explicitly documents the Windows ACL skip.
+- [~] **AC-4** Dispatcher-level cache. **Re-scoped**: per-dispatch resolution accepted because `AgentDispatcher` / `PluginDispatcher` are recreated per `dispatch()` call (constraint named in original AC body — "recreated per `dispatch()` call — current behavior — so cache invalidation is implicit"). Adding a `OnceCell<PathBuf>` here would create the staleness risk the AC's own MUST-NOT prohibits ("MUST NOT cache the resolved path indefinitely"). Re-scoping makes the AC's intent explicit rather than silently dropping the field.
+- [x] **AC-5** +3 unit tests. **Closed + Round 7 hardening** — 7 tests:
+  1. `which_in_path_canonicalizes_symlink_to_real_target`
+  2. `which_in_path_rejects_group_writable_binary`
+  3. `which_in_path_rejects_group_writable_parent_dir`
+  4. `which_in_path_skips_empty_path_entries` (Round 7 audit MED-4)
+  5. `resolve_safe_path_rejects_group_writable_override` (Round 7 audit HIGH-1)
+  6. `resolve_safe_path_canonicalizes_safe_override` (Round 7 audit HIGH-1)
+  7. `which_in_path_windows_skips_permission_gate` (cfg(not(unix)))
+- [x] **AC-6** CHANGELOG entry under **Security**. **Closed** in same sprint commit.
+
+## Round 7 Audit — Consumer-Side Bypass Closure (HIGH-1)
+
+Round 7 adversarial audit (2 parallel agents — security + code-reviewer, 2026-05-06) caught **HIGH-1 transport asymmetry**: PROB-052 closed the PATH-search surface but **left override branches unguarded**:
+
+- `AgentDispatcher::resolve_claude_binary` — `claude_binary` field used bare `is_file()`.
+- `PluginDispatcher::resolve_binary` — `claude_binary` field returned without ANY check.
+- `resolve_forgeplan_binary` — `FORGEPLAN_BIN` test override + `target/release/forgeplan` workspace fallback used bare `is_file()`.
+
+Closed by promoting `resolve_safe_path` to `pub(super)` and routing all 4 override branches through it. Same canonicalize + perm gate now applies whether the binary is found via PATH search OR explicit override. Pre-Round-7 a Homebrew operator setting `claude_binary = /usr/local/bin/claude` (group=admin 0o775) would bypass the gate entirely — Round 7 closes that vector.
+
+**Round 7 also closed**: MED-1/MED-2 log-injection (CWE-117/CWE-150) hardening — `tracing::warn!` rejection messages now use `escape_debug` mirroring PROB-053 shell-exec warning pattern; new `eprintln!` operator-visible channel so rejections surface без `RUST_LOG=warn`. MED-4 empty-PATH-entry skip. HIGH-3 docstring mode-bit precision. Residual TOCTOU between metadata() and Command::spawn documented as acceptable trade-off (full closure requires non-portable `O_NOFOLLOW + fexecve`).
+
+**Deferred to follow-up sprint**: typed-error refactor (`String` → `enum RejectionReason` per PROB-049 typed-errors lineage), setuid/setgid bit rejection (CWE-250 adjacent — narrow exploit window), sync-mutex variant of `DISPATCH_ENV_LOCK` (test infrastructure cleanup).
 
 ## Refs
 
 - PR-E Round 6 audit (2026-05-05): security-expert agent MED-1
+- Round 7 audit (2026-05-06): security + code-reviewer parallel agents, 2 HIGH closures + 4 MED closures
 - CHANGELOG.md (v0.29.0): "Deferred to v0.30.0" section
+- CHANGELOG.md (Unreleased): PROB-052 Security section
+- EVID-XXX (next sprint commit): closure evidence with full audit transcript
+
+
 

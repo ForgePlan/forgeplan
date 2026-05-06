@@ -1500,9 +1500,22 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ScoreParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws_opt = self.require_workspace().await.ok();
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Round 9 audit HIGH-1: MCP parity — acquire workspace lock so MCP
+        // `forgeplan_score` writes serialize against CLI/MCP mutators.
+        // Pre-Round 9 the inline `r_eff_recursive` was called but
+        // `update_r_eff_score` was never invoked; the helper closes that gap.
+        let _lock_guard = match ws_opt.as_ref() {
+            Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
+                Ok(g) => Some(g),
+                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+            },
+            None => None,
         };
 
         let target = match store.get_record(&p.id).await {
@@ -1565,21 +1578,37 @@ impl ForgeplanServer {
             evidence_items.push(item);
         }
 
-        // Recursive R_eff with dependency chain analysis
-        let mut visited = HashSet::new();
-        let report = reff::r_eff_recursive(&p.id, &store, &mut visited)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("Failed recursive R_eff for {}: {e}", p.id);
-                reff::AssuranceReport {
-                    artifact_id: p.id.clone(),
-                    r_eff: 0.0,
-                    self_score: 0.0,
-                    weakest_link: None,
-                    decay_penalty: 0.0,
-                    factors: vec![format!("Error: {e}")],
-                }
-            });
+        // PROB-057 / Round 9 HIGH-1: MCP parity — route through
+        // `sync_score_target` so the recomputed value is persisted to the
+        // cache. Pre-Round 9, MCP `forgeplan_score` computed the score for
+        // display but never wrote it back, leaving the cache stale forever
+        // through the MCP transport. On failure fall back to a fresh walk
+        // so the response still carries a breakdown.
+        let report = match forgeplan_core::scoring::sync_score_target(&store, &p.id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    target = "scoring",
+                    error = %e,
+                    id = %p.id,
+                    "MCP forgeplan_score persist failed; recomputing for display only"
+                );
+                let mut visited = HashSet::new();
+                reff::r_eff_recursive(&p.id, &store, &mut visited)
+                    .await
+                    .unwrap_or_else(|e2| {
+                        tracing::warn!("Failed recursive R_eff for {}: {e2}", p.id);
+                        reff::AssuranceReport {
+                            artifact_id: p.id.clone(),
+                            r_eff: 0.0,
+                            self_score: 0.0,
+                            weakest_link: None,
+                            decay_penalty: 0.0,
+                            factors: vec![format!("Error: {e2}")],
+                        }
+                    })
+            }
+        };
 
         // F-G-R quality breakdown
         let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
@@ -1693,6 +1722,14 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // PROB-058 Round 9 audit HIGH-1: MCP transport must mirror the CLI
+        // workspace lock to avoid concurrent-write races between MCP and CLI
+        // mutators against the shared LanceDB.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+        };
+
         let relation = match link::normalize_relation(p.relation.as_str()) {
             Ok(r) => r,
             Err(e) => {
@@ -1739,13 +1776,27 @@ impl ForgeplanServer {
             ));
         }
 
+        // PROB-057 / PRD-075 + Round 9 HIGH-1: MCP parity for sync recompute.
+        // Failure is non-fatal (mutation succeeded); surface via tracing so
+        // structured logs preserve the chain without aborting the response.
+        if let Err(e) = forgeplan_core::scoring::sync_score_target(&store, &p.source).await {
+            tracing::warn!(
+                target = "scoring",
+                error = %e,
+                id = %p.source,
+                "auto-recompute failed after MCP forgeplan_link; run forgeplan_score_all"
+            );
+        }
+
         let safe_src = sanitize_for_hint(&p.source);
         let safe_tgt = sanitize_for_hint(&p.target);
         let next_action = match relation.as_str() {
-            "informs" | "based_on" => format!(
-                "Linked. If source is evidence, `forgeplan_score {safe_tgt}` to see updated \
-                 R_eff. Continue linking more evidence if needed."
-            ),
+            // PRD-075 FR-009 / Round 9 HIGH-1: cache is now self-healing for
+            // the source after each link, so the canonical follow-up is parent
+            // chain reconciliation via score-all, NOT a per-target rescore.
+            "informs" | "based_on" => "Linked. R_eff recomputed on source. Reconcile parents: \
+                 `forgeplan_score_all`."
+                .to_string(),
             "supersedes" => format!(
                 "Supersede link set. Consider also marking old artifact: `forgeplan_supersede \
                  {safe_tgt} --by {safe_src}`."
@@ -2226,6 +2277,16 @@ impl ForgeplanServer {
         };
         let ws_opt = self.require_workspace().await.ok();
 
+        // Round 9 audit HIGH-1: MCP parity — acquire workspace lock to
+        // serialize against CLI mutators (link/activate/score/score-all).
+        let _lock_guard = match ws_opt.as_ref() {
+            Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
+                Ok(g) => Some(g),
+                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+            },
+            None => None,
+        };
+
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
         if let Some(ws) = &ws_opt
             && let Err(e) =
@@ -2238,6 +2299,19 @@ impl ForgeplanServer {
 
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
+                // PROB-057 / Round 9 HIGH-1: MCP parity — sync the cached R_eff
+                // BEFORE rendering the markdown projection so the on-disk file
+                // (source of truth per ADR-003) reflects the post-activation
+                // score, not the pre-activation cache.
+                if let Err(e) = forgeplan_core::scoring::sync_score_target(&store, &p.id).await {
+                    tracing::warn!(
+                        target = "scoring",
+                        error = %e,
+                        id = %p.id,
+                        "auto-recompute failed after MCP forgeplan_activate; run forgeplan_score_all"
+                    );
+                }
+
                 // ADR-003 / PROB-048 file-first: render store → file so the
                 // file's `status:` reflects active. Avoids file/lance skew.
                 if let Some(ws) = &ws_opt
@@ -2273,9 +2347,10 @@ impl ForgeplanServer {
                         }
                     ));
                 }
-                // PRD-071: single primary — verify trust on activation.
-                // Removed the "If X then Y" conditional and the multi-step
-                // commit narrative; both broke determinism.
+                // PRD-071 + PRD-075 FR-009 (Round 9 HIGH-1): trust is already
+                // recomputed inline above; canonical follow-up is parent
+                // chain reconciliation, NOT a per-target rescore.
+                let _ = safe_id; // bound for future use, currently no per-id substitution
                 let next_action = if result.forced {
                     format!(
                         "Activated with {} MUST error(s) (forced). Backfill evidence: \
@@ -2283,7 +2358,8 @@ impl ForgeplanServer {
                         result.must_errors.len()
                     )
                 } else {
-                    format!("Verify trust: `forgeplan_score {safe_id}`.")
+                    "R_eff recomputed on activation. Reconcile parents: `forgeplan_score_all`."
+                        .to_string()
                 };
                 hinted_result(
                     &serde_json::json!({
@@ -2588,39 +2664,30 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let report = forgeplan_core::health::health_report(&store)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        // PROB-051 L-H3 + P-H1 + P-H2 closure: route through
+        // `health_report_with_phase` so (a) `list_records` runs once
+        // (was twice — duplicate scan), (b) phase reads parallelise via
+        // `buffer_unordered(16)` (was sequential per-artifact), и
+        // (c) the returned verdict folds phase mismatches the same way
+        // the CLI does — eliminating the cross-surface verdict drift.
+        let (report, phase_mismatch_records) =
+            forgeplan_core::health::health_report_with_phase(&store, &ws)
+                .await
+                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
 
-        // PRD-056 FR-008: advisory phase-status mismatch surface.
-        // Active artifacts whose recorded phase is still in the early cycle
-        // (shape/validate/adi) likely skipped code/evidence — worth looking
-        // at, but strictly advisory. Never fails the health call.
-        let mut phase_mismatches: Vec<serde_json::Value> = Vec::new();
-        if phase_tracking_enabled(&ws)
-            && let Ok(all_records) = store.list_records(None).await
-        {
-            use forgeplan_core::phase::Phase;
-            for r in &all_records {
-                if r.status != "active" {
-                    continue;
-                }
-                if let Ok(Some(s)) = forgeplan_core::phase::store::read_phase(&ws, &r.id).await {
-                    let early =
-                        matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
-                    if early {
-                        phase_mismatches.push(serde_json::json!({
-                            "id": r.id,
-                            "title": sanitize_for_hint(&r.title),
-                            "status": r.status,
-                            "current_phase": s.current_phase.as_str(),
-                            "advisory": "status=active but phase is early-cycle — \
-                                         Code/Evidence likely skipped",
-                        }));
-                    }
-                }
-            }
-        }
+        // Render as JSON-friendly payload (sanitize titles for hint output).
+        let phase_mismatches: Vec<serde_json::Value> = phase_mismatch_records
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "title": sanitize_for_hint(&m.title),
+                    "status": m.status,
+                    "current_phase": m.current_phase,
+                    "advisory": m.advisory,
+                })
+            })
+            .collect();
 
         // PRD-071: deterministic single primary, real IDs (not <id>).
         // The first blind-spot/orphan/at-risk/stale gives the agent a
@@ -6534,8 +6601,12 @@ impl ForgeplanServer {
     #[tool(
         description = "Run a playbook end-to-end. Wave 4 wires the production \
                        plugin/agent/skill/command/forgeplan_core dispatchers via `RoutingDispatcher`. \
-                       Refuses without `yes: true` (ADR-009 security gate). Use `dry_run: true` \
-                       to enumerate steps without invoking dispatchers.",
+                       Refuses without `yes: true` (ADR-009 security gate). Playbooks containing \
+                       `Delegation::Command` (shell-exec) steps additionally require \
+                       `allow_shell: true` (PRD-074 / PROB-053, default-deny). Workspaces can \
+                       pre-approve trusted-local shell exec via `[playbook] allow_shell = true` \
+                       in `.forgeplan/config.yaml`. Use `dry_run: true` to enumerate steps without \
+                       invoking dispatchers.",
         annotations(
             title = "Run Playbook",
             read_only_hint = false,
@@ -6674,8 +6745,32 @@ impl ForgeplanServer {
         };
 
         let dispatcher = RoutingDispatcher::new(project_root.clone());
+
+        // PRD-074 §FR-2+§FR-6: resolve effective allow-shell signal from
+        // MCP `allow_shell` parameter OR workspace config opt-in. Mirrors
+        // the CLI surface (commands::playbook::run_execute). PROB-053
+        // closure.
+        //
+        // Audit Round 7 HIGH-D fix: log on parse-error explicitly (was:
+        // silent .ok() swallow caused stale config to silently regress
+        // workspace_allow_shell to false — same failure-mode class as
+        // PROB-035 / PROB-039).
+        let workspace_allow_shell = match forgeplan_core::workspace::load_config(&ws) {
+            Ok(c) => c.playbook.map(|pcfg| pcfg.allow_shell).unwrap_or(false),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to read workspace config (`.forgeplan/config.yaml`); \
+                     [playbook] allow_shell opt-in ignored"
+                );
+                false
+            }
+        };
+        let effective_allow_shell = p.allow_shell || workspace_allow_shell;
+
         let cfg = ExecutorConfig {
             yes_flag: p.yes,
+            allow_shell: effective_allow_shell,
             // load_playbook already validated; skip duplicate work.
             skip_revalidation: true,
             // HIGH-S5: forward the optional `step` arg so MCP-driven runs
@@ -9193,6 +9288,7 @@ steps:
                 dry_run: false,
                 step: None,
                 yes: false,
+                allow_shell: false,
             }))
             .await
             .unwrap();
@@ -9530,6 +9626,7 @@ steps:
                 dry_run: false,
                 step: Some(2), // skip s1, run s2..s3
                 yes: true,
+                allow_shell: false,
             }))
             .await
             .unwrap();

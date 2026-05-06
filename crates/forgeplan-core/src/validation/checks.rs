@@ -2,6 +2,84 @@ use crate::artifact::frontmatter::Frontmatter;
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// PROB-059 — extract artifact IDs (`PRD-NNN`, `EVID-NNN`, etc.) mentioned
+/// inside a `## Related Artifacts` table в the body. Returns the set of
+/// IDs that appear в table rows. Other body mentions (free-text "see also
+/// PRD-005") are intentionally NOT collected — only formal table rows count
+/// as a "this artifact claims a relation here" signal.
+///
+/// Strict parser by design: looks for `^##+\s+Related Artifacts$` heading,
+/// then collects table rows (`| ID-NNN | ... |`) until next heading. Code
+/// blocks и HTML comments are stripped via `strip_non_prose_for_leakage`
+/// (same helper PROB-038 introduced) so example tables в template guidance
+/// don't false-flag.
+pub fn extract_related_artifacts_table_ids(body: &str) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let stripped = strip_non_prose_for_leakage(body);
+    let lines: Vec<&str> = stripped.lines().collect();
+    let mut start_idx: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let after = trimmed.trim_start_matches('#').trim();
+            let lower = after.to_lowercase();
+            if lower == "related artifacts" || lower == "related" {
+                start_idx = Some(i + 1);
+                break;
+            }
+        }
+    }
+    let Some(start) = start_idx else {
+        return Vec::new();
+    };
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            end = i;
+            break;
+        }
+    }
+    static ID_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b([A-Z]+-[0-9]+)\b").expect("valid ID regex"));
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for line in &lines[start..end] {
+        let trimmed = line.trim();
+        // Only consider table rows (start с `|` and contain at least 2 pipes)
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        // Skip separator rows (`|---|---|`)
+        if trimmed
+            .chars()
+            .all(|c| c == '|' || c == '-' || c == ' ' || c == ':')
+        {
+            continue;
+        }
+        for m in ID_RE.find_iter(line) {
+            found.insert(m.as_str().to_string());
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// PROB-059 — extract `target` IDs от frontmatter `links:` array.
+pub fn extract_frontmatter_link_targets(fm: &Frontmatter) -> Vec<String> {
+    let Some(links_val) = fm.get("links") else {
+        return Vec::new();
+    };
+    let Some(seq) = links_val.as_sequence() else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for entry in seq {
+        if let Some(target) = entry.get("target").and_then(|v| v.as_str()) {
+            out.push(target.to_string());
+        }
+    }
+    out
+}
+
 /// Check that a frontmatter key exists and is non-empty.
 pub fn frontmatter_has(fm: &Frontmatter, key: &str) -> bool {
     fm.get(key)
@@ -367,9 +445,25 @@ static TECH_KEYWORD_REGEXES: LazyLock<Vec<(String, Regex)>> = LazyLock::new(|| {
 
 /// Check for technology names in text (implementation leakage).
 /// Returns list of (line_number, tech_name) using case-insensitive word boundary matching.
+///
+/// PROB-038 closure — pre-fix this function read raw lines including HTML
+/// comments (`<!-- ... -->`) и markdown code fences (\`\`\`). Template
+/// guidance comments в new PRDs contain phrases like "DON'T leak React,
+/// Django, AWS into FR" which legitimately mention tech names — those
+/// were false-flagged. Code fences и quoted strings can also legitimately
+/// reference tech names в documentation context.
+///
+/// Now we strip both before scanning:
+/// - `<!-- ... -->` HTML comments (single-line OR multi-line)
+/// - \`\`\`...\`\`\` fenced code blocks
+/// - inline backtick code (e.g. \`PostgreSQL\`)
+///
+/// Real leakage в FR/NFR text body still triggers — only template
+/// guidance и code/quote contexts are immune.
 pub fn find_tech_leakage(text: &str) -> Vec<(usize, String)> {
+    let stripped = strip_non_prose_for_leakage(text);
     let mut results = Vec::new();
-    for (i, line) in text.lines().enumerate() {
+    for (i, line) in stripped.lines().enumerate() {
         for (keyword, re) in TECH_KEYWORD_REGEXES.iter() {
             if re.is_match(line) {
                 results.push((i + 1, keyword.clone()));
@@ -377,6 +471,110 @@ pub fn find_tech_leakage(text: &str) -> Vec<(usize, String)> {
         }
     }
     results
+}
+
+/// PROB-038 helper — remove HTML comments, fenced code blocks, и inline
+/// backtick code от `text` so that downstream checks (tech-name leakage,
+/// numeric-target detection, etc.) only scan **prose**.
+///
+/// Replaces stripped regions с whitespace of equivalent line count so line
+/// numbers in the returned diagnostic match the input. Order of operations:
+///
+/// 1. HTML comments first (multiline `<!-- ... -->`) — they can wrap
+///    other markup, including code fences in template files.
+/// 2. Fenced code blocks (\`\`\` opening to \`\`\` closing) — wraps inline
+///    code samples that might mention tech names в documentation.
+/// 3. Inline backtick code — single-line, narrowest scope, applied last.
+fn strip_non_prose_for_leakage(text: &str) -> String {
+    // Step 1: strip HTML comments. Replace each comment с newlines so line
+    // numbers stay aligned (the linter reports "tech in FR section line N",
+    // и we don't want N к shift after comment removal).
+    let no_html = strip_html_comments(text);
+    // Step 2: strip fenced code blocks.
+    let no_fenced = strip_fenced_code(&no_html);
+    // Step 3: strip inline backtick spans.
+    strip_inline_code(&no_fenced)
+}
+
+fn strip_html_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
+            // Find closing `-->`. Preserve newlines в the stripped region
+            // so line numbers downstream match the input.
+            if let Some(rel_end) = s[i + 4..].find("-->") {
+                let comment_end = i + 4 + rel_end + 3;
+                let stripped_region = &s[i..comment_end];
+                for ch in stripped_region.chars() {
+                    if ch == '\n' {
+                        out.push('\n');
+                    }
+                }
+                i = comment_end;
+                continue;
+            } else {
+                // Unclosed comment — treat the rest as comment, preserve newlines.
+                for ch in s[i..].chars() {
+                    if ch == '\n' {
+                        out.push('\n');
+                    }
+                }
+                break;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn strip_fenced_code(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_fence = false;
+    for line in s.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn strip_inline_code(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_code = false;
+    for ch in s.chars() {
+        if ch == '`' {
+            in_code = !in_code;
+            // keep the backtick replaced by space so word-boundary regex
+            // doesn't merge adjacent tokens
+            out.push(' ');
+            continue;
+        }
+        if in_code {
+            // preserve newlines but blank out content
+            if ch == '\n' {
+                out.push('\n');
+                in_code = false; // inline code never crosses lines
+            } else {
+                out.push(' ');
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Check if text contains numeric targets (numbers with units or comparison).
@@ -814,5 +1012,170 @@ mod tests {
         let leaks = find_tech_leakage(text);
         assert_eq!(leaks.len(), 1);
         assert_eq!(leaks[0].1, "react");
+    }
+
+    // PROB-038 — non-prose context exclusions
+
+    /// PROB-038 — HTML comments containing tech names (template guidance)
+    /// MUST NOT trigger leakage warning. Pre-PROB-038 the validator scanned
+    /// raw text including `<!-- -->` blocks, false-flagging template hints
+    /// like "DON'T leak React/Django/AWS into FR".
+    #[test]
+    fn find_tech_leakage_skips_html_comments() {
+        let text = "<!-- Don't leak React, Django, AWS into FR -->\nUser can login";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            leaks.is_empty(),
+            "tech names в HTML comments must not trigger; got: {leaks:?}"
+        );
+    }
+
+    /// PROB-038 — multi-line HTML comments (typical в template files)
+    /// also must be stripped.
+    #[test]
+    fn find_tech_leakage_skips_multiline_html_comments() {
+        let text = "<!--\n  Avoid:\n  - React в FR\n  - PostgreSQL\n  - Redis\n-->\nFR-001: User can login";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            leaks.is_empty(),
+            "multi-line HTML comments must not trigger; got: {leaks:?}"
+        );
+    }
+
+    /// PROB-038 — fenced code blocks (\`\`\`) are documentation contexts;
+    /// MUST NOT trigger leakage warning.
+    #[test]
+    fn find_tech_leakage_skips_fenced_code_blocks() {
+        let text = "Description\n\n```\nReact component example\nDjango view\n```\n\nFR-001: User can login";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            leaks.is_empty(),
+            "fenced code must not trigger; got: {leaks:?}"
+        );
+    }
+
+    /// PROB-038 — inline backtick code (e.g. `\`PostgreSQL\``) MUST NOT
+    /// trigger. Real prose still does.
+    #[test]
+    fn find_tech_leakage_skips_inline_backtick_code() {
+        let text =
+            "FR-001: User can use `Redis` if available — but the actual implementation is OAuth2";
+        let leaks = find_tech_leakage(text);
+        // Redis в backticks → skipped. OAuth2 в prose → flagged.
+        assert!(
+            !leaks.iter().any(|(_, name)| name == "redis"),
+            "inline-backtick `Redis` must be skipped; got: {leaks:?}"
+        );
+        assert!(
+            leaks.iter().any(|(_, name)| name == "oauth2"),
+            "OAuth2 в prose must be flagged; got: {leaks:?}"
+        );
+    }
+
+    /// PROB-038 — REGRESSION GUARD: real tech leakage в prose still triggers.
+    /// Don't make the strip too aggressive.
+    #[test]
+    fn find_tech_leakage_still_catches_real_prose_leakage() {
+        let text = "FR-001: User authenticates via React component with PostgreSQL backend";
+        let leaks = find_tech_leakage(text);
+        let names: Vec<&str> = leaks.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"react"), "react в prose: {names:?}");
+        assert!(
+            names.contains(&"postgresql"),
+            "postgresql в prose: {names:?}"
+        );
+    }
+
+    // PROB-059 — Related Artifacts table extraction tests
+
+    /// Happy path — table rows with IDs are extracted.
+    #[test]
+    fn extract_related_artifacts_table_ids_finds_table_rows() {
+        let body = "
+# PRD-007: Title
+
+## Related Artifacts
+
+| Artifact | Relation |
+|---|---|
+| PRD-001 | refines |
+| EVID-042 | informs |
+| RFC-003 | based_on |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(ids, vec!["EVID-042", "PRD-001", "RFC-003"]);
+    }
+
+    /// Free-text mention OUTSIDE the Related Artifacts section is NOT
+    /// collected — strict parser by design (no false-flag on "see also").
+    #[test]
+    fn extract_related_artifacts_table_ids_ignores_freetext_mentions() {
+        let body = "
+# PRD-007
+
+## Problem
+
+This builds on PRD-001 and refines RFC-003.
+
+## Related Artifacts
+
+| Artifact | Relation |
+|---|---|
+| EVID-042 | informs |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(ids, vec!["EVID-042"]);
+    }
+
+    /// HTML comments in the Related Artifacts section are stripped first.
+    #[test]
+    fn extract_related_artifacts_table_ids_skips_html_comments() {
+        let body = "
+## Related Artifacts
+
+<!-- Example template:
+| Artifact | Relation |
+| FAKE-999 | bogus |
+-->
+
+| Artifact | Relation |
+|---|---|
+| PRD-001 | refines |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(ids, vec!["PRD-001"]);
+    }
+
+    /// No section → empty result, no panic.
+    #[test]
+    fn extract_related_artifacts_table_ids_returns_empty_when_no_section() {
+        let body = "# PRD-007: Title\n\n## Problem\n\nText.";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert!(ids.is_empty());
+    }
+
+    /// Frontmatter link target extraction.
+    #[test]
+    fn extract_frontmatter_link_targets_basic() {
+        let yaml = r#"
+id: PRD-007
+links:
+  - target: PRD-001
+    relation: refines
+  - target: EVID-042
+    relation: informs
+"#;
+        let fm: Frontmatter = serde_yaml::from_str(yaml).unwrap();
+        let targets = extract_frontmatter_link_targets(&fm);
+        assert_eq!(targets, vec!["PRD-001", "EVID-042"]);
+    }
+
+    /// Empty links: → empty result.
+    #[test]
+    fn extract_frontmatter_link_targets_empty_when_no_links() {
+        let yaml = "id: PRD-007\nstatus: draft";
+        let fm: Frontmatter = serde_yaml::from_str(yaml).unwrap();
+        let targets = extract_frontmatter_link_targets(&fm);
+        assert!(targets.is_empty());
     }
 }

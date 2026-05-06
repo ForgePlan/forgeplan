@@ -289,12 +289,18 @@ pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
     // `#[cfg(test)]` would expose CWE-426 (binary substitution) in
     // release builds, mirroring the AgentDispatcher gate. Do not change
     // without re-evaluating the security boundary.
+    //
+    // PROB-052 Round 7 audit HIGH-2 closure: route override branches
+    // through `resolve_safe_path` so the gate that closed PATH-search
+    // also covers (a) the test-only `FORGEPLAN_BIN` env override и
+    // (b) the workspace-relative `target/release/forgeplan` fallback.
+    // Pre-Round-7 both branches did bare `is_file()`, leaving the
+    // workspace-relative path exploitable in cloned-hostile-repo flows.
     #[cfg(test)]
-    if let Ok(override_path) = std::env::var("FORGEPLAN_BIN") {
-        let p = PathBuf::from(override_path);
-        if p.is_file() {
-            return Some(p);
-        }
+    if let Ok(override_path) = std::env::var("FORGEPLAN_BIN")
+        && let Ok(Some(p)) = resolve_safe_path(&PathBuf::from(override_path))
+    {
+        return Some(p);
     }
     if let Some(p) = which_in_path("forgeplan") {
         return Some(p);
@@ -303,8 +309,8 @@ pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
         .join("target")
         .join("release")
         .join("forgeplan");
-    if release.is_file() {
-        return Some(release);
+    if let Ok(Some(p)) = resolve_safe_path(&release) {
+        return Some(p);
     }
     None
 }
@@ -314,15 +320,153 @@ pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
 /// PROB-050 A-5 closure: promoted from `fn` (helpers-private) to
 /// `pub(super) fn` so AgentDispatcher and PluginDispatcher can drop their
 /// duplicate copies and consume the single source of truth here.
+///
+/// # Security (PROB-052 closure — Round 6 audit MED-1)
+///
+/// Pre-PROB-052 this was a CWE-367 (TOCTOU) + CWE-426 (untrusted-path
+/// hijack) surface. The function did `is_file()` (which silently follows
+/// symlinks), no `canonicalize()`, no executable-bit check, no
+/// parent-directory-permission check. A user with write access to *any*
+/// PATH directory earlier than the legitimate binary could plant a
+/// hijacking executable; the window between `is_file()` and the next
+/// `Command::spawn` allowed TOCTOU symlink swap on group-writable
+/// directories (default Homebrew installs `/usr/local/bin` group-writable
+/// под `admin`).
+///
+/// PROB-052 hardening:
+/// 1. **Canonicalize** the resolved path so symlinks land on the real
+///    target — caller spawns the resolved binary, not the link, eliminating
+///    the swap window.
+/// 2. **Reject group-writable / world-writable binaries** on Unix
+///    (`mode & 0o022 != 0`). Windows ACL is out of scope (documented).
+/// 3. **Reject group-writable / world-writable parent directories** on
+///    Unix. Same Windows skip.
+/// 4. **Skip non-files** after canonicalize (directories, missing targets
+///    of dangling symlinks).
+///
+/// On Unix the implementation uses `std::os::unix::fs::MetadataExt::mode()`;
+/// on Windows the permission gates are skipped by `cfg(unix)`. Cross-platform
+/// behavior is preserved (PATH lookup + canonicalize) — only the Unix-only
+/// permission gate is gated по `cfg(unix)`.
 pub(super) fn which_in_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
+        // Round 7 audit MED-4: skip empty PATH entries explicitly. POSIX
+        // interprets `PATH=":/usr/bin"` as `[".", "/usr/bin"]` — implicit
+        // cwd lookup is a hijack vector if the workspace contains an
+        // attacker-planted binary. Refuse the implicit-cwd case rather
+        // than relying on the parent-mode gate to catch a 0o755
+        // user-owned cwd.
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
         let candidate = dir.join(program);
-        if candidate.is_file() {
-            return Some(candidate);
+        match resolve_safe_path(&candidate) {
+            Ok(Some(real)) => return Some(real),
+            Ok(None) => continue,
+            Err(reason) => {
+                // Round 7 audit MED-1/MED-2: log injection (CWE-117/CWE-150)
+                // hardening — `Display` of attacker-influenceable PATH
+                // entries can carry newlines / ANSI escapes that forge log
+                // lines. Use `escape_debug` to neutralize, mirroring the
+                // PROB-053 shell-exec warning pattern.
+                let candidate_safe = candidate.display().to_string().escape_debug().to_string();
+                let reason_safe = reason.escape_debug().to_string();
+                eprintln!(
+                    "warning: which_in_path: rejected unsafe candidate {candidate_safe}: {reason_safe}"
+                );
+                tracing::warn!(
+                    target = "playbook::dispatch::helpers",
+                    candidate = %candidate_safe,
+                    reason = %reason_safe,
+                    "which_in_path: rejected unsafe candidate"
+                );
+                continue;
+            }
         }
     }
     None
+}
+
+/// Resolve `candidate` to a canonicalised, non-world-writable file path.
+///
+/// **Visibility**: `pub(super)` so dispatcher consumers (`AgentDispatcher::
+/// resolve_claude_binary`, `PluginDispatcher::resolve_binary`,
+/// `resolve_forgeplan_binary`) can route their explicit-override branches
+/// through the same gate. Closing PROB-052 Round 7 audit HIGH-1 — pre-Round-7
+/// the override branches did bare `is_file()`, leaving CWE-426 hijack
+/// exploitable on the *configured-binary* path even after PATH-search was
+/// hardened.
+///
+/// Returns:
+/// - `Ok(Some(real))` if the candidate exists, canonicalises to a regular
+///   file, and (на Unix) has safe permission bits on both the file and its
+///   parent directory.
+/// - `Ok(None)` if the candidate simply does not exist OR canonicalises to a
+///   non-file (directory, special file, dangling symlink target). Caller
+///   continues searching the next PATH entry.
+/// - `Err(String)` if the candidate exists but is rejected on security
+///   grounds (group/world-writable file or parent dir). Caller logs the
+///   rejection and continues; this is NOT a fatal error because PATH may
+///   contain multiple entries and the next one might be safe.
+///
+/// **Residual TOCTOU**: `canonicalize` + `metadata` are two separate syscalls,
+/// and the eventual `Command::spawn` is yet another. The gate **shrinks** the
+/// swap window from operator-time to syscall-time но не closes it fully —
+/// closing requires `O_NOFOLLOW` + `fexecve`-style fd-based exec which is
+/// non-portable (Linux-only). Out of scope for PROB-052; tracked в follow-up.
+pub(super) fn resolve_safe_path(candidate: &Path) -> Result<Option<PathBuf>, String> {
+    // PROB-052 #1: canonicalize — follows symlinks to the real target.
+    // `canonicalize` returns Err if the candidate doesn't exist; treat that
+    // as "not in this PATH dir, try next" rather than a security rejection.
+    let real = match std::fs::canonicalize(candidate) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+
+    // PROB-052 #4: must be a regular file (not a directory, not a dangling
+    // symlink target). symlink_metadata is unnecessary here — canonicalize
+    // already followed the chain.
+    let meta = match std::fs::metadata(&real) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    if !meta.is_file() {
+        return Ok(None);
+    }
+
+    // PROB-052 #2 + #3: Unix permission gates. Concretely the mask
+    // `0o022` covers two bits: `0o020` (group-write) AND `0o002`
+    // (world-write). Either set ⇒ reject. Out of scope: setuid `0o4000`,
+    // setgid `0o2000`, sticky `0o1000`, POSIX ACLs, MAC labels.
+    // Windows ACLs deliberately skipped via `cfg(unix)` per PRD §AC-3.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = meta.mode();
+        if mode & 0o022 != 0 {
+            return Err(format!(
+                "binary write-bits {:03o} set (gate: mode & 0o022)",
+                mode & 0o022
+            ));
+        }
+        // Reject if parent dir is group- or world-writable (e.g. default
+        // Homebrew /usr/local/bin under admin group).
+        if let Some(parent) = real.parent()
+            && let Ok(parent_meta) = std::fs::metadata(parent)
+        {
+            let pmode = parent_meta.mode();
+            if pmode & 0o022 != 0 {
+                return Err(format!(
+                    "parent dir {} write-bits {:03o} set (gate: mode & 0o022)",
+                    parent.display().to_string().escape_debug(),
+                    pmode & 0o022
+                ));
+            }
+        }
+    }
+
+    Ok(Some(real))
 }
 
 #[cfg(test)]
@@ -553,5 +697,256 @@ mod tests {
         // a direct probe here — the post-condition is asserted by the test
         // harness completing (and ADR-010 DoD's `ps` snapshot at integration
         // level).
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PROB-052 TOCTOU + symlink-follow + perm-gate hardening tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// AC-1 — `which_in_path` MUST canonicalize the resolved path so a
+    /// symlink in PATH resolves to its real target. This eliminates the
+    /// TOCTOU swap window between `is_file()` and the eventual
+    /// `Command::spawn` — once the canonical path is captured, swapping the
+    /// symlink target swaps a different file, not the resolved one.
+    ///
+    /// Serializes против peer dispatcher tests via `DISPATCH_ENV_LOCK`
+    /// because all PATH-mutating tests in this crate share that mutex.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // DISPATCH_ENV_LOCK pins env vars across spawn for test isolation
+    async fn which_in_path_canonicalizes_symlink_to_real_target() {
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        // Tighten dir mode so the parent-dir gate accepts it. tempdir() on
+        // some platforms creates 0o700 already; explicit set is safest.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let real = bin_dir.join("real-bin");
+        std::fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = bin_dir.join("link-bin");
+        symlink(&real, &link).unwrap();
+
+        // SAFETY: test-local PATH manipulation. helpers::which_in_path reads
+        // PATH on each call; restore at the end so subsequent tests are
+        // unaffected.
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+        }
+        let resolved = which_in_path("link-bin");
+        unsafe {
+            match original_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        let resolved = resolved.expect("symlink target must resolve");
+        let real_canonical = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            resolved, real_canonical,
+            "which_in_path must return canonical real path, not the symlink"
+        );
+    }
+
+    /// AC-2 — Group/world-writable binary MUST be rejected on Unix
+    /// (mode bits 0o022 set). Pre-PROB-052 this was a CWE-426 hijack vector
+    /// because `is_file()` made no permission distinction.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn which_in_path_rejects_group_writable_binary() {
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = bin_dir.join("hijackable");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        // 0o775 = group-writable — the exact case Homebrew creates by
+        // default on /usr/local/bin under group `admin`.
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+        }
+        let resolved = which_in_path("hijackable");
+        unsafe {
+            match original_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert!(
+            resolved.is_none(),
+            "group-writable binary must be rejected (CWE-426 hijack vector); got: {resolved:?}"
+        );
+    }
+
+    /// AC-3 — Cross-platform: on Windows the Unix permission gate is
+    /// skipped (Windows ACL is out of PROB-052 scope, documented in PRD).
+    /// PATH lookup + canonicalize must still apply.
+    #[cfg(not(unix))]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn which_in_path_windows_skips_permission_gate() {
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        let bin = bin_dir.join("anybin.exe");
+        std::fs::write(&bin, b"stub").unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+        }
+        let resolved = which_in_path("anybin.exe");
+        unsafe {
+            match original_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        // On Windows the permission gate is a no-op so existing-file
+        // resolution still succeeds. Test asserts "found" rather than
+        // mode-specific behavior.
+        assert!(
+            resolved.is_some(),
+            "Windows must still resolve real binaries via PATH"
+        );
+    }
+
+    /// Round 7 audit MED-4 — empty PATH entry (POSIX `:` interpreted as `.`)
+    /// must be skipped explicitly. Implicit cwd lookup is a hijack vector
+    /// when forgeplan is invoked inside a hostile cloned repo.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn which_in_path_skips_empty_path_entries() {
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", ":/nonexistent-dir-prob-052-med-4-test");
+        }
+        let resolved = which_in_path("ls");
+        unsafe {
+            match original_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        // Empty entry MUST be skipped (no cwd-relative resolve), and the
+        // bogus dir doesn't exist, so result is None.
+        assert!(
+            resolved.is_none(),
+            "empty PATH entry must NOT trigger cwd-relative resolve; got: {resolved:?}"
+        );
+    }
+
+    /// Round 7 audit HIGH-1 closure — explicit `claude_binary` field on
+    /// AgentDispatcher MUST go through `resolve_safe_path`. This test asserts
+    /// a group-writable override is rejected just like a PATH-resolved one.
+    /// Pre-Round-7 the override branch was unguarded.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn resolve_safe_path_rejects_group_writable_override() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = bin_dir.join("override-target");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        // Group-writable file — same hijack vector as the PATH test, just
+        // exercised through the resolve_safe_path entry point directly
+        // (mirroring how dispatcher overrides will call it).
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        let result = resolve_safe_path(&bin);
+        assert!(
+            matches!(result, Err(ref s) if s.contains("write-bits")),
+            "group-writable override must be rejected with mode-bit message; got: {result:?}"
+        );
+    }
+
+    /// Round 7 audit HIGH-1 boundary — a safe override is accepted as the
+    /// canonical path, mirroring the PATH-resolution semantics. Ensures the
+    /// dispatcher consumer call sites can rely on a single canonical
+    /// PathBuf rather than the original (potentially symlinked) input.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn resolve_safe_path_canonicalizes_safe_override() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let real = bin_dir.join("real-override");
+        std::fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = bin_dir.join("link-override");
+        symlink(&real, &link).unwrap();
+
+        let result = resolve_safe_path(&link);
+        let resolved = match result {
+            Ok(Some(p)) => p,
+            other => panic!("expected Ok(Some) for safe override; got: {other:?}"),
+        };
+        let real_canonical = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            resolved, real_canonical,
+            "safe symlinked override must canonicalize to real target"
+        );
+    }
+
+    /// PROB-052 boundary — a group-writable PARENT directory must reject
+    /// the binary even if the binary itself has tight 0o755 mode. This
+    /// covers the default Homebrew posture where `/usr/local/bin` is
+    /// 0o775 group=admin and any admin user can plant a binary that the
+    /// dispatcher will then run on behalf of the workspace owner.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn which_in_path_rejects_group_writable_parent_dir() {
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        // Group-writable parent.
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let bin = bin_dir.join("safe-bin");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", &bin_dir);
+        }
+        let resolved = which_in_path("safe-bin");
+        unsafe {
+            match original_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert!(
+            resolved.is_none(),
+            "group-writable parent dir must reject child binary; got: {resolved:?}"
+        );
     }
 }

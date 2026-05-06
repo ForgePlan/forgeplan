@@ -9,6 +9,529 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-05-06 — defensive sprint: security trio + cache self-healing + MCP transport parity + Wave 3 paper cuts
+
+**Highlights** (11 PROBs closed in single defensive sprint):
+
+- **Security**: PROB-053 shell-execution gate (CWE-78/94 default-deny + escape_debug warning), PROB-052 `which_in_path` TOCTOU/CWE-426 hardening (canonicalize + perm gate + symmetric override paths), PROB-054 `produces_at` prompt-injection-via-filesystem validator (CWE-94/OWASP A03)
+- **Trust calculus**: PROB-057 R_eff cache self-healing on link/unlink/activate (closes 4-consumer stale-state leak), PROB-058 (4/6 ACs) MCP transport parity для cache invalidation + score lock + concurrent-writer regression test
+- **Quality**: PROB-051 (4/7 items) phase-fold unification + perf scans + module rustdocs, PROB-056 `partial_verdict` field surfaces phase-fold contract в type system, PROB-032 search score breakdown coherent с total
+- **Paper cuts**: PROB-027/030/033 verified-already-closed via E2E + PROB-038 NEW validator strip pipeline (HTML comments + fenced code + inline backticks), PROB-028 reindex resilience против Phase-1 abort, **PROB-059** body↔links drift validate warning (strict `## Related Artifacts` parser)
+
+**Cross-surface symmetry pattern emerged 7×** в этом sprint — fixing security primitive on primary path while leaving symmetric override paths unguarded. Now baseline audit prompt asks "grep ALL consumers" before declaring closure.
+
+**Test count**: 1977 → **1489 lib + integration suites = ~1995 tests** (+ regression coverage по каждому PROB).
+
+**Quality gates**: `cargo fmt --check`, `cargo clippy --workspace --all-targets --features test-helpers -- -D warnings`, `cargo test --workspace --features test-helpers` — all clean across all 38 suites, 0 failures.
+
+**Deferred to v0.31.0+**:
+- PROB-049 follow-up retry-loop (typed-error refactor через scoring path)
+- PROB-051 MEDIUM/LOW deferred items (L-M1/M2/M3, P-M1/M2, P-L5, D-LOW-2/4)
+- PROB-058 deferred ACs (driver-trait parity, r_eff_local perf bound)
+- PROB-059 follow-ups: `forgeplan reconcile` interactive command, workspace-wide drift cleanup
+
+### Added (Validation — PROB-059 closure, body↔links drift warning)
+
+- **PROB-059 ✅ — `body-links-drift` validate warning** (SHOULD-level).
+  New `body-links-drift` rule в `validation::base_rules()` flags
+  artifacts whose body `## Related Artifacts` table mentions IDs not
+  present в frontmatter `links:` array. Source-of-truth-divergence
+  pattern: agent authors body table claiming relations, forgets
+  `forgeplan link X Y --relation ...`, и Lance index sees isolated
+  node despite markdown looking linked.
+
+  **Strict parser by design**: targets only formal `## Related Artifacts`
+  table rows. Free-text mentions ("see also PRD-005") elsewhere в body
+  are ignored — incidental references shouldn't trigger drift warnings.
+  HTML comments, fenced code blocks, и inline backtick code stripped
+  via shared `strip_non_prose_for_leakage` helper (DRY против PROB-038).
+
+  **Warning message** includes missing IDs + `forgeplan link` command
+  template:
+  ```
+  ~ [SHOULD] body-links-drift: Body's `## Related Artifacts` table
+    mentions PRD-005, RFC-001 but frontmatter `links:` array doesn't
+    reference them. Run: forgeplan link <this-id> <target> --relation
+    <informs|based_on|refines|...>
+  ```
+
+  **Tests**: +6 unit tests (`extract_related_artifacts_table_ids_*`
+  and `extract_frontmatter_link_targets_*`) covering happy path,
+  free-text exclusion, HTML comments stripped, no-section empty,
+  frontmatter parsing.
+
+  **Deferred к follow-up**: `forgeplan reconcile` interactive command
+  (out of scope для v1), workspace-wide `--apply` bulk fix, template
+  hint в frontmatter, `--strict` flag для CI.
+
+### Fixed (Wave 3 batch closure — PROB-027 + PROB-030 + PROB-033 + PROB-038)
+
+- **PROB-027 ✅ verified-already-closed** — `forgeplan reindex` now
+  rebuilds LanceDB from scratch when `lance/` dir missing. Closure
+  shipped в earlier sprint (`LanceStore::init()` instead of `open()`
+  in `reindex.rs:35`). E2E verified: `rm -rf .forgeplan/lance && forgeplan
+  reindex` recreates table + repopulates от .md files.
+- **PROB-030 ✅ verified-already-closed** — BM25 prefix search regression.
+  Closure shipped: `combined_score` uses `bm25_norm.max(keyword_score)`
+  at smart.rs:153 (substring fallback already в place). E2E verified:
+  `forgeplan search "auth"` returns 2 PRDs titled "Authentication ..."
+  с kw=0.80.
+- **PROB-033 ✅ verified-already-closed** — `forgeplan new evidence` no
+  longer blocked by session state machine on fresh workspace. E2E
+  verified: fresh init → new prd → new evidence works without
+  `--force`.
+- **PROB-038 ✅ NEW closure** — Validator false-positive on tech names
+  в HTML comments. Pre-PROB-038 `find_tech_leakage()` scanned raw text
+  including `<!-- -->` comments и code fences. Template guidance comments
+  с phrases like "DON'T leak React/Django/AWS into FR" были false-flagged.
+
+  **Fix**: new private `strip_non_prose_for_leakage()` helper performs
+  three passes before tech-leakage scanning:
+  1. Strip HTML comments (`<!-- ... -->`, single и multi-line)
+     replacing с blank lines чтобы preserve line numbers
+  2. Strip fenced code blocks (\`\`\`...\`\`\`)
+  3. Strip inline backtick code (\`Tech\`)
+
+  Real prose leakage в FR/NFR continues to trigger — only template
+  guidance + code/quote contexts are immune.
+
+  **E2E impact**: fresh PRD via `forgeplan new prd "Auth Test"` validate
+  output went от 7 false positives (`aws, django, docker, oauth2,
+  postgresql, react, redis, rest`) → 1 residual (`OAuth2` mention в
+  template's NFR-003 example row — actual prose, not in scope of this
+  fix). 86% reduction.
+
+  **Tests**: +5 unit tests in `validation::checks::tests`
+  (single-line / multi-line HTML / fenced code / inline backticks /
+  regression guard). Suite: lib 1477 → 1483 PASS, 0 failures across
+  38 suites.
+
+### Fixed (Search UX — PROB-032 closure, score breakdown lies)
+
+- **PROB-032 ✅ — `forgeplan search` score breakdown coherent с total**.
+  Pre-PROB-032 the display showed `kw=0.0 sem=0.0 r=0.0 g=0.0` while
+  total score was non-zero (e.g. 0.57) — violating "sum ≈ total"
+  expectation и lying к user about ranking composition.
+
+  **Root cause**: `SmartSearchResult` carries TWO keyword channels
+  (`keyword_score` substring + `bm25_score` BM25). `combined_score()`
+  uses `max(bm25, keyword_score)` as base, but CLI display showed только
+  `keyword_score`. When match was via BM25 tokenization (e.g. "auth"
+  matches "authentication" via stemming но not as substring),
+  `keyword_score` = 0 hence misleading `kw=0.0` display.
+
+  **Two-part fix** в `crates/forgeplan-cli/src/commands/search.rs`:
+  - Display `max(bm25_score, keyword_score)` so the visible value
+    reflects the actually-contributing channel (matches what
+    `combined_score()` consumes)
+  - Bump precision `{:.1}` → `{:.2}` so contributions of 0.02–0.09 no
+    longer round-down к 0.0
+
+  **Real E2E verified**: query "api error" against fresh workspace now
+  shows `kw=0.36 sem=0.00 r=0.00 g=0.00` matching total 0.36 (was
+  pre-fix `kw=0.0 ... total 0.36`).
+
+  Architectural pattern same as PROB-029 verdict aggregator: hidden
+  fold logic + display path that lies about the fold. When scoring
+  formula uses `max()` / `mean()` / `weighted_sum()` over multiple
+  channels, display MUST show the actually-contributing channel(s).
+
+### Fixed (Reindex — PROB-028 closure, reindex resilience)
+
+- **PROB-028 ✅ — `forgeplan reindex` resilience против Phase-1 abort**.
+  v0.17.1 introduced Phase 2/3 orphan trim (rows whose `.md` disappeared,
+  и orphan relations cascading from trimmed artifacts) but the trim path
+  was **unreachable** on workspaces с ANY title-divergent record. Phase 1
+  propagated the first per-file error via `?` и aborted the entire
+  reindex, leaving Phase 2/3 dead.
+
+  **Real-world bug observed today**: project workspace had orphan
+  PRD-001 / SPEC-001 from a scan-import smoke test earlier в session.
+  `forgeplan reindex` errored on a single SESSION-2026-04-06 record
+  (`FileNotFound` from `sync_body_from_file` because frontmatter `title:`
+  on disk diverged from DB-stored title), aborted, и left the orphans
+  untrimmed. Workspace stayed unhealthy для weeks despite the trim
+  logic existing.
+
+  **Two-part fix** в `crates/forgeplan-cli/src/commands/reindex.rs`:
+  - Pass file's parsed title (от frontmatter) к `sync_body_from_file`
+    instead of DB-stored `record.title` so its internal path computation
+    matches the actual file. Title divergence no longer triggers
+    `FileNotFound`.
+  - Per-file errors now log via `eprintln!("WARN ...")` + `errors += 1`
+    + `continue` вместо `?`-abort. Phase 2/3 orphan trim ALWAYS runs
+    after the per-file loop completes, regardless of how many individual
+    files failed.
+
+  **Tests**: +2 CLI integration tests (`cli_reindex_resilience`):
+  - `reindex_trims_orphan_after_md_file_deleted` — PROB-028 AC-5 verbatim
+  - `reindex_continues_after_per_file_error_and_still_trims_orphans`
+    — recreates project-workspace bug shape
+
+  **Real E2E**: project workspace orphans (PRD-001, SPEC-001) trimmed
+  cleanly после fix; `forgeplan health` now reports clean (0 orphans).
+
+  **Lesson**: when introducing a new pipeline phase, audit ALL paths
+  через which the previous phase can short-circuit. `?` propagation в
+  a `for` loop is the most common offender — converting к
+  `match … { Ok ⇒ continue; Err ⇒ log + continue }` is the pattern.
+
+### Refactor (Architecture — PROB-056 closure, leaky verdict abstraction)
+
+- **PROB-056 ✅ — `HealthReport.partial_verdict` field surfaces
+  phase-fold contract в the type system**. Pre-PROB-056 the single
+  `verdict` field silently switched semantic between callers:
+  `health_report()` populated it as partial (phase_mismatches=0),
+  `health_report_with_phase()` populated it as folded (PROB-051
+  closure). External library consumers calling `health_report`
+  directly couldn't tell от the type signature что their `verdict`
+  was partial.
+
+  **Fix**: new `partial_verdict: Verdict` field on `HealthReport` always
+  carries the value computed с phase_mismatches=0. `verdict` continues
+  carry the "best-known" value (folded когда available via
+  `health_report_with_phase`, partial otherwise). External library
+  consumers tracking additional context MUST consume `partial_verdict`
+  as base для their own `compute_verdict_with()` recomputation.
+
+  **Wire format**: `verdict` JSON field unchanged. New `partial_verdict`
+  appears in `--json` output (additive — non-breaking). CLI/MCP code
+  paths unchanged — both already route through `health_report_with_phase`
+  (PROB-051 closure) so `verdict` is the right value to consume.
+
+  **Tests**: +2 unit tests validating invariants:
+  - `health_report_partial_verdict_equals_verdict_when_no_phase` —
+    legacy path both fields equal
+  - `health_report_with_phase_partial_verdict_invariant` —
+    `partial_verdict` ALWAYS equals legacy `verdict` для same workspace,
+    even when post-fold `verdict` diverges
+
+  **Design choice**: additive (new field) vs hard rename (`verdict` →
+  `partial_verdict`). Picked additive — hard rename would force all
+  CLI/MCP/external code to migrate while still leaving the dual-semantic
+  foot-gun on the JSON wire field name. Additive split lets `verdict`
+  keep "best-known" user-facing semantic (= what consumers actually
+  want) и `partial_verdict` becomes explicit advanced-case access.
+  Mirror of PROB-049 typed-errors lineage (typed alternative alongside
+  legacy surface, incremental migration).
+
+  Suite: lib 1475 → **1477** PASS, 0 failures across 38 suites.
+
+### Fixed (Security — PROB-054 closure, prompt-injection-via-filesystem)
+
+- **PROB-054 ✅ — `produces_at` prompt-injection validator** (CWE-94
+  / OWASP A03). Pre-PROB-054 `Step.produces_at` path was spliced into
+  the `claude --print` natural-language prompt body via
+  `to_string_lossy()` без character validation:
+
+  ```text
+  Write output to `<produces_at>` using the Write tool.
+  ```
+
+  A path containing a backtick (`reports/`backdoor`.md`) closed the
+  markdown code-fence и turned everything after into prompt content
+  the agent treated as authoritative instruction. Same class for `$`
+  (variable expansion), `;` (command separator hint), `\n` / `\r`
+  (line-break injection).
+
+  This was a **separate attack surface** от argv injection (PROB-050
+  A-15 closure). The argv guard и the prompt-body guard are independent
+  concerns even when validating the same field.
+
+  **Fix**: new `validate_produces_at_chars(&Path) -> Result<(), String>`
+  helper in `claude_print.rs` with conservative allowlist regex
+  `^[A-Za-z0-9._/-]+$` (alphanumeric, dot, underscore, forward slash,
+  hyphen). Wired into both:
+  - `assemble_prompt()` — validates BEFORE splicing into prompt body
+  - `add_dir_for_produces_at()` — symmetric guard so argv splice fails
+    on the same input
+
+  Error messages use `escape_debug` for log-injection defense-in-depth
+  (mirrors PROB-053 shell-exec warning pattern).
+
+  **Tests**: +6 unit tests (5 char-class + 1 symmetric add_dir guard;
+  mandate was 3). Suite: lib 1469 → 1475 PASS.
+
+### Fixed (Trust calculus + Performance — PROB-051 partial closure, Wave-1 Round 5 audit deferred)
+
+- **PROB-051 partial ✅ — phase-fold unification + perf scans + module
+  docs** (Roadmap Tier 2 v0.30.0 Wave 1.3). Closes 4 of 7 deferred Round 5
+  audit items in single sprint:
+
+  - **L-H3 phase-fold unification**: pre-PROB-051 the MCP
+    `forgeplan_health` handler computed phase mismatches inline (читая
+    `read_phase` для each active artifact) и folded the count into the
+    verdict, while CLI `forgeplan health` ignored phase tracking entirely
+    — same workspace could return DIFFERENT verdicts через CLI vs MCP.
+    New `forgeplan_core::health::health_report_with_phase(store, ws)`
+    folds the mismatch count via `compute_verdict_with` and is consumed
+    by both CLI и MCP, guaranteeing identical verdicts.
+
+  - **P-H1 single-scan**: pre-PROB-051 MCP forgeplan_health called
+    `store.list_records(None)` twice (once inside `health_report`, once
+    again for phase mismatch loop). Post-PROB-051 the new function does
+    a single scan и passes records через to both consumers — eliminates
+    the duplicate query on every MCP health call.
+
+  - **P-H2 parallel `read_phase`**: pre-PROB-051 phase reads ran
+    sequentially per active artifact (~1ms each on disk-cached fs).
+    Post-PROB-051 uses `futures::stream::iter().buffer_unordered(16)` so
+    a 200-active-artifact workspace doesn't pay 200 sequential syscalls.
+
+  - **D-H1 `projection/mod.rs` module docs**: 50+ line `//!` block
+    introducing ADR-003 file-first invariant, helper categories
+    (Create/Update/Delete/Link/Re-render), MutationContext rationale,
+    typed-error semantics. Closes the discoverability gap surfaced by
+    documentation auditor.
+
+  - **D-H2 `health/mod.rs` module docs**: 60+ line `//!` block describing
+    public surface (legacy `health_report` vs phase-aware
+    `health_report_with_phase`), 4-level `Verdict` aggregator, performance
+    posture, file layout. Includes `Verdict::Empty` rationale (PR-E
+    Round 6 closure context).
+
+  **Side benefit**: CLI `forgeplan health` now renders a `Phase
+  mismatches (N)` advisory section in text mode and `phase_mismatches[]`
+  array в `--json` output — operators using CLI no longer have to switch
+  to MCP to see this advisory data.
+
+  **Tests**: +2 lib unit tests
+  (`health_report_with_phase_matches_legacy_for_empty_workspace`,
+  `health_report_with_phase_matches_legacy_when_no_mismatches`) — guard
+  against future drift between the two folding paths. Suite: lib 1467 →
+  **1469** PASS, 0 failures across 38 suites.
+
+  **Deferred to follow-up** (PROB-051 backlog): L-M1 (at_risk in
+  VerdictThresholds), L-M2 (truncation order), L-M3 (boundary tests),
+  P-M1/M2 (perf items needing benchmark scaffold first), P-L5 (config
+  caching), D-LOW-2/4 (doc cleanup), Round 4 M1 (typed-error sanitisation).
+
+### Fixed (Security — PROB-052 closure, Round 7 audit)
+
+- **PROB-052 ✅ — `which_in_path` TOCTOU + symlink-follow + perm gate
+  hardening** (CWE-367 + CWE-426). Pre-PROB-052 the PATH-search helper
+  did `is_file()` (silently follows symlinks), no `canonicalize`, no
+  exec-bit / write-bit checks, no parent-directory permission check.
+  Round 6 audit MED-1 flagged the function as exploitable on the
+  default Homebrew posture (`/usr/local/bin` 0o775 group=admin —
+  any admin user can plant a hijacking binary).
+
+  **Fix**: new `pub(super) resolve_safe_path` helper:
+  - `canonicalize` resolves symlinks to the real target (eliminates the
+    operator-time swap window; shrinks residual TOCTOU to two adjacent
+    syscalls).
+  - On Unix, rejects binaries with `mode & 0o022 != 0` (group-write OR
+    world-write) AND parent dirs with the same gate.
+  - Windows skips the perm gate (ACL out of scope, documented) but
+    still applies canonicalize + non-file rejection.
+  - Empty PATH entries (POSIX `:` interpreted as `.`) are explicitly
+    skipped — no implicit cwd lookup (hijack vector for cloned hostile
+    repos).
+
+  **Round 7 audit (2026-05-06) closures**:
+  - **HIGH-1 (consumer-side bypass)**: pre-Round-7 the override
+    branches in `AgentDispatcher::resolve_claude_binary`,
+    `PluginDispatcher::resolve_binary`, и `resolve_forgeplan_binary`
+    used bare `is_file()`. Round 7 routed all 4 surfaces through
+    `resolve_safe_path` so the gate applies symmetrically — operator
+    config setting `claude_binary = /usr/local/bin/claude` (group=admin
+    Homebrew dir) is now rejected just like the PATH-resolved case.
+  - **MED-1/MED-2 log-injection**: `tracing::warn!` rejection messages
+    now use `escape_debug` mirroring the PROB-053 shell-exec warning
+    pattern. New `eprintln!` operator-visible channel surfaces
+    rejections без `RUST_LOG=warn`.
+  - **HIGH-3 docstring precision**: mode-bit gate explicitly named
+    (0o020 = group-write, 0o002 = world-write); setuid/setgid/sticky
+    out of scope documented.
+
+  **Tests** (7 new unit tests in `helpers.rs`):
+  - canonicalize symlink to real target
+  - reject group-writable binary
+  - reject group-writable parent dir
+  - reject empty PATH entry (skip implicit cwd)
+  - reject group-writable override (HIGH-1 closure)
+  - canonicalize safe override (HIGH-1 closure)
+  - Windows skip permission gate (cfg(not(unix)))
+
+  All tests use `DISPATCH_ENV_LOCK` for cross-test PATH isolation
+  (PROB-050 A-6 pattern).
+
+  **AC tracking**: AC-1/3/5/6 closed; AC-2 partial (file write-bit
+  clause closed; parent-dir *ownership* clause re-scoped — single-user
+  threat model bounded by parent-mode gate; multi-user shared
+  workstation deferred until trigger fires); AC-4 caching re-scoped as
+  "no caching by design" — dispatcher recreated per `dispatch()` call,
+  per the AC's own MUST-NOT clause ("MUST NOT cache the resolved path
+  indefinitely") which a `OnceCell<PathBuf>` would violate.
+
+  **Files touched**: `helpers.rs` (+130 src + +160 tests),
+  `agent_dispatcher.rs::resolve_claude_binary`,
+  `plugin_dispatcher.rs::resolve_binary`. Suite: lib 1464 → 1467
+  (+3 net; sprint shipped 7 — exceeds AC-5 mandate of 3).
+
+### Added (Security — PROB-053 / PRD-074 closure)
+
+- **PROB-053 / PRD-074 ✅ — `Delegation::Command` shell-execution gate**
+  (CWE-78 / CWE-94 default-deny). The dispatcher refuses
+  `delegate_to: command` steps unless ONE of the two opt-ins is present:
+  - **CLI flag `--allow-shell`** on `forgeplan playbook run` (per
+    invocation, dedicated shell-exec gate; independent от existing
+    `--yes` ADR-009 confirmation).
+  - **Workspace config** `[playbook] allow_shell = true` в
+    `.forgeplan/config.yaml` (trusted-local pre-approval; do NOT set
+    в repos that fetch playbooks from network/marketplace).
+
+  **User-visible warning**: every `Delegation::Command` step prints
+  `! shell-exec: <argv...>` to stderr (eprintln, NOT tracing::warn) с
+  full argv (escape_debug-sanitized to bound CWE-117 / CWE-150 terminal
+  injection) перед spawning. Operator-readable regardless of
+  `RUST_LOG`. Bound at 4 KiB renders pathological argv с
+  `(truncated, original argv N args)` marker.
+
+  **Config-only auto-approval banner**: when the gate opens via config
+  opt-in (CLI flag absent), an additional `!! shell-exec: AUTO-APPROVED
+  via [playbook] allow_shell=true` banner fires once at run start,
+  surfacing post-hoc that the run inherited shell-exec permission from
+  a checked-in dotfile rather than this invocation.
+
+  **MCP parity**: `forgeplan_playbook_run` learns `allow_shell: bool`
+  parameter (default `false`); tool description documents the
+  requirement so agent integrations discover the gate by reading
+  `tools/list` rather than by trial-and-error.
+
+  **Config parse errors are no longer silent**: pre-Round-7 a malformed
+  `.forgeplan/config.yaml` would silently cause `workspace_allow_shell`
+  to default к `false`, regressing trusted-local workflows без warning
+  (same failure-mode class as PROB-035 / PROB-039). Now CLI emits
+  `Warning: failed to read workspace config ...` to stderr; MCP emits
+  `tracing::warn!` with structured `error` field.
+
+  **Reference playbooks**: `marketplace/playbooks/release.yaml` header
+  documents the `--allow-shell` requirement. `audit.yaml` + `brownfield-docs.yaml`
+  use Plugin/Skill dispatchers (not Command) и не affected.
+
+  **Migration for operators**: existing CI scripts using
+  `forgeplan playbook run X --yes` для shell playbooks must add
+  `--allow-shell` (or set `[playbook] allow_shell = true` once в
+  workspace config). The error path emits a `Fix:` hint pointing к the
+  flag.
+
+  **BREAKING (forgeplan-core lib only)**:
+  - `validate_command_delegate_security(step, allow_shell)` parameter
+    renamed from `yes_flag` (semantics changed — now a dedicated
+    shell-exec opt-in, not the blanket --yes).
+  - `SecurityError::ShellRequiresYes` renamed →
+    `SecurityError::ShellRequiresAllowShell` (variant tag matches the
+    flag name; `#[non_exhaustive]` already required `_ =>` arms).
+    Deprecated `pub const ShellRequiresYes` placeholder shim allows
+    one-release migration window.
+  - `ExecutorConfig` gained `allow_shell: bool` field (separate from
+    existing `yes_flag`; defaults к `false`). Library consumers
+    constructing `ExecutorConfig` directly must add the field.
+  - `Config` struct gained `playbook: Option<PlaybookConfig>` field
+    (defaults к `None` — existing workspaces parse identically).
+
+  **Quality gates**: cargo fmt clean, clippy
+  `--workspace --all-targets --features test-helpers -- -D warnings`
+  clean, **1985 tests pass / 0 fail** (+8 от Round 7 audit closures:
+  shell-exec warning escape, full-argv render, pathological truncation,
+  PlaybookConfig serde round-trip).
+
+  **Audit Round 7** (3 parallel adversarial agents — architect, code-reviewer,
+  security): 9+ findings closed in this PR (HIGH-A: yes-shadow + bad
+  hint, HIGH-B: config-only banner, HIGH-D: silent config swallow,
+  HIGH-E: MCP description, HIGH-F: terminal-injection sanitization,
+  HIGH-C: 4-cell test matrix, MED-C: variant rename, MED-D: full argv).
+  Deferred to follow-up PROBs: F3 ForgeplanCore::Ingest path-traversal,
+  F4 MCP stderr trust asymmetry, MED-E `ExecutorConfig` field coupling,
+  MED-1 ExecutorConfig invariant, plus LOW-1..LOW-4 cosmetic.
+
+### Fixed (Trust calculus — PROB-057 / PRD-075 closure)
+
+- **PROB-057 / PRD-075 ✅ — R_eff cache self-healing on link/unlink/activate**.
+  Discovered during the PROB-053 PR review session: `forgeplan link` /
+  `forgeplan activate` previously emitted a `Hint::info("verify R_eff")`
+  pointing at `forgeplan score <ID>` but never invoked the recompute.
+  Cached `r_eff_score` in LanceDB stayed stale until a manual `score`
+  / `score-all` run, leaking stale values to **four** downstream
+  consumers — `forgeplan get` UI (`get.rs:80`), search filter
+  `--has-evidence` (`search/filter.rs:93-94`), F-G-R quality grading
+  (`scoring/fgr.rs:150`) и LLM ADI prompt context
+  (`llm/reason.rs:218`). User-observed reproducer: PRD-074 reported
+  `R_eff: 0.00` from `get` while `score` returned 1.00 Adequate against
+  the same EVID-104 link.
+
+  **Fix**: new shared helper
+  `forgeplan_core::scoring::sync_score_target(store, id) -> f64`
+  encapsulates `r_eff_recursive` + `update_r_eff_score` and is called
+  synchronously after each `link`, `unlink`, `activate` mutation.
+  `score` / `score-all` route through the same helper to keep one
+  canonical "recompute + persist" path. Failure during auto-recompute
+  is non-fatal — the mutation succeeded, and `forgeplan score-all`
+  remains the authoritative full-tree reconciliation surface.
+
+  **Scope**: target artifact only. Parent / ancestor walk left to
+  `score-all` (PRD-075 §Non-Goals — bounded mutator latency). Schema
+  unchanged: workspaces from v0.29 read identically. `r_eff_recursive`
+  signature preserved for downstream callers.
+
+  **Hints updated**: post-mutation hints now point to
+  `forgeplan score-all` (parent reconciliation) instead of the
+  now-redundant `forgeplan score <ID>` per-target rescore.
+
+  **Tests**: 3 new unit tests cover persistence on no-evidence path,
+  stale-cache overwrite (regression guard for PROB-057), and
+  unknown-id error surfacing. Full workspace test suite stays green
+  (no regressions across the 1985-test baseline).
+
+### Changed (Trust calculus — PROB-058 partial closure, Round 9 audit)
+
+- **PROB-058 AC-2/4/5/6 closed + MCP transport parity** (Round 9
+  adversarial audit, 2 parallel agents). Cache self-healing now extends
+  to the MCP transport that LLM-orchestrated agents actually use:
+  - **MCP `forgeplan_link` / `forgeplan_activate`** acquire the
+    workspace lock and call `sync_score_target` after mutation; CLI
+    parity restored. Hint strings updated к `forgeplan_score_all`
+    (FR-009).
+  - **MCP `forgeplan_score`** — pre-Round-9 this tool computed
+    `r_eff_recursive` for display but **never persisted** the
+    recomputed value (latent bug since MCP launch). Now routes through
+    `sync_score_target` to write the cache.
+  - **`forgeplan score` / `score --all`** acquire `open_store_locked()`
+    so concurrent CLI/MCP mutators serialize correctly. Trade-off:
+    `score --all` now holds the lock for the entire batch — на dense
+    graphs (>200 artifacts × deep deps) this can starve concurrent
+    callers past the 30 s lock timeout. PROB-058 AC-3 (`r_eff_local`
+    variant) tracks the bound.
+  - **AC-2 regression test**: real concurrent-writer test added
+    (`parallel_score_all_invocations_serialize_via_workspace_lock`)
+    spawning two `forgeplan score --all` processes via OS-level fs2
+    advisory lock — closes the methodology gap that motivated
+    `feedback_meta_tooling_discipline.md`.
+  - **AC-4 hint contract**: 3 negative tests (link / unlink / activate)
+    use line-shape match (not substring contains) to prevent
+    concatenated drift like `score-all && score <ID>` from passing.
+  - **AC-5 threat model**: PRD-075 §"Threat Model — Mutation Latency
+    Side-Channel" documents the timing oracle posture for
+    multi-tenant/MCP-shared deployments, with explicit
+    trigger-to-revisit conditions.
+  - **AC-6 docstring**: `sync_score_target` rewrites scope to
+    distinguish evidence collection (bidirectional), dependency
+    recursion (descendant-only), and transitive parent rescore (out of
+    scope) — fixes Round 9 HIGH-3 factual mismatch with implementation.
+
+  **Deferred to follow-up sprint** (PROB-058 AC-1, AC-3): driver-trait
+  parity for `sync_score_target` (требует `r_eff_recursive` signature
+  rework across entire scoring pipeline) и `r_eff_local` perf-bound
+  variant (нужен benchmark scaffold). Current workspace size profile
+  (≤300 artifacts) does not exhibit the FR-005 100ms budget violation
+  in practice.
+
+  **Tests**: +3 negative hint tests, +1 concurrent-writer regression
+  test, +1 cycle-termination test, +1 malformed-id rejection test.
+  Suite total: **1985 baseline → ~1995+ tests pass**, 0 fail across
+  all gates (fmt / clippy --deny-warnings / workspace test).
+
 ## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
 
 Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five

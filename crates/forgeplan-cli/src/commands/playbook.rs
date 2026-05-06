@@ -339,18 +339,33 @@ pub async fn run_validate(file: &Path, json: bool) -> anyhow::Result<()> {
     }
 }
 
-/// `forgeplan playbook run <target> --yes [--dry-run] [--step N] [--json]`
+/// `forgeplan playbook run <target> --yes [--allow-shell] [--dry-run] [--step N] [--json]`
+///
+/// PROB-053 audit Round 7 closure: `--allow-shell` and `--yes` are
+/// **independent flags** — `--allow-shell` does NOT imply `--yes`. The
+/// two-flag friction is the security feature: `--yes` is the operator's
+/// blanket "I confirm running this playbook" gate (ADR-009); `--allow-shell`
+/// is the dedicated "I additionally confirm shell execution" opt-in
+/// (PRD-074 §FR-1). Audit Round 7 removed the previous `let yes = yes ||
+/// allow_shell` shadow because it collapsed two independent risk
+/// acknowledgements into one toggle, defeating PROB-053 raison d'être.
 pub async fn run_execute(
     target: &str,
     yes: bool,
+    allow_shell: bool,
     dry_run: bool,
     step: Option<usize>,
     json: bool,
 ) -> anyhow::Result<()> {
     // ADR-009 / SPEC-003 §"delegate_to": refuse without --yes.
     if !yes && !dry_run {
+        // PROB-053 audit Round 7: refuse-path hint must include
+        // --allow-shell when target is reachable (we don't load YAML yet,
+        // so we cannot detect Command steps here — append the flag
+        // unconditionally so operators don't have to re-discover it after
+        // the second refusal at the executor security gate).
         let fix = format!(
-            "forgeplan playbook run {} --yes",
+            "forgeplan playbook run {} --yes --allow-shell",
             shell_quote_if_needed(target)
         );
         if json {
@@ -362,6 +377,10 @@ pub async fn run_execute(
         } else {
             eprintln!("Error: playbook run requires --yes confirmation (ADR-009 security gate).");
             eprintln!("Fix: {}", fix);
+            eprintln!(
+                "Note: drop --allow-shell if the playbook contains no \
+                 `delegate_to: command` steps (PRD-074 §FR-1)."
+            );
         }
         std::process::exit(2);
     }
@@ -425,7 +444,10 @@ pub async fn run_execute(
     // returns the `.forgeplan/` dir itself, so we step up one level when it
     // matches.
     let cwd = std::env::current_dir()?;
-    let workspace_root = match workspace::find_workspace(&cwd) {
+    // PROB-053 audit Round 7 LOW-2 fix: cache the find_workspace result
+    // (was: 2 fs walks, one для workspace_root one для config).
+    let fp_dir_opt = workspace::find_workspace(&cwd);
+    let workspace_root = match &fp_dir_opt {
         Some(fp_dir) => fp_dir
             .parent()
             .map(Path::to_path_buf)
@@ -435,8 +457,51 @@ pub async fn run_execute(
     let journal = Journal::open(&workspace_root)?;
 
     let dispatcher = RoutingDispatcher::new(workspace_root.clone());
+
+    // PRD-074 §FR-1+§FR-2: resolve effective allow-shell signal from
+    // CLI flag OR workspace config opt-in. This is the input to
+    // `validate_command_delegate_security` inside the executor — a
+    // playbook with `Delegation::Command` step refuses unless ONE of the
+    // two opt-ins is set. PROB-053 closure.
+    //
+    // PROB-053 audit Round 7 HIGH-D fix: log on parse-error explicitly
+    // (was: silent .ok() swallow caused stale config to silently regress
+    // workspace_allow_shell to false, identical failure-mode class as
+    // PROB-035 / PROB-039).
+    let workspace_allow_shell = match fp_dir_opt
+        .as_ref()
+        .map(|fp_dir| workspace::load_config(fp_dir))
+    {
+        Some(Ok(c)) => c.playbook.map(|p| p.allow_shell).unwrap_or(false),
+        Some(Err(e)) => {
+            eprintln!(
+                "Warning: failed to read workspace config (`.forgeplan/config.yaml`); \
+                 [playbook] allow_shell opt-in ignored: {e}"
+            );
+            false
+        }
+        None => false, // no workspace — config opt-in not applicable
+    };
+    let effective_allow_shell = allow_shell || workspace_allow_shell;
+
+    // PROB-053 audit Round 7 HIGH-B fix: when the gate is opened ONLY by
+    // workspace config (CLI flag absent), emit a louder banner so the
+    // operator can tell post-hoc that the run inherited shell-exec
+    // permission from a checked-in dotfile rather than this invocation.
+    // Existing per-step `! shell-exec:` warning still fires per Command
+    // step; this banner fires once at run start.
+    if !json && effective_allow_shell && !allow_shell && workspace_allow_shell {
+        eprintln!(
+            "!! shell-exec: AUTO-APPROVED via [playbook] allow_shell=true in \
+             .forgeplan/config.yaml. To force-deny for this run, set the \
+             config to false (no CLI override flag exists yet — tracked as \
+             PRD-074 follow-up)."
+        );
+    }
+
     let cfg = ExecutorConfig {
         yes_flag: yes,
+        allow_shell: effective_allow_shell,
         // load_playbook already validated; skip duplicate work in executor.
         skip_revalidation: true,
         // HIGH-S5: forward `--step N` so resumable runs (PRD-065 FR-6)

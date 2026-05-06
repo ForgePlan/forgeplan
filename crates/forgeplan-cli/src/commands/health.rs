@@ -29,7 +29,14 @@ pub async fn run(
     let (ws, store) = common::open_store().await?;
 
     let config = workspace::load_config(&ws)?;
-    let report = health::health_report(&store).await?;
+    // PROB-051 L-H3 closure: route through `health_report_with_phase` so
+    // CLI returns the SAME verdict as MCP `forgeplan_health` for the same
+    // workspace (folds phase mismatches into the verdict aggregator). Pre-
+    // PROB-051 CLI used `health_report` (no phase folding) → operator could
+    // see different verdict via CLI vs MCP. Phase tracking is opt-in per
+    // workspace config; when disabled `phase_mismatches` is empty and the
+    // verdict equals the legacy `health_report` value.
+    let (report, phase_mismatches) = health::health_report_with_phase(&store, &ws).await?;
 
     // PRD-071 contract: derive a single deterministic Next: action from the
     // report. Priority order — blind spots > stubs > orphans > stale > at risk
@@ -105,6 +112,16 @@ pub async fn run(
                 "title": s.title,
                 "markers_found": s.markers_found,
                 "message": s.message,
+            })).collect::<Vec<_>>(),
+            // PROB-051 L-H3: surface phase mismatches in CLI --json so
+            // operators using `forgeplan health --json | jq .phase_mismatches`
+            // see the same data as MCP `forgeplan_health`.
+            "phase_mismatches": phase_mismatches.iter().map(|m| serde_json::json!({
+                "id": m.id,
+                "title": m.title,
+                "status": m.status,
+                "current_phase": m.current_phase,
+                "advisory": m.advisory,
             })).collect::<Vec<_>>(),
             "_next_action": hints::primary_action(&hints_vec),
         });
@@ -257,6 +274,25 @@ pub async fn run(
                 style(&d.id_b).yellow(),
                 pct,
                 d.title_a
+            );
+        }
+    }
+
+    // PROB-051 L-H3: phase mismatches advisory (active artifacts whose
+    // recorded phase is still early-cycle — Code/Evidence likely skipped).
+    if !phase_mismatches.is_empty() {
+        println!();
+        println!(
+            "  {} Phase mismatches ({}):",
+            style("⏳").yellow().bold(),
+            ui::styled_count(phase_mismatches.len(), true)
+        );
+        for m in &phase_mismatches {
+            println!(
+                "    {} \"{}\" — phase: {}",
+                style(&m.id).yellow(),
+                m.title,
+                style(&m.current_phase).yellow()
             );
         }
     }

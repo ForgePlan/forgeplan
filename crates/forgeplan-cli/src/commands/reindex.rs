@@ -83,19 +83,47 @@ pub async fn run() -> anyhow::Result<()> {
             // Check if artifact exists in LanceDB
             match store.get_record(&id).await? {
                 Some(record) => {
-                    // Compare body — sync if different
+                    // Compare body — sync if different.
+                    //
+                    // PROB-028 fix: pass the **file's** parsed title (not the
+                    // DB-stored `record.title`) to `sync_body_from_file` so
+                    // its internal path computation matches the file we just
+                    // read. Pre-fix, when a user edited frontmatter `title:`
+                    // on disk без syncing back to DB, the helper computed
+                    // `workspace/<kind>/<id>-<DB-slug>.md`, didn't find it,
+                    // returned `FileNotFound`, и `?` aborted the entire
+                    // reindex — preventing Phase 2 (orphan trim) и Phase 3
+                    // (orphan relations) from running. Workspace orphans
+                    // would then persist forever despite the trim logic
+                    // existing.
+                    let file_title = fm
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&record.title);
                     if record.body.trim() != body.trim() {
-                        projection::sync_body_from_file(
+                        // PROB-028 resilience: log per-file errors and
+                        // continue rather than `?`-aborting the loop. Phase 2/3
+                        // orphan trim depends on Phase 1 completing for ALL
+                        // files even when individual files fail to sync.
+                        match projection::sync_body_from_file(
                             &projection::MutationContext::new(&ws, &store),
                             &id,
                             &record.kind,
-                            &record.title,
+                            file_title,
                             &body,
                         )
-                        .await?;
-                        common::log_change(&store, &id, "update", "reindex").await;
-                        println!("  SYNC {} — body updated from file", id);
-                        synced += 1;
+                        .await
+                        {
+                            Ok(()) => {
+                                common::log_change(&store, &id, "update", "reindex").await;
+                                println!("  SYNC {} — body updated from file", id);
+                                synced += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("  WARN {} — sync failed: {}", id, e);
+                                errors += 1;
+                            }
+                        }
                     } else {
                         skipped += 1;
                     }
@@ -132,14 +160,25 @@ pub async fn run() -> anyhow::Result<()> {
                         tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
                     };
 
-                    projection::sync_artifact_from_file(
+                    // PROB-028 resilience: same per-file error handling as
+                    // the Some(record) branch above — don't let one bad file
+                    // abort the entire reindex pass.
+                    match projection::sync_artifact_from_file(
                         &projection::MutationContext::new(&ws, &store),
                         &artifact,
                     )
-                    .await?;
-                    common::log_change(&store, &id, "create", "reindex").await;
-                    println!("  NEW  {} — created from file", id);
-                    synced += 1;
+                    .await
+                    {
+                        Ok(()) => {
+                            common::log_change(&store, &id, "create", "reindex").await;
+                            println!("  NEW  {} — created from file", id);
+                            synced += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("  WARN {} — create failed: {}", id, e);
+                            errors += 1;
+                        }
+                    }
                 }
             }
 

@@ -70,6 +70,16 @@ fn base_rules() -> Vec<RuleEntry> {
             "Body must not be unfilled template",
             check_stub,
         ),
+        // PROB-059 closure — flag body↔links drift across all artifact kinds.
+        // SHOULD-level (not MUST) so existing artifacts с incidental drift
+        // pass validation but get visible warning. Promote к --strict mode
+        // в follow-up if user wants CI-fail behavior.
+        rule(
+            "body-links-drift",
+            Severity::Should,
+            "Body's `## Related Artifacts` table consistent с frontmatter `links:`",
+            check_body_links_drift,
+        ),
     ]
 }
 
@@ -178,6 +188,54 @@ fn check_meta_id(_body: &str, fm: &Frontmatter) -> Option<String> {
         Some("Missing 'id' field in frontmatter".into())
     } else {
         None
+    }
+}
+
+/// PROB-059 — body↔links drift detection.
+///
+/// Compares IDs mentioned в `## Related Artifacts` table rows against
+/// frontmatter `links:` array. If body table mentions an ID that has no
+/// corresponding `links:` entry → SHOULD-level warning. Self-references
+/// и table-row IDs that are the artifact's own id are ignored.
+///
+/// Implementation strategy (Option A from PROB-059): strict parser
+/// targeting only the `## Related Artifacts` section. Free-text "see
+/// also PRD-005" mentions elsewhere в body are intentionally NOT
+/// flagged — incidental mentions shouldn't trigger drift warnings.
+fn check_body_links_drift(body: &str, fm: &Frontmatter) -> Option<String> {
+    let body_ids = checks::extract_related_artifacts_table_ids(body);
+    if body_ids.is_empty() {
+        return None;
+    }
+    let link_targets: std::collections::BTreeSet<String> =
+        checks::extract_frontmatter_link_targets(fm)
+            .into_iter()
+            .map(|s| s.to_uppercase())
+            .collect();
+    let self_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_uppercase())
+        .unwrap_or_default();
+    let mut missing: Vec<String> = Vec::new();
+    for id in &body_ids {
+        let id_upper = id.to_uppercase();
+        if id_upper == self_id {
+            continue;
+        }
+        if !link_targets.contains(&id_upper) {
+            missing.push(id.clone());
+        }
+    }
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Body's `## Related Artifacts` table mentions {} but frontmatter `links:` array doesn't reference \
+             them. Run: forgeplan link <this-id> <target> --relation <informs|based_on|refines|...> \
+             OR remove the table row if the mention is incidental.",
+            missing.join(", ")
+        ))
     }
 }
 

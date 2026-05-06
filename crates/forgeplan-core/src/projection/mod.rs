@@ -1,3 +1,63 @@
+//! ADR-003 file-first projection — markdown is source of truth, LanceDB
+//! is a derived index that MUST be re-projected from the file after every
+//! structural mutation.
+//!
+//! # Mental model
+//!
+//! Forgeplan stores artifacts (PRDs, RFCs, Evidence, Problems, etc.) as
+//! Markdown files under `.forgeplan/<kind>s/<ID>-<slug>.md`. A LanceDB
+//! sidecar index at `.forgeplan/lance/` provides fast queries over the
+//! same artifacts (full-text search, R_eff scoring, link graph). The
+//! ADR-003 invariant is that **the markdown file is authoritative**:
+//! every mutator MUST update the file first (or in the same transaction
+//! as the index), and any divergence between file и index gets reconciled
+//! by re-projecting from the file via `forgeplan reindex`.
+//!
+//! Pre-PROB-048 closure (PRD-073), command handlers in `forgeplan-cli/`
+//! and `forgeplan-mcp/` called `LanceStore::create_artifact / update_* /
+//! delete_* / add_relation / delete_relation` directly. Each direct write
+//! bypassed the file-first contract — the file и index would silently
+//! drift on each unfortunate code path. Phase 3a + 3b + 4 of PRD-073
+//! locked these mutations behind the `projection::*` helpers in this
+//! module и enforced the boundary at the type level (`pub(crate)`
+//! visibility on the raw `LanceStore` mutation API plus a regression
+//! test that grep's for the forbidden call patterns).
+//!
+//! # Helper categories
+//!
+//! Mutator commands MUST funnel through one of these helpers; never call
+//! `LanceStore::*` mutation methods directly from `commands/` or
+//! `server.rs`:
+//!
+//! | Category | Helpers | What they do |
+//! |---|---|---|
+//! | Create | `create_artifact_with_projection` | Render markdown, then sync into LanceDB |
+//! | Update | `update_body_with_projection`, `update_status_with_projection`, `update_*_with_projection` | Modify file, then re-project the row |
+//! | Delete | `delete_artifact_with_projection` | Move file to `.forgeplan/.deleted/`, then drop row |
+//! | Link | `add_link_with_projection`, `delete_link_with_projection` | Update both sides' frontmatter, then add/delete relation row |
+//! | Re-render | `render_projection`, `render_after_mutation`, `sync_before_mutation` | Idempotent file↔store reconciliation used by `activate`, `supersede`, etc. |
+//!
+//! All mutator helpers take a [`MutationContext`] (workspace path + store
+//! reference) so callers don't have to thread two arguments через every
+//! invocation.
+//!
+//! # Failure semantics
+//!
+//! Helpers return [`MutationResult<T>`] which surfaces typed
+//! [`MutationError`] (not `anyhow::Error`) — callers pattern-match on
+//! `StoreTransient` (retryable) vs `StoreFatal` (don't retry) per
+//! PROB-049 typed-errors lineage. CLI consumers map `MutationError` into
+//! a `Fix:` hint per PRD-071 Hint Protocol.
+//!
+//! # Why this module exists at all
+//!
+//! Without this single point of indirection, ADR-003 would be enforced
+//! by convention only — every new command author would have to remember
+//! to call `LanceStore::*` "the right way". The compile-enforced boundary
+//! plus the regression test (`tests/adr_003_invariant.rs`) means new
+//! direct mutations get caught at code review time, not at production-
+//! workspace-corruption time.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

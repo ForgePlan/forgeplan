@@ -1,4 +1,63 @@
+//! Workspace health aggregation.
+//!
+//! Builds a single [`HealthReport`] over an opened [`LanceStore`] that
+//! consolidates every "warning class" the CLI / MCP surfaces care about
+//! (orphans, blind spots, active stubs, possible duplicates, at-risk
+//! decisions, stale artifacts, derived-status breakdown) and computes a
+//! typed [`Verdict`] aggregating all of them.
+//!
+//! # Public surface
+//!
+//! - [`health_report`] — fast path: one [`LanceStore::list_records`] scan
+//!   plus relation-graph build, no I/O outside the store. CLI-only callers
+//!   that don't need phase tracking should use this.
+//! - [`health_report_with_phase`] — single-scan path that ALSO emits a
+//!   `Vec<PhaseMismatch>` for active artifacts whose advisory phase state
+//!   is still in the early cycle (Shape / Validate / ADI). Phase data is
+//!   read concurrently via `buffer_unordered`. Folds phase mismatches into
+//!   the returned verdict so CLI and MCP surfaces produce IDENTICAL
+//!   `verdict` values for the same workspace (PROB-051 L-H3 closure).
+//! - [`compute_verdict_with`] / [`compute_verdict`] — pure functions over
+//!   counts, exposed for callers (FPF rules, custom dashboards) that want
+//!   alternate threshold configurations without re-scanning the store.
+//!
+//! # Verdict aggregator (PROB-029 AC-2)
+//!
+//! Four levels:
+//!
+//! - `Verdict::Empty` — workspace has zero artifacts. Treated as a
+//!   distinct level so JSON consumers gating on `verdict == "healthy"`
+//!   never wrongly classify an uninitialised project as healthy.
+//! - `Verdict::Healthy` — total > 0 and every warning class is empty.
+//! - `Verdict::NeedsAttention` — at least one non-zero warning class but
+//!   none exceed thresholds.
+//! - `Verdict::Unhealthy` — any class strictly exceeds its
+//!   [`VerdictThresholds`] entry.
+//!
+//! The enum is `#[non_exhaustive]` so future levels can land without
+//! breaking pattern-match callers in `forgeplan-cli`. External binaries
+//! consuming `forgeplan-core` as a library should always include a
+//! catch-all arm.
+//!
+//! # Performance (PROB-051 P-H1 + P-H2)
+//!
+//! - `health_report_with_phase` does ONE `list_records(None)` scan,
+//!   replacing the pre-PROB-051 MCP path which scanned twice.
+//! - Phase reads use `futures::stream::iter(active_records)
+//!   .map(read_phase).buffer_unordered(16).collect()` so a 200-active-
+//!   artifact workspace doesn't pay 200 sequential disk-seek round-trips.
+//!
+//! # File layout
+//!
+//! Per-warning-class detection lives in private helpers (`find_orphans`,
+//! `find_blind_spots`, `find_at_risk`, `find_active_stubs`,
+//! `find_duplicate_pairs`). The aggregator wires them; do not call them
+//! directly from CLI/MCP — funnel through `health_report*`.
+
 use std::collections::BTreeMap;
+use std::path::Path;
+
+use futures::StreamExt;
 
 use crate::artifact::frontmatter::Frontmatter;
 use crate::artifact::types::DECISION_KINDS_EVIDENCE;
@@ -132,11 +191,33 @@ pub struct HealthReport {
     pub next_actions: Vec<String>,
     pub possible_duplicates: Vec<DuplicatePair>,
     pub active_stubs: Vec<ActiveStub>,
-    /// PROB-029 AC-2: aggregated verdict that reads ALL warning classes.
-    /// Pre-fix this didn't exist — `next_actions` was the only summary
-    /// and silently said "Project looks healthy" while stubs/dups were
-    /// printed above it (PRD-043 detection bypass).
+    /// **Best-known verdict for user-facing display.** Aggregates all
+    /// warning classes Forgeplan currently understands. Equals
+    /// [`HealthReport::partial_verdict`] when this report comes из
+    /// [`health_report`] (legacy / no phase context); equals the
+    /// post-fold value (включая `phase_mismatches.len()`) when this
+    /// report comes from [`health_report_with_phase`].
+    ///
+    /// PROB-029 AC-2 origin: aggregated verdict that reads ALL warning
+    /// classes. Pre-fix this didn't exist — `next_actions` was the only
+    /// summary и silently said "Project looks healthy" while stubs/dups
+    /// были printed above it (PRD-043 detection bypass).
     pub verdict: Verdict,
+    /// PROB-056 closure — verdict computed using ONLY the warning
+    /// classes the `forgeplan-core` crate tracks (phase_mismatches=0).
+    ///
+    /// External library consumers tracking additional context (extra
+    /// phase data, custom signals from a downstream crate) MUST consume
+    /// this field as the base for their own [`compute_verdict_with`]
+    /// recomputation rather than rely on [`HealthReport::verdict`] —
+    /// the latter equals `partial_verdict` only когда the report came
+    /// from [`health_report`]. After [`health_report_with_phase`] the
+    /// two diverge if any phase mismatches были detected.
+    ///
+    /// Pre-PROB-056 there was a single `verdict` field that silently
+    /// switched semantic between callers (Round 6 audit MED-1 — leaky
+    /// abstraction). The split surfaces the contract в the type system.
+    pub partial_verdict: Verdict,
 }
 
 impl HealthReport {
@@ -198,16 +279,146 @@ pub struct BlindSpot {
 
 type RelationIndex = BTreeMap<String, Vec<(String, String)>>;
 
+/// PROB-051 L-H3 — phase-mismatch advisory entry.
+///
+/// Active artifacts whose recorded phase is still in the early cycle
+/// (`Shape`/`Validate`/`Adi`) likely skipped Code/Evidence — strictly
+/// advisory; never fails the health call but is folded into the verdict
+/// aggregator so CLI and MCP surfaces produce identical verdicts.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PhaseMismatch {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub current_phase: String,
+    pub advisory: String,
+}
+
 /// Generate a full health report for the workspace.
+///
+/// Single-scan fast path. CLI legacy callers and any consumer that does
+/// not need phase tracking should call this. For phase-aware verdict
+/// folding (CLI/MCP parity per PROB-051 L-H3), use
+/// [`health_report_with_phase`].
 pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     let all = store.list_records(None).await?;
     let all_relations = store.get_all_relations().await?;
+    health_report_from_records(store, &all, &all_relations).await
+}
 
+/// PROB-051 L-H3 + P-H1 + P-H2 closure — single-scan, phase-aware health
+/// report.
+///
+/// Loads `list_records` ONCE (replacing the pre-PROB-051 MCP path which
+/// scanned twice — P-H1), reads phase state for every active artifact
+/// concurrently via `buffer_unordered(16)` (replacing the sequential
+/// per-artifact disk seeks — P-H2), and folds the resulting
+/// `phase_mismatches.len()` into the verdict via [`compute_verdict_with`]
+/// so CLI and MCP surfaces returning the same workspace state produce
+/// IDENTICAL verdicts (L-H3).
+///
+/// `phase_tracking_enabled` is read from `workspace/config.yaml`; when
+/// disabled the function still does the single scan but returns an empty
+/// `Vec<PhaseMismatch>` and folds 0 into the verdict (so the verdict
+/// equals the [`health_report`] verdict for the same workspace, just
+/// with the duplicate scan eliminated).
+pub async fn health_report_with_phase(
+    store: &LanceStore,
+    workspace: &Path,
+) -> anyhow::Result<(HealthReport, Vec<PhaseMismatch>)> {
+    let all = store.list_records(None).await?;
+    let all_relations = store.get_all_relations().await?;
+
+    // PROB-051 P-H1 closure: pass pre-loaded records to avoid the second
+    // scan. Pre-PROB-051 the MCP forgeplan_health handler called
+    // health_report (one scan) and then store.list_records(None) again
+    // for phase mismatches — pure waste on a 1000-artifact workspace.
+    let mut report = health_report_from_records(store, &all, &all_relations).await?;
+
+    // PROB-051 L-H3 closure: phase tracking is opt-in per workspace
+    // config. When disabled the verdict matches health_report exactly
+    // (zero phase mismatches folded).
+    let config_enabled = crate::workspace::load_config(workspace)
+        .map(|c| crate::phase::is_enabled(&c))
+        .unwrap_or(true);
+
+    let phase_mismatches: Vec<PhaseMismatch> = if config_enabled {
+        // PROB-051 P-H2 closure: parallelise read_phase via
+        // buffer_unordered. Concurrency cap of 16 chosen as a safe
+        // default for typical workspace sizes (≤300 active artifacts);
+        // re-tune if benchmarks show contention.
+        //
+        // Collect owned (id, title, status) tuples first so the async
+        // closure does not need to borrow `&ArtifactRecord` across the
+        // await point — closure-lifetime constraints от buffer_unordered
+        // require 'static-ish bodies.
+        use crate::phase::Phase;
+        let active_records: Vec<(String, String, String)> = all
+            .iter()
+            .filter(|r| r.status == "active")
+            .map(|r| (r.id.clone(), r.title.clone(), r.status.clone()))
+            .collect();
+        let workspace_owned = workspace.to_path_buf();
+        futures::stream::iter(active_records)
+            .map(|(id, title, status)| {
+                let ws = workspace_owned.clone();
+                async move {
+                    let phase = crate::phase::store::read_phase(&ws, &id)
+                        .await
+                        .ok()
+                        .flatten();
+                    phase.and_then(|s| {
+                        let early =
+                            matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
+                        early.then(|| PhaseMismatch {
+                            id,
+                            title,
+                            status,
+                            current_phase: s.current_phase.as_str().to_string(),
+                            advisory: "status=active but phase is early-cycle — \
+                                       Code/Evidence likely skipped"
+                                .to_string(),
+                        })
+                    })
+                }
+            })
+            .buffer_unordered(16)
+            .filter_map(|opt| async move { opt })
+            .collect()
+            .await
+    } else {
+        Vec::new()
+    };
+
+    // PROB-051 L-H3 closure: re-fold the verdict so CLI/MCP parity holds.
+    report.verdict =
+        report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
+
+    Ok((report, phase_mismatches))
+}
+
+/// Internal: build a [`HealthReport`] from pre-loaded records. Extracted
+/// from [`health_report`] so [`health_report_with_phase`] can reuse the
+/// same logic without re-scanning.
+async fn health_report_from_records(
+    store: &LanceStore,
+    all: &[ArtifactRecord],
+    all_relations: &[(String, String, String)],
+) -> anyhow::Result<HealthReport> {
+    let _ = (store, all, all_relations);
+    health_report_inner(store, all, all_relations).await
+}
+
+async fn health_report_inner(
+    store: &LanceStore,
+    all: &[ArtifactRecord],
+    all_relations: &[(String, String, String)],
+) -> anyhow::Result<HealthReport> {
     // Counts
     let total = all.len();
     let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
-    for r in &all {
+    for r in all {
         *by_kind.entry(r.kind.clone()).or_default() += 1;
         *by_status.entry(r.status.clone()).or_default() += 1;
     }
@@ -220,7 +431,7 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     let evidence_records = store.list_records(Some(&evidence_filter)).await?;
 
     // Build relation index
-    let (outgoing, incoming) = build_relation_index(&all_relations);
+    let (outgoing, incoming) = build_relation_index(all_relations);
 
     // Stale — log warning on error, don't crash health report
     let stale_count = match store.find_stale().await {
@@ -251,8 +462,8 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
     // next_actions and the summary never knew about active stubs or
     // duplicate pairs → verdict always said "Project looks healthy"
     // even with 8 stubs and 5 duplicate pairs present.
-    let possible_duplicates = find_duplicate_pairs(&all, DUPLICATE_SIMILARITY_THRESHOLD);
-    let active_stubs = find_active_stubs(&all);
+    let possible_duplicates = find_duplicate_pairs(all, DUPLICATE_SIMILARITY_THRESHOLD);
+    let active_stubs = find_active_stubs(all);
 
     let next_actions = generate_next_actions(
         total,
@@ -280,6 +491,11 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         &VerdictThresholds::default(),
     );
 
+    // PROB-056 closure: from `health_report` (no phase context) the
+    // verdict equals partial_verdict — both are computed with
+    // phase_mismatches=0. They diverge only after `health_report_with_phase`
+    // overwrites `verdict` с the folded value. `partial_verdict` always
+    // reflects the "core knows about" subset.
     Ok(HealthReport {
         total,
         by_kind: by_kind.into_iter().collect(),
@@ -293,6 +509,7 @@ pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
         possible_duplicates,
         active_stubs,
         verdict,
+        partial_verdict: verdict,
     })
 }
 
@@ -1193,6 +1410,7 @@ mod tests {
             possible_duplicates: Vec::new(),
             active_stubs: Vec::new(),
             verdict: Verdict::Healthy,
+            partial_verdict: Verdict::Healthy,
         }
     }
 
@@ -1543,5 +1761,116 @@ mod tests {
                 .into();
         let stubs = find_active_stubs(&[r]);
         assert!(stubs.is_empty());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PROB-051 L-H3 verdict consistency tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// PROB-051 L-H3: an empty workspace MUST return identical verdict
+    /// regardless of phase tracking — both paths fold zero phase
+    /// mismatches и both reach `Verdict::Empty` for total=0.
+    #[tokio::test]
+    async fn health_report_with_phase_matches_legacy_for_empty_workspace() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let legacy = health_report(&store).await.unwrap();
+        let (with_phase, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+
+        assert_eq!(
+            legacy.verdict, with_phase.verdict,
+            "L-H3: legacy and phase-aware paths must agree on verdict for same workspace"
+        );
+        assert_eq!(legacy.verdict, Verdict::Empty);
+        assert!(
+            mismatches.is_empty(),
+            "empty workspace has no active records → no phase mismatches possible"
+        );
+    }
+
+    /// PROB-056 closure — `partial_verdict` equals `verdict` for the
+    /// `health_report` legacy path (both computed с phase_mismatches=0).
+    /// Regression guard для the contract documented on the field.
+    #[tokio::test]
+    async fn health_report_partial_verdict_equals_verdict_when_no_phase() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let report = health_report(&store).await.unwrap();
+        assert_eq!(
+            report.verdict, report.partial_verdict,
+            "PROB-056: legacy health_report has no phase context — verdict must == partial_verdict"
+        );
+    }
+
+    /// PROB-056 closure — `partial_verdict` and `verdict` may diverge
+    /// after `health_report_with_phase` if any phase mismatches were
+    /// folded. With zero mismatches they remain equal (regression guard
+    /// для the typical-case fast path).
+    #[tokio::test]
+    async fn health_report_with_phase_partial_verdict_invariant() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+
+        let (report, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+        if mismatches.is_empty() {
+            assert_eq!(
+                report.verdict, report.partial_verdict,
+                "PROB-056: zero phase mismatches → verdict == partial_verdict"
+            );
+        }
+        // partial_verdict MUST always equal the legacy compute even when
+        // verdict диverges due to folded phase context.
+        let legacy = health_report(&store).await.unwrap();
+        assert_eq!(
+            report.partial_verdict, legacy.verdict,
+            "PROB-056: partial_verdict on with_phase == verdict on legacy (same input → same partial)"
+        );
+    }
+
+    /// PROB-051 L-H3: when phase tracking emits zero mismatches (typical
+    /// case — fresh workspace, no phase state files), the phase-aware
+    /// path produces a verdict identical к the legacy path. Regression
+    /// guard against future drift between the two folding paths.
+    #[tokio::test]
+    async fn health_report_with_phase_matches_legacy_when_no_mismatches() {
+        use crate::db::store::NewArtifact;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws).await.unwrap();
+        // Seed a single active PRD with no phase state file → zero
+        // mismatches even with tracking enabled.
+        store
+            .create_artifact_for_test(&NewArtifact {
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "active".to_string(),
+                title: "Verdict consistency seed".to_string(),
+                body: "## Problem\nReal text.\n\n## Goals\nReal goals.\n".to_string(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let legacy = health_report(&store).await.unwrap();
+        let (with_phase, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+
+        assert_eq!(
+            legacy.verdict, with_phase.verdict,
+            "L-H3: zero phase mismatches → verdicts match"
+        );
+        assert!(mismatches.is_empty(), "no phase state file → no mismatches");
     }
 }

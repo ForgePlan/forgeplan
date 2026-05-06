@@ -390,9 +390,20 @@ async fn run_smart(
             query
         );
         for r in &results {
+            // PROB-032 fix: pre-fix displayed `r.keyword_score` (substring
+            // match) but `combined_score` actually uses
+            // `max(bm25_score, keyword_score)`. When a query matched via BM25
+            // tokenization but had no substring presence (e.g. "auth" matches
+            // "authentication" via stemming but not substring), `kw=0.0` was
+            // shown despite the keyword channel contributing the entire base
+            // score — total > 0 with all displayed components 0.0. Display
+            // the MAX of both channels so the breakdown reflects the actual
+            // contributor. Precision bumped к {:.2} so small contributions
+            // (0.02–0.09) no longer round-down к 0.0.
+            let kw_channel = r.bm25_score.max(r.keyword_score);
             let signals = format!(
-                "kw={:.1} sem={:.1} r={:.1} g={:.1}",
-                r.keyword_score, r.semantic_score, r.r_eff, r.graph_centrality
+                "kw={:.2} sem={:.2} r={:.2} g={:.2}",
+                kw_channel, r.semantic_score, r.r_eff, r.graph_centrality
             );
             println!(
                 "  {:.2}  {} [{}|{}] \"{}\"",
