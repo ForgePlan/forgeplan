@@ -5,14 +5,29 @@ use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let store = common::store().await?;
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", id))?;
+    // PROB-060 / SPEC-005 Phase 1.5 — `forgeplan get` accepts both display
+    // id (`PRD-074`, `prd-074`, `Prd-74`) and slug form (`prd-auth-system`).
+    // Resolver maps either form → canonical DB id; None means no match by
+    // any path. Audit Phase 1.5 H1: removed redundant `unwrap_or_else(id)`
+    // fallback — resolver already covers all legitimate paths.
+    // ADR-012 invariants I-3 + I-4 enforcement.
+    let record = match store.resolve_id(id).await? {
+        Some(canonical) => store.get_record(&canonical).await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Artifact resolved to '{canonical}' but get_record missed (race?)\nFix: forgeplan list"
+            )
+        })?,
+        None => anyhow::bail!("Artifact '{id}' not found\nFix: forgeplan list"),
+    };
 
     // Contextual hints — compute up front so both text and JSON paths emit them.
-    let relations = store.get_relations(id).await.unwrap_or_default();
-    let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
+    // Use canonical id everywhere downstream so relation lookups also work
+    // when caller passed slug.
+    let relations = store.get_relations(&record.id).await.unwrap_or_default();
+    let incoming = store
+        .get_incoming_relations(&record.id)
+        .await
+        .unwrap_or_default();
     let has_links = !relations.is_empty() || !incoming.is_empty();
     let kind: forgeplan_core::artifact::types::ArtifactKind = record
         .kind

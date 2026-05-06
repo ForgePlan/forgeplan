@@ -111,6 +111,32 @@ impl ArtifactKind {
     pub fn is_memory(&self) -> bool {
         matches!(self, Self::Memory)
     }
+
+    /// Map a slug prefix (lowercase, no trailing dash) back to [`ArtifactKind`].
+    ///
+    /// PROB-060 / SPEC-005 Phase 1.5: `resolve_id` accepts slug-form input
+    /// like `prd-auth-system` and needs to determine which kind's records
+    /// to scan for the slug field.
+    ///
+    /// Note: slug prefixes diverge from `from_str` aliases — slug uses
+    /// `prob` (not `problem`), `sol` (not `solution`), `evid` (not
+    /// `evidence`), `ref` (not `refresh`), `mem` (not `memory`).
+    pub fn from_slug_prefix(prefix: &str) -> Option<Self> {
+        match prefix {
+            "prd" => Some(Self::Prd),
+            "rfc" => Some(Self::Rfc),
+            "adr" => Some(Self::Adr),
+            "epic" => Some(Self::Epic),
+            "spec" => Some(Self::Spec),
+            "prob" => Some(Self::ProblemCard),
+            "sol" => Some(Self::SolutionPortfolio),
+            "evid" => Some(Self::EvidencePack),
+            "note" => Some(Self::Note),
+            "ref" => Some(Self::RefreshReport),
+            "mem" => Some(Self::Memory),
+            _ => None,
+        }
+    }
 }
 
 /// Convert title to filename slug — ASCII-only.
@@ -709,6 +735,48 @@ mod tests {
             err.contains("must be lowercase ASCII"),
             "expected ASCII error first, got: {err}"
         );
+    }
+
+    // PROB-060 / SPEC-005 Phase 1.5 — slug prefix mapping back to kind.
+
+    #[test]
+    fn from_slug_prefix_round_trips_all_kinds() {
+        let pairs = [
+            ("prd", ArtifactKind::Prd),
+            ("rfc", ArtifactKind::Rfc),
+            ("adr", ArtifactKind::Adr),
+            ("epic", ArtifactKind::Epic),
+            ("spec", ArtifactKind::Spec),
+            ("prob", ArtifactKind::ProblemCard),
+            ("sol", ArtifactKind::SolutionPortfolio),
+            ("evid", ArtifactKind::EvidencePack),
+            ("note", ArtifactKind::Note),
+            ("ref", ArtifactKind::RefreshReport),
+            ("mem", ArtifactKind::Memory),
+        ];
+        for (prefix, expected_kind) in pairs {
+            assert_eq!(ArtifactKind::from_slug_prefix(prefix), Some(expected_kind));
+        }
+    }
+
+    #[test]
+    fn from_slug_prefix_rejects_unknown() {
+        assert_eq!(ArtifactKind::from_slug_prefix("foo"), None);
+        assert_eq!(ArtifactKind::from_slug_prefix(""), None);
+        assert_eq!(ArtifactKind::from_slug_prefix("PRD"), None); // case-sensitive
+        assert_eq!(ArtifactKind::from_slug_prefix("problem"), None); // alias-form, not slug-form
+    }
+
+    #[test]
+    fn from_slug_prefix_covers_every_valid_kind_prefix() {
+        // Drift defense: every entry in VALID_KIND_PREFIXES must round-trip
+        // through from_slug_prefix back to a real ArtifactKind.
+        for prefix in VALID_KIND_PREFIXES {
+            assert!(
+                ArtifactKind::from_slug_prefix(prefix).is_some(),
+                "VALID_KIND_PREFIXES entry {prefix:?} has no from_slug_prefix mapping"
+            );
+        }
     }
 
     #[test]
