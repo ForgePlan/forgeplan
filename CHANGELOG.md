@@ -9,6 +9,48 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed (Wave 3 batch closure — PROB-027 + PROB-030 + PROB-033 + PROB-038)
+
+- **PROB-027 ✅ verified-already-closed** — `forgeplan reindex` now
+  rebuilds LanceDB from scratch when `lance/` dir missing. Closure
+  shipped в earlier sprint (`LanceStore::init()` instead of `open()`
+  in `reindex.rs:35`). E2E verified: `rm -rf .forgeplan/lance && forgeplan
+  reindex` recreates table + repopulates от .md files.
+- **PROB-030 ✅ verified-already-closed** — BM25 prefix search regression.
+  Closure shipped: `combined_score` uses `bm25_norm.max(keyword_score)`
+  at smart.rs:153 (substring fallback already в place). E2E verified:
+  `forgeplan search "auth"` returns 2 PRDs titled "Authentication ..."
+  с kw=0.80.
+- **PROB-033 ✅ verified-already-closed** — `forgeplan new evidence` no
+  longer blocked by session state machine on fresh workspace. E2E
+  verified: fresh init → new prd → new evidence works without
+  `--force`.
+- **PROB-038 ✅ NEW closure** — Validator false-positive on tech names
+  в HTML comments. Pre-PROB-038 `find_tech_leakage()` scanned raw text
+  including `<!-- -->` comments и code fences. Template guidance comments
+  с phrases like "DON'T leak React/Django/AWS into FR" были false-flagged.
+
+  **Fix**: new private `strip_non_prose_for_leakage()` helper performs
+  three passes before tech-leakage scanning:
+  1. Strip HTML comments (`<!-- ... -->`, single и multi-line)
+     replacing с blank lines чтобы preserve line numbers
+  2. Strip fenced code blocks (\`\`\`...\`\`\`)
+  3. Strip inline backtick code (\`Tech\`)
+
+  Real prose leakage в FR/NFR continues to trigger — only template
+  guidance + code/quote contexts are immune.
+
+  **E2E impact**: fresh PRD via `forgeplan new prd "Auth Test"` validate
+  output went от 7 false positives (`aws, django, docker, oauth2,
+  postgresql, react, redis, rest`) → 1 residual (`OAuth2` mention в
+  template's NFR-003 example row — actual prose, not in scope of this
+  fix). 86% reduction.
+
+  **Tests**: +5 unit tests in `validation::checks::tests`
+  (single-line / multi-line HTML / fenced code / inline backticks /
+  regression guard). Suite: lib 1477 → 1483 PASS, 0 failures across
+  38 suites.
+
 ### Fixed (Search UX — PROB-032 closure, score breakdown lies)
 
 - **PROB-032 ✅ — `forgeplan search` score breakdown coherent с total**.
