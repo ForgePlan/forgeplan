@@ -779,6 +779,101 @@ mod tests {
         }
     }
 
+    // Phase 1.6 — slug roundtrip property test (audit code-analyzer L3).
+    //
+    // Without external proptest dependency: generate 200 ASCII-letter
+    // titles of varying length and verify the invariant
+    //   slug_from_kind_title(kind, title).is_ok() ⟹ validate_slug(slug).is_ok()
+    // for every variant. Catches truncation edge cases, reserved-prefix
+    // escape correctness, and validation/builder consistency.
+
+    #[test]
+    fn slug_roundtrip_property_holds_for_all_kinds() {
+        let all_kinds = [
+            ArtifactKind::Prd,
+            ArtifactKind::Rfc,
+            ArtifactKind::Adr,
+            ArtifactKind::Epic,
+            ArtifactKind::Spec,
+            ArtifactKind::ProblemCard,
+            ArtifactKind::SolutionPortfolio,
+            ArtifactKind::EvidencePack,
+            ArtifactKind::Note,
+            ArtifactKind::RefreshReport,
+            ArtifactKind::Memory,
+        ];
+
+        // Deterministic-pseudo-random titles using a simple linear congruential
+        // generator. Avoids external rand dep while giving enough variety.
+        let mut state: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        let mut next_byte = || -> u8 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) & 0xFF) as u8
+        };
+
+        for kind in &all_kinds {
+            for trial in 0..200 {
+                // Generate title of variable length 1..120 chars from
+                // ASCII letter alphabet + space (ASCII-only is the slugify
+                // contract — non-ASCII would fail upstream).
+                let len = 1 + (trial % 120);
+                let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ ";
+                let title: String = (0..len)
+                    .map(|_| alphabet[next_byte() as usize % alphabet.len()] as char)
+                    .collect();
+
+                match slug_from_kind_title(kind, &title) {
+                    Ok(slug) => {
+                        // Invariant: every successful build must validate.
+                        assert!(
+                            validate_slug(&slug).is_ok(),
+                            "kind {:?} title {:?} → slug {:?} fails validate_slug",
+                            kind,
+                            title,
+                            slug
+                        );
+                        // Invariant: slug starts with expected kind prefix.
+                        let expected_prefix = format!("{}-", kind.prefix().trim_end_matches('-'));
+                        assert!(
+                            slug.starts_with(&expected_prefix),
+                            "kind {:?} title {:?} → slug {:?} does not start with {:?}",
+                            kind,
+                            title,
+                            slug,
+                            expected_prefix
+                        );
+                        // Invariant: total length within bounds.
+                        assert!(
+                            slug.len() >= MIN_SLUG_LEN && slug.len() <= MAX_SLUG_LEN,
+                            "kind {:?} title {:?} → slug {:?} length {} out of bounds",
+                            kind,
+                            title,
+                            slug,
+                            slug.len()
+                        );
+                    }
+                    Err(_) => {
+                        // Build can legitimately fail only when title
+                        // slugifies to empty (all spaces or all non-ASCII;
+                        // alphabet here is ASCII-only so non-ASCII path
+                        // is unreachable). Reserved prefixes are escaped
+                        // via x- in slug_from_kind_title and don't fail.
+                        let title_slug = slugify(&title);
+                        assert!(
+                            title_slug.is_empty(),
+                            "unexpected build failure for kind {:?} title {:?}: title_slug = {:?}",
+                            kind,
+                            title,
+                            title_slug
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn audit_l1_kind_prefixes_in_sync_with_artifact_kind() {
         // Defense against drift: every ArtifactKind variant's prefix (minus

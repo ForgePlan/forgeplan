@@ -57,9 +57,19 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         hints_vec.insert(0, h);
     }
 
+    // PROB-060 / SPEC-005 Phase 1.4 — slug lives in the body's YAML
+    // frontmatter (the template-rendered block, not the DB-derived
+    // synthetic one). Parse the body to extract it; non-fatal on failure.
+    let slug_for_json = forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body)
+        .ok()
+        .and_then(|(fm, _)| {
+            forgeplan_core::artifact::frontmatter::slug_from_frontmatter(&fm).map(|s| s.to_string())
+        });
+
     if json {
         let json_data = serde_json::json!({
             "id": record.id,
+            "slug": slug_for_json,
             "kind": record.kind,
             "status": record.status,
             "title": record.title,
@@ -77,8 +87,13 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // PROB-060 / SPEC-005 Phase 1.4 — show slug in CLI output when present.
+    // Reuse the same body-parse result computed above for JSON.
     ui::header(&record.id, &record.title);
     ui::kv("Kind", &record.kind);
+    if let Some(s) = &slug_for_json {
+        ui::kv("Slug", s);
+    }
     ui::kv("Status", &ui::styled_status(&record.status));
     ui::kv("Depth", &ui::styled_depth(&record.depth));
     if let Some(ref author) = record.author {
