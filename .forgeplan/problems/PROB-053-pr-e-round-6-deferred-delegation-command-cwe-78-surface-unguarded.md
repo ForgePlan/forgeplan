@@ -2,12 +2,12 @@
 depth: standard
 id: PROB-053
 kind: problem
-last_modified_at: 2026-05-05T20:38:24.718970+00:00
+last_modified_at: 2026-05-05T22:46:45.292886+00:00
 last_modified_by: claude-code/2.1.128
 links:
 - target: PROB-050
   relation: based_on
-status: draft
+status: active
 title: PR-E Round 6 deferred — Delegation::Command CWE-78 surface unguarded
 ---
 
@@ -68,24 +68,57 @@ Pre-existing surface (Delegation::Command predates PR-E refactor).
 
 ## Acceptance Criteria
 
-- [ ] `forgeplan playbook run` learns `--allow-shell` flag (boolean,
+- [x] `forgeplan playbook run` learns `--allow-shell` flag (boolean,
   default `false`). When false, `Delegation::Command` steps refuse with
-  `Error:` + `Fix:` markers per Hint Protocol (PRD-071).
-- [ ] Workspace config (`config.yaml`) learns `[playbook] allow_shell =
-  true` opt-in for trusted-local workflows.
-- [ ] Marketplace signing scheme designed (or explicitly deferred to
-  follow-up — but `Delegation::Command` from unsigned-source playbooks
-  rejects regardless of `--allow-shell` until then).
-- [ ] User-visible stderr warning before `Delegation::Command` executes,
-  exactly: `! shell-exec: <cmd[0]> [N args]`.
-- [ ] Updated audit.yaml / release.yaml / brownfield-docs.yaml docs to
-  show the `--allow-shell` requirement.
-- [ ] CHANGELOG entry under **Security** section + migration note for
-  operators.
+  `Error:` + `Fix:` markers per Hint Protocol (PRD-071). **Closed by
+  PRD-074 Phase 2 + Round 7 HIGH-A (refuse-path hint corrected to
+  `--yes --allow-shell`).**
+- [x] Workspace config (`config.yaml`) learns `[playbook] allow_shell =
+  true` opt-in for trusted-local workflows. **Closed by PRD-074 Phase 3
+  + Round 7 HIGH-B (config-only path emits dedicated banner).**
+- [x] Marketplace signing scheme **explicitly deferred** to follow-up —
+  see PRD-074 §Non-Goals. Default-deny (current closure) prevents
+  shell-exec from any source until a per-invocation opt-in is provided;
+  signing flow will gate `--allow-shell` itself when marketplace fetch
+  ships.
+- [x] User-visible stderr warning before `Delegation::Command` executes.
+  **Closed by PRD-074 Phase 1**: `! shell-exec: <full argv>` rendered
+  via `escape_debug` (Round 7 HIGH-F closes terminal-injection,
+  CWE-117 / CWE-150). Capped at 4 KiB rendered.
+- [x] Updated `release.yaml` reference doc to show `--allow-shell`
+  requirement. (audit.yaml + brownfield-docs.yaml use Plugin/Skill
+  dispatchers; не affected.)
+- [x] CHANGELOG entry under **Security** section + migration note for
+  operators. **Closed in this PR** — see CHANGELOG `[Unreleased]` block.
+
+## Closure summary (2026-05-06, Round 7 audit applied)
+
+- 3 parallel adversarial agents (architect, code-reviewer, security)
+  returned FIX-FIRST. 9+ findings closed in this PR; 7+ items deferred
+  to follow-up PROBs (out-of-scope for `Delegation::Command` gate
+  itself).
+- `validate_command_delegate_security` parameter renamed `yes_flag` →
+  `allow_shell`. `SecurityError::ShellRequiresYes` renamed →
+  `ShellRequiresAllowShell` (deprecated alias provided for
+  one-release migration window).
+- `ExecutorConfig` gained dedicated `allow_shell: bool` field
+  (independent от blanket `yes_flag`).
+- 1985 tests pass (+8 от Round 7: shell-exec warning escape, full-argv
+  render, pathological truncation, PlaybookConfig serde round-trip).
+- Real E2E PASS: refuse без `--allow-shell` (с `--yes`); success с
+  `--yes --allow-shell`; stderr `! shell-exec: /bin/echo hello`
+  visible.
 
 ## Refs
 
-- PR-E Round 6 audit (2026-05-05): security-expert agent MED-2
-- CHANGELOG.md (v0.29.0): "Deferred to v0.30.0" section
+- PR-E Round 6 audit (2026-05-05): security-expert agent MED-2 (origin)
+- PRD-074 (the closure scope) — `forgeplan get PRD-074`
+- RFC-008 (implementation phases) — `forgeplan get RFC-008`
+- CHANGELOG.md `[Unreleased]` (2026-05-06)
+- Round 7 audit findings tracked as TaskList items #30..#43 в the
+  closure session
 - ADR-011 §Security (Phase B Wave 1)
+
+
+
 

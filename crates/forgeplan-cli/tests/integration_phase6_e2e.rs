@@ -233,8 +233,11 @@ steps:
 "#;
     write_workspace_playbook(&tmp, "durable-trio", yaml);
 
+    // PROB-053 / PRD-074: Delegation::Command requires --allow-shell on
+    // top of --yes (the dedicated shell-exec gate, separate from the
+    // blanket "are you sure?" confirmation).
     forgeplan()
-        .args(["playbook", "run", "durable-trio", "--yes"])
+        .args(["playbook", "run", "durable-trio", "--yes", "--allow-shell"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -296,8 +299,15 @@ steps:
 "#;
     write_workspace_playbook(&tmp, "echo-subprocess", yaml);
 
+    // PROB-053 / PRD-074: Delegation::Command requires --allow-shell.
     forgeplan()
-        .args(["playbook", "run", "echo-subprocess", "--yes"])
+        .args([
+            "playbook",
+            "run",
+            "echo-subprocess",
+            "--yes",
+            "--allow-shell",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();

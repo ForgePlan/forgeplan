@@ -32,6 +32,28 @@ pub struct Config {
     /// roll back to pre-v0.23.0 behavior without recompiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<PhaseConfig>,
+    /// PRD-074 — playbook execution policy. Currently carries only
+    /// `allow_shell` opt-in for `Delegation::Command` (CWE-78 gate per
+    /// PROB-053). Block omitted from config → default-deny (operator
+    /// must pass `--allow-shell` per invocation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playbook: Option<PlaybookConfig>,
+}
+
+/// Playbook execution policy block (PRD-074 §FR-2).
+///
+/// Set `allow_shell = true` for trusted-local workflows (audit.yaml,
+/// release.yaml) so operators don't need `--allow-shell` on every
+/// `forgeplan playbook run` invocation. **DO NOT set in workspaces
+/// that fetch playbooks from network / marketplace** — the per-invocation
+/// `--allow-shell` flag is the opt-out for that case.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlaybookConfig {
+    /// When `true`, `Delegation::Command` steps execute without requiring
+    /// `--allow-shell` on the CLI. Default `false` — workspace stays
+    /// safe-by-default. Mirrors the `--allow-shell` flag semantically.
+    #[serde(default)]
+    pub allow_shell: bool,
 }
 
 /// Phase tracking feature-flag block. Missing block = default behavior
@@ -163,6 +185,7 @@ impl Default for Config {
             fpf: None,
             integrity: IntegrityConfig::default(),
             phase: None,
+            playbook: None,
         }
     }
 }
@@ -474,6 +497,36 @@ mod integrity_tests {
         let c: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(c.integrity.mcp_max_title_len, 256);
         assert_eq!(c.integrity.mcp_max_body_len, 1_048_576);
+    }
+
+    /// PROB-053 audit Round 7 MED-5 + HIGH-2 regression guard:
+    /// legacy config (без `[playbook]` block) parses к `playbook: None`,
+    /// effective `allow_shell` defaults к `false`. Forward-compat insurance
+    /// против future `serde(default, skip_serializing_if = ...)` regressions.
+    #[test]
+    fn test_config_yaml_omitted_playbook_defaults_to_none() {
+        let yaml = "version: 1\nproject_name: test\ndefault_depth: standard\nid_digits: 3\ncreated_at: 2026-01-01\n";
+        let c: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(c.playbook.is_none(), "omitted playbook block → None");
+    }
+
+    /// PROB-053 audit Round 7 MED-5: explicit `[playbook] allow_shell = true`
+    /// roundtrips через serde и сохраняет boolean.
+    #[test]
+    fn test_config_yaml_playbook_allow_shell_true_roundtrips() {
+        let yaml = "version: 1\nproject_name: test\ndefault_depth: standard\nid_digits: 3\ncreated_at: 2026-01-01\nplaybook:\n  allow_shell: true\n";
+        let c: Config = serde_yaml::from_str(yaml).unwrap();
+        let p = c.playbook.expect("playbook block parsed");
+        assert!(p.allow_shell, "allow_shell: true preserved");
+    }
+
+    /// Empty `playbook:` block parses к default (`allow_shell: false`).
+    #[test]
+    fn test_config_yaml_empty_playbook_defaults_allow_shell_false() {
+        let yaml = "version: 1\nproject_name: test\ndefault_depth: standard\nid_digits: 3\ncreated_at: 2026-01-01\nplaybook: {}\n";
+        let c: Config = serde_yaml::from_str(yaml).unwrap();
+        let p = c.playbook.expect("empty playbook block parsed as Some");
+        assert!(!p.allow_shell, "empty block → default false");
     }
 
     #[test]

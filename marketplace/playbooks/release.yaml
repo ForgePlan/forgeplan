@@ -37,6 +37,15 @@
 #   - ADR-009 — Forgeplan as orchestrator
 #   - ADR-011 — claude --print dispatcher (not used by this playbook —
 #     pure forgeplan_core + command)
+#   - PRD-074 — shell-execution gate (PROB-053). This playbook contains
+#     `Delegation::Command` steps (cargo, gh, git, …); operators MUST
+#     invoke with `--allow-shell` on top of `--yes`, OR set
+#     `[playbook] allow_shell = true` in `.forgeplan/config.yaml` for
+#     trusted-local repos. Default-deny prevents accidental shell exec
+#     when this playbook is fetched from a marketplace mirror.
+#
+# Invocation:
+#   forgeplan playbook run release --yes --allow-shell
 # =====================================================================
 
 schema_version: "1.0"

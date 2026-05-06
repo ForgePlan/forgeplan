@@ -794,6 +794,12 @@ enum PlaybookAction {
         /// Confirm execution (required — prevents accidental runs)
         #[arg(long)]
         yes: bool,
+        /// Allow `Delegation::Command` (shell-exec) steps to run.
+        /// PROB-053 / PRD-074 §FR-1: default-deny gate for the CWE-78
+        /// surface. Implies `--yes`. Alternative: set `[playbook]
+        /// allow_shell = true` in workspace `config.yaml`.
+        #[arg(long)]
+        allow_shell: bool,
         /// Print steps without executing
         #[arg(long)]
         dry_run: bool,
@@ -1256,10 +1262,14 @@ async fn main() -> anyhow::Result<()> {
             PlaybookAction::Run {
                 target,
                 yes,
+                allow_shell,
                 dry_run,
                 step,
                 json,
-            } => commands::playbook::run_execute(&target, yes, dry_run, step, json).await,
+            } => {
+                commands::playbook::run_execute(&target, yes, allow_shell, dry_run, step, json)
+                    .await
+            }
         },
         Commands::Ingest {
             mapping,

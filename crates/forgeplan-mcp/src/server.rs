@@ -6534,8 +6534,12 @@ impl ForgeplanServer {
     #[tool(
         description = "Run a playbook end-to-end. Wave 4 wires the production \
                        plugin/agent/skill/command/forgeplan_core dispatchers via `RoutingDispatcher`. \
-                       Refuses without `yes: true` (ADR-009 security gate). Use `dry_run: true` \
-                       to enumerate steps without invoking dispatchers.",
+                       Refuses without `yes: true` (ADR-009 security gate). Playbooks containing \
+                       `Delegation::Command` (shell-exec) steps additionally require \
+                       `allow_shell: true` (PRD-074 / PROB-053, default-deny). Workspaces can \
+                       pre-approve trusted-local shell exec via `[playbook] allow_shell = true` \
+                       in `.forgeplan/config.yaml`. Use `dry_run: true` to enumerate steps without \
+                       invoking dispatchers.",
         annotations(
             title = "Run Playbook",
             read_only_hint = false,
@@ -6674,8 +6678,32 @@ impl ForgeplanServer {
         };
 
         let dispatcher = RoutingDispatcher::new(project_root.clone());
+
+        // PRD-074 §FR-2+§FR-6: resolve effective allow-shell signal from
+        // MCP `allow_shell` parameter OR workspace config opt-in. Mirrors
+        // the CLI surface (commands::playbook::run_execute). PROB-053
+        // closure.
+        //
+        // Audit Round 7 HIGH-D fix: log on parse-error explicitly (was:
+        // silent .ok() swallow caused stale config to silently regress
+        // workspace_allow_shell to false — same failure-mode class as
+        // PROB-035 / PROB-039).
+        let workspace_allow_shell = match forgeplan_core::workspace::load_config(&ws) {
+            Ok(c) => c.playbook.map(|pcfg| pcfg.allow_shell).unwrap_or(false),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to read workspace config (`.forgeplan/config.yaml`); \
+                     [playbook] allow_shell opt-in ignored"
+                );
+                false
+            }
+        };
+        let effective_allow_shell = p.allow_shell || workspace_allow_shell;
+
         let cfg = ExecutorConfig {
             yes_flag: p.yes,
+            allow_shell: effective_allow_shell,
             // load_playbook already validated; skip duplicate work.
             skip_revalidation: true,
             // HIGH-S5: forward the optional `step` arg so MCP-driven runs
@@ -9193,6 +9221,7 @@ steps:
                 dry_run: false,
                 step: None,
                 yes: false,
+                allow_shell: false,
             }))
             .await
             .unwrap();
@@ -9530,6 +9559,7 @@ steps:
                 dry_run: false,
                 step: Some(2), // skip s1, run s2..s3
                 yes: true,
+                allow_shell: false,
             }))
             .await
             .unwrap();

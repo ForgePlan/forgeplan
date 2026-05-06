@@ -42,8 +42,15 @@ use super::types::{OnError, Playbook, Step};
 /// Per-run executor configuration.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutorConfig {
-    /// User confirmed `--yes` for opt-in shell delegates (PRD-065 FR-3).
+    /// User confirmed `--yes` to run a playbook (blanket "are you sure?"
+    /// gate, ADR-009 / SPEC-003 §"delegate_to"). Required for any execution.
     pub yes_flag: bool,
+    /// User confirmed `--allow-shell` (or set `[playbook] allow_shell = true`
+    /// in workspace config) — opt-in for `Delegation::Command` shell
+    /// execution (PRD-074 §FR-1+§FR-2, PROB-053 closure). Distinct from
+    /// `yes_flag`: a playbook with no shell steps needs `--yes` only;
+    /// a playbook with `Delegation::Command` needs both.
+    pub allow_shell: bool,
     /// If `true`, skip the structural re-validation pass (cycles / unknown
     /// refs / empty steps) at the start of `run`. Use when `Playbook` was
     /// already vetted by [`crate::playbook::loader::load_playbook`].
@@ -195,6 +202,7 @@ impl<D: Dispatcher> Executor<D> {
                     "title": playbook.title,
                     "step_count": playbook.steps.len(),
                     "yes_flag": self.config.yes_flag,
+                    "allow_shell": self.config.allow_shell,
                 }),
             })
             .await?;
@@ -290,8 +298,13 @@ impl<D: Dispatcher> Executor<D> {
                 .await?;
             info!(step = %step.id, "step start");
 
-            // Security gate (Command without --yes).
-            if let Err(sec_err) = validate_command_delegate_security(step, self.config.yes_flag) {
+            // Security gate (Command without --allow-shell).
+            // PROB-053 closure: previously gated by `yes_flag` (blanket
+            // confirm), now uses dedicated `allow_shell` signal so a generic
+            // `--yes` for a non-shell playbook does not implicitly authorise
+            // shell execution should the playbook be modified later.
+            if let Err(sec_err) = validate_command_delegate_security(step, self.config.allow_shell)
+            {
                 let report = StepReport {
                     step_id: step.id.clone(),
                     status: StepStatus::Failed,
@@ -674,10 +687,11 @@ steps:
         assert!(pos_a < pos_b, "a must come before b: {calls:?}");
     }
 
-    /// `--yes` not passed → Command step refused with SecurityRefused-shaped
-    /// message in StepReport.
+    /// `--allow-shell` not passed → Command step refused with
+    /// SecurityRefused-shaped message in StepReport (PROB-053 closure:
+    /// pre-PROB-053 the gate read `--yes`; now reads `--allow-shell`).
     #[tokio::test]
-    async fn command_step_without_yes_is_refused() {
+    async fn command_step_without_allow_shell_is_refused() {
         let yaml = r#"
 schema_version: "1.0"
 name: shellish
@@ -691,7 +705,8 @@ steps:
         let pb = load_playbook(yaml).expect("loads");
         let mock = MockDispatcher::new();
         let cfg = ExecutorConfig {
-            yes_flag: false,
+            yes_flag: true,     // blanket confirm OK …
+            allow_shell: false, // … but no shell-exec opt-in → refuse
             skip_revalidation: false,
             start_step: None,
         };
@@ -700,7 +715,10 @@ steps:
         assert_eq!(report.failed, 1);
         assert_eq!(report.success, 0);
         let msg = report.per_step[0].message.as_deref().expect("message set");
-        assert!(msg.contains("--yes"), "msg should reference --yes: {msg}");
+        assert!(
+            msg.contains("--allow-shell"),
+            "msg should reference --allow-shell: {msg}"
+        );
     }
 
     /// Dispatcher transport error → step Failed + message captured.
@@ -813,6 +831,7 @@ steps:
         let mock = MockDispatcher::new();
         let cfg = ExecutorConfig {
             yes_flag: false,
+            allow_shell: false,
             skip_revalidation: false,
             start_step: Some(3),
         };
@@ -873,6 +892,7 @@ steps:
         let mock = MockDispatcher::new();
         let cfg = ExecutorConfig {
             yes_flag: false,
+            allow_shell: false,
             skip_revalidation: false,
             start_step: Some(1),
         };
@@ -896,6 +916,7 @@ steps:
         let pb = load_playbook(yaml).expect("loads");
         let cfg = ExecutorConfig {
             yes_flag: false,
+            allow_shell: false,
             skip_revalidation: false,
             start_step: Some(0),
         };
@@ -923,6 +944,7 @@ steps:
         let pb = load_playbook(yaml).expect("loads");
         let cfg = ExecutorConfig {
             yes_flag: false,
+            allow_shell: false,
             skip_revalidation: false,
             start_step: Some(99),
         };

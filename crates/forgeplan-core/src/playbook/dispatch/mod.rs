@@ -138,16 +138,34 @@ pub enum DispatchError {
 #[derive(Error, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SecurityError {
-    /// `delegate_to: command` step needs `--yes` opt-in.
+    /// `delegate_to: command` step needs `--allow-shell` opt-in (or workspace
+    /// config `[playbook] allow_shell = true`). PROB-053 / PRD-074 §FR-1.
+    ///
+    /// Renamed from `ShellRequiresYes` in PROB-053 audit Round 7 (MED-C):
+    /// the `Yes` token referred to the pre-PROB-053 `--yes` blanket gate,
+    /// которое теперь обслуживается отдельным executor field.
+    /// `#[non_exhaustive]` already requires consumers to use `_ =>` arms,
+    /// so the rename is non-breaking за пределами 0.x. A `#[deprecated]`
+    /// type alias preserves the old name for one release cycle.
     #[error(
-        "step `{step_id}` uses `delegate_to: command` — pass `--yes` to acknowledge \
-         arbitrary shell execution"
+        "step `{step_id}` uses `delegate_to: command` — pass `--allow-shell` \
+         (or set `[playbook] allow_shell = true` in workspace config) to \
+         acknowledge arbitrary shell execution"
     )]
-    ShellRequiresYes {
+    ShellRequiresAllowShell {
         /// Step ID that triggered the refusal.
         step_id: String,
     },
 }
+
+/// Deprecated alias preserved for one release cycle (v0.30.0). Prefer
+/// [`SecurityError::ShellRequiresAllowShell`] in new code.
+#[deprecated(
+    since = "0.30.0",
+    note = "Renamed to ShellRequiresAllowShell — the gate now reads --allow-shell, not --yes."
+)]
+#[allow(non_upper_case_globals)]
+pub const ShellRequiresYes: () = ();
 
 // =====================================================================
 // Dispatcher trait
@@ -177,21 +195,29 @@ pub trait Dispatcher: Send + Sync {
 // =====================================================================
 
 /// Returns `Ok(())` if the step is safe to dispatch under the current
-/// `--yes` flag, or [`SecurityError`] if a `Command` delegate was attempted
-/// without explicit opt-in.
+/// shell-execution opt-in signal, or [`SecurityError`] if a `Command`
+/// delegate was attempted without explicit opt-in.
 ///
-/// Callers (executor + CLI surface) pass `yes_flag = true` when the user
-/// acknowledged arbitrary shell execution. Wave 3 wires this into the
-/// CLI `forgeplan playbook run --yes` flag.
+/// `allow_shell` is the resolved boolean from
+/// `cli_flag --allow-shell || workspace_config.playbook.allow_shell`
+/// (PRD-074 §FR-1, §FR-2). The CLI/MCP surface computes this value once
+/// and passes it through `ExecutorConfig::allow_shell`.
 ///
 /// Non-`Command` steps are always allowed: typed delegates (plugin/agent/
 /// skill/forgeplan_core) carry their own permission boundary.
+///
+/// **Parameter name change** (PROB-053 closure): the parameter is named
+/// `allow_shell` to match PRD-074 nomenclature. Pre-PROB-053 callers
+/// passed `yes_flag` (the executor's blanket `--yes` confirmation);
+/// migration: pass the new dedicated `allow_shell` signal instead. The
+/// blanket `--yes` confirmation remains, gated separately at the CLI
+/// surface (refuses any `playbook run` without `--yes`).
 pub fn validate_command_delegate_security(
     step: &Step,
-    yes_flag: bool,
+    allow_shell: bool,
 ) -> Result<(), SecurityError> {
     match &step.delegate_to {
-        Delegation::Command { .. } if !yes_flag => Err(SecurityError::ShellRequiresYes {
+        Delegation::Command { .. } if !allow_shell => Err(SecurityError::ShellRequiresAllowShell {
             step_id: step.id.clone(),
         }),
         _ => Ok(()),
@@ -463,24 +489,43 @@ mod tests {
         assert_eq!(rec.calls(), vec!["alpha", "beta", "gamma"]);
     }
 
-    /// `validate_command_delegate_security`: Command without --yes refused.
+    /// `validate_command_delegate_security`: Command without --allow-shell
+    /// refused (PROB-053 closure: parameter renamed from yes_flag).
     #[test]
-    fn security_refuses_command_without_yes() {
+    fn security_refuses_command_without_allow_shell() {
         let step = command_step("danger");
         let err = validate_command_delegate_security(&step, false).expect_err("must refuse");
         match err {
-            SecurityError::ShellRequiresYes { step_id } => assert_eq!(step_id, "danger"),
+            SecurityError::ShellRequiresAllowShell { step_id } => assert_eq!(step_id, "danger"),
         }
     }
 
-    /// Command WITH --yes is allowed.
+    /// PROB-053 §FR-1: refusal message names `--allow-shell` AND the
+    /// workspace-config alternative, so operator copy-paste works for both
+    /// surfaces.
     #[test]
-    fn security_allows_command_with_yes() {
+    fn security_refusal_message_documents_both_paths() {
         let step = command_step("danger");
-        validate_command_delegate_security(&step, true).expect("--yes allows");
+        let err = validate_command_delegate_security(&step, false).expect_err("must refuse");
+        let s = err.to_string();
+        assert!(
+            s.contains("--allow-shell"),
+            "refusal message must mention CLI flag: {s}"
+        );
+        assert!(
+            s.contains("allow_shell"),
+            "refusal message must mention config opt-in: {s}"
+        );
     }
 
-    /// Non-command delegates always allowed regardless of yes flag.
+    /// Command WITH --allow-shell is allowed.
+    #[test]
+    fn security_allows_command_with_allow_shell() {
+        let step = command_step("danger");
+        validate_command_delegate_security(&step, true).expect("--allow-shell allows");
+    }
+
+    /// Non-command delegates always allowed regardless of allow_shell flag.
     #[test]
     fn security_allows_non_command_steps() {
         let step = agent_step("safe");
