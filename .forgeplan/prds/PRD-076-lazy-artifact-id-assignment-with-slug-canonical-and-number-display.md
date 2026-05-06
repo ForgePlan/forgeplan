@@ -30,15 +30,31 @@ stepsCompleted: []
 
 ```
 Phase 0  ████░░░░░░░░░░░░░░░░░░░░  1/4   ( 25%)  Foundation (0.3 done; 0.1, 0.2, 0.4 pending)
-Phase 1  ████████████░░░░░░░░░░░░  3/6   ( 50%)  Core schema + CLI (1.1, 1.2, 1.3 done)
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP
+Phase 1  ████████████████████████  6/6   (100%)  Core schema + CLI (1.1-1.6 done; 1.5b extended)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP — blocked by Phase 0b EVID
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Web + Skills
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  Migration + activation
 ─────────────────────────────────────────────────
-TOTAL                               4/24  ( 17%)
+TOTAL                               7/24  ( 29%)
 ```
 
-**Cross-phase audit 2026-05-06 update:** Phase 1.1, 1.2, 1.3 landed на feat/prob-060-id-assignment branch; Phase 0 EVID-A (CI-bot prototype + stress-test) и EVID-C (migration dry-run) — pending; Phase 0.4 (CLAUDE.md update) — pending.
+**Update 2026-05-07** (after iterative phase delivery + cross-phase audit):
+
+- ✅ Phase 1.1 — slug validation/builder/render in `forgeplan-core/src/artifact/types.rs` + frontmatter accessors (`cc0b398`)
+- ✅ Phase 1.2 — `forgeplan new` populates slug+predicted+assigned in frontmatter (`2ce3964`)
+- ✅ Phase 1.3 — pre-create slug check vs `origin/dev` via `git fetch+ls-tree` (`3a9c697`)
+- ✅ Cross-phase audit closure (3 parallel agents — methodology + code + security) (`5900add`)
+- ✅ Phase 1.5 — `LanceStore::resolve_id` accepts both display id and slug form, wired into `forgeplan get` (`40bcf80`)
+- ✅ Phase 1.5b — resolver wired into `validate`, `activate`, `deprecate`, `link`, `score` (`4c37ddd`)
+- ✅ Phase 1.4 — `Slug:` line in `forgeplan get` output (text + JSON) (`a330907`)
+- ✅ Phase 1.6 — slug roundtrip property test (2200 trials × 11 kinds) (`a330907`)
+
+**Remaining before Phase 2 GA:**
+- ⏳ Phase 0.1 EVID-A — CI-bot prototype + 10×concurrent-merge stress-test
+- ⏳ Phase 0.2 EVID-C — migration dry-run on 298 existing artifacts
+- ⏳ Phase 0.4 — CLAUDE.md "Working with artifact IDs" section
+- ⏳ Phase 1.4 follow-up — slug column in `list`, `health`, `search` outputs (low priority — Phase 1.x cosmetic)
+- ⏳ Phase 1.5b extension — resolver wired into remaining 15+ commands (`update`, `reason`, `decompose`, `delete`, `renew`, `reopen`, `supersede`, etc.) — cleanup pass
 
 ---
 

@@ -25,14 +25,16 @@ depth: deep
 ## Progress
 
 ```
-Phase 0  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Foundation (EVID, docs, fixture)
-Phase 1  ░░░░░░░░░░░░░░░░░░░░░░░░  0/6   (  0%)  Core schema + CLI
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP
+Phase 0  ████░░░░░░░░░░░░░░░░░░░░  1/4   ( 25%)  Foundation (0.3 done; 0.1+0.2+0.4 pending)
+Phase 1  ████████████████████████  6/6   (100%)  Core schema + CLI (1.1-1.6 done)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP (blocked by Phase 0b EVID)
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  ForgePlanWeb + Skills
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  Migration + activation
 ─────────────────────────────────────────────────
-TOTAL                               0/24  (  0%)
+TOTAL                               7/24  ( 29%)
 ```
+
+**Status 2026-05-07** — Phase 1 ships complete via 9 commits on `feat/prob-060-id-assignment`. Phase 2 onset blocked by Phase 0b EVID-A (CI-bot prototype + stress-test) and EVID-C (legacy migration dry-run). See PRD-076 §Progress for commit-level breakdown.
 
 ---
 
