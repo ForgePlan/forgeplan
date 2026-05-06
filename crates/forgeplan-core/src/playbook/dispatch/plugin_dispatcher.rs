@@ -148,8 +148,15 @@ impl PluginDispatcher {
     /// Returns `None` if neither resolves — caller maps this to
     /// [`DispatchError::DelegateMissing`].
     fn resolve_binary(&self) -> Option<PathBuf> {
-        if let Some(path) = &self.claude_binary {
-            return Some(path.clone());
+        // PROB-052 Round 7 audit HIGH-1 closure: route explicit override
+        // through `resolve_safe_path` (canonicalize + Unix perm gate) so
+        // the symmetric AgentDispatcher hardening applies here too.
+        // Pre-Round-7 PluginDispatcher was even thinner than AgentDispatcher
+        // — it returned the override unconditionally без even is_file().
+        if let Some(path) = &self.claude_binary
+            && let Ok(Some(real)) = super::helpers::resolve_safe_path(path)
+        {
+            return Some(real);
         }
         super::helpers::which_in_path(DEFAULT_CLAUDE_BINARY)
     }
@@ -463,16 +470,28 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// `with_claude_binary` injection wins over `$PATH` lookup.
+    /// Post-PROB-052 the override path goes through `resolve_safe_path`
+    /// which `canonicalize`s the input — on systems where `/bin/echo` is
+    /// itself a symlink to `/usr/bin/echo` (Debian/Ubuntu) the resolved
+    /// value is the canonical real target, not the input symlink. Compare
+    /// against the canonicalized expected path to keep this test cross-distro.
     #[test]
     fn plugin_dispatcher_resolve_binary_prefers_explicit_override() {
         let echo = PathBuf::from("/bin/echo");
         if !echo.is_file() {
             return;
         }
+        let echo_canonical = match std::fs::canonicalize(&echo) {
+            Ok(p) => p,
+            Err(_) => return, // unusual filesystem; skip
+        };
         let dispatcher =
             PluginDispatcher::new(PathBuf::from("/tmp")).with_claude_binary(echo.clone());
         let resolved = dispatcher.resolve_binary().expect("must resolve");
-        assert_eq!(resolved, echo);
+        assert_eq!(
+            resolved, echo_canonical,
+            "PROB-052: override returns canonicalized path, not input symlink"
+        );
     }
 
     /// `Default` dispatcher reuses the same defaults as `new()`.
@@ -496,6 +515,9 @@ mod tests {
 
     /// Backwards-compat alias `with_task_tool` still compiles (deprecated
     /// shim for in-flight callers during the ADR-011 migration).
+    /// Post-PROB-052 the override path is canonicalized — see sibling
+    /// `plugin_dispatcher_resolve_binary_prefers_explicit_override` for
+    /// the same cross-distro adaptation.
     #[test]
     #[allow(deprecated)]
     fn plugin_dispatcher_with_task_tool_alias_still_works() {
@@ -503,8 +525,12 @@ mod tests {
         if !echo.is_file() {
             return;
         }
+        let echo_canonical = match std::fs::canonicalize(&echo) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
         let dispatcher = PluginDispatcher::new(PathBuf::from("/tmp")).with_task_tool(echo.clone());
-        assert_eq!(dispatcher.resolve_binary(), Some(echo));
+        assert_eq!(dispatcher.resolve_binary(), Some(echo_canonical));
     }
 
     // -----------------------------------------------------------------

@@ -9,6 +9,69 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed (Security — PROB-052 closure, Round 7 audit)
+
+- **PROB-052 ✅ — `which_in_path` TOCTOU + symlink-follow + perm gate
+  hardening** (CWE-367 + CWE-426). Pre-PROB-052 the PATH-search helper
+  did `is_file()` (silently follows symlinks), no `canonicalize`, no
+  exec-bit / write-bit checks, no parent-directory permission check.
+  Round 6 audit MED-1 flagged the function as exploitable on the
+  default Homebrew posture (`/usr/local/bin` 0o775 group=admin —
+  any admin user can plant a hijacking binary).
+
+  **Fix**: new `pub(super) resolve_safe_path` helper:
+  - `canonicalize` resolves symlinks to the real target (eliminates the
+    operator-time swap window; shrinks residual TOCTOU to two adjacent
+    syscalls).
+  - On Unix, rejects binaries with `mode & 0o022 != 0` (group-write OR
+    world-write) AND parent dirs with the same gate.
+  - Windows skips the perm gate (ACL out of scope, documented) but
+    still applies canonicalize + non-file rejection.
+  - Empty PATH entries (POSIX `:` interpreted as `.`) are explicitly
+    skipped — no implicit cwd lookup (hijack vector for cloned hostile
+    repos).
+
+  **Round 7 audit (2026-05-06) closures**:
+  - **HIGH-1 (consumer-side bypass)**: pre-Round-7 the override
+    branches in `AgentDispatcher::resolve_claude_binary`,
+    `PluginDispatcher::resolve_binary`, и `resolve_forgeplan_binary`
+    used bare `is_file()`. Round 7 routed all 4 surfaces through
+    `resolve_safe_path` so the gate applies symmetrically — operator
+    config setting `claude_binary = /usr/local/bin/claude` (group=admin
+    Homebrew dir) is now rejected just like the PATH-resolved case.
+  - **MED-1/MED-2 log-injection**: `tracing::warn!` rejection messages
+    now use `escape_debug` mirroring the PROB-053 shell-exec warning
+    pattern. New `eprintln!` operator-visible channel surfaces
+    rejections без `RUST_LOG=warn`.
+  - **HIGH-3 docstring precision**: mode-bit gate explicitly named
+    (0o020 = group-write, 0o002 = world-write); setuid/setgid/sticky
+    out of scope documented.
+
+  **Tests** (7 new unit tests in `helpers.rs`):
+  - canonicalize symlink to real target
+  - reject group-writable binary
+  - reject group-writable parent dir
+  - reject empty PATH entry (skip implicit cwd)
+  - reject group-writable override (HIGH-1 closure)
+  - canonicalize safe override (HIGH-1 closure)
+  - Windows skip permission gate (cfg(not(unix)))
+
+  All tests use `DISPATCH_ENV_LOCK` for cross-test PATH isolation
+  (PROB-050 A-6 pattern).
+
+  **AC tracking**: AC-1/3/5/6 closed; AC-2 partial (file write-bit
+  clause closed; parent-dir *ownership* clause re-scoped — single-user
+  threat model bounded by parent-mode gate; multi-user shared
+  workstation deferred until trigger fires); AC-4 caching re-scoped as
+  "no caching by design" — dispatcher recreated per `dispatch()` call,
+  per the AC's own MUST-NOT clause ("MUST NOT cache the resolved path
+  indefinitely") which a `OnceCell<PathBuf>` would violate.
+
+  **Files touched**: `helpers.rs` (+130 src + +160 tests),
+  `agent_dispatcher.rs::resolve_claude_binary`,
+  `plugin_dispatcher.rs::resolve_binary`. Suite: lib 1464 → 1467
+  (+3 net; sprint shipped 7 — exceeds AC-5 mandate of 3).
+
 ### Added (Security — PROB-053 / PRD-074 closure)
 
 - **PROB-053 / PRD-074 ✅ — `Delegation::Command` shell-execution gate**
