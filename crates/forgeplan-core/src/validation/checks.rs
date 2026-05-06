@@ -2,6 +2,84 @@ use crate::artifact::frontmatter::Frontmatter;
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// PROB-059 — extract artifact IDs (`PRD-NNN`, `EVID-NNN`, etc.) mentioned
+/// inside a `## Related Artifacts` table в the body. Returns the set of
+/// IDs that appear в table rows. Other body mentions (free-text "see also
+/// PRD-005") are intentionally NOT collected — only formal table rows count
+/// as a "this artifact claims a relation here" signal.
+///
+/// Strict parser by design: looks for `^##+\s+Related Artifacts$` heading,
+/// then collects table rows (`| ID-NNN | ... |`) until next heading. Code
+/// blocks и HTML comments are stripped via `strip_non_prose_for_leakage`
+/// (same helper PROB-038 introduced) so example tables в template guidance
+/// don't false-flag.
+pub fn extract_related_artifacts_table_ids(body: &str) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let stripped = strip_non_prose_for_leakage(body);
+    let lines: Vec<&str> = stripped.lines().collect();
+    let mut start_idx: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let after = trimmed.trim_start_matches('#').trim();
+            let lower = after.to_lowercase();
+            if lower == "related artifacts" || lower == "related" {
+                start_idx = Some(i + 1);
+                break;
+            }
+        }
+    }
+    let Some(start) = start_idx else {
+        return Vec::new();
+    };
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            end = i;
+            break;
+        }
+    }
+    static ID_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b([A-Z]+-[0-9]+)\b").expect("valid ID regex"));
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for line in &lines[start..end] {
+        let trimmed = line.trim();
+        // Only consider table rows (start с `|` and contain at least 2 pipes)
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        // Skip separator rows (`|---|---|`)
+        if trimmed
+            .chars()
+            .all(|c| c == '|' || c == '-' || c == ' ' || c == ':')
+        {
+            continue;
+        }
+        for m in ID_RE.find_iter(line) {
+            found.insert(m.as_str().to_string());
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// PROB-059 — extract `target` IDs от frontmatter `links:` array.
+pub fn extract_frontmatter_link_targets(fm: &Frontmatter) -> Vec<String> {
+    let Some(links_val) = fm.get("links") else {
+        return Vec::new();
+    };
+    let Some(seq) = links_val.as_sequence() else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for entry in seq {
+        if let Some(target) = entry.get("target").and_then(|v| v.as_str()) {
+            out.push(target.to_string());
+        }
+    }
+    out
+}
+
 /// Check that a frontmatter key exists and is non-empty.
 pub fn frontmatter_has(fm: &Frontmatter, key: &str) -> bool {
     fm.get(key)
@@ -1006,5 +1084,98 @@ mod tests {
             names.contains(&"postgresql"),
             "postgresql в prose: {names:?}"
         );
+    }
+
+    // PROB-059 — Related Artifacts table extraction tests
+
+    /// Happy path — table rows with IDs are extracted.
+    #[test]
+    fn extract_related_artifacts_table_ids_finds_table_rows() {
+        let body = "
+# PRD-007: Title
+
+## Related Artifacts
+
+| Artifact | Relation |
+|---|---|
+| PRD-001 | refines |
+| EVID-042 | informs |
+| RFC-003 | based_on |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(ids, vec!["EVID-042", "PRD-001", "RFC-003"]);
+    }
+
+    /// Free-text mention OUTSIDE the Related Artifacts section is NOT
+    /// collected — strict parser by design (no false-flag on "see also").
+    #[test]
+    fn extract_related_artifacts_table_ids_ignores_freetext_mentions() {
+        let body = "
+# PRD-007
+
+## Problem
+
+This builds on PRD-001 and refines RFC-003.
+
+## Related Artifacts
+
+| Artifact | Relation |
+|---|---|
+| EVID-042 | informs |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(ids, vec!["EVID-042"]);
+    }
+
+    /// HTML comments in the Related Artifacts section are stripped first.
+    #[test]
+    fn extract_related_artifacts_table_ids_skips_html_comments() {
+        let body = "
+## Related Artifacts
+
+<!-- Example template:
+| Artifact | Relation |
+| FAKE-999 | bogus |
+-->
+
+| Artifact | Relation |
+|---|---|
+| PRD-001 | refines |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(ids, vec!["PRD-001"]);
+    }
+
+    /// No section → empty result, no panic.
+    #[test]
+    fn extract_related_artifacts_table_ids_returns_empty_when_no_section() {
+        let body = "# PRD-007: Title\n\n## Problem\n\nText.";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert!(ids.is_empty());
+    }
+
+    /// Frontmatter link target extraction.
+    #[test]
+    fn extract_frontmatter_link_targets_basic() {
+        let yaml = r#"
+id: PRD-007
+links:
+  - target: PRD-001
+    relation: refines
+  - target: EVID-042
+    relation: informs
+"#;
+        let fm: Frontmatter = serde_yaml::from_str(yaml).unwrap();
+        let targets = extract_frontmatter_link_targets(&fm);
+        assert_eq!(targets, vec!["PRD-001", "EVID-042"]);
+    }
+
+    /// Empty links: → empty result.
+    #[test]
+    fn extract_frontmatter_link_targets_empty_when_no_links() {
+        let yaml = "id: PRD-007\nstatus: draft";
+        let fm: Frontmatter = serde_yaml::from_str(yaml).unwrap();
+        let targets = extract_frontmatter_link_targets(&fm);
+        assert!(targets.is_empty());
     }
 }

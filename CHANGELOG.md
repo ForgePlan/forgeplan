@@ -9,6 +9,40 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added (Validation — PROB-059 closure, body↔links drift warning)
+
+- **PROB-059 ✅ — `body-links-drift` validate warning** (SHOULD-level).
+  New `body-links-drift` rule в `validation::base_rules()` flags
+  artifacts whose body `## Related Artifacts` table mentions IDs not
+  present в frontmatter `links:` array. Source-of-truth-divergence
+  pattern: agent authors body table claiming relations, forgets
+  `forgeplan link X Y --relation ...`, и Lance index sees isolated
+  node despite markdown looking linked.
+
+  **Strict parser by design**: targets only formal `## Related Artifacts`
+  table rows. Free-text mentions ("see also PRD-005") elsewhere в body
+  are ignored — incidental references shouldn't trigger drift warnings.
+  HTML comments, fenced code blocks, и inline backtick code stripped
+  via shared `strip_non_prose_for_leakage` helper (DRY против PROB-038).
+
+  **Warning message** includes missing IDs + `forgeplan link` command
+  template:
+  ```
+  ~ [SHOULD] body-links-drift: Body's `## Related Artifacts` table
+    mentions PRD-005, RFC-001 but frontmatter `links:` array doesn't
+    reference them. Run: forgeplan link <this-id> <target> --relation
+    <informs|based_on|refines|...>
+  ```
+
+  **Tests**: +6 unit tests (`extract_related_artifacts_table_ids_*`
+  and `extract_frontmatter_link_targets_*`) covering happy path,
+  free-text exclusion, HTML comments stripped, no-section empty,
+  frontmatter parsing.
+
+  **Deferred к follow-up**: `forgeplan reconcile` interactive command
+  (out of scope для v1), workspace-wide `--apply` bulk fix, template
+  hint в frontmatter, `--strict` flag для CI.
+
 ### Fixed (Wave 3 batch closure — PROB-027 + PROB-030 + PROB-033 + PROB-038)
 
 - **PROB-027 ✅ verified-already-closed** — `forgeplan reindex` now
