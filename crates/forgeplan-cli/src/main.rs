@@ -1,5 +1,7 @@
-mod commands;
-mod ui;
+// PROB-060 Phase 0b: integration tests need to call select command modules
+// in-process. To avoid duplicating module trees, share via the (small)
+// library facade in `src/lib.rs` and import from there in the binary.
+use forgeplan::commands;
 
 use clap::{Parser, Subcommand};
 
@@ -638,6 +640,39 @@ enum Commands {
     },
     /// Run schema migrations on existing workspace
     Migrate,
+    /// PROB-060 Phase 0b — atomic CI assigner of `assigned_number`. Walks
+    /// `.forgeplan/**/*.md` in `--head`, finds candidates with
+    /// `assigned_number: null`, computes `next = max(assigned_number)+1`
+    /// per kind from `--base` git ref, rewrites frontmatter (no file
+    /// rename — Phase 2.1). LanceDB-free per ADR-003. Wrapped in production
+    /// by `.github/workflows/assign-id.yml` `concurrency: forgeplan-id-assign`.
+    CiAssignId {
+        /// PR number (informational, used in commit message). Required in CI.
+        #[arg(long, default_value_t = 0)]
+        pr: u64,
+        /// Repo slug "owner/name" (informational). Default: detect from origin.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git ref for "destination" state for max(assigned_number) lookup.
+        #[arg(long, default_value = "origin/dev")]
+        base: String,
+        /// Git ref for "incoming" PR state.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// Workspace root. Default: cwd.
+        #[arg(long)]
+        workspace: Option<std::path::PathBuf>,
+        /// Do not write frontmatter; print what would change.
+        #[arg(long)]
+        dry_run: bool,
+        /// On slug collision (slug already exists on --base), suggest
+        /// `<slug>-<assigned_number>` rename. Phase 0b: warning only.
+        #[arg(long)]
+        auto_suffix: bool,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
     /// Rebuild LanceDB index from .md files (files-first sync)
     Reindex,
     /// Generate embeddings for all artifacts (semantic search)
@@ -1195,6 +1230,33 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => commands::phase_advance::run(&id, to, reason.as_deref(), json).await,
         Commands::Migrate => commands::migrate::run().await,
+        Commands::CiAssignId {
+            pr,
+            repo,
+            base,
+            head,
+            workspace,
+            dry_run,
+            auto_suffix,
+            json,
+        } => {
+            // PROB-060 Phase 0b — propagate exit codes 0/1/2/3/4 per CD-1.
+            let args = commands::ci_assign_id::CiAssignIdArgs {
+                pr,
+                repo,
+                base,
+                head,
+                workspace,
+                dry_run,
+                auto_suffix,
+                json,
+            };
+            let code = commands::ci_assign_id::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,
         Commands::Log {
