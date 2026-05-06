@@ -470,16 +470,28 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// `with_claude_binary` injection wins over `$PATH` lookup.
+    /// Post-PROB-052 the override path goes through `resolve_safe_path`
+    /// which `canonicalize`s the input — on systems where `/bin/echo` is
+    /// itself a symlink to `/usr/bin/echo` (Debian/Ubuntu) the resolved
+    /// value is the canonical real target, not the input symlink. Compare
+    /// against the canonicalized expected path to keep this test cross-distro.
     #[test]
     fn plugin_dispatcher_resolve_binary_prefers_explicit_override() {
         let echo = PathBuf::from("/bin/echo");
         if !echo.is_file() {
             return;
         }
+        let echo_canonical = match std::fs::canonicalize(&echo) {
+            Ok(p) => p,
+            Err(_) => return, // unusual filesystem; skip
+        };
         let dispatcher =
             PluginDispatcher::new(PathBuf::from("/tmp")).with_claude_binary(echo.clone());
         let resolved = dispatcher.resolve_binary().expect("must resolve");
-        assert_eq!(resolved, echo);
+        assert_eq!(
+            resolved, echo_canonical,
+            "PROB-052: override returns canonicalized path, not input symlink"
+        );
     }
 
     /// `Default` dispatcher reuses the same defaults as `new()`.
