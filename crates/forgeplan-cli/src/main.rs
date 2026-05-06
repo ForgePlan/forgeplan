@@ -638,6 +638,17 @@ enum Commands {
     },
     /// Run schema migrations on existing workspace
     Migrate,
+    /// PROB-060 Phase 0b — EVID-C migration dry-run. Scans all artifacts
+    /// in `.forgeplan/`, computes the slug each would receive under
+    /// SPEC-005 rules, and detects per-kind collisions before Phase 4
+    /// migration. Read-only — never mutates `.md` files.
+    ///
+    /// Hybrid resolution: default = fail-and-list (exit 1 on collisions);
+    /// `--auto-suffix` adds `suggested_resolution` per collision in JSON.
+    ///
+    /// CD-7 ordering: at integration, Worker 1's `CiAssignId` variant
+    /// goes immediately above this; team lead resolves any conflict.
+    MigrateDryRun(commands::migrate_dry_run::MigrateDryRunArgs),
     /// Rebuild LanceDB index from .md files (files-first sync)
     Reindex,
     /// Generate embeddings for all artifacts (semantic search)
@@ -1195,6 +1206,17 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => commands::phase_advance::run(&id, to, reason.as_deref(), json).await,
         Commands::Migrate => commands::migrate::run().await,
+        Commands::MigrateDryRun(args) => {
+            // PROB-060 Phase 0b — propagate non-zero exit codes via std::process::exit
+            // so shells distinguish "no collisions (0)" / "collisions (1)" /
+            // "scan error (2)". Returning anyhow::Result<()> alone collapses
+            // 1/2 to a generic 1.
+            let code = commands::migrate_dry_run::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,
         Commands::Log {

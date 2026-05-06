@@ -39,6 +39,10 @@ pub mod list;
 pub mod log_cmd;
 pub mod mcp;
 pub mod migrate;
+// PROB-060 Phase 0b — EVID-C migration dry-run scanner.
+// CD-7 ordering: at integration, Worker 1's `pub mod ci_assign_id;` goes
+// immediately above this line; team lead resolves any structural conflict.
+pub mod migrate_dry_run;
 pub mod new;
 pub mod order;
 pub mod phase;
