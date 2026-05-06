@@ -1,0 +1,109 @@
+name: Assign artifact ID (PROB-060 Phase 0b prototype)
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: 'PR number for manual dry-run'
+        required: false
+        type: string
+      dry-run-only:
+        description: 'Run in dry-run mode (no push, no commit)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: forgeplan-id-assign
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  assign:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'ready-to-merge' &&
+       !github.event.pull_request.draft &&
+       github.event.pull_request.base.ref == 'dev') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.inputs.pr-number || github.event.pull_request.number }}
+      DRY_RUN_MODE: ${{ github.event.inputs.dry-run-only || false }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch base
+        run: git fetch origin dev:refs/remotes/origin/dev --no-tags --depth=200
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: ''
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/forgeplan-cli
+          cache-targets: release
+
+      - name: Build forgeplan
+        run: cargo build --release -p forgeplan-cli --bin forgeplan
+
+      - name: Assign IDs
+        id: assign
+        run: |
+          DRY_RUN_FLAG=""
+          if [[ "$DRY_RUN_MODE" == "true" ]]; then
+            DRY_RUN_FLAG="--dry-run-only"
+          fi
+
+          ./target/release/forgeplan ci-assign-id \
+            --pr "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --base origin/dev \
+            --json \
+            $DRY_RUN_FLAG > /tmp/assignment.json
+
+          cat /tmp/assignment.json | jq .
+
+          if [[ "$DRY_RUN_MODE" != "true" ]]; then
+            COMMIT_MSG=$(jq -r '.commit_message_suggested' /tmp/assignment.json)
+            echo "commit_msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: github.event_name == 'pull_request' && env.DRY_RUN_MODE != 'true'
+        run: |
+          if git diff --quiet; then
+            echo "no changes detected"
+            exit 0
+          fi
+
+          git config user.name  "forgeplan-bot"
+          git config user.email "bot@forgeplan.dev"
+          git add -A
+          git commit -m "${{ steps.assign.outputs.commit_msg }}"
+          git push origin HEAD:${{ github.head_ref }}
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && failure() && env.DRY_RUN_MODE != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ ID assignment workflow failed. Check logs in Actions tab.'
+            })
