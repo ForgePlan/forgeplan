@@ -9,6 +9,46 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed (Reindex — PROB-028 closure, reindex resilience)
+
+- **PROB-028 ✅ — `forgeplan reindex` resilience против Phase-1 abort**.
+  v0.17.1 introduced Phase 2/3 orphan trim (rows whose `.md` disappeared,
+  и orphan relations cascading from trimmed artifacts) but the trim path
+  was **unreachable** on workspaces с ANY title-divergent record. Phase 1
+  propagated the first per-file error via `?` и aborted the entire
+  reindex, leaving Phase 2/3 dead.
+
+  **Real-world bug observed today**: project workspace had orphan
+  PRD-001 / SPEC-001 from a scan-import smoke test earlier в session.
+  `forgeplan reindex` errored on a single SESSION-2026-04-06 record
+  (`FileNotFound` from `sync_body_from_file` because frontmatter `title:`
+  on disk diverged from DB-stored title), aborted, и left the orphans
+  untrimmed. Workspace stayed unhealthy для weeks despite the trim
+  logic existing.
+
+  **Two-part fix** в `crates/forgeplan-cli/src/commands/reindex.rs`:
+  - Pass file's parsed title (от frontmatter) к `sync_body_from_file`
+    instead of DB-stored `record.title` so its internal path computation
+    matches the actual file. Title divergence no longer triggers
+    `FileNotFound`.
+  - Per-file errors now log via `eprintln!("WARN ...")` + `errors += 1`
+    + `continue` вместо `?`-abort. Phase 2/3 orphan trim ALWAYS runs
+    after the per-file loop completes, regardless of how many individual
+    files failed.
+
+  **Tests**: +2 CLI integration tests (`cli_reindex_resilience`):
+  - `reindex_trims_orphan_after_md_file_deleted` — PROB-028 AC-5 verbatim
+  - `reindex_continues_after_per_file_error_and_still_trims_orphans`
+    — recreates project-workspace bug shape
+
+  **Real E2E**: project workspace orphans (PRD-001, SPEC-001) trimmed
+  cleanly после fix; `forgeplan health` now reports clean (0 orphans).
+
+  **Lesson**: when introducing a new pipeline phase, audit ALL paths
+  через which the previous phase can short-circuit. `?` propagation в
+  a `for` loop is the most common offender — converting к
+  `match … { Ok ⇒ continue; Err ⇒ log + continue }` is the pattern.
+
 ### Refactor (Architecture — PROB-056 closure, leaky verdict abstraction)
 
 - **PROB-056 ✅ — `HealthReport.partial_verdict` field surfaces
