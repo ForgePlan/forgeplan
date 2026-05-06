@@ -155,6 +155,52 @@ pub fn augment_frontmatter_with_id_fields(
     render_frontmatter(&fm, &body).map_err(|e| anyhow::anyhow!("re-render frontmatter: {e}"))
 }
 
+/// Set `assigned_number` field in frontmatter from `null` (or absent) to `n`.
+///
+/// PROB-060 / SPEC-005 Phase 0b — used by `forgeplan ci-assign-id` to
+/// atomically promote a candidate artifact's `assigned_number` from its
+/// pre-merge null state to a concrete u32.
+///
+/// # Invariant I-2 (write-once)
+/// If `assigned_number` is **already non-null**, this function returns an
+/// error rather than silently overwriting. SPEC-005 forbids re-assignment;
+/// the only legitimate flow is `null → N`. Any caller that hits this error
+/// has either a logic bug (idempotency check should have caught it earlier)
+/// or a corrupted git state — both should fail loudly.
+///
+/// # Behavior
+/// - Field absent OR field present with `null` → set to `n`, return new content
+/// - Field present with non-null value → return `Err(...)` (I-2 violation)
+/// - No frontmatter / unparseable YAML → return `Err(...)`
+///
+/// Body content is preserved byte-for-byte. All other frontmatter fields
+/// are preserved.
+///
+/// # Errors
+/// Returns an error with a precise reason for any rule violation.
+pub fn set_assigned_number(content: &str, n: u32) -> anyhow::Result<String> {
+    let (mut fm, body) = parse_frontmatter(content)
+        .map_err(|e| anyhow::anyhow!("set_assigned_number: parse frontmatter failed: {e}"))?;
+
+    // I-2 enforcement: refuse to overwrite a non-null assigned_number.
+    if let Some(existing) = fm.get("assigned_number")
+        && !existing.is_null()
+    {
+        anyhow::bail!(
+            "set_assigned_number: assigned_number is write-once (I-2); \
+             already set to {existing:?}, refusing to overwrite with {n}"
+        );
+    }
+
+    fm.insert(
+        "assigned_number".to_string(),
+        serde_yaml::Value::Number(serde_yaml::Number::from(n)),
+    );
+
+    render_frontmatter(&fm, &body)
+        .map_err(|e| anyhow::anyhow!("set_assigned_number: re-render frontmatter failed: {e}"))
+}
+
 /// Check whether a tag list contains a given key/value match.
 ///
 /// Thin wrapper around [`crate::search::filter::has_tag_predicate`] — the
@@ -397,5 +443,74 @@ mod tests {
         let augmented = augment_frontmatter_with_id_fields(content, "prd-auth", 74).unwrap();
         assert!(augmented.contains("assigned_number: 74"));
         assert!(!augmented.contains("assigned_number: 0"));
+    }
+
+    // PROB-060 Phase 0b — set_assigned_number tests (EVID-A binary helper).
+
+    #[test]
+    fn set_assigned_number_promotes_null_to_value() {
+        let content = "---\nid: prd-auth\nstatus: draft\nslug: prd-auth\nassigned_number: null\n---\n\nBody.\n";
+        let updated = set_assigned_number(content, 74).unwrap();
+        assert!(
+            updated.contains("assigned_number: 74"),
+            "expected assigned_number: 74, got:\n{updated}"
+        );
+        let (fm, _body) = parse_frontmatter(&updated).unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), Some(74));
+    }
+
+    #[test]
+    fn set_assigned_number_inserts_when_field_absent() {
+        let content = "---\nid: prd-auth\nstatus: draft\nslug: prd-auth\n---\n\nBody.\n";
+        let updated = set_assigned_number(content, 75).unwrap();
+        assert!(updated.contains("assigned_number: 75"));
+        let (fm, _body) = parse_frontmatter(&updated).unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), Some(75));
+    }
+
+    #[test]
+    fn set_assigned_number_rejects_non_null_value_invariant_i2() {
+        let content = "---\nid: prd-auth\nstatus: active\nslug: prd-auth\nassigned_number: 73\n---\n\nBody.\n";
+        let err = set_assigned_number(content, 74).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("write-once") || msg.contains("I-2"),
+            "expected I-2 message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn set_assigned_number_rejects_no_frontmatter() {
+        let content = "# No frontmatter here.\n\nJust body.\n";
+        let err = set_assigned_number(content, 1).unwrap_err();
+        assert!(err.to_string().contains("frontmatter"));
+    }
+
+    #[test]
+    fn set_assigned_number_rejects_unclosed_frontmatter() {
+        let content = "---\nid: prd-auth\nslug: prd-auth\n";
+        let err = set_assigned_number(content, 1).unwrap_err();
+        assert!(err.to_string().contains("frontmatter"));
+    }
+
+    #[test]
+    fn set_assigned_number_preserves_other_frontmatter_fields() {
+        let content = "---\nid: prd-auth\nstatus: draft\nslug: prd-auth\npredicted_number: 74\nassigned_number: null\ntitle: Auth System\n---\n\n# PRD-74?: Auth System\n\nBody.\n";
+        let updated = set_assigned_number(content, 74).unwrap();
+        let (fm, body) = parse_frontmatter(&updated).unwrap();
+        assert_eq!(fm.get("id").and_then(|v| v.as_str()), Some("prd-auth"));
+        assert_eq!(fm.get("status").and_then(|v| v.as_str()), Some("draft"));
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some("prd-auth"));
+        assert_eq!(
+            fm.get("predicted_number").and_then(|v| v.as_u64()),
+            Some(74)
+        );
+        assert_eq!(fm.get("assigned_number").and_then(|v| v.as_u64()), Some(74));
+        assert_eq!(
+            fm.get("title").and_then(|v| v.as_str()),
+            Some("Auth System")
+        );
+        assert!(body.contains("# PRD-74?: Auth System"));
+        assert!(body.contains("Body."));
     }
 }
