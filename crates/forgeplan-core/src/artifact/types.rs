@@ -142,6 +142,133 @@ pub fn slugify(title: &str) -> String {
         .join("-")
 }
 
+/// Valid kind prefixes for slug parsing (lowercase, without trailing `-`).
+/// Mirrors `ArtifactKind::prefix()` minus the dash.
+const VALID_KIND_PREFIXES: &[&str] = &[
+    "prd", "rfc", "adr", "epic", "spec", "prob", "sol", "evid", "note", "ref", "mem",
+];
+
+/// Reserved suffix prefixes (after kind prefix) that cannot be used in user slugs.
+/// Per SPEC-005: tmp- (test fixtures), draft-/pending- (reserved for future).
+const RESERVED_SUFFIX_PREFIXES: &[&str] = &["tmp-", "draft-", "pending-"];
+
+/// Validate slug per SPEC-005 rules (PROB-060).
+///
+/// Rules:
+/// - Total length 3..=80 chars
+/// - Lowercase ASCII alphanumeric + hyphens only
+/// - Starts with a valid kind prefix followed by `-`
+/// - Suffix (after kind prefix) is non-empty
+/// - Suffix is not reserved (`tmp-`, `draft-`, `pending-`)
+/// - Suffix is not numeric-only (e.g. `prd-074` reserved for display id form)
+pub fn validate_slug(slug: &str) -> std::result::Result<(), crate::error::ForgeplanError> {
+    use crate::error::ForgeplanError;
+
+    if slug.len() < 3 || slug.len() > 80 {
+        return Err(ForgeplanError::InvalidSlug(format!(
+            "length must be 3..=80 chars, got {}",
+            slug.len()
+        )));
+    }
+
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(ForgeplanError::InvalidSlug(format!(
+            "must be lowercase ASCII alphanumeric + hyphens, got {slug:?}"
+        )));
+    }
+
+    let suffix = VALID_KIND_PREFIXES
+        .iter()
+        .find_map(|prefix| slug.strip_prefix(&format!("{prefix}-")))
+        .ok_or_else(|| {
+            ForgeplanError::InvalidSlug(format!(
+                "must start with one of {:?} followed by `-`, got {slug:?}",
+                VALID_KIND_PREFIXES
+            ))
+        })?;
+
+    if suffix.is_empty() {
+        return Err(ForgeplanError::InvalidSlug(format!(
+            "needs content after kind prefix, got {slug:?}"
+        )));
+    }
+
+    for reserved in RESERVED_SUFFIX_PREFIXES {
+        if suffix.starts_with(reserved) {
+            return Err(ForgeplanError::InvalidSlug(format!(
+                "uses reserved prefix `{reserved}` after kind, got {slug:?}"
+            )));
+        }
+    }
+
+    if suffix.chars().all(|c| c.is_ascii_digit()) {
+        return Err(ForgeplanError::InvalidSlug(format!(
+            "suffix must not be numeric-only (avoid collision with display id form), got {slug:?}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Build a canonical slug from kind + title per SPEC-005.
+///
+/// Format: `<kind_prefix>-<slugified-title>` truncated at the last hyphen
+/// before 80 chars. Returns InvalidSlug if title produces empty slug
+/// (all non-ASCII or empty) or otherwise fails validation.
+pub fn slug_from_kind_title(
+    kind: &ArtifactKind,
+    title: &str,
+) -> std::result::Result<String, crate::error::ForgeplanError> {
+    use crate::error::ForgeplanError;
+
+    let prefix = kind.prefix().trim_end_matches('-');
+    let title_slug = slugify(title);
+
+    if title_slug.is_empty() {
+        return Err(ForgeplanError::InvalidSlug(format!(
+            "title produces empty slug (all non-ASCII or empty): {title:?}"
+        )));
+    }
+
+    let max_title_len = 80usize.saturating_sub(prefix.len() + 1);
+    let truncated = if title_slug.len() > max_title_len {
+        let cut = title_slug[..max_title_len]
+            .rfind('-')
+            .unwrap_or(max_title_len);
+        &title_slug[..cut]
+    } else {
+        title_slug.as_str()
+    };
+
+    if truncated.is_empty() {
+        return Err(ForgeplanError::InvalidSlug(format!(
+            "truncation produced empty title-suffix for prefix {prefix:?}"
+        )));
+    }
+
+    let slug = format!("{prefix}-{truncated}");
+    validate_slug(&slug)?;
+    Ok(slug)
+}
+
+/// Render derived display id per SPEC-005 (PROB-060).
+///
+/// - `assigned = Some(n)` → uppercase prefix + zero-padded 3-digit number (`PRD-074`)
+/// - `assigned = None`    → uppercase prefix + predicted number + `?` marker (`PRD-74?`)
+///
+/// The `?` marker visually signals that the number is local prediction
+/// and may change at merge.
+pub fn render_display_id(kind: &ArtifactKind, predicted: u32, assigned: Option<u32>) -> String {
+    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
+    match assigned {
+        Some(n) => format!("{prefix}-{n:03}"),
+        None => format!("{prefix}-{predicted}?"),
+    }
+}
+
 /// Artifact lifecycle status.
 ///
 /// State machine (see CLAUDE.md + docs/methodology/):
@@ -303,5 +430,170 @@ mod tests {
         assert_eq!(slugify("Auth System"), "auth-system");
         assert_eq!(slugify("Hello World!"), "hello-world");
         assert_eq!(slugify("  multiple   spaces  "), "multiple-spaces");
+    }
+
+    // PROB-060 / SPEC-005 — slug validation, building, and display id rendering.
+
+    #[test]
+    fn validate_slug_happy_path() {
+        assert!(validate_slug("prd-auth-system").is_ok());
+        assert!(validate_slug("rfc-mtls-rollout").is_ok());
+        assert!(validate_slug("prob-api-panic").is_ok());
+        assert!(validate_slug("evid-stack-trace").is_ok());
+    }
+
+    #[test]
+    fn validate_slug_rejects_too_short() {
+        assert!(validate_slug("ab").is_err());
+        assert!(validate_slug("p").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_too_long() {
+        let long = format!("prd-{}", "a".repeat(80));
+        assert!(validate_slug(&long).is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_uppercase() {
+        assert!(validate_slug("PRD-auth").is_err());
+        assert!(validate_slug("prd-Auth").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_unknown_prefix() {
+        assert!(validate_slug("foo-auth-system").is_err());
+        assert!(validate_slug("xxx-bar").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_empty_suffix() {
+        assert!(validate_slug("prd-").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_reserved_prefix() {
+        assert!(validate_slug("prd-tmp-fixture").is_err());
+        assert!(validate_slug("prd-draft-foo").is_err());
+        assert!(validate_slug("prd-pending-bar").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_numeric_only_suffix() {
+        // Avoid collision with display form `PRD-074`.
+        assert!(validate_slug("prd-074").is_err());
+        assert!(validate_slug("prd-1").is_err());
+        assert!(validate_slug("rfc-9").is_err());
+    }
+
+    #[test]
+    fn validate_slug_accepts_alphanumeric_mix() {
+        assert!(validate_slug("prd-h2-database").is_ok());
+        assert!(validate_slug("prd-v2-rollout").is_ok());
+        assert!(validate_slug("rfc-3way-merge").is_ok());
+    }
+
+    #[test]
+    fn validate_slug_rejects_special_chars() {
+        assert!(validate_slug("prd-auth_system").is_err());
+        assert!(validate_slug("prd-auth.system").is_err());
+        assert!(validate_slug("prd-auth!system").is_err());
+        assert!(validate_slug("prd-auth/system").is_err());
+    }
+
+    #[test]
+    fn slug_from_kind_title_basic() {
+        assert_eq!(
+            slug_from_kind_title(&ArtifactKind::Prd, "Auth System").unwrap(),
+            "prd-auth-system"
+        );
+        assert_eq!(
+            slug_from_kind_title(&ArtifactKind::Rfc, "mTLS Rollout").unwrap(),
+            "rfc-mtls-rollout"
+        );
+        assert_eq!(
+            slug_from_kind_title(&ArtifactKind::ProblemCard, "API panic").unwrap(),
+            "prob-api-panic"
+        );
+    }
+
+    #[test]
+    fn slug_from_kind_title_truncates_long_titles() {
+        let long_title = "long ".repeat(50);
+        let result = slug_from_kind_title(&ArtifactKind::Prd, &long_title).unwrap();
+        assert!(result.len() <= 80, "got {}: {}", result.len(), result);
+        assert!(result.starts_with("prd-"));
+    }
+
+    #[test]
+    fn slug_from_kind_title_rejects_empty_title() {
+        assert!(slug_from_kind_title(&ArtifactKind::Prd, "").is_err());
+    }
+
+    #[test]
+    fn slug_from_kind_title_rejects_pure_non_ascii() {
+        // Per existing slugify (ASCII-only): пустой результат → ошибка.
+        assert!(slug_from_kind_title(&ArtifactKind::Prd, "тест").is_err());
+    }
+
+    #[test]
+    fn slug_from_kind_title_validates_output() {
+        // Roundtrip: built slug always passes validation.
+        let slug = slug_from_kind_title(&ArtifactKind::Prd, "Auth System").unwrap();
+        assert!(validate_slug(&slug).is_ok());
+    }
+
+    #[test]
+    fn slug_from_kind_title_handles_special_chars_in_title() {
+        let result =
+            slug_from_kind_title(&ArtifactKind::Prd, "Auth/System: rate-limiter (v2)").unwrap();
+        assert_eq!(result, "prd-auth-system-rate-limiter-v2");
+    }
+
+    #[test]
+    fn render_display_id_assigned_zero_pads_to_3() {
+        assert_eq!(
+            render_display_id(&ArtifactKind::Prd, 74, Some(74)),
+            "PRD-074"
+        );
+        assert_eq!(
+            render_display_id(&ArtifactKind::Adr, 1, Some(12)),
+            "ADR-012"
+        );
+        assert_eq!(
+            render_display_id(&ArtifactKind::Prd, 74, Some(123)),
+            "PRD-123"
+        );
+    }
+
+    #[test]
+    fn render_display_id_predicted_uses_question_mark() {
+        assert_eq!(render_display_id(&ArtifactKind::Prd, 74, None), "PRD-74?");
+        assert_eq!(render_display_id(&ArtifactKind::Rfc, 9, None), "RFC-9?");
+    }
+
+    #[test]
+    fn render_display_id_legacy_kinds() {
+        assert_eq!(
+            render_display_id(&ArtifactKind::ProblemCard, 60, Some(60)),
+            "PROB-060"
+        );
+        assert_eq!(
+            render_display_id(&ArtifactKind::EvidencePack, 113, None),
+            "EVID-113?"
+        );
+        assert_eq!(
+            render_display_id(&ArtifactKind::SolutionPortfolio, 5, Some(5)),
+            "SOL-005"
+        );
+    }
+
+    #[test]
+    fn render_display_id_assigned_supersedes_predicted() {
+        // When assigned is set, predicted is ignored.
+        assert_eq!(
+            render_display_id(&ArtifactKind::Prd, 999, Some(74)),
+            "PRD-074"
+        );
     }
 }

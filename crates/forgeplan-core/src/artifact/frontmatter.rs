@@ -64,6 +64,43 @@ pub fn tags_from_frontmatter(fm: &Frontmatter) -> Vec<String> {
     }
 }
 
+/// Extract `slug` field from frontmatter (PROB-060 / SPEC-005).
+///
+/// Returns `Some(&str)` if the field is present and string-valued, `None`
+/// otherwise. Slug is the canonical identity per ADR-012 — used for refs
+/// in commits and cross-artifact relations until a display number is
+/// assigned at merge.
+///
+/// Backward compat: legacy artifacts without this field return `None`;
+/// callers must fall back to filename-derived id.
+pub fn slug_from_frontmatter(fm: &Frontmatter) -> Option<&str> {
+    fm.get("slug").and_then(|v| v.as_str())
+}
+
+/// Extract `predicted_number` field from frontmatter as `u32`.
+///
+/// Returns `None` if the field is missing, null, or not a non-negative
+/// integer that fits in u32. Per SPEC-005, this is a local prediction
+/// (`max(assigned_number) + 1` at create time) — used only for the `?`
+/// display marker, never for refs or db lookups.
+pub fn predicted_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
+    fm.get("predicted_number")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+/// Extract `assigned_number` field from frontmatter as `u32`.
+///
+/// Treats explicit `null` and missing field equivalently (both return
+/// `None`). Per SPEC-005 invariant I-2, this field is **write-once** —
+/// set by CI bot on merge to dev. Callers must not modify it after
+/// initial assignment.
+pub fn assigned_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
+    fm.get("assigned_number")
+        .and_then(|v| if v.is_null() { None } else { v.as_u64() })
+        .and_then(|n| u32::try_from(n).ok())
+}
+
 /// Check whether a tag list contains a given key/value match.
 ///
 /// Thin wrapper around [`crate::search::filter::has_tag_predicate`] — the
@@ -123,5 +160,88 @@ mod tests {
         assert!(has_tag_in(&tags, "reviewed", None));
         assert!(has_tag_in(&tags, "source", None));
         assert!(!has_tag_in(&tags, "missing", None));
+    }
+
+    // PROB-060 / SPEC-005 — slug + predicted_number + assigned_number accessors.
+
+    #[test]
+    fn slug_from_frontmatter_present() {
+        let fm: Frontmatter = serde_yaml::from_str("slug: prd-auth-system").unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), Some("prd-auth-system"));
+    }
+
+    #[test]
+    fn slug_from_frontmatter_missing() {
+        let fm: Frontmatter = serde_yaml::from_str("status: draft").unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn slug_from_frontmatter_non_string_returns_none() {
+        let fm: Frontmatter = serde_yaml::from_str("slug: 42").unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn predicted_number_from_frontmatter_present() {
+        let fm: Frontmatter = serde_yaml::from_str("predicted_number: 74").unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm), Some(74));
+    }
+
+    #[test]
+    fn predicted_number_from_frontmatter_missing() {
+        let fm: Frontmatter = serde_yaml::from_str("status: draft").unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn predicted_number_from_frontmatter_string_returns_none() {
+        let fm: Frontmatter = serde_yaml::from_str("predicted_number: \"74\"").unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn predicted_number_from_frontmatter_negative_returns_none() {
+        let fm: Frontmatter = serde_yaml::from_str("predicted_number: -1").unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn assigned_number_from_frontmatter_explicit_null() {
+        let fm: Frontmatter = serde_yaml::from_str("assigned_number: null").unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn assigned_number_from_frontmatter_set() {
+        let fm: Frontmatter = serde_yaml::from_str("assigned_number: 74").unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), Some(74));
+    }
+
+    #[test]
+    fn assigned_number_from_frontmatter_missing() {
+        let fm: Frontmatter = serde_yaml::from_str("status: draft").unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn legacy_frontmatter_returns_none_for_all_new_fields() {
+        // Backward compat: pre-PROB-060 artifacts have none of the new fields.
+        let fm: Frontmatter =
+            serde_yaml::from_str("id: PRD-018\nstatus: active\ntitle: Legacy artifact").unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), None);
+        assert_eq!(predicted_number_from_frontmatter(&fm), None);
+        assert_eq!(assigned_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn full_new_frontmatter_returns_all_fields() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "slug: prd-auth-system\npredicted_number: 74\nassigned_number: 74",
+        )
+        .unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), Some("prd-auth-system"));
+        assert_eq!(predicted_number_from_frontmatter(&fm), Some(74));
+        assert_eq!(assigned_number_from_frontmatter(&fm), Some(74));
     }
 }

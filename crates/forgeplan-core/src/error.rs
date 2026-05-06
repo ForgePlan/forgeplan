@@ -15,6 +15,9 @@ pub enum ForgeplanError {
     #[error("invalid artifact kind: {0}")]
     InvalidKind(String),
 
+    #[error("invalid slug: {0}")]
+    InvalidSlug(String),
+
     #[error(
         "invalid relation type: {0} (valid: informs, based_on, supersedes, contradicts, refines)"
     )]
@@ -77,6 +80,12 @@ mod tests {
     fn invalid_kind_display() {
         let err = ForgeplanError::InvalidKind("banana".to_string());
         assert_eq!(err.to_string(), "invalid artifact kind: banana");
+    }
+
+    #[test]
+    fn invalid_slug_display() {
+        let err = ForgeplanError::InvalidSlug("too short".to_string());
+        assert_eq!(err.to_string(), "invalid slug: too short");
     }
 
     #[test]
