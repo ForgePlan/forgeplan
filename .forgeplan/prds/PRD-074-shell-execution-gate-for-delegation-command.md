@@ -37,13 +37,13 @@ This PRD scopes the **safety net** — a CLI flag + workspace config opt-in + us
 
 ## Goals
 
-1. **Default refuse** (FR-1): `forgeplan playbook run` with a YAML containing `Delegation::Command` exits non-zero with a typed `DispatchError` and a `Fix:` hint pointing to the new flag.
-2. **Explicit opt-in** (FR-1, FR-2): `--allow-shell` CLI flag enables shell execution for the current invocation; `[playbook] allow_shell = true` in workspace config enables for trusted-local workflows.
-3. **User-visible warning** (FR-3): every `Delegation::Command` step prints `! shell-exec: <argv[0]> [N args]` to stderr **before** execution. Operator-readable, never tracing-buried.
-4. **Backwards compatible local playbooks** (FR-4): existing `audit.yaml` / `release.yaml` / `brownfield-docs.yaml` keep working when invoked with `--allow-shell` (or with the workspace config flag set). Reference YAML headers updated to document the requirement.
-5. **Hint Protocol compliance** (FR-5, references PRD-071): refuse path emits `Error:` + `Fix:` markers; success path stays unchanged.
-6. **MCP parity** (FR-6): if `forgeplan_playbook_run` MCP tool exists, expose equivalent `allow_shell` parameter с тем же default false.
-7. **Test matrix proof** (FR-7): 4-cell test matrix (flag × config booleans) plus warning-emitted assertions on the run paths.
+1. **Default refuse** (FR-001): `forgeplan playbook run` with a YAML containing `Delegation::Command` exits non-zero with a typed `DispatchError` and a `Fix:` hint pointing to the new flag.
+2. **Explicit opt-in** (FR-001, FR-002): `--allow-shell` CLI flag enables shell execution for the current invocation; `[playbook] allow_shell = true` in workspace config enables for trusted-local workflows.
+3. **User-visible warning** (FR-003): every `Delegation::Command` step prints `! shell-exec: <argv[0]> [N args]` to stderr **before** execution. Operator-readable, never tracing-buried.
+4. **Backwards compatible local playbooks** (FR-004): existing `audit.yaml` / `release.yaml` / `brownfield-docs.yaml` keep working when invoked with `--allow-shell` (or with the workspace config flag set). Reference YAML headers updated to document the requirement.
+5. **Hint Protocol compliance** (FR-005, references PRD-071): refuse path emits `Error:` + `Fix:` markers; success path stays unchanged.
+6. **MCP parity** (FR-006): if `forgeplan_playbook_run` MCP tool exists, expose equivalent `allow_shell` parameter с тем же default false.
+7. **Test matrix proof** (FR-007): 4-cell test matrix (flag × config booleans) plus warning-emitted assertions on the run paths.
 
 ## Non-Goals
 
@@ -55,13 +55,13 @@ This PRD scopes the **safety net** — a CLI flag + workspace config opt-in + us
 
 ## Functional Requirements
 
-- **FR-1**: `forgeplan playbook run <path>` learns a `--allow-shell` boolean flag (default `false`). When `false`, dispatching `Delegation::Command` returns `DispatchError::Transport` with the message `shell execution refused — Delegation::Command requires explicit --allow-shell or [playbook] allow_shell = true in workspace config`.
-- **FR-2**: Workspace config (`.forgeplan/config.yaml`) learns a `[playbook] allow_shell = bool` opt-in (default `false`). When `true`, dispatching `Delegation::Command` proceeds **as if `--allow-shell` were set**. Documented in workspace config reference.
-- **FR-3**: When shell execution is permitted (FR-1 OR FR-2), the dispatcher MUST emit `! shell-exec: <argv[0]> [N args]` to stderr (eprintln, not tracing::warn) **before** spawning the subprocess. Operator MUST see the warning regardless of `RUST_LOG` settings.
-- **FR-4**: `audit.yaml`, `release.yaml`, `brownfield-docs.yaml` reference templates document the `--allow-shell` requirement in their headers (comment block at the top of each YAML).
-- **FR-5**: Hint Protocol (PRD-071) compliance — refuse path emits `Error: shell execution refused\nFix: forgeplan playbook run --allow-shell <path>`.
-- **FR-6**: MCP tool `forgeplan_playbook_run` (если exists) exposes equivalent `allow_shell: bool` parameter; same default `false`.
-- **FR-7**: Tests cover all four matrix cells: (flag=false, config=false) → refuse; (flag=true, config=false) → run; (flag=false, config=true) → run; (flag=true, config=true) → run. Plus warning-emitted check on the run paths.
+- [x] **FR-001**: `forgeplan playbook run <path>` learns a `--allow-shell` boolean flag (default `false`). When `false`, dispatching `Delegation::Command` returns `DispatchError::Transport` with the message `shell execution refused — Delegation::Command requires explicit --allow-shell or [playbook] allow_shell = true in workspace config`.
+- [x] **FR-002**: Workspace config (`.forgeplan/config.yaml`) learns a `[playbook] allow_shell = bool` opt-in (default `false`). When `true`, dispatching `Delegation::Command` proceeds **as if `--allow-shell` were set**. Documented in workspace config reference.
+- [x] **FR-003**: When shell execution is permitted (FR-001 OR FR-002), the dispatcher MUST emit `! shell-exec: <argv[0]> [N args]` to stderr (eprintln, not tracing::warn) **before** spawning the subprocess. Operator MUST see the warning regardless of `RUST_LOG` settings.
+- [x] **FR-004**: `audit.yaml`, `release.yaml`, `brownfield-docs.yaml` reference templates document the `--allow-shell` requirement in their headers (comment block at the top of each YAML).
+- [x] **FR-005**: Hint Protocol (PRD-071) compliance — refuse path emits `Error: shell execution refused\nFix: forgeplan playbook run --allow-shell <path>`.
+- [x] **FR-006**: MCP tool `forgeplan_playbook_run` (если exists) exposes equivalent `allow_shell: bool` parameter; same default `false`.
+- [x] **FR-007**: Tests cover all four matrix cells: (flag=false, config=false) → refuse; (flag=true, config=false) → run; (flag=false, config=true) → run; (flag=true, config=true) → run. Plus warning-emitted check on the run paths.
 
 ## Target Users
 

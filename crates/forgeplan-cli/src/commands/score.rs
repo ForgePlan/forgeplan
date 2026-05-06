@@ -17,7 +17,10 @@ use crate::ui;
 pub async fn run_all(json: bool) -> anyhow::Result<()> {
     use forgeplan_core::artifact::types::DECISION_KINDS_EVIDENCE;
 
-    let store = common::store().await?;
+    // PROB-058 AC-2: acquire workspace lock so concurrent CLI invocations
+    // (operator running `score-all` while a multi-agent dispatch runs `link`
+    // в parallel — PRD-057) cannot race on `update_r_eff_score` writes.
+    let (_ws, _lock, store) = common::open_store_locked().await?;
     let records = store.list_records(None).await?;
 
     let decision_records: Vec<_> = records
@@ -43,29 +46,45 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
     }
 
     let mut results = Vec::new();
+    let mut errors: Vec<serde_json::Value> = Vec::new();
     for record in &decision_records {
-        let mut visited = HashSet::new();
-        let report = reff::r_eff_recursive(&record.id, &store, &mut visited).await?;
-
-        if let Err(e) = store.update_r_eff_score(&record.id, report.r_eff).await {
-            eprintln!("  Warning: could not persist R_eff for {}: {e}", record.id);
-        }
+        // PRD-075 FR-004: route batch reconciliation through the same shared
+        // helper that mutators (link/unlink/activate) use.
+        let r_eff = match forgeplan_core::scoring::sync_score_target(&store, &record.id).await {
+            Ok(report) => report.r_eff,
+            Err(e) => {
+                // Round 8 audit MED-4: surface failed artifacts in JSON instead
+                // of silently dropping them, so scripted consumers cannot
+                // mistake partial success for full success.
+                let msg = e.to_string();
+                eprintln!("  Warning: could not score {}: {msg}", record.id);
+                errors.push(serde_json::json!({"id": record.id, "error": msg}));
+                continue;
+            }
+        };
 
         if !json {
-            let symbol = if report.r_eff >= 0.5 {
+            let symbol = if r_eff >= 0.5 {
                 "+"
-            } else if report.r_eff >= 0.1 {
+            } else if r_eff >= 0.1 {
                 "~"
             } else {
                 "!"
             };
-            println!("  {} {} → R_eff={:.2}", symbol, record.id, report.r_eff);
+            println!("  {} {} → R_eff={:.2}", symbol, record.id, r_eff);
         }
-        results.push(serde_json::json!({"id": record.id, "r_eff": report.r_eff}));
+        results.push(serde_json::json!({"id": record.id, "r_eff": r_eff}));
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        // Round 8 audit MED-4: include `errors` so scripted consumers can
+        // distinguish partial vs full success. Empty array stays present so
+        // the schema is stable.
+        let payload = serde_json::json!({
+            "results": results,
+            "errors": errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         let high = results
             .iter()
@@ -74,6 +93,9 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
         let total = results.len();
         println!();
         println!("  {}/{} artifacts with R_eff >= 0.5", high, total);
+        if !errors.is_empty() {
+            println!("  ! {} artifacts skipped due to errors", errors.len());
+        }
     }
 
     Ok(())
@@ -82,7 +104,10 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let target_id = id.ok_or_else(|| anyhow::anyhow!("Usage: forgeplan score <ID>"))?;
 
-    let store = common::store().await?;
+    // PROB-058 AC-2: acquire workspace lock — `score` writes `r_eff_score` and
+    // must serialize against concurrent `link` / `activate` to avoid
+    // latest-writer-wins data loss.
+    let (_ws, _lock, store) = common::open_store_locked().await?;
 
     // Get the target artifact
     let target = store.get_record(target_id).await?.ok_or_else(|| {
@@ -90,13 +115,20 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     })?;
 
     // --- Recursive R_eff via AssuranceReport ---
-    let mut visited = HashSet::new();
-    let report = reff::r_eff_recursive(target_id, &store, &mut visited).await?;
-
-    // Write R_eff back to LanceDB (soft error — don't block display)
-    if let Err(e) = store.update_r_eff_score(target_id, report.r_eff).await {
-        eprintln!("  Warning: could not persist R_eff score: {e}");
-    }
+    // PRD-075 FR-004 + Round 8 audit MED-1: the shared helper persists the
+    // score AND returns the report so we avoid a second recursive walk for
+    // display. On persist failure we fall back to a fresh recursive walk so
+    // the user still sees a breakdown — but we annotate it with a warning so
+    // the displayed value cannot silently disagree with stored cache.
+    let report = match forgeplan_core::scoring::sync_score_target(&store, target_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  Warning: could not persist R_eff score: {e}");
+            eprintln!("Fix: forgeplan score-all");
+            let mut visited = HashSet::new();
+            reff::r_eff_recursive(target_id, &store, &mut visited).await?
+        }
+    };
 
     // --- Flat evidence list for display (backward-compat) ---
     let outgoing = store.get_relations(target_id).await?;

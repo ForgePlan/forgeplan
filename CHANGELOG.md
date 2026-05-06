@@ -86,6 +86,92 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   F4 MCP stderr trust asymmetry, MED-E `ExecutorConfig` field coupling,
   MED-1 ExecutorConfig invariant, plus LOW-1..LOW-4 cosmetic.
 
+### Fixed (Trust calculus — PROB-057 / PRD-075 closure)
+
+- **PROB-057 / PRD-075 ✅ — R_eff cache self-healing on link/unlink/activate**.
+  Discovered during the PROB-053 PR review session: `forgeplan link` /
+  `forgeplan activate` previously emitted a `Hint::info("verify R_eff")`
+  pointing at `forgeplan score <ID>` but never invoked the recompute.
+  Cached `r_eff_score` in LanceDB stayed stale until a manual `score`
+  / `score-all` run, leaking stale values to **four** downstream
+  consumers — `forgeplan get` UI (`get.rs:80`), search filter
+  `--has-evidence` (`search/filter.rs:93-94`), F-G-R quality grading
+  (`scoring/fgr.rs:150`) и LLM ADI prompt context
+  (`llm/reason.rs:218`). User-observed reproducer: PRD-074 reported
+  `R_eff: 0.00` from `get` while `score` returned 1.00 Adequate against
+  the same EVID-104 link.
+
+  **Fix**: new shared helper
+  `forgeplan_core::scoring::sync_score_target(store, id) -> f64`
+  encapsulates `r_eff_recursive` + `update_r_eff_score` and is called
+  synchronously after each `link`, `unlink`, `activate` mutation.
+  `score` / `score-all` route through the same helper to keep one
+  canonical "recompute + persist" path. Failure during auto-recompute
+  is non-fatal — the mutation succeeded, and `forgeplan score-all`
+  remains the authoritative full-tree reconciliation surface.
+
+  **Scope**: target artifact only. Parent / ancestor walk left to
+  `score-all` (PRD-075 §Non-Goals — bounded mutator latency). Schema
+  unchanged: workspaces from v0.29 read identically. `r_eff_recursive`
+  signature preserved for downstream callers.
+
+  **Hints updated**: post-mutation hints now point to
+  `forgeplan score-all` (parent reconciliation) instead of the
+  now-redundant `forgeplan score <ID>` per-target rescore.
+
+  **Tests**: 3 new unit tests cover persistence on no-evidence path,
+  stale-cache overwrite (regression guard for PROB-057), and
+  unknown-id error surfacing. Full workspace test suite stays green
+  (no regressions across the 1985-test baseline).
+
+### Changed (Trust calculus — PROB-058 partial closure, Round 9 audit)
+
+- **PROB-058 AC-2/4/5/6 closed + MCP transport parity** (Round 9
+  adversarial audit, 2 parallel agents). Cache self-healing now extends
+  to the MCP transport that LLM-orchestrated agents actually use:
+  - **MCP `forgeplan_link` / `forgeplan_activate`** acquire the
+    workspace lock and call `sync_score_target` after mutation; CLI
+    parity restored. Hint strings updated к `forgeplan_score_all`
+    (FR-009).
+  - **MCP `forgeplan_score`** — pre-Round-9 this tool computed
+    `r_eff_recursive` for display but **never persisted** the
+    recomputed value (latent bug since MCP launch). Now routes through
+    `sync_score_target` to write the cache.
+  - **`forgeplan score` / `score --all`** acquire `open_store_locked()`
+    so concurrent CLI/MCP mutators serialize correctly. Trade-off:
+    `score --all` now holds the lock for the entire batch — на dense
+    graphs (>200 artifacts × deep deps) this can starve concurrent
+    callers past the 30 s lock timeout. PROB-058 AC-3 (`r_eff_local`
+    variant) tracks the bound.
+  - **AC-2 regression test**: real concurrent-writer test added
+    (`parallel_score_all_invocations_serialize_via_workspace_lock`)
+    spawning two `forgeplan score --all` processes via OS-level fs2
+    advisory lock — closes the methodology gap that motivated
+    `feedback_meta_tooling_discipline.md`.
+  - **AC-4 hint contract**: 3 negative tests (link / unlink / activate)
+    use line-shape match (not substring contains) to prevent
+    concatenated drift like `score-all && score <ID>` from passing.
+  - **AC-5 threat model**: PRD-075 §"Threat Model — Mutation Latency
+    Side-Channel" documents the timing oracle posture for
+    multi-tenant/MCP-shared deployments, with explicit
+    trigger-to-revisit conditions.
+  - **AC-6 docstring**: `sync_score_target` rewrites scope to
+    distinguish evidence collection (bidirectional), dependency
+    recursion (descendant-only), and transitive parent rescore (out of
+    scope) — fixes Round 9 HIGH-3 factual mismatch with implementation.
+
+  **Deferred to follow-up sprint** (PROB-058 AC-1, AC-3): driver-trait
+  parity for `sync_score_target` (требует `r_eff_recursive` signature
+  rework across entire scoring pipeline) и `r_eff_local` perf-bound
+  variant (нужен benchmark scaffold). Current workspace size profile
+  (≤300 artifacts) does not exhibit the FR-005 100ms budget violation
+  in practice.
+
+  **Tests**: +3 negative hint tests, +1 concurrent-writer regression
+  test, +1 cycle-termination test, +1 malformed-id rejection test.
+  Suite total: **1985 baseline → ~1995+ tests pass**, 0 fail across
+  all gates (fmt / clippy --deny-warnings / workspace test).
+
 ## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
 
 Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five

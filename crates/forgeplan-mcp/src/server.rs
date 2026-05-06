@@ -1500,9 +1500,22 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ScoreParams>,
     ) -> Result<CallToolResult, McpError> {
+        let ws_opt = self.require_workspace().await.ok();
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Round 9 audit HIGH-1: MCP parity — acquire workspace lock so MCP
+        // `forgeplan_score` writes serialize against CLI/MCP mutators.
+        // Pre-Round 9 the inline `r_eff_recursive` was called but
+        // `update_r_eff_score` was never invoked; the helper closes that gap.
+        let _lock_guard = match ws_opt.as_ref() {
+            Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
+                Ok(g) => Some(g),
+                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+            },
+            None => None,
         };
 
         let target = match store.get_record(&p.id).await {
@@ -1565,21 +1578,37 @@ impl ForgeplanServer {
             evidence_items.push(item);
         }
 
-        // Recursive R_eff with dependency chain analysis
-        let mut visited = HashSet::new();
-        let report = reff::r_eff_recursive(&p.id, &store, &mut visited)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("Failed recursive R_eff for {}: {e}", p.id);
-                reff::AssuranceReport {
-                    artifact_id: p.id.clone(),
-                    r_eff: 0.0,
-                    self_score: 0.0,
-                    weakest_link: None,
-                    decay_penalty: 0.0,
-                    factors: vec![format!("Error: {e}")],
-                }
-            });
+        // PROB-057 / Round 9 HIGH-1: MCP parity — route through
+        // `sync_score_target` so the recomputed value is persisted to the
+        // cache. Pre-Round 9, MCP `forgeplan_score` computed the score for
+        // display but never wrote it back, leaving the cache stale forever
+        // through the MCP transport. On failure fall back to a fresh walk
+        // so the response still carries a breakdown.
+        let report = match forgeplan_core::scoring::sync_score_target(&store, &p.id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    target = "scoring",
+                    error = %e,
+                    id = %p.id,
+                    "MCP forgeplan_score persist failed; recomputing for display only"
+                );
+                let mut visited = HashSet::new();
+                reff::r_eff_recursive(&p.id, &store, &mut visited)
+                    .await
+                    .unwrap_or_else(|e2| {
+                        tracing::warn!("Failed recursive R_eff for {}: {e2}", p.id);
+                        reff::AssuranceReport {
+                            artifact_id: p.id.clone(),
+                            r_eff: 0.0,
+                            self_score: 0.0,
+                            weakest_link: None,
+                            decay_penalty: 0.0,
+                            factors: vec![format!("Error: {e2}")],
+                        }
+                    })
+            }
+        };
 
         // F-G-R quality breakdown
         let kind: ArtifactKind = target.kind.parse().unwrap_or(ArtifactKind::Note);
@@ -1693,6 +1722,14 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // PROB-058 Round 9 audit HIGH-1: MCP transport must mirror the CLI
+        // workspace lock to avoid concurrent-write races between MCP and CLI
+        // mutators against the shared LanceDB.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+        };
+
         let relation = match link::normalize_relation(p.relation.as_str()) {
             Ok(r) => r,
             Err(e) => {
@@ -1739,13 +1776,27 @@ impl ForgeplanServer {
             ));
         }
 
+        // PROB-057 / PRD-075 + Round 9 HIGH-1: MCP parity for sync recompute.
+        // Failure is non-fatal (mutation succeeded); surface via tracing so
+        // structured logs preserve the chain without aborting the response.
+        if let Err(e) = forgeplan_core::scoring::sync_score_target(&store, &p.source).await {
+            tracing::warn!(
+                target = "scoring",
+                error = %e,
+                id = %p.source,
+                "auto-recompute failed after MCP forgeplan_link; run forgeplan_score_all"
+            );
+        }
+
         let safe_src = sanitize_for_hint(&p.source);
         let safe_tgt = sanitize_for_hint(&p.target);
         let next_action = match relation.as_str() {
-            "informs" | "based_on" => format!(
-                "Linked. If source is evidence, `forgeplan_score {safe_tgt}` to see updated \
-                 R_eff. Continue linking more evidence if needed."
-            ),
+            // PRD-075 FR-009 / Round 9 HIGH-1: cache is now self-healing for
+            // the source after each link, so the canonical follow-up is parent
+            // chain reconciliation via score-all, NOT a per-target rescore.
+            "informs" | "based_on" => "Linked. R_eff recomputed on source. Reconcile parents: \
+                 `forgeplan_score_all`."
+                .to_string(),
             "supersedes" => format!(
                 "Supersede link set. Consider also marking old artifact: `forgeplan_supersede \
                  {safe_tgt} --by {safe_src}`."
@@ -2226,6 +2277,16 @@ impl ForgeplanServer {
         };
         let ws_opt = self.require_workspace().await.ok();
 
+        // Round 9 audit HIGH-1: MCP parity — acquire workspace lock to
+        // serialize against CLI mutators (link/activate/score/score-all).
+        let _lock_guard = match ws_opt.as_ref() {
+            Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
+                Ok(g) => Some(g),
+                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+            },
+            None => None,
+        };
+
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
         if let Some(ws) = &ws_opt
             && let Err(e) =
@@ -2238,6 +2299,19 @@ impl ForgeplanServer {
 
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
+                // PROB-057 / Round 9 HIGH-1: MCP parity — sync the cached R_eff
+                // BEFORE rendering the markdown projection so the on-disk file
+                // (source of truth per ADR-003) reflects the post-activation
+                // score, not the pre-activation cache.
+                if let Err(e) = forgeplan_core::scoring::sync_score_target(&store, &p.id).await {
+                    tracing::warn!(
+                        target = "scoring",
+                        error = %e,
+                        id = %p.id,
+                        "auto-recompute failed after MCP forgeplan_activate; run forgeplan_score_all"
+                    );
+                }
+
                 // ADR-003 / PROB-048 file-first: render store → file so the
                 // file's `status:` reflects active. Avoids file/lance skew.
                 if let Some(ws) = &ws_opt
@@ -2273,9 +2347,10 @@ impl ForgeplanServer {
                         }
                     ));
                 }
-                // PRD-071: single primary — verify trust on activation.
-                // Removed the "If X then Y" conditional and the multi-step
-                // commit narrative; both broke determinism.
+                // PRD-071 + PRD-075 FR-009 (Round 9 HIGH-1): trust is already
+                // recomputed inline above; canonical follow-up is parent
+                // chain reconciliation, NOT a per-target rescore.
+                let _ = safe_id; // bound for future use, currently no per-id substitution
                 let next_action = if result.forced {
                     format!(
                         "Activated with {} MUST error(s) (forced). Backfill evidence: \
@@ -2283,7 +2358,8 @@ impl ForgeplanServer {
                         result.must_errors.len()
                     )
                 } else {
-                    format!("Verify trust: `forgeplan_score {safe_id}`.")
+                    "R_eff recomputed on activation. Reconcile parents: `forgeplan_score_all`."
+                        .to_string()
                 };
                 hinted_result(
                     &serde_json::json!({
