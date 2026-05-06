@@ -337,7 +337,7 @@ pub async fn health_report_with_phase(
             .map(|r| (r.id.clone(), r.title.clone(), r.status.clone()))
             .collect();
         let workspace_owned = workspace.to_path_buf();
-        futures::stream::iter(active_records.into_iter())
+        futures::stream::iter(active_records)
             .map(|(id, title, status)| {
                 let ws = workspace_owned.clone();
                 async move {
