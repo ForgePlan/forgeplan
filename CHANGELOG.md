@@ -9,6 +9,36 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed (Search UX — PROB-032 closure, score breakdown lies)
+
+- **PROB-032 ✅ — `forgeplan search` score breakdown coherent с total**.
+  Pre-PROB-032 the display showed `kw=0.0 sem=0.0 r=0.0 g=0.0` while
+  total score was non-zero (e.g. 0.57) — violating "sum ≈ total"
+  expectation и lying к user about ranking composition.
+
+  **Root cause**: `SmartSearchResult` carries TWO keyword channels
+  (`keyword_score` substring + `bm25_score` BM25). `combined_score()`
+  uses `max(bm25, keyword_score)` as base, but CLI display showed только
+  `keyword_score`. When match was via BM25 tokenization (e.g. "auth"
+  matches "authentication" via stemming но not as substring),
+  `keyword_score` = 0 hence misleading `kw=0.0` display.
+
+  **Two-part fix** в `crates/forgeplan-cli/src/commands/search.rs`:
+  - Display `max(bm25_score, keyword_score)` so the visible value
+    reflects the actually-contributing channel (matches what
+    `combined_score()` consumes)
+  - Bump precision `{:.1}` → `{:.2}` so contributions of 0.02–0.09 no
+    longer round-down к 0.0
+
+  **Real E2E verified**: query "api error" against fresh workspace now
+  shows `kw=0.36 sem=0.00 r=0.00 g=0.00` matching total 0.36 (was
+  pre-fix `kw=0.0 ... total 0.36`).
+
+  Architectural pattern same as PROB-029 verdict aggregator: hidden
+  fold logic + display path that lies about the fold. When scoring
+  formula uses `max()` / `mean()` / `weighted_sum()` over multiple
+  channels, display MUST show the actually-contributing channel(s).
+
 ### Fixed (Reindex — PROB-028 closure, reindex resilience)
 
 - **PROB-028 ✅ — `forgeplan reindex` resilience против Phase-1 abort**.
