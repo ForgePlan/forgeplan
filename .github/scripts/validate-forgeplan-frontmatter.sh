@@ -82,6 +82,16 @@ assigned_number_changed() {
     [[ "$current" == "null" || "$current" == "~" ]] && current=""
     [[ "$previous" == "null" || "$previous" == "~" ]] && previous=""
 
+    # Round 2 audit FINDING-4: assign-id workflow self-deadlock fix.
+    # CI bot stamps `assigned_number: null → <integer>` and pushes back to PR.
+    # Synchronize event re-runs validator. Without this special-case, validator
+    # detects null→integer as write-once violation and fails the bot's commit.
+    # Treat null→integer as the LEGITIMATE bot stamp (only flag <integer>→<other>
+    # or <integer>→null as actual write-once violations).
+    if [[ -z "$previous" && -n "$current" && "$current" =~ ^[0-9]+$ ]]; then
+        return 1  # false — this is the CI bot's stamp, not a violation
+    fi
+
     # Compare: if either differs (including empty vs non-empty), they've changed
     [[ "$current" != "$previous" ]]
 }

@@ -2203,7 +2203,12 @@ impl ForgeplanServer {
 
         // Projection was already moved into trash by soft_delete_capture.
 
-        let safe_id = sanitize_for_hint(&p.id);
+        // Round 2 audit FINDING-1: emit slug pre-merge / display id post-merge
+        // в recovery hint (CD-5 contract). Pre-merge restore must use slug
+        // because display id is unstable until CI bot stamp.
+        let ref_form =
+            forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+        let safe_id = sanitize_for_hint(&ref_form);
         hinted_result(
             &serde_json::json!({
                 "id": p.id,
@@ -2428,8 +2433,17 @@ impl ForgeplanServer {
                     )
                     .await;
                 }
-                let safe_id = sanitize_for_hint(&p.id);
-                let mut msg = format!("Activated {} (draft → active)", p.id);
+                // Round 2 audit FINDING-1: emit slug pre-merge / display id
+                // post-merge в `msg` so агент uses canonical reference в follow-up.
+                // Best-effort fetch — if record не resolvable, fall back to p.id.
+                let ref_form = match store.get_record(&p.id).await {
+                    Ok(Some(r)) => {
+                        forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id)
+                    }
+                    _ => p.id.clone(),
+                };
+                let safe_id = sanitize_for_hint(&ref_form);
+                let mut msg = format!("Activated {safe_id} (draft → active)");
                 if result.forced {
                     msg.push_str(&format!(
                         "\nWarning: Activated with {} validation error{}",
@@ -2444,7 +2458,7 @@ impl ForgeplanServer {
                 // PRD-071 + PRD-075 FR-009 (Round 9 HIGH-1): trust is already
                 // recomputed inline above; canonical follow-up is parent
                 // chain reconciliation, NOT a per-target rescore.
-                let _ = safe_id; // bound for future use, currently no per-id substitution
+                let _ = safe_id; // bound для future use в hints (currently used в msg above)
                 let next_action = if result.forced {
                     format!(
                         "Activated with {} MUST error(s) (forced). Backfill evidence: \
