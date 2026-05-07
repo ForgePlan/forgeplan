@@ -52,11 +52,6 @@ assigned_number_changed() {
     local current
     current=$(extract_field "$file" "assigned_number")
 
-    # If not in git yet (new file), it hasn't changed
-    if ! git ls-files --error-unmatch "$file" > /dev/null 2>&1; then
-        return 1  # false - file is new
-    fi
-
     # CRIT-1 fix: use BASE_REF from CI environment, fail closed if missing
     local base_ref="${BASE_REF:-}"
     if [[ -z "$base_ref" ]]; then
@@ -64,14 +59,28 @@ assigned_number_changed() {
         exit 1
     fi
 
-    # Get the assigned_number from the base ref version
+    # Round 2 audit: file existence в base ref — not currently tracked in HEAD
+    # (Round 1 used `git ls-files --error-unmatch` which is HEAD-tracking;
+    # для write-once rule we need "exists in base ref" not "exists in HEAD").
+    if ! git show "origin/${base_ref}:${file}" > /dev/null 2>&1 \
+       && ! git show "${base_ref}:${file}" > /dev/null 2>&1; then
+        return 1  # file is new in base — write-once rule does not apply
+    fi
+
+    # Get the assigned_number from the base ref version (try origin/<ref>
+    # first, fall back к local <ref> для tests без remote).
     local previous
-    previous=$(git show "origin/${base_ref}:${file}" 2>/dev/null | \
-        sed -n '/^---$/,/^---$/p' | \
-        grep "^assigned_number:" | \
-        head -1 | \
-        sed 's/^assigned_number:[[:space:]]*//' | \
-        sed 's/^"\(.*\)"$/\1/' || true)
+    previous=$(git show "origin/${base_ref}:${file}" 2>/dev/null \
+        || git show "${base_ref}:${file}" 2>/dev/null \
+        | sed -n '/^---$/,/^---$/p' \
+        | grep "^assigned_number:" \
+        | head -1 \
+        | sed 's/^assigned_number:[[:space:]]*//' \
+        | sed 's/^"\(.*\)"$/\1/' || true)
+
+    # Round 2 audit FINDING-2: normalize YAML null forms на обоих sides.
+    [[ "$current" == "null" || "$current" == "~" ]] && current=""
+    [[ "$previous" == "null" || "$previous" == "~" ]] && previous=""
 
     # Compare: if either differs (including empty vs non-empty), they've changed
     [[ "$current" != "$previous" ]]
@@ -117,8 +126,11 @@ validate_artifact() {
             ERRORS=$((ERRORS + 1))
         fi
 
-        # CRIT-2 Layer A: Reject pre-set assigned_number on new artifacts
-        if [[ -n "$assigned_number" ]]; then
+        # CRIT-2 Layer A: Reject pre-set assigned_number on new artifacts.
+        # Round 2 audit FINDING-2: bash extract_field returns literal "null" for
+        # YAML scalar null. Treat "null", "~", and empty as YAML-null equivalent
+        # (matches Rust serde_yaml semantics).
+        if [[ -n "$assigned_number" && "$assigned_number" != "null" && "$assigned_number" != "~" ]]; then
             echo "❌ ERROR: New artifact '$basename' has pre-set assigned_number: '$assigned_number' (invariant I-2 violation)"
             echo "   assigned_number must be null or absent in new artifacts — only CI bot may assign it after merge"
             ERRORS=$((ERRORS + 1))
@@ -148,13 +160,29 @@ main() {
     # Find all artifact files that were added or modified in this PR
     local artifact_files=()
 
-    # Get changed files from git diff
+    # Round 2 audit FINDING-1: actions/checkout@v4 leaves clean working tree
+    # — `git diff --cached` returns empty on every CI run, so the validator
+    # discovered ZERO files in production. Use BASE_REF-aware diff instead;
+    # fail closed if BASE_REF is missing (script entry guards against this).
+    local base_ref="${BASE_REF:-}"
+    if [[ -z "$base_ref" ]]; then
+        echo "❌ ERROR: BASE_REF environment variable not set (required for file discovery)"
+        exit 1
+    fi
+
+    # Validate BASE_REF shape (Round 2 FINDING-9 — CWE-78 defense): branch
+    # name must be safe для interpolation в `git show "origin/${BASE_REF}:..."`.
+    if ! [[ "$base_ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+        echo "❌ ERROR: BASE_REF '$base_ref' contains unsafe characters"
+        exit 1
+    fi
+
     while IFS= read -r file; do
         # Check if file is in a .forgeplan artifact directory
         if [[ "$file" =~ ^\.forgeplan/(prds|rfcs|adrs|epics|specs|evidence|problems|solutions|refresh|notes|memory)/.*\.md$ ]]; then
             artifact_files+=("$file")
         fi
-    done < <(git diff --name-only --cached || git diff --name-only HEAD...origin/main 2>/dev/null || true)
+    done < <(git diff --name-only "origin/${base_ref}...HEAD" 2>/dev/null)
 
     if [[ ${#artifact_files[@]} -eq 0 ]]; then
         echo "ℹ️  No Forgeplan artifacts to validate"
