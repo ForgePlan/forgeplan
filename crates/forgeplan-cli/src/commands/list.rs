@@ -38,11 +38,14 @@ pub async fn run(
     };
 
     let all = store.list_records(None).await?;
-    let artifacts: Vec<_> = all
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — capture full records so
+    // hint emission can pick slug vs display id based on each artifact's
+    // pre/post-merge state. The summary projection is built afterwards.
+    let full_records: Vec<_> = all
         .into_iter()
         .filter(|r| composed.as_ref().map(|f| f.matches(r)).unwrap_or(true))
-        .map(|r| r.to_summary())
         .collect();
+    let artifacts: Vec<_> = full_records.iter().map(|r| r.to_summary()).collect();
 
     let mut hints_vec: Vec<Hint> = Vec::new();
 
@@ -70,10 +73,17 @@ pub async fn run(
     }
 
     // Pick first artifact for default Next: action.
-    let first_id = artifacts[0].id.clone();
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug for pre-merge
+    // artifacts, display id otherwise, so the agent's next `forgeplan get`
+    // call uses the canonical reference form (matters for commit `Refs:`).
+    let first_record = &full_records[0];
+    let first_ref = forgeplan_core::artifact::frontmatter::refs_form_from_body(
+        &first_record.body,
+        &first_record.id,
+    );
     hints_vec.push(
-        Hint::info(format!("Inspect {}", first_id))
-            .with_action(format!("forgeplan get {}", first_id)),
+        Hint::info(format!("Inspect {}", first_ref))
+            .with_action(format!("forgeplan get {}", first_ref)),
     );
 
     if json {

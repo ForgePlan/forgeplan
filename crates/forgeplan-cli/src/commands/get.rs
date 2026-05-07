@@ -38,33 +38,41 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .parse()
         .unwrap_or(forgeplan_core::artifact::types::Mode::Standard);
 
-    let mut hints_vec: Vec<Hint> =
-        hints::get_hints(&record.id, &record.status, &kind, has_links, &depth);
+    // PROB-060 / SPEC-005 Phase 1.4 — slug lives in the body's YAML
+    // frontmatter (the template-rendered block, not the DB-derived
+    // synthetic one). Parse the body to extract it; non-fatal on failure.
+    let parsed_fm = forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body).ok();
+    let slug_for_json = parsed_fm.as_ref().and_then(|(fm, _)| {
+        forgeplan_core::artifact::frontmatter::slug_from_frontmatter(fm).map(|s| s.to_string())
+    });
 
-    // Top-level Next: hint per status — full command, real ID.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pick the canonical
+    // reference form for hints: slug pre-merge, display id post-merge.
+    // Falls back to `record.id` for legacy artifacts without slug.
+    let ref_form: String = parsed_fm
+        .as_ref()
+        .map(|(fm, _)| forgeplan_core::artifact::frontmatter::refs_form(fm, &record.id).to_string())
+        .unwrap_or_else(|| record.id.clone());
+
+    let mut hints_vec: Vec<Hint> =
+        hints::get_hints(&ref_form, &record.status, &kind, has_links, &depth);
+
+    // Top-level Next: hint per status — full command using slug pre-merge
+    // or display id post-merge so commit `Refs:` lines stay canonical.
     let primary = match record.status.as_str() {
         "draft" => Some(
             Hint::suggestion("Validate after filling MUST sections")
-                .with_action(format!("forgeplan validate {}", record.id)),
+                .with_action(format!("forgeplan validate {}", ref_form)),
         ),
         "active" if record.r_eff_score < 0.5 => Some(
             Hint::warning("R_eff below 0.5 — score and add evidence")
-                .with_action(format!("forgeplan score {}", record.id)),
+                .with_action(format!("forgeplan score {}", ref_form)),
         ),
         _ => None,
     };
     if let Some(h) = primary {
         hints_vec.insert(0, h);
     }
-
-    // PROB-060 / SPEC-005 Phase 1.4 — slug lives in the body's YAML
-    // frontmatter (the template-rendered block, not the DB-derived
-    // synthetic one). Parse the body to extract it; non-fatal on failure.
-    let slug_for_json = forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body)
-        .ok()
-        .and_then(|(fm, _)| {
-            forgeplan_core::artifact::frontmatter::slug_from_frontmatter(&fm).map(|s| s.to_string())
-        });
 
     if json {
         let json_data = serde_json::json!({

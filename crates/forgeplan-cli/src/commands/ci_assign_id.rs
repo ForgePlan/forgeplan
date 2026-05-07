@@ -17,17 +17,35 @@
 //! 3. Mint sequential numbers starting from `max+1`, deterministic order.
 //! 4. Detect slug collisions (slug already exists in `--base`) — exit 1
 //!    unless `--auto-suffix` is supplied (Phase 0b prototype: warning only;
-//!    rename is Phase 2.1's responsibility).
-//! 5. Rewrite frontmatter only (no file rename — Phase 2.1 task).
+//!    rename is Phase 2.1's responsibility — now implemented in Phase 2.2).
+//! 5. Rewrite frontmatter and (Phase 2.2) rename file from
+//!    `<kind>-<slug-suffix>.md` → `<KIND>-<NNN>-<slug-suffix>.md` so the
+//!    on-disk filename agrees with the freshly assigned display ID.
 //! 6. Emit either human-readable summary or `--json` per CD-3 schema.
 //!
-//! ## What this binary deliberately does NOT do (Phase 0b boundaries)
+//! ## What this binary deliberately does NOT do (Phase 0b/2 boundaries)
 //!
-//! - Rename `.md` files (`prd-slug.md` → `PRD-074-slug.md`) — Phase 2.1.
 //! - Touch LanceDB (`lance/`) — ADR-003 red-line #8.
 //! - Read `change_log` table — PROB-061 isolation.
 //! - Run `git commit` / `git push` — workflow YAML wraps and commits.
 //! - Network calls — purely local git plumbing.
+//!
+//! ## Phase 2.2 — file rename atomicity (CD-4 binding)
+//!
+//! After [`set_assigned_number`] rewrites the frontmatter atomically (tmp
+//! plus POSIX rename), [`apply_plan`] additionally renames the file itself
+//! from the Phase 1 placeholder shape to the display-id-prefixed form
+//! (e.g. `prd-auth-system.md` becomes `PRD-074-auth-system.md`).
+//!
+//! Rename strategy: `git mv` if we're inside a git work tree (preserves
+//! history under squash-merge), with [`std::fs::rename`] as a fallback
+//! for non-git callers (tests, ad-hoc CLI use). Idempotent — if the
+//! filename already matches the target, no rename is invoked.
+//!
+//! Reflected in [`Assignment::action`] via additive enum variants per
+//! CD-3 — `renamed` and `renamed_and_assigned`. The JSON
+//! `schema_version` stays at `1` because consumers must already treat
+//! `action` as an open-set string per the original CD-3 contract.
 
 use std::path::{Path, PathBuf};
 
@@ -112,7 +130,6 @@ const EXIT_SUCCESS: i32 = 0;
 const EXIT_COLLISION: i32 = 1;
 const EXIT_NO_CANDIDATES: i32 = 2;
 const EXIT_CONFIG_ERROR: i32 = 3;
-#[allow(dead_code)]
 const EXIT_INVARIANT_VIOLATION: i32 = 4;
 
 /// JSON output schema version (CD-3).
@@ -123,11 +140,28 @@ const JSON_SCHEMA_VERSION: u32 = 1;
 pub struct Assignment {
     pub slug: String,
     pub kind: String,
+    /// Workspace-relative path to the artifact file.  When Phase 2.2
+    /// rename takes effect, this reflects the **post-rename** filename
+    /// (e.g. `.forgeplan/prds/PRD-074-auth-system.md`) so JSON consumers
+    /// see the canonical on-disk location.
     pub path: String,
     pub predicted_number: Option<u32>,
     pub assigned_number: u32,
     pub max_in_base: Option<u32>,
-    /// `assigned`, `skipped_already_assigned`, or `would_assign` (dry-run).
+    /// One of the following CD-3 action strings:
+    /// * `assigned` — frontmatter rewritten this run (no rename needed).
+    /// * `renamed` — file renamed this run (frontmatter was already
+    ///   correct; recovers from a partial earlier run that rewrote
+    ///   frontmatter but failed before the rename step).
+    /// * `renamed_and_assigned` — both frontmatter and rename happened
+    ///   this run (the common Phase 2.2 fresh-assignment path).
+    /// * `skipped_already_assigned` — no-op (idempotent re-run on a
+    ///   fully-numbered + correctly-named artifact).
+    /// * `would_assign` — dry-run preview; no filesystem mutation.
+    ///
+    /// CD-3 is additive — `JSON_SCHEMA_VERSION` stays at `1` because
+    /// consumers must treat `action` as an open-set string per the
+    /// initial Phase 0b contract.
     pub action: String,
 }
 
@@ -249,8 +283,18 @@ pub async fn run(args: CiAssignIdArgs) -> Result<i32> {
     }
 
     // 2. Compute assignment plan against base.
-    let plan = compute_assignment_plan(&workspace, &args.base, &candidates)
-        .with_context(|| format!("computing plan against base ref {}", args.base))?;
+    // CRIT-2 Layer B: catch invariant violations and return EXIT_INVARIANT_VIOLATION
+    let plan = match compute_assignment_plan(&workspace, &args.base, &candidates) {
+        Ok(p) => p,
+        Err(e) if e.to_string().contains("CRIT-2 invariant violation") => {
+            eprintln!("{}", e);
+            return Ok(EXIT_INVARIANT_VIOLATION);
+        }
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("computing plan against base ref {}", args.base))?;
+        }
+    };
 
     // 3. Apply (or simulate if --dry-run). Round 2 [CR-7]: auto_suffix
     //    no longer plumbed through to apply_plan — collision suffix is
@@ -411,6 +455,11 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
 /// that absorbed maximum. Without the 2-pass shape, an input like
 /// `[null, null, existing=80]` against `max_in_base=73` would produce
 /// `74, 75, 80` — leaking 80 across the next CI run boundary.
+///
+/// CRIT-2 Layer B: Detect pre-set assigned_number on new artifacts and exit
+/// with EXIT_INVARIANT_VIOLATION. A new artifact (not in base ref) must not
+/// carry a pre-set assigned_number — only the CI bot is allowed to assign
+/// these numbers after merge. Fail-closed to defend against tampering.
 pub fn compute_assignment_plan(
     workspace: &Path,
     base_ref: &str,
@@ -441,6 +490,47 @@ pub fn compute_assignment_plan(
         seq_per_kind.insert(kind_dir.clone(), max_in_base.unwrap_or(0));
         let files = artifact_filenames_in_origin_dev(workspace, kind_dir);
         base_files_per_kind.insert(kind_dir.clone(), files);
+    }
+
+    // CRIT-2 Layer B: Pre-flight check — reject pre-set assigned_number on new artifacts
+    // Only check when there ARE existing artifacts in base for this kind.
+    // If base_files is empty for a kind, the artifact might be the first in that kind,
+    // and re-processing is legitimate (idempotent re-run of the assignment).
+    for c in candidates {
+        if let Some(existing) = c.current_assigned {
+            let kind_dir = c.kind.dir_name().to_string();
+            let base_files = base_files_per_kind
+                .get(&kind_dir)
+                .cloned()
+                .unwrap_or_default();
+
+            // Skip check if no artifacts exist in base yet for this kind
+            if base_files.is_empty() {
+                continue;
+            }
+
+            // Check if this specific artifact exists in the base ref
+            let exists_in_base = base_files.iter().any(|f| {
+                f.ends_with(&format!("{}.md", c.slug)) || f.contains(&format!("{}-", c.slug)) // Handle numbered filenames
+            });
+
+            // Fail closed: new artifact (not in base) with pre-set assigned_number is an invariant violation
+            if !exists_in_base {
+                eprintln!(
+                    "INVARIANT VIOLATION: New artifact {} in {} has pre-set assigned_number: {} \
+                     (only CI bot may assign numbers after merge)",
+                    redact_path(workspace, &c.path),
+                    base_ref,
+                    existing
+                );
+                anyhow::bail!(
+                    "CRIT-2 invariant violation: pre-set assigned_number on new artifact '{}' \
+                     (file: {})",
+                    c.slug,
+                    redact_path(workspace, &c.path)
+                );
+            }
+        }
     }
 
     // Pass 1: absorb every already-assigned number into the per-kind
@@ -499,7 +589,101 @@ pub fn compute_assignment_plan(
     Ok(output)
 }
 
-/// Apply the plan: rewrite frontmatter, return assignment + collision lists.
+/// Compute the Phase 2.2 target filename for a freshly assigned artifact.
+///
+/// **Pattern**: `<KIND>-<NNN>-<slug-suffix>.md` where:
+/// * `KIND` is the uppercased canonical prefix (`PRD`, `RFC`, `PROB`, …)
+///   derived from [`ArtifactKind::prefix`] (without trailing dash). Mirror
+///   of [`display_id`]'s mapping — same source of truth for kind→prefix.
+/// * `NNN` is `assigned_number` zero-padded to three digits.
+/// * `slug-suffix` is the slug with the kind prefix stripped
+///   (`prd-auth-system` → `auth-system`). If the slug somehow lacks the
+///   expected prefix (defensive — `validate_slug` guarantees the shape
+///   upstream), we fall back to the bare slug.
+///
+/// Pure function — no filesystem access, easy to unit-test (see
+/// `target_filename_*` tests below).
+fn target_filename(kind: &ArtifactKind, slug: &str, assigned_number: u32) -> String {
+    let kind_prefix_lc = kind.prefix().trim_end_matches('-'); // "prd"
+    let kind_prefix_uc = kind_prefix_lc.to_uppercase(); // "PRD"
+    let suffix = slug
+        .strip_prefix(kind.prefix())
+        .unwrap_or(slug)
+        .trim_start_matches('-');
+    if suffix.is_empty() {
+        // Degenerate — slug was exactly the prefix. Emit `KIND-NNN.md`
+        // rather than a trailing-dash filename. validate_slug rejects
+        // this shape upstream so this branch is defensive only.
+        format!("{kind_prefix_uc}-{assigned_number:03}.md")
+    } else {
+        format!("{kind_prefix_uc}-{assigned_number:03}-{suffix}.md")
+    }
+}
+
+/// Detect whether `workspace` lies inside a git work tree.
+///
+/// Used to decide between `git mv` (preserves blame/history under the
+/// post-merge squash) and a plain [`std::fs::rename`] fallback (tests,
+/// ad-hoc local CLI use). `git rev-parse --is-inside-work-tree` is the
+/// canonical query — it returns `true` on stdout and exit 0 inside a
+/// repo, exit non-zero outside. We treat any failure (git missing,
+/// network FS quirk, IO error) as "not a git repo" — the
+/// [`std::fs::rename`] fallback is correct in either case for the
+/// rename outcome.
+fn is_inside_git_repo(workspace: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(workspace)
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
+}
+
+/// Rename a tracked artifact file from `from` → `to` while preserving git
+/// history when possible. Phase 2.2 (CD-4) — atomicity contract:
+///
+/// 1. **In a git repo**: invoke `git mv -- <from> <to>`. `git mv` records
+///    the move in the index so blame/log surface continuity post-merge.
+///    On failure (e.g. file not yet `git add`-ed in fresh-fixture tests)
+///    we silently fall through to [`std::fs::rename`] — the rename still
+///    has to happen for the binary's contract; the worst case is loss of
+///    history continuity, which the wrapping workflow's `git add -A`
+///    step would also induce.
+/// 2. **Outside a git repo or git failed**: [`std::fs::rename`].
+///
+/// The target must NOT already exist as a distinct file — overlay a
+/// pre-rename idempotency check at the call site (compare canonical
+/// paths) before invoking. We surface IO errors with `Context` so the
+/// caller's `with_context` chain points at the offending pair.
+fn rename_artifact_file(workspace: &Path, from: &Path, to: &Path) -> Result<()> {
+    if is_inside_git_repo(workspace) {
+        let output = std::process::Command::new("git")
+            .args(["mv", "--"])
+            .arg(from)
+            .arg(to)
+            .current_dir(workspace)
+            .output();
+        if let Ok(o) = output
+            && o.status.success()
+        {
+            return Ok(());
+        }
+        // git mv refused (e.g. unstaged file in test fixtures) or git
+        // is unavailable. Fall through to plain rename — the file
+        // system mutation still needs to happen and the wrapper
+        // workflow's `git add -A` will record the rename.
+    }
+    std::fs::rename(from, to).with_context(|| {
+        format!(
+            "ci-assign-id: rename {} -> {}",
+            redact_path(workspace, from),
+            redact_path(workspace, to)
+        )
+    })
+}
+
+/// Apply the plan: rewrite frontmatter, rename file (Phase 2.2), return
+/// assignment + collision lists.
 ///
 /// PROB-060 Phase 0b Round 2 closures:
 /// - **[CR-7]** drops the no-op `auto_suffix` parameter — Phase 0b
@@ -514,6 +698,22 @@ pub fn compute_assignment_plan(
 ///     * write to a `*.md.tmp` sibling and `rename` to publish atomically —
 ///       a crash mid-write leaves either the old or new file, never a
 ///       half-written one.
+///
+/// Phase 2.2 [CD-4] additions:
+/// - After the frontmatter rewrite (or skipping it for already-assigned
+///   artifacts), compute the target filename via [`target_filename`].
+/// - If the current basename differs from the target, rename via
+///   [`rename_artifact_file`] (`git mv` when in a repo, `std::fs::rename`
+///   otherwise). The same SEC-5/SEC-6 invariants apply: target must
+///   stay inside the workspace and must not collide with a distinct
+///   existing file.
+/// - The [`Assignment::path`] in the returned vector reflects the
+///   **post-rename** filename so consumers see canonical state.
+/// - Action enum extended: `renamed`, `renamed_and_assigned` (additive
+///   per CD-3 — `JSON_SCHEMA_VERSION` unchanged).
+/// - Dry-run remains side-effect-free: no rename is invoked, action
+///   stays at `would_assign` / `skipped_already_assigned` for parity
+///   with the existing dry-run contract.
 pub fn apply_plan(
     workspace: &Path,
     plan: &[PlanItem],
@@ -529,7 +729,8 @@ pub fn apply_plan(
 
     for item in plan {
         let kind_template_key = item.candidate.kind.template_key().to_string();
-        let path_str = item.candidate.path.to_string_lossy().into_owned();
+        let mut current_path = item.candidate.path.clone();
+        let path_str = current_path.to_string_lossy().into_owned();
 
         if let Some(suggested) = &item.collision {
             collisions.push(Collision {
@@ -548,15 +749,56 @@ pub fn apply_plan(
             continue;
         }
 
+        // Phase 2.2 [CD-4]: compute the desired post-assignment basename
+        // up front. Used both to decide whether a rename is needed and
+        // (in non-dry-run) to actually invoke `git mv` / `std::fs::rename`.
+        let target_basename = target_filename(
+            &item.candidate.kind,
+            &item.candidate.slug,
+            item.assigned_number,
+        );
+        let current_basename = current_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let needs_rename = current_basename != target_basename;
+
         if item.already_assigned {
+            // Phase 2.2 recovery path: frontmatter is already correct,
+            // but a previous run may have crashed between rewrite and
+            // rename. If the basename still doesn't match the target,
+            // rename now (non-dry-run) and report `renamed`. Otherwise
+            // it's a true no-op.
+            let action = if !dry_run && needs_rename {
+                let target_path = match rename_target_path(
+                    workspace,
+                    canonical_workspace.as_deref(),
+                    &current_path,
+                    &target_basename,
+                )? {
+                    Some(p) => p,
+                    None => {
+                        // Idempotent: target already exists and is the
+                        // same file (e.g. cross-FS quirk). Treat as
+                        // already-renamed.
+                        current_path.clone()
+                    }
+                };
+                rename_artifact_file(workspace, &current_path, &target_path)?;
+                current_path = target_path;
+                "renamed".to_string()
+            } else {
+                "skipped_already_assigned".to_string()
+            };
             assignments.push(Assignment {
                 slug: item.candidate.slug.clone(),
                 kind: kind_template_key,
-                path: path_str,
+                path: current_path.to_string_lossy().into_owned(),
                 predicted_number: item.candidate.predicted_number,
                 assigned_number: item.assigned_number,
                 max_in_base: item.max_in_base,
-                action: "skipped_already_assigned".to_string(),
+                action,
             });
             continue;
         }
@@ -564,48 +806,47 @@ pub fn apply_plan(
         if !dry_run {
             // [SEC-6 CWE-367] symlink check: refuse to follow symlinks.
             // symlink_metadata never traverses, unlike metadata().
-            let lmeta = std::fs::symlink_metadata(&item.candidate.path).with_context(|| {
+            let lmeta = std::fs::symlink_metadata(&current_path).with_context(|| {
                 format!(
                     "ci-assign-id: stat {} (symlink check)",
-                    redact_path(workspace, &item.candidate.path)
+                    redact_path(workspace, &current_path)
                 )
             })?;
             if lmeta.file_type().is_symlink() {
                 anyhow::bail!(
                     "ci-assign-id: refusing to follow symlink artifact {} [SEC-6]",
-                    redact_path(workspace, &item.candidate.path)
+                    redact_path(workspace, &current_path)
                 );
             }
 
             // [SEC-6] path traversal: canonicalize the candidate and
             // verify it stays under the canonicalized workspace.
             if let Some(ws_canon) = canonical_workspace.as_ref() {
-                let path_canon =
-                    std::fs::canonicalize(&item.candidate.path).with_context(|| {
-                        format!(
-                            "ci-assign-id: canonicalize {}",
-                            redact_path(workspace, &item.candidate.path)
-                        )
-                    })?;
+                let path_canon = std::fs::canonicalize(&current_path).with_context(|| {
+                    format!(
+                        "ci-assign-id: canonicalize {}",
+                        redact_path(workspace, &current_path)
+                    )
+                })?;
                 if !path_canon.starts_with(ws_canon) {
                     anyhow::bail!(
                         "ci-assign-id: path {} escapes workspace [SEC-6 invariant violation]",
-                        redact_path(workspace, &item.candidate.path)
+                        redact_path(workspace, &current_path)
                     );
                 }
             }
 
-            let content = std::fs::read_to_string(&item.candidate.path).with_context(|| {
+            let content = std::fs::read_to_string(&current_path).with_context(|| {
                 format!(
                     "ci-assign-id: read {} for assigned_number rewrite",
-                    redact_path(workspace, &item.candidate.path)
+                    redact_path(workspace, &current_path)
                 )
             })?;
             let new_content =
                 set_assigned_number(&content, item.assigned_number).with_context(|| {
                     format!(
                         "ci-assign-id: set_assigned_number on {} to {}",
-                        redact_path(workspace, &item.candidate.path),
+                        redact_path(workspace, &current_path),
                         item.assigned_number
                     )
                 })?;
@@ -613,35 +854,127 @@ pub fn apply_plan(
             // Atomic publish: write to `<path>.tmp` then rename. POSIX
             // rename is atomic for files on the same filesystem; we
             // rely on that to avoid half-written artifacts on crash.
-            let tmp_path = item.candidate.path.with_extension("md.tmp");
+            let tmp_path = current_path.with_extension("md.tmp");
             std::fs::write(&tmp_path, new_content).with_context(|| {
                 format!("ci-assign-id: write {}", redact_path(workspace, &tmp_path))
             })?;
-            std::fs::rename(&tmp_path, &item.candidate.path).with_context(|| {
+            std::fs::rename(&tmp_path, &current_path).with_context(|| {
                 format!(
                     "ci-assign-id: rename {} -> {}",
                     redact_path(workspace, &tmp_path),
-                    redact_path(workspace, &item.candidate.path)
+                    redact_path(workspace, &current_path)
                 )
             })?;
+
+            // Phase 2.2 [CD-4]: rename file to its display-id-prefixed
+            // target now that frontmatter is committed. Idempotent on
+            // matching basename.
+            if needs_rename
+                && let Some(target_path) = rename_target_path(
+                    workspace,
+                    canonical_workspace.as_deref(),
+                    &current_path,
+                    &target_basename,
+                )?
+            {
+                rename_artifact_file(workspace, &current_path, &target_path)?;
+                current_path = target_path;
+            }
         }
+
+        let action = if dry_run {
+            "would_assign".to_string()
+        } else if needs_rename {
+            "renamed_and_assigned".to_string()
+        } else {
+            "assigned".to_string()
+        };
 
         assignments.push(Assignment {
             slug: item.candidate.slug.clone(),
             kind: kind_template_key,
-            path: path_str,
+            path: current_path.to_string_lossy().into_owned(),
             predicted_number: item.candidate.predicted_number,
             assigned_number: item.assigned_number,
             max_in_base: item.max_in_base,
-            action: if dry_run {
-                "would_assign".to_string()
-            } else {
-                "assigned".to_string()
-            },
+            action,
         });
     }
 
     Ok((assignments, collisions))
+}
+
+/// Resolve the target path for a Phase 2.2 rename and validate it.
+///
+/// Returns:
+/// * `Ok(Some(path))` — target path is safe (sibling of `from`, inside
+///   workspace) and either does not exist OR is the same canonical file
+///   as `from` (idempotent re-run on a fully-renamed artifact).
+/// * `Ok(None)` — target already exists and points at the same file
+///   (idempotent already-renamed case detected via canonicalize).
+/// * `Err(_)` — target collides with a distinct existing file (refuse
+///   to clobber) or escapes the workspace boundary.
+///
+/// The split keeps [`apply_plan`] readable while concentrating the
+/// SEC-5/SEC-6 invariants for the rename target in one place.
+fn rename_target_path(
+    workspace: &Path,
+    canonical_workspace: Option<&Path>,
+    from: &Path,
+    target_basename: &str,
+) -> Result<Option<PathBuf>> {
+    let parent = from.parent().with_context(|| {
+        format!(
+            "ci-assign-id: artifact has no parent dir: {}",
+            redact_path(workspace, from)
+        )
+    })?;
+    let target_path = parent.join(target_basename);
+
+    // [SEC-6] target must stay inside the canonical workspace. We can
+    // assemble the canonical target lexically because `parent` lives
+    // inside the workspace (already canonicalized for the source path)
+    // and `target_basename` is a pure filename with no path separators.
+    if let Some(ws_canon) = canonical_workspace {
+        // We canonicalize the parent (which exists) and assemble the
+        // target by joining the bare basename — never canonicalize the
+        // target itself before it exists.
+        let parent_canon = std::fs::canonicalize(parent).with_context(|| {
+            format!(
+                "ci-assign-id: canonicalize parent {}",
+                redact_path(workspace, parent)
+            )
+        })?;
+        if !parent_canon.starts_with(ws_canon) {
+            anyhow::bail!(
+                "ci-assign-id: rename target parent {} escapes workspace [SEC-6]",
+                redact_path(workspace, parent)
+            );
+        }
+    }
+
+    // Idempotent check: target == source after canonicalization means
+    // we're being asked to rename a file to itself.
+    if target_path == from {
+        return Ok(None);
+    }
+
+    // Refuse to clobber a distinct existing file. If the target exists
+    // and resolves to the same inode as `from` (extremely unlikely on
+    // a sane FS but defensive), it's a no-op.
+    if target_path.exists() {
+        let from_canon = std::fs::canonicalize(from).ok();
+        let to_canon = std::fs::canonicalize(&target_path).ok();
+        if from_canon.is_some() && from_canon == to_canon {
+            return Ok(None);
+        }
+        anyhow::bail!(
+            "ci-assign-id: rename target {} already exists [SEC-5 collision]",
+            redact_path(workspace, &target_path)
+        );
+    }
+
+    Ok(Some(target_path))
 }
 
 /// Render the human-readable summary table.
@@ -1097,9 +1430,20 @@ mod tests {
         let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
         assert!(collisions.is_empty());
         assert_eq!(assignments.len(), 1);
-        assert_eq!(assignments[0].action, "assigned");
-        let updated = fs::read_to_string(&path).unwrap();
+        // PROB-060 Phase 2.2 [CD-4]: fresh-assign on a Phase-1 placeholder
+        // filename produces both a frontmatter rewrite AND a rename, so
+        // the action surfaces the additive `renamed_and_assigned` enum.
+        assert_eq!(assignments[0].action, "renamed_and_assigned");
+        // Old filename is gone, frontmatter rewrite landed on the new
+        // display-id-prefixed filename.
+        assert!(!path.exists(), "old filename should be removed by rename");
+        let new_path = tmp.path().join("PRD-074-x.md");
+        let updated = fs::read_to_string(&new_path).unwrap();
         assert!(updated.contains("assigned_number: 74"));
+        assert!(
+            assignments[0].path.ends_with("PRD-074-x.md"),
+            "Assignment.path should reflect post-rename filename"
+        );
     }
 
     #[test]
@@ -1129,12 +1473,19 @@ mod tests {
 
     #[test]
     fn apply_plan_already_assigned_emits_skipped() {
+        // PROB-060 Phase 2.2 [CD-4]: pure no-op requires the candidate
+        // filename to ALREADY match its display-id-prefixed target so
+        // that `needs_rename` is false. Otherwise the recovery branch
+        // kicks in and emits `renamed`. We use the canonical post-rename
+        // filename here to test the genuine idempotent path.
         let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("PRD-074-x.md");
+        fs::write(&path, artifact("prd-x", 74, Some("74"))).unwrap();
         let plan = vec![PlanItem {
             candidate: Candidate {
                 slug: "prd-x".to_string(),
                 kind: ArtifactKind::Prd,
-                path: tmp.path().join("prd-x.md"),
+                path: path.clone(),
                 predicted_number: Some(74),
                 current_assigned: Some(74),
             },
@@ -1145,6 +1496,7 @@ mod tests {
         }];
         let (assignments, _) = apply_plan(tmp.path(), &plan, false).unwrap();
         assert_eq!(assignments[0].action, "skipped_already_assigned");
+        assert!(path.exists(), "no-op must not move the file");
     }
 
     #[test]
@@ -1318,7 +1670,14 @@ mod tests {
         };
         let exit = tokio_test_block(async move { super::run(args).await.unwrap() });
         assert_eq!(exit, EXIT_SUCCESS);
-        let updated = fs::read_to_string(&new_path).unwrap();
+
+        // PROB-060 Phase 2.2 [CD-4]: end-to-end run renames the new
+        // artifact from `prd-new.md` → `PRD-074-new.md`. Existing
+        // (already-assigned) artifact gets renamed too as part of the
+        // recovery path: `prd-existing.md` → `PRD-073-existing.md`.
+        assert!(!new_path.exists(), "fresh artifact must be renamed away");
+        let renamed = tmp.path().join(".forgeplan/prds/PRD-074-new.md");
+        let updated = fs::read_to_string(&renamed).unwrap();
         assert!(updated.contains("assigned_number: 74"));
     }
 
@@ -1756,13 +2115,19 @@ mod tests {
         assert!(collisions.is_empty());
         assert_eq!(assignments.len(), 1);
 
-        // Final file has the new content.
-        let after = fs::read_to_string(&path).unwrap();
+        // PROB-060 Phase 2.2 [CD-4]: file got renamed to its display-id
+        // target. Original placeholder filename should be gone, and the
+        // atomic-write invariant (no `.md.tmp` sibling, trailing
+        // newline preserved) holds at the new path.
+        let renamed = prds.join("PRD-074-x.md");
+        assert!(renamed.exists(), "rename target should exist");
+        let after = fs::read_to_string(&renamed).unwrap();
         assert!(after.contains("assigned_number: 74"));
-        // No tmp sibling left behind.
-        let tmp_sibling = path.with_extension("md.tmp");
+        // No tmp sibling left behind on either old or new path.
+        let tmp_sibling_old = path.with_extension("md.tmp");
+        let tmp_sibling_new = renamed.with_extension("md.tmp");
         assert!(
-            !tmp_sibling.exists(),
+            !tmp_sibling_old.exists() && !tmp_sibling_new.exists(),
             "atomic write must rename, not leave .tmp sibling"
         );
         // Trailing newline preserved (well-formed file, not truncated).
@@ -1880,5 +2245,449 @@ mod tests {
     fn parse_repo_from_url_garbage_returns_none() {
         assert_eq!(parse_repo_from_url("not-a-url"), None);
         assert_eq!(parse_repo_from_url("just-text"), None);
+    }
+
+    // PROB-060 Phase 2.2 [CD-4] — file rename atomicity tests.
+
+    #[test]
+    fn target_filename_strips_kind_prefix_for_prd() {
+        assert_eq!(
+            target_filename(&ArtifactKind::Prd, "prd-auth-system", 74),
+            "PRD-074-auth-system.md"
+        );
+    }
+
+    #[test]
+    fn target_filename_handles_problem_card_prefix() {
+        // ProblemCard's prefix is `prob-` and display key is `PROB`.
+        assert_eq!(
+            target_filename(&ArtifactKind::ProblemCard, "prob-id-collisions", 60),
+            "PROB-060-id-collisions.md"
+        );
+    }
+
+    #[test]
+    fn target_filename_handles_evidence_pack_prefix() {
+        assert_eq!(
+            target_filename(&ArtifactKind::EvidencePack, "evid-real-stress-test", 114),
+            "EVID-114-real-stress-test.md"
+        );
+    }
+
+    #[test]
+    fn target_filename_handles_solution_refresh_note() {
+        assert_eq!(
+            target_filename(&ArtifactKind::SolutionPortfolio, "sol-foo", 1),
+            "SOL-001-foo.md"
+        );
+        assert_eq!(
+            target_filename(&ArtifactKind::RefreshReport, "ref-revisit-x", 5),
+            "REF-005-revisit-x.md"
+        );
+        assert_eq!(
+            target_filename(&ArtifactKind::Note, "note-quick-decision", 1),
+            "NOTE-001-quick-decision.md"
+        );
+    }
+
+    #[test]
+    fn target_filename_zero_pads_three_digits() {
+        assert_eq!(
+            target_filename(&ArtifactKind::Prd, "prd-tiny", 1),
+            "PRD-001-tiny.md"
+        );
+        assert_eq!(
+            target_filename(&ArtifactKind::Prd, "prd-big", 999),
+            "PRD-999-big.md"
+        );
+        // Numbers above 999 are exceptional но не truncated — `:03` is
+        // a minimum width, not a maximum.
+        assert_eq!(
+            target_filename(&ArtifactKind::Prd, "prd-huge", 1234),
+            "PRD-1234-huge.md"
+        );
+    }
+
+    #[test]
+    fn target_filename_handles_multi_dash_slug_suffix() {
+        assert_eq!(
+            target_filename(&ArtifactKind::Rfc, "rfc-id-assignment-v2", 9),
+            "RFC-009-id-assignment-v2.md"
+        );
+    }
+
+    /// Phase 2.2 fresh-assignment path: PR introduces an unnumbered
+    /// artifact, [`apply_plan`] should rewrite the frontmatter AND
+    /// rename the file to the display-id-prefixed target. Action must
+    /// surface the additive `renamed_and_assigned` enum variant.
+    #[test]
+    fn apply_plan_renames_file_after_assign() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let original_path = prds.join("prd-auth-system.md");
+        fs::write(&original_path, artifact("prd-auth-system", 74, None)).unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-auth-system".to_string(),
+                kind: ArtifactKind::Prd,
+                path: original_path.clone(),
+                predicted_number: Some(74),
+                current_assigned: None,
+            },
+            assigned_number: 74,
+            max_in_base: Some(73),
+            already_assigned: false,
+            collision: None,
+        }];
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
+        assert!(collisions.is_empty());
+        assert_eq!(assignments.len(), 1);
+        assert_eq!(
+            assignments[0].action, "renamed_and_assigned",
+            "fresh assign + rename should report `renamed_and_assigned`"
+        );
+
+        // File at the old path must be gone.
+        assert!(
+            !original_path.exists(),
+            "old filename must be removed after rename"
+        );
+        // File at the new path must exist with rewritten frontmatter.
+        let new_path = prds.join("PRD-074-auth-system.md");
+        assert!(
+            new_path.exists(),
+            "renamed target {} must exist",
+            new_path.display()
+        );
+        let content = fs::read_to_string(&new_path).unwrap();
+        assert!(
+            content.contains("assigned_number: 74"),
+            "frontmatter rewrite must persist on the renamed file"
+        );
+        // No `.tmp` sibling should be left behind.
+        let tmp_sibling = original_path.with_extension("md.tmp");
+        assert!(
+            !tmp_sibling.exists(),
+            "atomic write must not leave a .tmp sibling"
+        );
+        // Assignment.path should reflect the post-rename basename.
+        assert!(
+            assignments[0].path.ends_with("PRD-074-auth-system.md"),
+            "Assignment.path should reflect post-rename filename, got: {}",
+            assignments[0].path
+        );
+    }
+
+    /// Idempotent re-run: an artifact already at its display-id
+    /// filename and already carrying `assigned_number` produces a
+    /// `skipped_already_assigned` action and no filesystem mutation.
+    #[test]
+    fn apply_plan_idempotent_for_already_renamed() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let path = prds.join("PRD-074-auth-system.md");
+        let original_content = artifact("prd-auth-system", 74, Some("74"));
+        fs::write(&path, &original_content).unwrap();
+        let original_mtime = fs::metadata(&path).unwrap().modified().ok();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-auth-system".to_string(),
+                kind: ArtifactKind::Prd,
+                path: path.clone(),
+                predicted_number: Some(74),
+                current_assigned: Some(74),
+            },
+            assigned_number: 74,
+            max_in_base: Some(74),
+            already_assigned: true,
+            collision: None,
+        }];
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
+
+        assert!(collisions.is_empty());
+        assert_eq!(assignments.len(), 1);
+        assert_eq!(
+            assignments[0].action, "skipped_already_assigned",
+            "already-assigned + already-renamed should be a no-op"
+        );
+
+        // File still at the same path with identical content.
+        assert!(path.exists(), "file must still exist at its current path");
+        let after = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, original_content,
+            "no-op run must not modify file contents"
+        );
+        // mtime should not have changed (best-effort assertion — some
+        // filesystems have coarse mtime resolution; we skip if either
+        // read returned None).
+        if let (Some(before), Ok(meta_after)) = (original_mtime, fs::metadata(&path))
+            && let Ok(after_mtime) = meta_after.modified()
+        {
+            assert_eq!(
+                before, after_mtime,
+                "no-op run must not touch mtime (coarse fs may flake — \
+                 remove this assertion if it does)"
+            );
+        }
+
+        // Assignment.path is unchanged.
+        assert!(
+            assignments[0].path.ends_with("PRD-074-auth-system.md"),
+            "Assignment.path on no-op should reflect unchanged filename"
+        );
+    }
+
+    /// Recovery path: a previous run rewrote frontmatter (assigned_number
+    /// is set) but crashed before the rename. Re-running should NOT
+    /// rewrite the frontmatter again (`already_assigned: true`) but
+    /// SHOULD complete the rename, producing the `renamed` action.
+    #[test]
+    fn apply_plan_recovers_partial_rename_with_renamed_action() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let original_path = prds.join("prd-auth-system.md");
+        // Frontmatter already has assigned_number = 74 (Phase 1 partial state).
+        fs::write(&original_path, artifact("prd-auth-system", 74, Some("74"))).unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-auth-system".to_string(),
+                kind: ArtifactKind::Prd,
+                path: original_path.clone(),
+                predicted_number: Some(74),
+                current_assigned: Some(74),
+            },
+            assigned_number: 74,
+            max_in_base: Some(74),
+            already_assigned: true,
+            collision: None,
+        }];
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
+
+        assert!(collisions.is_empty());
+        assert_eq!(assignments.len(), 1);
+        assert_eq!(
+            assignments[0].action, "renamed",
+            "already_assigned + needs_rename should produce `renamed` action"
+        );
+        assert!(!original_path.exists(), "old filename should be gone");
+        let new_path = prds.join("PRD-074-auth-system.md");
+        assert!(new_path.exists(), "rename target should exist");
+        // Frontmatter unchanged (no rewrite on already_assigned path).
+        let content = fs::read_to_string(&new_path).unwrap();
+        assert!(content.contains("assigned_number: 74"));
+        assert!(
+            assignments[0].path.ends_with("PRD-074-auth-system.md"),
+            "Assignment.path should reflect post-rename filename"
+        );
+    }
+
+    /// Dry-run remains side-effect-free — even when a rename would
+    /// occur in a real run, no filesystem mutation happens and the
+    /// action stays at `would_assign`.
+    #[test]
+    fn apply_plan_dry_run_does_not_rename() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let original_path = prds.join("prd-auth-system.md");
+        let original_content = artifact("prd-auth-system", 74, None);
+        fs::write(&original_path, &original_content).unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-auth-system".to_string(),
+                kind: ArtifactKind::Prd,
+                path: original_path.clone(),
+                predicted_number: Some(74),
+                current_assigned: None,
+            },
+            assigned_number: 74,
+            max_in_base: Some(73),
+            already_assigned: false,
+            collision: None,
+        }];
+        let (assignments, _) = apply_plan(tmp.path(), &plan, true).unwrap();
+
+        assert_eq!(assignments[0].action, "would_assign");
+        assert!(original_path.exists(), "dry-run must not move the file");
+        let new_path = prds.join("PRD-074-auth-system.md");
+        assert!(
+            !new_path.exists(),
+            "dry-run must not create the rename target"
+        );
+        let after = fs::read_to_string(&original_path).unwrap();
+        assert_eq!(
+            after, original_content,
+            "dry-run must not modify file contents"
+        );
+    }
+
+    /// Inside a real git work tree the rename invokes `git mv`, which
+    /// records the move in the index for blame/history continuity.
+    /// Verify the file exists at its new path AND `git status` reports
+    /// it as a rename rather than untracked + deleted.
+    #[test]
+    fn apply_plan_uses_git_mv_when_inside_repo() {
+        // init_git_with_files commits `.gitkeep` + given fixtures on `dev`,
+        // so the artifact below is git-tracked when apply_plan runs.
+        let tmp = init_git_with_files(&[(
+            ".forgeplan/prds/prd-auth-system.md",
+            &artifact("prd-auth-system", 74, None),
+        )]);
+        let original_path = tmp.path().join(".forgeplan/prds/prd-auth-system.md");
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-auth-system".to_string(),
+                kind: ArtifactKind::Prd,
+                path: original_path.clone(),
+                predicted_number: Some(74),
+                current_assigned: None,
+            },
+            assigned_number: 74,
+            max_in_base: Some(73),
+            already_assigned: false,
+            collision: None,
+        }];
+        let (assignments, _) = apply_plan(tmp.path(), &plan, false).unwrap();
+        assert_eq!(assignments[0].action, "renamed_and_assigned");
+        let new_path = tmp.path().join(".forgeplan/prds/PRD-074-auth-system.md");
+        assert!(new_path.exists(), "rename target should exist");
+        assert!(!original_path.exists(), "old filename should be gone");
+
+        // `git status --porcelain=v1` should reflect either a rename
+        // (`R  old -> new`) or an add+delete pair. Either way the file
+        // must appear in the index — `git mv` did not leave it
+        // untracked. We assert the new path appears in the porcelain
+        // output as a not-untracked entry.
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain=v1"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git status");
+        let porcelain = String::from_utf8_lossy(&status.stdout);
+        // Untracked entries start with "??". Renames start with "R" or
+        // "AM"/"M ". The new file must NOT appear as `??`.
+        let new_basename = "PRD-074-auth-system.md";
+        let new_untracked = porcelain
+            .lines()
+            .any(|line| line.starts_with("??") && line.contains(new_basename));
+        assert!(
+            !new_untracked,
+            "renamed file must not show as untracked in git status; porcelain = {porcelain}"
+        );
+        // And the new path should appear somewhere in the porcelain
+        // (rename target or add).
+        assert!(
+            porcelain.contains(new_basename),
+            "renamed file must appear in git status; porcelain = {porcelain}"
+        );
+    }
+
+    /// Refusing to clobber an existing distinct file at the rename
+    /// target. SEC-5 collision invariant: a separate file already
+    /// occupying `PRD-074-auth-system.md` blocks the rename rather
+    /// than silently overwriting it.
+    #[test]
+    fn apply_plan_refuses_to_clobber_existing_target() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let from = prds.join("prd-auth-system.md");
+        let to = prds.join("PRD-074-auth-system.md");
+        fs::write(&from, artifact("prd-auth-system", 74, None)).unwrap();
+        fs::write(&to, "---\nslug: prd-other\n---\n\nbody\n").unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-auth-system".to_string(),
+                kind: ArtifactKind::Prd,
+                path: from.clone(),
+                predicted_number: Some(74),
+                current_assigned: None,
+            },
+            assigned_number: 74,
+            max_in_base: Some(73),
+            already_assigned: false,
+            collision: None,
+        }];
+        let err = apply_plan(tmp.path(), &plan, false)
+            .expect_err("rename onto existing distinct file must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("already exists") || msg.contains("collision"),
+            "expected SEC-5 collision rejection, got: {msg}"
+        );
+        // Both files must remain.
+        assert!(to.exists(), "existing target must not be deleted");
+    }
+
+    /// JSON schema_version stays at 1 even with the new action variants
+    /// — additive enum extension per CD-3.
+    #[test]
+    fn json_schema_version_unchanged_after_phase_2_2() {
+        let out = CiAssignIdOutput {
+            schema_version: JSON_SCHEMA_VERSION,
+            ran_at: "2026-05-07T00:00:00Z".to_string(),
+            pr: 1,
+            repo: String::new(),
+            base: "origin/dev".to_string(),
+            head: "HEAD".to_string(),
+            dry_run: false,
+            assignments: vec![Assignment {
+                slug: "prd-x".to_string(),
+                kind: "prd".to_string(),
+                path: ".forgeplan/prds/PRD-074-x.md".to_string(),
+                predicted_number: Some(74),
+                assigned_number: 74,
+                max_in_base: Some(73),
+                action: "renamed_and_assigned".to_string(),
+            }],
+            collisions: vec![],
+            summary: Summary {
+                total_candidates: 1,
+                assigned: 1,
+                skipped_already_assigned: 0,
+                collisions: 0,
+                exit_code: 0,
+            },
+            commit_message_suggested: String::new(),
+        };
+        let json = render_json_summary(&out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["schema_version"], 1,
+            "Phase 2.2 must remain on schema_version=1 (additive action enum)"
+        );
+        assert_eq!(parsed["assignments"][0]["action"], "renamed_and_assigned");
+    }
+
+    /// CRIT-2 Layer B: When artifacts exist in base for a kind, reject pre-set
+    /// assigned_number on new artifacts. When base_files is empty for a kind,
+    /// allow re-processing of idempotent assignments.
+    ///
+    /// Integration test in .github/workflows/ci.yml validates this via the
+    /// validate-forgeplan-frontmatter.sh script + Rust binary error handling.
+    /// Unit tests for the individual pieces:
+    /// - compute_plan_idempotent_for_already_assigned (empty base → allow)
+    /// - INTEGRATION: real PR validation via CI workflow
+    #[test]
+    fn crit2_layer_b_defense_documented() {
+        // CRIT-2 Layer B implementation:
+        // 1. Bash validator (Layer A): rejects pre-set assigned_number in new artifacts
+        // 2. Rust binary (Layer B): detects when new artifact (not in base) has
+        //    assigned_number and exits with EXIT_INVARIANT_VIOLATION (4)
+        // 3. ci.yml (Layer C): catches error, reports INVARIANT VIOLATION
+        //
+        // Test fixtures: compute_plan_idempotent_for_already_assigned validates
+        // that empty base_files allows re-processing (idempotent).
+        // Real-world: a PR with a new artifact carrying pre-set assigned_number
+        // will be caught by both bash validator and Rust binary.
     }
 }

@@ -120,6 +120,13 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
     })?;
 
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pick the canonical
+    // reference form for hint emission: slug pre-merge, display id
+    // post-merge. Body comes from LanceStore; refs_form_from_body is
+    // non-fatal on legacy / malformed frontmatter.
+    let target_ref =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&target.body, &target.id);
+
     // --- Recursive R_eff via AssuranceReport ---
     // PRD-075 FR-004 + Round 8 audit MED-1: the shared helper persists the
     // score AND returns the report so we avoid a second recursive walk for
@@ -249,14 +256,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             .filter(|e| e.congruence_level == 0)
             .count();
         let score_hints_json = hints::score_hints(
-            &target.id,
+            &target_ref,
             report.r_eff,
             !evidence_items.is_empty(),
             cl0_count_json,
         );
         let next_action_json = hints::primary_action(&score_hints_json).or_else(|| {
             if report.r_eff >= 0.5 && target.status == "draft" {
-                Some(format!("forgeplan activate {}", target.id))
+                Some(format!("forgeplan activate {}", target_ref))
             } else {
                 None
             }
@@ -301,7 +308,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             "No evidence found",
             &format!(
                 "forgeplan new evidence \"Benchmark for {}\" && forgeplan link EVID-NNN {} --relation informs",
-                target.id, target.id
+                target_ref, target_ref
             ),
         );
     } else {
@@ -409,7 +416,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         .filter(|e| e.congruence_level == 0)
         .count();
     let score_hints =
-        forgeplan_core::hints::score_hints(&target.id, report.r_eff, has_evidence, cl0_count);
+        forgeplan_core::hints::score_hints(&target_ref, report.r_eff, has_evidence, cl0_count);
     if !score_hints.is_empty() {
         print!("{}", forgeplan_core::hints::format_hints(&score_hints));
     }
@@ -422,7 +429,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         } else if report.r_eff >= 0.5 && target.status == "draft" {
             vec![
                 forgeplan_core::hints::Hint::info("R_eff healthy — ready to activate")
-                    .with_action(format!("forgeplan activate {}", target.id)),
+                    .with_action(format!("forgeplan activate {}", target_ref)),
             ]
         } else {
             Vec::new()

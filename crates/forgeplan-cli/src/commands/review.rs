@@ -66,19 +66,29 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
         .any(|w| w.contains("No evidence linked"));
     let is_stub = result.warnings.iter().any(|w| w.contains("Body too short"));
     let has_must_errors = !result.must_findings.is_empty();
-    let kind = store
-        .get_record(id)
-        .await
-        .ok()
-        .flatten()
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — load the record so we
+    // can pick slug pre-merge or display id post-merge for hint emission,
+    // matching the canonical reference form used in commit `Refs:` lines.
+    let record_opt = store.get_record(id).await.ok().flatten();
+    let kind = record_opt
+        .as_ref()
         .and_then(|r| {
             r.kind
                 .parse::<forgeplan_core::artifact::types::ArtifactKind>()
                 .ok()
         })
         .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
-    let review_hints =
-        forgeplan_core::hints::review_hints(id, has_evidence, is_stub, has_must_errors, &kind);
+    let ref_form = record_opt
+        .as_ref()
+        .map(|r| forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id))
+        .unwrap_or_else(|| id.to_string());
+    let review_hints = forgeplan_core::hints::review_hints(
+        &ref_form,
+        has_evidence,
+        is_stub,
+        has_must_errors,
+        &kind,
+    );
     if !review_hints.is_empty() {
         print!("{}", forgeplan_core::hints::format_hints(&review_hints));
     }
@@ -90,10 +100,10 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
     let next_hints: Vec<Hint> = if has_must_errors {
         vec![
             Hint::warning("Validation has MUST errors")
-                .with_action(format!("forgeplan validate {}", id)),
+                .with_action(format!("forgeplan validate {}", ref_form)),
         ]
     } else if result.can_activate {
-        vec![Hint::info("Review passed").with_action(format!("forgeplan activate {}", id))]
+        vec![Hint::info("Review passed").with_action(format!("forgeplan activate {}", ref_form))]
     } else {
         // Pull primary action from the advisory review_hints (e.g. add evidence).
         match hints::primary_action(&review_hints) {

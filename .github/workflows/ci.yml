@@ -14,6 +14,47 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
+  # Validation gate: check Forgeplan artifact frontmatter contract per SPEC-005
+  # Fires only on PRs that touch .forgeplan/**/*.md files
+  validate-forgeplan-frontmatter:
+    name: Validate Forgeplan artifact frontmatter
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git diff to work correctly
+
+      - name: Check if PR touches Forgeplan artifacts
+        id: check_artifacts
+        run: |
+          # Check if any .forgeplan/**/*.md files were changed
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q '^\.forgeplan/.*\.md$'; then
+            echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate frontmatter contract
+        if: steps.check_artifacts.outputs.has_artifacts == 'true'
+        run: |
+          # Make script executable
+          chmod +x .github/scripts/validate-forgeplan-frontmatter.sh
+
+          # Run validation
+          .github/scripts/validate-forgeplan-frontmatter.sh
+        env:
+          # CRIT-1 fix: pass BASE_REF for write-once validation
+          BASE_REF: ${{ github.base_ref }}
+          # Ensure we can access git history for diff operations
+          GIT_TRACE: 0
+
+      - name: Skip validation (no artifact changes)
+        if: steps.check_artifacts.outputs.has_artifacts == 'false'
+        run: |
+          echo "✓ No Forgeplan artifacts were changed in this PR"
+
   check:
     name: Check, Lint & Format
     runs-on: ubuntu-latest

@@ -8,6 +8,7 @@
 
 use chrono::Duration;
 use forgeplan_core::claim::{ClaimError, ClaimStore, DEFAULT_TTL};
+use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
@@ -30,6 +31,31 @@ pub async fn run(
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id so
+    // operators / agents can claim with whichever form they have on hand
+    // (e.g. fresh slug pre-merge, display number post-merge). Resolver is
+    // best-effort: if the artifact isn't in LanceDB yet (cross-PR
+    // forward-reference), fall back to raw input mirroring `link`.
+    let lance = LanceStore::open(&ws).await?;
+    let canonical = lance.resolve_id(id).await?;
+    let id_owned: String;
+    let id: &str = if let Some(c) = canonical {
+        id_owned = c;
+        id_owned.as_str()
+    } else {
+        id
+    };
+
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pre-compute ref_form
+    // (slug pre-merge / display id post-merge) so every hint emitted from
+    // this command carries the canonical reference for commit `Refs:`.
+    // If the artifact isn't in LanceDB yet (cross-PR forward-reference),
+    // fall back to the raw `id`.
+    let ref_form: String = match lance.get_record(id).await? {
+        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
+        None => id.to_string(),
+    };
 
     let agent_str = match agent.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => a.to_string(),
@@ -55,9 +81,11 @@ pub async fn run(
             // Successful claim: next action is to start work on the
             // artifact (we use `forgeplan get` as a concrete inspection
             // step the agent should perform before editing).
+            // PROB-060 (W1.B, CD-5) — emit ref_form so the inspect command
+            // stays canonical for commit `Refs:`.
             let hint_list = vec![
-                Hint::info(format!("Inspect claimed {}", claim.id))
-                    .with_action(format!("forgeplan get {}", claim.id)),
+                Hint::info(format!("Inspect claimed {}", ref_form))
+                    .with_action(format!("forgeplan get {}", ref_form)),
             ];
 
             if json {
@@ -80,7 +108,7 @@ pub async fn run(
                 println!(
                     "  Hint:    release with `forgeplan release {}` when done, or re-run \
                      `forgeplan claim {}` to renew before expiry.",
-                    claim.id, claim.id,
+                    ref_form, ref_form,
                 );
                 print!("{}", hints::render_next_action_line(&hint_list));
             }
@@ -92,9 +120,13 @@ pub async fn run(
             expires_at,
         }) => {
             // Conflict: orchestrator override path is the deterministic fix.
+            // PROB-060 (W1.B, CD-5) — `ref_form` outer captures the canonical
+            // reference for the artifact (slug pre-merge / display id
+            // post-merge); the inner `id` from ClaimError is the raw filename
+            // we just kept — but the outer ref_form is canonical so prefer it.
             let hint_list = vec![
                 Hint::warning(format!("Claim held by {agent_id}"))
-                    .with_action(format!("forgeplan release {} --force", id)),
+                    .with_action(format!("forgeplan release {} --force", ref_form)),
             ];
 
             if json {
@@ -109,10 +141,10 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&body)?);
             } else {
                 eprintln!("Claim for {id} already held by {agent_id} (expires {expires_at})");
-                eprintln!("Fix: forgeplan release {id} --force");
+                eprintln!("Fix: forgeplan release {ref_form} --force");
                 eprintln!(
                     "  Hint: wait for TTL expiry, work on a different artifact, or ask the \
-                     orchestrator to force-release with `forgeplan release {id} --force`."
+                     orchestrator to force-release with `forgeplan release {ref_form} --force`."
                 );
             }
             std::process::exit(1);

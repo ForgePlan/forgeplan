@@ -46,6 +46,47 @@ The contract defines five kinds of next-actions. Most outputs use `Next` — the
 | `Done` | Terminal success; workflow complete, move on | `Done.` |
 | `Fix` | Error remediation; pair with `Error:` line | `Fix: forgeplan undo-last --within-hours 720` |
 
+## Slug-aware references (PROB-060 / SPEC-005 / ADR-012)
+
+Forgeplan uses **two-layer artifact identity**: a canonical `slug`
+(`prd-auth-system`) that never changes, and a derived `display id`
+(`PRD-074`) that is finalised by a CI bot when the artifact's branch
+merges to `dev`. While the bot has not yet flipped `assigned_number`
+from `null` to a number, the artifact is **pre-merge** and the
+display id carries a `?` marker (`PRD-74?`) signalling "predicted, not
+final".
+
+The hint protocol mirrors this contract:
+
+| State | Hints reference | Rendered example |
+|---|---|---|
+| **Pre-merge** (`assigned_number: null`) | the **slug** | `Next: forgeplan validate prd-auth-system` |
+| **Post-merge** (`assigned_number: 74`) | the **display id** | `Next: forgeplan validate PRD-074` |
+
+The selection happens in [`forgeplan_core::artifact::frontmatter::refs_form`](../../crates/forgeplan-core/src/artifact/frontmatter.rs);
+all CLI / MCP hint sites consult that helper so the choice stays in
+exactly one place. Agents do not need to re-implement the rule —
+`Next:` lines and `_next_action` JSON fields already carry the right
+form. Just **paste the command verbatim**.
+
+### Why this matters for `Refs:` in commit messages
+
+Because `assigned_number` is write-once and only flips at merge, a
+commit body that pins `Refs: PRD-074` **before** the CI bot has
+assigned it points to nothing — the number is still predicted and may
+shift if a sibling branch merges first. Pre-merge commits MUST use
+the slug; post-merge they MAY use either form (the resolver maps both
+to the same artifact).
+
+```
+✅ Pre-merge:  Refs: prd-auth-system, FR-001..003
+✅ Post-merge: Refs: PRD-074, FR-001..003
+✅ Post-merge: Refs: prd-auth-system  (slug also resolves)
+
+❌ Pre-merge:  Refs: PRD-74?, FR-001..003   # "?" marker is for display, not refs
+❌ Pre-merge:  Refs: PRD-074, FR-001..003   # number not yet assigned — broken pointer
+```
+
 ## Good hints vs. bad hints
 
 ### Good (✅)
@@ -55,6 +96,22 @@ Next: forgeplan score PRD-001
   R_eff is 0 — link evidence to enable activation
 ```
 Specific, full command, real ID, rationale explains *why*.
+
+```
+Next: forgeplan validate prd-auth-system
+  draft, MUST sections incomplete
+```
+Pre-merge artifact: hint references the slug. Agent's next commit will
+use `Refs: prd-auth-system` so the pointer survives any merge-time
+display-number reshuffle.
+
+```
+Next: forgeplan activate PRD-074
+  R_eff = 0.82 — ready to ship
+```
+Post-merge artifact (`assigned_number: 74` is set): hint references the
+zero-padded display id. Slug still resolves but display id is the
+canonical form once the number is finalised.
 
 ```
 Next: forgeplan dispatch --agents 3
@@ -91,6 +148,21 @@ Workspace is free for any agent to claim work.
 ```
 Terminal status without an exit signal. What should the agent do? (If truly terminal, emit `Done.` instead.)
 
+```
+Next: forgeplan validate PRD-74?
+```
+Pre-merge artifact whose hint embeds the literal `?` marker. The marker
+is for **display** (the human-readable card heading); commit messages
+and `forgeplan` commands should consume the slug instead. Forgeplan
+rendering MUST strip the marker before populating `Next:`.
+
+```
+Next: forgeplan validate PRD-074
+```
+…on a draft artifact whose `assigned_number` is still `null`. The
+display id `PRD-074` is not stable yet — a sibling branch may shift the
+predicted number on merge. Pre-merge hints MUST use the slug.
+
 ## Agent reading protocol
 
 When an agent receives any Forgeplan output, it should:
@@ -124,6 +196,27 @@ let json = serde_json::json!({
 // MCP responses use the same primary_action() output
 hinted_result(&payload, primary_action(&hints).unwrap_or_default())
 ```
+
+Slug-aware reference selection (PROB-060 / SPEC-005 / ADR-012) lives in
+`forgeplan_core::artifact::frontmatter`:
+
+```rust
+use forgeplan_core::artifact::frontmatter::{refs_form, refs_form_from_body};
+
+// Frontmatter already parsed:
+let ref_form = refs_form(&fm, &record.id);
+
+// Convenience for sites that only have the rendered body string:
+let ref_form = refs_form_from_body(&record.body, &record.id);
+
+// Then thread `ref_form` through the hint helpers as `artifact_id`:
+let hints = get_hints(&ref_form, &status, &kind, has_links, &depth);
+```
+
+Hint sites MUST consult these helpers rather than inlining the
+"slug if pre-merge else display id" branch — keeping the rule in one
+place is what prevents drift between the MCP `_next_action` shape and
+the CLI `Next:` line (Rule 5: CONSISTENCY).
 
 ## Drift prevention
 

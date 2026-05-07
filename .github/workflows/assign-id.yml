@@ -103,21 +103,35 @@ jobs:
       # a slug containing `"; rm -rf /` would break out of the `git
       # commit -m "…"` quotes. Env-var pass keeps the value confined to
       # a shell parameter where `"$COMMIT_MSG"` quoting holds.
+      #
+      # HIGH-2 [CWE-94] fix: Also apply env-var pattern to HEAD_REF.
+      # Branch names allow $, backticks, (), &, | which can RCE via unquoted
+      # interpolation. Fork PR with evil$(cmd) triggers RCE in runner's
+      # GITHUB_TOKEN context (write to contents + PRs). Now passed via env var
+      # + validated: only alphanumeric, dots, underscores, slashes, hyphens.
       - name: Commit and push
         if: github.event_name == 'pull_request' && env.DRY_RUN_MODE != 'true'
         env:
           COMMIT_MSG: ${{ steps.assign.outputs.commit_msg }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           if git diff --quiet; then
             echo "no changes detected"
             exit 0
           fi
 
+          # Validate HEAD_REF against whitelist to prevent RCE
+          if ! [[ "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "ERROR: invalid branch name in HEAD_REF: $HEAD_REF (rejected by security filter)"
+            echo "Branch names must contain only alphanumeric, dots, underscores, slashes, or hyphens"
+            exit 1
+          fi
+
           git config user.name  "forgeplan-bot"
           git config user.email "bot@forgeplan.dev"
           git add -A
           git commit -m "$COMMIT_MSG"
-          git push origin HEAD:${{ github.head_ref }}
+          git push origin "HEAD:refs/heads/$HEAD_REF"
 
       - name: Comment on PR
         if: github.event_name == 'pull_request' && failure() && env.DRY_RUN_MODE != 'true'
