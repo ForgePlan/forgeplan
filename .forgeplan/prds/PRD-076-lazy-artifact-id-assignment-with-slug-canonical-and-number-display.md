@@ -29,16 +29,16 @@ stepsCompleted: []
 ## Progress
 
 ```
-Phase 0  ████░░░░░░░░░░░░░░░░░░░░  1/4   ( 25%)  Foundation (0.3 done; 0.1, 0.2, 0.4 pending)
+Phase 0  ████████████████████████  4/4   (100%)  Foundation (Phase 0b закрыл EVID-A + EVID-C + CLAUDE.md)
 Phase 1  ████████████████████████  6/6   (100%)  Core schema + CLI (1.1-1.6 done; 1.5b extended)
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP — blocked by Phase 0b EVID
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP — unblocked
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  Web + Skills
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  Migration + activation
 ─────────────────────────────────────────────────
-TOTAL                               7/24  ( 29%)
+TOTAL                              10/24  ( 42%)
 ```
 
-**Update 2026-05-07** (after iterative phase delivery + cross-phase audit):
+**Update 2026-05-07** (after iterative phase delivery + cross-phase audit + Phase 0b closure):
 
 - ✅ Phase 1.1 — slug validation/builder/render in `forgeplan-core/src/artifact/types.rs` + frontmatter accessors (`cc0b398`)
 - ✅ Phase 1.2 — `forgeplan new` populates slug+predicted+assigned in frontmatter (`2ce3964`)
@@ -49,11 +49,16 @@ TOTAL                               7/24  ( 29%)
 - ✅ Phase 1.4 — `Slug:` line in `forgeplan get` output (text + JSON) (`a330907`)
 - ✅ Phase 1.6 — slug roundtrip property test (2200 trials × 11 kinds) (`a330907`)
 
-**Remaining before Phase 2 GA:**
-- ⏳ Phase 0.1 EVID-A — CI-bot prototype + 10×concurrent-merge stress-test
-- ⏳ Phase 0.2 EVID-C — migration dry-run on 298 existing artifacts
-- ⏳ Phase 0.4 — CLAUDE.md "Working with artifact IDs" section
-- ⏳ Phase 1.4 follow-up — slug column in `list`, `health`, `search` outputs (low priority — Phase 1.x cosmetic)
+**Phase 0b closure (commits на `feat/prob-060-phase-0b-integration`):**
+- ✅ Phase 0.1 EVID-A — `forgeplan ci-assign-id` binary + Variant B stress-test (12 git seeds + 100 in-process permutations) — EVID-114 CL2 (Variant A pre-Phase-2-GA gate documented)
+- ✅ Phase 0.2 EVID-C — `forgeplan migrate-dry-run` on real workspace (305 artifacts, 6 dogfooding collisions, all `--auto-suffix`-resolvable) — EVID-115 CL3
+- ✅ Phase 0.4 — CLAUDE.md «Working with artifact IDs» section (33 lines)
+- ✅ 14 audit findings closed (1 CRITICAL + 3 HIGH + 5 MEDIUM + 5 LOW) across 2 fix rounds; 5 deferred с rationale
+- ✅ ADR-012 R_eff = 0.90 после EVID-114 + EVID-115 linking
+
+**Remaining before Phase 2 GA (user-gated):**
+- ⏳ Variant A real-runtime stress-test — `scripts/stress-test-real-gh.sh` manual run, upgrades EVID-114 CL2 → CL3
+- ⏳ Phase 1.4 follow-up — slug column in `list`, `health`, `search` outputs (low priority — cosmetic)
 - ⏳ Phase 1.5b extension — resolver wired into remaining 15+ commands (`update`, `reason`, `decompose`, `delete`, `renew`, `reopen`, `supersede`, etc.) — cleanup pass
 
 ---

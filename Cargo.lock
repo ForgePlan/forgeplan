@@ -2333,6 +2333,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "predicates",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",

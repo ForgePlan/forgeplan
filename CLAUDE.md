@@ -183,6 +183,40 @@ forgeplan reopen <id> --reason          # stale/active → deprecated + NEW draf
 
 ---
 
+## Working with artifact IDs (PROB-060)
+
+Двухслойная identity: **slug** (`prd-auth-system`) — каноничный, immutable,
+пишется в `forgeplan new`. **Display number** (`PRD-074`) — выставляется
+CI-ботом на merge в `dev`. До merge артефакт виден как `PRD-74?`
+(маркер `?` = «номер предсказан, не финален»). Frontmatter: `slug`,
+`predicted_number`, `assigned_number` (последний — `null` до merge).
+
+**Три правила для коммитов и refs:**
+
+1. **До merge — только slug в `Refs:`**. Predicted/displayed номер не
+   попадает в commit messages — он ещё не финален.
+   ```
+   ✅ Refs: prd-auth-system, FR-001..003
+   ❌ Refs: PRD-74?, FR-001..003
+   ❌ Refs: PRD-074, FR-001..003   # broken pointer — номер не assigned
+   ```
+2. **После merge — работают оба формата**: `Refs: PRD-074` или
+   `Refs: prd-auth-system`. Резолвер маппит в один артефакт.
+3. **`assigned_number` — write-once, выставляется только CI-ботом**
+   (workflow `.github/workflows/assign-id.yml`, concurrency-serialized).
+   Ручная правка `assigned_number` в frontmatter — нарушение контракта
+   (mirrors §RED LINES #7/#8: artifact integrity).
+
+**Pre-create check**: `forgeplan new` warning'ит если slug уже существует
+в `origin/dev` и предлагает alt-slug. Игнор без явной причины запрещён.
+
+Подробности (FAQ, migration, multi-agent dispatch, slug regex):
+[`docs/methodology/ID-ASSIGNMENT.ru.md`](docs/methodology/ID-ASSIGNMENT.ru.md).
+
+Cross-refs: PROB-060, PRD-076, ADR-012, SPEC-005, RFC-009.
+
+---
+
 ## Validator aliases
 
 The validator accepts section synonyms:

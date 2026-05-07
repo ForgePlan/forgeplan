@@ -3,6 +3,108 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context;
+
+/// PROB-060 Phase 0b Round 2 [SEC-5 CWE-200]: bound the visible portion
+/// of a user-supplied git ref in error messages. Refs longer than 40
+/// chars are truncated to first 37 + `...`. Avoids splattering full SHAs
+/// or pathological long branch names into CI logs verbatim.
+fn redact_ref(s: &str) -> String {
+    const MAX: usize = 40;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..MAX.saturating_sub(3)])
+    }
+}
+
+/// Workspace-relative path or basename-only for paths outside the
+/// workspace. Mirrors the same helper in `forgeplan-cli`. Currently
+/// unused at file-level (paths from `git ls-tree` are already
+/// workspace-relative), kept `pub(crate)` for future call sites that
+/// may surface absolute filesystem paths in error messages.
+#[allow(dead_code)]
+pub(crate) fn redact_path(workspace: &Path, path: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(workspace) {
+        return rel.display().to_string();
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+use crate::artifact::frontmatter::{assigned_number_from_frontmatter, parse_frontmatter};
+use crate::artifact::types::ArtifactKind;
+
+/// Validate that `s` is safe to pass as a git ref/object argument.
+///
+/// PROB-060 Phase 0b SEC-1 [CWE-88 — Argument Injection]: `git ls-tree`,
+/// `git show`, и friends parse arguments starting с `-` as flags. Even
+/// though `Command::args` neutralizes shell metacharacters, a ref like
+/// `--upload-pack=…` или `-q` still affects git's own argv parsing —
+/// confirmed exploit: `--base="--output=/tmp/x"` redirected ls-tree
+/// output. We restrict accepted values to a conservative subset that
+/// covers the vast majority of legitimate refs (branches, tags,
+/// `origin/dev`, full SHAs) while rejecting anything that could double
+/// as a git option, contain control characters, или smuggle revision
+/// modifiers like `@{1}` / `..`.
+///
+/// # Accepted shape
+/// Pattern: `^[A-Za-z0-9][A-Za-z0-9_/.-]*$` and additionally must not
+/// contain `..`, и does not start с `-`.
+///
+/// # Rejected examples
+/// - `""` (empty)
+/// - `-x`, `--flag` (looks like option)
+/// - `dev@{1}` (reflog), `HEAD^{tree}` (peel)
+/// - `dev..main` (range)
+/// - whitespace, control chars, `:`, `?`, `*`, `[`, `\\`, `~`, `^`
+///
+/// # Errors
+/// Returns `Err` с the offending value embedded для debug ergonomics.
+/// Phase 0b boundary: caller (`ci-assign-id::run`) maps to exit code 3
+/// (config/git error per CD-1).
+pub fn validate_git_ref(s: &str) -> anyhow::Result<()> {
+    if s.is_empty() {
+        anyhow::bail!("validate_git_ref: empty ref is not allowed");
+    }
+    if s.starts_with('-') {
+        anyhow::bail!(
+            "validate_git_ref: ref must not start with '-' (got {s:?}) — \
+             leading-dash refs would be parsed as git CLI options [CWE-88]"
+        );
+    }
+    if s.contains("..") {
+        anyhow::bail!("validate_git_ref: ref must not contain '..' (got {s:?})");
+    }
+    // First char must be alphanumeric (no . _ / etc).
+    let first = s.chars().next().expect("non-empty checked above");
+    if !first.is_ascii_alphanumeric() {
+        anyhow::bail!("validate_git_ref: ref must start with an alphanumeric (got {s:?})");
+    }
+    for c in s.chars() {
+        // Reject any non-ASCII или control char. The allowed subset is
+        // [A-Za-z0-9] + `_`, `/`, `.`, `-`. Everything else (spaces,
+        // `@{`, `:`, `?`, `*`, `[`, `\\`, `~`, `^`, `'`, `"`, etc.) is
+        // rejected. This is intentionally stricter than git's own
+        // `check-ref-format` because we are guarding our own attack
+        // surface, not git's; false rejections (e.g. exotic refs in
+        // user repos) are acceptable.
+        let allowed = c.is_ascii_alphanumeric() || matches!(c, '_' | '/' | '.' | '-');
+        if !allowed {
+            anyhow::bail!("validate_git_ref: ref contains forbidden char {c:?} (got {s:?})");
+        }
+        // Belt-and-suspenders control char check (the `allowed` set
+        // above already excludes them, but keep an explicit message
+        // since it's the more dangerous class).
+        if (c as u32) < 0x20 || (c as u32) == 0x7F {
+            anyhow::bail!("validate_git_ref: ref contains control character (got {s:?})");
+        }
+    }
+    Ok(())
+}
+
 /// Files changed in .forgeplan/ between two git refs.
 #[derive(Debug, Clone)]
 pub struct GitChangedFile {
@@ -250,6 +352,128 @@ pub fn slug_exists_in_filenames(slug: &str, filenames: &[String]) -> bool {
         let middle = &bytes[pfx.len()..bytes.len() - sfx.len()];
         !middle.is_empty() && middle.iter().all(|c| c.is_ascii_digit())
     })
+}
+
+/// Find the maximum `assigned_number` for a kind in a base git ref.
+///
+/// PROB-060 / SPEC-005 Phase 0b — used by `forgeplan ci-assign-id` to compute
+/// `next = max(assigned_number) + 1` when minting a new display number for a
+/// candidate artifact in a PR.
+///
+/// # Why git-native (not LanceDB)
+/// ADR-003 invariant: markdown is source of truth; LanceDB is a derived,
+/// gitignored cache. Reading directly from the git ref keeps the assignment
+/// logic deterministic and correct on a fresh CI checkout (no warm cache),
+/// and avoids the PROB-061 change_log corruption class altogether.
+///
+/// # Approach
+/// 1. `git ls-tree -r --name-only <base_ref> .forgeplan/<kind_dir>/` enumerates
+///    `.md` files in the kind directory at the base.
+/// 2. For each file, `git show <base_ref>:<path>` reads the blob content.
+/// 3. Parse YAML frontmatter; extract `assigned_number` if present.
+/// 4. Return the maximum, or `None` if the kind directory is empty / no
+///    artifact has a numeric `assigned_number`.
+///
+/// Files without a parseable `assigned_number` (legacy artifacts that have
+/// not yet been migrated, or artifacts mid-PR with `null`) are silently
+/// skipped — they do not affect the max.
+///
+/// # Path traversal guard (defense in depth)
+/// `kind_dir` comes from [`ArtifactKind::dir_name`], a const string controlled
+/// by the binary. We still reject `/`, `..`, or empty values at runtime to
+/// mirror [`artifact_filenames_in_origin_dev`]'s posture.
+///
+/// # Errors
+/// - Returns `Err` if `git ls-tree` fails for any reason other than
+///   "ref does not exist" / "not a valid object name" — those are folded
+///   into `Ok(None)` because an empty base is a valid no-artifacts state.
+/// - Returns `Err` if `git show` fails on a file that `ls-tree` already
+///   reported (real corruption — surface loudly).
+/// - Frontmatter parse failures on individual files are logged to stderr
+///   and skipped (one bad file should not block CI).
+pub fn max_assigned_number_in_base(
+    repo_root: &Path,
+    base_ref: &str,
+    kind: &ArtifactKind,
+) -> anyhow::Result<Option<u32>> {
+    // PROB-060 Phase 0b SEC-1 [CWE-88]: harden ref input. `base_ref` flows
+    // verbatim to `git ls-tree <ref> ...` and `git show <ref>:<path>` —
+    // a leading-dash ref would be parsed as a git option.
+    validate_git_ref(base_ref).with_context(|| {
+        format!(
+            "max_assigned_number_in_base: invalid base_ref {:?}",
+            redact_ref(base_ref)
+        )
+    })?;
+    let kind_dir = kind.dir_name();
+    if kind_dir.is_empty() || kind_dir.contains('/') || kind_dir.contains("..") {
+        anyhow::bail!("max_assigned_number_in_base: invalid kind_dir {kind_dir:?}");
+    }
+    let path_arg = format!(".forgeplan/{kind_dir}/");
+
+    let ls_output = Command::new("git")
+        .args(["ls-tree", "-r", "--name-only", base_ref, &path_arg])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("git ls-tree spawn failed: {e}"))?;
+
+    if !ls_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ls_output.stderr);
+        let stderr = stderr.trim();
+        // "ref does not exist on this clone" is a valid empty-base state.
+        if stderr.contains("Not a valid object name")
+            || stderr.contains("unknown revision")
+            || stderr.contains("does not exist")
+        {
+            return Ok(None);
+        }
+        anyhow::bail!("git ls-tree failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&ls_output.stdout);
+    let mut max: Option<u32> = None;
+
+    for line in stdout.lines() {
+        let path = line.trim();
+        if path.is_empty() || !path.ends_with(".md") {
+            continue;
+        }
+
+        // Read blob from base.
+        let show_output = Command::new("git")
+            .args(["show", &format!("{base_ref}:{path}")])
+            .current_dir(repo_root)
+            .output()
+            .map_err(|e| anyhow::anyhow!("git show {path} spawn failed: {e}"))?;
+
+        if !show_output.status.success() {
+            // ls-tree said it exists; show failed = real corruption.
+            let stderr = String::from_utf8_lossy(&show_output.stderr);
+            anyhow::bail!(
+                "git show {}:{path} failed: {}",
+                redact_ref(base_ref),
+                stderr.trim()
+            );
+        }
+
+        let content = String::from_utf8_lossy(&show_output.stdout);
+        let (fm, _body) = match parse_frontmatter(&content) {
+            Ok(parts) => parts,
+            Err(e) => {
+                // Don't block CI on one bad file. Surface it but skip.
+                eprintln!(
+                    "max_assigned_number_in_base: skipping {path}: frontmatter parse failed: {e}"
+                );
+                continue;
+            }
+        };
+
+        if let Some(n) = assigned_number_from_frontmatter(&fm) {
+            max = Some(max.map_or(n, |cur| cur.max(n)));
+        }
+    }
+
+    Ok(max)
 }
 
 /// Get the ORIG_HEAD ref (set after git pull/merge/rebase).
@@ -527,5 +751,258 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let result = artifact_filenames_in_origin_dev(tmp.path(), "");
         assert!(result.is_empty());
+    }
+
+    // PROB-060 Phase 0b — max_assigned_number_in_base tests.
+
+    /// Helper: init a git repo with one commit on `dev` containing the
+    /// given (path, content) pairs. Always seeds at least a placeholder
+    /// file so the initial commit succeeds even when `files` is empty.
+    fn init_repo_with_files(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let tmp = TempDir::new().unwrap();
+        let work = tmp.path();
+        let st = Command::new("git")
+            .args(["init", "--quiet", "--initial-branch=dev"])
+            .current_dir(work)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git init");
+        for (k, v) in [("user.email", "test@local"), ("user.name", "Test")] {
+            Command::new("git")
+                .args(["config", k, v])
+                .current_dir(work)
+                .status()
+                .ok();
+        }
+        std::fs::write(work.join(".gitkeep"), "").unwrap();
+        for (rel, content) in files {
+            let p = work.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        let st = Command::new("git")
+            .args(["add", "."])
+            .current_dir(work)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git add");
+        let st = Command::new("git")
+            .args(["commit", "--quiet", "-m", "fixture"])
+            .current_dir(work)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git commit");
+        tmp
+    }
+
+    #[test]
+    fn max_assigned_number_empty_repo_returns_none() {
+        let tmp = init_repo_with_files(&[]);
+        let max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Prd).unwrap();
+        assert_eq!(max, None);
+    }
+
+    #[test]
+    fn max_assigned_number_single_artifact() {
+        let tmp = init_repo_with_files(&[(
+            ".forgeplan/prds/prd-auth-system.md",
+            "---\nslug: prd-auth-system\nassigned_number: 73\n---\n\nBody.\n",
+        )]);
+        let max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Prd).unwrap();
+        assert_eq!(max, Some(73));
+    }
+
+    #[test]
+    fn max_assigned_number_multiple_takes_max() {
+        let tmp = init_repo_with_files(&[
+            (
+                ".forgeplan/prds/prd-a.md",
+                "---\nslug: prd-a\nassigned_number: 70\n---\n\n",
+            ),
+            (
+                ".forgeplan/prds/prd-b.md",
+                "---\nslug: prd-b\nassigned_number: 73\n---\n\n",
+            ),
+            (
+                ".forgeplan/prds/prd-c.md",
+                "---\nslug: prd-c\nassigned_number: 71\n---\n\n",
+            ),
+        ]);
+        let max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Prd).unwrap();
+        assert_eq!(max, Some(73));
+    }
+
+    #[test]
+    fn max_assigned_number_skips_null_assigned() {
+        let tmp = init_repo_with_files(&[
+            (
+                ".forgeplan/prds/prd-a.md",
+                "---\nslug: prd-a\nassigned_number: 73\n---\n\n",
+            ),
+            (
+                ".forgeplan/prds/prd-b.md",
+                "---\nslug: prd-b\nassigned_number: null\n---\n\n",
+            ),
+        ]);
+        let max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Prd).unwrap();
+        assert_eq!(max, Some(73));
+    }
+
+    #[test]
+    fn max_assigned_number_unknown_ref_returns_none() {
+        let tmp = init_repo_with_files(&[]);
+        let max =
+            max_assigned_number_in_base(tmp.path(), "this-ref-does-not-exist", &ArtifactKind::Prd)
+                .unwrap();
+        assert_eq!(max, None);
+    }
+
+    #[test]
+    fn max_assigned_number_per_kind_isolation() {
+        let tmp = init_repo_with_files(&[
+            (
+                ".forgeplan/prds/prd-x.md",
+                "---\nslug: prd-x\nassigned_number: 73\n---\n\n",
+            ),
+            (
+                ".forgeplan/rfcs/rfc-y.md",
+                "---\nslug: rfc-y\nassigned_number: 8\n---\n\n",
+            ),
+        ]);
+        let prd_max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Prd).unwrap();
+        let rfc_max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Rfc).unwrap();
+        assert_eq!(prd_max, Some(73));
+        assert_eq!(rfc_max, Some(8));
+    }
+
+    // PROB-060 Phase 0b SEC-1 [CWE-88] — validate_git_ref tests.
+
+    #[test]
+    fn validate_git_ref_rejects_empty() {
+        assert!(validate_git_ref("").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_leading_dash() {
+        assert!(validate_git_ref("-x").is_err());
+        assert!(validate_git_ref("--flag").is_err());
+        assert!(validate_git_ref("--upload-pack=evil").is_err());
+        assert!(validate_git_ref("--output=/tmp/x").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_accepts_common_refs() {
+        assert!(validate_git_ref("dev").is_ok());
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("HEAD").is_ok());
+        assert!(validate_git_ref("origin/dev").is_ok());
+        assert!(validate_git_ref("origin/main").is_ok());
+        assert!(validate_git_ref("feat/foo-bar").is_ok());
+        assert!(validate_git_ref("release/v1.2.3").is_ok());
+        assert!(validate_git_ref("v0.29.0").is_ok());
+        // Full SHA.
+        assert!(validate_git_ref("e11d3fc1234567890abcdef1234567890abcdef1").is_ok());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_double_dot() {
+        assert!(validate_git_ref("dev..main").is_err());
+        assert!(validate_git_ref("..").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_revision_modifiers() {
+        assert!(validate_git_ref("dev@{1}").is_err());
+        assert!(validate_git_ref("HEAD^{tree}").is_err());
+        assert!(validate_git_ref("HEAD~1").is_err());
+        assert!(validate_git_ref("HEAD^").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_special_chars() {
+        assert!(validate_git_ref("dev:path").is_err());
+        assert!(validate_git_ref("foo bar").is_err());
+        assert!(validate_git_ref("foo*").is_err());
+        assert!(validate_git_ref("foo?").is_err());
+        assert!(validate_git_ref("foo[1]").is_err());
+        assert!(validate_git_ref("foo\\bar").is_err());
+        assert!(validate_git_ref("foo'evil").is_err());
+        assert!(validate_git_ref("foo\"evil").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_control_chars() {
+        assert!(validate_git_ref("foo\nbar").is_err());
+        assert!(validate_git_ref("foo\tbar").is_err());
+        assert!(validate_git_ref("foo\rbar").is_err());
+        assert!(validate_git_ref("foo\x00bar").is_err());
+        assert!(validate_git_ref("foo\x7Fbar").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_leading_non_alnum() {
+        assert!(validate_git_ref("/dev").is_err());
+        assert!(validate_git_ref(".dev").is_err());
+        assert!(validate_git_ref("_dev").is_err());
+    }
+
+    #[test]
+    fn max_assigned_number_in_base_rejects_malicious_ref() {
+        // CWE-88: ensure validation kicks in before the binary spawns git.
+        let tmp = init_repo_with_files(&[]);
+        let err = max_assigned_number_in_base(tmp.path(), "--upload-pack=evil", &ArtifactKind::Prd);
+        assert!(err.is_err(), "leading-dash ref must be rejected");
+        let err = max_assigned_number_in_base(tmp.path(), "dev..main", &ArtifactKind::Prd);
+        assert!(err.is_err(), "range refs must be rejected");
+    }
+
+    // PROB-060 Phase 0b Round 2 [SEC-5 CWE-200] — path/ref redaction.
+
+    #[test]
+    fn redact_path_returns_relative_for_workspace_subpath() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let nested = workspace.join(".forgeplan/prds/PRD-001-x.md");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, "---\n---\n").unwrap();
+        let red = redact_path(workspace, &nested);
+        assert_eq!(red, ".forgeplan/prds/PRD-001-x.md");
+    }
+
+    #[test]
+    fn redact_path_returns_filename_only_for_outside() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        // A path that is NOT a child of `workspace`.
+        let outside = std::path::Path::new("/etc/passwd");
+        let red = redact_path(workspace, outside);
+        assert_eq!(red, "passwd");
+    }
+
+    #[test]
+    fn redact_ref_short_passes_through() {
+        assert_eq!(redact_ref("dev"), "dev");
+        assert_eq!(redact_ref("origin/dev"), "origin/dev");
+    }
+
+    #[test]
+    fn redact_ref_long_truncates() {
+        let long = "a".repeat(80);
+        let red = redact_ref(&long);
+        assert!(red.ends_with("..."));
+        assert_eq!(red.len(), 40);
+    }
+
+    #[test]
+    fn max_assigned_number_skips_unparseable_frontmatter() {
+        let tmp = init_repo_with_files(&[
+            (
+                ".forgeplan/prds/prd-good.md",
+                "---\nslug: prd-good\nassigned_number: 50\n---\n\n",
+            ),
+            (".forgeplan/prds/prd-bad.md", "no frontmatter here\n"),
+        ]);
+        let max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Prd).unwrap();
+        assert_eq!(max, Some(50));
     }
 }
