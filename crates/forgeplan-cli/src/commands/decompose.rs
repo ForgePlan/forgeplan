@@ -51,10 +51,14 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
 
     // PRD-071 ACTIONABILITY: target ID is real (`record.id`); `RFC-NNN` is the
     // allowed value-to-fill placeholder for the yet-to-exist RFC.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the link command stays canonical for commit `Refs:`.
+    let ref_form =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
     let hint_list = vec![
-        Hint::info(format!("Create RFC for {}", record.id)).with_action(format!(
+        Hint::info(format!("Create RFC for {}", ref_form)).with_action(format!(
             "forgeplan new rfc \"<task title>\" && forgeplan link RFC-NNN {} --relation refines",
-            record.id
+            ref_form
         )),
     ];
     print!("{}", hints::render_next_action_line(&hint_list));

@@ -154,28 +154,32 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // Build a single primary next-action with a real command, prioritised
     // by severity: validation errors > missing evidence > ready-to-activate
     // > otherwise score.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug pre-merge and
+    // display id post-merge so commit `Refs:` lines stay canonical.
+    let ref_form =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
     let mut hint_list: Vec<Hint> = Vec::new();
     if must_errors > 0 {
         hint_list.push(
             Hint::warning(format!("Fix {} MUST error(s)", must_errors))
-                .with_action(format!("forgeplan validate {}", record.id)),
+                .with_action(format!("forgeplan validate {}", ref_form)),
         );
     } else if !has_evidence {
         hint_list.push(
             Hint::warning("No evidence linked")
                 .with_action(format!(
                     "forgeplan new evidence \"Evidence for {}\" && forgeplan link EVID-XXX {} --relation informs",
-                    record.id, record.id
+                    ref_form, ref_form
                 )),
         );
     } else if validation_passed && report.r_eff > 0.0 && record.status == "draft" {
         hint_list.push(
-            Hint::info(format!("Ready to activate {}", record.id))
-                .with_action(format!("forgeplan activate {}", record.id)),
+            Hint::info(format!("Ready to activate {}", ref_form))
+                .with_action(format!("forgeplan activate {}", ref_form)),
         );
     } else {
         hint_list
-            .push(Hint::info("Verify R_eff").with_action(format!("forgeplan score {}", record.id)));
+            .push(Hint::info("Verify R_eff").with_action(format!("forgeplan score {}", ref_form)));
     }
 
     // --- Output ---

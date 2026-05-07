@@ -108,11 +108,19 @@ Fix: forgeplan list",
     // - single ID + 0 errors → activate
     // - single ID + errors → fix-style hint (re-validate after editing)
     // - multi/CI mode → run health to get blind-spot view
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug pre-merge and
+    // display id post-merge so the next command keeps canonical refs in
+    // commit messages. Falls back to user input only if no record was
+    // resolved (defensive — `to_validate.is_empty()` already errors above).
     let next_hints: Vec<Hint> = if let Some(target_id) = id {
+        let ref_form = to_validate
+            .first()
+            .map(|r| forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id))
+            .unwrap_or_else(|| target_id.to_string());
         if total_errors == 0 {
             vec![
                 Hint::info("Validation passed")
-                    .with_action(format!("forgeplan activate {}", target_id)),
+                    .with_action(format!("forgeplan activate {}", ref_form)),
             ]
         } else {
             vec![
@@ -120,7 +128,7 @@ Fix: forgeplan list",
                     "{} MUST error(s) — fix and revalidate",
                     total_errors
                 ))
-                .with_action(format!("forgeplan validate {}", target_id)),
+                .with_action(format!("forgeplan validate {}", ref_form)),
             ]
         }
     } else if total_errors > 0 {
