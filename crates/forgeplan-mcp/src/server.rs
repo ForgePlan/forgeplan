@@ -1227,7 +1227,16 @@ impl ForgeplanServer {
         // only — a failure here is logged and does not break creation.
         maybe_init_phase(&ws, &id, "forgeplan_new").await;
 
-        let hint = methodology_hint_after_new(template_key, &id);
+        // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug-canonical
+        // hint while the artifact is pre-merge (`assigned_number` null). We
+        // re-parse the rendered body so this path stays consistent with
+        // what was actually written to disk: if W1.A's response shape
+        // expansion has wired `augment_frontmatter_with_id_fields` into the
+        // MCP create flow, the slug is present and used; otherwise we
+        // gracefully fall back to the numeric `id` so the hint stays
+        // runnable for legacy templates.
+        let ref_form = forgeplan_core::artifact::frontmatter::refs_form_from_body(&rendered, &id);
+        let hint = methodology_hint_after_new(template_key, &ref_form);
 
         Ok(json_result(&NewArtifactResponse {
             id,
@@ -7618,22 +7627,103 @@ impl rmcp::ServerHandler for ForgeplanServer {
 // ── Methodology hints ──────────────────────────────────────────
 
 /// Generate a methodology hint based on artifact kind after creation.
-fn methodology_hint_after_new(kind: &str, id: &str) -> String {
+///
+/// **PROB-060 / SPEC-005 / ADR-012 (Phase 2 W1.B, CD-5)** — `ref_form` is
+/// the canonical reference token the agent should use in the next command:
+/// - **Pre-merge** artifact (`assigned_number` is null) → caller passes the
+///   slug (`prd-auth-system`).
+/// - **Post-merge** artifact → caller passes the zero-padded display id
+///   (`PRD-074`).
+///
+/// The hint helper itself stays slug-agnostic; centralising the choice
+/// in the call site (via [`forgeplan_core::artifact::frontmatter::refs_form`])
+/// avoids leaking frontmatter parsing into every hint location and lets a
+/// single helper drive both the MCP `_next_action` shape and the CLI
+/// `Next:` line.
+fn methodology_hint_after_new(kind: &str, ref_form: &str) -> String {
     match kind {
         "prd" | "rfc" | "adr" | "spec" | "epic" => format!(
-            "Fill ALL MUST sections, then: forgeplan validate {id}. \
+            "Fill ALL MUST sections, then: forgeplan validate {ref_form}. \
              Do NOT start coding until validate PASS."
         ),
         "evidence" => format!(
             "Add structured fields (verdict, congruence_level, evidence_type) to body, \
-             then: forgeplan link {id} <TARGET> --relation informs"
+             then: forgeplan link {ref_form} <TARGET> --relation informs"
         ),
         "problem" => format!(
             "Describe the problem with context. \
-             Then: forgeplan link {id} <RELATED> --relation identifies"
+             Then: forgeplan link {ref_form} <RELATED> --relation identifies"
         ),
         "note" => "Notes auto-expire in 90 days. Link to related artifacts if relevant.".into(),
-        _ => format!("Next: forgeplan validate {id}"),
+        _ => format!("Next: forgeplan validate {ref_form}"),
+    }
+}
+
+#[cfg(test)]
+mod methodology_hint_tests {
+    //! PROB-060 / SPEC-005 / ADR-012 (Phase 2 W1.B, CD-5) — verify the
+    //! hint emitted after `forgeplan_new` references the right canonical
+    //! form per the artifact's pre/post-merge state.
+    //!
+    //! These tests exercise the *helper* directly; the integration with
+    //! `refs_form_from_body` is exercised in the body-roundtrip tests of
+    //! `forgeplan_core::artifact::frontmatter`.
+
+    use super::methodology_hint_after_new;
+
+    #[test]
+    fn hint_uses_slug_for_pre_merge_artifact() {
+        // PRD slug pre-merge (`prd-auth-system`, no display number yet).
+        let hint = methodology_hint_after_new("prd", "prd-auth-system");
+        assert!(
+            hint.contains("forgeplan validate prd-auth-system"),
+            "expected slug in pre-merge hint, got: {hint}"
+        );
+        // Defensive: a stale numeric ID would be a regression.
+        assert!(
+            !hint.contains("PRD-074"),
+            "pre-merge hint must not embed the post-merge display id, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn hint_uses_display_id_for_post_merge_artifact() {
+        // Post-merge: caller passes the zero-padded display id.
+        let hint = methodology_hint_after_new("prd", "PRD-074");
+        assert!(
+            hint.contains("forgeplan validate PRD-074"),
+            "expected display id in post-merge hint, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn evidence_hint_uses_slug_pre_merge() {
+        // Evidence artifact's `link` hint must also be slug-aware.
+        let hint = methodology_hint_after_new("evidence", "evid-auth-stress");
+        assert!(
+            hint.contains("forgeplan link evid-auth-stress <TARGET>"),
+            "evidence hint must reference slug as link source, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn problem_hint_uses_display_id_post_merge() {
+        let hint = methodology_hint_after_new("problem", "PROB-061");
+        assert!(
+            hint.contains("forgeplan link PROB-061 <RELATED>"),
+            "problem hint must reference display id post-merge, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn unknown_kind_falls_back_to_validate_with_ref_form() {
+        // Default branch must also use the supplied ref_form, not the
+        // hard-coded `id` from before W1.B.
+        let hint = methodology_hint_after_new("unknown-kind", "rfc-migration");
+        assert!(
+            hint.contains("forgeplan validate rfc-migration"),
+            "fallback hint must use ref_form, got: {hint}"
+        );
     }
 }
 

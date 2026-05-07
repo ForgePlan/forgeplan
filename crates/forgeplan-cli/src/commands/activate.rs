@@ -89,6 +89,9 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     }
 
     // Hints: suggest evidence if not linked, then reconcile parents.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pass the canonical
+    // reference form (slug pre-merge / display id post-merge) so emitted
+    // hints stay consistent with commit `Refs:` conventions.
     let mut emitted: Vec<Hint> = Vec::new();
     if let Some(record) = store.get_record(id).await? {
         let rels = store.get_relations(id).await.unwrap_or_default();
@@ -101,7 +104,9 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
             .kind
             .parse()
             .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
-        emitted = forgeplan_core::hints::activate_hints(id, true, has_evidence, &kind);
+        let ref_form =
+            forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+        emitted = forgeplan_core::hints::activate_hints(&ref_form, true, has_evidence, &kind);
         if !emitted.is_empty() {
             print!("{}", forgeplan_core::hints::format_hints(&emitted));
         }

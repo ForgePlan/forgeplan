@@ -101,6 +101,65 @@ pub fn assigned_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
         .and_then(|n| u32::try_from(n).ok())
 }
 
+/// Whether an artifact is **pre-merge** per ADR-012 / SPEC-005 (PROB-060).
+///
+/// "Pre-merge" means CI has not yet promoted `assigned_number` from `null`
+/// to a concrete `u32` (the write-once flip happens on merge to `dev`).
+/// During the pre-merge window the canonical reference is the **slug**;
+/// the display ID still carries a `?` marker (`PRD-74?`) and may change.
+///
+/// Used by hint emission (PRD-071) to decide whether `Next:` lines and
+/// `_next_action` JSON fields should reference the slug (pre-merge) or
+/// the zero-padded display ID (post-merge). See [`refs_form`].
+///
+/// Legacy artifacts (no `assigned_number` field at all) are treated as
+/// pre-merge — same as explicit `null` — so resolver fallback paths still
+/// emit a usable hint.
+pub fn is_pre_merge(fm: &Frontmatter) -> bool {
+    assigned_number_from_frontmatter(fm).is_none()
+}
+
+/// Pick the canonical reference form for hint / commit-Refs emission per
+/// ADR-012 / SPEC-005 (PROB-060).
+///
+/// Contract:
+/// - **Pre-merge** (`assigned_number` is `null` or absent) → return the
+///   `slug` field if present (`prd-auth-system`).
+/// - **Post-merge** (`assigned_number` is set) → return `fallback_id`,
+///   which the caller is expected to populate with the zero-padded
+///   display ID (`PRD-074`) — typically the resolver's canonical form
+///   (`record.id` from `LanceStore`).
+/// - **Pre-merge but no slug field** (legacy artifacts mid-migration) →
+///   return `fallback_id`. Better to surface *something* runnable than
+///   silently drop the hint.
+///
+/// The two-pronged shape (Frontmatter + fallback) intentionally pushes
+/// the decision down to a single helper so hint sites stay slug-aware
+/// without duplicating the branch logic. CD-5 binding.
+pub fn refs_form<'a>(fm: &'a Frontmatter, fallback_id: &'a str) -> &'a str {
+    if is_pre_merge(fm) {
+        slug_from_frontmatter(fm).unwrap_or(fallback_id)
+    } else {
+        fallback_id
+    }
+}
+
+/// Pick the canonical reference form from raw markdown content
+/// (frontmatter + body). Convenience wrapper around [`refs_form`] for
+/// call sites that only have the rendered body string (e.g. CLI commands
+/// reading from `ArtifactRecord::body`).
+///
+/// Returns the supplied `fallback_id` verbatim when the body has no
+/// parseable frontmatter — i.e. `refs_form_from_body` is non-fatal on
+/// malformed input, mirroring the lenient behaviour of
+/// `slug_from_frontmatter`.
+pub fn refs_form_from_body(content: &str, fallback_id: &str) -> String {
+    match parse_frontmatter(content) {
+        Ok((fm, _)) => refs_form(&fm, fallback_id).to_string(),
+        Err(_) => fallback_id.to_string(),
+    }
+}
+
 /// Augment rendered frontmatter with PROB-060 / SPEC-005 / ADR-012 identity fields.
 ///
 /// Inserts three fields with these semantics:
@@ -343,6 +402,85 @@ mod tests {
         assert_eq!(slug_from_frontmatter(&fm), Some("prd-auth-system"));
         assert_eq!(predicted_number_from_frontmatter(&fm), Some(74));
         assert_eq!(assigned_number_from_frontmatter(&fm), Some(74));
+    }
+
+    // PROB-060 Phase 2 W1.B (CD-5) — is_pre_merge + refs_form helpers.
+
+    #[test]
+    fn is_pre_merge_true_when_assigned_number_null() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "slug: prd-auth-system\npredicted_number: 74\nassigned_number: null",
+        )
+        .unwrap();
+        assert!(is_pre_merge(&fm));
+    }
+
+    #[test]
+    fn is_pre_merge_true_when_assigned_number_absent() {
+        // Legacy artifact: no `assigned_number` field at all is treated
+        // identically to explicit null (pre-merge).
+        let fm: Frontmatter = serde_yaml::from_str("slug: prd-auth-system").unwrap();
+        assert!(is_pre_merge(&fm));
+    }
+
+    #[test]
+    fn is_pre_merge_false_when_assigned_number_set() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "slug: prd-auth-system\npredicted_number: 74\nassigned_number: 74",
+        )
+        .unwrap();
+        assert!(!is_pre_merge(&fm));
+    }
+
+    #[test]
+    fn refs_form_returns_slug_when_pre_merge() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "slug: prd-auth-system\npredicted_number: 74\nassigned_number: null",
+        )
+        .unwrap();
+        assert_eq!(refs_form(&fm, "PRD-74?"), "prd-auth-system");
+    }
+
+    #[test]
+    fn refs_form_returns_fallback_when_post_merge() {
+        let fm: Frontmatter = serde_yaml::from_str(
+            "slug: prd-auth-system\npredicted_number: 74\nassigned_number: 74",
+        )
+        .unwrap();
+        // Post-merge: caller is expected to pass the resolver's canonical
+        // display id (e.g. `PRD-074`) as fallback. We do NOT return the
+        // slug even though it's in the frontmatter — display id is the
+        // canonical form once `assigned_number` flips.
+        assert_eq!(refs_form(&fm, "PRD-074"), "PRD-074");
+    }
+
+    #[test]
+    fn refs_form_falls_back_when_pre_merge_but_no_slug() {
+        // Legacy artifact mid-migration: no slug yet but no assigned_number
+        // either. We return the fallback so the hint is at least runnable.
+        let fm: Frontmatter = serde_yaml::from_str("status: draft").unwrap();
+        assert_eq!(refs_form(&fm, "PRD-074"), "PRD-074");
+    }
+
+    #[test]
+    fn refs_form_from_body_pre_merge_returns_slug() {
+        let body = "---\nslug: prd-auth-system\npredicted_number: 74\nassigned_number: null\n---\n\nBody.\n";
+        assert_eq!(refs_form_from_body(body, "PRD-74?"), "prd-auth-system");
+    }
+
+    #[test]
+    fn refs_form_from_body_post_merge_returns_fallback() {
+        let body =
+            "---\nslug: prd-auth-system\npredicted_number: 74\nassigned_number: 74\n---\n\nBody.\n";
+        assert_eq!(refs_form_from_body(body, "PRD-074"), "PRD-074");
+    }
+
+    #[test]
+    fn refs_form_from_body_no_frontmatter_returns_fallback() {
+        // Defensive: malformed / missing frontmatter must not panic and
+        // must not silently drop the hint.
+        let body = "# PRD-074: title\n\nNo frontmatter here.\n";
+        assert_eq!(refs_form_from_body(body, "PRD-074"), "PRD-074");
     }
 
     // PROB-060 / SPEC-005 — augment_frontmatter_with_id_fields tests
