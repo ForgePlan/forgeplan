@@ -33,6 +33,26 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+
+/// PROB-060 Phase 0b Round 2 [SEC-5 CWE-200]: redact filesystem paths in
+/// error messages and log output. Workspace-relative paths are safe to
+/// surface; absolute filesystem paths (`/home/runner/work/…`) leak CI
+/// layout and are stripped to just the file basename if outside the
+/// workspace.
+///
+/// Returns the path verbatim as a `String` for ergonomic use in
+/// `format!`/`anyhow::bail!`. Caller must pass an already-canonicalized
+/// or known-good `workspace`; we only do a string-level prefix check.
+fn redact_path(workspace: &Path, path: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(workspace) {
+        return rel.display().to_string();
+    }
+    // Outside the workspace — strip everything but the basename.
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
 use forgeplan_core::artifact::frontmatter::{
     assigned_number_from_frontmatter, parse_frontmatter, predicted_number_from_frontmatter,
     set_assigned_number, slug_from_frontmatter,
@@ -232,9 +252,11 @@ pub async fn run(args: CiAssignIdArgs) -> Result<i32> {
     let plan = compute_assignment_plan(&workspace, &args.base, &candidates)
         .with_context(|| format!("computing plan against base ref {}", args.base))?;
 
-    // 3. Apply (or simulate if --dry-run).
-    let (assignments, collisions) = apply_plan(&workspace, &plan, args.dry_run, args.auto_suffix)
-        .context("applying assignment plan")?;
+    // 3. Apply (or simulate if --dry-run). Round 2 [CR-7]: auto_suffix
+    //    no longer plumbed through to apply_plan — collision suffix is
+    //    decided in compute_assignment_plan above.
+    let (assignments, collisions) =
+        apply_plan(&workspace, &plan, args.dry_run).context("applying assignment plan")?;
 
     // 4. Build output.
     let exit_code = if !collisions.is_empty() && !args.auto_suffix {
@@ -317,8 +339,8 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
         if !dir.is_dir() {
             continue;
         }
-        for entry in
-            std::fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))?
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("read_dir {}", redact_path(workspace, &dir)))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -330,16 +352,17 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
             // open is a real CI fault (corrupt fs, permission denied,
             // race), not a "silent skip-OK" case.
             let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("ci-assign-id: read {}", path.display()))?;
+                .with_context(|| format!("ci-assign-id: read {}", redact_path(workspace, &path)))?;
             let (fm, _body) = match parse_frontmatter(&content) {
                 Ok(parts) => parts,
                 Err(e) => {
                     // PROB-060 Phase 0b CR-2 fix: surface parse failures
                     // instead of silently skipping. Continue с remaining
                     // candidates so one bad file doesn't block CI.
+                    // Round 2 [SEC-5]: redact path to workspace-relative.
                     eprintln!(
                         "ci-assign-id: skipping {}: frontmatter parse failed: {e}",
-                        path.display()
+                        redact_path(workspace, &path)
                     );
                     continue;
                 }
@@ -359,7 +382,7 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
             if let Err(e) = validate_slug(&slug) {
                 anyhow::bail!(
                     "ci-assign-id: malformed slug {slug:?} in {}: {e}",
-                    path.display()
+                    redact_path(workspace, &path)
                 );
             }
             let predicted = predicted_number_from_frontmatter(&fm);
@@ -379,6 +402,15 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
 }
 
 /// Convert candidates → plan items with assigned numbers.
+///
+/// PROB-060 Phase 0b Round 2 [E2E-2]: 2-pass strategy eliminates the
+/// iteration-order edge case where a candidate carrying
+/// `current_assigned: Some(n)` appears *after* one or more `null`
+/// candidates. Pass 1 absorbs every existing `assigned_number` into the
+/// per-kind sequence counter; pass 2 then assigns nulls strictly above
+/// that absorbed maximum. Without the 2-pass shape, an input like
+/// `[null, null, existing=80]` against `max_in_base=73` would produce
+/// `74, 75, 80` — leaking 80 across the next CI run boundary.
 pub fn compute_assignment_plan(
     workspace: &Path,
     base_ref: &str,
@@ -386,20 +418,20 @@ pub fn compute_assignment_plan(
 ) -> Result<Vec<PlanItem>> {
     use std::collections::HashMap;
 
-    let mut by_kind: HashMap<String, Vec<Candidate>> = HashMap::new();
-    for c in candidates {
-        by_kind
-            .entry(c.kind.dir_name().to_string())
-            .or_default()
-            .push(c.clone());
-    }
+    // Discover unique kind dirs touched by this batch.
+    let mut kind_dirs: Vec<String> = candidates
+        .iter()
+        .map(|c| c.kind.dir_name().to_string())
+        .collect();
+    kind_dirs.sort();
+    kind_dirs.dedup();
 
-    let mut output: Vec<PlanItem> = Vec::with_capacity(candidates.len());
     let mut seq_per_kind: HashMap<String, u32> = HashMap::new();
     let mut max_per_kind: HashMap<String, Option<u32>> = HashMap::new();
     let mut base_files_per_kind: HashMap<String, Vec<String>> = HashMap::new();
 
-    for kind_dir in by_kind.keys() {
+    // Seed sequence counters from `--base` for every kind in the batch.
+    for kind_dir in &kind_dirs {
         let kind = match dir_name_to_kind(kind_dir) {
             Some(k) => k,
             None => continue,
@@ -411,6 +443,21 @@ pub fn compute_assignment_plan(
         base_files_per_kind.insert(kind_dir.clone(), files);
     }
 
+    // Pass 1: absorb every already-assigned number into the per-kind
+    // sequence counter, in any input order. After this loop,
+    // `seq_per_kind[k]` ≥ max(existing, max_in_base) for every kind.
+    for c in candidates {
+        if let Some(existing) = c.current_assigned {
+            let kind_dir = c.kind.dir_name().to_string();
+            let entry = seq_per_kind.entry(kind_dir).or_insert(0);
+            *entry = (*entry).max(existing);
+        }
+    }
+
+    // Pass 2: emit plan items in input order. Nulls now mint numbers
+    // strictly above all absorbed existing numbers, so collisions are
+    // impossible regardless of how the original input was ordered.
+    let mut output: Vec<PlanItem> = Vec::with_capacity(candidates.len());
     for c in candidates {
         let kind_dir = c.kind.dir_name().to_string();
         let max_in_base = max_per_kind.get(&kind_dir).cloned().flatten();
@@ -420,14 +467,6 @@ pub fn compute_assignment_plan(
             .unwrap_or_default();
 
         if let Some(existing) = c.current_assigned {
-            // PROB-060 Phase 0b CR-1 fix: when a candidate is already
-            // assigned (workflow retry, partial-assignment state), the
-            // per-kind sequence counter must absorb its number — otherwise
-            // на retry мы бы выдали `max_in_base + 1` коллидируя с уже
-            // присвоенным номером. Doc promised idempotency; this seals
-            // the leak.
-            let entry = seq_per_kind.entry(kind_dir.clone()).or_insert(0);
-            *entry = (*entry).max(existing);
             output.push(PlanItem {
                 candidate: c.clone(),
                 assigned_number: existing,
@@ -461,14 +500,32 @@ pub fn compute_assignment_plan(
 }
 
 /// Apply the plan: rewrite frontmatter, return assignment + collision lists.
+///
+/// PROB-060 Phase 0b Round 2 closures:
+/// - **[CR-7]** drops the no-op `auto_suffix` parameter — Phase 0b
+///   prototype semantics did not consult the flag here. Collision-resolution
+///   suffix lives in [`compute_assignment_plan`] (driven by `--auto-suffix`
+///   surfaced at `run`).
+/// - **[SEC-6 CWE-367]** TOCTOU + symlink hardening:
+///     * reject any candidate whose `path` is a symlink (would let a PR
+///       redirect the write target outside `.forgeplan/`);
+///     * canonicalize the path and assert it stays under the canonicalized
+///       workspace (path-traversal defense);
+///     * write to a `*.md.tmp` sibling and `rename` to publish atomically —
+///       a crash mid-write leaves either the old or new file, never a
+///       half-written one.
 pub fn apply_plan(
-    _workspace: &Path,
+    workspace: &Path,
     plan: &[PlanItem],
     dry_run: bool,
-    auto_suffix: bool,
 ) -> Result<(Vec<Assignment>, Vec<Collision>)> {
     let mut assignments = Vec::new();
     let mut collisions = Vec::new();
+
+    // Canonicalize the workspace once. If canonicalize fails (e.g. the
+    // workspace was deleted out from under us), we can still proceed for
+    // dry-run paths but writes will fail loudly below.
+    let canonical_workspace = std::fs::canonicalize(workspace).ok();
 
     for item in plan {
         let kind_template_key = item.candidate.kind.template_key().to_string();
@@ -486,9 +543,8 @@ pub fn apply_plan(
                 ),
                 suggested_resolution: suggested.clone(),
             });
-            // Phase 0b prototype: do NOT perform the rename even with
-            // --auto-suffix. Worker 1 prompt: "warning only".
-            let _ = auto_suffix;
+            // Phase 0b prototype: collision-resolution suffix is decided
+            // upstream in compute_assignment_plan — not here.
             continue;
         }
 
@@ -506,22 +562,67 @@ pub fn apply_plan(
         }
 
         if !dry_run {
+            // [SEC-6 CWE-367] symlink check: refuse to follow symlinks.
+            // symlink_metadata never traverses, unlike metadata().
+            let lmeta = std::fs::symlink_metadata(&item.candidate.path).with_context(|| {
+                format!(
+                    "ci-assign-id: stat {} (symlink check)",
+                    redact_path(workspace, &item.candidate.path)
+                )
+            })?;
+            if lmeta.file_type().is_symlink() {
+                anyhow::bail!(
+                    "ci-assign-id: refusing to follow symlink artifact {} [SEC-6]",
+                    redact_path(workspace, &item.candidate.path)
+                );
+            }
+
+            // [SEC-6] path traversal: canonicalize the candidate and
+            // verify it stays under the canonicalized workspace.
+            if let Some(ws_canon) = canonical_workspace.as_ref() {
+                let path_canon =
+                    std::fs::canonicalize(&item.candidate.path).with_context(|| {
+                        format!(
+                            "ci-assign-id: canonicalize {}",
+                            redact_path(workspace, &item.candidate.path)
+                        )
+                    })?;
+                if !path_canon.starts_with(ws_canon) {
+                    anyhow::bail!(
+                        "ci-assign-id: path {} escapes workspace [SEC-6 invariant violation]",
+                        redact_path(workspace, &item.candidate.path)
+                    );
+                }
+            }
+
             let content = std::fs::read_to_string(&item.candidate.path).with_context(|| {
                 format!(
                     "ci-assign-id: read {} for assigned_number rewrite",
-                    item.candidate.path.display()
+                    redact_path(workspace, &item.candidate.path)
                 )
             })?;
             let new_content =
                 set_assigned_number(&content, item.assigned_number).with_context(|| {
                     format!(
                         "ci-assign-id: set_assigned_number on {} to {}",
-                        item.candidate.path.display(),
+                        redact_path(workspace, &item.candidate.path),
                         item.assigned_number
                     )
                 })?;
-            std::fs::write(&item.candidate.path, new_content).with_context(|| {
-                format!("ci-assign-id: write {}", item.candidate.path.display())
+
+            // Atomic publish: write to `<path>.tmp` then rename. POSIX
+            // rename is atomic for files on the same filesystem; we
+            // rely on that to avoid half-written artifacts on crash.
+            let tmp_path = item.candidate.path.with_extension("md.tmp");
+            std::fs::write(&tmp_path, new_content).with_context(|| {
+                format!("ci-assign-id: write {}", redact_path(workspace, &tmp_path))
+            })?;
+            std::fs::rename(&tmp_path, &item.candidate.path).with_context(|| {
+                format!(
+                    "ci-assign-id: rename {} -> {}",
+                    redact_path(workspace, &tmp_path),
+                    redact_path(workspace, &item.candidate.path)
+                )
             })?;
         }
 
@@ -679,6 +780,10 @@ fn build_commit_message(pr: u64, assignments: &[Assignment]) -> String {
 }
 
 /// Best-effort `owner/name` detection from `git remote get-url origin`.
+///
+/// Thin wrapper around [`parse_repo_from_url`] that handles the git
+/// invocation. Separated from the parser so the URL-shape branches are
+/// unit-testable in isolation (PROB-060 Phase 0b Round 2 [CR-6]).
 fn detect_repo(workspace: &Path) -> String {
     let output = std::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
@@ -687,24 +792,53 @@ fn detect_repo(workspace: &Path) -> String {
     match output {
         Ok(o) if o.status.success() => {
             let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let url = url.trim_end_matches(".git").to_string();
-            if let Some(idx) = url.rfind(':') {
-                let tail = &url[idx + 1..];
-                if tail.contains('/') {
-                    return tail.to_string();
-                }
-            }
-            if let Some(idx) = url.find("://") {
-                let after = &url[idx + 3..];
-                let parts: Vec<&str> = after.splitn(2, '/').collect();
-                if parts.len() == 2 {
-                    return parts[1].to_string();
-                }
-            }
-            url
+            parse_repo_from_url(&url).unwrap_or(url)
         }
         _ => String::new(),
     }
+}
+
+/// Pure parser: extract `owner/name` (or `group/sub/name` for nested
+/// providers like GitLab) from a git remote URL.
+///
+/// Accepts both SSH and HTTPS forms with or without a trailing `.git`:
+/// - `git@github.com:org/repo.git` → `Some("org/repo")`
+/// - `git@github.com:org/repo` → `Some("org/repo")`
+/// - `https://github.com/org/repo.git` → `Some("org/repo")`
+/// - `https://github.com/org/repo` → `Some("org/repo")`
+/// - `git@gitlab.com:group/sub/repo.git` → `Some("group/sub/repo")`
+/// - `""` / non-URL strings → `None`
+pub fn parse_repo_from_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let url = url.trim_end_matches(".git");
+
+    // SSH form: user@host:path
+    if let Some(idx) = url.rfind(':') {
+        let tail = &url[idx + 1..];
+        if tail.contains('/') && !tail.starts_with('/') {
+            // Reject if the colon was part of `://` (HTTPS form falls through).
+            let before = &url[..idx];
+            if !before.ends_with(':') && !before.ends_with('/') {
+                return Some(tail.to_string());
+            }
+        }
+    }
+    // HTTPS / scheme form: scheme://host/path
+    if let Some(idx) = url.find("://") {
+        let after = &url[idx + 3..];
+        // path begins after the host segment
+        if let Some(slash) = after.find('/') {
+            let path = &after[slash + 1..];
+            if !path.is_empty() && path.contains('/') {
+                return Some(path.to_string());
+            }
+        }
+        return None;
+    }
+    None
 }
 
 /// Reverse mapping `dir_name` (e.g. "prds") → ArtifactKind.
@@ -960,7 +1094,7 @@ mod tests {
             already_assigned: false,
             collision: None,
         }];
-        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false, false).unwrap();
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
         assert!(collisions.is_empty());
         assert_eq!(assignments.len(), 1);
         assert_eq!(assignments[0].action, "assigned");
@@ -987,7 +1121,7 @@ mod tests {
             already_assigned: false,
             collision: None,
         }];
-        let (assignments, _) = apply_plan(tmp.path(), &plan, true, false).unwrap();
+        let (assignments, _) = apply_plan(tmp.path(), &plan, true).unwrap();
         assert_eq!(assignments[0].action, "would_assign");
         let after = fs::read_to_string(&path).unwrap();
         assert_eq!(after, original, "dry-run must not modify file");
@@ -1009,7 +1143,7 @@ mod tests {
             already_assigned: true,
             collision: None,
         }];
-        let (assignments, _) = apply_plan(tmp.path(), &plan, false, false).unwrap();
+        let (assignments, _) = apply_plan(tmp.path(), &plan, false).unwrap();
         assert_eq!(assignments[0].action, "skipped_already_assigned");
     }
 
@@ -1031,7 +1165,7 @@ mod tests {
             already_assigned: false,
             collision: Some("prd-conflict-74".to_string()),
         }];
-        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false, false).unwrap();
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
         assert_eq!(collisions.len(), 1);
         assert!(
             assignments.is_empty(),
@@ -1513,5 +1647,238 @@ mod tests {
         };
         let exit = tokio_test_block(async move { super::run(args).await.unwrap() });
         assert_eq!(exit, EXIT_CONFIG_ERROR);
+    }
+
+    // ---------------------------------------------------------------
+    // PROB-060 Phase 0b Round 2 — additional closures
+    // ---------------------------------------------------------------
+
+    // CLOSE-2 [SEC-6 CWE-367] — symlink + canonical path + atomic write.
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_plan_rejects_symlink_artifact() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        // Create a real file outside .forgeplan/, and a symlink inside it.
+        let target = tmp.path().join("real.md");
+        fs::write(&target, artifact("prd-x", 74, None)).unwrap();
+        let sym_dir = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&sym_dir).unwrap();
+        let sym = sym_dir.join("prd-x.md");
+        symlink(&target, &sym).unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-x".to_string(),
+                kind: ArtifactKind::Prd,
+                path: sym.clone(),
+                predicted_number: Some(74),
+                current_assigned: None,
+            },
+            assigned_number: 74,
+            max_in_base: Some(73),
+            already_assigned: false,
+            collision: None,
+        }];
+        let err =
+            apply_plan(tmp.path(), &plan, false).expect_err("symlink artifact must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("symlink"),
+            "expected symlink rejection message, got: {msg}"
+        );
+        // The real file must remain unchanged.
+        let after = fs::read_to_string(&target).unwrap();
+        assert!(after.contains("assigned_number: null"));
+    }
+
+    /// CLOSE-2 [SEC-6]: a candidate path that, after canonicalization,
+    /// resolves outside the workspace must be rejected. We simulate this
+    /// by canonicalizing the workspace first, then constructing a path
+    /// in a sibling temp dir.
+    #[test]
+    fn apply_plan_rejects_path_outside_workspace() {
+        let ws = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_path = outside.path().join("evil.md");
+        fs::write(&outside_path, artifact("prd-evil", 1, None)).unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-evil".to_string(),
+                kind: ArtifactKind::Prd,
+                path: outside_path.clone(),
+                predicted_number: Some(1),
+                current_assigned: None,
+            },
+            assigned_number: 1,
+            max_in_base: None,
+            already_assigned: false,
+            collision: None,
+        }];
+        let err = apply_plan(ws.path(), &plan, false)
+            .expect_err("path outside workspace must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("escapes workspace") || msg.contains("invariant"),
+            "expected escape-workspace rejection, got: {msg}"
+        );
+    }
+
+    /// CLOSE-2 [SEC-6]: success path uses the atomic write pattern.
+    /// We can't easily kill mid-write from a unit test, but we can assert
+    /// (a) the final file is the new content, (b) no `*.md.tmp` sibling
+    /// is left behind, and (c) the file's content is fully formed.
+    #[test]
+    fn apply_plan_atomic_write_no_partial_state() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let path = prds.join("prd-x.md");
+        let original = artifact("prd-x", 74, None);
+        fs::write(&path, &original).unwrap();
+
+        let plan = vec![PlanItem {
+            candidate: Candidate {
+                slug: "prd-x".to_string(),
+                kind: ArtifactKind::Prd,
+                path: path.clone(),
+                predicted_number: Some(74),
+                current_assigned: None,
+            },
+            assigned_number: 74,
+            max_in_base: Some(73),
+            already_assigned: false,
+            collision: None,
+        }];
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
+        assert!(collisions.is_empty());
+        assert_eq!(assignments.len(), 1);
+
+        // Final file has the new content.
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("assigned_number: 74"));
+        // No tmp sibling left behind.
+        let tmp_sibling = path.with_extension("md.tmp");
+        assert!(
+            !tmp_sibling.exists(),
+            "atomic write must rename, not leave .tmp sibling"
+        );
+        // Trailing newline preserved (well-formed file, not truncated).
+        assert!(after.ends_with('\n'), "file must be fully written");
+    }
+
+    // CLOSE-5 [E2E-2] — 2-pass compute_assignment_plan absorbs all
+    // existing assigned_numbers before assigning nulls, regardless of
+    // input order.
+
+    #[test]
+    fn compute_plan_existing_after_null_no_overlap() {
+        let tmp = init_git_with_files(&[(
+            ".forgeplan/prds/prd-existing.md",
+            &artifact("prd-existing", 73, Some("73")),
+        )]);
+        // Input order: [null, null, existing=80] — existing comes LAST.
+        let candidates = vec![
+            Candidate {
+                slug: "prd-null-a".to_string(),
+                kind: ArtifactKind::Prd,
+                path: tmp.path().join(".forgeplan/prds/prd-null-a.md"),
+                predicted_number: None,
+                current_assigned: None,
+            },
+            Candidate {
+                slug: "prd-null-b".to_string(),
+                kind: ArtifactKind::Prd,
+                path: tmp.path().join(".forgeplan/prds/prd-null-b.md"),
+                predicted_number: None,
+                current_assigned: None,
+            },
+            Candidate {
+                slug: "prd-existing-80".to_string(),
+                kind: ArtifactKind::Prd,
+                path: tmp.path().join(".forgeplan/prds/prd-existing-80.md"),
+                predicted_number: Some(80),
+                current_assigned: Some(80),
+            },
+        ];
+        let plan = compute_assignment_plan(tmp.path(), "dev", &candidates).unwrap();
+        assert_eq!(plan.len(), 3);
+
+        let existing = plan
+            .iter()
+            .find(|p| p.candidate.slug == "prd-existing-80")
+            .unwrap();
+        assert_eq!(existing.assigned_number, 80);
+        assert!(existing.already_assigned);
+
+        // Nulls must mint 81 and 82 — NOT 74 and 75.
+        let nulls: Vec<u32> = plan
+            .iter()
+            .filter(|p| !p.already_assigned)
+            .map(|p| p.assigned_number)
+            .collect();
+        let mut sorted = nulls.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![81, 82],
+            "nulls must mint above absorbed existing=80, got {nulls:?}"
+        );
+    }
+
+    // CLOSE-7 [CR-6] — parse_repo_from_url unit tests.
+
+    #[test]
+    fn parse_repo_from_url_ssh_with_dot_git() {
+        assert_eq!(
+            parse_repo_from_url("git@github.com:org/repo.git"),
+            Some("org/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_url_ssh_no_dot_git() {
+        assert_eq!(
+            parse_repo_from_url("git@github.com:org/repo"),
+            Some("org/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_url_https_with_dot_git() {
+        assert_eq!(
+            parse_repo_from_url("https://github.com/org/repo.git"),
+            Some("org/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_url_https_no_dot_git() {
+        assert_eq!(
+            parse_repo_from_url("https://github.com/org/repo"),
+            Some("org/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_url_multi_segment_gitlab_ssh() {
+        assert_eq!(
+            parse_repo_from_url("git@gitlab.com:group/sub/repo.git"),
+            Some("group/sub/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_url_empty_returns_none() {
+        assert_eq!(parse_repo_from_url(""), None);
+        assert_eq!(parse_repo_from_url("   "), None);
+    }
+
+    #[test]
+    fn parse_repo_from_url_garbage_returns_none() {
+        assert_eq!(parse_repo_from_url("not-a-url"), None);
+        assert_eq!(parse_repo_from_url("just-text"), None);
     }
 }

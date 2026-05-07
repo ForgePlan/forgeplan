@@ -175,7 +175,12 @@ All branches will be cleaned up automatically. Continue?"; then
     add_labels
 
     log_info "All workflows triggered. Check GH Actions:"
-    log_info "https://github.com/explosovebit/ForgePlan/actions/workflows/assign-id.yml"
+    # PROB-060 Phase 0b Round 2 [SEC-7 CWE-200]: avoid hardcoded user/repo
+    # identifier. Prefer GH Actions' GITHUB_REPOSITORY env-var (set by every
+    # GHA runner); fall back to `gh repo view` for local invocations; final
+    # fallback to a generic placeholder so logs never embed a fixed handle.
+    local repo_slug="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo 'OWNER/REPO')}"
+    log_info "https://github.com/${repo_slug}/actions/workflows/assign-id.yml"
 
     log_info "Waiting for workflows (60s)..."
     sleep 60

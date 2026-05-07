@@ -5,6 +5,35 @@ use std::process::Command;
 
 use anyhow::Context;
 
+/// PROB-060 Phase 0b Round 2 [SEC-5 CWE-200]: bound the visible portion
+/// of a user-supplied git ref in error messages. Refs longer than 40
+/// chars are truncated to first 37 + `...`. Avoids splattering full SHAs
+/// or pathological long branch names into CI logs verbatim.
+fn redact_ref(s: &str) -> String {
+    const MAX: usize = 40;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..MAX.saturating_sub(3)])
+    }
+}
+
+/// Workspace-relative path or basename-only for paths outside the
+/// workspace. Mirrors the same helper in `forgeplan-cli`. Currently
+/// unused at file-level (paths from `git ls-tree` are already
+/// workspace-relative), kept `pub(crate)` for future call sites that
+/// may surface absolute filesystem paths in error messages.
+#[allow(dead_code)]
+pub(crate) fn redact_path(workspace: &Path, path: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(workspace) {
+        return rel.display().to_string();
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
 use crate::artifact::frontmatter::{assigned_number_from_frontmatter, parse_frontmatter};
 use crate::artifact::types::ArtifactKind;
 
@@ -370,8 +399,12 @@ pub fn max_assigned_number_in_base(
     // PROB-060 Phase 0b SEC-1 [CWE-88]: harden ref input. `base_ref` flows
     // verbatim to `git ls-tree <ref> ...` and `git show <ref>:<path>` —
     // a leading-dash ref would be parsed as a git option.
-    validate_git_ref(base_ref)
-        .with_context(|| format!("max_assigned_number_in_base: invalid base_ref {base_ref:?}"))?;
+    validate_git_ref(base_ref).with_context(|| {
+        format!(
+            "max_assigned_number_in_base: invalid base_ref {:?}",
+            redact_ref(base_ref)
+        )
+    })?;
     let kind_dir = kind.dir_name();
     if kind_dir.is_empty() || kind_dir.contains('/') || kind_dir.contains("..") {
         anyhow::bail!("max_assigned_number_in_base: invalid kind_dir {kind_dir:?}");
@@ -416,7 +449,11 @@ pub fn max_assigned_number_in_base(
         if !show_output.status.success() {
             // ls-tree said it exists; show failed = real corruption.
             let stderr = String::from_utf8_lossy(&show_output.stderr);
-            anyhow::bail!("git show {base_ref}:{path} failed: {}", stderr.trim());
+            anyhow::bail!(
+                "git show {}:{path} failed: {}",
+                redact_ref(base_ref),
+                stderr.trim()
+            );
         }
 
         let content = String::from_utf8_lossy(&show_output.stdout);
@@ -917,6 +954,43 @@ mod tests {
         assert!(err.is_err(), "leading-dash ref must be rejected");
         let err = max_assigned_number_in_base(tmp.path(), "dev..main", &ArtifactKind::Prd);
         assert!(err.is_err(), "range refs must be rejected");
+    }
+
+    // PROB-060 Phase 0b Round 2 [SEC-5 CWE-200] — path/ref redaction.
+
+    #[test]
+    fn redact_path_returns_relative_for_workspace_subpath() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let nested = workspace.join(".forgeplan/prds/PRD-001-x.md");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, "---\n---\n").unwrap();
+        let red = redact_path(workspace, &nested);
+        assert_eq!(red, ".forgeplan/prds/PRD-001-x.md");
+    }
+
+    #[test]
+    fn redact_path_returns_filename_only_for_outside() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        // A path that is NOT a child of `workspace`.
+        let outside = std::path::Path::new("/etc/passwd");
+        let red = redact_path(workspace, outside);
+        assert_eq!(red, "passwd");
+    }
+
+    #[test]
+    fn redact_ref_short_passes_through() {
+        assert_eq!(redact_ref("dev"), "dev");
+        assert_eq!(redact_ref("origin/dev"), "origin/dev");
+    }
+
+    #[test]
+    fn redact_ref_long_truncates() {
+        let long = "a".repeat(80);
+        let red = redact_ref(&long);
+        assert!(red.ends_with("..."));
+        assert_eq!(red.len(), 40);
     }
 
     #[test]

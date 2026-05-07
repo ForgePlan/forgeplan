@@ -416,12 +416,24 @@ pub fn render_json(report: &CollisionReport, auto_suffix: bool) -> serde_json::V
         .map(|k| kind_key(k).to_string())
         .collect();
 
+    // PROB-060 Phase 0b Round 2 [SEC-5 CWE-200]: prefer workspace-relative
+    // paths in scan_errors. Falls back to basename for paths that strip
+    // empty (e.g. paths that aren't a child of `report.workspace`).
     let scan_errors_json: Vec<serde_json::Value> = report
         .scan_errors
         .iter()
         .map(|e| {
+            let path_display = match e.path.strip_prefix(&report.workspace) {
+                Ok(rel) => rel.display().to_string(),
+                Err(_) => e
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+            };
             serde_json::json!({
-                "path": e.path.display().to_string(),
+                "path": path_display,
                 "reason": e.reason,
             })
         })
@@ -515,19 +527,39 @@ pub fn render_human_summary(report: &CollisionReport) -> String {
 }
 
 /// Resolve workspace `.forgeplan/` directory. `--workspace <PATH>` may
-/// point either at the project root (auto-walks down to `.forgeplan/`)
-/// OR at `.forgeplan/` itself (used as-is).
+/// point either at the project root (containing `.forgeplan/`) OR at the
+/// `.forgeplan/` directory itself.
+///
+/// PROB-060 Phase 0b Round 2 [E2E-3]: previously a `--workspace /tmp/empty`
+/// argument was accepted as-is (returning the bare path), and the scan
+/// silently produced 0 artifacts + exit 0. CD-3 contract requires exit 2
+/// for scan errors, including missing `.forgeplan/`. We now require the
+/// resolved path to *be* a `.forgeplan/` directory or to contain one.
 fn resolve_forgeplan_dir(arg: Option<&Path>) -> anyhow::Result<PathBuf> {
     if let Some(p) = arg {
         let candidate = p.to_path_buf();
-        if candidate.is_dir() {
-            let nested = candidate.join(".forgeplan");
-            if nested.is_dir() {
-                return Ok(nested);
-            }
+        if !candidate.is_dir() {
+            anyhow::bail!("workspace path does not exist: {}", candidate.display());
+        }
+        // Project root containing .forgeplan/.
+        let nested = candidate.join(".forgeplan");
+        if nested.is_dir() {
+            return Ok(nested);
+        }
+        // Direct .forgeplan/ pass-through (recognized by the directory
+        // basename — we accept any directory literally named ".forgeplan").
+        if candidate
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s == ".forgeplan")
+            .unwrap_or(false)
+        {
             return Ok(candidate);
         }
-        anyhow::bail!("workspace path does not exist: {}", candidate.display());
+        anyhow::bail!(
+            "migrate-dry-run: no .forgeplan/ directory found at {}",
+            candidate.display()
+        );
     }
     let cwd = std::env::current_dir()?;
     forgeplan_core::workspace::find_workspace(&cwd)
@@ -852,6 +884,27 @@ mod tests {
         let res = collisions[0]["suggested_resolution"].as_array().unwrap();
         assert_eq!(res[0]["new_slug"], "prd-cat");
         assert_eq!(res[1]["new_slug"], "prd-cat-1");
+    }
+
+    /// PROB-060 Phase 0b Round 2 [E2E-3]: a workspace path that exists
+    /// as a directory but has no `.forgeplan/` subdir must be rejected
+    /// with exit 2 (scan error), not silently treated as «0 artifacts».
+    #[test]
+    fn run_returns_exit_2_when_forgeplan_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // dir.path() exists but contains no `.forgeplan/`.
+        let args = MigrateDryRunArgs {
+            workspace: Some(dir.path().to_path_buf()),
+            auto_suffix: false,
+            output: None,
+            json: true,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let exit = rt.block_on(async { run(args).await.unwrap() });
+        assert_eq!(exit, 2, "missing .forgeplan/ must return exit 2");
     }
 
     #[test]
