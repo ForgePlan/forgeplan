@@ -45,6 +45,8 @@ jobs:
           # Run validation
           .github/scripts/validate-forgeplan-frontmatter.sh
         env:
+          # CRIT-1 fix: pass BASE_REF for write-once validation
+          BASE_REF: ${{ github.base_ref }}
           # Ensure we can access git history for diff operations
           GIT_TRACE: 0
 
