@@ -681,6 +681,14 @@ enum Commands {
     /// Hybrid resolution: default = fail-and-list (exit 1 on collisions);
     /// `--auto-suffix` adds `suggested_resolution` per collision in JSON.
     MigrateDryRun(commands::migrate_dry_run::MigrateDryRunArgs),
+    /// PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge
+    /// identity drift. Scans `.forgeplan/<kind>/*.md`, detects four
+    /// drift categories (filename mismatch, missing `predicted_number`,
+    /// body-links drift, duplicate `assigned_number`), and either
+    /// reports (`--check-only`) or auto-fixes the safe categories.
+    /// LanceDB is never touched; run `forgeplan scan-import` afterwards
+    /// if the index needs to be rebuilt.
+    ReconcileIds(commands::reconcile_ids::ReconcileIdsArgs),
     /// Rebuild LanceDB index from .md files (files-first sync)
     Reindex,
     /// Generate embeddings for all artifacts (semantic search)
@@ -1271,6 +1279,15 @@ async fn main() -> anyhow::Result<()> {
             // "scan error (2)". Returning anyhow::Result<()> alone collapses
             // 1/2 to a generic 1.
             let code = commands::migrate_dry_run::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Commands::ReconcileIds(args) => {
+            // PROB-060 Phase 2.4 — same exit-code propagation as
+            // migrate-dry-run. 0 = clean, 1 = drift detected, 2 = scan error.
+            let code = commands::reconcile_ids::run(args)?;
             if code != 0 {
                 std::process::exit(code);
             }
