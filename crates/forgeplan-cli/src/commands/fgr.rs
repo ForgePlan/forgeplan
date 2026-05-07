@@ -44,6 +44,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
 
     if json {
         let mut results = Vec::new();
+        // PROB-060 (W1.B, CD-5) — track the lowest-grade record's ref_form
+        // (slug pre-merge / display id post-merge) so the agent's next
+        // command stays canonical for commit `Refs:`.
+        let mut lowest: Option<(String, String, f64)> = None;
         for record in &records {
             let kind = record
                 .kind
@@ -77,27 +81,22 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 is_stale,
                 fpf_weights.as_ref(),
             );
+            let overall = score.overall();
+            let ref_form =
+                forgeplan_core::artifact::frontmatter::refs_form(&fm, &record.id).to_string();
             results.push(serde_json::json!({
                 "id": record.id, "title": record.title,
                 "formality": score.formality, "granularity": score.granularity,
-                "reliability": score.reliability, "overall": score.overall(), "grade": score.grade(),
+                "reliability": score.reliability, "overall": overall, "grade": score.grade(),
             }));
+            if lowest.as_ref().is_none_or(|(_, _, v)| overall < *v) {
+                lowest = Some((record.id.clone(), ref_form, overall));
+            }
         }
-        // Pick the lowest-overall record (real ID) as the next-action target.
-        let lowest = results
-            .iter()
-            .min_by(|a, b| {
-                a["overall"]
-                    .as_f64()
-                    .unwrap_or(1.0)
-                    .partial_cmp(&b["overall"].as_f64().unwrap_or(1.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .and_then(|r| r["id"].as_str().map(|s| s.to_string()));
-        let hint_list = if let Some(target) = lowest {
+        let hint_list = if let Some((_id, target_ref, _)) = lowest {
             vec![
-                Hint::info(format!("Improve lowest-grade artifact {}", target))
-                    .with_action(format!("forgeplan get {}", target)),
+                Hint::info(format!("Improve lowest-grade artifact {}", target_ref))
+                    .with_action(format!("forgeplan get {}", target_ref)),
             ]
         } else {
             Vec::new()
@@ -117,7 +116,9 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     );
     println!("{}", "-".repeat(70));
 
-    let mut lowest: Option<(String, f64)> = None;
+    // PROB-060 (W1.B, CD-5) — track ref_form of lowest-grade record so the
+    // emitted hint stays canonical (slug pre-merge / display id post-merge).
+    let mut lowest: Option<(String, String, f64)> = None;
     for record in &records {
         let kind = record
             .kind
@@ -162,15 +163,17 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         );
 
         let overall = score.overall();
-        if lowest.as_ref().is_none_or(|(_, v)| overall < *v) {
-            lowest = Some((record.id.clone(), overall));
+        let ref_form =
+            forgeplan_core::artifact::frontmatter::refs_form(&fm, &record.id).to_string();
+        if lowest.as_ref().is_none_or(|(_, _, v)| overall < *v) {
+            lowest = Some((record.id.clone(), ref_form, overall));
         }
     }
 
-    let hint_list = if let Some((target, _)) = lowest {
+    let hint_list = if let Some((_id, target_ref, _)) = lowest {
         vec![
-            Hint::info(format!("Improve lowest-grade artifact {}", target))
-                .with_action(format!("forgeplan get {}", target)),
+            Hint::info(format!("Improve lowest-grade artifact {}", target_ref))
+                .with_action(format!("forgeplan get {}", target_ref)),
         ]
     } else {
         Vec::new()

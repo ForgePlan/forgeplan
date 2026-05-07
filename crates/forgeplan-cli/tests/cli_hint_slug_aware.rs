@@ -241,3 +241,194 @@ fn list_first_get_hint_uses_slug_pre_merge() {
         "pre-merge list Next: must reference slug `{slug}`, got: {next}"
     );
 }
+
+// ── PROB-060 Phase 2 audit closure (CRIT-3): W3 commands. ──────────────
+//
+// The W3 batch (Phase 2.6 / CD-6) wired `resolve_id` into 13 CLI commands
+// but several of them still emitted `record.id` directly into their hint
+// `Next:` line — the audit caught the regression. The tests below are the
+// regression guard: each command must emit `slug` pre-merge and the
+// display id post-merge.
+
+fn extract_next_line(stdout: &[u8]) -> String {
+    let s = String::from_utf8(stdout.to_vec()).unwrap();
+    let next_lines: Vec<&str> = s
+        .lines()
+        .filter(|l| l.trim_start().starts_with("Next:"))
+        .collect();
+    assert_eq!(
+        next_lines.len(),
+        1,
+        "expected exactly one Next: line, got:\n{s}"
+    );
+    next_lines[0].to_string()
+}
+
+#[test]
+fn update_emits_slug_pre_merge_for_validate_hint() {
+    // CRIT-3 — `forgeplan update` was using `record.id` for the
+    // `forgeplan validate` next-action. Verify the slug-aware refactor.
+    let (dir, _id) = workspace_with_one_prd("Hint Update Pre Merge");
+    make_pre_merge(dir.path());
+    let slug = slug_for(dir.path(), "PRD-001");
+
+    let out = forgeplan()
+        .args(["update", &slug, "--title", "Updated Title"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next = extract_next_line(&out);
+    assert!(
+        next.contains(&slug),
+        "pre-merge update Next: must reference slug `{slug}`, got: {next}"
+    );
+    assert!(
+        !next.contains("PRD-001"),
+        "pre-merge update Next: must NOT reference display id, got: {next}"
+    );
+}
+
+#[test]
+fn update_emits_display_id_post_merge() {
+    // Counter-test: post-merge artifact (assigned_number set) routes
+    // through `record.id` fallback → display id wins.
+    let (dir, id) = workspace_with_one_prd("Hint Update Post Merge");
+    let out = forgeplan()
+        .args(["update", &id, "--title", "Updated Title"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next = extract_next_line(&out);
+    assert!(
+        next.contains("PRD-001"),
+        "post-merge update Next: must reference display id, got: {next}"
+    );
+}
+
+#[test]
+fn renew_emits_slug_pre_merge_for_score_hint() {
+    // CRIT-3 — `forgeplan renew` previously used `id` directly. After the
+    // fix the score command must use slug pre-merge.
+    let (dir, _id) = workspace_with_one_prd("Hint Renew Pre Merge");
+    // Ensure stale state via lifecycle: the artifact is fresh-created
+    // (status=draft, valid_until=None). renew refreshes valid_until from
+    // any state per lifecycle::renew. We force pre-merge after.
+    make_pre_merge(dir.path());
+    let slug = slug_for(dir.path(), "PRD-001");
+
+    let out = forgeplan()
+        .args([
+            "renew",
+            &slug,
+            "--reason",
+            "extending review window",
+            "--until",
+            "2099-01-01",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next = extract_next_line(&out);
+    assert!(
+        next.contains(&slug),
+        "pre-merge renew Next: must reference slug `{slug}`, got: {next}"
+    );
+    assert!(
+        !next.contains("PRD-001"),
+        "pre-merge renew Next: must NOT reference display id, got: {next}"
+    );
+}
+
+#[test]
+fn estimate_emits_slug_pre_merge_for_calibrate_hint() {
+    // CRIT-3 — `forgeplan estimate` emitted `record.id` for the
+    // `calibrate-estimate` follow-up. With the fix the slug must win.
+    let (dir, _id) = workspace_with_one_prd("Hint Estimate Pre Merge");
+    make_pre_merge(dir.path());
+    let slug = slug_for(dir.path(), "PRD-001");
+
+    // estimate may emit empty-items hint (`forgeplan get …`) if there are
+    // no FR/Phase items in the body — both paths must be slug-aware. The
+    // fixture has no FR sections so we exercise the empty-items branch.
+    let out = forgeplan()
+        .args(["estimate", &slug])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next = extract_next_line(&out);
+    assert!(
+        next.contains(&slug),
+        "pre-merge estimate Next: must reference slug `{slug}`, got: {next}"
+    );
+    assert!(
+        !next.contains("PRD-001"),
+        "pre-merge estimate Next: must NOT reference display id, got: {next}"
+    );
+}
+
+#[test]
+fn fgr_emits_slug_pre_merge_for_lowest_hint() {
+    // CRIT-3 — `forgeplan fgr` lowest-grade hint emitted `record.id`.
+    // Verify slug-aware after the fix on text path.
+    let (dir, _id) = workspace_with_one_prd("Hint FGR Pre Merge");
+    make_pre_merge(dir.path());
+    let slug = slug_for(dir.path(), "PRD-001");
+
+    let out = forgeplan()
+        .args(["fgr"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next = extract_next_line(&out);
+    assert!(
+        next.contains(&slug),
+        "pre-merge fgr Next: must reference slug `{slug}`, got: {next}"
+    );
+    assert!(
+        !next.contains("PRD-001"),
+        "pre-merge fgr Next: must NOT reference display id, got: {next}"
+    );
+}
+
+#[test]
+fn delete_emits_slug_pre_merge_for_restore_hint() {
+    // CRIT-3 — `forgeplan delete` referenced raw `id` in its restore
+    // follow-up. With the slug-aware fix the restore command stays
+    // canonical pre-merge.
+    let (dir, _id) = workspace_with_one_prd("Hint Delete Pre Merge");
+    make_pre_merge(dir.path());
+    let slug = slug_for(dir.path(), "PRD-001");
+
+    let out = forgeplan()
+        .args(["delete", &slug, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next = extract_next_line(&out);
+    assert!(
+        next.contains(&slug),
+        "pre-merge delete Next: must reference slug `{slug}`, got: {next}"
+    );
+    assert!(
+        !next.contains("PRD-001"),
+        "pre-merge delete Next: must NOT reference display id, got: {next}"
+    );
+}
