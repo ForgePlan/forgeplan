@@ -25,16 +25,16 @@ depth: deep
 ## Progress
 
 ```
-Phase 0  ████░░░░░░░░░░░░░░░░░░░░  1/4   ( 25%)  Foundation (0.3 done; 0.1+0.2+0.4 pending)
+Phase 0  ████████████████████████  4/4   (100%)  Foundation (Phase 0b closure delivered EVID-A + EVID-C)
 Phase 1  ████████████████████████  6/6   (100%)  Core schema + CLI (1.1-1.6 done)
-Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP (blocked by Phase 0b EVID)
+Phase 2  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  CI bot + MCP (unblocked — ready to start)
 Phase 3  ░░░░░░░░░░░░░░░░░░░░░░░░  0/4   (  0%)  ForgePlanWeb + Skills
 Phase 4  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5   (  0%)  Migration + activation
 ─────────────────────────────────────────────────
-TOTAL                               7/24  ( 29%)
+TOTAL                              10/24  ( 42%)
 ```
 
-**Status 2026-05-07** — Phase 1 ships complete via 9 commits on `feat/prob-060-id-assignment`. Phase 2 onset blocked by Phase 0b EVID-A (CI-bot prototype + stress-test) and EVID-C (legacy migration dry-run). See PRD-076 §Progress for commit-level breakdown.
+**Status 2026-05-07 (Phase 0b complete)** — Phase 0b shipped via integration branch `feat/prob-060-phase-0b-integration`: EVID-114 (Variant B stress-test, CL2 — Variant A pre-Phase-2-GA gate documented в `docs/operations/EVID-A-real-stress-test.md`); EVID-115 (real-workspace migration dry-run, CL3 — 305 artifacts, 6 dogfooding collisions, all `--auto-suffix`-resolvable). ADR-012 R_eff = 0.90 после EVID linking. 14 audit findings closed (9 fixed across 2 fix rounds, 5 deferred с rationale per PR description). Phase 2 unblocked; ready for next sprint cycle.
 
 ---
 
