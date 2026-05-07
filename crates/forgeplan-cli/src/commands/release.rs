@@ -33,6 +33,15 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
         id
     };
 
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — derive ref_form for hint
+    // emission (slug pre-merge / display id post-merge). Falls back to the
+    // canonical id when the artifact is missing — release is idempotent and
+    // we still want a runnable suggestion.
+    let ref_form: String = match lance.get_record(id).await? {
+        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
+        None => id.to_string(),
+    };
+
     // Match MCP semantics: explicit agent > default agent string. With
     // `--force` and no agent, the empty string is acceptable (the core
     // path waives the agent check on force=true).
@@ -71,9 +80,11 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
         }
         Err(ClaimError::NotHeldByRequester { held_by, .. }) => {
             // PRD-071: error path — direct user to the only safe escape hatch.
+            // PROB-060 (W1.B, CD-5) — emit ref_form so the override command
+            // stays canonical for commit `Refs:`.
             let fix_hints: Vec<Hint> = vec![
                 Hint::warning(format!("Claim held by {held_by}, not requester"))
-                    .with_action(format!("forgeplan release {id} --force")),
+                    .with_action(format!("forgeplan release {ref_form} --force")),
             ];
 
             if json {

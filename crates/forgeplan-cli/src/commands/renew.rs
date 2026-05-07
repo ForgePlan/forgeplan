@@ -60,9 +60,15 @@ pub async fn run(id: &str, reason: &str, until: &str) -> anyhow::Result<()> {
 
     // PRD-071: post-renew, score the artifact to confirm R_eff still holds
     // with refreshed evidence dating.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the score command stays canonical.
+    let ref_form = match store.get_record(id).await? {
+        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
+        None => id.to_string(),
+    };
     let next_hints: Vec<Hint> = vec![
         Hint::info("Renewed — re-score to confirm trust")
-            .with_action(format!("forgeplan score {}", id)),
+            .with_action(format!("forgeplan score {}", ref_form)),
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 

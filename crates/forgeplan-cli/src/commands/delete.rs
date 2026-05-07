@@ -91,11 +91,16 @@ Fix: forgeplan list",
     );
 
     // Soft-deleted: surface the recovery path.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the restore command keeps the canonical reference
+    // form (e.g. `forgeplan restore prd-auth-system` pre-merge).
+    let ref_form =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
     let hint_list = vec![
         Hint::info(format!(
-            "Recoverable via `forgeplan restore {id}` (within 30 days)"
+            "Recoverable via `forgeplan restore {ref_form}` (within 30 days)"
         ))
-        .with_action(format!("forgeplan restore {id}")),
+        .with_action(format!("forgeplan restore {ref_form}")),
     ];
     print!("{}", hints::render_next_action_line(&hint_list));
 

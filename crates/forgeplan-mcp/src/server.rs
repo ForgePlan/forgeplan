@@ -1729,7 +1729,12 @@ impl ForgeplanServer {
         // Audit C-2: sanitize dynamic strings before interpolating into
         // agent-visible hints to prevent prompt injection via crafted
         // artifact IDs or weakest_link values from user-created artifacts.
-        let safe_id = sanitize_for_hint(&target.id);
+        // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug pre-merge
+        // and display id post-merge so commit `Refs:` propagation stays
+        // canonical for the agent's next command.
+        let target_ref_form =
+            forgeplan_core::artifact::frontmatter::refs_form_from_body(&target.body, &target.id);
+        let safe_id = sanitize_for_hint(&target_ref_form);
         let safe_weakest = report
             .weakest_link
             .as_deref()
@@ -1954,7 +1959,14 @@ impl ForgeplanServer {
         };
         match store.get_record(&canonical).await {
             Ok(Some(r)) => {
-                let safe_id = sanitize_for_hint(&r.id);
+                // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug
+                // pre-merge (`assigned_number: null`) and display id
+                // post-merge so the agent's next command produces canonical
+                // commit `Refs:` lines. `sanitize_for_hint` defends against
+                // prompt-injection vectors in the slug itself (audit C-2).
+                let ref_form =
+                    forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id);
+                let safe_id = sanitize_for_hint(&ref_form);
                 // PRD-071: single primary action per status. No multi-step
                 // chains; downstream steps surface as the agent re-calls
                 // each tool and reads its own hint.
@@ -2133,7 +2145,11 @@ impl ForgeplanServer {
         self.stamp_identity_best_effort(&ws, &updated.id, &updated.kind, &updated.title)
             .await;
 
-        let safe_id = sanitize_for_hint(&updated.id);
+        // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug pre-merge
+        // and display id post-merge so commit `Refs:` stays canonical.
+        let updated_ref_form =
+            forgeplan_core::artifact::frontmatter::refs_form_from_body(&updated.body, &updated.id);
+        let safe_id = sanitize_for_hint(&updated_ref_form);
         // PRD-071: single primary action per status.
         let next_action = match updated.status.as_str() {
             "draft" => format!("Updated (draft). Re-validate: `forgeplan_validate {safe_id}`."),
@@ -2337,7 +2353,17 @@ impl ForgeplanServer {
         };
         match forgeplan_core::lifecycle::review(&store, &p.id).await {
             Ok(result) => {
-                let safe_id = sanitize_for_hint(&result.artifact_id);
+                // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug
+                // pre-merge / display id post-merge for the activate /
+                // validate hint so commit `Refs:` stays canonical. Fall back
+                // to the canonical id if the record is missing (race).
+                let ref_form: String = match store.get_record(&result.artifact_id).await {
+                    Ok(Some(rec)) => forgeplan_core::artifact::frontmatter::refs_form_from_body(
+                        &rec.body, &rec.id,
+                    ),
+                    _ => result.artifact_id.clone(),
+                };
+                let safe_id = sanitize_for_hint(&ref_form);
                 // PRD-071: single deterministic primary — activate when ready,
                 // re-validate when blocked. R_eff strength is reported by
                 // forgeplan_score, not forced into the review hint.
@@ -9716,6 +9742,175 @@ mod prob060_response_shape_tests {
             body["id_display"].as_str(),
             Some("PRD-018"),
             "legacy id_display falls back to verbatim id"
+        );
+    }
+
+    // ── PROB-060 Phase 2 audit closure (CRIT-4): MCP hint emission. ────
+    //
+    // The CD-5 contract (slug pre-merge / display id post-merge) was
+    // initially propagated to `methodology_hint_after_new` but missed the
+    // hint emission inside `forgeplan_get`, `forgeplan_score`,
+    // `forgeplan_update`, `forgeplan_review` — those handlers still
+    // referenced `record.id` directly in `_next_action`. The tests below
+    // exercise both states end-to-end and serve as regression guards.
+
+    /// Mutate the on-disk markdown so `assigned_number` is `null` (pre-merge),
+    /// then sync the change back into LanceDB. Mirrors the helper in
+    /// `crates/forgeplan-cli/tests/cli_hint_slug_aware.rs`.
+    async fn make_pre_merge_via_disk(
+        ws: &std::path::Path,
+        store_arc: &std::sync::Arc<LanceStore>,
+        artifact_id: &str,
+    ) {
+        // Locate the freshly-created PRD file.
+        let prd_dir = ws.join("prds");
+        let path = std::fs::read_dir(&prd_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|ext| ext == "md"))
+            .expect("PRD file must exist");
+        let body = std::fs::read_to_string(&path).unwrap();
+        let mut updated = String::new();
+        for line in body.lines() {
+            if line.starts_with("assigned_number:") {
+                updated.push_str("assigned_number: null\n");
+            } else {
+                updated.push_str(line);
+                updated.push('\n');
+            }
+        }
+        std::fs::write(&path, updated).unwrap();
+        // Reflect disk change back into LanceDB so subsequent handler calls
+        // see the pre-merge body. `sync_before_mutation` reads the file when
+        // it's newer than the cached body — which is exactly the case after
+        // a direct write above.
+        forgeplan_core::projection::sync_before_mutation(ws, store_arc.as_ref(), artifact_id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn forgeplan_get_hint_uses_slug_pre_merge() {
+        // CRIT-4: MCP `forgeplan_get` was using `r.id` for `_next_action`.
+        // Verify ref_form-aware: pre-merge artifact → slug in hint.
+        let (server, _tmp) = fresh_server().await;
+
+        let new_resp = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Mcp Hint Pre Merge".to_string(),
+            }))
+            .await
+            .unwrap();
+        let new_body = body_value(&new_resp);
+        let slug = new_body["slug"].as_str().unwrap().to_string();
+        let display_id = new_body["id"].as_str().unwrap().to_string();
+
+        // Force pre-merge state on disk (assigned_number → null) and reindex.
+        let store = server.store.read().await.clone().unwrap();
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        make_pre_merge_via_disk(&ws, &store, &display_id).await;
+
+        // Read via slug — resolver maps to canonical id, hint should
+        // surface the slug (not the display id).
+        let r = server
+            .forgeplan_get(Parameters(GetParams { id: slug.clone() }))
+            .await
+            .unwrap();
+        let body = body_value(&r);
+        let next = body["_next_action"]
+            .as_str()
+            .expect("_next_action must be present");
+        assert!(
+            next.contains(&slug),
+            "pre-merge MCP get _next_action must reference slug `{slug}`, got: {next}"
+        );
+        assert!(
+            !next.contains(&display_id),
+            "pre-merge MCP get _next_action must NOT reference display id `{display_id}`, got: {next}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forgeplan_get_hint_uses_display_id_post_merge() {
+        // Counter-test: post-merge artifact (assigned_number set) routes
+        // through fallback → display id wins.
+        let (server, _tmp) = fresh_server().await;
+
+        let new_resp = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Mcp Hint Post Merge".to_string(),
+            }))
+            .await
+            .unwrap();
+        let new_body = body_value(&new_resp);
+        let display_id = new_body["id"].as_str().unwrap().to_string();
+
+        let r = server
+            .forgeplan_get(Parameters(GetParams {
+                id: display_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let body = body_value(&r);
+        let next = body["_next_action"]
+            .as_str()
+            .expect("_next_action must be present");
+        assert!(
+            next.contains(&display_id),
+            "post-merge MCP get _next_action must reference display id `{display_id}`, got: {next}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forgeplan_update_hint_uses_slug_pre_merge() {
+        // CRIT-4: MCP `forgeplan_update` was using `updated.id` for
+        // `_next_action`. Verify slug propagation pre-merge.
+        //
+        // NOTE: `forgeplan_update` MCP handler does NOT yet wire the
+        // slug→canonical-id resolver (separate scope), so the test calls
+        // it with the display id, but the artifact's body carries the
+        // pre-merge frontmatter — `refs_form_from_body` must pick the
+        // slug regardless of the id form the caller used.
+        let (server, _tmp) = fresh_server().await;
+
+        let new_resp = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Mcp Update Hint Pre Merge".to_string(),
+            }))
+            .await
+            .unwrap();
+        let new_body = body_value(&new_resp);
+        let slug = new_body["slug"].as_str().unwrap().to_string();
+        let display_id = new_body["id"].as_str().unwrap().to_string();
+
+        let store = server.store.read().await.clone().unwrap();
+        let ws = server.workspace_path.read().await.clone().unwrap();
+        make_pre_merge_via_disk(&ws, &store, &display_id).await;
+
+        let r = server
+            .forgeplan_update(Parameters(UpdateParams {
+                id: display_id.clone(),
+                status: None,
+                title: Some("Updated Title".to_string()),
+                body: None,
+            }))
+            .await
+            .unwrap();
+        let body = body_value(&r);
+        let next = body["_next_action"]
+            .as_str()
+            .expect("_next_action must be present");
+        assert!(
+            next.contains(&slug),
+            "pre-merge MCP update _next_action must reference slug `{slug}`, got: {next}"
+        );
+        assert!(
+            !next.contains(&display_id),
+            "pre-merge MCP update _next_action must NOT reference display id `{display_id}`, got: {next}"
         );
     }
 }

@@ -34,6 +34,12 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
         anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", artifact_id)
     })?;
 
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the follow-up `estimate` / `score` hints stay
+    // canonical for commit `Refs:`.
+    let ref_form =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+
     // Re-run estimate pipeline (same as estimate command)
     let work_items = extractor::extract_work_items(&record.body);
     if work_items.is_empty() {
@@ -190,17 +196,17 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
                 "Estimates {:.1}x optimistic — re-estimate with buffer",
                 ratio
             ))
-            .with_action(format!("forgeplan estimate {} --my-grade", artifact_id)),
+            .with_action(format!("forgeplan estimate {} --my-grade", ref_form)),
         );
     } else if ratio < 0.5 {
         hint_list.push(
             Hint::info("Estimates conservative — re-grade")
-                .with_action(format!("forgeplan estimate {} --my-grade", artifact_id)),
+                .with_action(format!("forgeplan estimate {} --my-grade", ref_form)),
         );
     } else {
         hint_list.push(
             Hint::info("Calibration recorded — verify next artifact")
-                .with_action(format!("forgeplan score {}", artifact_id)),
+                .with_action(format!("forgeplan score {}", ref_form)),
         );
     }
     print!("{}", hints::render_next_action_line(&hint_list));

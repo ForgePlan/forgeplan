@@ -173,8 +173,17 @@ Fix: forgeplan list",
 
     // PRD-071: any update — re-validate to make sure the artifact still
     // satisfies its kind+depth rules.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the re-validation command stays canonical for
+    // commit `Refs:` lines.
+    let updated_record = store.get_record(id).await?;
+    let ref_form = match &updated_record {
+        Some(r) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id),
+        None => id.to_string(),
+    };
     let next_hints: Vec<Hint> = vec![
-        Hint::info("Updated — re-run validator").with_action(format!("forgeplan validate {}", id)),
+        Hint::info("Updated — re-run validator")
+            .with_action(format!("forgeplan validate {}", ref_form)),
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 
