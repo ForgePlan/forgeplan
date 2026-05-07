@@ -4,8 +4,10 @@
 # Validates Forgeplan artifact frontmatter contract per SPEC-005:
 # - New artifacts (no assigned_number) MUST have slug + predicted_number
 # - Rejects PRs that mutate existing assigned_number (write-once rule)
+# - Rejects pre-set assigned_number on new artifacts (CRIT-2 defense)
 #
 # Usage: ./validate-forgeplan-frontmatter.sh [--check-only]
+# Environment: BASE_REF (required for PR validation)
 # Exit 0 if valid, 1 if errors found
 
 set -euo pipefail
@@ -58,14 +60,21 @@ assigned_number_changed() {
         return 1  # false - file is new
     fi
 
-    # Get the assigned_number from the previous version
+    # CRIT-1 fix: use BASE_REF from CI environment, fail closed if missing
+    local base_ref="${BASE_REF:-}"
+    if [[ -z "$base_ref" ]]; then
+        echo "❌ ERROR: BASE_REF environment variable not set (required for PR validation)"
+        exit 1
+    fi
+
+    # Get the assigned_number from the base ref version
     local previous
-    previous=$(git show HEAD:"$file" 2>/dev/null | \
+    previous=$(git show "origin/${base_ref}:${file}" 2>/dev/null | \
         sed -n '/^---$/,/^---$/p' | \
         grep "^assigned_number:" | \
         head -1 | \
         sed 's/^assigned_number:[[:space:]]*//' | \
-        sed 's/^"\(.*\)"$/\1/')
+        sed 's/^"\(.*\)"$/\1/' || true)
 
     # If either is empty, they differ
     if [[ -z "$current" ]] || [[ -z "$previous" ]]; then
@@ -114,6 +123,13 @@ validate_artifact() {
             ERRORS=$((ERRORS + 1))
         elif ! [[ "$predicted_number" =~ ^[0-9]+$ ]] || [[ "$predicted_number" -lt 1 ]]; then
             echo "❌ ERROR: New artifact '$basename' has invalid predicted_number: '$predicted_number' (must be positive integer)"
+            ERRORS=$((ERRORS + 1))
+        fi
+
+        # CRIT-2 Layer A: Reject pre-set assigned_number on new artifacts
+        if [[ -n "$assigned_number" ]]; then
+            echo "❌ ERROR: New artifact '$basename' has pre-set assigned_number: '$assigned_number' (invariant I-2 violation)"
+            echo "   assigned_number must be null or absent in new artifacts — only CI bot may assign it after merge"
             ERRORS=$((ERRORS + 1))
         fi
     fi
