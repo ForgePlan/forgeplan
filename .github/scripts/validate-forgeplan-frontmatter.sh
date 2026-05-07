@@ -16,11 +16,8 @@ CHECK_ONLY="${1:-}"
 ERRORS=0
 WARNINGS=0
 
-# Slug regex per SPEC-005
-SLUG_REGEX="^(prd|rfc|adr|epic|spec|prob|sol|evid|note|ref)-[a-z0-9]+(-[a-z0-9]+)*$"
-
-# Artifact kinds and their directories
-ARTIFACT_KINDS=("prds" "rfcs" "adrs" "epics" "specs" "evidence" "problems" "solutions" "refresh" "notes" "memory")
+# Slug regex per SPEC-005 (includes mem for memory artifacts)
+SLUG_REGEX="^(prd|rfc|adr|epic|spec|prob|sol|evid|note|ref|mem)-[a-z0-9]+(-[a-z0-9]+)*$"
 
 # Helper: extract frontmatter field value from markdown file
 # Returns the value or empty string if not found
@@ -76,13 +73,7 @@ assigned_number_changed() {
         sed 's/^assigned_number:[[:space:]]*//' | \
         sed 's/^"\(.*\)"$/\1/' || true)
 
-    # If either is empty, they differ
-    if [[ -z "$current" ]] || [[ -z "$previous" ]]; then
-        [[ "$current" != "$previous" ]]
-        return $?
-    fi
-
-    # Compare non-empty values
+    # Compare: if either differs (including empty vs non-empty), they've changed
     [[ "$current" != "$previous" ]]
 }
 
