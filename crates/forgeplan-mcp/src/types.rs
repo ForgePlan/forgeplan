@@ -129,16 +129,28 @@ pub struct NewArtifactResponse {
     #[serde(default)]
     pub warnings: Vec<DuplicateWarning>,
     // NEW FIELDS — PROB-060 / SPEC-005 / ADR-012 Phase 2.4 additive shape.
+    //
+    // **MED-7 (Round-1 audit)**: aligned to sibling DTO shape. Previously
+    // these were `String` / `u32` with `#[serde(default)]` — diverging
+    // from `ArtifactSummaryDto` / `ArtifactRecordDto` / `SearchResultDto`
+    // which all use `Option<>` + `skip_serializing_if = "Option::is_none"`.
+    // The mismatch made the JSON schema inconsistent and forced clients
+    // to handle two shapes for "missing slug" depending on which tool
+    // they called. Now uniform: missing → omitted from the payload.
+    //
+    // For a freshly created artifact these will always be `Some(...)` in
+    // practice (server.rs populates them from the augmented frontmatter),
+    // but the optional shape leaves room for legacy import paths /
+    // future tools that don't compute the identity triple up front.
     /// Canonical slug (`prd-auth-system`) computed from kind+title at
     /// create time. Used in commit `Refs:` lines and cross-artifact links
-    /// until the CI bot assigns a number on merge. Always populated for
-    /// freshly created artifacts.
-    #[serde(default)]
-    pub slug: String,
+    /// until the CI bot assigns a number on merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
     /// Local prediction at create time — `max(assigned)+1`. Drives the `?`
     /// display marker and frontmatter persistence.
-    #[serde(default)]
-    pub predicted_number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_number: Option<u32>,
     /// CI-assigned authoritative number. Phase 1.x mirrors `predicted_number`
     /// (immediate assignment); Phase 2 CI bot will null this on create and
     /// stamp atomically on merge. `None` means "not yet final".
@@ -146,10 +158,12 @@ pub struct NewArtifactResponse {
     pub assigned_number: Option<u32>,
     /// `id_canonical = slug` — explicit alias so agents can pick the
     /// stable reference without parsing semantics out of `slug`/`id`.
+    /// Always populated for freshly created artifacts.
     #[serde(default)]
     pub id_canonical: String,
     /// `id_display = render_display_id(kind, predicted, assigned)` —
     /// `"PRD-074"` post-merge, `"PRD-74?"` pre-merge.
+    /// Always populated for freshly created artifacts.
     #[serde(default)]
     pub id_display: String,
     /// Short methodology guidance about which form to put into commit

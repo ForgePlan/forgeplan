@@ -77,16 +77,32 @@ pub fn slug_from_frontmatter(fm: &Frontmatter) -> Option<&str> {
     fm.get("slug").and_then(|v| v.as_str())
 }
 
+/// Sane upper bound on artifact numbers (MED-1, CWE-1284 — Round-1 audit).
+///
+/// **MUST hold for all callers**: any `predicted_number` or
+/// `assigned_number` returned by the helpers below is in `0..=MAX_ARTIFACT_NUMBER`.
+///
+/// 1_000_000 is two orders of magnitude beyond any realistic project
+/// trajectory and well below `u32::MAX`. A frontmatter that declares
+/// `assigned_number: 4294967295` is either corrupted, attacker-controlled
+/// (display-id manipulation, sequence-counter poisoning), or a bug in the
+/// CI bot; treating it as `None` lets the resolver fall back to a sane
+/// default rather than splicing a giant integer into agent hints or
+/// allocating a million-entry sequence map downstream.
+pub const MAX_ARTIFACT_NUMBER: u32 = 1_000_000;
+
 /// Extract `predicted_number` field from frontmatter as `u32`.
 ///
-/// Returns `None` if the field is missing, null, or not a non-negative
-/// integer that fits in u32. Per SPEC-005, this is a local prediction
+/// Returns `None` if the field is missing, null, not a non-negative
+/// integer that fits in u32, **or exceeds [`MAX_ARTIFACT_NUMBER`]**
+/// (MED-1 / CWE-1284 audit). Per SPEC-005, this is a local prediction
 /// (`max(assigned_number) + 1` at create time) — used only for the `?`
 /// display marker, never for refs or db lookups.
 pub fn predicted_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
     fm.get("predicted_number")
         .and_then(|v| v.as_u64())
         .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n <= MAX_ARTIFACT_NUMBER)
 }
 
 /// Extract `assigned_number` field from frontmatter as `u32`.
@@ -95,10 +111,17 @@ pub fn predicted_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
 /// `None`). Per SPEC-005 invariant I-2, this field is **write-once** —
 /// set by CI bot on merge to dev. Callers must not modify it after
 /// initial assignment.
+///
+/// **MED-1 (Round-1 audit, CWE-1284)**: values beyond
+/// [`MAX_ARTIFACT_NUMBER`] are treated as `None`. A frontmatter declaring
+/// `assigned_number: 4294967295` is corrupted or hostile — propagating it
+/// would let the display id (`PRD-4294967295`) blow past hint length caps
+/// and could poison `next_id` sequence-counter logic.
 pub fn assigned_number_from_frontmatter(fm: &Frontmatter) -> Option<u32> {
     fm.get("assigned_number")
         .and_then(|v| if v.is_null() { None } else { v.as_u64() })
         .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n <= MAX_ARTIFACT_NUMBER)
 }
 
 /// Whether an artifact is **pre-merge** per ADR-012 / SPEC-005 (PROB-060).
@@ -124,21 +147,35 @@ pub fn is_pre_merge(fm: &Frontmatter) -> bool {
 ///
 /// Contract:
 /// - **Pre-merge** (`assigned_number` is `null` or absent) → return the
-///   `slug` field if present (`prd-auth-system`).
+///   `slug` field if present **and the slug passes [`crate::artifact::types::validate_slug`]**
+///   (`prd-auth-system`).
 /// - **Post-merge** (`assigned_number` is set) → return `fallback_id`,
 ///   which the caller is expected to populate with the zero-padded
 ///   display ID (`PRD-074`) — typically the resolver's canonical form
 ///   (`record.id` from `LanceStore`).
-/// - **Pre-merge but no slug field** (legacy artifacts mid-migration) →
-///   return `fallback_id`. Better to surface *something* runnable than
-///   silently drop the hint.
+/// - **Pre-merge but no slug field** OR **slug fails validation** (legacy
+///   artifacts mid-migration, hand-edited corrupted frontmatter) → return
+///   `fallback_id`. Better to surface *something* runnable than silently
+///   drop the hint or splice a tampered slug into the agent-visible
+///   `Refs:` line.
+///
+/// **HIGH-3 (Round-1 audit, CWE-117 / prompt injection)**: we treat an
+/// invalid slug as "no usable canonical form" and fall back to the
+/// resolver's display id. The slug shape is policed up-front rather than
+/// relying on every hint site to remember to call `sanitize_for_hint`.
+/// Hint sites should *still* sanitize as a second layer (defence in
+/// depth) — this filter only protects against shape violations, not all
+/// possible hostile content.
 ///
 /// The two-pronged shape (Frontmatter + fallback) intentionally pushes
 /// the decision down to a single helper so hint sites stay slug-aware
 /// without duplicating the branch logic. CD-5 binding.
 pub fn refs_form<'a>(fm: &'a Frontmatter, fallback_id: &'a str) -> &'a str {
     if is_pre_merge(fm) {
-        slug_from_frontmatter(fm).unwrap_or(fallback_id)
+        match slug_from_frontmatter(fm) {
+            Some(s) if crate::artifact::types::validate_slug(s).is_ok() => s,
+            _ => fallback_id,
+        }
     } else {
         fallback_id
     }
@@ -383,6 +420,58 @@ mod tests {
         assert_eq!(assigned_number_from_frontmatter(&fm), None);
     }
 
+    // MED-1 (Round-1 audit, CWE-1284) — number fields must reject values
+    // beyond MAX_ARTIFACT_NUMBER. A `u32::MAX` declaration is corrupted or
+    // hostile and must not propagate.
+
+    #[test]
+    fn assigned_number_above_max_returns_none() {
+        let fm: Frontmatter =
+            serde_yaml::from_str(&format!("assigned_number: {}", MAX_ARTIFACT_NUMBER + 1)).unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn assigned_number_at_max_is_accepted() {
+        // Boundary: exactly MAX_ARTIFACT_NUMBER must still be accepted.
+        let fm: Frontmatter =
+            serde_yaml::from_str(&format!("assigned_number: {}", MAX_ARTIFACT_NUMBER)).unwrap();
+        assert_eq!(
+            assigned_number_from_frontmatter(&fm),
+            Some(MAX_ARTIFACT_NUMBER)
+        );
+    }
+
+    #[test]
+    fn assigned_number_u32_max_returns_none() {
+        let fm: Frontmatter = serde_yaml::from_str("assigned_number: 4294967295").unwrap();
+        assert_eq!(assigned_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn predicted_number_above_max_returns_none() {
+        let fm: Frontmatter =
+            serde_yaml::from_str(&format!("predicted_number: {}", MAX_ARTIFACT_NUMBER + 1))
+                .unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm), None);
+    }
+
+    #[test]
+    fn predicted_number_at_max_is_accepted() {
+        let fm: Frontmatter =
+            serde_yaml::from_str(&format!("predicted_number: {}", MAX_ARTIFACT_NUMBER)).unwrap();
+        assert_eq!(
+            predicted_number_from_frontmatter(&fm),
+            Some(MAX_ARTIFACT_NUMBER)
+        );
+    }
+
+    #[test]
+    fn predicted_number_u32_max_returns_none() {
+        let fm: Frontmatter = serde_yaml::from_str("predicted_number: 4294967295").unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm), None);
+    }
+
     #[test]
     fn legacy_frontmatter_returns_none_for_all_new_fields() {
         // Backward compat: pre-PROB-060 artifacts have none of the new fields.
@@ -460,6 +549,41 @@ mod tests {
         // either. We return the fallback so the hint is at least runnable.
         let fm: Frontmatter = serde_yaml::from_str("status: draft").unwrap();
         assert_eq!(refs_form(&fm, "PRD-074"), "PRD-074");
+    }
+
+    // HIGH-3 (Round-1 audit, CWE-117 / prompt injection) — refs_form must
+    // refuse to surface a slug that fails validate_slug. Without this guard,
+    // a tampered frontmatter with `slug: "; rm -rf $HOME #"` would flow
+    // verbatim into agent-visible commit-Refs hint lines.
+
+    #[test]
+    fn refs_form_rejects_invalid_slug_pre_merge() {
+        // Slug carries shell metacharacters — must drop to fallback.
+        let fm: Frontmatter =
+            serde_yaml::from_str("slug: \"; rm -rf /\"\nassigned_number: null").unwrap();
+        assert_eq!(refs_form(&fm, "PRD-074"), "PRD-074");
+    }
+
+    #[test]
+    fn refs_form_rejects_uppercase_slug_pre_merge() {
+        // Uppercase prefix violates SPEC-005 grammar (`[a-z]+-...`).
+        let fm: Frontmatter =
+            serde_yaml::from_str("slug: PRD-Auth-System\nassigned_number: null").unwrap();
+        assert_eq!(refs_form(&fm, "PRD-074"), "PRD-074");
+    }
+
+    #[test]
+    fn refs_form_rejects_unknown_kind_prefix_pre_merge() {
+        // Unknown kind prefix — slug grammar rejects, refs_form falls back.
+        let fm: Frontmatter =
+            serde_yaml::from_str("slug: xyz-some-thing\nassigned_number: null").unwrap();
+        assert_eq!(refs_form(&fm, "PRD-074"), "PRD-074");
+    }
+
+    #[test]
+    fn refs_form_from_body_rejects_invalid_slug() {
+        let body = "---\nslug: \"; rm -rf /\"\npredicted_number: 74\nassigned_number: null\n---\n\nBody.\n";
+        assert_eq!(refs_form_from_body(body, "PRD-74?"), "PRD-74?");
     }
 
     #[test]

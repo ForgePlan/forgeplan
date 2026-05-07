@@ -58,8 +58,16 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
     // allowed value-to-fill placeholder for the yet-to-exist RFC.
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
     // id post-merge so the link command stays canonical for commit `Refs:`.
-    let ref_form =
+    //
+    // **HIGH-3 (Round-1 audit, CWE-117 / prompt injection)**: even though
+    // `refs_form_from_body` already drops slugs that fail SPEC-005's
+    // grammar (added in this fix-1c), we apply `sanitize_for_hint` as a
+    // defence-in-depth layer. This catches any future regression in the
+    // slug grammar gate and aligns CLI hint emission with MCP server
+    // (which has always sanitized).
+    let raw_ref =
         forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+    let ref_form = forgeplan_core::artifact::sanitize::sanitize_for_hint(&raw_ref);
     let hint_list = vec![
         Hint::info(format!("Create RFC for {}", ref_form)).with_action(format!(
             "forgeplan new rfc \"<task title>\" && forgeplan link RFC-NNN {} --relation refines",
