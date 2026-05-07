@@ -6,6 +6,7 @@
 //! escape hatch to reap a crashed sub-agent's claim.
 
 use forgeplan_core::claim::{ClaimError, ClaimStore};
+use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
@@ -17,6 +18,20 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    // Best-effort resolve: if the artifact isn't in LanceDB (e.g. claim
+    // outlived its underlying record), fall back to raw input so the
+    // operator can still drop the now-orphaned claim file.
+    let lance = LanceStore::open(&ws).await?;
+    let canonical = lance.resolve_id(id).await?;
+    let id_owned: String;
+    let id: &str = if let Some(c) = canonical {
+        id_owned = c;
+        id_owned.as_str()
+    } else {
+        id
+    };
 
     // Match MCP semantics: explicit agent > default agent string. With
     // `--force` and no agent, the empty string is acceptable (the core

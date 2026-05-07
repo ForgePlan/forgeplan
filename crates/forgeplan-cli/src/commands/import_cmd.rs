@@ -84,10 +84,24 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
     let mut downgraded = 0usize;
 
     for art in artifacts {
-        let id = art["id"].as_str().unwrap_or_default();
-        if id.is_empty() {
+        let raw_id = art["id"].as_str().unwrap_or_default();
+        if raw_id.is_empty() {
             continue;
         }
+
+        // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — bulk resolve each id in
+        // the payload. Hand-edited JSON exports may carry slugs instead of
+        // display ids; resolve_id maps them onto the canonical DB form.
+        // Resolver returning None just means the id is novel — fall back
+        // to the raw input so the new artifact gets created as-is.
+        let canonical = store.resolve_id(raw_id).await?;
+        let id_owned: String;
+        let id: &str = if let Some(c) = canonical {
+            id_owned = c;
+            id_owned.as_str()
+        } else {
+            raw_id
+        };
 
         let existing = store.get_record(id).await?;
         if existing.is_some() && !force {
