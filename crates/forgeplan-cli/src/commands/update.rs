@@ -12,6 +12,16 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    // Resolve once at the top so every downstream operation (lifecycle,
+    // projection, log_change, hint rendering) sees the canonical DB id
+    // regardless of which form the user passed.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Verify artifact exists (keep original for old projection cleanup)
     let original = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(

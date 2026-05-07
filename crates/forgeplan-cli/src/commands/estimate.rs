@@ -18,6 +18,13 @@ pub async fn run(
 ) -> Result<()> {
     let store = common::store().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Fetch artifact
     let record = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(

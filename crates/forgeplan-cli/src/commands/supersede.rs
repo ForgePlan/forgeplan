@@ -7,6 +7,18 @@ use crate::commands::common;
 pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    // The source must resolve (it's the artifact being marked superseded);
+    // the `--by` target may not exist yet (forward-reference cross-PR), so
+    // we fall back to the raw input mirroring `link` semantics.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+    let by_canonical = store.resolve_id(by).await?;
+    let by = by_canonical.as_deref().unwrap_or(by);
+
     let old_status = store
         .get_record(id)
         .await?

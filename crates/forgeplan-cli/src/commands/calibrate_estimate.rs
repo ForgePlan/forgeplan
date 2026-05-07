@@ -23,6 +23,12 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
 
     let store = common::store().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let artifact_id = store.resolve_id(artifact_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Artifact '{artifact_id}' not found\nFix: forgeplan list")
+    })?;
+    let artifact_id = artifact_id.as_str();
+
     // Get the artifact
     let record = store.get_record(artifact_id).await?.ok_or_else(|| {
         anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", artifact_id)

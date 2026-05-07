@@ -16,6 +16,11 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
             anyhow::bail!("LLM not configured");
         }
     };
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let prd_id = store.resolve_id(prd_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Artifact '{prd_id}' not found\nFix: forgeplan list --type prd")
+    })?;
+    let prd_id = prd_id.as_str();
     let record = store.get_record(prd_id).await?.ok_or_else(|| {
         anyhow::anyhow!(
             "Artifact '{}' not found\n\

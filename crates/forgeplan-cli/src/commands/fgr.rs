@@ -9,10 +9,15 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
 
     let records = if let Some(id) = id {
-        let record = store
-            .get_record(id)
+        // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+        let canonical = store
+            .resolve_id(id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Artifact not found: {id}"))?;
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+        let record = store
+            .get_record(&canonical)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}"))?;
         vec![record]
     } else {
         store.list_records(None).await?
