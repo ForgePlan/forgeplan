@@ -6,7 +6,7 @@ links:
 - target: PROB-060
   relation: informs
 - target: ADR-012
-  relation: evidences
+  relation: informs
 - target: PRD-076
   relation: informs
 - target: RFC-009
