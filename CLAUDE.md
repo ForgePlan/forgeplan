@@ -17,6 +17,20 @@ Instructions for Claude Code when working in this repository.
 8. **DO NOT call `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` directly from `commands/*.rs` или `server.rs`** — нарушает ADR-003 (markdown — source of truth). Используй `forgeplan_core::projection::sync_file_to_store` + `render_projection` flow (см. canonical `crates/forgeplan-cli/src/commands/deprecate.rs`). Regression guard: `tests/adr_003_invariant.rs` блокирует рост counts. Migration tracker: PROB-048 + PRD-073.
 9. **DO NOT skip the post-release sync step** — после каждого `release/v* → main` PR merge обязательно открывай sync-PR `chore/sync-main-to-dev-after-vX.Y.Z` (branch protection blocks direct push to dev). Без этого dev forever lags `Cargo.toml` version, и следующий release создаст merge conflicts. См. PR #223 как канонический пример flow.
 10. **DO NOT ignore Dependabot alerts at release time** — перед каждым `release/v* → main` PR проверь `gh api repos/.../dependabot/alerts` и в release notes пометь: addressed / scheduled / accepted-with-justification. Накопление alerts — отдельный architectural debt (PROB-XXX TBD при первом triage).
+11. **STRICT: Forgeplan artifacts мутировать ТОЛЬКО через MCP/CLI** —
+  файлы в `.forgeplan/{prds,adrs,specs,rfcs,evidence,notes}/*.md` нельзя
+  редактировать через `Edit`/`Write`/`sed` напрямую. Все изменения тела/статуса
+  идут через `mcp__forgeplan__forgeplan_update`, `forgeplan_new`,
+  `forgeplan_link`, `forgeplan_activate`, `forgeplan_deprecate` (или
+  эквивалентный CLI `forgeplan update|new|link|activate|...`). Прямой Edit
+  десинхронизирует LanceDB index, state machine (`.forgeplan/state/<ID>.yaml`)
+  и canonical body — `forgeplan_get` начнёт возвращать stale данные,
+  semantic search промахнётся. Если случайно отредактирован — recover через
+  `forgeplan_update id=<ID> body=<full new body>` (читаешь файл, формируешь
+  полное новое body без YAML frontmatter, пушишь через MCP). Last-resort
+  fallback: `forgeplan scan-import` пересоберёт LanceDB из markdown.
+  Direct Edit OK ТОЛЬКО для не-forgeplan markdown (READMEs, CLAUDE.md,
+  KNOWN-ISSUES, src code, .changeset/*.md).
 
 Everything else in this file is guidelines, not red lines.
 
@@ -356,6 +370,151 @@ Full guide: `docs/methodology/UNIFIED-WORKFLOW.ru.md`.
 
 Guide: `docs/operations/MULTI-AGENT.ru.md`.
 
+---
+
+## AgentTeams orchestration patterns
+
+Два паттерна спавна workers для сложных multi-task фаз. Выбор зависит от
+координации между задачами.
+
+### Pattern A: Team Lead + Parallel Workers (durable state)
+
+Использовать когда:
+- ≥3 задач, требующих cross-worker contracts (CLI signature shared между binary
+  и workflow YAML; JSON shape consumed multiple workers)
+- State preserve между worker exchanges (lead returns после wave 1, spawns wave 2)
+- Конфликты файлов нужны explicit resolution (CD-N protocol, see Phase 0b)
+
+Mechanism:
+```
+Agent({ subagent_type: "api-scaffolding:backend-architect",
+        description: "Phase X team lead",
+        prompt: <team-lead-brief> })
+# Lead returns 4-6 worker briefs с CD-N decisions
+# Затем main thread spawns workers одним сообщением:
+Agent({ subagent_type: "systems-programming:rust-pro", prompt: <W1-brief> })
+Agent({ subagent_type: "cicd-automation:deployment-engineer", prompt: <W2-brief> })
+# ... и т.д.
+```
+
+Lead's responsibilities (НЕ пишет код):
+1. Read context (handoff doc + ADR + RFC + relevant code)
+2. Validate cross-worker contracts (binding CD-N decisions)
+3. Worker briefs с file ownership grid
+4. Risk register (top 5 рисков + mitigations)
+5. After workers complete: integration / conflict resolution / EVID authoring
+
+### Pattern B: Single-message parallel Agent (one-shot)
+
+Использовать когда:
+- Independent tasks без shared state
+- Lead role не нужен (workers self-sufficient)
+- Quick parallel close
+
+Mechanism:
+```python
+# В одном assistant message:
+Agent({ subagent_type: "systems-programming:rust-pro", prompt: <T1-brief> })
+Agent({ subagent_type: "agents-pro:documentation-engineer", prompt: <T2-brief> })
+```
+
+### Multi-agent worktree pattern (PRD-057 follow-up)
+
+**Lesson из Phase 0b**: shared `.git/HEAD` между параллельными agents в одном
+worktree вызывает branch ref corruption (W4's `git update-ref` recovery сбила
+W2's branch). Для ≥3 параллельных workers — separate worktrees:
+
+```bash
+# Pre-spawn (in main thread):
+git worktree add ../forgeplan-w1 feat/prob-060-phase-2-w1
+git worktree add ../forgeplan-w2 feat/prob-060-phase-2-w2
+# Worker prompt: «Working dir: ../forgeplan-w1»
+```
+
+Cleanup после merge: `git worktree remove ../forgeplan-w1 && git branch -D feat/prob-060-phase-2-w1`.
+
+### Worker brief required fields (any pattern)
+
+Каждый worker prompt должен явно содержать:
+
+1. **Working directory** + branch instructions (off which base, naming convention)
+2. **OWNED FILES** list (exact paths, mark `(new)` для new files)
+3. **FORBIDDEN FILES** list (exact paths + which worker owns each)
+4. **CONTRACT spec** (CLI signature / YAML structure / JSON schema / markdown shape)
+5. **🔴 RED-LINE #11 reminder** (artifact mutations через MCP/CLI ONLY)
+6. **Pipeline gate** command list (cargo fmt + check + test + clippy)
+7. **Acceptance criteria** (testable bullets)
+8. **Anti-patterns** (что НЕ делать с конкретными warnings)
+9. **Final report format** (что worker возвращает)
+
+### Adversarial audit mandate
+
+После significant changes (≥5 commits OR new public API) — 2-agent audit:
+- `agents-pro:security-expert` — CWE coverage, injection vectors
+- `code-documentation:code-reviewer` или `agents-core:reviewer` — code quality
+
+Each MUST find ≥3 issues. Zero findings → re-spawn (suspect superficial review).
+
+---
+
+## Sub-agents и forgeplan MCP/CLI tools
+
+**Red-line #11 enforcement в worker prompts**: artifact mutations ИСКЛЮЧИТЕЛЬНО
+через MCP tools или CLI — никогда `Edit`/`Write`/`sed` напрямую на
+`.forgeplan/{prds,adrs,specs,rfcs,evidence,notes}/*.md`.
+
+### Канонические operations
+
+| Operation | MCP tool | CLI equivalent |
+|---|---|---|
+| Create artifact | `mcp__forgeplan__forgeplan_new(kind, title)` | `forgeplan new <kind> "Title"` |
+| Read | `mcp__forgeplan__forgeplan_get(id)` | `forgeplan get <id>` |
+| Update body/metadata | `mcp__forgeplan__forgeplan_update(id, body=...)` | `forgeplan update <id> --body @path` |
+| Add typed link | `mcp__forgeplan__forgeplan_link(source, target, relation)` | `forgeplan link <src> <tgt> --relation <r>` |
+| Activate | `mcp__forgeplan__forgeplan_activate(id)` | `forgeplan activate <id>` |
+| Validate | `mcp__forgeplan__forgeplan_validate(id)` | `forgeplan validate <id>` |
+| Score (R_eff) | `mcp__forgeplan__forgeplan_score(id)` | `forgeplan score <id>` |
+| ADI reasoning | `mcp__forgeplan__forgeplan_reason(id)` | `forgeplan reason <id>` |
+| Health | `mcp__forgeplan__forgeplan_health()` | `forgeplan health` |
+
+### What sub-agents MUST use MCP/CLI for
+
+- Creating EvidencePack (`forgeplan_new evidence` + `forgeplan_update body=...` + `forgeplan_link`)
+- Updating PRD/RFC/ADR/Spec progress trackers (`forgeplan_update id=... body=<full new body>`)
+- Activating artifact (`forgeplan_activate id=...`)
+- Linking artifacts (`forgeplan_link source=... target=... relation=...`)
+- Adding/updating Notes, Problems, Solutions, Refresh
+
+### What sub-agents MAY edit directly (NOT in red-line #11 scope)
+
+- `CLAUDE.md` (project-wide instruction file, not artifact)
+- `docs/**` (documentation, not artifact)
+- `crates/**` (Rust code)
+- `.github/workflows/*.yml`, `scripts/*.sh`, `templates/**`
+- `README.md`, `CHANGELOG.md`, `KNOWN-ISSUES.md`, `.changeset/*.md`
+- Test fixtures NOT under `.forgeplan/`
+
+### Recovery if accidentally Edit'нул artifact
+
+1. Re-Read file to capture current content
+2. Strip YAML frontmatter (forgeplan_update body excludes it)
+3. `mcp__forgeplan__forgeplan_update(id="<ID>", body=<full body>)`
+4. Last-resort fallback: `forgeplan scan-import` rebuilds LanceDB from markdown
+
+Document the violation в commit message so reviewer recognizes the pattern was caught.
+
+### Hint protocol reading после fpl calls
+
+После каждого `forgeplan_*` MCP/CLI call agent reads:
+- `Next: <command>` — primary action (run as-is)
+- `Or: <command>` — alternative
+- `Wait: <condition>` — async retry
+- `Done.` — workflow complete (terminal)
+- `Fix: <command>` — error remediation
+
+JSON: `_next_action` field. Following hints = staying на methodology path
+(Shape → Validate → Code → Evidence → Activate).
+
 ## Docs — update on every release
 
 **Red line** для методологии: release, который добавляет user-facing MCP tool или CLI flag, **не мерджится в main** без:
@@ -406,6 +565,48 @@ forgeplan fpf ingest && forgeplan fpf search "trust"
 Any fail → do not commit, fix.
 
 ---
+
+
+### Standard flow для фичи (Standard+)
+
+```bash
+forgeplan health                                         # observe
+forgeplan route "implement ad-account dashboard tile"
+forgeplan new prd "Ad-account dashboard tile"            # shape
+$EDITOR .forgeplan/prds/PRD-NNN-*.md                     # заполнить MUST sections
+forgeplan validate PRD-NNN                               # 0 MUST errors
+forgeplan reason PRD-NNN                                 # ADI (Standard+)
+# write code + tests (через subagent / orchestrator)
+forgeplan new evidence "PRD-NNN: vitest 14 pass, p95 180ms на staging"
+$EDITOR .forgeplan/evidence/EVID-MMM-*.md                # ## Structured Fields!
+forgeplan link EVID-MMM PRD-NNN --relation informs
+forgeplan score PRD-NNN                                  # R_eff > 0?
+forgeplan activate PRD-NNN                               # draft → active
+# gh pr create --base develop  (PR body: "Refs: PRD-NNN")
+```
+
+### Multi-agent (`dispatch → claim → spawn → release`)
+
+```bash
+forgeplan dispatch --agents 3 --json    # планер conflict-free buckets (НЕ спавнер!)
+forgeplan claim PRD-NNN --agent <subagent-name> --ttl-minutes 60
+# … работа …
+forgeplan release PRD-NNN
+```
+
+`dispatch` возвращает план, **спавнит main thread / orchestrator** через `Agent({subagent_type, prompt})` (несколько `Agent`-блоков в одном сообщении = параллель). `SendMessage` — НЕ спавнер; адресует только уже запущенные процессы.
+
+### Команды-однострочники (на каждый день)
+
+```bash
+forgeplan health              # session-start sanity check
+forgeplan list                # все артефакты
+forgeplan graph               # mermaid-граф связей
+forgeplan stale               # артефакты с истёкшим valid_until
+forgeplan blindspots          # решения без evidence
+forgeplan claims              # кто что захватил
+```
+
 
 ## Storage (ADR-003): Markdown primary, LanceDB derived
 
