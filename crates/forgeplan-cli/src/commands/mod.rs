@@ -41,6 +41,8 @@ pub mod mcp;
 pub mod migrate;
 // PROB-060 Phase 0b — EVID-A CI ID-assignment binary (Worker 1).
 pub mod ci_assign_id;
+// PROB-060 Phase 0b — EVID-C migration dry-run scanner (Worker 3).
+pub mod migrate_dry_run;
 pub mod new;
 pub mod order;
 pub mod phase;
