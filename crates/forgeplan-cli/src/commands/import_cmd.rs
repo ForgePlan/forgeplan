@@ -109,6 +109,26 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             continue;
         }
 
+        // HIGH-6 (Round-1 audit, CWE-639 / data corruption): when the
+        // resolver maps `prd-foo` (slug) onto an existing PRD-001 row,
+        // a payload claiming `"kind": "rfc"` would otherwise delete the
+        // PRD and create an `id="PRD-001", kind="rfc"` row — kind/id
+        // incoherent. Refuse the import outright with an actionable
+        // remediation hint. The check fires before the destructive
+        // delete-then-create so the existing artifact stays intact.
+        if let Some(existing_record) = &existing {
+            let raw_kind_for_check = art["kind"].as_str().unwrap_or("");
+            if !raw_kind_for_check.is_empty() && existing_record.kind != raw_kind_for_check {
+                anyhow::bail!(
+                    "Import would change kind of {} from {} to {}\n\
+                     Fix: change `kind` в payload или use a different `id`",
+                    id,
+                    existing_record.kind,
+                    raw_kind_for_check
+                );
+            }
+        }
+
         if existing.is_some() {
             // PRD-073 audit H3: routed through helper so the markdown
             // projection is removed in lockstep with the LanceDB row.

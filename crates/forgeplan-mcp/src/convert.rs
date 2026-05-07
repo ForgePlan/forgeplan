@@ -3,7 +3,7 @@ use forgeplan_core::artifact::frontmatter::{
     slug_from_frontmatter,
 };
 use forgeplan_core::artifact::store::ArtifactSummary;
-use forgeplan_core::artifact::types::{ArtifactKind, render_display_id};
+use forgeplan_core::artifact::types::{ArtifactKind, render_display_id, validate_slug};
 use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::validation::{Finding, ValidationResult};
 
@@ -37,10 +37,36 @@ pub(crate) struct IdentityFields {
 /// `parse_frontmatter(&record.body)`). Failure to parse frontmatter is
 /// treated as "legacy artifact" — we still emit a usable display id so
 /// callers don't have to special-case `None`.
+///
+/// **HIGH-3 (Round-1 audit)**: a slug surviving from a tampered file or a
+/// hand-edited DB row could carry shell metacharacters or invisible
+/// Unicode. The slug we surface to MCP DTO consumers is gated through
+/// [`validate_slug`] — anything that doesn't satisfy SPEC-005's slug
+/// grammar is dropped to `None` rather than propagated. Downstream hint
+/// sites then either use the post-merge display id or apply
+/// `sanitize_for_hint` as a second layer. CWE-117 + prompt-injection
+/// defence in depth.
 pub(crate) fn identity_from_record(id: &str, kind_str: &str, body: &str) -> IdentityFields {
     let (slug, predicted, assigned) = match parse_frontmatter(body) {
         Ok((fm, _body)) => (
-            slug_from_frontmatter(&fm).map(|s| s.to_string()),
+            slug_from_frontmatter(&fm)
+                .filter(|s| {
+                    // HIGH-3: drop slugs that violate the SPEC-005 grammar.
+                    // We log a structured warning so an operator can spot
+                    // the bad row, but we never let a malformed slug flow
+                    // into agent-visible DTO fields.
+                    let ok = validate_slug(s).is_ok();
+                    if !ok {
+                        tracing::warn!(
+                            target: "forgeplan_mcp::convert",
+                            artifact_id = %id,
+                            kind = %kind_str,
+                            "dropping invalid slug from frontmatter (HIGH-3 defence)"
+                        );
+                    }
+                    ok
+                })
+                .map(|s| s.to_string()),
             predicted_number_from_frontmatter(&fm),
             assigned_number_from_frontmatter(&fm),
         ),
@@ -160,5 +186,78 @@ impl From<ValidationResult> for ValidationResultDto {
             warning_count,
             findings: r.findings.into_iter().map(Into::into).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a body with the given slug field.
+    fn body_with_slug(slug: &str, assigned: Option<u32>) -> String {
+        let assigned_field = match assigned {
+            Some(n) => format!("assigned_number: {n}"),
+            None => "assigned_number: null".to_string(),
+        };
+        format!(
+            "---\nid: PRD-074\nslug: \"{slug}\"\npredicted_number: 74\n{assigned_field}\n---\n\n# body\n"
+        )
+    }
+
+    // HIGH-3 (Round-1 audit): identity_from_record must drop slugs that
+    // fail SPEC-005's grammar. Otherwise tampered frontmatter would
+    // propagate through to MCP DTOs and into agent-visible hint strings.
+
+    #[test]
+    fn identity_drops_slug_with_shell_metacharacters() {
+        // `;` and space are not in the valid slug charset.
+        let body = body_with_slug("; rm -rf /", None);
+        let id = identity_from_record("PRD-074", "prd", &body);
+        assert_eq!(
+            id.slug, None,
+            "slug with shell metacharacters must be rejected"
+        );
+        // id_canonical falls back to lowercased display id.
+        assert_eq!(id.id_canonical, "prd-074");
+    }
+
+    #[test]
+    fn identity_drops_uppercase_slug() {
+        // SPEC-005 requires lowercase ASCII.
+        let body = body_with_slug("PRD-Auth-System", None);
+        let id = identity_from_record("PRD-074", "prd", &body);
+        assert_eq!(id.slug, None);
+    }
+
+    #[test]
+    fn identity_drops_unknown_kind_prefix_slug() {
+        let body = body_with_slug("xyz-some-thing", None);
+        let id = identity_from_record("PRD-074", "prd", &body);
+        assert_eq!(id.slug, None);
+    }
+
+    #[test]
+    fn identity_keeps_valid_slug() {
+        let body = body_with_slug("prd-auth-system", Some(74));
+        let id = identity_from_record("PRD-074", "prd", &body);
+        assert_eq!(id.slug.as_deref(), Some("prd-auth-system"));
+        assert_eq!(id.id_canonical, "prd-auth-system");
+    }
+
+    #[test]
+    fn identity_drops_zero_width_slug() {
+        // Zero-width chars are non-ASCII so validate_slug rejects on the
+        // ASCII gate.
+        let body = "---\nid: PRD-074\nslug: \"prd-\u{200B}auth\"\npredicted_number: 74\nassigned_number: null\n---\n\n# body\n";
+        let id = identity_from_record("PRD-074", "prd", body);
+        assert_eq!(id.slug, None);
+    }
+
+    #[test]
+    fn identity_drops_reserved_prefix_slug() {
+        // "tmp-" / "draft-" / "pending-" suffixes are reserved.
+        let body = body_with_slug("prd-tmp-something", None);
+        let id = identity_from_record("PRD-074", "prd", &body);
+        assert_eq!(id.slug, None);
     }
 }

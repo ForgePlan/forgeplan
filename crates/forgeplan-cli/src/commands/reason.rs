@@ -142,8 +142,15 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug pre-merge and
     // display id post-merge so the agent's next command keeps canonical
     // refs in commit messages.
-    let ref_form =
+    //
+    // **HIGH-3 (Round-1 audit, CWE-117 / prompt injection)**: defence in
+    // depth — even though `refs_form_from_body` rejects slugs failing the
+    // SPEC-005 grammar, we sanitize the result before splicing it into
+    // hint strings. Mirrors MCP server's existing `sanitize_for_hint`
+    // discipline.
+    let raw_ref =
         forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+    let ref_form = forgeplan_core::artifact::sanitize::sanitize_for_hint(&raw_ref);
     let mut hints_vec: Vec<Hint> = Vec::new();
     if !adi_output.evidence_needed.is_empty() {
         hints_vec.push(
