@@ -39,6 +39,8 @@ pub mod list;
 pub mod log_cmd;
 pub mod mcp;
 pub mod migrate;
+// PROB-060 Phase 0b — EVID-A CI ID-assignment binary (Worker 1).
+pub mod ci_assign_id;
 pub mod new;
 pub mod order;
 pub mod phase;
