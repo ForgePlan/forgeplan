@@ -7,6 +7,13 @@ use crate::commands::common;
 pub async fn run(id: &str, reason: &str, until: &str) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Sync file→LanceDB before lifecycle call (preserve user edits)
     if let Some(record) = store.get_record(id).await? {
         projection::sync_file_to_store(&store, &ws, &record).await?;
