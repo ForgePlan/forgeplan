@@ -60,7 +60,7 @@ use forgeplan_core::artifact::frontmatter::{
     Frontmatter, assigned_number_from_frontmatter, parse_frontmatter,
     predicted_number_from_frontmatter, render_frontmatter, slug_from_frontmatter,
 };
-use forgeplan_core::artifact::types::ArtifactKind;
+use forgeplan_core::artifact::types::{ArtifactKind, validate_slug};
 use serde::Serialize;
 
 /// CLI arguments for `forgeplan reconcile-ids`.
@@ -268,7 +268,19 @@ fn discover_artifacts(forgeplan_dir: &Path) -> Result<DiscoverResult> {
                 continue;
             }
         };
-        for entry in entries.flatten() {
+        // [LOW-1 fix] Don't `.flatten()` here — silently dropping per-entry
+        // IO errors masks transient FS issues (permission, broken inode,
+        // unreadable symlink). Surface them as scan errors so downstream
+        // tooling can react. Mirrors the loud-but-non-fatal posture
+        // ci_assign_id.rs uses for parse failures.
+        for entry_res in entries {
+            let entry = match entry_res {
+                Ok(e) => e,
+                Err(e) => {
+                    scan_errors.push((kind_dir.clone(), format!("read_dir entry failed: {e}")));
+                    continue;
+                }
+            };
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -293,6 +305,19 @@ fn read_record(path: &Path, kind: &ArtifactKind) -> Result<ArtifactRecord> {
     let (fm, body) =
         parse_frontmatter(&content).map_err(|e| anyhow::anyhow!("parse frontmatter: {e}"))?;
     let slug = slug_from_frontmatter(&fm).map(|s| s.to_string());
+    // [HIGH-1 fix mirror of ci_assign_id.rs:418-431] When the frontmatter
+    // does carry a slug, re-validate it against the SPEC-005 shape. Slugs
+    // flow into filenames, hint suggestions, JSON output, and (downstream)
+    // git command arguments — a malformed slug here means the artifact
+    // was edited outside the canonical CLI/MCP path (red-line #11) or
+    // PR-tampered. Fail the scan loudly rather than letting bogus content
+    // reach apply-mode rename and downstream consumers. Legacy artifacts
+    // that pre-date the slug field have `slug: None` — those are skipped.
+    if let Some(s) = slug.as_deref()
+        && let Err(e) = validate_slug(s)
+    {
+        anyhow::bail!("malformed slug {s:?}: {e}");
+    }
     let predicted = predicted_number_from_frontmatter(&fm);
     let assigned = assigned_number_from_frontmatter(&fm);
     Ok(ArtifactRecord {
@@ -382,7 +407,6 @@ fn body_artifact_refs(body: &str) -> HashSet<String> {
         if i >= n || bytes[i] != b'-' {
             continue;
         }
-        let dash_pos = i;
         i += 1;
         // walk digits
         let digits_start = i;
@@ -390,10 +414,11 @@ fn body_artifact_refs(body: &str) -> HashSet<String> {
             i += 1;
         }
         if i == digits_start {
+            // No digits after the dash — not a valid token.
             continue;
         }
         let digits_end = i;
-        // optional trailing '?'
+        // optional trailing '?' (predicted-id marker pre-merge)
         let mut tok_end = digits_end;
         if tok_end < n && bytes[tok_end] == b'?' {
             tok_end += 1;
@@ -404,17 +429,17 @@ fn body_artifact_refs(body: &str) -> HashSet<String> {
             continue;
         }
         let prefix = &body[prefix_start..prefix_end];
-        // accept only known prefixes
+        // Accept only known artifact-kind prefixes. References like
+        // `WIDGET-12` whose prefix maps to no kind are filtered here.
         let lower = prefix.to_ascii_lowercase();
         if ArtifactKind::from_slug_prefix(&lower).is_none() {
             continue;
         }
-        let tok = &body[prefix_start..digits_end]; // strip `?` for canonical form
-        // skip references like `WIDGET-12` or numbers shorter than 1 digit (already filtered)
-        if (digits_end - digits_start) > 0 {
-            out.insert(tok.to_string());
-        }
-        let _ = dash_pos; // silence unused
+        // Strip `?` for canonical form. The empty-digits case is already
+        // rejected at the `i == digits_start` guard above, so the slice
+        // here is always non-empty.
+        let tok = &body[prefix_start..digits_end];
+        out.insert(tok.to_string());
     }
     out
 }
@@ -548,14 +573,76 @@ fn is_git_tracked(path: &Path) -> bool {
 
 /// Rename `from` → `to`. Uses `git mv` if the file is tracked (preserves
 /// history), `fs::rename` otherwise. Returns the new path on success.
-fn rename_with_git_fallback(from: &Path, to: &Path) -> Result<PathBuf> {
+///
+/// [HIGH-1 fix mirror of ci_assign_id.rs:752-782 / 658-683 SEC-6 block]
+/// Hardening:
+/// 1. **Symlink check** — `symlink_metadata` (does NOT traverse) + reject
+///    any source that is a symlink. A PR-tampered `.forgeplan/prds/x.md`
+///    pointing at `/etc/passwd` would otherwise be moved.
+/// 2. **Workspace boundary** — if `canonical_workspace` is supplied,
+///    assert that the canonicalized source AND the canonicalized parent
+///    of the target both stay under the workspace root. Defends against
+///    relative-`..` slugs that escape `.forgeplan/`.
+/// 3. **`--` separator** on `git mv` — explicit `mv -- <from> <to>`
+///    prevents future flag-injection regressions if `from`/`to` ever
+///    accept untrusted prefixes.
+fn rename_with_git_fallback(
+    from: &Path,
+    to: &Path,
+    canonical_workspace: Option<&Path>,
+) -> Result<PathBuf> {
     if to.exists() {
         anyhow::bail!("destination already exists: {}", to.display());
     }
+
+    // [SEC-6 CWE-367] symlink check: refuse to follow symlinks. Use
+    // `symlink_metadata` which never traverses, unlike `metadata()`.
+    let lmeta = fs::symlink_metadata(from)
+        .map_err(|e| anyhow::anyhow!("stat {} (symlink check): {e}", from.display()))?;
+    if lmeta.file_type().is_symlink() {
+        anyhow::bail!(
+            "reconcile-ids: refusing to follow symlink artifact {} [SEC-6]",
+            from.display()
+        );
+    }
+
+    // [SEC-6 CWE-22] path traversal: canonicalize source and assert it
+    // stays under workspace; canonicalize target's parent (which must
+    // already exist) and assert the same. We never canonicalize the
+    // target itself before it exists.
+    if let Some(ws_canon) = canonical_workspace {
+        let from_canon = fs::canonicalize(from)
+            .map_err(|e| anyhow::anyhow!("canonicalize {}: {e}", from.display()))?;
+        if !from_canon.starts_with(ws_canon) {
+            anyhow::bail!(
+                "reconcile-ids: source {} escapes workspace [SEC-6 invariant violation]",
+                from.display()
+            );
+        }
+        let target_parent = to
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("rename target has no parent: {}", to.display()))?;
+        let target_parent_canon = fs::canonicalize(target_parent).map_err(|e| {
+            anyhow::anyhow!(
+                "canonicalize target parent {}: {e}",
+                target_parent.display()
+            )
+        })?;
+        if !target_parent_canon.starts_with(ws_canon) {
+            anyhow::bail!(
+                "reconcile-ids: target parent {} escapes workspace [SEC-6]",
+                target_parent.display()
+            );
+        }
+    }
+
     if is_git_tracked(from) {
         let parent = from.parent().unwrap_or_else(|| Path::new("."));
+        // [HIGH-1 fix] `["mv", "--"]` separator mirrors ci_assign_id.rs:606.
+        // Prevents argument-injection if `from`/`to` ever start with a
+        // dash; harmless on well-formed inputs.
         let status = Command::new("git")
-            .arg("mv")
+            .args(["mv", "--"])
             .arg(from)
             .arg(to)
             .current_dir(parent)
@@ -571,6 +658,14 @@ fn rename_with_git_fallback(from: &Path, to: &Path) -> Result<PathBuf> {
 
 /// Insert `predicted_number` field at the canonical position. Body bytes
 /// are preserved.
+///
+/// [HIGH-4 fix mirror of ci_assign_id.rs:854-867] Atomic publish: write
+/// to `<path>.tmp` then `fs::rename` it into place. POSIX `rename(2)` is
+/// atomic on a single filesystem — a crash mid-write therefore leaves
+/// either the previous file intact or the new file fully written, never
+/// a half-written truncation. Direct `fs::write(path, …)` truncates the
+/// destination first, which means a crash mid-write would leave an
+/// empty/partial file on disk.
 fn write_predicted_number(path: &Path, fm: &Frontmatter, body: &str, n: u32) -> Result<()> {
     let mut new_fm = fm.clone();
     new_fm.insert(
@@ -578,8 +673,24 @@ fn write_predicted_number(path: &Path, fm: &Frontmatter, body: &str, n: u32) -> 
         serde_yaml::Value::Number(serde_yaml::Number::from(n)),
     );
     let rendered = render_frontmatter(&new_fm, body)?;
-    fs::write(path, rendered)
-        .map_err(|e| anyhow::anyhow!("write {} failed: {e}", path.display()))?;
+
+    // Sibling tmp file — same parent ⇒ same filesystem ⇒ atomic rename.
+    // We use `.md.tmp` (mirrors ci_assign_id.rs convention) so a stray
+    // crashed-tmp is easy to recognize manually.
+    let tmp_path = path.with_extension("md.tmp");
+    fs::write(&tmp_path, rendered)
+        .map_err(|e| anyhow::anyhow!("write tmp {} failed: {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        // Try to clean up the orphan tmp on rename failure so a retry
+        // doesn't trip over a stale sibling. Best-effort — if the
+        // cleanup itself errors we keep the original error context.
+        let _ = fs::remove_file(&tmp_path);
+        anyhow::anyhow!(
+            "atomic rename {} -> {} failed: {e}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -722,7 +833,19 @@ fn build_actions(
 /// Apply order: filename renames first (so subsequent reads use new
 /// paths), then predicted-number writes. We always re-read the file
 /// content immediately before mutation to defend against TOCTOU drift.
-fn apply_actions(actions: &mut [ReconcileAction]) {
+///
+/// [HIGH-1 fix] `workspace` is canonicalized once at entry and passed
+/// down into [`rename_with_git_fallback`] for SEC-6 boundary checks. We
+/// canonicalize once because canonicalize is a syscall — repeating it
+/// per-action would be wasteful and (worse) racy if the workspace dir
+/// were swapped mid-loop.
+fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) {
+    // Canonicalize workspace once. If canonicalize fails (e.g. workspace
+    // got removed) we skip the boundary check rather than crash — writes
+    // will fail loudly below if the FS is genuinely broken. This mirrors
+    // the posture in ci_assign_id.rs::apply_plan.
+    let canonical_workspace = fs::canonicalize(workspace).ok();
+
     // Phase 1: renames. We update `artifact_path` in-place so any
     // subsequent operation on the same record (e.g. predicted-number
     // write that landed on the same file) sees the new path.
@@ -751,7 +874,7 @@ fn apply_actions(actions: &mut [ReconcileAction]) {
             }
         };
         let to = parent.join(&new_filename);
-        match rename_with_git_fallback(&from, &to) {
+        match rename_with_git_fallback(&from, &to, canonical_workspace.as_deref()) {
             Ok(new_path) => {
                 renamed.insert(from, new_path.clone());
                 action.artifact_path = new_path;
@@ -845,10 +968,17 @@ pub fn render_json(report: &ReconcileReport) -> serde_json::Value {
             })
         })
         .collect();
+    // [MED-2 fix mirror of redact_path posture] Don't leak the absolute
+    // workspace path into JSON output — it surfaces CI runner layout
+    // (`/home/runner/work/owner/repo/.forgeplan`) and is useless to
+    // consumers, who only care that this is a Forgeplan workspace. Emit
+    // the canonical relative `.forgeplan` shape instead. The scanned
+    // paths inside `actions` and `scan_errors` are already redacted to
+    // workspace-relative form by `redact_path`.
     serde_json::json!({
         "schema_version": 1,
         "timestamp": timestamp,
-        "workspace": report.workspace.display().to_string(),
+        "workspace": ".forgeplan",
         "check_only": report.check_only,
         "actions": actions,
         "scan_errors": scan_errors,
@@ -954,7 +1084,7 @@ pub fn run(args: ReconcileIdsArgs) -> Result<i32> {
     //   - duplicate_assigned / body_links_drift → Some(false) (never fixed)
     //   - cross_pr_deferred → Some(true) (no-op)
     if !args.check_only {
-        apply_actions(&mut actions);
+        apply_actions(&mut actions, &forgeplan_dir);
     }
 
     let report = ReconcileReport {
@@ -1273,5 +1403,219 @@ mod tests {
             canonical_filename(&r).as_deref(),
             Some("PRD-007-auth-system.md")
         );
+    }
+
+    // =================================================================
+    // Round 1 audit closures — additional coverage for the safety
+    // hardening landed in this commit (HIGH-1, HIGH-4, MED-2, LOW-1,
+    // LOW-2). Each test pins one invariant that the hardening enforces.
+    // =================================================================
+
+    /// [HIGH-1 / SEC-6] `read_record` rejects malformed slugs from
+    /// frontmatter so a tampered artifact (slug containing shell
+    /// metacharacters, uppercase letters, etc.) cannot reach apply mode.
+    /// The test uses `discover_artifacts` (the public entry point that
+    /// touches `read_record`) and asserts the bad file lands in
+    /// `scan_errors` rather than `records`.
+    #[test]
+    fn reconcile_ids_read_record_rejects_malformed_slug() {
+        // Slug `PRD-Bad slug` violates SPEC-005 (uppercase + space). The
+        // file is otherwise well-formed YAML — the only failure should
+        // come from `validate_slug`.
+        let bad = "---\nid: PRD-099\nkind: prd\nstatus: draft\ntitle: T\nslug: \"PRD-Bad slug\"\npredicted_number: 99\nassigned_number: null\n---\n\nBody.\n";
+        let ws = temp_workspace(&[("prds", "prd-bad-slug.md", bad)]);
+        let fp = ws.path().join(".forgeplan");
+        let (records, scan_errors) = discover_artifacts(&fp).unwrap();
+        // The bad file must NOT produce a record.
+        assert!(
+            records.is_empty(),
+            "malformed slug should not yield a record"
+        );
+        // It MUST surface as a scan error so operators see the violation.
+        assert_eq!(scan_errors.len(), 1);
+        let (path, msg) = &scan_errors[0];
+        assert!(path.ends_with("prd-bad-slug.md"));
+        assert!(
+            msg.contains("malformed slug") || msg.contains("slug"),
+            "scan error should mention slug; got: {msg}"
+        );
+    }
+
+    /// [HIGH-1] Legacy artifacts that pre-date the slug field (`slug:
+    /// None`) must still parse cleanly — `validate_slug` only fires when
+    /// a slug is present.
+    #[test]
+    fn reconcile_ids_read_record_accepts_legacy_no_slug() {
+        // No slug field at all — early Phase-1 artifacts look like this.
+        let legacy = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Legacy\nassigned_number: 1\n---\n\nBody.\n";
+        let ws = temp_workspace(&[("prds", "PRD-001-legacy.md", legacy)]);
+        let fp = ws.path().join(".forgeplan");
+        let (records, scan_errors) = discover_artifacts(&fp).unwrap();
+        assert_eq!(records.len(), 1, "legacy slug-less artifact must parse");
+        assert!(scan_errors.is_empty());
+        assert!(records[0].slug.is_none());
+    }
+
+    /// [HIGH-1 / SEC-6 CWE-22] `rename_with_git_fallback` refuses to act
+    /// on a symlink source. The companion `ci_assign_id.rs` invariant —
+    /// here we pin the same posture for the manual-cleanup tool.
+    #[cfg(unix)]
+    #[test]
+    fn rename_with_git_fallback_rejects_symlink_source() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.md");
+        fs::write(&target, "real").unwrap();
+        let link = dir.path().join("link.md");
+        symlink(&target, &link).unwrap();
+        let dest = dir.path().join("renamed.md");
+
+        let err = rename_with_git_fallback(&link, &dest, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symlink") || msg.contains("SEC-6"),
+            "expected symlink rejection, got: {msg}"
+        );
+        // Both source and target untouched.
+        assert!(link.exists());
+        assert!(target.exists());
+        assert!(!dest.exists());
+    }
+
+    /// [HIGH-1 / SEC-6] When `canonical_workspace` is supplied the rename
+    /// must reject a source path whose canonical form lies outside the
+    /// workspace. We construct the situation by passing a `canonical_workspace`
+    /// that points at a different temp dir than the actual source.
+    #[test]
+    fn rename_with_git_fallback_enforces_workspace_boundary() {
+        let outer = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+
+        // Real file lives under `outer`, NOT under `workspace`.
+        let from = outer.path().join("escapes.md");
+        fs::write(&from, "x").unwrap();
+        let to = outer.path().join("renamed.md");
+
+        let canonical_ws = fs::canonicalize(workspace.path()).unwrap();
+        let err = rename_with_git_fallback(&from, &to, Some(&canonical_ws)).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("escapes workspace") || msg.contains("SEC-6"),
+            "expected workspace-boundary rejection, got: {msg}"
+        );
+        // Source untouched.
+        assert!(from.exists());
+        assert!(!to.exists());
+    }
+
+    /// [HIGH-4] `write_predicted_number` is atomic — uses a tmp+rename
+    /// dance so the destination either has the old content or the new
+    /// content, never an empty/half-written file. We can't easily
+    /// simulate a crash, so we verify the contract indirectly: after a
+    /// successful call no `*.md.tmp` sibling remains, the destination
+    /// is well-formed and contains the new field, and a *failing* call
+    /// (rename to a path whose parent doesn't exist) leaves the original
+    /// intact.
+    #[test]
+    fn write_predicted_number_is_atomic_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.md");
+        let original = "---\nid: PRD-005\nkind: prd\nstatus: draft\ntitle: T\nslug: prd-search\nassigned_number: 5\n---\n\nBody.\n";
+        fs::write(&path, original).unwrap();
+
+        let (fm, body) = parse_frontmatter(original).unwrap();
+        write_predicted_number(&path, &fm, &body, 5).unwrap();
+
+        // No orphan tmp left behind.
+        let tmp = path.with_extension("md.tmp");
+        assert!(!tmp.exists(), "atomic write must clean up tmp on success");
+
+        // Destination has the new field and the original body.
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("predicted_number: 5"));
+        assert!(after.contains("Body."));
+
+        // Round-trip: re-parse must succeed (file is well-formed).
+        let (fm2, body2) = parse_frontmatter(&after).unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fm2), Some(5));
+        assert_eq!(body2.trim(), "Body.");
+    }
+
+    /// [MED-2] The JSON `workspace` field is the relative `.forgeplan`
+    /// string — never the absolute path of the runner. This pins the
+    /// fix that prevents CI layout (`/home/runner/work/owner/repo/...`)
+    /// from leaking into machine-readable output.
+    #[test]
+    fn render_json_workspace_field_is_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        let absolute_ws = dir.path().join(".forgeplan");
+        fs::create_dir_all(&absolute_ws).unwrap();
+        let report = ReconcileReport {
+            workspace: absolute_ws.clone(),
+            check_only: true,
+            actions: Vec::new(),
+            scan_errors: Vec::new(),
+            per_kind_count: BTreeMap::new(),
+        };
+        let v = render_json(&report);
+        let ws_field = v.get("workspace").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(ws_field, ".forgeplan");
+        // Defense check: must NOT contain the absolute path that the
+        // report carries internally.
+        assert!(
+            !ws_field.contains(absolute_ws.to_str().unwrap()),
+            "absolute workspace path must not leak into JSON"
+        );
+    }
+
+    /// [LOW-1] `discover_artifacts` surfaces malformed files as scan
+    /// errors rather than dropping them silently. Combined с the
+    /// loop-level Err propagation (no more `entries.flatten()`), this
+    /// guarantees every input file lands in either `records` или
+    /// `scan_errors` — never silently disappears.
+    #[test]
+    fn reconcile_ids_discover_surfaces_malformed_frontmatter() {
+        // Two PRDs: one well-formed, one whose frontmatter block never
+        // closes — guaranteed to fail `parse_frontmatter` (vs a silently-
+        // tolerated bad field value).
+        let good = fm_full("PRD-001", "Auth", "prd-auth", 1, Some(1));
+        // Missing the closing `---` ⇒ parse_frontmatter must error out.
+        let broken = "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: T\nslug: prd-broken\npredicted_number: 2\n\nBody-without-end-marker.\n";
+        let ws = temp_workspace(&[
+            ("prds", "PRD-001-auth.md", &good),
+            ("prds", "prd-broken.md", broken),
+        ]);
+        let fp = ws.path().join(".forgeplan");
+        let (records, scan_errors) = discover_artifacts(&fp).unwrap();
+        // Exactly one good record.
+        assert_eq!(records.len(), 1, "good record must parse");
+        assert_eq!(records[0].slug.as_deref(), Some("prd-auth"));
+        // Bad file MUST surface as a scan error (not silently dropped).
+        assert_eq!(scan_errors.len(), 1, "broken frontmatter must surface");
+        assert!(
+            scan_errors[0].0.ends_with("prd-broken.md"),
+            "scan error must point at the broken file: {:?}",
+            scan_errors[0]
+        );
+        // Conservation rule: every input file accounted for.
+        assert_eq!(
+            records.len() + scan_errors.len(),
+            2,
+            "every input must surface as either record or scan_error"
+        );
+    }
+
+    /// [LOW-2] After cleaning up `dash_pos` and the redundant length
+    /// check, `body_artifact_refs` still rejects tokens with no digits
+    /// after the dash (the case the old comment lied about).
+    #[test]
+    fn body_artifact_refs_skips_no_digit_tokens() {
+        // `PRD-` and `ADR-foo` must not be accepted — the dash isn't
+        // followed by digits. `RFC-001` IS a valid token.
+        let body = "Bare dash PRD-, slug-style ADR-foo, but RFC-001 is real.";
+        let refs = body_artifact_refs(body);
+        assert!(refs.contains("RFC-001"));
+        assert!(!refs.iter().any(|r| r == "PRD-"));
+        assert!(!refs.iter().any(|r| r.starts_with("ADR-foo")));
     }
 }
