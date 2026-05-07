@@ -56,6 +56,12 @@ jobs:
           workspaces: crates/forgeplan-cli
           cache-targets: release
 
+      # PROB-060 Phase 0b SEC-3 [policy]: this `cargo build --release` step
+      # compiles PR-controlled code (incl. any PR-supplied `build.rs`) с
+      # GITHUB_TOKEN active. Mitigation is the `ready-to-merge` label gate
+      # — see `.github/SECURITY-PROB-060.md` for the mandatory PR review
+      # checklist that maintainers MUST run before applying the label.
+      # Phase 2.1 productionization will rebuild from a trusted ref.
       - name: Build forgeplan
         run: cargo build --release -p forgeplan-cli --bin forgeplan
 
@@ -76,13 +82,31 @@ jobs:
 
           cat /tmp/assignment.json | jq .
 
+          # PROB-060 Phase 0b SEC-2 [CWE-94] fix Part A: pass commit_msg
+          # to GITHUB_OUTPUT through a heredoc rather than a raw `echo
+          # "k=$(jq …)"`. Multi-line или metacharacter-laden values from
+          # PR-controlled YAML would otherwise corrupt the GITHUB_OUTPUT
+          # file format и leak control over the variable.
+          # See: https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
           if [[ "$DRY_RUN_MODE" != "true" ]]; then
-            COMMIT_MSG=$(jq -r '.commit_message_suggested' /tmp/assignment.json)
-            echo "commit_msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+            {
+              echo "commit_msg<<FORGEPLAN_EOF"
+              jq -r '.commit_message_suggested' /tmp/assignment.json
+              echo "FORGEPLAN_EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
+      # PROB-060 Phase 0b SEC-2 [CWE-94] fix Part A (continued): pass
+      # commit_msg through an env var rather than embedding `${{ … }}`
+      # directly in the shell script body. `${{ }}` is interpolated
+      # verbatim by the GitHub Actions runner *before* shell parsing, so
+      # a slug containing `"; rm -rf /` would break out of the `git
+      # commit -m "…"` quotes. Env-var pass keeps the value confined to
+      # a shell parameter where `"$COMMIT_MSG"` quoting holds.
       - name: Commit and push
         if: github.event_name == 'pull_request' && env.DRY_RUN_MODE != 'true'
+        env:
+          COMMIT_MSG: ${{ steps.assign.outputs.commit_msg }}
         run: |
           if git diff --quiet; then
             echo "no changes detected"
@@ -92,7 +116,7 @@ jobs:
           git config user.name  "forgeplan-bot"
           git config user.email "bot@forgeplan.dev"
           git add -A
-          git commit -m "${{ steps.assign.outputs.commit_msg }}"
+          git commit -m "$COMMIT_MSG"
           git push origin HEAD:${{ github.head_ref }}
 
       - name: Comment on PR
@@ -105,5 +129,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ ID assignment workflow failed. Check logs in Actions tab.'
+              body: 'ID assignment workflow failed. Check logs in Actions tab.'
             })

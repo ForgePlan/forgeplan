@@ -3,8 +3,78 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context;
+
 use crate::artifact::frontmatter::{assigned_number_from_frontmatter, parse_frontmatter};
 use crate::artifact::types::ArtifactKind;
+
+/// Validate that `s` is safe to pass as a git ref/object argument.
+///
+/// PROB-060 Phase 0b SEC-1 [CWE-88 — Argument Injection]: `git ls-tree`,
+/// `git show`, и friends parse arguments starting с `-` as flags. Even
+/// though `Command::args` neutralizes shell metacharacters, a ref like
+/// `--upload-pack=…` или `-q` still affects git's own argv parsing —
+/// confirmed exploit: `--base="--output=/tmp/x"` redirected ls-tree
+/// output. We restrict accepted values to a conservative subset that
+/// covers the vast majority of legitimate refs (branches, tags,
+/// `origin/dev`, full SHAs) while rejecting anything that could double
+/// as a git option, contain control characters, или smuggle revision
+/// modifiers like `@{1}` / `..`.
+///
+/// # Accepted shape
+/// Pattern: `^[A-Za-z0-9][A-Za-z0-9_/.-]*$` and additionally must not
+/// contain `..`, и does not start с `-`.
+///
+/// # Rejected examples
+/// - `""` (empty)
+/// - `-x`, `--flag` (looks like option)
+/// - `dev@{1}` (reflog), `HEAD^{tree}` (peel)
+/// - `dev..main` (range)
+/// - whitespace, control chars, `:`, `?`, `*`, `[`, `\\`, `~`, `^`
+///
+/// # Errors
+/// Returns `Err` с the offending value embedded для debug ergonomics.
+/// Phase 0b boundary: caller (`ci-assign-id::run`) maps to exit code 3
+/// (config/git error per CD-1).
+pub fn validate_git_ref(s: &str) -> anyhow::Result<()> {
+    if s.is_empty() {
+        anyhow::bail!("validate_git_ref: empty ref is not allowed");
+    }
+    if s.starts_with('-') {
+        anyhow::bail!(
+            "validate_git_ref: ref must not start with '-' (got {s:?}) — \
+             leading-dash refs would be parsed as git CLI options [CWE-88]"
+        );
+    }
+    if s.contains("..") {
+        anyhow::bail!("validate_git_ref: ref must not contain '..' (got {s:?})");
+    }
+    // First char must be alphanumeric (no . _ / etc).
+    let first = s.chars().next().expect("non-empty checked above");
+    if !first.is_ascii_alphanumeric() {
+        anyhow::bail!("validate_git_ref: ref must start with an alphanumeric (got {s:?})");
+    }
+    for c in s.chars() {
+        // Reject any non-ASCII или control char. The allowed subset is
+        // [A-Za-z0-9] + `_`, `/`, `.`, `-`. Everything else (spaces,
+        // `@{`, `:`, `?`, `*`, `[`, `\\`, `~`, `^`, `'`, `"`, etc.) is
+        // rejected. This is intentionally stricter than git's own
+        // `check-ref-format` because we are guarding our own attack
+        // surface, not git's; false rejections (e.g. exotic refs in
+        // user repos) are acceptable.
+        let allowed = c.is_ascii_alphanumeric() || matches!(c, '_' | '/' | '.' | '-');
+        if !allowed {
+            anyhow::bail!("validate_git_ref: ref contains forbidden char {c:?} (got {s:?})");
+        }
+        // Belt-and-suspenders control char check (the `allowed` set
+        // above already excludes them, but keep an explicit message
+        // since it's the more dangerous class).
+        if (c as u32) < 0x20 || (c as u32) == 0x7F {
+            anyhow::bail!("validate_git_ref: ref contains control character (got {s:?})");
+        }
+    }
+    Ok(())
+}
 
 /// Files changed in .forgeplan/ between two git refs.
 #[derive(Debug, Clone)]
@@ -297,6 +367,11 @@ pub fn max_assigned_number_in_base(
     base_ref: &str,
     kind: &ArtifactKind,
 ) -> anyhow::Result<Option<u32>> {
+    // PROB-060 Phase 0b SEC-1 [CWE-88]: harden ref input. `base_ref` flows
+    // verbatim to `git ls-tree <ref> ...` and `git show <ref>:<path>` —
+    // a leading-dash ref would be parsed as a git option.
+    validate_git_ref(base_ref)
+        .with_context(|| format!("max_assigned_number_in_base: invalid base_ref {base_ref:?}"))?;
     let kind_dir = kind.dir_name();
     if kind_dir.is_empty() || kind_dir.contains('/') || kind_dir.contains("..") {
         anyhow::bail!("max_assigned_number_in_base: invalid kind_dir {kind_dir:?}");
@@ -761,6 +836,87 @@ mod tests {
         let rfc_max = max_assigned_number_in_base(tmp.path(), "dev", &ArtifactKind::Rfc).unwrap();
         assert_eq!(prd_max, Some(73));
         assert_eq!(rfc_max, Some(8));
+    }
+
+    // PROB-060 Phase 0b SEC-1 [CWE-88] — validate_git_ref tests.
+
+    #[test]
+    fn validate_git_ref_rejects_empty() {
+        assert!(validate_git_ref("").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_leading_dash() {
+        assert!(validate_git_ref("-x").is_err());
+        assert!(validate_git_ref("--flag").is_err());
+        assert!(validate_git_ref("--upload-pack=evil").is_err());
+        assert!(validate_git_ref("--output=/tmp/x").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_accepts_common_refs() {
+        assert!(validate_git_ref("dev").is_ok());
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("HEAD").is_ok());
+        assert!(validate_git_ref("origin/dev").is_ok());
+        assert!(validate_git_ref("origin/main").is_ok());
+        assert!(validate_git_ref("feat/foo-bar").is_ok());
+        assert!(validate_git_ref("release/v1.2.3").is_ok());
+        assert!(validate_git_ref("v0.29.0").is_ok());
+        // Full SHA.
+        assert!(validate_git_ref("e11d3fc1234567890abcdef1234567890abcdef1").is_ok());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_double_dot() {
+        assert!(validate_git_ref("dev..main").is_err());
+        assert!(validate_git_ref("..").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_revision_modifiers() {
+        assert!(validate_git_ref("dev@{1}").is_err());
+        assert!(validate_git_ref("HEAD^{tree}").is_err());
+        assert!(validate_git_ref("HEAD~1").is_err());
+        assert!(validate_git_ref("HEAD^").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_special_chars() {
+        assert!(validate_git_ref("dev:path").is_err());
+        assert!(validate_git_ref("foo bar").is_err());
+        assert!(validate_git_ref("foo*").is_err());
+        assert!(validate_git_ref("foo?").is_err());
+        assert!(validate_git_ref("foo[1]").is_err());
+        assert!(validate_git_ref("foo\\bar").is_err());
+        assert!(validate_git_ref("foo'evil").is_err());
+        assert!(validate_git_ref("foo\"evil").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_control_chars() {
+        assert!(validate_git_ref("foo\nbar").is_err());
+        assert!(validate_git_ref("foo\tbar").is_err());
+        assert!(validate_git_ref("foo\rbar").is_err());
+        assert!(validate_git_ref("foo\x00bar").is_err());
+        assert!(validate_git_ref("foo\x7Fbar").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_leading_non_alnum() {
+        assert!(validate_git_ref("/dev").is_err());
+        assert!(validate_git_ref(".dev").is_err());
+        assert!(validate_git_ref("_dev").is_err());
+    }
+
+    #[test]
+    fn max_assigned_number_in_base_rejects_malicious_ref() {
+        // CWE-88: ensure validation kicks in before the binary spawns git.
+        let tmp = init_repo_with_files(&[]);
+        let err = max_assigned_number_in_base(tmp.path(), "--upload-pack=evil", &ArtifactKind::Prd);
+        assert!(err.is_err(), "leading-dash ref must be rejected");
+        let err = max_assigned_number_in_base(tmp.path(), "dev..main", &ArtifactKind::Prd);
+        assert!(err.is_err(), "range refs must be rejected");
     }
 
     #[test]
