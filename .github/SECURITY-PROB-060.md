@@ -383,3 +383,105 @@ When run on current code: ✅ No drift detected (regex in sync with enum).
 - **Remaining deferred (Phase 2.2-A/C)**: 8 findings в backlog (5 MED + 3 LOW)
 - **Drift detector maintenance**: script must be reviewed when new artifact
   kind is added to Rust enum (usually caught by CI before PR merge)
+
+---
+
+## Phase 2.3 — Edge cases + validator self-test (Fixer 2.3-B)
+
+**Date**: 2026-05-08
+**Fixer Stage**: 2.3-B (T3 + T4 — edge case test suite + workspace
+self-test gate)
+**Reference**: PROB-060 Phase 2.3 brief; SPEC-005 §slug grammar; ADR-012
+§I-2 write-once.
+
+### T3 — Frontmatter edge case test suite
+
+**File**: `crates/forgeplan-cli/tests/edge_cases_frontmatter.rs` (NEW, 36 tests)
+
+**Coverage** (10 groups, all behaviours observed in legacy workspace and
+multi-agent dispatch):
+
+| Group | Cases | What it pins |
+|-------|-------|--------------|
+| A — Missing fields | 3 | Pre-PROB-060 artifacts: parser succeeds, helpers return `None`, `is_pre_merge=true` |
+| B — Двойной frontmatter | 2 | PRD-076 pattern: outer `---YAML---` wins; inner block becomes body. Mirrors `parse_frontmatter` (split on first `\n---`). |
+| C — Malformed YAML | 4 | Unclosed string / no closing `---` / no opening `---` / mixed-indent tabs all fail with clear error, never panic |
+| D — Long titles | 2 | `slug_from_kind_title` truncates >200-char titles to ≤MAX_SLUG_LEN; result still validates |
+| E — Unicode titles | 6 | Cyrillic-only / emoji-only / RTL Arabic / CJK error cleanly; mixed ASCII keeps ASCII portion |
+| F — Invalid slug shape | 5 | Uppercase / underscore / space / slash / too-short rejected by `validate_slug` |
+| G — `assigned_number` null variants | 4 | `null` / `~` / empty / absent all parse as `None`; `is_pre_merge=true` |
+| H — Number boundary | 4 | `predicted_number: 0` permissive; negative / above MAX_ARTIFACT_NUMBER / u32::MAX → None (CWE-1284 defence) |
+| I — Empty body | 2 | Frontmatter-only or trailing-newline-only do not panic |
+| J — Augment/set on edges | 4 | `augment_frontmatter_with_id_fields` minimal frontmatter works; `set_assigned_number` rejects string-typed non-null (I-2 still fires); empty/whitespace input fails cleanly |
+
+**Result**: 36/36 PASS. No source code changes were required —
+`forgeplan-core::artifact::frontmatter` and `::types` already handle all
+observed edge cases; tests are pin-tests preventing regressions.
+
+### T4 — Workspace validator self-test
+
+**Files**:
+- `scripts/validator-audit-all.sh` (NEW, 219 lines)
+- `.github/workflows/ci.yml` job `validator-self-test` (additive)
+
+**Audit script semantics**:
+- Walks `.forgeplan/{prds,rfcs,adrs,epics,specs,evidence,problems,solutions,refresh,notes,memory}/*.md`
+- Per-file rules executed: Rule 1 partial-coverage check (slug present
+  XOR predicted_number → ERROR; both absent → SKIP_RULE1 legacy);
+  Rule 3 slug shape (warning by default, error in `--strict`).
+- Rule 2 (write-once) intentionally NOT executed — no base-ref to compare
+  against on workspace audit.
+- Mirrors the post-Round-4 `extract_field` semantics (`|| true` neutralises
+  pipefail on missing field).
+
+**Current workspace baseline** (PROB-060 Phase 2.3 fixture):
+- Total: 309 artifacts
+- Pass (new schema): 0
+- Skip Rule 1 (legacy): 309
+- Warnings: 0
+- Errors: 0
+
+This baseline is expected to shift as new artifacts created via
+`forgeplan_new` start emitting `slug` + `predicted_number` per ADR-012.
+The job catches three regression classes:
+
+1. Hand-edited drift (uppercase/underscore in committed slug → WARN).
+2. Partial-coverage corruption (slug without predicted, or vice versa → ERROR).
+3. Validator script regression (broken `extract_field`, missing kind in
+   `SLUG_REGEX`, `set -e` reintroduction → script aborts loudly).
+
+### CI job placement
+
+`validator-self-test` runs on every push/PR (no `if:` filter — always-on
+self-test). It is additive: not a `needs:` for `check` or `test`, so it
+cannot block parallel flows. Bash-only, ~1 second, no compilation cost.
+
+### Security model
+
+The job invokes only repo-resident static scripts:
+- `scripts/validator-audit-all.sh` reads `.forgeplan/*.md` from disk.
+- No `github.*` interpolation in `run:` blocks.
+- No environment variables sourced from PR input.
+
+The audit script uses `set -o pipefail` (no `-u` because macOS bash 3.2
+treats empty arrays as unset; explicit nullity checks compensate). The
+slug regex is duplicated from the PR validator on purpose — drift between
+the two is caught by `scripts/check-kind-list-drift.sh` (Phase 2.2-B
+closure for LOW-13).
+
+### Validation
+
+- [x] `bash -n scripts/validator-audit-all.sh` — syntax OK
+- [x] `bash scripts/validator-audit-all.sh` — exits 0 on canonical workspace
+- [x] `cargo test --package forgeplan --test edge_cases_frontmatter` — 36/36 PASS
+- [x] `cargo test --workspace --lib` — all PASS (no regressions)
+- [x] `cargo fmt --check` — 0 diffs
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings
+- [x] `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` — valid
+
+### Out of scope (Fixer 2.3-A / 2.3-C)
+
+- `crates/forgeplan-cli/tests/legacy_compat_e2e.rs` — Fixer 2.3-A (legacy compat E2E)
+- `docs/audit/PROB-060-legacy-compat-audit.md` — Fixer 2.3-A
+- `docs/methodology/ID-ASSIGNMENT.ru.md` updates — Fixer 2.3-C
+

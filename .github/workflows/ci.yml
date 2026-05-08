@@ -84,6 +84,42 @@ jobs:
           chmod +x scripts/check-kind-list-drift.sh
           scripts/check-kind-list-drift.sh
 
+  # PROB-060 Phase 2.3 (T4) — workspace audit of frontmatter validator coverage.
+  #
+  # Self-test job: runs scripts/validator-audit-all.sh against the canonical
+  # workspace on every push/PR. Catches three classes of regression:
+  # 1. Hand-edited slug shape drift (uppercase/underscore/spaces in committed slug).
+  # 2. New artifact lacking required new-schema triple (slug + predicted_number +
+  #    explicit assigned_number) where the frontmatter is partially populated
+  #    (slug without predicted_number, etc. — corruption signal per
+  #    validator-audit-all.sh).
+  # 3. Validator script regression (mismatched SLUG_REGEX, broken extract_field
+  #    after CI Round 4 pipefail fix).
+  #
+  # Mode: default (warnings allowed, errors fail). Strict mode is reserved for
+  # future post-migration cleanup once all legacy artifacts are migrated to the
+  # new schema (PROB-060 Phase 4).
+  #
+  # Security: this job invokes only repo-resident static scripts with no PR
+  # input flowing to shell — the script reads .forgeplan/*.md files from disk,
+  # which themselves go through the same validator on artifact PRs (see the
+  # validate-forgeplan-frontmatter job above). No untrusted github.* fields
+  # are interpolated into run: blocks.
+  #
+  # Additive — does NOT depend on check or test, runs in parallel and cannot
+  # block other CI flows. Fast (~1 second) — bash-only, no compilation.
+  validator-self-test:
+    name: Validator workspace self-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run validator audit on workspace
+        run: |
+          chmod +x scripts/validator-audit-all.sh
+          bash scripts/validator-audit-all.sh
+
   check:
     name: Check, Lint & Format
     runs-on: ubuntu-latest
