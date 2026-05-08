@@ -10,6 +10,8 @@ use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase;
 use forgeplan_core::workspace;
 
+use crate::commands::common;
+
 /// Read advisory phase state for an artifact. Returns current_phase,
 /// workflow_type, timestamps, and the full append-only transition history
 /// from `.forgeplan/state/<id>.yaml`. If no state file exists yet
@@ -21,9 +23,18 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    match phase::store::read_phase(&ws, id).await? {
+    // Phase 2.5 (PROB-060) — accept slug or display id form. Phase state
+    // file is named by canonical id, so без resolver slug input would
+    // silently return "unknown" (false positive).
+    let store = common::store().await?;
+    let canonical = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+
+    match phase::store::read_phase(&ws, &canonical).await? {
         Some(state) => print_state(&state, json),
-        None => print_unknown(id, json),
+        None => print_unknown(&canonical, json),
     }
     Ok(())
 }

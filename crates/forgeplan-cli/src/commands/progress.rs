@@ -72,15 +72,19 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // If specific ID requested, show only that artifact
+    // If specific ID requested, show only that artifact.
+    // Phase 2.5 (PROB-060) — accept slug or display id form via resolver.
     if let Some(target_id) = id {
-        let upper = target_id.to_uppercase();
+        let canonical = store.resolve_id(target_id).await?.ok_or_else(|| {
+            anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
+        })?;
+        let canonical_upper = canonical.to_uppercase();
 
         // Find both progress and record in one pass
         let found = records
             .iter()
             .enumerate()
-            .find(|(_, r)| r.id.to_uppercase() == upper);
+            .find(|(_, r)| r.id.to_uppercase() == canonical_upper);
         let (idx, record) = found.ok_or_else(|| {
             anyhow::anyhow!(
                 "Artifact '{}' not found

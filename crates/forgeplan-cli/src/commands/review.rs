@@ -6,7 +6,13 @@ use crate::commands::common;
 
 pub async fn run(id: &str) -> anyhow::Result<()> {
     let store = common::store().await?;
-    let result = lifecycle::review(&store, id).await?;
+    // Phase 2.5 (PROB-060) — accept slug or display id form. Without
+    // resolver, slug input fails в lifecycle::review's get_record path.
+    let canonical = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+    let result = lifecycle::review(&store, &canonical).await?;
 
     // Styled output — distinguish MUST errors from gate warnings
     if result.can_activate {
