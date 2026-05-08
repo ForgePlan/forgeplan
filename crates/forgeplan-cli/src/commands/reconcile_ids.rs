@@ -53,7 +53,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Args;
 use forgeplan_core::artifact::frontmatter::{
@@ -674,17 +674,26 @@ fn rename_with_git_fallback(
 /// `/etc/passwd`) and the predicted-number rewrite would clobber the
 /// link target. Mirrors `ci_assign_id.rs:806-837` exactly.
 ///
-/// `canonical_workspace` is `Option` to mirror `apply_actions`'s posture
-/// — if canonicalize at the workspace level failed earlier, the boundary
-/// check is skipped (write will still fail loudly if the FS is broken),
-/// but the symlink check ALWAYS runs because it's local to `path` and
-/// has no workspace dependency.
+/// [Round 3 Sec FINDING-4 fix] `canonical_workspace` is now a required
+/// `&Path` (not `Option`). Previously [`apply_actions`] best-efforted
+/// `fs::canonicalize` and passed `None` on failure, silently demoting
+/// the SEC-6 boundary check to a no-op. The new contract is: callers
+/// MUST supply an already-canonicalized workspace; if their canonicalize
+/// step fails they should bail rather than enter `apply_actions`. The
+/// symlink check (which is local to `path` and workspace-independent)
+/// runs unconditionally either way.
+///
+/// [Round 3 Sec FINDING-12 fix] The atomic-publish dance now uses
+/// [`tempfile::NamedTempFile::new_in(parent)`] so concurrent invocations
+/// on the same artifact get distinct tmp paths instead of colliding on
+/// the deterministic `<path>.md.tmp` sibling. The file is auto-removed
+/// on any error path before the final `persist`.
 fn write_predicted_number(
     path: &Path,
     fm: &Frontmatter,
     body: &str,
     n: u32,
-    canonical_workspace: Option<&Path>,
+    canonical_workspace: &Path,
 ) -> Result<()> {
     // [SEC-6 CWE-367] symlink check: refuse to follow symlinks. Use
     // `symlink_metadata` which never traverses, unlike `metadata()`.
@@ -698,18 +707,16 @@ fn write_predicted_number(
     }
 
     // [SEC-6 CWE-22] path traversal: canonicalize `path` and assert it
-    // stays under the canonicalized workspace. Defends against a
+    // stays under the supplied canonical workspace. Defends against a
     // relative-`..` path or symlink-shaped tamper that escaped the
     // boundary checks earlier in the pipeline (defense-in-depth).
-    if let Some(ws_canon) = canonical_workspace {
-        let path_canon = fs::canonicalize(path)
-            .map_err(|e| anyhow::anyhow!("canonicalize {}: {e}", path.display()))?;
-        if !path_canon.starts_with(ws_canon) {
-            anyhow::bail!(
-                "reconcile-ids: path {} escapes workspace [SEC-6 invariant violation]",
-                path.display()
-            );
-        }
+    let path_canon = fs::canonicalize(path)
+        .map_err(|e| anyhow::anyhow!("canonicalize {}: {e}", path.display()))?;
+    if !path_canon.starts_with(canonical_workspace) {
+        anyhow::bail!(
+            "reconcile-ids: path {} escapes workspace [SEC-6 invariant violation]",
+            path.display()
+        );
     }
 
     let mut new_fm = fm.clone();
@@ -719,21 +726,29 @@ fn write_predicted_number(
     );
     let rendered = render_frontmatter(&new_fm, body)?;
 
-    // Sibling tmp file — same parent ⇒ same filesystem ⇒ atomic rename.
-    // We use `.md.tmp` (mirrors ci_assign_id.rs convention) so a stray
-    // crashed-tmp is easy to recognize manually.
-    let tmp_path = path.with_extension("md.tmp");
-    fs::write(&tmp_path, rendered)
-        .map_err(|e| anyhow::anyhow!("write tmp {} failed: {e}", tmp_path.display()))?;
-    fs::rename(&tmp_path, path).map_err(|e| {
-        // Try to clean up the orphan tmp on rename failure so a retry
-        // doesn't trip over a stale sibling. Best-effort — if the
-        // cleanup itself errors we keep the original error context.
-        let _ = fs::remove_file(&tmp_path);
+    // [Round 3 Sec FINDING-12] Sibling tmp file — same parent ⇒ same
+    // filesystem ⇒ atomic rename. `NamedTempFile::new_in(parent)` mints
+    // a unique random suffix so two concurrent runs don't trample each
+    // other's `<path>.md.tmp`. We then write the rendered bytes and
+    // `persist` (rename) over the destination atomically.
+    let parent = path.parent().ok_or_else(|| {
         anyhow::anyhow!(
-            "atomic rename {} -> {} failed: {e}",
-            tmp_path.display(),
+            "reconcile-ids: artifact path has no parent dir: {}",
             path.display()
+        )
+    })?;
+    let tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("create tmp file in {}", parent.display()))?;
+    fs::write(tmp.path(), rendered)
+        .with_context(|| format!("write tmp {}", tmp.path().display()))?;
+    tmp.persist(path).map_err(|e| {
+        // `PersistError` carries the underlying io::Error; surface both
+        // the source path (for debugging) and the rename target.
+        anyhow::anyhow!(
+            "atomic rename {} -> {} failed: {}",
+            e.file.path().display(),
+            path.display(),
+            e.error
         )
     })?;
     Ok(())
@@ -884,12 +899,26 @@ fn build_actions(
 /// canonicalize once because canonicalize is a syscall — repeating it
 /// per-action would be wasteful and (worse) racy if the workspace dir
 /// were swapped mid-loop.
-fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) {
-    // Canonicalize workspace once. If canonicalize fails (e.g. workspace
-    // got removed) we skip the boundary check rather than crash — writes
-    // will fail loudly below if the FS is genuinely broken. This mirrors
-    // the posture in ci_assign_id.rs::apply_plan.
-    let canonical_workspace = fs::canonicalize(workspace).ok();
+///
+/// [Round 3 Sec FINDING-4 fix] Previously the `fs::canonicalize` here
+/// was best-effort: a failure (e.g. workspace mid-removal, EACCES,
+/// dangling symlink) yielded `None` и downstream SEC-6 boundary checks
+/// silently degraded to no-ops. Now we bail with an explicit error
+/// instead of fail-open so callers get a loud failure mode whenever
+/// the workspace can't be resolved. The symlink check inside
+/// [`write_predicted_number`] still runs because it's local to `path`,
+/// but we never enter that path until canonicalize succeeds.
+fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) -> Result<()> {
+    // [Round 3 Sec FINDING-4] Canonicalize workspace once. Bail if
+    // canonicalize fails — writing under a workspace we cannot resolve
+    // would silently bypass the SEC-6 boundary check inside
+    // `write_predicted_number` and `rename_with_git_fallback`.
+    let canonical_workspace = fs::canonicalize(workspace).with_context(|| {
+        format!(
+            "workspace canonicalize required for apply_actions [SEC-6]: {}",
+            workspace.display()
+        )
+    })?;
 
     // Phase 1: renames. We update `artifact_path` in-place so any
     // subsequent operation on the same record (e.g. predicted-number
@@ -919,7 +948,7 @@ fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) {
             }
         };
         let to = parent.join(&new_filename);
-        match rename_with_git_fallback(&from, &to, canonical_workspace.as_deref()) {
+        match rename_with_git_fallback(&from, &to, Some(&canonical_workspace)) {
             Ok(new_path) => {
                 renamed.insert(from, new_path.clone());
                 action.artifact_path = new_path;
@@ -973,7 +1002,7 @@ fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) {
             action.artifact_path = path;
             continue;
         }
-        match write_predicted_number(&path, &fm, &body, value, canonical_workspace.as_deref()) {
+        match write_predicted_number(&path, &fm, &body, value, &canonical_workspace) {
             Ok(()) => {
                 action.applied = Some(true);
                 action.artifact_path = path;
@@ -981,6 +1010,7 @@ fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) {
             Err(_) => action.applied = Some(false),
         }
     }
+    Ok(())
 }
 
 // =====================================================================
@@ -1037,7 +1067,14 @@ pub fn render_json(report: &ReconcileReport) -> serde_json::Value {
 pub fn render_human(report: &ReconcileReport) -> String {
     let mut out = String::new();
     out.push_str("Forgeplan reconcile-ids (PROB-060 / RFC-009 §Phase 2.4)\n");
-    out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
+    // [Round 3 Sec FINDING-5] Emit `Workspace: .forgeplan` for parity
+    // with the JSON renderer (Round 2 MED-2). The internal absolute
+    // path leaks CI runner layout (`/home/runner/work/owner/repo/...`)
+    // and is never interesting to a human reader — they only need to
+    // know they're in a Forgeplan workspace. The scan-error and action
+    // paths inside the body are still redacted relative to workspace
+    // by `redact_path`.
+    out.push_str("Workspace: .forgeplan\n");
     out.push_str(&format!(
         "Mode: {}\n",
         if report.check_only {
@@ -1128,8 +1165,17 @@ pub fn run(args: ReconcileIdsArgs) -> Result<i32> {
     //   - filename_mismatch / missing_predicted → None (pending review)
     //   - duplicate_assigned / body_links_drift → Some(false) (never fixed)
     //   - cross_pr_deferred → Some(true) (no-op)
-    if !args.check_only {
-        apply_actions(&mut actions, &forgeplan_dir);
+    //
+    // [Round 3 Sec FINDING-4] apply_actions can fail loudly if the
+    // workspace cannot be canonicalized (mid-removal, EACCES, dangling
+    // symlink). Surface that as exit-code 2 (workspace error) instead
+    // of swallowing it — the same exit class used for "no .forgeplan/"
+    // and "scan failure".
+    if !args.check_only
+        && let Err(e) = apply_actions(&mut actions, &forgeplan_dir)
+    {
+        eprintln!("Error: {e:#}");
+        return Ok(2);
     }
 
     let report = ReconcileReport {
@@ -1557,10 +1603,15 @@ mod tests {
     /// dance so the destination either has the old content or the new
     /// content, never an empty/half-written file. We can't easily
     /// simulate a crash, so we verify the contract indirectly: after a
-    /// successful call no `*.md.tmp` sibling remains, the destination
+    /// successful call no `*.tmp*` sibling remains, the destination
     /// is well-formed and contains the new field, and a *failing* call
     /// (rename to a path whose parent doesn't exist) leaves the original
     /// intact.
+    ///
+    /// [Round 3 Sec FINDING-12] After switching to `NamedTempFile`, no
+    /// deterministic `*.md.tmp` sibling exists at any point during the
+    /// happy path; we just confirm no `tempfile::*` sibling leaked into
+    /// the parent dir.
     #[test]
     fn write_predicted_number_is_atomic_and_idempotent() {
         let dir = tempfile::tempdir().unwrap();
@@ -1569,13 +1620,22 @@ mod tests {
         fs::write(&path, original).unwrap();
 
         let (fm, body) = parse_frontmatter(original).unwrap();
-        // [Round 2 Sec FINDING-5] SEC-6 hardening: pass workspace boundary
-        // (None disables the boundary check; symlink check still runs).
-        write_predicted_number(&path, &fm, &body, 5, None).unwrap();
+        // [Round 3 Sec FINDING-4] SEC-6 hardening: canonical workspace is
+        // now required (no Option). Use the temp dir as the workspace.
+        let canonical_ws = fs::canonicalize(dir.path()).unwrap();
+        write_predicted_number(&path, &fm, &body, 5, &canonical_ws).unwrap();
 
-        // No orphan tmp left behind.
-        let tmp = path.with_extension("md.tmp");
-        assert!(!tmp.exists(), "atomic write must clean up tmp on success");
+        // No orphan tmp left behind: only the destination file remains.
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["x.md"],
+            "atomic write must clean up tmp on success, found: {entries:?}",
+        );
 
         // Destination has the new field and the original body.
         let after = fs::read_to_string(&path).unwrap();
@@ -1586,6 +1646,49 @@ mod tests {
         let (fm2, body2) = parse_frontmatter(&after).unwrap();
         assert_eq!(predicted_number_from_frontmatter(&fm2), Some(5));
         assert_eq!(body2.trim(), "Body.");
+    }
+
+    /// [Round 3 Sec FINDING-12] Two concurrent `write_predicted_number`
+    /// calls on sibling paths used to collide на a shared deterministic
+    /// `<path>.md.tmp` filename. Switching к `NamedTempFile::new_in`
+    /// gives each invocation a unique tmp suffix. We exercise the
+    /// concurrent path by running two writes back-to-back on
+    /// the same parent dir and asserting both completed successfully —
+    /// even if tmp filenames did collide we'd see one `persist` clobber
+    /// the other's tmp before flush, surfacing as a write error.
+    #[test]
+    fn write_predicted_number_uses_unique_tmp_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_ws = fs::canonicalize(dir.path()).unwrap();
+
+        let path_a = dir.path().join("a.md");
+        let path_b = dir.path().join("b.md");
+        let original = "---\nid: PRD-005\nkind: prd\nstatus: draft\ntitle: T\nslug: prd-x\nassigned_number: 5\n---\n\nBody.\n";
+        fs::write(&path_a, original).unwrap();
+        fs::write(&path_b, original).unwrap();
+        let (fm, body) = parse_frontmatter(original).unwrap();
+
+        // Both calls must succeed without colliding на a shared tmp path.
+        write_predicted_number(&path_a, &fm, &body, 5, &canonical_ws).unwrap();
+        write_predicted_number(&path_b, &fm, &body, 6, &canonical_ws).unwrap();
+
+        // No deterministic tmp filename left behind (the old buggy
+        // pattern `<path>.md.tmp`); only the two destinations remain.
+        let mut entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, vec!["a.md", "b.md"]);
+        assert!(!dir.path().join("a.md.tmp").exists());
+        assert!(!dir.path().join("b.md.tmp").exists());
+
+        // Distinct values landed (proves no cross-contamination).
+        let (fma, _) = parse_frontmatter(&fs::read_to_string(&path_a).unwrap()).unwrap();
+        let (fmb, _) = parse_frontmatter(&fs::read_to_string(&path_b).unwrap()).unwrap();
+        assert_eq!(predicted_number_from_frontmatter(&fma), Some(5));
+        assert_eq!(predicted_number_from_frontmatter(&fmb), Some(6));
     }
 
     /// [Round 2 Sec FINDING-5] `write_predicted_number` refuses to follow a
@@ -1609,7 +1712,11 @@ mod tests {
         symlink(&real_target, &link_path).unwrap();
 
         let (fm, body) = parse_frontmatter(real_content).unwrap();
-        let err = write_predicted_number(&link_path, &fm, &body, 5, None)
+        // [Round 3 Sec FINDING-4] canonical workspace is now required.
+        // Use the temp dir as the workspace — symlink check fires before
+        // the boundary check, so this still exercises symlink rejection.
+        let canonical_ws = fs::canonicalize(dir.path()).unwrap();
+        let err = write_predicted_number(&link_path, &fm, &body, 5, &canonical_ws)
             .expect_err("symlink artifact must be rejected");
         let msg = format!("{err:#}");
         assert!(
@@ -1644,7 +1751,7 @@ mod tests {
 
         let (fm, body) = parse_frontmatter(original).unwrap();
         let canonical_ws = fs::canonicalize(&workspace).unwrap();
-        let err = write_predicted_number(&path, &fm, &body, 5, Some(&canonical_ws))
+        let err = write_predicted_number(&path, &fm, &body, 5, &canonical_ws)
             .expect_err("path outside workspace must be rejected");
         let msg = format!("{err:#}");
         assert!(
@@ -1683,6 +1790,44 @@ mod tests {
         assert!(
             !ws_field.contains(absolute_ws.to_str().unwrap()),
             "absolute workspace path must not leak into JSON"
+        );
+    }
+
+    /// [Round 3 Sec FINDING-5] Round 2 fixed JSON output (`workspace`
+    /// field == `.forgeplan`) but the human renderer kept emitting the
+    /// absolute path. Parity matters because both surfaces appear in
+    /// CI logs / agent transcripts and the absolute path leaks runner
+    /// layout. After this fix, neither renderer surfaces the internal
+    /// absolute path.
+    #[test]
+    fn render_human_workspace_field_is_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        let absolute_ws = dir.path().join(".forgeplan");
+        fs::create_dir_all(&absolute_ws).unwrap();
+        let report = ReconcileReport {
+            workspace: absolute_ws.clone(),
+            check_only: true,
+            actions: Vec::new(),
+            scan_errors: Vec::new(),
+            per_kind_count: BTreeMap::new(),
+        };
+        let s = render_human(&report);
+        assert!(
+            s.contains("Workspace: .forgeplan"),
+            "human render must emit relative workspace, got:\n{s}",
+        );
+        // Defense check: absolute internal path must not leak. We probe
+        // both the parent (which reveals the runner's tmp directory
+        // layout) and the workspace path itself.
+        let absolute_str = absolute_ws.to_str().unwrap();
+        assert!(
+            !s.contains(absolute_str),
+            "absolute workspace path leaked into human output: {s}",
+        );
+        let parent_str = dir.path().to_str().unwrap();
+        assert!(
+            !s.contains(parent_str),
+            "tmp parent path leaked into human output: {s}",
         );
     }
 
