@@ -460,12 +460,19 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
 /// with EXIT_INVARIANT_VIOLATION. A new artifact (not in base ref) must not
 /// carry a pre-set assigned_number — only the CI bot is allowed to assign
 /// these numbers after merge. Fail-closed to defend against tampering.
+///
+/// [Round 3 Code FINDING-4] This is the production wrapper that fetches
+/// `max_per_kind` and `base_files_per_kind` from git
+/// (`max_assigned_number_in_base` + `artifact_filenames_in_origin_dev`).
+/// The pure inner function [`compute_assignment_plan_with_bases`] takes
+/// those two maps as parameters so unit tests can inject fixture data
+/// without standing up a remote — see `compute_plan_layer_b_*` tests.
 pub fn compute_assignment_plan(
     workspace: &Path,
     base_ref: &str,
     candidates: &[Candidate],
 ) -> Result<Vec<PlanItem>> {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     // Discover unique kind dirs touched by this batch.
     let mut kind_dirs: Vec<String> = candidates
@@ -475,11 +482,10 @@ pub fn compute_assignment_plan(
     kind_dirs.sort();
     kind_dirs.dedup();
 
-    let mut seq_per_kind: HashMap<String, u32> = HashMap::new();
-    let mut max_per_kind: HashMap<String, Option<u32>> = HashMap::new();
-    let mut base_files_per_kind: HashMap<String, Vec<String>> = HashMap::new();
+    let mut max_per_kind: BTreeMap<String, Option<u32>> = BTreeMap::new();
+    let mut base_files_per_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    // Seed sequence counters from `--base` for every kind in the batch.
+    // Seed bases from `--base` for every kind in the batch.
     for kind_dir in &kind_dirs {
         let kind = match dir_name_to_kind(kind_dir) {
             Some(k) => k,
@@ -487,9 +493,58 @@ pub fn compute_assignment_plan(
         };
         let max_in_base = max_assigned_number_in_base(workspace, base_ref, &kind)?;
         max_per_kind.insert(kind_dir.clone(), max_in_base);
-        seq_per_kind.insert(kind_dir.clone(), max_in_base.unwrap_or(0));
         let files = artifact_filenames_in_origin_dev(workspace, kind_dir);
         base_files_per_kind.insert(kind_dir.clone(), files);
+    }
+
+    compute_assignment_plan_with_bases(
+        workspace,
+        base_ref,
+        candidates,
+        &max_per_kind,
+        &base_files_per_kind,
+    )
+}
+
+/// Pure plan computation given pre-fetched per-kind bases.
+///
+/// Extracted from [`compute_assignment_plan`] for testability — accepts
+/// `max_per_kind` and `base_files_per_kind` as injection-friendly
+/// `BTreeMap` parameters so unit tests can construct fixture state
+/// directly without standing up an `origin/dev` remote.
+///
+/// **Inputs**:
+/// * `workspace` — used only for path redaction in error messages.
+/// * `base_ref` — used only for the human-readable "in base ref X"
+///   string in the INVARIANT VIOLATION message.
+/// * `candidates` — slice of [`Candidate`]s to convert into [`PlanItem`]s.
+/// * `max_per_kind` — for each kind dir present in `candidates`, the
+///   maximum `assigned_number` in the base ref (or `None` if base has
+///   no artifacts for that kind). Drives the `max_in_base` field on
+///   each emitted [`PlanItem`].
+/// * `base_files_per_kind` — for each kind dir present in `candidates`,
+///   the basenames of `.md` files in `<base_ref>:.forgeplan/<kind_dir>/`.
+///   Drives both Layer B's "exists in base" check (CRIT-2 invariant
+///   guard against tampered new artifacts) и the collision-suggestion
+///   field on each emitted [`PlanItem`].
+///
+/// **Errors**: `Err(_)` on CRIT-2 invariant violation — a candidate with
+/// `current_assigned: Some(_)` whose slug doesn't exist in the
+/// corresponding base files (i.e. a new artifact carrying a pre-set
+/// assigned_number, which only the CI bot may set after merge).
+pub fn compute_assignment_plan_with_bases(
+    workspace: &Path,
+    base_ref: &str,
+    candidates: &[Candidate],
+    max_per_kind: &std::collections::BTreeMap<String, Option<u32>>,
+    base_files_per_kind: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<Vec<PlanItem>> {
+    use std::collections::HashMap;
+
+    let mut seq_per_kind: HashMap<String, u32> = HashMap::new();
+    // Seed sequence counters from max_per_kind.
+    for (kind_dir, max_opt) in max_per_kind {
+        seq_per_kind.insert(kind_dir.clone(), max_opt.unwrap_or(0));
     }
 
     // CRIT-2 Layer B: Pre-flight check — reject pre-set assigned_number on new artifacts
@@ -2697,11 +2752,22 @@ mod tests {
     /// - INTEGRATION: real PR validation via CI workflow
     #[test]
     fn crit2_layer_b_defense_documented() {
-        // CRIT-2 Layer B implementation:
+        // CRIT-2 defense-in-depth chain:
         // 1. Bash validator (Layer A): rejects pre-set assigned_number in new artifacts
         // 2. Rust binary (Layer B): detects when new artifact (not in base) has
         //    assigned_number and exits with EXIT_INVARIANT_VIOLATION (4)
-        // 3. ci.yml (Layer C): catches error, reports INVARIANT VIOLATION
+        // 3. ci.yml error reporting layer: catches the non-zero exit code
+        //    and surfaces "INVARIANT VIOLATION" в the PR check output.
+        //
+        // [Round 3 Code FINDING-7] The third tier here is the **ci.yml
+        // error reporting layer** — distinct from the unimplemented
+        // "Layer C: per-file base partition" called out in Round 2 Sec
+        // FINDING-11 (deferred separately, tracking artifact TBD). The
+        // earlier "Layer C" name was a docstring-only collision. Avoid
+        // reusing that label here so audit-doc readers don't conflate
+        // the two. The defense chain documented in this test is
+        // (Layer A: bash) → (Layer B: Rust binary `compute_assignment_plan`)
+        // → (ci.yml exit-code surfacing).
         //
         // Test fixtures: compute_plan_idempotent_for_already_assigned validates
         // that empty base_files allows re-processing (idempotent).
@@ -2790,5 +2856,205 @@ mod tests {
         // should also match — case folding is total over ASCII.
         let mixed = vec!["PRD-074-Auth-System.md".to_string()];
         assert!(slug_exists_in_filenames("prd-auth-system", &mixed));
+    }
+
+    // ── [Round 3 Code FINDING-4] Layer B INTEGRATION coverage ─────────
+    //
+    // The two tests above exercise the predicate `slug_exists_in_filenames`
+    // в isolation. The audit's concern: a future refactor of
+    // `compute_assignment_plan` could regress the *consumer* of that
+    // predicate (the CRIT-2 invariant guard) without the predicate
+    // tests catching it. The four tests below pin the integration site
+    // by injecting fixture `base_files_per_kind` directly via the new
+    // pure helper [`compute_assignment_plan_with_bases`] — no remote
+    // git stand-up required, so we can construct the precise
+    // (slug, base_files) pairs needed для each scenario.
+    //
+    // Coverage matrix (4 cases):
+    //   1. False-positive guard — substring overlap
+    //      (`prd-auth-system` vs `prd-auth-system-deprecated.md`):
+    //      tampered NEW artifact must trigger INVARIANT VIOLATION.
+    //   2. False-negative guard — post-merge uppercase filename
+    //      (`prd-auth-system` vs `PRD-074-auth-system.md`):
+    //      idempotent re-run must NOT trigger violation.
+    //   3. Empty-base allow path: no artifacts in base for this kind →
+    //      candidate с `current_assigned: Some(_)` is allowed
+    //      through (first-of-kind idempotent re-run).
+    //   4. Null candidate path: candidate с `current_assigned: None` →
+    //      Layer B doesn't fire regardless of base_files.
+
+    /// [Round 3 Code FINDING-4] Layer B INTEGRATION — false positive:
+    /// candidate slug `prd-auth-system` overlaps base filename
+    /// `prd-auth-system-deprecated.md` as substring. Tampered new
+    /// artifact carrying pre-set `assigned_number` must trigger CRIT-2
+    /// INVARIANT VIOLATION at the integration site (not just the
+    /// predicate). Pre-fix consumer used `f.contains("{slug}-")` which
+    /// would have classified the candidate as already-in-base and
+    /// silently allowed the violation.
+    #[test]
+    fn compute_plan_layer_b_integration_substring_overlap_triggers_violation() {
+        use std::collections::BTreeMap;
+
+        let workspace = TempDir::new().unwrap();
+        let candidates = vec![Candidate {
+            slug: "prd-auth-system".to_string(),
+            kind: ArtifactKind::Prd,
+            path: workspace.path().join(".forgeplan/prds/prd-auth-system.md"),
+            predicted_number: Some(75),
+            current_assigned: Some(75), // tampered — pre-set on a new artifact
+        }];
+        let mut max_per_kind: BTreeMap<String, Option<u32>> = BTreeMap::new();
+        max_per_kind.insert("prds".to_string(), Some(74));
+        let mut base_files_per_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        base_files_per_kind.insert(
+            "prds".to_string(),
+            vec!["prd-auth-system-deprecated.md".to_string()],
+        );
+
+        let result = compute_assignment_plan_with_bases(
+            workspace.path(),
+            "dev",
+            &candidates,
+            &max_per_kind,
+            &base_files_per_kind,
+        );
+        assert!(
+            result.is_err(),
+            "substring-overlap candidate must trigger CRIT-2 INVARIANT VIOLATION at integration site"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("invariant violation") || err_msg.contains("INVARIANT VIOLATION"),
+            "error message must mention invariant violation, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("prd-auth-system"),
+            "error message must reference the candidate slug, got: {err_msg}"
+        );
+    }
+
+    /// [Round 3 Code FINDING-4] Layer B INTEGRATION — false negative:
+    /// candidate slug `prd-auth-system` против post-merge uppercase
+    /// filename `PRD-074-auth-system.md`. Idempotent re-run must NOT
+    /// trigger violation (the predicate's case-insensitive match
+    /// classifies it as already-in-base correctly).
+    #[test]
+    fn compute_plan_layer_b_integration_post_merge_uppercase_allowed() {
+        use std::collections::BTreeMap;
+
+        let workspace = TempDir::new().unwrap();
+        let candidates = vec![Candidate {
+            slug: "prd-auth-system".to_string(),
+            kind: ArtifactKind::Prd,
+            path: workspace
+                .path()
+                .join(".forgeplan/prds/PRD-074-auth-system.md"),
+            predicted_number: Some(74),
+            current_assigned: Some(74), // legitimate — already merged
+        }];
+        let mut max_per_kind: BTreeMap<String, Option<u32>> = BTreeMap::new();
+        max_per_kind.insert("prds".to_string(), Some(74));
+        let mut base_files_per_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        base_files_per_kind.insert(
+            "prds".to_string(),
+            vec!["PRD-074-auth-system.md".to_string()],
+        );
+
+        let result = compute_assignment_plan_with_bases(
+            workspace.path(),
+            "dev",
+            &candidates,
+            &max_per_kind,
+            &base_files_per_kind,
+        );
+        let plan = result.expect(
+            "post-merge uppercase filename must classify candidate as already-in-base \
+             (idempotent re-run, no violation)",
+        );
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].assigned_number, 74);
+        assert!(plan[0].already_assigned);
+    }
+
+    /// [Round 3 Code FINDING-4] Layer B INTEGRATION — empty base allow:
+    /// when no artifacts exist in base for the candidate's kind,
+    /// Layer B skips the violation check (first-of-kind idempotent
+    /// re-run is legitimate).
+    #[test]
+    fn compute_plan_layer_b_integration_empty_base_allows_assigned_candidate() {
+        use std::collections::BTreeMap;
+
+        let workspace = TempDir::new().unwrap();
+        let candidates = vec![Candidate {
+            slug: "prd-first-of-kind".to_string(),
+            kind: ArtifactKind::Prd,
+            path: workspace
+                .path()
+                .join(".forgeplan/prds/prd-first-of-kind.md"),
+            predicted_number: Some(1),
+            current_assigned: Some(1), // first-of-kind, allowed when base empty
+        }];
+        let mut max_per_kind: BTreeMap<String, Option<u32>> = BTreeMap::new();
+        max_per_kind.insert("prds".to_string(), None);
+        let mut base_files_per_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        base_files_per_kind.insert("prds".to_string(), Vec::new());
+
+        let result = compute_assignment_plan_with_bases(
+            workspace.path(),
+            "dev",
+            &candidates,
+            &max_per_kind,
+            &base_files_per_kind,
+        );
+        let plan =
+            result.expect("empty base must allow first-of-kind candidate with current_assigned");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].assigned_number, 1);
+        assert!(plan[0].already_assigned);
+    }
+
+    /// [Round 3 Code FINDING-4] Layer B INTEGRATION — null candidate
+    /// path: a candidate с `current_assigned: None` is не subject to
+    /// Layer B's invariant check regardless of base_files contents.
+    /// This is the happy path for new artifacts — they get fresh
+    /// numbers minted from `max_in_base + 1`.
+    #[test]
+    fn compute_plan_layer_b_integration_null_candidate_skips_check() {
+        use std::collections::BTreeMap;
+
+        let workspace = TempDir::new().unwrap();
+        let candidates = vec![Candidate {
+            slug: "prd-new-feature".to_string(),
+            kind: ArtifactKind::Prd,
+            path: workspace.path().join(".forgeplan/prds/prd-new-feature.md"),
+            predicted_number: Some(75),
+            current_assigned: None, // happy path — bot will mint number
+        }];
+        let mut max_per_kind: BTreeMap<String, Option<u32>> = BTreeMap::new();
+        max_per_kind.insert("prds".to_string(), Some(74));
+        // Base files contain other artifacts — irrelevant since candidate is null.
+        let mut base_files_per_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        base_files_per_kind.insert(
+            "prds".to_string(),
+            vec![
+                "PRD-073-existing.md".to_string(),
+                "PRD-074-other.md".to_string(),
+            ],
+        );
+
+        let plan = compute_assignment_plan_with_bases(
+            workspace.path(),
+            "dev",
+            &candidates,
+            &max_per_kind,
+            &base_files_per_kind,
+        )
+        .expect("null candidate path must not trigger Layer B violation");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(
+            plan[0].assigned_number, 75,
+            "null candidate must mint max_in_base + 1 = 75"
+        );
+        assert!(!plan[0].already_assigned);
     }
 }
