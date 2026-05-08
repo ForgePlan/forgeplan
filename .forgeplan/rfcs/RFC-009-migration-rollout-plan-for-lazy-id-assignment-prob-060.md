@@ -5,19 +5,8 @@ kind: rfc
 links:
 - target: PRD-076
   relation: based_on
-status: draft
+status: active
 title: Migration rollout plan for lazy ID assignment (PROB-060)
----
-
----
-id: RFC-009
-title: "Migration rollout plan for lazy ID assignment (PROB-060)"
-status: Draft
-author: explosivebit
-created: 2026-05-06
-updated: 2026-05-06
-prd: PRD-076
-depth: deep
 ---
 
 # RFC-009: Migration rollout plan for lazy ID assignment (PROB-060)
@@ -35,6 +24,8 @@ TOTAL                              10/24  ( 42%)
 ```
 
 **Status 2026-05-07 (Phase 0b complete)** — Phase 0b shipped via integration branch `feat/prob-060-phase-0b-integration`: EVID-114 (Variant B stress-test, CL2 — Variant A pre-Phase-2-GA gate documented в `docs/operations/EVID-A-real-stress-test.md`); EVID-115 (real-workspace migration dry-run, CL3 — 305 artifacts, 6 dogfooding collisions, all `--auto-suffix`-resolvable). ADR-012 R_eff = 0.90 после EVID linking. 14 audit findings closed (9 fixed across 2 fix rounds, 5 deferred с rationale per PR description). Phase 2 unblocked; ready for next sprint cycle.
+
+**Status 2026-05-08 (Phase 2.3 audit)** — PR #268 dev-sync CI revealed что все 73 legacy artifacts (PRD-001..073, ADR-001..011, RFC-001..008, etc.) работают first-class через display id path без `slug` field. E2E suite `crates/forgeplan-cli/tests/legacy_compat_e2e.rs` (Fixer 2.3-A) фиксирует resolver fallback, MCP DTO `Option<String>` handling, `refs_form_from_body` graceful degradation. **Migration demoted с MUST до OPTIONAL CLEANUP** — см. §Phase 4 ниже и §Phase 4.5 «Legacy compatibility — no migration required».
 
 ---
 
@@ -54,7 +45,7 @@ ADR-012 фиксирует решение (Option A с двухслойной id
 
 1. Доставить решение в 5 фаз без single big-bang migration
 2. На каждой фазе иметь работающий feature flag для отката (`id_assignment: legacy / hybrid / new`)
-3. Backward compat: все 298 существующих артефактов и `Refs:` к ним продолжают работать
+3. Backward compat: все 298 существующих артефактов и `Refs:` к ним продолжают работать **через display id path без миграции** (verified by `crates/forgeplan-cli/tests/legacy_compat_e2e.rs` E2E suite — Phase 2.3 audit, 2026-05-08)
 4. Multi-agent dispatch получает zero-collision гарантии by Phase 2
 5. ForgePlanWeb рендеринг обновлён до Phase 3 (не блокирует Phases 1-2)
 6. Activation gate: все EVID собраны, R_eff > 0.7
@@ -194,13 +185,42 @@ Rendering layer и agent training.
 
 Cutoff date, migration legacy 298 артефактов, EVID closure, activation.
 
-- [ ] **4.1** Cutoff date announce в CHANGELOG. Open PRs grandfather rules: PRs открытые до cutoff merge'атся по старой схеме; new PRs после cutoff — по новой.
-- [ ] **4.2** Migration script: legacy 298 artifacts get `slug` + `assigned_number` фrontmatter поля (additive only — никаких contents changes). Run on dev, validate, then push.
+- [ ] **4.1** *(OPTIONAL CLEANUP — Phase 2.3 audit demoted from MUST)* Cutoff date announce в CHANGELOG. Open PRs grandfather rules: PRs открытые до cutoff merge'атся по старой схеме; new PRs после cutoff — по новой. **Note**: cutoff не блокирует работу с legacy artifacts; они работают first-class via display id path (см. §Phase 4.5).
+- [ ] **4.2** *(OPTIONAL CLEANUP — Phase 2.3 audit demoted from MUST; backward compat already handled by Phase 2 resolver)* Migration script: legacy 73 artifacts get `slug` + `assigned_number` frontmatter поля (additive only — никаких contents changes). **Backward compat without migration**: Phase 2 resolver fallback paths уже обеспечивают first-class operation для legacy artifacts. Default recommendation: don't run unless team explicitly wants single schema across all artifacts.
 - [ ] **4.3** EVID-B: multi-agent benchmark — 10 запусков `forgeplan_dispatch` с 5 агентами. Target: 0 slug collisions при разных titles.
 - [ ] **4.4** EVID-D: AI-agent compliance benchmark — 50 reasoning prompts, измерить % коммитов с slug в `Refs:` (target ≥ 95%).
 - [ ] **4.5** Activation gate: все EVID собраны (A, B, C, D, E), R_eff > 0.7. ADR-012 переключён в `active`. Feature flag `id_assignment` дефолт меняется на `new`.
 
 **Exit criteria**: smoke test 5 параллельных AI-агентов создают по 3 артефакта, 0 collisions; visual regression Web pass; feature flag `legacy` остаётся доступным как rollback option до v0.34.
+
+### Phase 4.5: Legacy compatibility — no migration required (Phase 2.3 audit, 2026-05-08)
+
+**TL;DR**: все 73 legacy artifacts (PRD-001..073, ADR-001..011, RFC-001..008, EPIC-*, SPEC-001..004, NOTE-*, EVID-*, и т.д.) работают first-class через display id path **без миграции**. Phase 2 resolver fallback paths, MCP DTO `Option<String>` handling, и `refs_form_from_body` graceful degradation обеспечивают backward compat by construction.
+
+#### Mechanism (already shipped в Phase 1/Phase 2)
+
+1. **Resolver** — `crates/forgeplan-core/src/artifact/store.rs`:
+   - Если `slug` отсутствует в frontmatter (legacy state), lookup по `assigned_number` через display id (`PRD-074`).
+   - Primary key: display id (always set для legacy). Slug — optional secondary key.
+2. **MCP DTOs** — `crates/forgeplan-mcp/src/types.rs`:
+   - `slug: Option<String>` с `#[serde(skip_serializing_if = "Option::is_none")]` — legacy artifacts возвращаются без поля `slug` в JSON.
+   - Agent видит только `id` / `id_display` и работает с ними.
+3. **`refs_form_from_body`** — fallback к display id:
+   - Если parse slug fails (legacy `Refs: PRD-018`), возвращается canonical display id.
+   - Resolver принимает оба формата.
+
+#### E2E proof
+
+`crates/forgeplan-cli/tests/legacy_compat_e2e.rs` (Fixer 2.3-A) фиксирует все три fallback paths real CLI invocation. 23 tests cover все 11 artifact kinds + edge cases.
+
+#### What this means для Phase 4
+
+- Migration is cosmetic, not functional requirement.
+- §4.1 cutoff date — нужен только для NEW artifacts (slug required).
+- §4.2 migration script — optional housekeeping.
+- §Activation gate (4.5) не зависит от migration completion.
+
+**Exit criteria** для Phase 4.5: E2E suite `legacy_compat_e2e.rs` green in CI; documentation (CLAUDE.md «Working with artifact IDs» legacy note, `docs/methodology/ID-ASSIGNMENT.ru.md` §«Legacy artifacts compatibility») landed via PR #270.
 
 ---
 
@@ -254,5 +274,8 @@ Cutoff date, migration legacy 298 артефактов, EVID closure, activation
 ---
 
 > **Next step**: После approve RFC → ADR-012 переключить в Proposed → Active с EVID; запустить Phase 0.
+
+
+
 
 

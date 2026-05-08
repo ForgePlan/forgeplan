@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: RFC-009
   relation: based_on
-status: draft
+status: active
 title: Slug-canonical identity with display number assigned at merge
 ---
 
@@ -271,5 +271,6 @@ R_eff = min(F=0.67, G=0.67, R=0.7) × CL2(0.95) = **0.665** (per FPF B.3 — wea
 | PRD-057 | PRD | informs (multi-agent dispatch already in production) |
 | PRD-071 | PRD | informs (hint protocol contract) |
 | ADR-003 | ADR | informs (markdown source of truth — invariant preserved) |
+
 
 

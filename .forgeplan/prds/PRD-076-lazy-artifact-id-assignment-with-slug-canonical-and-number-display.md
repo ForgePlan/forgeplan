@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: PROB-060
   relation: based_on
-status: draft
+status: active
 title: Lazy artifact ID assignment with slug-canonical and number-display
 ---
 
@@ -417,6 +417,7 @@ And on merge, CI bot assigns final number without breaking any refs
 | PRD-057 | informs (multi-agent dispatch context) | active |
 | PRD-071 | informs (hint protocol contract) | active |
 | ADR-003 | informs (markdown source of truth invariant) | active |
+
 
 
 

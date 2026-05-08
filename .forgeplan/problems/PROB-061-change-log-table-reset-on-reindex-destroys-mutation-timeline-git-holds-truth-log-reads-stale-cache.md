@@ -2,6 +2,9 @@
 depth: tactical
 id: PROB-061
 kind: problem
+links:
+- target: ADR-003
+  relation: informs
 status: draft
 title: change_log table reset on reindex destroys mutation timeline — git holds truth, log reads stale cache
 ---
@@ -108,4 +111,5 @@ Hard constraints:
 | Artifact | Relation |
 |----------|----------|
 | | based_on / informs |
+
 
