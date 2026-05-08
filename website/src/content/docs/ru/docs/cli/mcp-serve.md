@@ -4,7 +4,7 @@ description: "Alias for `forgeplan serve` — starts the Forgeplan MCP server on
 ---
 
 `forgeplan mcp serve` — это тонкий алиас для [`forgeplan serve`](/ru/docs/cli/serve/).
-Обе команды запускают один и тот же MCP-сервер (stdio transport, 63 инструмента,
+Обе команды запускают один и тот же MCP-сервер (stdio transport, 71 инструмента,
 одно рабочее пространство) и завершаются по Ctrl-C. Алиас существует, чтобы
 namespace `mcp` был внутренне консистентным — после `forgeplan mcp install`
 очевидное продолжение для отладки — это `forgeplan mcp serve`.
