@@ -16,6 +16,11 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
             anyhow::bail!("LLM not configured");
         }
     };
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let prd_id = store.resolve_id(prd_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Artifact '{prd_id}' not found\nFix: forgeplan list --type prd")
+    })?;
+    let prd_id = prd_id.as_str();
     let record = store.get_record(prd_id).await?.ok_or_else(|| {
         anyhow::anyhow!(
             "Artifact '{}' not found\n\
@@ -51,10 +56,22 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
 
     // PRD-071 ACTIONABILITY: target ID is real (`record.id`); `RFC-NNN` is the
     // allowed value-to-fill placeholder for the yet-to-exist RFC.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the link command stays canonical for commit `Refs:`.
+    //
+    // **HIGH-3 (Round-1 audit, CWE-117 / prompt injection)**: even though
+    // `refs_form_from_body` already drops slugs that fail SPEC-005's
+    // grammar (added in this fix-1c), we apply `sanitize_for_hint` as a
+    // defence-in-depth layer. This catches any future regression in the
+    // slug grammar gate and aligns CLI hint emission with MCP server
+    // (which has always sanitized).
+    let raw_ref =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+    let ref_form = forgeplan_core::artifact::sanitize::sanitize_for_hint(&raw_ref);
     let hint_list = vec![
-        Hint::info(format!("Create RFC for {}", record.id)).with_action(format!(
+        Hint::info(format!("Create RFC for {}", ref_form)).with_action(format!(
             "forgeplan new rfc \"<task title>\" && forgeplan link RFC-NNN {} --relation refines",
-            record.id
+            ref_form
         )),
     ];
     print!("{}", hints::render_next_action_line(&hint_list));

@@ -84,15 +84,49 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
     let mut downgraded = 0usize;
 
     for art in artifacts {
-        let id = art["id"].as_str().unwrap_or_default();
-        if id.is_empty() {
+        let raw_id = art["id"].as_str().unwrap_or_default();
+        if raw_id.is_empty() {
             continue;
         }
+
+        // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — bulk resolve each id in
+        // the payload. Hand-edited JSON exports may carry slugs instead of
+        // display ids; resolve_id maps them onto the canonical DB form.
+        // Resolver returning None just means the id is novel — fall back
+        // to the raw input so the new artifact gets created as-is.
+        let canonical = store.resolve_id(raw_id).await?;
+        let id_owned: String;
+        let id: &str = if let Some(c) = canonical {
+            id_owned = c;
+            id_owned.as_str()
+        } else {
+            raw_id
+        };
 
         let existing = store.get_record(id).await?;
         if existing.is_some() && !force {
             skipped += 1;
             continue;
+        }
+
+        // HIGH-6 (Round-1 audit, CWE-639 / data corruption): when the
+        // resolver maps `prd-foo` (slug) onto an existing PRD-001 row,
+        // a payload claiming `"kind": "rfc"` would otherwise delete the
+        // PRD and create an `id="PRD-001", kind="rfc"` row — kind/id
+        // incoherent. Refuse the import outright with an actionable
+        // remediation hint. The check fires before the destructive
+        // delete-then-create so the existing artifact stays intact.
+        if let Some(existing_record) = &existing {
+            let raw_kind_for_check = art["kind"].as_str().unwrap_or("");
+            if !raw_kind_for_check.is_empty() && existing_record.kind != raw_kind_for_check {
+                anyhow::bail!(
+                    "Import would change kind of {} from {} to {}\n\
+                     Fix: change `kind` в payload или use a different `id`",
+                    id,
+                    existing_record.kind,
+                    raw_kind_for_check
+                );
+            }
         }
 
         if existing.is_some() {

@@ -9,9 +9,22 @@ pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Re
 
     let (ws, _lock, store) = common::open_store_locked().await?;
 
-    // Verify source exists
-    let source = store.get_artifact(source_id).await?;
-    if source.is_none() {
+    // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id for both ends.
+    // Source must resolve (we error otherwise); target may not exist yet
+    // (cross-PR forward-reference is allowed) so we only resolve if possible.
+    let source_id_owned = store.resolve_id(source_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Source artifact '{source_id}' not found\nFix: forgeplan list")
+    })?;
+    let source_id = source_id_owned.as_str();
+
+    let target_id_owned = store
+        .resolve_id(target_id)
+        .await?
+        .unwrap_or_else(|| target_id.to_string());
+    let target_id = target_id_owned.as_str();
+
+    // Verify source exists (sanity check after resolve — should always pass).
+    if store.get_artifact(source_id).await?.is_none() {
         anyhow::bail!(
             "Source artifact '{}' not found
 Fix: forgeplan list",
@@ -20,8 +33,7 @@ Fix: forgeplan list",
     }
 
     // Verify target exists (warning only)
-    let target = store.get_artifact(target_id).await?;
-    if target.is_none() {
+    if store.get_artifact(target_id).await?.is_none() {
         eprintln!(
             "Warning: Target artifact '{}' not found in workspace (creating link anyway)",
             target_id

@@ -7,6 +7,13 @@ use crate::commands::common;
 pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 1.5b — slug-aware lookup.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     let old_status = store
         .get_record(id)
         .await?

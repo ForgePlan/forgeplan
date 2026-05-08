@@ -18,6 +18,13 @@ pub async fn run(
 ) -> Result<()> {
     let store = common::store().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Fetch artifact
     let record = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(
@@ -26,6 +33,12 @@ Fix: forgeplan list",
             id
         )
     })?;
+
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so every hint emitted from this command stays canonical
+    // for commit `Refs:` propagation.
+    let ref_form =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
 
     // Extract work items from artifact body
     let work_items = extractor::extract_work_items(&record.body);
@@ -37,7 +50,7 @@ Fix: forgeplan list",
         // Empty estimate: actionable next-step is to fill FR/Phase items.
         let next_hints = vec![
             Hint::warning("No estimable items — fill FR/Phase sections")
-                .with_action(format!("forgeplan get {}", id)),
+                .with_action(format!("forgeplan get {}", ref_form)),
         ];
 
         if json {
@@ -181,9 +194,11 @@ Fix: forgeplan list",
 
     // Suggest calibrating the estimate after delivery — this is the
     // canonical follow-up workflow (estimate → work → calibrate-estimate).
+    // PROB-060 (W1.B, CD-5) — emit ref_form so the calibrate command stays
+    // canonical (slug pre-merge / display id post-merge).
     let next_hints = vec![Hint::info("Calibrate after delivery").with_action(format!(
         "forgeplan calibrate-estimate {} --actual-hours <N>",
-        record.id
+        ref_form
     ))];
 
     // Output

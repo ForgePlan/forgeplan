@@ -2,10 +2,12 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
+use forgeplan_core::artifact::frontmatter::augment_frontmatter_with_id_fields;
 use forgeplan_core::artifact::store::ArtifactSummary;
-use forgeplan_core::artifact::types::ArtifactKind;
+use forgeplan_core::artifact::types::{ArtifactKind, slug_from_kind_title};
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+use forgeplan_core::git::{artifact_filenames_in_origin_dev, slug_exists_in_filenames};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
@@ -21,9 +23,17 @@ pub const MAX_TITLE_LEN: usize = 128;
 
 /// Validate an artifact title before any DB or filesystem writes.
 ///
-/// Rejects empty titles (including whitespace-only) and titles longer than
-/// [`MAX_TITLE_LEN`] characters. Called at the very start of `run` so that
-/// invalid input never produces orphan DB rows.
+/// Rejects:
+/// - Empty / whitespace-only titles
+/// - Titles longer than [`MAX_TITLE_LEN`] characters
+/// - **Control characters** (CWE-176) — would corrupt rendered headings
+///   and MCP responses passed to LLM agents
+/// - **BIDI override codepoints** (CWE-1007 / Trojan Source) —
+///   `U+202A..U+202E` and `U+2066..U+2069` can spoof displayed `Next:`
+///   commands suggested back to AI agents
+///
+/// Called at the very start of `run` so that invalid input never produces
+/// orphan DB rows. Per cross-phase security audit L3.
 pub fn validate_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Title cannot be empty. Provide a non-empty title.");
@@ -35,6 +45,26 @@ pub fn validate_title(title: &str) -> Result<()> {
             len,
             MAX_TITLE_LEN
         );
+    }
+    // Reject control chars and BIDI overrides. We allow newline-as-control
+    // (\n, \r, \t) is rejected because titles are single-line user input
+    // and embedded newlines break frontmatter rendering and CLI output.
+    for c in title.chars() {
+        if c.is_control() {
+            anyhow::bail!(
+                "Title contains control character (U+{:04X}). \
+                 Use plain printable text only.",
+                c as u32
+            );
+        }
+        // BIDI override / isolate codepoints (Trojan Source class).
+        if matches!(c as u32, 0x202A..=0x202E | 0x2066..=0x2069) {
+            anyhow::bail!(
+                "Title contains BIDI override character (U+{:04X}). \
+                 These can spoof rendered output — rejected for security.",
+                c as u32
+            );
+        }
     }
     Ok(())
 }
@@ -106,9 +136,21 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     let template = get_embedded_template(template_key)
         .ok_or_else(|| anyhow::anyhow!("No template found for kind '{}'", template_key))?;
 
-    // Build template variables
+    // Build template variables.
+    //
+    // Audit H2b fix: `next_id` is contractually guaranteed to return
+    // `"{PREFIX}-{:03}"` (see `LanceStore::next_id`). The previous
+    // `.unwrap_or("001")` masked any contract violation by silently
+    // substituting a default — producing a frontmatter where `id` and
+    // `predicted_number` disagreed. Replace with `expect` so a future
+    // refactor of `next_id` that breaks the format fails loudly at the
+    // very first artifact creation rather than corrupting data.
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let nnn = id.split('-').next_back().unwrap_or("001").to_string();
+    let nnn = id
+        .split('-')
+        .next_back()
+        .expect("next_id contract: returned id must contain '-'")
+        .to_string();
 
     let mut vars = HashMap::new();
     vars.insert("NNN".to_string(), nnn.clone());
@@ -120,6 +162,77 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
 
     // Replace date placeholders
     rendered = rendered.replace("YYYY-MM-DD", &today);
+
+    // PROB-060 / SPEC-005: augment frontmatter with `slug`, `predicted_number`,
+    // `assigned_number`. In Phase 1.x assigned = predicted (current immediate-
+    // assignment via counter is preserved). Phase 2 CI bot will null
+    // `assigned_number` for new artifacts and populate it atomically on merge
+    // to dev — at that point the contract becomes truly lazy.
+    //
+    // This step is purely additive: existing frontmatter fields are preserved,
+    // legacy artifacts (without these fields) continue to load via filename-
+    // derived id resolver, and downstream tooling that ignores unknown fields
+    // is unaffected.
+    let predicted_number: u32 = nnn.parse().with_context(|| {
+        format!(
+            "internal: failed to parse numeric prefix {:?} from id {}",
+            nnn, id
+        )
+    })?;
+    let slug = slug_from_kind_title(&kind, title)
+        .with_context(|| format!("failed to build canonical slug from title {:?}", title))?;
+
+    // PROB-060 / SPEC-005 Phase 1.3 — pre-create remote slug uniqueness check.
+    //
+    // Best-effort: fetch origin/dev and check if the slug already exists upstream.
+    // Soft-fail by design — offline / non-git / no remote workspaces continue
+    // without warning. The remote check IS the value-add of Phase 1.3 (workspace-
+    // local uniqueness was already implicit via filesystem).
+    //
+    // Skip the check when --allow-duplicate is set (caller has already accepted
+    // the risk of similar artifacts) — saves the network round-trip.
+    if !allow_duplicate {
+        let remote_files = artifact_filenames_in_origin_dev(&workspace, kind.dir_name());
+        if slug_exists_in_filenames(&slug, &remote_files) {
+            // **Advisory** check — between the fetch above and the actual merge a
+            // teammate can push a colliding slug (TOCTOU). True atomic guarantee
+            // arrives in Phase 2 with the CI bot. Audit C1: phrase accordingly.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                // Non-tty: single canonical message via bail (no separate
+                // eprintln, audit L2). Suppress the warning duplicate.
+                anyhow::bail!(
+                    "Advisory: slug {:?} appears to exist in origin/dev — \
+                         it may collide at merge. \
+                         Non-interactive shell cannot prompt.\n\
+                         Fix: forgeplan new {} \"{}\" --allow-duplicate",
+                    slug,
+                    kind_str,
+                    title
+                );
+            }
+            // Interactive shell: warn + prompt to confirm.
+            eprintln!(
+                "advisory: slug {:?} appears in origin/dev — may collide at merge \
+                     (Phase 2 CI bot will resolve definitively).",
+                slug
+            );
+            let proceed = cliclack::confirm(format!(
+                "Continue creating slug {:?} despite advisory?",
+                slug
+            ))
+            .initial_value(false)
+            .interact()
+            .unwrap_or(false);
+            if !proceed {
+                println!("Cancelled");
+                return Ok(());
+            }
+        }
+    }
+
+    rendered = augment_frontmatter_with_id_fields(&rendered, &slug, predicted_number)
+        .with_context(|| format!("failed to augment frontmatter for {}", id))?;
 
     // Replace full ID patterns like PRD-{NNN} that may remain after render
     let heading_pattern = format!("# {}-{}: ", prefix, nnn);
@@ -319,6 +432,52 @@ mod tests {
         assert!(validate_title(&t2).is_err());
     }
 
+    // Cross-phase security audit L3 — control char + BIDI override rejection.
+
+    #[test]
+    fn audit_l3_validate_title_rejects_control_chars() {
+        // Embedded newline / tab / NUL must be rejected.
+        let cases = [
+            "Auth\nSystem",
+            "Auth\tSystem",
+            "Auth\0System",
+            "Auth\rSystem",
+        ];
+        for case in cases {
+            let err = validate_title(case).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("control"),
+                "expected 'control' in error for {case:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_l3_validate_title_rejects_bidi_overrides() {
+        // U+202E (RTL override) is the canonical Trojan Source attack char.
+        let cases = [
+            "Auth\u{202E}System", // RTL override
+            "Auth\u{202A}System", // LTR embedding
+            "Auth\u{2066}System", // LTR isolate
+            "Auth\u{2069}System", // pop directional isolate
+        ];
+        for case in cases {
+            let err = validate_title(case).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("bidi") || err.contains("control"),
+                "expected 'bidi' in error for {case:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_l3_validate_title_accepts_unicode_letters() {
+        // Make sure we don't over-reject legitimate non-ASCII content.
+        assert!(validate_title("Тестовая система").is_ok());
+        assert!(validate_title("システム認証").is_ok());
+        assert!(validate_title("Système d'auth").is_ok());
+    }
+
     #[test]
     fn find_duplicate_picks_exact_over_substring() {
         let existing = vec![
@@ -330,4 +489,8 @@ mod tests {
         assert_eq!(id, "PRD-003");
         assert!((score - 1.0).abs() < 1e-9);
     }
+
+    // augment_frontmatter_with_id_fields tests live in
+    // crates/forgeplan-core/src/artifact/frontmatter.rs (cross-phase audit
+    // code-analyzer #1: pure frontmatter logic relocated to core).
 }

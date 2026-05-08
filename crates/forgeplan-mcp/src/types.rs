@@ -9,6 +9,33 @@ pub struct ArtifactSummaryDto {
     pub kind: String,
     pub status: String,
     pub title: String,
+    // PROB-060 / SPEC-005 / ADR-012 — Phase 2.4 (CD-2 binding):
+    // Slug-canonical identity surfaced alongside the existing display id.
+    // All four fields are additive — legacy callers that ignore unknown
+    // keys continue to work, agents and clients that read them get the
+    // full slug + predicted + assigned + display triple.
+    /// Canonical slug from frontmatter (`prd-auth-system`). `None` for legacy
+    /// artifacts that pre-date Phase 1 or whose frontmatter could not be parsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Local prediction at create time (used for the `?` display marker).
+    /// `None` for legacy artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_number: Option<u32>,
+    /// CI-assigned authoritative number; `None` until the bot stamps it on
+    /// merge to dev (Phase 2.1+) or for legacy artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_number: Option<u32>,
+    /// Canonical reference to use in commit `Refs:` lines and cross-artifact
+    /// links: the slug when present, otherwise the lowercased display id
+    /// (legacy fallback). Always populated.
+    #[serde(default)]
+    pub id_canonical: String,
+    /// Pretty-printed display id: `PRD-074` once assigned, `PRD-74?` while
+    /// the number is only predicted. Falls back to the existing id field
+    /// for legacy artifacts. Always populated.
+    #[serde(default)]
+    pub id_display: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -25,6 +52,20 @@ pub struct ArtifactRecordDto {
     pub valid_until: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    // PROB-060 / SPEC-005 / ADR-012 — Phase 2.4 (CD-2 binding).
+    // See `ArtifactSummaryDto` for field semantics; the same triple is
+    // surfaced here so `forgeplan_get` callers see the canonical identity
+    // without a second lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_number: Option<u32>,
+    #[serde(default)]
+    pub id_canonical: String,
+    #[serde(default)]
+    pub id_display: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -74,6 +115,8 @@ pub struct DuplicateWarning {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NewArtifactResponse {
+    // EXISTING FIELDS — order preserved for JSON-schema/back-compat
+    // (CD-2 binding: pre-Phase-2.4 callers must keep working).
     pub id: String,
     pub kind: String,
     pub title: String,
@@ -85,6 +128,49 @@ pub struct NewArtifactResponse {
     /// Artifact is still created — AI agent decides how to react.
     #[serde(default)]
     pub warnings: Vec<DuplicateWarning>,
+    // NEW FIELDS — PROB-060 / SPEC-005 / ADR-012 Phase 2.4 additive shape.
+    //
+    // **MED-7 (Round-1 audit)**: aligned to sibling DTO shape. Previously
+    // these were `String` / `u32` with `#[serde(default)]` — diverging
+    // from `ArtifactSummaryDto` / `ArtifactRecordDto` / `SearchResultDto`
+    // which all use `Option<>` + `skip_serializing_if = "Option::is_none"`.
+    // The mismatch made the JSON schema inconsistent and forced clients
+    // to handle two shapes for "missing slug" depending on which tool
+    // they called. Now uniform: missing → omitted from the payload.
+    //
+    // For a freshly created artifact these will always be `Some(...)` in
+    // practice (server.rs populates them from the augmented frontmatter),
+    // but the optional shape leaves room for legacy import paths /
+    // future tools that don't compute the identity triple up front.
+    /// Canonical slug (`prd-auth-system`) computed from kind+title at
+    /// create time. Used in commit `Refs:` lines and cross-artifact links
+    /// until the CI bot assigns a number on merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Local prediction at create time — `max(assigned)+1`. Drives the `?`
+    /// display marker and frontmatter persistence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_number: Option<u32>,
+    /// CI-assigned authoritative number. Phase 1.x mirrors `predicted_number`
+    /// (immediate assignment); Phase 2 CI bot will null this on create and
+    /// stamp atomically on merge. `None` means "not yet final".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_number: Option<u32>,
+    /// `id_canonical = slug` — explicit alias so agents can pick the
+    /// stable reference without parsing semantics out of `slug`/`id`.
+    /// Always populated for freshly created artifacts.
+    #[serde(default)]
+    pub id_canonical: String,
+    /// `id_display = render_display_id(kind, predicted, assigned)` —
+    /// `"PRD-074"` post-merge, `"PRD-74?"` pre-merge.
+    /// Always populated for freshly created artifacts.
+    #[serde(default)]
+    pub id_display: String,
+    /// Short methodology guidance about which form to put into commit
+    /// `Refs:` and cross-artifact links (slug pre-merge, display post-merge).
+    /// Distinct from `_next_action`, which is the workflow chaining hint.
+    #[serde(default)]
+    pub hint: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -342,6 +428,20 @@ pub struct SearchResultDto {
     /// If present, this result was added via graph expansion from the given parent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expanded_from: Option<String>,
+    // PROB-060 / SPEC-005 / ADR-012 — Phase 2.4 (CD-2 binding).
+    // Search hits expose the canonical identity triple so agents that
+    // pick a hit can immediately use the slug in commit refs without a
+    // second `forgeplan_get` round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_number: Option<u32>,
+    #[serde(default)]
+    pub id_canonical: String,
+    #[serde(default)]
+    pub id_display: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

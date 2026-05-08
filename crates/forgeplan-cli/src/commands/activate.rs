@@ -7,6 +7,16 @@ use crate::commands::common;
 pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id.
+    // Resolve once at the top; propagate canonical id throughout so
+    // lifecycle, relations, projection, and log_change all see the same
+    // value regardless of whether user passed slug or display form.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Capture old status before transition
     let old_status = store
         .get_record(id)
@@ -79,6 +89,9 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     }
 
     // Hints: suggest evidence if not linked, then reconcile parents.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pass the canonical
+    // reference form (slug pre-merge / display id post-merge) so emitted
+    // hints stay consistent with commit `Refs:` conventions.
     let mut emitted: Vec<Hint> = Vec::new();
     if let Some(record) = store.get_record(id).await? {
         let rels = store.get_relations(id).await.unwrap_or_default();
@@ -91,7 +104,9 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
             .kind
             .parse()
             .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
-        emitted = forgeplan_core::hints::activate_hints(id, true, has_evidence, &kind);
+        let ref_form =
+            forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+        emitted = forgeplan_core::hints::activate_hints(&ref_form, true, has_evidence, &kind);
         if !emitted.is_empty() {
             print!("{}", forgeplan_core::hints::format_hints(&emitted));
         }

@@ -12,6 +12,16 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    // Resolve once at the top so every downstream operation (lifecycle,
+    // projection, log_change, hint rendering) sees the canonical DB id
+    // regardless of which form the user passed.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Verify artifact exists (keep original for old projection cleanup)
     let original = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(
@@ -163,8 +173,17 @@ Fix: forgeplan list",
 
     // PRD-071: any update — re-validate to make sure the artifact still
     // satisfies its kind+depth rules.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the re-validation command stays canonical for
+    // commit `Refs:` lines.
+    let updated_record = store.get_record(id).await?;
+    let ref_form = match &updated_record {
+        Some(r) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id),
+        None => id.to_string(),
+    };
     let next_hints: Vec<Hint> = vec![
-        Hint::info("Updated — re-run validator").with_action(format!("forgeplan validate {}", id)),
+        Hint::info("Updated — re-run validator")
+            .with_action(format!("forgeplan validate {}", ref_form)),
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 
