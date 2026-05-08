@@ -250,3 +250,66 @@ jobs:
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER == 'sccache'
         run: sccache --show-stats || true
+
+  smoke-e2e:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    needs: [check, test]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Probe sccache backend
+        run: |
+          export SCCACHE_GHA_ENABLED=true
+          if timeout 30 sccache --start-server >/dev/null 2>&1; then
+            echo 'fn main() {}' > /tmp/probe.rs
+            if timeout 30 sccache rustc \
+                --edition 2021 \
+                --crate-name probe \
+                --crate-type bin \
+                /tmp/probe.rs \
+                -o /tmp/probe 2>/dev/null; then
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "✓ sccache probe passed — wrapper enabled"
+            else
+              sccache --stop-server >/dev/null 2>&1 || true
+              echo "✗ sccache probe failed (rustc invocation) — falling back to direct rustc"
+            fi
+          else
+            echo "✗ sccache probe failed (server start) — falling back to direct rustc"
+          fi
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build forgeplan binary
+        run: cargo build --bin forgeplan
+
+      - name: Run smoke test
+        run: bash scripts/smoke-test.sh --verbose
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-logs
+          path: /tmp/forgeplan-smoke-*
+          retention-days: 7
+
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats || true
