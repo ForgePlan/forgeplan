@@ -37,7 +37,24 @@ const MAX_HINT_LEN: usize = 80;
 /// chars AFTER filtering. Trim whitespace last.
 ///
 /// Removes additional punctuation that affects hint syntax / agent
-/// parsing: backtick, braces, double-quote, single-quote, backslash.
+/// parsing or, more importantly, would survive in a shell context if an
+/// agent ever copy-pastes a hint into a terminal:
+///
+/// * **Original set** (Round 1): `` ` { } " ' \ ``
+///   — backtick / brace expansion / quote injection / escape.
+/// * **Round 2 Sec FINDING-6 extension**: POSIX shell metacharacters
+///   `;` (command separator), `$` (parameter expansion), `|` (pipe),
+///   `&` (background / `&&`), `(` `)` (subshell / arithmetic),
+///   `<` `>` (redirection), `!` (history expansion in interactive
+///   shells), `#` (comment — hides trailing payload), `*` (glob).
+///
+/// Concrete threat model from the audit: an attacker plants
+/// `slug: "; rm -rf $HOME #"` in frontmatter; without this set, the
+/// sanitized hint reads `Next: forgeplan get ; rm -rf $HOME #` — copy-
+/// paste that into a shell and the rest of the line is a destructive
+/// command. After this fix every shell-relevant byte is stripped, so
+/// the surviving text is an obviously-broken identifier that can't
+/// execute as anything.
 ///
 /// **Idempotence**: applying twice yields the same result as once.
 /// **No allocation surprises**: returns a `String`; callers usually want
@@ -80,9 +97,28 @@ pub fn sanitize_for_hint(s: &str) -> String {
             if c.is_control() {
                 return false;
             }
-            // Reject specific punctuation that affects hint syntax /
-            // agent parsing.
-            !matches!(*c, '`' | '{' | '}' | '"' | '\'' | '\\')
+            // Reject punctuation that affects hint syntax / agent parsing
+            // OR would behave as a shell metacharacter on copy-paste.
+            // [Round 2 Sec FINDING-6] extended set — see fn-level docs.
+            !matches!(
+                *c,
+                '`' | '{'
+                    | '}'
+                    | '"'
+                    | '\''
+                    | '\\'
+                    | ';'
+                    | '$'
+                    | '|'
+                    | '&'
+                    | '('
+                    | ')'
+                    | '<'
+                    | '>'
+                    | '!'
+                    | '#'
+                    | '*'
+            )
         })
         .take(MAX_HINT_LEN)
         .collect();
@@ -118,16 +154,61 @@ mod tests {
 
     #[test]
     fn sanitize_strips_control_and_newline() {
+        // [Round 2 Sec FINDING-6] `!` is now in the extended reject set
+        // (history expansion in interactive shells), so unlike Round 1 the
+        // trailing `!` is dropped along with the controls.
         let input = "prd\nauth\rsystem\t!";
         let out = sanitize_for_hint(input);
-        assert_eq!(out, "prdauthsystem!");
+        assert_eq!(out, "prdauthsystem");
     }
 
     #[test]
     fn sanitize_strips_dangerous_punctuation() {
+        // [Round 2 Sec FINDING-6] `$` is now in the rejected set (parameter
+        // expansion), so the surviving text loses it too. The original
+        // Round 1 expectation kept `$HOME` literal; post-fix every shell
+        // metacharacter is gone and only the alphanumerics survive.
         let input = "rm`-rf'$HOME\"{bad}\\";
         let out = sanitize_for_hint(input);
-        assert_eq!(out, "rm-rf$HOMEbad");
+        assert_eq!(out, "rm-rfHOMEbad");
+    }
+
+    /// [Round 2 Sec FINDING-6] Audit's stated threat: a slug-shaped payload
+    /// like `"; rm -rf $HOME #"` planted in frontmatter must not survive
+    /// sanitization as anything that could execute on copy-paste. Every
+    /// shell-relevant byte (`;`, `$`, `#`) plus the quotes must be gone;
+    /// only plain alphanumerics, dashes, and spaces remain (and the
+    /// trailing trim drops bordering whitespace).
+    #[test]
+    fn sanitize_neutralises_shell_metachar_payload() {
+        let input = "\"; rm -rf $HOME #\"";
+        let out = sanitize_for_hint(input);
+        // After filter:  ` rm -rf HOME ` then trim → "rm -rf HOME"
+        // The leading `"` and `;` are gone, `$` is gone, `#` is gone, and
+        // the trailing `"` is gone — what remains can't execute.
+        assert!(!out.contains(';'), "; must be stripped: {out:?}");
+        assert!(!out.contains('$'), "$ must be stripped: {out:?}");
+        assert!(!out.contains('#'), "# must be stripped: {out:?}");
+        assert!(!out.contains('"'), "\" must be stripped: {out:?}");
+        assert!(!out.contains('\''), "' must be stripped: {out:?}");
+        assert_eq!(out, "rm -rf HOME");
+    }
+
+    /// [Round 2 Sec FINDING-6] Cover the rest of the extended reject set —
+    /// regression guard for the individual metacharacters we added so a
+    /// future contributor can't accidentally drop one without a test
+    /// failure.
+    #[test]
+    fn sanitize_strips_extended_shell_metas() {
+        // Every extended-reject byte present once + a benign anchor.
+        let input = "a;b|c&d(e)f<g>h!i*j";
+        let out = sanitize_for_hint(input);
+        // Each separator drops, leaving the alphabetic letters concatenated.
+        assert_eq!(out, "abcdefghij");
+        // Sanity-check: not even one of the rejected chars survives.
+        for c in ";|&()<>!*".chars() {
+            assert!(!out.contains(c), "byte {c:?} must be stripped: {out:?}");
+        }
     }
 
     #[test]
