@@ -666,7 +666,52 @@ fn rename_with_git_fallback(
 /// a half-written truncation. Direct `fs::write(path, …)` truncates the
 /// destination first, which means a crash mid-write would leave an
 /// empty/partial file on disk.
-fn write_predicted_number(path: &Path, fm: &Frontmatter, body: &str, n: u32) -> Result<()> {
+///
+/// [Round 2 Sec FINDING-5 fix] Defense-in-depth: this function now also
+/// gets the SEC-6 hardening block (symlink-reject + workspace-boundary
+/// canonicalize) that the rename path picked up in Round 1. Without it
+/// a tampered artifact `path` could be a symlink (e.g. pointing at
+/// `/etc/passwd`) and the predicted-number rewrite would clobber the
+/// link target. Mirrors `ci_assign_id.rs:806-837` exactly.
+///
+/// `canonical_workspace` is `Option` to mirror `apply_actions`'s posture
+/// — if canonicalize at the workspace level failed earlier, the boundary
+/// check is skipped (write will still fail loudly if the FS is broken),
+/// but the symlink check ALWAYS runs because it's local to `path` and
+/// has no workspace dependency.
+fn write_predicted_number(
+    path: &Path,
+    fm: &Frontmatter,
+    body: &str,
+    n: u32,
+    canonical_workspace: Option<&Path>,
+) -> Result<()> {
+    // [SEC-6 CWE-367] symlink check: refuse to follow symlinks. Use
+    // `symlink_metadata` which never traverses, unlike `metadata()`.
+    let lmeta = fs::symlink_metadata(path)
+        .map_err(|e| anyhow::anyhow!("stat {} (symlink check): {e}", path.display()))?;
+    if lmeta.file_type().is_symlink() {
+        anyhow::bail!(
+            "reconcile-ids: refusing to follow symlink artifact {} [SEC-6]",
+            path.display()
+        );
+    }
+
+    // [SEC-6 CWE-22] path traversal: canonicalize `path` and assert it
+    // stays under the canonicalized workspace. Defends against a
+    // relative-`..` path or symlink-shaped tamper that escaped the
+    // boundary checks earlier in the pipeline (defense-in-depth).
+    if let Some(ws_canon) = canonical_workspace {
+        let path_canon = fs::canonicalize(path)
+            .map_err(|e| anyhow::anyhow!("canonicalize {}: {e}", path.display()))?;
+        if !path_canon.starts_with(ws_canon) {
+            anyhow::bail!(
+                "reconcile-ids: path {} escapes workspace [SEC-6 invariant violation]",
+                path.display()
+            );
+        }
+    }
+
     let mut new_fm = fm.clone();
     new_fm.insert(
         "predicted_number".to_string(),
@@ -928,7 +973,7 @@ fn apply_actions(actions: &mut [ReconcileAction], workspace: &Path) {
             action.artifact_path = path;
             continue;
         }
-        match write_predicted_number(&path, &fm, &body, value) {
+        match write_predicted_number(&path, &fm, &body, value, canonical_workspace.as_deref()) {
             Ok(()) => {
                 action.applied = Some(true);
                 action.artifact_path = path;
@@ -1524,7 +1569,9 @@ mod tests {
         fs::write(&path, original).unwrap();
 
         let (fm, body) = parse_frontmatter(original).unwrap();
-        write_predicted_number(&path, &fm, &body, 5).unwrap();
+        // [Round 2 Sec FINDING-5] SEC-6 hardening: pass workspace boundary
+        // (None disables the boundary check; symlink check still runs).
+        write_predicted_number(&path, &fm, &body, 5, None).unwrap();
 
         // No orphan tmp left behind.
         let tmp = path.with_extension("md.tmp");
@@ -1539,6 +1586,77 @@ mod tests {
         let (fm2, body2) = parse_frontmatter(&after).unwrap();
         assert_eq!(predicted_number_from_frontmatter(&fm2), Some(5));
         assert_eq!(body2.trim(), "Body.");
+    }
+
+    /// [Round 2 Sec FINDING-5] `write_predicted_number` refuses to follow a
+    /// symlinked artifact path. A tampered PR could land a symlink at
+    /// `.forgeplan/prds/x.md` pointing at `/etc/passwd`; without this guard
+    /// the predicted-number rewrite would clobber the link target. Mirrors
+    /// the `rename_with_git_fallback_rejects_symlink_source` test posture.
+    #[cfg(unix)]
+    #[test]
+    fn write_predicted_number_rejects_symlink_artifact() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Real target file (could be inside or outside workspace — symlink
+        // existence alone is the trigger).
+        let real_target = dir.path().join("real.md");
+        let real_content = "---\nid: PRD-005\nkind: prd\nstatus: draft\ntitle: T\nslug: prd-x\nassigned_number: 5\n---\n\nBody.\n";
+        fs::write(&real_target, real_content).unwrap();
+
+        let link_path = dir.path().join("link.md");
+        symlink(&real_target, &link_path).unwrap();
+
+        let (fm, body) = parse_frontmatter(real_content).unwrap();
+        let err = write_predicted_number(&link_path, &fm, &body, 5, None)
+            .expect_err("symlink artifact must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("symlink") || msg.contains("SEC-6"),
+            "expected symlink rejection message, got: {msg}"
+        );
+        // The real target must remain untouched (no predicted_number
+        // injected), since the rewrite never proceeded.
+        let after = fs::read_to_string(&real_target).unwrap();
+        assert!(
+            !after.contains("predicted_number: 5"),
+            "real target must not be clobbered through symlink"
+        );
+    }
+
+    /// [Round 2 Sec FINDING-5] `write_predicted_number` enforces the
+    /// workspace boundary: a path that canonicalizes outside the supplied
+    /// workspace root is rejected. Mirrors
+    /// `rename_with_git_fallback_enforces_workspace_boundary`.
+    #[test]
+    fn write_predicted_number_enforces_workspace_boundary() {
+        // Two sibling dirs: `workspace/` (the canonical root we pass in)
+        // and `outside/` (where the artifact actually lives).
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let path = outside.join("x.md");
+        let original = "---\nid: PRD-005\nkind: prd\nstatus: draft\ntitle: T\nslug: prd-x\nassigned_number: 5\n---\n\nBody.\n";
+        fs::write(&path, original).unwrap();
+
+        let (fm, body) = parse_frontmatter(original).unwrap();
+        let canonical_ws = fs::canonicalize(&workspace).unwrap();
+        let err = write_predicted_number(&path, &fm, &body, 5, Some(&canonical_ws))
+            .expect_err("path outside workspace must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("escapes workspace") || msg.contains("SEC-6"),
+            "expected workspace-boundary rejection, got: {msg}"
+        );
+        // File untouched — no predicted_number field appended.
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("predicted_number: 5"),
+            "file outside workspace must not be modified"
+        );
     }
 
     /// [MED-2] The JSON `workspace` field is the relative `.forgeplan`

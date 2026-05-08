@@ -67,16 +67,27 @@ assigned_number_changed() {
         return 1  # file is new in base — write-once rule does not apply
     fi
 
-    # Get the assigned_number from the base ref version (try origin/<ref>
-    # first, fall back к local <ref> для tests без remote).
-    local previous
-    previous=$(git show "origin/${base_ref}:${file}" 2>/dev/null \
+    # Round 3 audit CRIT-1 fix: bash `|` binds tighter than `||`, so the
+    # original form `A || B | sed` parsed as `A || (B | sed)`. When A
+    # (`git show "origin/<base>:<file>"`) succeeded — the typical CI case —
+    # `previous` captured the entire raw markdown (frontmatter + body) instead
+    # of the parsed assigned_number. Smoke test passed by coincidence (tamper
+    # is non-equal either way), but legitimate `null → integer` bot stamps
+    # were misclassified as write-once violations on every PR.
+    #
+    # Fix: capture raw output first (with explicit fallback grouping), then
+    # pipe through extraction.
+    local raw
+    raw=$(git show "origin/${base_ref}:${file}" 2>/dev/null \
         || git show "${base_ref}:${file}" 2>/dev/null \
+        || true)
+    local previous
+    previous=$(printf '%s\n' "$raw" \
         | sed -n '/^---$/,/^---$/p' \
         | grep "^assigned_number:" \
         | head -1 \
         | sed 's/^assigned_number:[[:space:]]*//' \
-        | sed 's/^"\(.*\)"$/\1/' || true)
+        | sed 's/^"\(.*\)"$/\1/')
 
     # Round 2 audit FINDING-2: normalize YAML null forms на обоих sides.
     [[ "$current" == "null" || "$current" == "~" ]] && current=""
