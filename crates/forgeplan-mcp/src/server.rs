@@ -1334,10 +1334,14 @@ impl ForgeplanServer {
             "Empty result. Run `forgeplan_list` without filters to see all artifacts.".to_string()
         } else if draft_count > 0 {
             // Surface the first draft so the agent has a concrete target.
+            // Round 3 audit HIGH-1: use id_canonical (slug pre-merge / display
+            // post-merge) instead of raw id (always display) per CD-5 contract.
+            // ArtifactSummaryDto::id_canonical is always populated (slug if
+            // present in body, else lowercased display id fallback).
             let first_draft = dtos
                 .iter()
                 .find(|a| a.status == "draft")
-                .map(|a| sanitize_for_hint(&a.id));
+                .map(|a| sanitize_for_hint(&a.id_canonical));
             match first_draft {
                 Some(id) => format!(
                     "{draft_count} draft(s) of {total}. Validate the first: \
