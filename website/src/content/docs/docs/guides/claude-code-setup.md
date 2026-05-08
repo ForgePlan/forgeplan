@@ -120,7 +120,7 @@ Add Forgeplan as MCP server for AI agents:
 }
 ```
 
-This gives AI agents access to 63 tools: create, validate, score, search, graph, reason, route, plus playbook orchestration, FPF KB, dispatch, claims, and more.
+This gives AI agents access to 71 tools: create, validate, score, search, graph, reason, route, plus playbook orchestration, FPF KB, dispatch, claims, and more.
 
 ## Memory Integration (Hindsight)
 
