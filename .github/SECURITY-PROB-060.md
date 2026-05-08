@@ -220,3 +220,80 @@ Phase 2.1 затворит surface окончательно.
 - **Validation gate tests** — integration tests for frontmatter validator
   (Phase 2 cleanup, nice-to-have).
 - **HEAD_REF validation regression guard**: CI should verify branch name whitelist regex remains `^[A-Za-z0-9._/-]+$` in assign-id.yml:124 (prevent silent removal of validation)
+
+---
+
+## Phase 2.1 Hotfix — Round 2 audit closure (Fixer 2.1-B)
+
+**Date**: 2026-05-08
+**Fixer Stage**: 2.1-B (test + CI gate hotfixes)
+**Audit Round**: PROB-060 Phase 2 Round 2
+
+### HIGH-1 (Code FINDING-2): cli_hint_slug_aware coverage gap
+
+**File**: `crates/forgeplan-cli/tests/cli_hint_slug_aware.rs`
+
+**Issue**: Round 1 CRIT-3 fix touched 13 W3 commands но regression test
+suite covered только 7. Six commands without slug-aware regression guard:
+`supersede`, `reopen`, `claim`, `release`, `calibrate-estimate`, `import`.
+
+**Fix**: Added 13 new integration tests covering все 6 missing commands
+plus 2-3 post-merge counterparts:
+
+- `supersede_emits_slug_pre_merge_for_successor_hint`
+- `supersede_emits_display_id_post_merge_for_successor_hint`
+- `reopen_emits_slug_pre_merge_for_validate_hint`
+- `claim_emits_slug_pre_merge_for_inspect_hint`
+- `claim_already_held_emits_slug_pre_merge_in_release_hint`
+- `release_emits_dispatch_hint_pre_merge_without_id_leak`
+- `release_not_held_emits_slug_pre_merge_in_force_hint`
+- `calibrate_estimate_emits_slug_pre_merge_for_followup_hint`
+- `calibrate_estimate_emits_display_id_post_merge_for_followup_hint`
+- `import_post_run_hint_does_not_leak_display_id_pre_merge`
+
+Each test exercises the canonical reference form contract:
+- **Pre-merge** (`assigned_number: null`) → slug в `Next:` / `Fix:` line
+- **Post-merge** → display id (counterpart tests verify the fallback path)
+
+Helper additions: `make_all_prds_pre_merge` (multi-artifact pre-merge),
+`workspace_with_two_prds` (supersede fixture), `force_active`
+(`activate --force` to bypass MUST-section gate so the lifecycle state
+machine permits supersede / reopen transitions), `inject_fr_table`
+(provides estimable items for calibrate-estimate success path).
+
+### HIGH-2 (Code FINDING-3): validate-frontmatter false positive on release PRs
+
+**File**: `.github/workflows/ci.yml`
+
+**Issue**: Gate ran on every PR (`if: github.event_name == 'pull_request'`)
+но assign-id bot only mutates `assigned_number` on PRs merged into `dev`.
+Release PRs (`release/v* -> main`) saw `assigned_number: null` в base
+(main, lagging) и `73` в HEAD (dev, freshly assigned), triggering false
+write-once violation на legitimate forward-promotion.
+
+**Fix**: Tightened conditional to
+`if: github.event_name == 'pull_request' && github.base_ref == 'dev'`.
+The contract gate now runs только где the assign-id bot can mint numbers;
+release-promotion PRs flow без re-validating already-vetted state.
+
+**Threat model unchanged**: `github.base_ref` is the PR's target branch
+name, used here в a literal-string equality check (no shell
+interpolation). The downstream validation script still passes `BASE_REF`
+via env per Round 2 CRIT-1 hardening.
+
+### Validation
+
+- [x] `cargo fmt --check` — 0 diffs
+- [x] `cargo check --workspace` — 0 warnings
+- [x] `cargo test --workspace --lib` — all PASS
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings
+- [x] `cargo test --test cli_hint_slug_aware` — 20/20 PASS (7 pre-existing
+      + 13 new)
+- [x] `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` — valid
+
+### Deferred (out of Fixer 2.1-B scope)
+
+Other Round 2 HIGH findings (Sec FINDING-3..7) cover Rust source files
+owned by Fixer 2.1-A (`ci_assign_id.rs`, `reconcile_ids.rs`,
+`sanitize.rs`, MCP `server.rs`). Fixer 2.1-B owns только test + CI gate
+surfaces.
