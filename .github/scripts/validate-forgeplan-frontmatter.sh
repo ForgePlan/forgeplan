@@ -20,18 +20,29 @@ WARNINGS=0
 SLUG_REGEX="^(prd|rfc|adr|epic|spec|prob|sol|evid|note|ref|mem)-[a-z0-9]+(-[a-z0-9]+)*$"
 
 # Helper: extract frontmatter field value from markdown file
-# Returns the value or empty string if not found
+# Returns the value or empty string if not found.
+#
+# CI Round 4 fix: `set -euo pipefail` + grep no-match exits 1 (no field present),
+# pipefail propagates to subshell exit 1, which `set -e` then kills script
+# в next iteration when caller does `field=$(extract_field ...)`. The legacy
+# PROB-060 artifacts (ADR-012, PRD-076, RFC-009, SPEC-005, EVID-114, EVID-115,
+# PROB-060, PROB-061) lack `slug:` field в first frontmatter block (двойной
+# frontmatter from `forgeplan_new` template + manual edit) — they were created
+# pre-Phase-1.5 schema enforcement. Validator silently aborted on first
+# missing field.
+#
+# Fix: append `|| true` so grep no-match doesn't propagate pipefail.
 extract_field() {
     local file="$1"
     local field="$2"
 
     # Extract YAML frontmatter (between first --- and second ---)
-    # and grep for the field
-    sed -n '/^---$/,/^---$/p' "$file" | \
+    # and grep for the field. `|| true` neutralizes grep no-match.
+    { sed -n '/^---$/,/^---$/p' "$file" | \
         grep "^${field}:" | \
         head -1 | \
         sed "s/^${field}:[[:space:]]*//" | \
-        sed 's/^"\(.*\)"$/\1/'
+        sed 's/^"\(.*\)"$/\1/'; } || true
 }
 
 # Helper: check if a field exists and has a value
