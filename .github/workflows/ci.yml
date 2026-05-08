@@ -14,12 +14,27 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  # Validation gate: check Forgeplan artifact frontmatter contract per SPEC-005
-  # Fires only on PRs that touch .forgeplan/**/*.md files
+  # Validation gate: check Forgeplan artifact frontmatter contract per SPEC-005.
+  # Fires only on PRs that touch .forgeplan/**/*.md files AND target `dev`.
+  #
+  # PROB-060 Phase 2.1 audit Round 2 Code FINDING-3 closure: do NOT run on
+  # PRs targeting `main` (release/v* -> main). The assign-id bot only runs on
+  # `dev`, so `main` lags `dev` for `assigned_number` mutations. A release PR
+  # would see `assigned_number: null` in base (main) and `73` in HEAD (dev),
+  # triggering a false write-once violation. Restricting the gate to `dev`-
+  # bound PRs keeps the contract enforced where the bot actually mints
+  # numbers, while letting release-promotion PRs flow without re-validating
+  # already-vetted state.
+  #
+  # Security note: github.base_ref is the PR's target branch name (chosen by
+  # the actor opening the PR, but constrained by GitHub's branch naming
+  # rules). Using it in an `if:` expression is safe — it's a literal-string
+  # equality check, not a shell interpolation. The validation script itself
+  # passes BASE_REF via env (already hardened in CRIT-1 fix).
   validate-forgeplan-frontmatter:
     name: Validate Forgeplan artifact frontmatter
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
