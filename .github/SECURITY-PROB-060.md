@@ -249,7 +249,7 @@ plus 2-3 post-merge counterparts:
 - `release_not_held_emits_slug_pre_merge_in_force_hint`
 - `calibrate_estimate_emits_slug_pre_merge_for_followup_hint`
 - `calibrate_estimate_emits_display_id_post_merge_for_followup_hint`
-- `import_post_run_hint_does_not_leak_display_id_pre_merge`
+- `import_next_action_is_workspace_health_not_artifact_id` (Round 3 Code FINDING-2: renamed for accuracy — verifies workspace-scope hint, not per-artifact)
 
 Each test exercises the canonical reference form contract:
 - **Pre-merge** (`assigned_number: null`) → slug в `Next:` / `Fix:` line
