@@ -579,12 +579,16 @@ JSON: `_next_action` field. Following hints = staying на methodology path
 - DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
 
 ### Smoke test (every sprint)
+
+Automated via `scripts/smoke-test.sh` in CI pipeline (see `smoke-e2e` job in `.github/workflows/ci.yml`).
+
+Manual testing (if CI not available):
 ```bash
 cargo fmt && cargo fmt --check && cargo check && cargo test  # 0 diffs, 0 warnings, all PASS
-forgeplan init -y && forgeplan new prd "Smoke" && forgeplan validate PRD-XXX && forgeplan score PRD-XXX
-forgeplan blocked && forgeplan order
-forgeplan fpf ingest && forgeplan fpf search "trust"
+bash scripts/smoke-test.sh --verbose                          # 13 operations, 8 artifact kinds
 ```
+Covers: init, new (8 kinds), validate, score, list, search, blocked, order, health, link, graph, fpf.
+
 Any fail → do not commit, fix.
 
 ---
