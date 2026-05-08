@@ -224,6 +224,29 @@ CI-ботом на merge в `dev`. До merge артефакт виден как
 **Pre-create check**: `forgeplan new` warning'ит если slug уже существует
 в `origin/dev` и предлагает alt-slug. Игнор без явной причины запрещён.
 
+**Legacy artifacts compatibility (Phase 2.3 audit, 2026-05-08)**: артефакты,
+созданные **до Phase 1.5** (PRD-001..073, ADR-001..011, RFC-001..008, etc.) **не
+имеют** `slug` поля во frontmatter — и это **сознательное решение**. Такие
+артефакты работают как **first-class citizens** через display id path и
+**миграция не требуется** (она demoted с MUST до OPTIONAL CLEANUP в RFC-009 §4.1).
+
+Resolver, MCP DTOs и hint emission обрабатывают missing slug graceful через
+fallback к display id:
+- **Resolver**: `crates/forgeplan-core/src/artifact/store.rs` — если `slug` отсутствует,
+  lookup идёт по `assigned_number` через display id (`PRD-074`).
+- **MCP DTOs**: `slug: Option<String>` с `skip_serializing_if = "Option::is_none"` —
+  legacy артефакты возвращаются без поля `slug` в JSON, agent видит только `id` /
+  `id_display`.
+- **`refs_form_from_body`**: если parse slug fails, возвращается canonical id
+  (display number), что валидно для post-merge legacy.
+- **E2E coverage**: `crates/forgeplan-cli/tests/legacy_compat_e2e.rs` фиксирует все
+  fallback paths (resolver → display id, MCP serialization без slug, refs lookup).
+
+**Практическое следствие**: agent **не должен** добавлять slug в legacy artifact
+вручную (через `forgeplan_update`) — миграция, если будет, идёт через cosmetic
+script, не как часть feature workflow. Проверяй через resolver, что artifact
+доступен по display id (`PRD-074`) — этого достаточно.
+
 Подробности (FAQ, migration, multi-agent dispatch, slug regex):
 [`docs/methodology/ID-ASSIGNMENT.ru.md`](docs/methodology/ID-ASSIGNMENT.ru.md).
 
