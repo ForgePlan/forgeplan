@@ -44,9 +44,13 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# Utility functions
+# Utility functions.
+# All log functions write к stderr so callers using `$(create_artifact ...)`
+# capture only the ID line (which goes to stdout via final `echo "$id"`).
+# CI bug fix: `log_info` previously printed к stdout, which contaminated
+# `$(...)` capture with `ℹ Created prd: PRD-001` prefix when --verbose is on.
 log_step() {
-    echo -e "${GREEN}✓${NC} $1"
+    echo -e "${GREEN}✓${NC} $1" >&2
 }
 
 log_error() {
@@ -55,7 +59,7 @@ log_error() {
 
 log_info() {
     if [ "$VERBOSE" = "--verbose" ]; then
-        echo -e "${YELLOW}ℹ${NC} $1"
+        echo -e "${YELLOW}ℹ${NC} $1" >&2
     fi
 }
 
