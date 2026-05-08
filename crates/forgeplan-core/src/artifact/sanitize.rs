@@ -48,6 +48,19 @@ const MAX_HINT_LEN: usize = 80;
 ///   `<` `>` (redirection), `!` (history expansion in interactive
 ///   shells), `#` (comment — hides trailing payload), `*` (glob).
 ///
+/// **Note on `!` (Round 3 Code FINDING-6 — kept by design)**: `!`
+/// rejected as defense-in-depth against bash history expansion in
+/// interactive shells. The threat is low-impact (history expansion
+/// only fires в interactive shells; agent-driven hint copy-paste
+/// usually happens in a shell already running a script context with
+/// `set +H`). Stripping is cheap, however, and the benefit of a
+/// uniform reject set across both interactive and non-interactive
+/// surfaces outweighs the cosmetic cost. The trade-off is explicit:
+/// titles containing `!` lose the character (e.g. `"Auth! redesign"`
+/// sanitizes to `"Auth redesign"`). If a future use case demands
+/// `!`-preservation, audit the agent-paste path first — relaxing
+/// в isolation re-opens the history-expansion hole on classic bash.
+///
 /// Concrete threat model from the audit: an attacker plants
 /// `slug: "; rm -rf $HOME #"` in frontmatter; without this set, the
 /// sanitized hint reads `Next: forgeplan get ; rm -rf $HOME #` — copy-
@@ -100,6 +113,9 @@ pub fn sanitize_for_hint(s: &str) -> String {
             // Reject punctuation that affects hint syntax / agent parsing
             // OR would behave as a shell metacharacter on copy-paste.
             // [Round 2 Sec FINDING-6] extended set — see fn-level docs.
+            // [Round 3 Code FINDING-6] `!` kept as defense-in-depth for
+            // bash history expansion (low-impact threat, cheap fix);
+            // trade-off documented in the function-level docstring.
             !matches!(
                 *c,
                 '`' | '{'

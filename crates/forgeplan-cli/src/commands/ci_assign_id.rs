@@ -713,9 +713,10 @@ fn rename_artifact_file(workspace: &Path, from: &Path, to: &Path) -> Result<()> 
 ///       redirect the write target outside `.forgeplan/`);
 ///     * canonicalize the path and assert it stays under the canonicalized
 ///       workspace (path-traversal defense);
-///     * write to a `*.md.tmp` sibling and `rename` to publish atomically —
-///       a crash mid-write leaves either the old or new file, never a
-///       half-written one.
+///     * write to a sibling tmp file via [`tempfile::NamedTempFile::new_in`]
+///       (Round 3 Sec FINDING-12 — random suffix, no collision) and
+///       `rename` to publish atomically — a crash mid-write leaves
+///       either the old or new file, never a half-written one.
 ///
 /// Phase 2.2 [CD-4] additions:
 /// - After the frontmatter rewrite (or skipping it for already-assigned
@@ -869,18 +870,40 @@ pub fn apply_plan(
                     )
                 })?;
 
-            // Atomic publish: write to `<path>.tmp` then rename. POSIX
-            // rename is atomic for files on the same filesystem; we
+            // [Round 3 Sec FINDING-12] Atomic publish via `NamedTempFile::new_in`.
+            // POSIX rename is atomic for files on the same filesystem; we
             // rely on that to avoid half-written artifacts on crash.
-            let tmp_path = current_path.with_extension("md.tmp");
-            std::fs::write(&tmp_path, new_content).with_context(|| {
-                format!("ci-assign-id: write {}", redact_path(workspace, &tmp_path))
-            })?;
-            std::fs::rename(&tmp_path, &current_path).with_context(|| {
-                format!(
-                    "ci-assign-id: rename {} -> {}",
-                    redact_path(workspace, &tmp_path),
+            // Previous implementation used a deterministic `<path>.md.tmp`
+            // sibling — concurrent ci-assign-id runs (parallel jobs in
+            // matrix builds, or two workflow invocations on the same
+            // ref) could collide on that path. `NamedTempFile::new_in`
+            // mints a unique random suffix per call so writes don't
+            // trample each other; the file is auto-removed on any error
+            // path before `persist`.
+            let parent = current_path.parent().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ci-assign-id: artifact path has no parent dir: {}",
                     redact_path(workspace, &current_path)
+                )
+            })?;
+            let tmp = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+                format!(
+                    "ci-assign-id: create tmp in {}",
+                    redact_path(workspace, parent)
+                )
+            })?;
+            std::fs::write(tmp.path(), new_content).with_context(|| {
+                format!(
+                    "ci-assign-id: write tmp {}",
+                    redact_path(workspace, tmp.path())
+                )
+            })?;
+            tmp.persist(&current_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "ci-assign-id: rename {} -> {}: {}",
+                    redact_path(workspace, e.file.path()),
+                    redact_path(workspace, &current_path),
+                    e.error
                 )
             })?;
 
@@ -2100,6 +2123,81 @@ mod tests {
         assert!(
             msg.contains("escapes workspace") || msg.contains("invariant"),
             "expected escape-workspace rejection, got: {msg}"
+        );
+    }
+
+    /// [Round 3 Sec FINDING-12] Two `apply_plan` invocations on
+    /// distinct artifacts in the same parent dir used to potentially
+    /// collide on the deterministic `<path>.md.tmp` suffix. Switching
+    /// to `tempfile::NamedTempFile::new_in` makes each invocation pick
+    /// its own unique tmp filename. This test runs two writes
+    /// back-to-back and asserts both succeed, no `*.md.tmp` sibling
+    /// remains, and both destinations carry the expected
+    /// `assigned_number`. (Strict thread-level interleaving is not
+    /// needed: the bug is the deterministic name itself.)
+    #[test]
+    fn apply_plan_unique_tmp_filenames_no_collision() {
+        let tmp = TempDir::new().unwrap();
+        let prds = tmp.path().join(".forgeplan/prds");
+        fs::create_dir_all(&prds).unwrap();
+        let path_a = prds.join("prd-a.md");
+        let path_b = prds.join("prd-b.md");
+        fs::write(&path_a, artifact("prd-a", 74, None)).unwrap();
+        fs::write(&path_b, artifact("prd-b", 75, None)).unwrap();
+
+        let plan = vec![
+            PlanItem {
+                candidate: Candidate {
+                    slug: "prd-a".to_string(),
+                    kind: ArtifactKind::Prd,
+                    path: path_a.clone(),
+                    predicted_number: Some(74),
+                    current_assigned: None,
+                },
+                assigned_number: 74,
+                max_in_base: Some(73),
+                already_assigned: false,
+                collision: None,
+            },
+            PlanItem {
+                candidate: Candidate {
+                    slug: "prd-b".to_string(),
+                    kind: ArtifactKind::Prd,
+                    path: path_b.clone(),
+                    predicted_number: Some(75),
+                    current_assigned: None,
+                },
+                assigned_number: 75,
+                max_in_base: Some(73),
+                already_assigned: false,
+                collision: None,
+            },
+        ];
+        let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
+        assert!(collisions.is_empty());
+        assert_eq!(assignments.len(), 2);
+
+        // Both targets exist after rename, neither tmp sibling leaks.
+        let renamed_a = prds.join("PRD-074-a.md");
+        let renamed_b = prds.join("PRD-075-b.md");
+        assert!(renamed_a.exists() && renamed_b.exists());
+        assert!(!path_a.with_extension("md.tmp").exists());
+        assert!(!path_b.with_extension("md.tmp").exists());
+        assert!(!renamed_a.with_extension("md.tmp").exists());
+        assert!(!renamed_b.with_extension("md.tmp").exists());
+
+        // No stray tmp filename leaked into the parent dir under the
+        // new `NamedTempFile` strategy either (which uses random
+        // suffixes — they would all be auto-removed on drop).
+        let leftover: Vec<_> = fs::read_dir(&prds)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "no tmp leftovers expected, found: {leftover:?}"
         );
     }
 
