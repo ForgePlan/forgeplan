@@ -297,3 +297,89 @@ Other Round 2 HIGH findings (Sec FINDING-3..7) cover Rust source files
 owned by Fixer 2.1-A (`ci_assign_id.rs`, `reconcile_ids.rs`,
 `sanitize.rs`, MCP `server.rs`). Fixer 2.1-B owns только test + CI gate
 surfaces.
+
+---
+
+## Phase 2.2 — Deferred round 3 findings (Fixer 2.2-B)
+
+**Date**: 2026-05-08
+**Fixer Stage**: 2.2-B (CI gate deferred findings)
+**Audit Round**: PROB-060 Phase 2 Round 3
+
+### MED Sec FINDING-3: ci.yml gate uncovered for hotfix→main
+
+**File**: `.github/workflows/ci.yml:37-39`
+
+**Issue**: HIGH-5 (Phase 2.1-B) restricted gate к `dev` base. However, this
+blanket restriction also blocks `hotfix/* → main` PRs, which ARE legitimate.
+Hotfixes bypass `dev` and go directly to `main`, so artifact mutations in
+hotfix PRs should pass the validation gate (unlike release/v* PRs, which
+are already-vetted promotions from dev).
+
+**Coverage matrix**:
+- `feat/* → dev` ✅ runs (caught by new condition)
+- `release/v* → main` ✅ skipped (intended, already vetted on dev)
+- `hotfix/* → main` ❌ UNINTENDED bypass (hotfixes are legitimate)
+
+**Fix**:
+```yaml
+if: github.event_name == 'pull_request' && (
+  github.base_ref == 'dev' ||
+  (github.base_ref == 'main' && !startsWith(github.head_ref, 'release/'))
+)
+```
+
+Extended condition to:
+1. Allow `dev` base (primary flow)
+2. Allow `main` base IF head ref does NOT start with `release/` (hotfixes allowed)
+3. Deny `main` base IF head ref starts with `release/` (release promotions blocked)
+
+**Security model**: `github.base_ref` and `github.head_ref` are GitHub PR
+metadata (safe for literal-string comparison in `if:` expressions, not shell
+interpolations). This follows same safe-comparison pattern used for BASE_REF
+env var in CRIT-1 fix.
+
+### LOW Sec FINDING-13: bash kind regex hand-maintained (drift risk)
+
+**File**: `.github/scripts/validate-forgeplan-frontmatter.sh:20` + new
+`scripts/check-kind-list-drift.sh`
+
+**Issue**: SLUG_REGEX is a hardcoded list of artifact kind prefixes. The
+Rust enum (crates/forgeplan-core/src/artifact/types.rs) is the source of truth,
+but bash regex must be manually kept in sync. When a new kind is added
+(e.g., mem was added in Phase 0b), the regex drift silently accumulates,
+causing false rejections of valid artifacts or acceptance of invalid ones.
+
+**Solution**: Added drift detector script `scripts/check-kind-list-drift.sh`
+that:
+1. Extracts Rust enum variants from `artifact/types.rs`
+2. Maps to canonical slug forms (e.g., ProblemCard → prob, Memory → mem)
+3. Builds expected bash regex dynamically
+4. Compares with actual SLUG_REGEX in validator script
+5. Exits 0 if in sync, 1 if drift detected
+
+**Implementation**:
+- New file: `scripts/check-kind-list-drift.sh` (135 lines)
+- Canonical mapping hardcoded (validates against types.rs enum definition):
+  - Prd → prd, Epic → epic, Spec → spec, Rfc → rfc, Adr → adr
+  - Note → note, ProblemCard → prob, SolutionPortfolio → sol
+  - EvidencePack → evid, RefreshReport → ref, Memory → mem
+- Added CI job `check-kind-list-drift` to `.github/workflows/ci.yml`
+- Runs on every CI run (not just artifact PRs) to catch drift early
+
+**Validation**:
+```bash
+bash -n scripts/check-kind-list-drift.sh    # syntax check
+./scripts/check-kind-list-drift.sh          # drift detector
+```
+
+When run on current code: ✅ No drift detected (regex in sync with enum).
+
+---
+
+## Tracking
+
+- **Phase 2.2-B closure**: Sec FINDING-3 and LOW-13 FIXED
+- **Remaining deferred (Phase 2.2-A/C)**: 8 findings в backlog (5 MED + 3 LOW)
+- **Drift detector maintenance**: script must be reviewed when new artifact
+  kind is added to Rust enum (usually caught by CI before PR merge)
