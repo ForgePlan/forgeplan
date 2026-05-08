@@ -509,10 +509,28 @@ pub fn compute_assignment_plan(
                 continue;
             }
 
-            // Check if this specific artifact exists in the base ref
-            let exists_in_base = base_files.iter().any(|f| {
-                f.ends_with(&format!("{}.md", c.slug)) || f.contains(&format!("{}-", c.slug)) // Handle numbered filenames
-            });
+            // Check if this specific artifact exists in the base ref.
+            //
+            // [Round 2 Sec FINDING-3 fix] Replace ad-hoc substring matcher
+            // (`f.ends_with("{slug}.md") || f.contains("{slug}-")`) with the
+            // canonical helper `slug_exists_in_filenames`. The old logic was
+            // broken bidirectionally:
+            //   * **False positive**: `slug.contains("-")` matched any
+            //     filename containing `<slug>-` as a substring — e.g.
+            //     filename `prd-auth-systemicness.md` would match slug
+            //     `prd-auth-system` because of the `-` boundary, allowing a
+            //     tampered new artifact whose slug overlaps an existing base
+            //     filename to slip through.
+            //   * **False negative**: matching was case-sensitive against
+            //     literal slug, but post-merge filenames are uppercase
+            //     (`PRD-074-foo.md`) — re-running the bot against an
+            //     already-merged artifact would (incorrectly) classify it as
+            //     "not in base" and bail with INVARIANT VIOLATION.
+            // `slug_exists_in_filenames` handles both pre-merge
+            // (`prd-auth-system.md`) and post-merge (`PRD-074-auth-system.md`)
+            // forms via case-insensitive ASCII compare, exactly mirroring the
+            // collision check at line 574 below.
+            let exists_in_base = slug_exists_in_filenames(&c.slug, &base_files);
 
             // Fail closed: new artifact (not in base) with pre-set assigned_number is an invariant violation
             if !exists_in_base {
@@ -2689,5 +2707,88 @@ mod tests {
         // that empty base_files allows re-processing (idempotent).
         // Real-world: a PR with a new artifact carrying pre-set assigned_number
         // will be caught by both bash validator and Rust binary.
+    }
+
+    /// [Round 2 Sec FINDING-3] Layer B's `exists_in_base` predicate must
+    /// reject substring-overlap matches.
+    ///
+    /// Pre-fix logic at the audited site was:
+    /// ```text
+    /// f.ends_with(&format!("{}.md", c.slug)) ||
+    ///     f.contains(&format!("{}-", c.slug))
+    /// ```
+    ///
+    /// Two failure modes:
+    /// * **False positive** — a base filename like
+    ///   `prd-auth-system-deprecated.md` (some unrelated artifact whose slug
+    ///   merely *starts with* the candidate's slug) would match
+    ///   `f.contains("prd-auth-system-")` and a tampered NEW artifact whose
+    ///   slug is `prd-auth-system` carrying a pre-set `assigned_number`
+    ///   would slip through Layer B.
+    /// * **False negative** — case-sensitive compare missed the post-merge
+    ///   uppercase form (`PRD-074-auth-system.md`), causing legitimate
+    ///   idempotent re-runs to bail with INVARIANT VIOLATION.
+    ///
+    /// We test the predicate (`slug_exists_in_filenames`) directly because
+    /// `compute_assignment_plan`'s `base_files` source
+    /// (`artifact_filenames_in_origin_dev`) hardcodes `origin/dev` and an
+    /// in-process unit test cannot easily set up a remote — the integration
+    /// test in `.github/workflows/ci.yml` is the end-to-end coverage. The
+    /// predicate-level test pins the contract Layer B now relies on.
+    #[test]
+    fn layer_b_predicate_rejects_substring_overlap() {
+        // Candidate slug whose simple ASCII form is a substring (not the
+        // post-merge `<kind>-<digits>-<suffix>.md` shape) of an unrelated
+        // base filename. Pre-fix, the ad-hoc `f.contains("{slug}-")` test
+        // would have returned true here; the canonical helper returns
+        // false because the chars between `prd-` and the suffix `.md`
+        // are not all digits.
+        let base_files = vec!["prd-auth-system-deprecated.md".to_string()];
+        // The candidate is a NEW artifact `prd-auth-system` — its slug is
+        // a prefix of the unrelated base filename's slug. Must not be
+        // classified as already-in-base.
+        assert!(
+            !slug_exists_in_filenames("prd-auth-system", &base_files),
+            "substring-overlap match must NOT count as in-base"
+        );
+        // Sanity: the legitimate base slug DOES match itself.
+        assert!(slug_exists_in_filenames(
+            "prd-auth-system-deprecated",
+            &base_files
+        ));
+        // Reverse direction: candidate slug is a SUPERSTRING of an
+        // existing base filename's slug — also must NOT match (avoids the
+        // mirror false-positive).
+        let other_base = vec!["prd-auth.md".to_string()];
+        assert!(
+            !slug_exists_in_filenames("prd-auth-system", &other_base),
+            "candidate slug as superstring of base slug must NOT match"
+        );
+    }
+
+    /// [Round 2 Sec FINDING-3] Layer B's `exists_in_base` predicate must
+    /// match the post-merge uppercase filename (case-insensitive). Without
+    /// this, an idempotent re-run of the bot against an already-merged
+    /// artifact would falsely raise INVARIANT VIOLATION.
+    #[test]
+    fn layer_b_predicate_matches_post_merge_uppercase_filename() {
+        // Post-merge form: kind prefix uppercase + zero-padded display
+        // number + lowercased suffix. Case mixed intentionally.
+        let base_files = vec!["PRD-074-auth-system.md".to_string()];
+        assert!(
+            slug_exists_in_filenames("prd-auth-system", &base_files),
+            "post-merge uppercase filename must match the lowercase slug"
+        );
+        // Negative control: a slug that doesn't share the suffix MUST NOT
+        // match the same post-merge filename. Guards against an over-
+        // permissive case-fold regression.
+        assert!(!slug_exists_in_filenames(
+            "prd-billing-service",
+            &base_files
+        ));
+        // Mid-case (e.g. PRD-074-Auth-System.md from a typo'd rename)
+        // should also match — case folding is total over ASCII.
+        let mixed = vec!["PRD-074-Auth-System.md".to_string()];
+        assert!(slug_exists_in_filenames("prd-auth-system", &mixed));
     }
 }

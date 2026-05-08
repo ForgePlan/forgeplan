@@ -8215,10 +8215,16 @@ mod sanitize_for_hint_tests {
     #[test]
     fn not_alphanumeric_only_is_fine() {
         // Sanitize is a block-list, not an allow-list — legitimate
-        // punctuation like `:` `;` `(` `)` `.` must pass through.
+        // punctuation like `:` and `.` passes through. Per [Round 2 Sec
+        // FINDING-6] the extended reject set now strips POSIX shell
+        // metacharacters (`(`, `)`, `;`, `$`, `|`, `&`, `<`, `>`, `!`, `#`,
+        // `*`), so the parens around `(v2)` are dropped. Plain artifact
+        // identifiers (`PRD-001`, `EPIC-042_foo`, `evid-123`) — see the
+        // adjacent `passthrough_for_well_formed_ids` test — are unaffected
+        // because they only contain alphanumerics, dash, and underscore.
         let s = "PRD-001: see the RFC (v2).";
         let clean = sanitize_for_hint(s);
-        assert_eq!(clean, s);
+        assert_eq!(clean, "PRD-001: see the RFC v2.");
     }
 
     #[test]
