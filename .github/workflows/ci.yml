@@ -15,26 +15,28 @@ env:
 
 jobs:
   # Validation gate: check Forgeplan artifact frontmatter contract per SPEC-005.
-  # Fires only on PRs that touch .forgeplan/**/*.md files AND target `dev`.
+  # Fires only on PRs that touch .forgeplan/**/*.md files AND target `dev` OR hotfix→main.
   #
   # PROB-060 Phase 2.1 audit Round 2 Code FINDING-3 closure: do NOT run on
-  # PRs targeting `main` (release/v* -> main). The assign-id bot only runs on
-  # `dev`, so `main` lags `dev` for `assigned_number` mutations. A release PR
-  # would see `assigned_number: null` in base (main) and `73` in HEAD (dev),
-  # triggering a false write-once violation. Restricting the gate to `dev`-
-  # bound PRs keeps the contract enforced where the bot actually mints
-  # numbers, while letting release-promotion PRs flow without re-validating
-  # already-vetted state.
+  # PRs targeting `main` that are release/* (release/v* -> main). The assign-id
+  # bot only runs on `dev`, so `main` lags `dev` for `assigned_number` mutations.
+  # A release PR would see `assigned_number: null` in base (main) and `73` in
+  # HEAD (dev), triggering a false write-once violation.
   #
-  # Security note: github.base_ref is the PR's target branch name (chosen by
-  # the actor opening the PR, but constrained by GitHub's branch naming
-  # rules). Using it in an `if:` expression is safe — it's a literal-string
-  # equality check, not a shell interpolation. The validation script itself
-  # passes BASE_REF via env (already hardened in CRIT-1 fix).
+  # HOWEVER: hotfix/* → main PRs ARE allowed. Hotfixes bypass `dev` and go
+  # directly to `main`, so artifact mutations are legitimate in this flow.
+  # The condition extends to: `base_ref == 'dev' OR (base_ref == 'main' AND
+  # head_ref doesn't start with 'release/')`. This keeps the contract enforced
+  # where the bot can mint numbers, while letting release-promotion PRs (which
+  # are already vetted on `dev`) flow without re-validating already-vetted state.
+  #
+  # Security note: github.base_ref is safe for equality checks (literal string,
+  # no command injection risk in `if:` expressions). For defensive depth, the
+  # validation script also passes BASE_REF via env (hardened in CRIT-1 fix).
   validate-forgeplan-frontmatter:
     name: Validate Forgeplan artifact frontmatter
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
+    if: github.event_name == 'pull_request' && (github.base_ref == 'dev' || (github.base_ref == 'main' && !startsWith(github.head_ref, 'release/')))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +71,18 @@ jobs:
         if: steps.check_artifacts.outputs.has_artifacts == 'false'
         run: |
           echo "✓ No Forgeplan artifacts were changed in this PR"
+
+  check-kind-list-drift:
+    name: Check artifact kind list drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check Rust enum vs bash validator drift
+        run: |
+          chmod +x scripts/check-kind-list-drift.sh
+          scripts/check-kind-list-drift.sh
 
   check:
     name: Check, Lint & Format
