@@ -1,3 +1,12 @@
+---
+id: REF-{NNN}
+title: "{title}"
+status: draft
+kind: refresh
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
+
 # REF-{NNN}: Refresh — {Original Artifact ID}
 
 | Field | Value |

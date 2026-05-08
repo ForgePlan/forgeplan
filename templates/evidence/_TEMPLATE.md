@@ -1,3 +1,12 @@
+---
+id: EVID-{NNN}
+title: "{title}"
+status: draft
+kind: evidence
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
+
 # EVID-{NNN}: {Evidence Title}
 
 | Field | Value |
