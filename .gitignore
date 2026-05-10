@@ -13,7 +13,6 @@ target/
 # Derived index, embedding cache, local config = NOT tracked
 .forgeplan/lance/
 .forgeplan/.fastembed_cache/
-.forgeplan/config.yaml
 .forgeplan/session.yaml
 
 # Node.js
