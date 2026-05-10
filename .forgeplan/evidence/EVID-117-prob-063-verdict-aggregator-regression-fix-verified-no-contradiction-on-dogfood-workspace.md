@@ -11,11 +11,11 @@ status: active
 title: PROB-063 verdict aggregator regression fix verified — no contradiction on dogfood workspace
 ---
 
-# EVID-117: PROB-063 verdict aggregator regression fix verified — no contradiction on dogfood workspace
+# EVID-117: PROB-063 verdict aggregator regression fix verified — no contradiction on dogfood + synthetic E2E
 
 ## Summary
 
-PROB-063 fix (`compute_verdict_from_signals` excludes `phase_mismatches` из обеих promotion веток) проверен через TDD pipeline + E2E на dogfood workspace. Result: verdict, verdict_summary и next_actions согласованы — contradiction из issue #276 закрыт.
+PROB-063 fix (`compute_verdict_from_signals` excludes `phase_mismatches` из обеих promotion веток) проверен через TDD pipeline + E2E на dogfood workspace + **synthetic E2E reproducing issue #276 acceptance scenario**. Result: verdict, verdict_summary и next_actions согласованы — contradiction из issue #276 закрыт.
 
 ## Method
 
@@ -29,9 +29,9 @@ PROB-063 fix (`compute_verdict_from_signals` excludes `phase_mismatches` из о
 
 2. Pre-fix run: 2 теста FAIL — confirmed bug reproducer.
 
-3. Удалил 2 устаревших теста, документировавших buggy behavior (`verdict_phase_mismatches_below_threshold_is_needs_attention`, `verdict_phase_mismatches_above_threshold_is_unhealthy`).
+3. Удалил 2 устаревших теста, документировавших buggy behavior.
 
-4. Применил fix: `phase_mismatches` исключён из critical AND has_any_warning checks. Параметр сохранён в signature как `_phase_mismatches: usize` для API stability (future Verdict::Advisory tier может opt-in без breaking change). `t.phase_mismatches` threshold аналогично retained но unused.
+4. Применил fix: `phase_mismatches` исключён из critical AND has_any_warning checks. Параметр сохранён в signature как `_phase_mismatches: usize` для API stability.
 
 5. Post-fix run: 19/19 verdict tests + 50/50 health module tests + `verdict_human_summary_never_lies` + `next_actions_never_says_healthy_when_any_signal_present` — все green.
 
@@ -43,10 +43,56 @@ PROB-063 fix (`compute_verdict_from_signals` excludes `phase_mismatches` из о
 | `cargo check --workspace` | 0 warnings |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
 | `cargo test -p forgeplan-core --lib` | 1629/1630 (1 flaky `run_subprocess_caps_stdout_at_10mib` — passes в isolation, parallelism issue в helpers module, unrelated к health) |
+| `bash scripts/smoke-test.sh` | PASSED — 13 operations, 8 artifact kinds, full forge cycle |
+
+### Synthetic E2E — issue #276 acceptance criteria reproduction
+
+Создан temp workspace, симулирующий reporter сценарий:
+
+```bash
+T=$(mktemp -d)
+cd "$T"
+forgeplan init -y
+# Create EVID, fill structured fields, activate
+forgeplan new evidence "ev"
+# (append verdict/CL/type to EVID body)
+forgeplan activate EVID-001
+# Create PROB, link evidence, force-activate, advance phase to shape
+forgeplan new problem "issue 1"
+forgeplan link EVID-001 PROB-001 --relation informs
+forgeplan activate PROB-001 --force
+forgeplan phase-advance PROB-001 --to shape
+# State: 1 advisory phase mismatch + 0 critical signals
+forgeplan health
+```
+
+**Output (post-fix)**:
+
+```
+By status:
+  active  2
+
+⏳ Phase mismatches (1):
+  PROB-001 "issue 1" — phase: shape
+
+→ Next actions:
+  1. Project looks healthy. Continue implementation.
+
+Project looks healthy.
+Done.
+```
+
+**Acceptance criteria (issue #276) ALL MET**:
+
+| Criterion | Pre-fix | Post-fix |
+|---|---|---|
+| `verdict_summary` matches `next_actions[0]` | ❌ contradiction | ✅ both say "healthy" |
+| CLI output does not contain "Project is unhealthy" when next_actions says healthy | ❌ both lines emitted | ✅ only "Project looks healthy" |
+| 0 critical + N>0 advisory → verdict=healthy | ❌ NeedsAttention | ✅ Healthy |
 
 ### Real E2E на dogfood workspace
 
-Pre-fix scenario reproducer недоступен локально (наш репо имеет 1 blind_spot — real critical), но invariant'ы fix'а проверены на актуальном state:
+Pre-fix scenario reproducer недоступен на нашем репо (имеет 1 blind_spot — real critical), но invariant'ы проверены на актуальном state. Тут verdict=needs_attention (drives'ит blind_spot, не phase_mismatches).
 
 ```
 $ forgeplan health
@@ -55,16 +101,9 @@ $ forgeplan health
   → Next actions:
     1. Create evidence for 1 artifact(s) without proof — start with `forgeplan new evidence "<title>" --link PROB-062`
   Project needs attention.
-
-$ forgeplan health --json | jq '{verdict, verdict_summary, "next_actions[0]": .next_actions[0]}'
-{
-  "verdict": "needs_attention",
-  "verdict_summary": "Project needs attention.",
-  "next_actions[0]": "Create evidence for 1 artifact(s) without proof..."
-}
 ```
 
-Все три surface (CLI text, JSON `verdict`, JSON `next_actions[0]`) согласованы — verdict drivers'ит blind_spot (real warning), не phase_mismatches (advisory). Contradiction из issue #276 не воспроизводится.
+CLI text + JSON `verdict` + `next_actions[0]` — все три согласованы. Verdict drivers'ит blind_spot (real warning), не phase_mismatches (advisory). Contradiction из issue #276 не воспроизводится.
 
 ## Findings
 
@@ -73,6 +112,8 @@ $ forgeplan health --json | jq '{verdict, verdict_summary, "next_actions[0]": .n
 2. **API surface preserved**: `compute_verdict_with(thresholds, phase_mismatches)` сохранён 1:1 (call sites в `health_report_with_phase` не меняются). `VerdictThresholds.phase_mismatches` поле тоже retained — public type, удаление было бы breaking. Future tier `Verdict::Advisory` может re-introduce phase_mismatches влияние на verdict без breaking change (enum уже `#[non_exhaustive]`).
 
 3. **No semantic shift для real signals**: blind_spots, orphans, active_stubs, duplicates, stale, at_risk — promotion logic неизменна. Только phase_mismatches переведён в чисто-display category.
+
+4. **Discovered separate concern (out of scope)**: `forgeplan health --json` CLI surface не fold'ит `advisory_phase_mismatches` в JSON output (CLI text surface fold'ит через `health_report_with_phase`). MCP `forgeplan_health` fold'ит correctly. Это отдельная asymmetry между CLI JSON и MCP/CLI text — НЕ связана с PROB-063 fix, может быть отдельный bug. Documented для future triage.
 
 ## Structured Fields
 
@@ -85,7 +126,4 @@ evidence_type: test
 - PROB-063 (parent — regression bug fixed)
 - PROB-029 (anti-contradiction class restored)
 - issue #276 (external bug report, will auto-close on PR merge)
-
-
-
 
