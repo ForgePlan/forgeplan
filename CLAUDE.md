@@ -345,7 +345,7 @@ CI также содержит **drift detector** (`scripts/check-mcp-tool-count
 ## AI-agents (non-interactive hygiene)
 
 - `forgeplan init` — **always** with `-y` (no interactive prompt)
-- Config `.forgeplan/config.yaml` — в gitignore, теряется на reinit → настроить LLM provider после init
+- Config `.forgeplan/config.yaml` — tracked (env var refs only, no hardcoded secrets); shared LLM provider/model settings между членами команды
 - **Backup перед reinit** (4-step для LanceDB migration или corruption):
   1. `forgeplan export --output backup-$(date +%Y%m%d).json`
   2. `cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)`
@@ -642,14 +642,15 @@ forgeplan claims              # кто что захватил
 ├── adrs/ rfcs/ prds/ epics/ specs/   ← tracked, source of truth
 ├── evidence/ problems/ solutions/
 ├── notes/ refresh/ memory/
+├── config.yaml         ← tracked (env var refs only, no hardcoded secrets)
 ├── lance/              ← ⚠️ gitignored (derived index — forgeplan scan-import)
 ├── .fastembed_cache/   ← ⚠️ gitignored
-└── config.yaml         ← ⚠️ gitignored (LLM keys)
+└── session.yaml        ← ⚠️ gitignored (per-machine runtime state)
 ```
 
 **Fresh clone**: `git clone → forgeplan init -y → forgeplan scan-import → forgeplan list`.
 
-**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan scan-import`; DO NOT commit `lance/` or `config.yaml`.
+**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan scan-import`; DO NOT commit `lance/` or `session.yaml`.
 
 ---
 
