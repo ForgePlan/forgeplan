@@ -10,6 +10,8 @@ use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase::{self, Phase};
 use forgeplan_core::workspace;
 
+use crate::commands::common;
+
 /// Phases accepted on the CLI. Lower-case snake_case mirrors the MCP
 /// `PhaseArg` enum and the on-disk YAML representation. `Unknown` is
 /// intentionally NOT exposed as an advance target -- callers cannot
@@ -61,8 +63,19 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
+    // Phase 2.5 (PROB-060) — accept slug или display id form. Phase state
+    // file named by canonical id; without resolver slug input creates
+    // a NEW state file at .forgeplan/state/<slug>.yaml instead of updating
+    // existing canonical one — silent state divergence.
+    let store = common::store().await?;
+    let canonical = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+
     let target: Phase = to.into();
-    let state = phase::store::advance_phase(&ws, id, target, reason.map(|s| s.to_string())).await?;
+    let state =
+        phase::store::advance_phase(&ws, &canonical, target, reason.map(|s| s.to_string())).await?;
 
     // PRD-071 contract: produce a single Next: action — the next suggested phase
     // advance. No suggestion when at terminal phase (Done.).
