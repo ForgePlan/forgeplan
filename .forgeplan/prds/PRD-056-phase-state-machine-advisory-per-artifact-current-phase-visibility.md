@@ -316,3 +316,4 @@ And health does not fail (exit 0, advisory only)
 
 > **Next step**: validate PRD-056 → ADI (3+ hypotheses, Standard recommended) → Code.
 
+
