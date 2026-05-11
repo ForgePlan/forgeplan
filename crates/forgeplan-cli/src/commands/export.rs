@@ -70,10 +70,16 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         full_path.display()
     );
 
+    // [w4 HIGH-2 / CWE-78] sanitize the path before interpolating it into
+    // the agent-visible hint. `--output <PATH>` is full attacker-controlled
+    // input; without filtering, a payload like `'/tmp/foo;rm -rf .'` lands
+    // in `Next: forgeplan import /tmp/foo;rm -rf .` and executes the
+    // trailing command on copy-paste. Sibling fix of HIGH-1 (tag.rs).
     let path_str = full_path.display().to_string();
+    let safe_path = forgeplan_core::artifact::sanitize::sanitize_path_for_hint(&path_str);
     let hint_list = vec![
         Hint::info("Re-import to verify the snapshot round-trips")
-            .with_action(format!("forgeplan import {}", path_str)),
+            .with_action(format!("forgeplan import {}", safe_path)),
     ];
     print!("{}", hints::render_next_action_line(&hint_list));
 
