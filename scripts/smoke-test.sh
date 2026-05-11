@@ -314,10 +314,10 @@ log_step "Progress: forgeplan progress $PRD_ID --json"
 log_info "Testing claim/release cycle..."
 
 # Claim with short TTL — proves write path
-output=$("$FORGEPLAN_BIN" claim "$PRD_ID" --agent "smoke-test/v1" --ttl-minutes 1 --note "smoke" 2>&1) || {
+output=$("$FORGEPLAN_BIN" claim "$PRD_ID" --agent "smoke-test-v1" --ttl-minutes 1 --note "smoke" 2>&1) || {
     fail "forgeplan claim $PRD_ID failed: $output"
 }
-log_step "Claim: $PRD_ID (agent=smoke-test/v1, ttl=1m)"
+log_step "Claim: $PRD_ID (agent=smoke-test-v1, ttl=1m)"
 
 # Claims listing — proves read path picks up the claim
 output=$("$FORGEPLAN_BIN" claims 2>&1) || {
@@ -329,7 +329,7 @@ fi
 log_step "Claims: forgeplan claims (found $PRD_ID)"
 
 # Release — idempotent close
-output=$("$FORGEPLAN_BIN" release "$PRD_ID" --agent "smoke-test/v1" 2>&1) || {
+output=$("$FORGEPLAN_BIN" release "$PRD_ID" --agent "smoke-test-v1" 2>&1) || {
     fail "forgeplan release $PRD_ID failed: $output"
 }
 log_step "Release: $PRD_ID"
