@@ -20,11 +20,38 @@ fn parse_fail_on(fail_on: &str) -> std::collections::HashMap<String, usize> {
     thresholds
 }
 
+/// Compute the `--strict` exit code for a built health report.
+///
+/// Returns `Some(1)` when the workspace surfaces any critical signal
+/// (verdict ∈ {NeedsAttention, Unhealthy} OR any of orphans / blind_spots
+/// / active_stubs / at_risk > 0). Returns `None` otherwise (caller emits
+/// exit 0). Empty workspaces and advisory-only signals (phase mismatches
+/// alone — consistent with PROB-063: advisory ≠ critical) are NOT counted
+/// as failures.
+///
+/// Pure function on the report so unit tests can pin the contract without
+/// invoking the CLI shell.
+fn strict_exit_code(report: &health::HealthReport) -> Option<i32> {
+    if !report.orphans.is_empty()
+        || !report.blind_spots.is_empty()
+        || !report.active_stubs.is_empty()
+        || !report.at_risk.is_empty()
+    {
+        return Some(1);
+    }
+    match report.verdict {
+        health::Verdict::NeedsAttention | health::Verdict::Unhealthy => Some(1),
+        // `Empty` and `Healthy` (plus any forward-compat variants) → no signal
+        _ => None,
+    }
+}
+
 pub async fn run(
     compact: bool,
     json: bool,
     ci: bool,
     fail_on: Option<String>,
+    strict: bool,
 ) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
@@ -96,6 +123,15 @@ pub async fn run(
                 })
             })
             .collect();
+        // `--strict` adds a parseable `exit_code` field so CI scripts can
+        // branch on a single integer instead of recomputing the gate from
+        // counts. Field is only present when `--strict` was requested —
+        // omitting it in default mode keeps legacy consumers untouched.
+        let strict_exit = if strict {
+            strict_exit_code(&report).unwrap_or(0)
+        } else {
+            0
+        };
         let json_data = serde_json::json!({
             "project": config.project_name,
             "total": report.total,
@@ -144,7 +180,14 @@ pub async fn run(
             "advisory_phase_mismatches": phase_mismatches_payload,
             "_next_action": hints::primary_action(&hints_vec),
         });
+        let mut json_data = json_data;
+        if strict && let serde_json::Value::Object(ref mut map) = json_data {
+            map.insert("exit_code".to_string(), serde_json::json!(strict_exit));
+        }
         println!("{}", serde_json::to_string_pretty(&json_data)?);
+        if strict && strict_exit != 0 {
+            std::process::exit(strict_exit);
+        }
         return Ok(());
     }
 
@@ -434,6 +477,14 @@ pub async fn run(
         } else {
             println!("CI PASSED — health within thresholds");
         }
+    }
+
+    // `--strict` gate: exit non-zero when any critical signal trips. Runs
+    // AFTER human rendering so operators still see the dashboard before
+    // the CI failure. JSON path handles its own exit above to keep the
+    // `exit_code` field in the payload.
+    if strict && let Some(code) = strict_exit_code(&report) {
+        std::process::exit(code);
     }
 
     Ok(())

@@ -556,6 +556,13 @@ enum Commands {
         /// Fail thresholds for --ci (e.g., "orphans=5,blind_spots=3,stale=2")
         #[arg(long)]
         fail_on: Option<String>,
+        /// Strict mode: exit 1 if verdict is NeedsAttention/Unhealthy or
+        /// any of {orphans, blind_spots, active_stubs, at_risk} > 0.
+        /// Designed for CI gates that want a single boolean signal.
+        /// Empty workspaces and advisory-only signals (e.g. phase mismatches)
+        /// keep exit 0.
+        #[arg(long)]
+        strict: bool,
     },
     /// Capture a decision from conversation into a Note or ADR artifact
     Capture {
@@ -1191,7 +1198,8 @@ async fn main() -> anyhow::Result<()> {
             json,
             ci,
             fail_on,
-        } => commands::health::run(compact, json, ci, fail_on).await,
+            strict,
+        } => commands::health::run(compact, json, ci, fail_on, strict).await,
         Commands::Route {
             description,
             explain,
