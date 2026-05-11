@@ -5,7 +5,7 @@ status: Draft
 author:
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
-prd: PRD-{NNN}
+prd: null
 type: API / Data Model / Protocol / UI Spec
 depth: standard / deep / critical
 ---
@@ -116,9 +116,9 @@ erDiagram
 
 ## Related
 
-- PRD-{NNN}: {link}
-- RFC-{NNN}: {link}
-- ADR-{NNN}: {link}
+- PRD-<id>: {link}
+- RFC-<id>: {link}
+- ADR-<id>: {link}
 
 ---
 

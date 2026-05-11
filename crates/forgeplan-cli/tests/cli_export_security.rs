@@ -135,9 +135,7 @@ fn export_hint_preserves_clean_path_chars() {
     //    only whitelist-allowed bytes.
     let prefix = "Next: forgeplan import ";
     let arg_start = next_line.find(prefix).map(|i| i + prefix.len());
-    let arg = arg_start
-        .map(|i| &next_line[i..])
-        .unwrap_or(&next_line);
+    let arg = arg_start.map(|i| &next_line[i..]).unwrap_or(&next_line);
     for c in arg.chars() {
         assert!(
             c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_'),

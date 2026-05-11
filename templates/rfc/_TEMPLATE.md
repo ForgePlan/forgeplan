@@ -5,7 +5,7 @@ status: Draft
 author:
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
-prd: PRD-{NNN}
+prd: null
 depth: standard / deep / critical
 ---
 
@@ -105,9 +105,9 @@ TOTAL                               0/0  (  0%)
 
 | Artifact | Type | Relation |
 |----------|------|----------|
-| PRD-{NNN} | PRD | based_on |
-| SPEC-{NNN} | Spec | implements |
-| ADR-{NNN} | ADR | decided_by |
+| PRD-<id> | PRD | based_on |
+| SPEC-<id> | Spec | implements |
+| ADR-<id> | ADR | decided_by |
 
 ---
 
