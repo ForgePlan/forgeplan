@@ -506,12 +506,26 @@ fn detect_body_links_drift(r: &ArtifactRecord) -> Option<Vec<String>> {
         .predicted
         .map(|n| format!("{prefix_upper}-{n}"))
         .unwrap_or_default();
+    // LOW-2 (w4-security-audit): fall back to the `id` field from the outer
+    // frontmatter when `assigned_number` / `predicted_number` are absent —
+    // common for fresh-init artifacts whose outer wrapper carries only the
+    // canonical `id: PRD-001` form. Without this, the artifact's own heading
+    // (`# PRD-001: …`) and inner-frontmatter `id:` line are misreported as
+    // body_links_drift on a clean workspace.
+    let self_id_from_fm =
+        r.fm.get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_uppercase())
+            .unwrap_or_default();
 
     let drifted: Vec<String> = body_refs
         .into_iter()
         .filter(|tok| {
             let upper = tok.to_ascii_uppercase();
-            if upper == self_id_assigned || upper == self_id_predicted {
+            if upper == self_id_assigned
+                || upper == self_id_predicted
+                || (!self_id_from_fm.is_empty() && upper == self_id_from_fm)
+            {
                 return false;
             }
             !frontmatter_targets.contains(&upper)

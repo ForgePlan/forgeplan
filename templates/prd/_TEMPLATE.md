@@ -5,7 +5,7 @@ status: Draft
 author:
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
-epic: EPIC-{NNN}
+epic: null
 priority: P0 / P1 / P2 / P3
 depth: tactical / standard / deep / critical
 domain: general / healthcare / fintech / govtech / edtech
@@ -251,10 +251,10 @@ Then  [результат]
 
 | Artifact | Relation | Status |
 |----------|----------|--------|
-| EPIC-{NNN} | Parent epic | ... |
-| SPEC-{NNN} | API contracts | ... |
-| RFC-{NNN} | Architecture proposal | ... |
-| ADR-{NNN} | Decision record | ... |
+| EPIC-<id> | Parent epic | ... |
+| SPEC-<id> | API contracts | ... |
+| RFC-<id> | Architecture proposal | ... |
+| ADR-<id> | Decision record | ... |
 
 ---
 

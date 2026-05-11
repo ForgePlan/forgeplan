@@ -27,10 +27,21 @@ fn forgeplan() -> Command {
 }
 
 /// Initialise a fresh `.forgeplan/` workspace in a tempdir and return it.
+///
+/// LOW-3 (w4-security-audit): the binary's `discover_known_playbooks`
+/// enumerates `$HOME/.claude/plugins/` on every `forgeplan init`. Without
+/// HOME override that enumeration is non-deterministic between CI (no
+/// user plugins) and local dev (e.g. dev-toolkit, forge plugin installed).
+/// We override HOME — and USERPROFILE for Windows portability — to the
+/// tempdir so plugin discovery is hermetic. XDG_DATA_HOME pinned too,
+/// matching the setup-skill test for consistency.
 fn init_workspace() -> TempDir {
     let tmp = TempDir::new().unwrap();
     forgeplan()
         .args(["init", "-y"])
+        .env("HOME", tmp.path())
+        .env("USERPROFILE", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path())
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -41,6 +52,9 @@ fn init_workspace() -> TempDir {
 fn new_prd(tmp: &TempDir, title: &str) -> String {
     forgeplan()
         .args(["new", "prd", title])
+        .env("HOME", tmp.path())
+        .env("USERPROFILE", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path())
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -390,9 +404,14 @@ fn setup_skill_writes_skill_file_under_fake_home() {
     let tmp = init_workspace();
     let fake_home = TempDir::new().unwrap();
 
+    // LOW-1 (w4-security-audit): override HOME, USERPROFILE (Windows), and
+    // XDG_DATA_HOME so `dirs::home_dir()` resolves to the tempdir on every
+    // platform — and never falls through to passwd entry when HOME is blank.
     forgeplan()
         .args(["setup-skill"])
         .env("HOME", fake_home.path())
+        .env("USERPROFILE", fake_home.path())
+        .env("XDG_DATA_HOME", fake_home.path())
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -641,14 +660,18 @@ fn reconcile_ids_check_only_emits_json() {
     let tmp = init_workspace();
     let _ = new_prd(&tmp, "Reconcile target");
 
-    // Empty workspace может породить unresolved drift (body_links_drift на
-    // template body refs) → exit 1. Контракт: structure JSON всё равно
-    // emits. Принимаем оба кода через .code().
+    // LOW-2 (w4-security-audit): fresh-init workspace MUST be clean. The
+    // shipped templates no longer carry literal cross-refs (`ADR-001` etc.
+    // were replaced with `<id>` placeholders), and `detect_body_links_drift`
+    // now treats the outer-frontmatter `id` as a self-ref to cover artifacts
+    // with double-wrapped frontmatter. Together these close the bad-first-
+    // run UX where a fresh `forgeplan init` + `new prd` would surface
+    // body_links_drift. Strict assertion: exit 0, summary.unresolved=false.
     let output = forgeplan()
         .args(["reconcile-ids", "--check-only", "--json"])
         .current_dir(tmp.path())
         .assert()
-        .code(predicate::in_iter([0i32, 1i32]))
+        .success()
         .get_output()
         .stdout
         .clone();
@@ -657,6 +680,10 @@ fn reconcile_ids_check_only_emits_json() {
         serde_json::from_str(s.trim()).expect("reconcile-ids --json output");
     assert!(parsed["actions"].is_array());
     assert!(parsed["summary"].is_object());
+    assert_eq!(
+        parsed["summary"]["unresolved"], false,
+        "fresh init must have zero unresolved drift (LOW-2 regression guard)"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -15,7 +15,10 @@ use chrono::Utc;
 /// realistic clientInfo values ("claude-code/1.0.50", "cursor-ide/0.42")
 /// while short enough to keep frontmatter scannable and reject pathological
 /// inputs.
-const MAX_FIELD_LEN: usize = 64;
+///
+/// PROB-066 reuse: `claim::validate_agent_id` mirrors this length cap for
+/// the free-form agent string accepted by `forgeplan claim --agent`.
+pub(crate) const MAX_FIELD_LEN: usize = 64;
 
 /// Reject control chars, bidi-override / ZWJ / RTL class, newlines, path
 /// separators, and the `/` delimiter we use in `as_frontmatter_value()`.
@@ -23,7 +26,10 @@ const MAX_FIELD_LEN: usize = 64;
 /// clientInfo name like `"orchestrator\u{202E}drowssap"` must not land
 /// verbatim in markdown where human auditors and downstream LLMs consume
 /// it (R2 audit MED, security-expert finding).
-fn is_identity_char_forbidden(c: char) -> bool {
+///
+/// PROB-066 reuse: also enforced on `forgeplan claim --agent <STR>` to keep
+/// CLI and MCP identity surfaces character-class-symmetric.
+pub(crate) fn is_identity_char_forbidden(c: char) -> bool {
     // Explicit path separators + our delimiter.
     if matches!(c, '/' | '\\' | '\0') {
         return true;
