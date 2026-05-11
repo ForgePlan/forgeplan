@@ -7,6 +7,8 @@ links:
   relation: informs
 - target: PROB-029
   relation: informs
+- target: PROB-064
+  relation: informs
 status: active
 title: PROB-063 verdict aggregator regression fix verified — no contradiction on dogfood workspace
 ---
@@ -113,7 +115,7 @@ CLI text + JSON `verdict` + `next_actions[0]` — все три согласов
 
 3. **No semantic shift для real signals**: blind_spots, orphans, active_stubs, duplicates, stale, at_risk — promotion logic неизменна. Только phase_mismatches переведён в чисто-display category.
 
-4. **Discovered separate concern (out of scope)**: `forgeplan health --json` CLI surface не fold'ит `advisory_phase_mismatches` в JSON output (CLI text surface fold'ит через `health_report_with_phase`). MCP `forgeplan_health` fold'ит correctly. Это отдельная asymmetry между CLI JSON и MCP/CLI text — НЕ связана с PROB-063 fix, может быть отдельный bug. Documented для future triage.
+4. **Discovered separate concern (PROB-064, out of scope)**: `forgeplan health --json` CLI surface И MCP `forgeplan_health` ОБА fold'ят advisory phase mismatches, но **используют разные имена ключа** — CLI JSON: `phase_mismatches`, MCP: `advisory_phase_mismatches`. Это naming inconsistency между surface'ами одного и того же tool'а — НЕ связана с PROB-063 fix, отдельный artifact PROB-064 records discovery для future triage. (Initial scan этого EVID ошибочно прочитал «не fold'ит» — на самом деле fold'ит под другим именем.)
 
 ## Structured Fields
 
@@ -126,4 +128,5 @@ evidence_type: test
 - PROB-063 (parent — regression bug fixed)
 - PROB-029 (anti-contradiction class restored)
 - issue #276 (external bug report, will auto-close on PR merge)
+
 
