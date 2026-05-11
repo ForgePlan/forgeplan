@@ -26,149 +26,10 @@
 //! object) — a single macro shape would just push assertion logic into the
 //! call site, defeating the readability win.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use serde_json::{Value, json};
 
-use forgeplan_core::db::store::LanceStore;
-use forgeplan_core::workspace;
-use forgeplan_mcp::ForgeplanServer;
-use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, RawContent};
-use serde_json::{Map, Value, json};
-use tempfile::TempDir;
-
-// ── harness (local copy of integration_e2e.rs::McpFixture) ────────────
-
-struct McpFixture {
-    _tempdir: TempDir,
-    workspace_path: PathBuf,
-    client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
-    _server_task: tokio::task::JoinHandle<()>,
-}
-
-impl McpFixture {
-    async fn new() -> Self {
-        let tempdir = TempDir::new().expect("tempdir");
-        let workspace_path =
-            workspace::init_workspace(tempdir.path(), "mcp-coverage-test").expect("init workspace");
-        let _store = Arc::new(
-            LanceStore::init(&workspace_path)
-                .await
-                .expect("init lance store"),
-        );
-        let server = ForgeplanServer::new(tempdir.path().to_path_buf()).await;
-
-        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-        let server_task = tokio::spawn(async move {
-            if let Ok(running) = server.serve(server_io).await {
-                let _ = running.waiting().await;
-            }
-        });
-
-        let client = ().serve(client_io).await.expect("client initialize handshake");
-
-        Self {
-            _tempdir: tempdir,
-            workspace_path,
-            client,
-            _server_task: server_task,
-        }
-    }
-
-    async fn call_tool_json(&self, name: &'static str, args: Value) -> CallToolEnvelope {
-        let params = CallToolRequestParams::new(name).with_arguments(value_to_object(args));
-        let result = tokio::time::timeout(
-            Duration::from_secs(15),
-            self.client.peer().call_tool(params),
-        )
-        .await
-        .unwrap_or_else(|_| panic!("tool `{name}` timed out (15s)"))
-        .unwrap_or_else(|e| panic!("tool `{name}` rpc error: {e}"));
-
-        CallToolEnvelope::from(result)
-    }
-
-    /// Helper: create a PRD via the live tool and return its display id.
-    async fn seed_prd(&self, title: &str) -> String {
-        let env = self
-            .call_tool_json("forgeplan_new", json!({"kind": "prd", "title": title}))
-            .await;
-        let resp = env.assert_ok();
-        resp["id"].as_str().expect("id present").to_string()
-    }
-}
-
-fn value_to_object(v: Value) -> Map<String, Value> {
-    match v {
-        Value::Object(map) => map,
-        Value::Null => Map::new(),
-        other => panic!("expected JSON object for tool args, got: {other}"),
-    }
-}
-
-struct CallToolEnvelope {
-    is_error: bool,
-    raw_text: String,
-    json: Option<Value>,
-}
-
-impl CallToolEnvelope {
-    fn assert_ok(&self) -> &Value {
-        assert!(
-            !self.is_error,
-            "expected success, got error: {}",
-            self.raw_text
-        );
-        self.json.as_ref().unwrap_or_else(|| {
-            panic!(
-                "expected JSON payload but content was non-JSON text: {}",
-                self.raw_text
-            )
-        })
-    }
-
-    /// Accept EITHER a successful JSON payload OR an `is_error=true` envelope.
-    /// Used by handlers that depend on optional pre-requisites (LLM provider,
-    /// external file, pre-existing trash). The contract we pin here is "the
-    /// handler is reachable, well-formed args don't panic, and the response
-    /// shape is parseable" — not "the underlying operation succeeded".
-    fn assert_reachable(&self) {
-        // No panic from server, no transport error, and we got SOME body.
-        assert!(
-            !self.raw_text.is_empty(),
-            "tool returned empty content — likely panicked: {self:?}"
-        );
-    }
-}
-
-impl std::fmt::Debug for CallToolEnvelope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CallToolEnvelope")
-            .field("is_error", &self.is_error)
-            .field("raw_text", &self.raw_text)
-            .field("json_is_some", &self.json.is_some())
-            .finish()
-    }
-}
-
-impl From<CallToolResult> for CallToolEnvelope {
-    fn from(r: CallToolResult) -> Self {
-        let is_error = r.is_error.unwrap_or(false);
-        let mut raw_text = String::new();
-        for c in &r.content {
-            if let RawContent::Text(t) = &c.raw {
-                raw_text.push_str(&t.text);
-            }
-        }
-        let json = serde_json::from_str::<Value>(&raw_text).ok();
-        Self {
-            is_error,
-            raw_text,
-            json,
-        }
-    }
-}
+mod common;
+use common::McpFixture;
 
 // ── Group A: read-only tools that need no args + no state ─────────────
 
@@ -558,7 +419,20 @@ async fn c30_forgeplan_calibrate_no_id_smoke() {
     env.assert_reachable();
 }
 
-// ── Group G: LLM-backed tools (LLM not configured → typed error OK) ───
+// ── Group G: LLM-backed tools (LLM not configured → is_error=true) ────
+//
+// Wave 4 code-review MAJOR-2: these handlers require a configured LLM
+// provider (capture / reason / decompose / generate all call
+// `forgeplan_core::llm::*`). A fresh `McpFixture` workspace never has an
+// API key wired, so the contract на test env пинуем строго:
+// `is_error == true` AND non-empty error body. Anything else means the
+// handler silently succeeded without an LLM (regression) or panicked
+// (also regression).
+//
+// The other ~30 reachability-only tests in this file cover handlers с
+// optional pre-requisites (playbooks, plugins, undo receipts) — they
+// stay tolerant by design. Tightening them одинаково — отдельный refactor
+// (PROB-065 candidate).
 
 #[tokio::test]
 async fn c31_forgeplan_capture_no_llm_smoke() {
@@ -569,9 +443,15 @@ async fn c31_forgeplan_capture_no_llm_smoke() {
             json!({"decision": "Use Postgres for primary storage"}),
         )
         .await;
-    // Without LLM provider configured this returns is_error=true; either
-    // outcome is acceptable — the contract is "reachable, no panic".
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "capture without LLM provider must return is_error=true (handler requires LLM), got: {}",
+        env.raw_text
+    );
+    assert!(
+        !env.raw_text.is_empty(),
+        "error body must describe the missing provider, got empty"
+    );
 }
 
 #[tokio::test]
@@ -581,7 +461,15 @@ async fn c32_forgeplan_reason_no_llm_smoke() {
     let env = fx
         .call_tool_json("forgeplan_reason", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "reason without LLM provider must return is_error=true (ADI requires LLM), got: {}",
+        env.raw_text
+    );
+    assert!(
+        !env.raw_text.is_empty(),
+        "error body must describe the missing provider, got empty"
+    );
 }
 
 #[tokio::test]
@@ -591,7 +479,15 @@ async fn c33_forgeplan_decompose_no_llm_smoke() {
     let env = fx
         .call_tool_json("forgeplan_decompose", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "decompose without LLM provider must return is_error=true (handler requires LLM), got: {}",
+        env.raw_text
+    );
+    assert!(
+        !env.raw_text.is_empty(),
+        "error body must describe the missing provider, got empty"
+    );
 }
 
 #[tokio::test]
@@ -603,7 +499,15 @@ async fn c34_forgeplan_generate_no_llm_smoke() {
             json!({"kind": "prd", "description": "User onboarding flow"}),
         )
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "generate without LLM provider must return is_error=true (template fill requires LLM), got: {}",
+        env.raw_text
+    );
+    assert!(
+        !env.raw_text.is_empty(),
+        "error body must describe the missing provider, got empty"
+    );
 }
 
 // ── Group H: export / import roundtrip ────────────────────────────────

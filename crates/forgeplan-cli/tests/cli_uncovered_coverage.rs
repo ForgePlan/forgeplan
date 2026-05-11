@@ -8,8 +8,10 @@
 //! верификация: на момент написания все 17 команд работают на простейшем
 //! happy path; тесты фиксируют этот baseline.
 //!
-//! Covered commands (17):
-//!   embed, tree, git_sync, watch, log_cmd, context, promote, reopen,
+//! Covered commands (16; `watch` deferred — long-running foreground watcher
+//! is untestable via assert_cmd without SIGTERM handling and timing races,
+//! see `crates/forgeplan-cli/src/commands/watch.rs` for module-level unit tests):
+//!   embed, tree, git_sync, log_cmd, context, promote, reopen,
 //!   scan_import, setup_skill, tag, recall, remember, migrate,
 //!   migrate_dry_run, reconcile_ids, ci_assign_id
 //!
@@ -179,20 +181,6 @@ fn git_sync_since_head_no_changes() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No .forgeplan/ files changed"));
-}
-
-// ---------------------------------------------------------------------------
-// watch
-// ---------------------------------------------------------------------------
-
-/// `watch` — long-running foreground process с notify-debouncer. В CI/test
-/// harness нет надёжного способа запустить watcher, дождаться detection одного
-/// file change и killнуть его в timeout без race conditions. Unit-tested
-/// внутри module; помечен #[ignore] для integration suite.
-#[test]
-#[ignore = "long-running foreground watcher process; not testable via assert_cmd without SIGTERM handling and timing races"]
-fn watch_smoke() {
-    // Intentionally empty — see #[ignore] rationale above.
 }
 
 // ---------------------------------------------------------------------------
