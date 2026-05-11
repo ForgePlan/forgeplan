@@ -868,6 +868,61 @@ async fn t13_legacy_artifact_handled_gracefully() {
     assert_eq!(legacy["id_display"], "PRD-099");
 }
 
+// ── MED-1: phase_mismatches dual-key emission on MCP surface ──────────
+
+/// w4-security-audit MED-1 (inverse PROB-064): pre-fix MCP
+/// `forgeplan_health` emitted only the canonical
+/// `advisory_phase_mismatches` key; agents authored against legacy CLI
+/// (which still carried `phase_mismatches`) saw `null` when port'ing
+/// their branching logic to MCP. After the fix the MCP surface emits
+/// the same payload under both names, single-binding so future drift
+/// is impossible.
+///
+/// Pinning both:
+///   1. Both keys exist in the response envelope.
+///   2. Both reference equal payloads (single-binding contract).
+///
+/// We do not pin specific phase_mismatches content (depends on workspace
+/// config + phase-advance heuristics that evolve); equality + presence
+/// is sufficient for the regression contract.
+#[tokio::test]
+async fn health_emits_both_phase_mismatches_aliases_mcp_surface() {
+    let fx = McpFixture::new().await;
+
+    let env = fx.call_tool_json("forgeplan_health", json!({})).await;
+    let resp = env.assert_ok();
+
+    assert!(
+        resp.get("phase_mismatches").is_some(),
+        "legacy `phase_mismatches` key MUST be present on MCP surface (mirrors CLI dual-key); response was: {resp}"
+    );
+    assert!(
+        resp.get("advisory_phase_mismatches").is_some(),
+        "canonical `advisory_phase_mismatches` key MUST remain present; response was: {resp}"
+    );
+
+    let legacy = resp.get("phase_mismatches").expect("legacy alias");
+    let canonical = resp
+        .get("advisory_phase_mismatches")
+        .expect("canonical key");
+    assert_eq!(
+        legacy, canonical,
+        "dual-key emission MUST reference the same payload (single-binding contract); \
+         legacy={legacy}, canonical={canonical}"
+    );
+
+    // Both keys must be array-shaped (the value's TYPE is part of the
+    // contract — consumers branch on `.length`).
+    assert!(
+        legacy.is_array(),
+        "phase_mismatches MUST be a JSON array, got: {legacy}"
+    );
+    assert!(
+        canonical.is_array(),
+        "advisory_phase_mismatches MUST be a JSON array, got: {canonical}"
+    );
+}
+
 // ── housekeeping: workspace path discoverable ─────────────────────────
 
 /// Sanity: the fixture's own `init_workspace` succeeded and produced a
