@@ -632,7 +632,7 @@ fn claim_emits_slug_pre_merge_for_inspect_hint() {
     let slug = slug_for(dir.path(), "PRD-001");
 
     let out = forgeplan()
-        .args(["claim", &slug, "--agent", "test/cli", "--ttl-minutes", "5"])
+        .args(["claim", &slug, "--agent", "test-cli", "--ttl-minutes", "5"])
         .current_dir(dir.path())
         .assert()
         .success()
@@ -666,7 +666,7 @@ fn claim_already_held_emits_slug_pre_merge_in_release_hint() {
             "claim",
             &slug,
             "--agent",
-            "first/agent",
+            "first-agent",
             "--ttl-minutes",
             "30",
         ])
@@ -680,7 +680,7 @@ fn claim_already_held_emits_slug_pre_merge_in_release_hint() {
             "claim",
             &slug,
             "--agent",
-            "second/agent",
+            "second-agent",
             "--ttl-minutes",
             "30",
         ])
@@ -724,7 +724,7 @@ fn release_emits_dispatch_hint_pre_merge_without_id_leak() {
             "claim",
             &slug,
             "--agent",
-            "owner/cli",
+            "owner-cli",
             "--ttl-minutes",
             "30",
         ])
@@ -733,7 +733,7 @@ fn release_emits_dispatch_hint_pre_merge_without_id_leak() {
         .success();
 
     let out = forgeplan()
-        .args(["release", &slug, "--agent", "owner/cli"])
+        .args(["release", &slug, "--agent", "owner-cli"])
         .current_dir(dir.path())
         .assert()
         .success()
@@ -769,7 +769,7 @@ fn release_not_held_emits_slug_pre_merge_in_force_hint() {
             "claim",
             &slug,
             "--agent",
-            "first/cli",
+            "first-cli",
             "--ttl-minutes",
             "30",
         ])
@@ -779,7 +779,7 @@ fn release_not_held_emits_slug_pre_merge_in_force_hint() {
 
     // Different agent tries to release without --force → NotHeldByRequester.
     let output = forgeplan()
-        .args(["release", &slug, "--agent", "intruder/cli"])
+        .args(["release", &slug, "--agent", "intruder-cli"])
         .current_dir(dir.path())
         .output()
         .unwrap();

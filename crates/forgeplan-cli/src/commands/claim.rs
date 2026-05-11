@@ -7,7 +7,7 @@
 //! ask the orchestrator to force-release.
 
 use chrono::Duration;
-use forgeplan_core::claim::{ClaimError, ClaimStore, DEFAULT_TTL};
+use forgeplan_core::claim::{self, ClaimError, ClaimStore, DEFAULT_TTL};
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
@@ -61,6 +61,19 @@ pub async fn run(
         Some(a) => a.to_string(),
         None => default_agent(),
     };
+
+    // PROB-066: early CLI-side validation so the operator sees a typed
+    // remediation hint *before* the workspace lock + filesystem write are
+    // attempted. The same check runs again in ClaimStore::claim as
+    // defense-in-depth (a future caller bypassing this surface still hits
+    // the guard in core).
+    if let Err(e) = claim::validate_agent_id(&agent_str) {
+        anyhow::bail!(
+            "Error: {e}\n\
+             Fix: rename --agent to printable non-path characters only \
+             (e.g. `smoke-test-v1` — alphanumerics, `-`, `_`; no `/`, controls, bidi)."
+        );
+    }
 
     let ttl = match ttl_minutes {
         Some(0) => anyhow::bail!("ttl-minutes must be >= 1"),
