@@ -60,47 +60,57 @@ fn extract_next_line(stdout: &str) -> Option<String> {
 
 #[test]
 fn tag_hint_sanitizes_shell_metacharacters() {
-    let (dir, id) = workspace_with_one_prd();
-    // Payload mixes a command-separator (`;`), parameter expansion (`$`),
-    // a glob (`*`), a backtick subshell (`` ` ``), and the `rm` keyword
-    // — every byte the sanitizer is meant to filter.
-    let malicious_tag = "x;rm -rf $HOME`whoami`*";
+    // Three representative payloads, each exercising a different class of
+    // shell metacharacter (per w4-security-audit follow-up). All three
+    // MUST sanitize identically — every forbidden byte stripped from the
+    // `Next:` line — proving the helper applies uniformly, not just to
+    // one canonical input. Mirrors the
+    // `sanitize_neutralises_shell_metachar_payload` unit test in
+    // forgeplan_core::artifact::sanitize but exercises the full CLI
+    // surface (real binary + hint emitter).
+    let payloads: &[&str] = &[
+        "a;b",                    // bare command separator
+        "x|y",                    // pipe
+        "x;rm -rf $HOME`whoami`", // realistic injection attempt
+    ];
 
-    let out = forgeplan()
-        .args(["tag", &id, malicious_tag])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let stdout = String::from_utf8(out).expect("stdout utf8");
+    for payload in payloads {
+        let (dir, id) = workspace_with_one_prd();
+        let out = forgeplan()
+            .args(["tag", &id, payload])
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stdout = String::from_utf8(out).expect("stdout utf8");
 
-    let next_line = extract_next_line(&stdout)
-        .unwrap_or_else(|| panic!("expected `Next:` line; got stdout:\n{stdout}"));
+        let next_line = extract_next_line(&stdout).unwrap_or_else(|| {
+            panic!("expected `Next:` line for payload {payload:?}; got stdout:\n{stdout}")
+        });
 
-    // The tag itself is stored verbatim (storage layer is not in scope of
-    // this CWE — it is the hint surface that flows to a shell). What MUST
-    // be true is that the *hint* surface carries no shell-relevant bytes.
-    for c in FORBIDDEN_METACHARS {
+        // The tag itself is stored verbatim (storage layer is not in
+        // scope of this CWE — it is the hint surface that flows to a
+        // shell). What MUST be true is that the *hint* surface carries
+        // no shell-relevant bytes.
+        for c in FORBIDDEN_METACHARS {
+            assert!(
+                !next_line.contains(*c),
+                "metacharacter {c:?} survived in `Next:` line for payload \
+                 {payload:?}: {next_line:?}\nfull stdout:\n{stdout}"
+            );
+        }
+
+        // The hint must still resolve to a valid `forgeplan list` form —
+        // sanitization shouldn't drop the `--tag` argument structure even
+        // when the tag value collapses to the documented `<tag>` placeholder.
         assert!(
-            !next_line.contains(*c),
-            "metacharacter {:?} survived in `Next:` line: {next_line:?}\nfull stdout:\n{stdout}",
-            c
+            next_line.contains("--tag"),
+            "Next: line must still target the list command for payload \
+             {payload:?}: {next_line:?}"
         );
     }
-
-    // Defense in depth — the `rm` keyword can survive (it is alphabetic
-    // and outside the sanitizer's mandate) but it must not be preceded
-    // by a separator that would turn the hint into a two-command line.
-    // We already verified `;` and `&` are gone, so a copy-paste of the
-    // line would not branch into rm execution. We still pin that the
-    // sanitized argument is not empty and that `--tag` is present, so
-    // the hint stays a valid `forgeplan list` invocation.
-    assert!(
-        next_line.contains("--tag"),
-        "Next: line must still target the list command: {next_line:?}"
-    );
 }
 
 #[test]

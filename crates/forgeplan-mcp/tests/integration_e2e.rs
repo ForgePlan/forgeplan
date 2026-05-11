@@ -702,44 +702,68 @@ async fn t13_legacy_artifact_handled_gracefully() {
 /// `advisory_phase_mismatches` key; agents authored against legacy CLI
 /// (which still carried `phase_mismatches`) saw `null` when port'ing
 /// their branching logic to MCP. After the fix the MCP surface emits
-/// the same payload under both names, single-binding so future drift
-/// is impossible.
+/// the same payload under both names — sourced from a single binding
+/// so drift between the two keys is impossible by construction.
 ///
-/// Pinning both:
-///   1. Both keys exist in the response envelope.
-///   2. Both reference equal payloads (single-binding contract).
+/// Mirrors the symmetric CLI guard
+/// `health_json_phase_mismatches_aliases_have_identical_payload` in
+/// `crates/forgeplan-cli/tests/cli_integration_test.rs:3807-3846`. The
+/// CLI test pins identity on the CLI's `--json` surface; this one pins
+/// it on the MCP `forgeplan_health` surface. Both together form the
+/// cross-surface contract.
 ///
 /// We do not pin specific phase_mismatches content (depends on workspace
-/// config + phase-advance heuristics that evolve); equality + presence
+/// config + phase-advance heuristics that evolve); identity + presence
 /// is sufficient for the regression contract.
 #[tokio::test]
-async fn health_emits_both_phase_mismatches_aliases_mcp_surface() {
+async fn health_response_emits_both_phase_mismatches_aliases_identical_payload() {
     let fx = McpFixture::new().await;
+
+    // Add a couple of artifacts so the emitter executes the non-trivial
+    // path (matches the CLI test which также seeds two artifacts).
+    let _ = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "prd", "title": "Aliasing Feature"}),
+        )
+        .await;
+    let _ = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "note", "title": "Aliasing Note"}),
+        )
+        .await;
 
     let env = fx.call_tool_json("forgeplan_health", json!({})).await;
     let resp = env.assert_ok();
 
+    let legacy = &resp["phase_mismatches"];
+    let canonical = &resp["advisory_phase_mismatches"];
+
+    // PROB-064 (inverse): both keys MUST surface — pre-fix only the
+    // canonical key existed and the legacy alias resolved to `null`,
+    // exactly the failure mode the audit caught.
     assert!(
-        resp.get("phase_mismatches").is_some(),
-        "legacy `phase_mismatches` key MUST be present on MCP surface (mirrors CLI dual-key); response was: {resp}"
+        !legacy.is_null(),
+        "PROB-064 inverse: legacy `phase_mismatches` MUST be present on \
+         MCP surface (was null pre-fix). response = {resp}"
     );
     assert!(
-        resp.get("advisory_phase_mismatches").is_some(),
-        "canonical `advisory_phase_mismatches` key MUST remain present; response was: {resp}"
+        !canonical.is_null(),
+        "PROB-064: canonical `advisory_phase_mismatches` MUST remain \
+         present. response = {resp}"
     );
 
-    let legacy = resp.get("phase_mismatches").expect("legacy alias");
-    let canonical = resp
-        .get("advisory_phase_mismatches")
-        .expect("canonical key");
+    // PROB-064 alias contract (mirrors CLI assertion verbatim — see
+    // cli_integration_test.rs:3841-3845).
     assert_eq!(
         legacy, canonical,
-        "dual-key emission MUST reference the same payload (single-binding contract); \
-         legacy={legacy}, canonical={canonical}"
+        "PROB-064: phase_mismatches and advisory_phase_mismatches must carry \
+         identical payloads (alias contract). legacy = {legacy}, canonical = {canonical}"
     );
 
-    // Both keys must be array-shaped (the value's TYPE is part of the
-    // contract — consumers branch on `.length`).
+    // Type guard — consumers branch on `.length`; an empty workspace
+    // gives `[]` but never `null` / object.
     assert!(
         legacy.is_array(),
         "phase_mismatches MUST be a JSON array, got: {legacy}"
