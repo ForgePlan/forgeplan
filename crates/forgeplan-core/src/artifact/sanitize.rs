@@ -141,6 +141,51 @@ pub fn sanitize_for_hint(s: &str) -> String {
     cleaned.trim().to_string()
 }
 
+/// Sanitize a filesystem path before interpolating it into an agent-visible
+/// `Next:` hint.
+///
+/// Sibling of [`sanitize_for_hint`], but path-aware: legitimate path bytes
+/// (`/`, `.`, `-`, `_`) are preserved so the surviving string can still be
+/// re-fed to a CLI accepting a path argument. Every other non-alphanumeric
+/// byte is stripped — that includes spaces (a space-containing path either
+/// needs quoting which the hint protocol does not provide, or is a sign of
+/// adversarial input), shell metacharacters, control bytes, ANSI escapes,
+/// bidi overrides, zero-width characters, and tag characters.
+///
+/// Whitelist approach (vs. the denylist used by [`sanitize_for_hint`])
+/// because path inputs come from CLI args (`--output <PATH>`) which an
+/// attacker controls in full; we are willing to be more aggressive at the
+/// cost of mangling exotic paths. The trade-off is conscious — adversarial
+/// path like `'/tmp/foo;rm -rf .'` sanitizes to `/tmp/foorm-rf.`, which is
+/// (a) clearly not the path the agent meant to operate on, and (b) cannot
+/// execute as anything.
+///
+/// Truncated to [`MAX_HINT_LEN`] after filtering, matching the budget of
+/// `sanitize_for_hint`. Paths longer than 80 visible chars are tail-clipped;
+/// callers that need the literal full path should print it на the human-
+/// facing line and only emit the sanitized form в the `Next:` hint.
+///
+/// **Threat model**: CWE-78 hint injection — agent reads `Next: forgeplan
+/// import <path>` and executes the line verbatim. Without sanitization, a
+/// crafted `--output` value embeds shell metacharacters in the hint and
+/// extends the executed command into destructive territory (HIGH-2 audit
+/// finding, sibling of HIGH-1 closed in `sanitize_for_hint`).
+///
+/// **Idempotence**: applying twice yields the same result as once.
+pub fn sanitize_path_for_hint(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| {
+            // Whitelist: ASCII alphanumerics + path-friendly punctuation.
+            // Anything else (controls, shell metas, bidi, ANSI, spaces) is
+            // dropped — see fn-level docs for the trade-off vs. denylist.
+            c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_')
+        })
+        .take(MAX_HINT_LEN)
+        .collect();
+    cleaned.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +327,108 @@ mod tests {
         let input = "prd\u{E0041}\u{E0042}auth";
         let out = sanitize_for_hint(input);
         assert_eq!(out, "prdauth");
+    }
+
+    // ---- sanitize_path_for_hint (w4 HIGH-2 / CWE-78 sibling of HIGH-1) ----
+
+    /// Adversarial `--output` payload — every shell metacharacter the hint
+    /// renderer must strip before emitting `Next: forgeplan import <path>`.
+    /// Mirrors the threat model from the audit brief.
+    #[test]
+    fn sanitize_path_for_hint_strips_shell_metacharacters() {
+        // Plain happy-path: a clean POSIX path round-trips unchanged.
+        assert_eq!(
+            sanitize_path_for_hint("/tmp/safe-file.json"),
+            "/tmp/safe-file.json"
+        );
+
+        // Each of these bytes individually MUST be filtered.
+        for c in ";`$|&()<>!#*\"'\\{}".chars() {
+            let payload = format!("/tmp/foo{c}rm-rf");
+            let cleaned = sanitize_path_for_hint(&payload);
+            assert!(
+                !cleaned.contains(c),
+                "byte {c:?} must be stripped: {cleaned:?}"
+            );
+        }
+    }
+
+    /// The whole point of the path-aware variant: `/`, `.`, `-`, `_` and
+    /// alphanumerics survive so the sanitized hint is still a usable path
+    /// argument (when the input itself was benign).
+    #[test]
+    fn sanitize_path_for_hint_preserves_path_chars() {
+        let safe = "/tmp/foo.bar/baz_qux-v2.json";
+        assert_eq!(sanitize_path_for_hint(safe), safe);
+
+        // Relative paths likewise round-trip.
+        assert_eq!(
+            sanitize_path_for_hint(".forgeplan/export.json"),
+            ".forgeplan/export.json"
+        );
+    }
+
+    /// Concrete audit threat: `'/tmp/foo;rm -rf .'` must NOT survive as a
+    /// shell-executable payload. After sanitization, the surviving text is
+    /// a broken-looking path that cannot branch into command execution.
+    #[test]
+    fn sanitize_path_for_hint_neutralises_destructive_payload() {
+        let evil = "/tmp/foo;rm -rf .";
+        let out = sanitize_path_for_hint(evil);
+        // Separator and the space are gone; `rm` letters survive but cannot
+        // execute because they are now part of a single contiguous "path"
+        // argument to `forgeplan import`.
+        assert!(!out.contains(';'), "; survived: {out:?}");
+        assert!(!out.contains(' '), "space survived: {out:?}");
+        assert_eq!(out, "/tmp/foorm-rf.");
+    }
+
+    /// Spaces are dropped (whitelist policy) — paths containing spaces are
+    /// either adversarial or need quoting that the hint protocol doesn't
+    /// provide. Documented trade-off, pinned by this test.
+    #[test]
+    fn sanitize_path_for_hint_drops_spaces_and_controls() {
+        let input = "/tmp/with space\nand\tcontrol";
+        let out = sanitize_path_for_hint(input);
+        assert!(!out.contains(' '), "space survived: {out:?}");
+        assert!(!out.contains('\n'), "newline survived: {out:?}");
+        assert!(!out.contains('\t'), "tab survived: {out:?}");
+        assert_eq!(out, "/tmp/withspaceandcontrol");
+    }
+
+    #[test]
+    fn sanitize_path_for_hint_strips_bidi_and_zero_width() {
+        // Same invisible-character coverage as sanitize_for_hint — the
+        // whitelist policy implicitly rejects everything outside ASCII
+        // alphanumerics + `/`, `.`, `-`, `_`.
+        let input = "/tmp/\u{202E}drow/\u{200B}\u{FEFF}file.json";
+        let out = sanitize_path_for_hint(input);
+        assert!(!out.contains('\u{202E}'));
+        assert!(!out.contains('\u{200B}'));
+        assert!(!out.contains('\u{FEFF}'));
+        assert_eq!(out, "/tmp/drow/file.json");
+    }
+
+    #[test]
+    fn sanitize_path_for_hint_idempotent() {
+        let evil = "/tmp/foo;rm -rf $HOME`whoami`";
+        let once = sanitize_path_for_hint(evil);
+        let twice = sanitize_path_for_hint(&once);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn sanitize_path_for_hint_truncates_to_80_chars() {
+        // 200 alphanumerics — all valid under the whitelist — must clip to 80.
+        let input = "a".repeat(200);
+        let out = sanitize_path_for_hint(&input);
+        assert_eq!(out.len(), 80);
+    }
+
+    #[test]
+    fn sanitize_path_for_hint_handles_empty_input() {
+        assert_eq!(sanitize_path_for_hint(""), "");
+        // All-invalid input collapses to empty.
+        assert_eq!(sanitize_path_for_hint(";; |&"), "");
     }
 }
