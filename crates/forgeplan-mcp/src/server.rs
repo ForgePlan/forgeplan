@@ -463,9 +463,17 @@ enum JournalKind {
     Solution,
 }
 
+/// Methodology **session** phase enum (idle/routing/shaping/coding/evidence/pr).
+///
+/// Distinct from artifact lifecycle `Phase` (shape/validate/adi/code/test/
+/// audit/evidence/done) exposed by `forgeplan_phase_advance`. Both enums
+/// share an `evidence` variant lexically, but they target different state
+/// machines (PROB-065). The MCP arg surface is named `target_session_phase`
+/// (with `target_phase` retained as a serde alias for backward compatibility)
+/// to make the bounded context explicit at the schema layer.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-enum PhaseKind {
+enum SessionPhaseKind {
     Idle,
     Routing,
     Shaping,
@@ -535,10 +543,10 @@ impl JournalKind {
     }
 }
 
-impl PhaseKind {
-    // Currently unused — GuardParams uses PhaseKind directly via match.
+impl SessionPhaseKind {
+    // Currently unused — GuardParams uses SessionPhaseKind directly via match.
     // Kept for API symmetry with other *Kind enums; may be needed when
-    // PhaseKind is exposed in response bodies.
+    // SessionPhaseKind is exposed in response bodies.
     #[allow(dead_code)]
     fn as_str(&self) -> &'static str {
         match self {
@@ -691,8 +699,17 @@ struct RouteParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GuardParams {
-    /// Target phase to check
-    target_phase: PhaseKind,
+    /// Target **methodology session** phase to check
+    /// (idle/routing/shaping/coding/evidence/pr).
+    ///
+    /// Not to be confused with the **artifact lifecycle** phase enum
+    /// (shape/validate/adi/code/test/audit/evidence/done) exposed by
+    /// `forgeplan_phase_advance` (PROB-065). The legacy field name
+    /// `target_phase` remains accepted via serde alias so existing
+    /// callers do not break, but new callers should use
+    /// `target_session_phase`.
+    #[serde(alias = "target_phase")]
+    target_session_phase: SessionPhaseKind,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -5288,9 +5305,9 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Check if a methodology phase transition is allowed. Use before performing actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason.",
+        description = "Check if a methodology **session phase** transition is allowed (idle → routing → shaping → coding → evidence → pr). Use before performing session-level actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason. NOTE: this guards the methodology session phase machine, NOT the artifact lifecycle phase machine (shape/validate/adi/code/test/audit/evidence/done) — for that use `forgeplan_phase_advance`. The `target_session_phase` argument is the canonical name; `target_phase` is accepted as a deprecated alias for backward compatibility (PROB-065).",
         annotations(
-            title = "Phase Transition Check",
+            title = "Session Phase Transition Check",
             read_only_hint = true,
             destructive_hint = false,
             idempotent_hint = true,
@@ -5308,14 +5325,16 @@ impl ForgeplanServer {
 
         let session = forgeplan_core::session::SessionState::load(&ws);
 
-        // Schema enum PhaseKind already validates the value — just map to core Phase type.
-        let target_phase = match p.target_phase {
-            PhaseKind::Idle => forgeplan_core::session::Phase::Idle,
-            PhaseKind::Routing => forgeplan_core::session::Phase::Routing,
-            PhaseKind::Shaping => forgeplan_core::session::Phase::Shaping,
-            PhaseKind::Coding => forgeplan_core::session::Phase::Coding,
-            PhaseKind::Evidence => forgeplan_core::session::Phase::Evidence,
-            PhaseKind::Pr => forgeplan_core::session::Phase::Pr,
+        // Schema enum SessionPhaseKind already validates the value — just map to core
+        // session Phase type. SessionPhaseKind is distinct from artifact-lifecycle
+        // Phase used by forgeplan_phase_advance (PROB-065).
+        let target_phase = match p.target_session_phase {
+            SessionPhaseKind::Idle => forgeplan_core::session::Phase::Idle,
+            SessionPhaseKind::Routing => forgeplan_core::session::Phase::Routing,
+            SessionPhaseKind::Shaping => forgeplan_core::session::Phase::Shaping,
+            SessionPhaseKind::Coding => forgeplan_core::session::Phase::Coding,
+            SessionPhaseKind::Evidence => forgeplan_core::session::Phase::Evidence,
+            SessionPhaseKind::Pr => forgeplan_core::session::Phase::Pr,
         };
 
         let result = session.can_transition(target_phase);
@@ -5800,13 +5819,17 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Manually advance (or set) the advisory phase marker for an artifact. \
+        description = "Manually advance (or set) the advisory **artifact lifecycle phase** marker \
+                       for an artifact (shape/validate/adi/code/test/audit/evidence/done). \
                        Appends a transition to the history. Does NOT validate phase ordering — \
                        advisory layer allows out-of-order jumps (e.g. direct `done` override). \
                        Full phase enforcement lands in a later PRD under EPIC-005. Use when \
-                       auto-advancement missed a transition or when reclassifying workflow state.",
+                       auto-advancement missed a transition or when reclassifying workflow state. \
+                       NOTE: this targets the artifact lifecycle phase machine, NOT the \
+                       methodology session phase machine (idle/routing/shaping/coding/evidence/pr) \
+                       — for that use `forgeplan_guard` (PROB-065).",
         annotations(
-            title = "Advance Phase",
+            title = "Advance Artifact Lifecycle Phase",
             read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = false,

@@ -621,15 +621,102 @@ async fn c42_forgeplan_phase_advance_smoke() {
 
 #[tokio::test]
 async fn c43_forgeplan_guard_smoke() {
+    // Disambiguation between session-phase and artifact-lifecycle-phase enums
+    // now lives in the tool schema description (PROB-065) — see the regression
+    // test `guard_target_session_phase_disambiguated_from_artifact_phase`
+    // below for the assertion. This smoke test exercises the canonical
+    // argument name `target_session_phase`.
     let fx = McpFixture::new().await;
-    // `forgeplan_guard`'s `target_phase` is the methodology-session phase
-    // enum (idle/routing/shaping/coding/evidence/pr), NOT the artifact
-    // phase enum from `forgeplan_phase` (shape/validate/adi/code/test/
-    // audit/evidence/done). Don't confuse them.
     let env = fx
-        .call_tool_json("forgeplan_guard", json!({"target_phase": "coding"}))
+        .call_tool_json("forgeplan_guard", json!({"target_session_phase": "coding"}))
         .await;
     env.assert_reachable();
+}
+
+/// PROB-065 regression: `forgeplan_guard.target_session_phase` is the
+/// methodology-session phase enum (idle/routing/shaping/coding/evidence/pr),
+/// which lexically overlaps the artifact lifecycle phase enum exposed by
+/// `forgeplan_phase_advance` (shape/validate/adi/code/test/audit/evidence/done).
+/// To prevent silent type confusion this test asserts three contracts:
+///
+/// 1. The canonical argument name `target_session_phase` is accepted.
+/// 2. The legacy alias `target_phase` is still accepted (backward compat).
+/// 3. The tool description returned from `tools/list` explicitly contains
+///    the phrase "session phase" so agents reading the catalog see the
+///    disambiguation up front.
+#[tokio::test]
+async fn guard_target_session_phase_disambiguated_from_artifact_phase() {
+    let fx = McpFixture::new().await;
+
+    // (1) Canonical argument name works.
+    let env_new = fx
+        .call_tool_json(
+            "forgeplan_guard",
+            json!({"target_session_phase": "evidence"}),
+        )
+        .await;
+    env_new.assert_reachable();
+    assert!(
+        !env_new.is_error,
+        "guard with canonical `target_session_phase` must succeed: {}",
+        env_new.raw_text
+    );
+
+    // (2) Legacy alias `target_phase` is still accepted (serde alias).
+    let env_legacy = fx
+        .call_tool_json("forgeplan_guard", json!({"target_phase": "evidence"}))
+        .await;
+    env_legacy.assert_reachable();
+    assert!(
+        !env_legacy.is_error,
+        "guard with deprecated alias `target_phase` must remain accepted: {}",
+        env_legacy.raw_text
+    );
+
+    // (3) Tool description contains the disambiguation phrasing.
+    let tools = fx
+        .peer_list_all_tools()
+        .await
+        .expect("list_all_tools must succeed against in-process server");
+    let guard_tool = tools
+        .iter()
+        .find(|t| t.name == "forgeplan_guard")
+        .expect("forgeplan_guard must be registered");
+    let description = guard_tool
+        .description
+        .as_ref()
+        .map(|c| c.as_ref())
+        .unwrap_or("");
+    assert!(
+        description.contains("session phase"),
+        "forgeplan_guard description must mention 'session phase' to \
+         disambiguate from artifact lifecycle phase (PROB-065). Got: {description}"
+    );
+    assert!(
+        description.contains("forgeplan_phase_advance"),
+        "forgeplan_guard description must cross-reference \
+         `forgeplan_phase_advance` (PROB-065). Got: {description}"
+    );
+
+    let phase_advance_tool = tools
+        .iter()
+        .find(|t| t.name == "forgeplan_phase_advance")
+        .expect("forgeplan_phase_advance must be registered");
+    let phase_desc = phase_advance_tool
+        .description
+        .as_ref()
+        .map(|c| c.as_ref())
+        .unwrap_or("");
+    assert!(
+        phase_desc.contains("artifact lifecycle phase"),
+        "forgeplan_phase_advance description must mention 'artifact \
+         lifecycle phase' (PROB-065). Got: {phase_desc}"
+    );
+    assert!(
+        phase_desc.contains("forgeplan_guard"),
+        "forgeplan_phase_advance description must cross-reference \
+         `forgeplan_guard` (PROB-065). Got: {phase_desc}"
+    );
 }
 
 // ── Group L: discovery session lifecycle ──────────────────────────────
