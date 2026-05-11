@@ -2912,11 +2912,11 @@ impl ForgeplanServer {
         // w4-security-audit MED-1 (inverse PROB-064): legacy CLI key
         // `phase_mismatches` was missing on MCP surface — agents authored
         // against pre-PROB-064 CLI saw `null` when port'ing the same
-        // branching logic to MCP. Emit both keys, single-binding so drift
-        // is impossible (mirrors CLI's `phase_mismatches_payload` pattern
+        // branching logic to MCP. Reuse the `phase_mismatches` binding
+        // built at line ~2791 (already `Vec<serde_json::Value>`) so the
+        // single source of truth feeds both keys — drift impossible by
+        // construction (mirrors CLI's `phase_mismatches_payload` pattern
         // в commands/health.rs:87-144).
-        let phase_mismatches_payload =
-            serde_json::to_value(&phase_mismatches).unwrap_or(serde_json::Value::Array(Vec::new()));
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
@@ -2938,8 +2938,8 @@ impl ForgeplanServer {
             // means future drift is impossible; consumers may branch on
             // either name. Future deprecation of the legacy alias is
             // tracked in PROB-064.
-            "phase_mismatches": phase_mismatches_payload,
-            "advisory_phase_mismatches": phase_mismatches_payload,
+            "phase_mismatches": phase_mismatches,
+            "advisory_phase_mismatches": phase_mismatches,
             "active_claims": claims_json,
             "active_claim_count": active_claims.len(),
             "skipped_claim_files": skipped_claims,
