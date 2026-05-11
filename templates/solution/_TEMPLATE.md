@@ -4,7 +4,7 @@ title: "{title}"
 status: Draft
 created: YYYY-MM-DD
 depth: tactical / standard / deep
-problem: PROB-{NNN}
+problem: null
 ---
 
 # SOL-{NNN}: {Portfolio Title}
@@ -85,4 +85,4 @@ problem: PROB-{NNN}
 
 | Artifact | Relation |
 |----------|----------|
-| PROB-{NNN} | based_on |
+| PROB-<id> | based_on |
