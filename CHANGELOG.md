@@ -11,6 +11,17 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Added
 
+- **`forgeplan health --strict` flag** — exit 1 if verdict ∈
+  {NeedsAttention, Unhealthy} OR any of {orphans, blind_spots,
+  active_stubs, at_risk} > 0. Designed for CI gates that want a single
+  boolean signal (default `forgeplan health` always exits 0 — advisory
+  tool). Empty workspaces (verdict=Empty) exit 0 — "no artifacts" is not
+  a critical signal. Advisory-only signals (phase mismatches alone) stay
+  advisory and exit 0, consistent with PROB-063 (advisory ≠ critical).
+  JSON mode (`--json --strict`) adds a parseable `exit_code` integer
+  field so CI scripts can branch on a single value instead of
+  recomputing the gate from counts. Backward compatible: legacy
+  `--ci`/`--fail-on` thresholds path untouched.
 - **`advisory_phase_mismatches` JSON key** в `forgeplan health --json`
   output (alias for legacy `phase_mismatches`, matches MCP
   `forgeplan_health` cross-surface). Non-breaking: legacy key retained
