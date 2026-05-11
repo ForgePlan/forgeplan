@@ -131,6 +131,20 @@ impl McpFixture {
         CallToolEnvelope::from(result)
     }
 
+    /// Issue a `tools/list` JSON-RPC request and return the paginated tool
+    /// catalog. Used by tool-schema regression tests (e.g. PROB-065
+    /// disambiguation) that need to assert on the description string an
+    /// MCP client sees. Bounded by a 15s timeout to surface hangs as
+    /// panics rather than stuck CI jobs.
+    #[allow(dead_code)]
+    pub async fn peer_list_all_tools(
+        &self,
+    ) -> Result<Vec<rmcp::model::Tool>, rmcp::service::ServiceError> {
+        tokio::time::timeout(Duration::from_secs(15), self.client.peer().list_all_tools())
+            .await
+            .unwrap_or_else(|_| panic!("`tools/list` timed out (15s)"))
+    }
+
     /// Helper: create a PRD via the live tool and return its display id.
     /// Only used from `integration_full_coverage.rs`, but lives here so
     /// the fixture stays a single source of truth.
