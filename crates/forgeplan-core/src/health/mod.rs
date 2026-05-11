@@ -551,6 +551,18 @@ pub fn compute_verdict(
 /// `Verdict::Empty` BEFORE warning-class checks, so an uninitialized
 /// workspace cannot return `Healthy` (the pre-fix path which broke
 /// JSON consumers that gated on `verdict == "healthy"`).
+///
+/// PROB-063 (issue #276) regression of PROB-029 anti-contradiction
+/// guarantee: `phase_mismatches` is intentionally EXCLUDED from both
+/// promotion paths (critical and any-warning). `advisory_phase_mismatches`
+/// is named "advisory" by design — folding it into verdict makes
+/// CLI/MCP output internally contradictory (`next_actions` says
+/// "looks healthy" while `verdict` says "unhealthy"). The parameter
+/// is retained on the function signature for API stability and so
+/// future tiers (e.g. an `Advisory` Verdict between `Healthy` and
+/// `NeedsAttention`) can opt back in without a breaking change.
+/// `t.phase_mismatches` threshold is similarly retained but unused —
+/// removal would be a public API break of `VerdictThresholds`.
 #[allow(clippy::too_many_arguments)]
 fn compute_verdict_from_signals(
     total: usize,
@@ -560,7 +572,7 @@ fn compute_verdict_from_signals(
     duplicates: usize,
     stale: usize,
     at_risk: usize,
-    phase_mismatches: usize,
+    _phase_mismatches: usize,
     t: &VerdictThresholds,
 ) -> Verdict {
     // Empty workspace short-circuit (Round 6 audit MED): zero artifacts is
@@ -570,22 +582,22 @@ fn compute_verdict_from_signals(
         return Verdict::Empty;
     }
     // Critical: any single class above its threshold → Unhealthy.
+    // PROB-063: phase_mismatches NOT included — advisory by design.
     if orphans > t.orphans
         || blind_spots > t.blind_spots
         || active_stubs > t.active_stubs
         || duplicates > t.duplicates
-        || phase_mismatches > t.phase_mismatches
     {
         return Verdict::Unhealthy;
     }
     // Non-zero anywhere → NeedsAttention.
+    // PROB-063: phase_mismatches NOT included — advisory by design.
     let has_any_warning = orphans > 0
         || blind_spots > 0
         || active_stubs > 0
         || duplicates > 0
         || stale > 0
-        || at_risk > 0
-        || phase_mismatches > 0;
+        || at_risk > 0;
     if has_any_warning {
         Verdict::NeedsAttention
     } else {
@@ -1529,19 +1541,46 @@ mod tests {
         assert_eq!(r.compute_verdict(), Verdict::Unhealthy);
     }
 
-    // PROB-029: phase mismatches counted via compute_verdict_with so
-    // the MCP server can fold them in without a core-side workspace
-    // path. Below threshold → NeedsAttention. Above → Unhealthy.
+    // PROB-063 (issue #276) regression of PROB-029 AC-2 anti-contradiction
+    // guarantee: advisory_phase_mismatches must NOT promote verdict —
+    // they're advisory by name and excluded from next_actions priority
+    // chain, so verdict folding them as critical creates internal
+    // contradiction (`next_actions: "healthy"` + `verdict: "unhealthy"`).
+    //
+    // Pre-PROB-063 these two tests asserted the buggy behavior
+    // (phase_mismatches → NeedsAttention/Unhealthy). After fix: phase
+    // mismatches alone leave verdict at Healthy. Other signals still
+    // promote normally.
     #[test]
-    fn verdict_phase_mismatches_below_threshold_is_needs_attention() {
+    fn verdict_phase_mismatches_alone_is_healthy() {
+        // 1 mismatch, no other signals → Healthy.
         let r = empty_report(10);
         let v = r.compute_verdict_with(&VerdictThresholds::default(), 1);
+        assert_eq!(v, Verdict::Healthy);
+    }
+
+    #[test]
+    fn verdict_many_phase_mismatches_alone_is_still_healthy() {
+        // 165 mismatches (issue #276 reporter scenario) → Healthy.
+        let r = empty_report(293);
+        let v = r.compute_verdict_with(&VerdictThresholds::default(), 165);
+        assert_eq!(v, Verdict::Healthy);
+    }
+
+    #[test]
+    fn verdict_phase_mismatches_with_blind_spot_is_needs_attention() {
+        // Real warning still promotes: 1 blind_spot + 100 mismatches → NeedsAttention.
+        let mut r = empty_report(10);
+        r.blind_spots = vec![spot("ADR-011")];
+        let v = r.compute_verdict_with(&VerdictThresholds::default(), 100);
         assert_eq!(v, Verdict::NeedsAttention);
     }
 
     #[test]
-    fn verdict_phase_mismatches_above_threshold_is_unhealthy() {
-        let r = empty_report(10);
+    fn verdict_phase_mismatches_with_critical_is_unhealthy() {
+        // Real critical still promotes: 8 stubs (>3 threshold) + 100 mismatches → Unhealthy.
+        let mut r = empty_report(50);
+        r.active_stubs = (0..8).map(|i| stub(&format!("PRD-{i:03}"))).collect();
         let v = r.compute_verdict_with(&VerdictThresholds::default(), 100);
         assert_eq!(v, Verdict::Unhealthy);
     }
