@@ -11,7 +11,15 @@
 #   6. forgeplan list (verify visibility)
 #   7. forgeplan link (test relations)
 #   8. forgeplan fpf ingest / fpf search (FPF KB smoke)
-#   9. Clean up ephemeral workspace
+#   9. forgeplan tree (hierarchy ASCII)
+#   10. forgeplan progress (FR checkbox tracker)
+#   11. forgeplan claim/release (PRD-057 multi-agent coordination cycle)
+#   12. forgeplan dispatch (PRD-057 parallel work planner)
+#   13. forgeplan phase + phase-advance (advisory phase tracker, EPIC-005)
+#   14. Clean up ephemeral workspace
+#
+# v0.31.0 coverage sprint: +6 ops (tree, progress, claim, release, dispatch,
+# phase-advance + phase). Total: 13 → 19 operation categories.
 #
 # Usage: bash scripts/smoke-test.sh [--verbose]
 # Exit 0 on full pass, 1 on any step failure (with clear output)
@@ -274,6 +282,90 @@ output=$("$FORGEPLAN_BIN" graph 2>&1) || {
 log_step "Generated: dependency graph (mermaid)"
 
 # ============================================================================
+# T13: Hierarchy view (ASCII tree)
+# ============================================================================
+log_info "Testing artifact hierarchy view..."
+
+output=$("$FORGEPLAN_BIN" tree 2>&1) || {
+    fail "forgeplan tree failed: $output"
+}
+log_step "Hierarchy: forgeplan tree (ASCII)"
+
+# ============================================================================
+# T14: Progress tracker (FR checkboxes)
+# ============================================================================
+log_info "Testing progress tracker..."
+
+# Without ID: aggregate progress across all artifacts
+output=$("$FORGEPLAN_BIN" progress 2>&1) || {
+    fail "forgeplan progress (all) failed: $output"
+}
+log_step "Progress: forgeplan progress (workspace-wide)"
+
+# Per-artifact JSON shape (verifies machine-consumable output)
+output=$("$FORGEPLAN_BIN" progress "$PRD_ID" --json 2>&1) || {
+    fail "forgeplan progress $PRD_ID --json failed: $output"
+}
+log_step "Progress: forgeplan progress $PRD_ID --json"
+
+# ============================================================================
+# T15: Multi-agent coordination (PRD-057 claim/release cycle)
+# ============================================================================
+log_info "Testing claim/release cycle..."
+
+# Claim with short TTL — proves write path
+output=$("$FORGEPLAN_BIN" claim "$PRD_ID" --agent "smoke-test/v1" --ttl-minutes 1 --note "smoke" 2>&1) || {
+    fail "forgeplan claim $PRD_ID failed: $output"
+}
+log_step "Claim: $PRD_ID (agent=smoke-test/v1, ttl=1m)"
+
+# Claims listing — proves read path picks up the claim
+output=$("$FORGEPLAN_BIN" claims 2>&1) || {
+    fail "forgeplan claims failed: $output"
+}
+if ! echo "$output" | grep -q "$PRD_ID"; then
+    fail "forgeplan claims did not list newly-created claim for $PRD_ID: $output"
+fi
+log_step "Claims: forgeplan claims (found $PRD_ID)"
+
+# Release — idempotent close
+output=$("$FORGEPLAN_BIN" release "$PRD_ID" --agent "smoke-test/v1" 2>&1) || {
+    fail "forgeplan release $PRD_ID failed: $output"
+}
+log_step "Release: $PRD_ID"
+
+# ============================================================================
+# T16: Multi-agent dispatch planner (PRD-057)
+# ============================================================================
+log_info "Testing dispatch planner..."
+
+# JSON mode — machine-consumable plan for orchestrator
+output=$("$FORGEPLAN_BIN" dispatch --agents 3 --status any --json 2>&1) || {
+    fail "forgeplan dispatch --agents 3 --status any --json failed: $output"
+}
+log_step "Dispatch: forgeplan dispatch --agents 3 --status any --json"
+
+# ============================================================================
+# T17: Advisory phase tracker (EPIC-005)
+# ============================================================================
+log_info "Testing advisory phase tracker..."
+
+# Advance phase — writes .forgeplan/state/<id>.yaml history
+output=$("$FORGEPLAN_BIN" phase-advance "$PRD_ID" --to shape --reason "smoke test" 2>&1) || {
+    fail "forgeplan phase-advance $PRD_ID --to shape failed: $output"
+}
+log_step "Phase-advance: $PRD_ID → shape"
+
+# Read it back — proves state file round-trip
+output=$("$FORGEPLAN_BIN" phase "$PRD_ID" 2>&1) || {
+    fail "forgeplan phase $PRD_ID failed: $output"
+}
+if ! echo "$output" | grep -qi "shape"; then
+    fail "forgeplan phase $PRD_ID did not return 'shape' after advance: $output"
+fi
+log_step "Phase: forgeplan phase $PRD_ID (current=shape)"
+
+# ============================================================================
 # Final summary
 # ============================================================================
 echo ""
@@ -298,6 +390,11 @@ echo "  ✓ forgeplan link"
 echo "  ✓ forgeplan search"
 echo "  ✓ forgeplan fpf list/search"
 echo "  ✓ forgeplan graph"
+echo "  ✓ forgeplan tree (hierarchy ASCII)"
+echo "  ✓ forgeplan progress (workspace + per-ID JSON)"
+echo "  ✓ forgeplan claim / claims / release (PRD-057 cycle)"
+echo "  ✓ forgeplan dispatch --agents 3 --json (PRD-057 planner)"
+echo "  ✓ forgeplan phase-advance / phase (EPIC-005 advisory tracker)"
 echo ""
 
 exit 0

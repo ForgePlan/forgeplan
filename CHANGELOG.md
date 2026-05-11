@@ -9,6 +9,54 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added
+
+- **`advisory_phase_mismatches` JSON key** в `forgeplan health --json`
+  output (alias for legacy `phase_mismatches`, matches MCP
+  `forgeplan_health` cross-surface). Non-breaking: legacy key retained
+  для backward compat. Future deprecation possible в major version bump.
+  Closes PROB-064 advisory/critical mismatch reporting drift between
+  CLI and MCP surfaces. Refs: EVID-118.
+
+### Security
+
+- **Bump openssl 0.10.78 → 0.10.79** — closes two GitHub Dependabot
+  alerts on the transitive dependency tree (reqwest → rustls → lance):
+  - **#27 (HIGH)** — rust-openssl undefined behavior в
+    `X509Ref::ocsp_responders` для non-UTF-8 OCSP URLs (CVE pending).
+  - **#28 (MEDIUM)** — heap buffer overflow при AES key-wrap-with-padding
+    encryption.
+
+  `uuid` и `lru` Dependabot alerts deferred: `uuid` flagged as a
+  false-positive (production code never touches the vulnerable
+  v3/v5 SHA-1 path) и `lru` is pinned downstream by `lancedb` —
+  see `TODO.md` для full justification + tracking.
+
+### Tests
+
+- **+33 CLI integration tests** для 16 previously-untested commands
+  in `crates/forgeplan-cli/tests/cli_uncovered_coverage.rs`: `embed`,
+  `tree`, `git_sync`, `log_cmd`, `context`, `promote`, `reopen`,
+  `scan_import`, `setup_skill`, `tag`, `recall`, `remember`, `migrate`,
+  `migrate_dry_run`, `reconcile_ids`, `ci_assign_id`. The `watch`
+  command is intentionally deferred — long-running foreground watcher
+  is untestable via `assert_cmd` без SIGTERM handling и timing races
+  (module-level unit tests cover the core debouncer logic).
+- **+59 MCP tool contract tests** в
+  `crates/forgeplan-mcp/tests/integration_full_coverage.rs` — coverage
+  expanded 14 → 61 unique handlers (100% user-facing tools reachable
+  через JSON-RPC duplex transport). LLM-dependent group (capture /
+  reason / decompose / generate) pins `is_error=true` contract; other
+  reachability-only assertions tracked for future tightening
+  (PROB-065 candidate).
+- **+6 smoke-test.sh operations** (13 → 19): `tree`, `progress`,
+  `claim/release` cycle, `dispatch` planner JSON, `phase-advance`
+  round-trip. Runtime budget ≤3s on warm cache.
+- **Shared MCP test fixture** extracted to
+  `crates/forgeplan-mcp/tests/common/mod.rs` (McpFixture + helpers) —
+  removes ~200 LOC of verbatim duplication between `integration_e2e.rs`
+  и `integration_full_coverage.rs`.
+
 ## [0.30.0] — 2026-05-06 — defensive sprint: security trio + cache self-healing + MCP transport parity + Wave 3 paper cuts
 
 **Highlights** (11 PROBs closed in single defensive sprint):

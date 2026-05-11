@@ -3,7 +3,20 @@
 > **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
 > (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
 
-## Current: v0.28.0 — file-first invariant compile-enforced + claude --print + canonical playbooks
+## Current dev: v0.31.0 (in progress on `dev` — Cargo.toml workspace = 0.30.0)
+
+Recent releases (authoritative: `git tag --sort=-v:refname | head` + `Cargo.toml`):
+
+- **v0.30.0** (released 2026-05-06, sync PR #262) — PROB-060 slug-canonical identity marathon (PR #255..#274) + Phase 2.5 resolver wire-up.
+- **v0.29.0** (released 2026-05-05, sync PR #250) — verdict aggregator typed errors (PROB-049 H-class), claude --print dispatch refactor (PROB-050 A-4..A-15), CWE-426 binary substitution closed.
+- **v0.28.0** (released 2026-05-04, sync PR #223) — file-first invariant compile-enforced (PRD-073) + claude --print dispatchers (ADR-011) + canonical playbooks (release/brownfield-docs).
+
+**In-flight на `dev` к v0.31.0** (PRs merged after v0.30.0 tag):
+
+- PR #275 — PROB-060 Phase 2.5 test coverage extension — **merged 2026-05-10**.
+- PR #277 — PROB-063 verdict aggregator excludes `advisory_phase_mismatches` (Closes #276) — **open**, awaiting CI green at время этой записи.
+
+## Released: v0.28.0 — file-first invariant compile-enforced + claude --print + canonical playbooks
 
 Bundles 14 merge-PR (#224..#237) since v0.27.0 (2026-04-28). Three load-bearing
 themes:
@@ -43,9 +56,9 @@ themes:
 - [x] EVID-098 readiness measurement (R_eff propagation to PRD-073 grade A)
 - [x] AI docs accessibility: robots.txt + llms.txt
 - [x] MCP tool count drift swept (63 canonical, 18 doc locations updated)
-- [ ] Push `release/v0.28.0 → main` (awaiting user approval)
-- [ ] Tag v0.28.0 + cargo-dist + brew publish (post-merge)
-- [ ] Post-release sync PR `chore/sync-main-to-dev-after-v0.28.0` (red line #9)
+- [x] Push `release/v0.28.0 → main` (PR #238 merged 2026-05-04)
+- [x] Tag v0.28.0 + cargo-dist + brew publish (released 2026-05-04)
+- [x] Post-release sync PR `chore/sync-main-to-dev-after-v0.28.0` (PR #223 merged 2026-04-28 — predecessor; v0.28.0 sync через cascade)
 
 ### Follow-ups (deferred к PR 3 / PR 4)
 - [ ] PR 3: PROB-049 top-4 (StoreError split, # Errors rustdoc, MutationContext, let-else)

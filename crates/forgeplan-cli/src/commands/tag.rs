@@ -42,14 +42,25 @@ pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
     );
 
     // PRD-071: tags applied — surface filtered list as the verifying action.
+    // w4-security-audit HIGH-1 (CWE-78): user-provided tag flows into the
+    // agent-visible `Next:` hint verbatim. Mirrors decompose.rs:70 /
+    // reason.rs:153 — sanitize before interpolation so shell metacharacters
+    // (`;`, `$`, ``, `|`, `&`, …) cannot survive copy-paste from agent
+    // output into a terminal. Empty/all-metachar input collapses to "" and
+    // is replaced with the documented `<tag>` placeholder so the hint stays
+    // self-explanatory.
     let primary_tag = tags
         .iter()
         .find(|t| !t.trim().is_empty())
         .cloned()
         .unwrap_or_else(|| "<tag>".to_string());
+    let safe_tag = {
+        let s = forgeplan_core::artifact::sanitize::sanitize_for_hint(&primary_tag);
+        if s.is_empty() { "<tag>".to_string() } else { s }
+    };
     let next_hints: Vec<Hint> = vec![
         Hint::info("Tag added — list filtered artifacts")
-            .with_action(format!("forgeplan list --tag {}", primary_tag)),
+            .with_action(format!("forgeplan list --tag {}", safe_tag)),
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 

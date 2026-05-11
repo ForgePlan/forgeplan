@@ -48,184 +48,11 @@
 //! feature) so we can write bodies the server itself would never emit
 //! (`assigned_number: null`, missing slug).
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use forgeplan_core::db::store::NewArtifact;
+use serde_json::json;
 
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
-use forgeplan_core::workspace;
-use forgeplan_mcp::ForgeplanServer;
-use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, RawContent};
-use serde_json::{Map, Value, json};
-use tempfile::TempDir;
-
-// ── harness ───────────────────────────────────────────────────────────
-
-/// Live in-process MCP fixture: tempdir-rooted server, paired with a
-/// `()`-handler client over a `tokio::io::duplex` transport. The fixture
-/// owns the tempdir so dropping the test releases all temp state.
-struct McpFixture {
-    _tempdir: TempDir,
-    workspace_path: PathBuf,
-    /// rmcp client peer — every test issues `call_tool` through this.
-    client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
-    /// Holds the spawned server task so it lives as long as the client.
-    /// Cancelled on drop via `tokio::task::JoinHandle::abort`.
-    _server_task: tokio::task::JoinHandle<()>,
-}
-
-impl McpFixture {
-    /// Set up tempdir + workspace + LanceStore + ForgeplanServer +
-    /// in-memory JSON-RPC client. Awaits the rmcp `initialize` handshake
-    /// before returning so the first `call_tool` lands on a fully-ready peer.
-    async fn new() -> Self {
-        Self::new_with_seed(|_| std::future::ready(())).await
-    }
-
-    /// Two-phase setup so tests can seed artifacts via
-    /// `LanceStore::create_artifact_for_test` BEFORE the MCP server opens
-    /// its own Lance handle. LanceDB takes a versioned snapshot at open
-    /// time; if seeding happens after `ForgeplanServer::new` (which calls
-    /// `LanceStore::open` internally), the server's read path operates on
-    /// an older snapshot and seeded rows are invisible until the next
-    /// re-open. The async closure runs against the test's exclusive store
-    /// handle while the server side is still uninitialized.
-    async fn new_with_seed<F, Fut>(seed: F) -> Self
-    where
-        F: FnOnce(Arc<LanceStore>) -> Fut,
-        Fut: std::future::Future<Output = ()>,
-    {
-        let tempdir = TempDir::new().expect("tempdir");
-        let workspace_path =
-            workspace::init_workspace(tempdir.path(), "mcp-e2e-test").expect("init workspace");
-        let store = Arc::new(
-            LanceStore::init(&workspace_path)
-                .await
-                .expect("init lance store"),
-        );
-
-        // Run any caller-provided seed BEFORE the server opens its own
-        // store handle. Any rows written here are guaranteed to be
-        // visible to the server's first read.
-        seed(Arc::clone(&store)).await;
-
-        // ForgeplanServer::new walks up from the supplied root looking for
-        // `.forgeplan/` and opens a second Lance handle. The fixture's
-        // own `store` handle is reserved for seeding fixtures.
-        let server = ForgeplanServer::new(tempdir.path().to_path_buf()).await;
-
-        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-        let server_task = tokio::spawn(async move {
-            // serve(transport) returns a RunningService whose `waiting()`
-            // future resolves when the transport closes. We swallow the
-            // result here — the test's lifetime drives the client side and
-            // dropping the client closes the duplex pipe, which terminates
-            // the server cleanly.
-            if let Ok(running) = server.serve(server_io).await {
-                let _ = running.waiting().await;
-            }
-        });
-
-        // `()` implements `ClientHandler` in rmcp, which gives it a
-        // `Service<RoleClient>` impl. `serve(transport)` performs the
-        // initialize handshake; the returned `RunningService` exposes
-        // `peer().call_tool(...)`.
-        let client = ().serve(client_io).await.expect("client initialize handshake");
-
-        // Drop fixture's store handle — Round 1 fix moved seeding into the
-        // `new_with_seed` closure, so the post-init handle is never read.
-        drop(store);
-
-        Self {
-            _tempdir: tempdir,
-            workspace_path,
-            client,
-            _server_task: server_task,
-        }
-    }
-
-    /// Issue a `tools/call` JSON-RPC request and parse the JSON payload
-    /// returned by the tool. Handlers serialize their response DTO via
-    /// `serde_json::to_string_pretty` and wrap it as `Content::text(...)`,
-    /// so the wire format is "stringified JSON inside content[0].text".
-    async fn call_tool_json(&self, name: &'static str, args: Value) -> CallToolEnvelope {
-        // `CallToolRequestParams` is `#[non_exhaustive]`, so we go through
-        // its public builder rather than struct-literal init. `Map::new()`
-        // for empty/null args matches the wire shape an MCP client emits
-        // when a tool takes no parameters.
-        let params = CallToolRequestParams::new(name).with_arguments(value_to_object(args));
-        // Bound runtime so a regression that hangs the handler surfaces as
-        // a panic with the offending tool name rather than a stuck CI job.
-        let result = tokio::time::timeout(
-            Duration::from_secs(15),
-            self.client.peer().call_tool(params),
-        )
-        .await
-        .unwrap_or_else(|_| panic!("tool `{name}` timed out (15s)"))
-        .unwrap_or_else(|e| panic!("tool `{name}` rpc error: {e}"));
-
-        CallToolEnvelope::from(result)
-    }
-}
-
-/// Coerce a `serde_json::Value::Object` into the `JsonObject` shape rmcp
-/// expects in `CallToolRequestParams.arguments`. Panics on non-object values
-/// because every tool in this crate takes an object body.
-fn value_to_object(v: Value) -> Map<String, Value> {
-    match v {
-        Value::Object(map) => map,
-        Value::Null => Map::new(),
-        other => panic!("expected JSON object for tool args, got: {other}"),
-    }
-}
-
-/// Lightly normalised view of `CallToolResult` so each test can read fields
-/// without re-parsing JSON six times.
-struct CallToolEnvelope {
-    /// `is_error == Some(true)` from the handler. `false` for success.
-    is_error: bool,
-    /// Concatenated text of all `Content::Text` items in `content`.
-    raw_text: String,
-    /// Best-effort parse of `raw_text` into a JSON value. `None` when the
-    /// handler returned a plain (non-JSON) error string — typical of
-    /// `err_result(...)`.
-    json: Option<Value>,
-}
-
-impl CallToolEnvelope {
-    fn assert_ok(&self) -> &Value {
-        assert!(
-            !self.is_error,
-            "expected success, got error: {}",
-            self.raw_text
-        );
-        self.json.as_ref().unwrap_or_else(|| {
-            panic!(
-                "expected JSON payload but content was non-JSON text: {}",
-                self.raw_text
-            )
-        })
-    }
-}
-
-impl From<CallToolResult> for CallToolEnvelope {
-    fn from(r: CallToolResult) -> Self {
-        let is_error = r.is_error.unwrap_or(false);
-        let mut raw_text = String::new();
-        for c in &r.content {
-            if let RawContent::Text(t) = &c.raw {
-                raw_text.push_str(&t.text);
-            }
-        }
-        let json = serde_json::from_str::<Value>(&raw_text).ok();
-        Self {
-            is_error,
-            raw_text,
-            json,
-        }
-    }
-}
+mod common;
+use common::McpFixture;
 
 /// Build a frontmatter+body string with explicit `assigned_number: null`
 /// — the Phase 2 "pre-merge" form that the CI bot will eventually mint.
@@ -866,6 +693,85 @@ async fn t13_legacy_artifact_handled_gracefully() {
     );
     assert_eq!(legacy["id_canonical"], "prd-099");
     assert_eq!(legacy["id_display"], "PRD-099");
+}
+
+// ── MED-1: phase_mismatches dual-key emission on MCP surface ──────────
+
+/// w4-security-audit MED-1 (inverse PROB-064): pre-fix MCP
+/// `forgeplan_health` emitted only the canonical
+/// `advisory_phase_mismatches` key; agents authored against legacy CLI
+/// (which still carried `phase_mismatches`) saw `null` when port'ing
+/// their branching logic to MCP. After the fix the MCP surface emits
+/// the same payload under both names — sourced from a single binding
+/// so drift between the two keys is impossible by construction.
+///
+/// Mirrors the symmetric CLI guard
+/// `health_json_phase_mismatches_aliases_have_identical_payload` in
+/// `crates/forgeplan-cli/tests/cli_integration_test.rs:3807-3846`. The
+/// CLI test pins identity on the CLI's `--json` surface; this one pins
+/// it on the MCP `forgeplan_health` surface. Both together form the
+/// cross-surface contract.
+///
+/// We do not pin specific phase_mismatches content (depends on workspace
+/// config + phase-advance heuristics that evolve); identity + presence
+/// is sufficient for the regression contract.
+#[tokio::test]
+async fn health_response_emits_both_phase_mismatches_aliases_identical_payload() {
+    let fx = McpFixture::new().await;
+
+    // Add a couple of artifacts so the emitter executes the non-trivial
+    // path (matches the CLI test which также seeds two artifacts).
+    let _ = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "prd", "title": "Aliasing Feature"}),
+        )
+        .await;
+    let _ = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "note", "title": "Aliasing Note"}),
+        )
+        .await;
+
+    let env = fx.call_tool_json("forgeplan_health", json!({})).await;
+    let resp = env.assert_ok();
+
+    let legacy = &resp["phase_mismatches"];
+    let canonical = &resp["advisory_phase_mismatches"];
+
+    // PROB-064 (inverse): both keys MUST surface — pre-fix only the
+    // canonical key existed and the legacy alias resolved to `null`,
+    // exactly the failure mode the audit caught.
+    assert!(
+        !legacy.is_null(),
+        "PROB-064 inverse: legacy `phase_mismatches` MUST be present on \
+         MCP surface (was null pre-fix). response = {resp}"
+    );
+    assert!(
+        !canonical.is_null(),
+        "PROB-064: canonical `advisory_phase_mismatches` MUST remain \
+         present. response = {resp}"
+    );
+
+    // PROB-064 alias contract (mirrors CLI assertion verbatim — see
+    // cli_integration_test.rs:3841-3845).
+    assert_eq!(
+        legacy, canonical,
+        "PROB-064: phase_mismatches and advisory_phase_mismatches must carry \
+         identical payloads (alias contract). legacy = {legacy}, canonical = {canonical}"
+    );
+
+    // Type guard — consumers branch on `.length`; an empty workspace
+    // gives `[]` but never `null` / object.
+    assert!(
+        legacy.is_array(),
+        "phase_mismatches MUST be a JSON array, got: {legacy}"
+    );
+    assert!(
+        canonical.is_array(),
+        "advisory_phase_mismatches MUST be a JSON array, got: {canonical}"
+    );
 }
 
 // ── housekeeping: workspace path discoverable ─────────────────────────

@@ -3752,3 +3752,133 @@ fn new_evidence_works_in_routing_phase_without_session_warning() {
         "evidence file must be created"
     );
 }
+
+// ─── PROB-064: CLI / MCP advisory_phase_mismatches aliasing ──────────────
+
+/// PROB-064 — CLI `health --json` must emit BOTH legacy `phase_mismatches`
+/// and MCP-canonical `advisory_phase_mismatches` keys. Pre-fix only the
+/// legacy key was present; consumers branching on the MCP name silently
+/// saw `null` after switching surfaces. Empty-workspace baseline: both
+/// keys are present as empty arrays.
+#[test]
+fn health_json_emits_both_phase_mismatches_aliases() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["health", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "health --json must succeed");
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("health --json must produce valid JSON");
+
+    assert!(
+        json.get("phase_mismatches").is_some(),
+        "legacy CLI key `phase_mismatches` must be present (PROB-064 backward-compat): keys = {:?}",
+        json.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
+    assert!(
+        json.get("advisory_phase_mismatches").is_some(),
+        "MCP-canonical key `advisory_phase_mismatches` must be present (PROB-064 fix): keys = {:?}",
+        json.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
+    assert!(
+        json["phase_mismatches"].is_array(),
+        "phase_mismatches must be an array"
+    );
+    assert!(
+        json["advisory_phase_mismatches"].is_array(),
+        "advisory_phase_mismatches must be an array"
+    );
+}
+
+/// PROB-064 — the two aliased keys must carry **identical** payloads.
+/// Aliasing is meaningful only if a `jq .phase_mismatches` consumer and
+/// a `jq .advisory_phase_mismatches` consumer see the exact same data.
+/// Single source of truth in the emitter prevents the two from drifting.
+#[test]
+fn health_json_phase_mismatches_aliases_have_identical_payload() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Add a few artifacts so the emitter executes the non-trivial path
+    // (even if phase tracking is opt-in and the list ends up empty, the
+    // identity assertion still holds and guards against future drift).
+    forgeplan()
+        .args(["new", "prd", "Aliasing Feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "note", "Aliasing Note"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["health", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "health --json must succeed");
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("health --json must produce valid JSON");
+
+    let legacy = &json["phase_mismatches"];
+    let canonical = &json["advisory_phase_mismatches"];
+    assert_eq!(
+        legacy, canonical,
+        "PROB-064: phase_mismatches and advisory_phase_mismatches must carry \
+         identical payloads (alias contract). legacy = {legacy}, canonical = {canonical}"
+    );
+}
+
+/// PROB-064 — symbolic guard that the CLI exposes the MCP-canonical key
+/// name verbatim. If the MCP server renames the field, this test will
+/// keep passing (it only checks CLI surface), but the test name + a body
+/// reference to the MCP path make the cross-surface contract obvious to
+/// any reader who edits one side without the other.
+#[test]
+fn health_json_advisory_alias_matches_mcp_naming() {
+    // MCP path emitter: `crates/forgeplan-mcp/src/server.rs`
+    //   → uses the key `"advisory_phase_mismatches"`.
+    // CLI must mirror this exact spelling so agents written against the
+    // MCP response can re-use their JSON path on the CLI surface.
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["health", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let keys: Vec<&String> = json
+        .as_object()
+        .expect("health --json is a JSON object")
+        .keys()
+        .collect();
+    assert!(
+        keys.iter()
+            .any(|k| k.as_str() == "advisory_phase_mismatches"),
+        "CLI must expose the MCP-canonical key `advisory_phase_mismatches` verbatim; \
+         present keys: {keys:?}"
+    );
+}

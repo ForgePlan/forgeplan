@@ -79,6 +79,23 @@ pub async fn run(
         // by construction (no consumer can read `verdict == "healthy"`
         // for an empty workspace).
         let verdict_summary = report.verdict.human_summary();
+        // PROB-064: compute the phase-mismatch payload ONCE and reference it
+        // under both `phase_mismatches` (legacy CLI key) and
+        // `advisory_phase_mismatches` (MCP-canonical key) for cross-surface
+        // consistency. Single source of truth — the two JSON keys cannot
+        // drift apart.
+        let phase_mismatches_payload: Vec<serde_json::Value> = phase_mismatches
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "title": m.title,
+                    "status": m.status,
+                    "current_phase": m.current_phase,
+                    "advisory": m.advisory,
+                })
+            })
+            .collect();
         let json_data = serde_json::json!({
             "project": config.project_name,
             "total": report.total,
@@ -113,16 +130,18 @@ pub async fn run(
                 "markers_found": s.markers_found,
                 "message": s.message,
             })).collect::<Vec<_>>(),
-            // PROB-051 L-H3: surface phase mismatches in CLI --json so
-            // operators using `forgeplan health --json | jq .phase_mismatches`
-            // see the same data as MCP `forgeplan_health`.
-            "phase_mismatches": phase_mismatches.iter().map(|m| serde_json::json!({
-                "id": m.id,
-                "title": m.title,
-                "status": m.status,
-                "current_phase": m.current_phase,
-                "advisory": m.advisory,
-            })).collect::<Vec<_>>(),
+            // PROB-051 L-H3 + PROB-064: surface phase mismatches in CLI --json
+            // under BOTH legacy (`phase_mismatches`) and MCP-canonical
+            // (`advisory_phase_mismatches`) keys. Same data, two names —
+            // additive aliasing so agents/CI scripts written against either
+            // surface keep working. MCP `forgeplan_health` emits only
+            // `advisory_phase_mismatches`; pre-PROB-064 CLI emitted only
+            // `phase_mismatches`; consumers branching on the MCP name when
+            // moved to the CLI surface silently saw `null` (PROB-064 root
+            // cause). Future deprecation of the legacy `phase_mismatches`
+            // key is possible in a major-version bump.
+            "phase_mismatches": phase_mismatches_payload,
+            "advisory_phase_mismatches": phase_mismatches_payload,
             "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);

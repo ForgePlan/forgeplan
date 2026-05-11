@@ -2909,6 +2909,14 @@ impl ForgeplanServer {
         // for an empty workspace).
         let verdict_summary = verdict.human_summary();
 
+        // w4-security-audit MED-1 (inverse PROB-064): legacy CLI key
+        // `phase_mismatches` was missing on MCP surface — agents authored
+        // against pre-PROB-064 CLI saw `null` when port'ing the same
+        // branching logic to MCP. Reuse the `phase_mismatches` binding
+        // built at line ~2791 (already `Vec<serde_json::Value>`) so the
+        // single source of truth feeds both keys — drift impossible by
+        // construction (mirrors CLI's `phase_mismatches_payload` pattern
+        // в commands/health.rs:87-144).
         Ok(json_result(&serde_json::json!({
             "total": report.total,
             "by_kind": report.by_kind,
@@ -2924,6 +2932,13 @@ impl ForgeplanServer {
             "stale_count": report.stale_count,
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
+            // Dual-key emission — same payload under both legacy
+            // (`phase_mismatches`) and MCP-canonical
+            // (`advisory_phase_mismatches`) names. Single-binding payload
+            // means future drift is impossible; consumers may branch on
+            // either name. Future deprecation of the legacy alias is
+            // tracked in PROB-064.
+            "phase_mismatches": phase_mismatches,
             "advisory_phase_mismatches": phase_mismatches,
             "active_claims": claims_json,
             "active_claim_count": active_claims.len(),
