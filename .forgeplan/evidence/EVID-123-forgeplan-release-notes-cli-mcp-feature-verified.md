@@ -1,12 +1,12 @@
 ---
 depth: tactical
-id: EVID-002
+id: EVID-123
 kind: evidence
 status: active
 title: forgeplan release-notes CLI + MCP feature verified
 ---
 
-# EVID-002: forgeplan release-notes CLI + MCP feature verified
+# EVID-123: forgeplan release-notes CLI + MCP feature verified
 
 | Field | Value |
 |-------|-------|

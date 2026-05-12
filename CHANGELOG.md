@@ -49,7 +49,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   `status==active` or `r_eff_score > 0` are emitted; `--draft` waives.
   Companion MCP tool `forgeplan_release_notes` returns the same JSON
   shape. Closes v0.31.0 Wave 4 MAJOR-3 (manual CHANGELOG sync pain) —
-  the feature self-uses at the next release. Refs: EVID-002.
+  the feature self-uses at the next release. Refs: EVID-123.
 - **`forgeplan health --strict` flag** — exit 1 if verdict ∈
   {NeedsAttention, Unhealthy} OR any of {orphans, blind_spots,
   active_stubs, at_risk} > 0. Designed for CI gates that want a single
