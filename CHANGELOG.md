@@ -77,10 +77,40 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   - **#28 (MEDIUM)** — heap buffer overflow при AES key-wrap-with-padding
     encryption.
 
-  `uuid` и `lru` Dependabot alerts deferred: `uuid` flagged as a
-  false-positive (production code never touches the vulnerable
-  v3/v5 SHA-1 path) и `lru` is pinned downstream by `lancedb` —
-  see `TODO.md` для full justification + tracking.
+- **Bump mermaid 11.14.0 → 11.15.0 в `website/`** — closes four GitHub
+  Dependabot alerts on the documentation site dependency tree:
+  - **#32 (MEDIUM, GHSA-6m6c-36f7-fhxh)** — Gantt charts vulnerable to
+    infinite-loop DoS.
+  - **#31 (MEDIUM, GHSA-ghcm-xqfw-q4vr)** — improper sanitization of
+    `classDef` in state diagrams (HTML injection).
+  - **#30 (MEDIUM, GHSA-87f9-hvmw-gh4p)** — improper sanitization of
+    configuration (CSS injection).
+  - **#29 (MEDIUM, GHSA-xcj9-5m2h-648r)** — improper sanitization of
+    `classDefs` in diagrams (CSS injection).
+
+- **Bump uuid 11.1.0 → 14.0.0 в `website/`** — closes Dependabot alert
+  **#26 (MEDIUM, GHSA-w5hq-g745-h8pq)** — missing buffer bounds check в
+  `v3/v5/v6` when buf is provided. Major bump landed via mermaid 11.15.0
+  broadening its peer range (`^11 || ^12 || ^13 || ^14`); npm resolved
+  to latest 14.0.0. `npm audit` reports 0 vulnerabilities post-bump.
+
+- **`lru` 0.12.5 alert deferred** (#3, LOW, GHSA-rhfx-m35p-ff5j) —
+  `IterMut` Stacked Borrows violation. Blocked upstream: `tantivy
+  v0.24.2` pins `lru = "^0.12.0"`, and `lance v4.0.0` pins
+  `tantivy = "=0.24.1"`. Bump requires `lance ≥4.1` (not yet released
+  с newer tantivy). Justification: LOW severity, Forgeplan не использует
+  `lru::IterMut` напрямую — code path is tantivy-internal text index
+  iteration, not exposed через our search API. Tracked для re-triage
+  on next lance upstream release.
+
+- **`cargo-deny` CI gate added** — new `.github/workflows/security.yml`
+  runs `cargo deny check advisories licenses bans sources` on push to
+  dev/main, on PRs against dev/main, и weekly cron (Mon 07:23 UTC).
+  Config: `deny.toml` at repo root. Initial rollout
+  `continue-on-error: true` — establishes baseline, then flips to
+  blocking after first clean run. Closes RED LINE #10 mechanism gap
+  (Dependabot mandate had no automated enforcement before release).
+  Schema is cargo-deny 0.19+ (action @v2.x).
 
 ### Tests
 
