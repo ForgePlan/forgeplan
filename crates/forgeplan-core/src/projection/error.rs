@@ -901,4 +901,192 @@ mod tests {
         );
         assert!(!out.contains("<HOME>"));
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Wave 9 edge-case worker — corner cases not covered by the
+    // existing W9 audit tests. Each test pins a specific edge so a
+    // future refactor that regresses it fails first.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Edge: HOME passed with a trailing slash already. Current impl
+    /// branches on `home.ends_with('/')` and skips the synthetic append,
+    /// so the substitution targets `/Users/alice/` exactly once. Pin
+    /// so the no-double-slash invariant is compiler-enforced via the
+    /// test contract: no `<HOME>//` artefact in the output.
+    #[test]
+    fn sanitize_text_with_handles_trailing_slash_home() {
+        let out = sanitize_text_with("error opening /Users/alice/foo/bar", Some("/Users/alice/"));
+        assert!(
+            out.contains("<HOME>/foo/bar"),
+            "expected <HOME>/foo/bar, got: {out}"
+        );
+        assert!(
+            !out.contains("<HOME>//"),
+            "trailing-slash HOME must not introduce double slash: {out}"
+        );
+        assert!(
+            !out.contains("/Users/alice"),
+            "raw HOME suffix must not survive: {out}"
+        );
+    }
+
+    /// Edge: multi-line input. The sanitiser walks chars without
+    /// special-casing newlines, so each occurrence of HOME is masked
+    /// independently on its own line and the newlines are preserved
+    /// verbatim — important when a multi-cause error chain spans many
+    /// lines and operators expect line-wise diff readability.
+    #[test]
+    fn sanitize_text_with_preserves_newlines_and_masks_per_line() {
+        let input = "line one /Users/alice/proj\nline two /Users/alice/other\nline three plain";
+        let out = sanitize_text_with(input, Some("/Users/alice"));
+        // Both occurrences masked.
+        assert!(
+            !out.contains("/Users/alice"),
+            "all HOME occurrences must be masked across lines: {out}"
+        );
+        // Newlines preserved — line count unchanged.
+        assert_eq!(
+            out.lines().count(),
+            3,
+            "newline structure must survive sanitisation: {out:?}"
+        );
+        // Each masked line has its own <HOME>.
+        let mask_count = out.matches("<HOME>").count();
+        assert_eq!(mask_count, 2, "each line's HOME must be masked: {out}");
+        // The plain third line passes through untouched.
+        assert!(
+            out.lines().nth(2).unwrap().contains("plain"),
+            "untouched lines pass through: {out}"
+        );
+    }
+
+    /// Edge: exact-equal bare HOME (no trailing slash, no children).
+    /// Already covered partially in
+    /// `sanitize_text_with_anchors_home_match_to_path_separator`, but
+    /// re-pin explicitly to fix the contract: `input == home` triggers
+    /// the bare-HOME branch and emits `<HOME>` (no slash, no children).
+    #[test]
+    fn sanitize_text_with_bare_home_exact_match_emits_bare_mask() {
+        let out = sanitize_text_with("/Users/alice", Some("/Users/alice"));
+        assert_eq!(
+            out, "<HOME>",
+            "exact-equal HOME input must produce bare <HOME>: {out}"
+        );
+    }
+
+    /// Idempotency on output, extended: feed multi-mask sanitised output
+    /// back through the sanitiser and confirm fixed-point. The single-
+    /// mask idempotency case is already covered by
+    /// `sanitize_text_with_is_idempotent`; this case exercises the
+    /// combination (HOME + scratch dir + multiple occurrences).
+    #[test]
+    fn sanitize_text_with_idempotent_on_multi_mask_combinations() {
+        let input = "chain: /Users/alice/a -> /tmp/b -> /var/folders/c -> /Users/alice/d";
+        let first = sanitize_text_with(input, Some("/Users/alice"));
+        let second = sanitize_text_with(&first, Some("/Users/alice"));
+        let third = sanitize_text_with(&second, Some("/Users/alice"));
+        assert_eq!(
+            first, second,
+            "sanitize_text_with idempotent (1->2): {first} | {second}"
+        );
+        assert_eq!(
+            second, third,
+            "sanitize_text_with idempotent (2->3): {second} | {third}"
+        );
+        // Confirm masks landed.
+        assert!(!first.contains("/Users/alice"));
+        assert!(!first.contains("/tmp/b"));
+        assert!(!first.contains("/var/folders/c"));
+        assert!(first.contains("<HOME>"));
+        assert!(first.contains("<tmpdir>"));
+    }
+
+    /// Edge: HOME path containing regex-metacharacters
+    /// (`.`, `+`, `$`, `*`, `?`, `(`, `)`). `str::replace` is a literal-
+    /// string operation (NOT regex), so these characters are matched
+    /// byte-for-byte without escaping — pin the contract so a future
+    /// switch to a regex-based mask (e.g. for case-insensitive HOME on
+    /// Windows) is forced to handle escaping explicitly.
+    #[test]
+    fn sanitize_text_with_handles_regex_meta_chars_in_home() {
+        for tricky_home in [
+            "/Users/a.b",
+            "/Users/a+b",
+            "/Users/a$b",
+            "/Users/a*b",
+            "/Users/a(b)c",
+        ] {
+            let input = format!("error on {tricky_home}/file");
+            let out = sanitize_text_with(&input, Some(tricky_home));
+            assert!(
+                !out.contains(tricky_home),
+                "regex-meta HOME {tricky_home:?} must be literally matched, got: {out}"
+            );
+            assert!(
+                out.contains("<HOME>/file"),
+                "expected <HOME>/file after mask of {tricky_home:?}, got: {out}"
+            );
+        }
+    }
+
+    /// Edge: empty input. Trivial but pins the no-op behaviour — empty
+    /// stays empty, even with HOME provided. Guards against a future
+    /// refactor that accidentally returns a non-empty placeholder.
+    #[test]
+    fn sanitize_text_with_empty_input_is_empty() {
+        let out = sanitize_text_with("", Some("/Users/alice"));
+        assert_eq!(out, "", "empty input must produce empty output: {out:?}");
+        let out_no_home = sanitize_text_with("", None);
+        assert_eq!(
+            out_no_home, "",
+            "empty input + no HOME also empty: {out_no_home:?}"
+        );
+    }
+
+    /// Edge: HOME shorter than typical (e.g. `/U`). Anchor on the path
+    /// separator means `/U/` must be a substring to match. A longer path
+    /// like `/Users/alice` does NOT have `/U/` as substring (it has
+    /// `/Us...`) so MUST NOT be masked. Pin so a future relaxation of
+    /// the anchor doesn't accidentally trip this case.
+    #[test]
+    fn sanitize_text_with_short_home_does_not_match_longer_path() {
+        // HOME=/U (rare but valid — e.g. some chroot setups). /Users/alice
+        // does not contain `/U/` as substring → must pass through.
+        let out = sanitize_text_with("workspace at /Users/alice/proj", Some("/U"));
+        assert!(
+            out.contains("/Users/alice/proj"),
+            "/U must not match /Users/alice (substring `/U/` not present): {out}"
+        );
+        assert!(
+            !out.contains("<HOME>"),
+            "no mask should be applied — HOME `/U` is unrelated: {out}"
+        );
+
+        // Confirm `/U/sub/...` IS masked (positive control for the
+        // anchored match).
+        let out_pos = sanitize_text_with("workspace at /U/sub/file", Some("/U"));
+        assert!(
+            out_pos.contains("<HOME>/sub/file"),
+            "/U/sub/file MUST be masked (anchored): {out_pos}"
+        );
+    }
+
+    /// Edge: zero-length HOME after env filter. `home_env` already
+    /// filters empty strings to `None`, but the helper also defensively
+    /// filters in its own guard (`!h.is_empty()`). Pin the contract:
+    /// `Some("")` is treated identically to `None` — scratch-dir rules
+    /// still apply.
+    #[test]
+    fn sanitize_text_with_treats_empty_home_string_like_none() {
+        let out_empty = sanitize_text_with("/tmp/x and /Users/alice/y", Some(""));
+        let out_none = sanitize_text_with("/tmp/x and /Users/alice/y", None);
+        assert_eq!(
+            out_empty, out_none,
+            "Some(\"\") and None must produce identical output: {out_empty:?} vs {out_none:?}"
+        );
+        // Scratch-dir rule still applied.
+        assert!(out_empty.contains("<tmpdir>/x"));
+        // HOME rule skipped (no override → /Users/alice survives).
+        assert!(out_empty.contains("/Users/alice/y"));
+    }
 }
