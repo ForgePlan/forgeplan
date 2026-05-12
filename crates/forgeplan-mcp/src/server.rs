@@ -2949,6 +2949,14 @@ impl ForgeplanServer {
             // tracked in PROB-064.
             "phase_mismatches": phase_mismatches,
             "advisory_phase_mismatches": phase_mismatches,
+            // PROB-062: advisory gitignore-drift list (tracked files
+            // under canonical forgeplan ignore patterns). Same
+            // advisory class as `advisory_phase_mismatches` — surfaced
+            // for visibility but does NOT promote the verdict.
+            "gitignore_drift": report.gitignore_drift.iter().map(|d| serde_json::json!({
+                "path": d.path,
+                "reason": d.reason,
+            })).collect::<Vec<_>>(),
             "active_claims": claims_json,
             "active_claim_count": active_claims.len(),
             "skipped_claim_files": skipped_claims,
