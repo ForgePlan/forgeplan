@@ -399,3 +399,158 @@ fn verdict_boundary_empty_workspace_short_circuits_before_threshold_checks() {
         "total = 0 must short-circuit to Empty regardless of signal counts, got {v:?}"
     );
 }
+
+// ── combination tests — multi-signal interaction ─────────────────────
+//
+// The single-signal triplets above pin per-counter semantics. Real
+// workspaces can trip multiple counters at once — these tests pin the
+// OR-fold contract of `compute_verdict_from_signals`:
+//
+//   verdict = if total == 0       { Empty }
+//             else if ANY critical above-limit { Unhealthy }
+//             else if ANY warning  { NeedsAttention }
+//             else                  { Healthy }
+//
+// Wave 9 edge-case worker. Pre-existing tests only flipped one signal
+// at a time, leaving the multi-signal OR-fold contract untested.
+
+/// All three critical signals exactly at threshold simultaneously
+/// (orphans = t, blind_spots = t, active_stubs = t). Strict-`>` means
+/// none have tripped yet — verdict stays NeedsAttention (warning class,
+/// since the at-limit detector lists exist and produce next_actions).
+#[test]
+fn verdict_boundary_multi_signal_all_at_threshold_is_needs_attention() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    r.orphans = (0..t.orphans).map(|i| format!("NOTE-{i:03}")).collect();
+    r.blind_spots = (0..t.blind_spots)
+        .map(|i| spot(&format!("ADR-{i:03}")))
+        .collect();
+    r.active_stubs = (0..t.active_stubs)
+        .map(|i| stub(&format!("PRD-{i:03}")))
+        .collect();
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::NeedsAttention,
+        "multiple at-threshold critical signals (none above) must stay NeedsAttention, got {v:?}"
+    );
+}
+
+/// Multiple critical signals just above their respective thresholds
+/// (orphans = t+1 AND blind_spots = t+1). The aggregator OR-folds: ANY
+/// critical above limit → Unhealthy. Pin so a future refactor that
+/// changes the fold to AND-of-all-criticals (the wrong contract) fails
+/// here first.
+#[test]
+fn verdict_boundary_multi_signal_two_above_threshold_is_unhealthy() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    r.orphans = (0..=t.orphans).map(|i| format!("NOTE-{i:03}")).collect();
+    r.blind_spots = (0..=t.blind_spots)
+        .map(|i| spot(&format!("ADR-{i:03}")))
+        .collect();
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::Unhealthy,
+        "two critical signals above threshold must OR-fold to Unhealthy, got {v:?}"
+    );
+}
+
+/// All five critical classes ((orphans, blind_spots, active_stubs,
+/// duplicates, at_risk)) just above threshold simultaneously. Worst-case
+/// fixture: every critical class fires together. Verdict still
+/// Unhealthy (saturating max, not additive).
+#[test]
+fn verdict_boundary_multi_signal_all_critical_above_threshold_is_unhealthy() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    r.orphans = (0..=t.orphans).map(|i| format!("NOTE-{i:03}")).collect();
+    r.blind_spots = (0..=t.blind_spots)
+        .map(|i| spot(&format!("ADR-{i:03}")))
+        .collect();
+    r.active_stubs = (0..=t.active_stubs)
+        .map(|i| stub(&format!("PRD-{i:03}")))
+        .collect();
+    r.possible_duplicates = (0..=t.duplicates)
+        .map(|i| dup(&format!("EVID-{i:03}"), &format!("EVID-{:03}", i + 100)))
+        .collect();
+    r.at_risk = (0..=t.at_risk)
+        .map(|i| at_risk(&format!("PRD-{i:03}")))
+        .collect();
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::Unhealthy,
+        "all critical signals above threshold must collapse to Unhealthy (saturating), got {v:?}"
+    );
+}
+
+/// Mixed signal: one critical at-limit (still tolerated) + advisory
+/// stale count above any conceivable threshold (advisory-only, never
+/// promotes to Unhealthy per PROB-063 contract). Verdict must be
+/// NeedsAttention — neither signal individually trips Unhealthy.
+///
+/// Pin: advisory signals MUST NOT promote past critical-at-limit.
+/// If a future refactor accidentally folded `stale_count` into the
+/// critical class, this test would flip to Unhealthy and force a
+/// methodology review.
+#[test]
+fn verdict_boundary_mixed_at_limit_critical_plus_advisory_stale_is_needs_attention() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    // Orphans at limit (strict-> means still tolerated as warning).
+    r.orphans = (0..t.orphans).map(|i| format!("NOTE-{i:03}")).collect();
+    // Advisory stale count well above any reasonable critical bar.
+    r.stale_count = 100;
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::NeedsAttention,
+        "at-limit critical + huge advisory stale must NOT promote to Unhealthy (PROB-063), got {v:?}"
+    );
+}
+
+/// Mixed signal: one critical above limit + advisory phase mismatches
+/// above any conceivable threshold. Verdict MUST be Unhealthy (critical
+/// wins) — phase mismatches alone never promote, but they don't shield
+/// either: a real critical signal still trips Unhealthy.
+///
+/// Edge worth pinning: makes sure the advisory path's "non-promotion"
+/// guard doesn't accidentally suppress real critical promotions.
+#[test]
+fn verdict_boundary_mixed_critical_above_plus_advisory_phase_is_unhealthy() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    // One critical above limit.
+    r.orphans = (0..=t.orphans).map(|i| format!("NOTE-{i:03}")).collect();
+    // Phase mismatches passed via the third arg of compute_verdict_with
+    // (advisory — PROB-063 contract: never promotes).
+    let v = r.compute_verdict_with(&t, 50);
+    assert_eq!(
+        v,
+        Verdict::Unhealthy,
+        "critical above limit must promote to Unhealthy even with advisory phase mismatches present, got {v:?}"
+    );
+}
+
+/// Single advisory phase mismatches without any other signal MUST stay
+/// Healthy (PROB-063). Pre-existing test
+/// `verdict_boundary_zero_counts_on_populated_workspace_is_healthy`
+/// passes zero, this passes a large advisory count — pin that the
+/// advisory path stays Healthy at any count.
+#[test]
+fn verdict_boundary_advisory_phase_only_stays_healthy_at_any_count() {
+    let r = baseline_report();
+    let t = VerdictThresholds::default();
+    // No critical signals; only advisory phase mismatches.
+    for advisory_count in [1, 5, 10, 50, 1000] {
+        let v = r.compute_verdict_with(&t, advisory_count);
+        assert_eq!(
+            v,
+            Verdict::Healthy,
+            "advisory phase mismatches alone must NOT promote at count={advisory_count}, got {v:?}"
+        );
+    }
+}
