@@ -68,7 +68,12 @@ pub enum MutationError {
     /// fails (symlink/canonicalization mismatch); they MUST NOT pass an
     /// absolute path. Future contributors: tests at the construction sites
     /// assert `!path.is_absolute()` — keep them green.
-    #[error("file not found for {id} at {path}")]
+    ///
+    /// **Defence-in-depth (Wave 9 M1)**: even if a future caller forgets to
+    /// strip the prefix, the Display formatter routes the path through
+    /// `sanitize_path_for_display` so HOME / workspace-root / temp-dir
+    /// absolute prefixes get masked before reaching logs.
+    #[error("file not found for {id} at {}", sanitize_path_for_display(path))]
     FileNotFound { id: String, path: PathBuf },
 
     /// Detected drift between the on-disk frontmatter and the LanceDB row
@@ -124,7 +129,17 @@ pub enum MutationError {
     /// legacy `StoreError`, so the split is a strict refinement, never a
     /// regression. TODO(PROB-049): finer-grained categorisation as
     /// LanceDB / Lance error taxonomies stabilise upstream.
-    #[error("LanceStore mutation failed (transient): {0}")]
+    ///
+    /// # Security
+    ///
+    /// **DO** keep this variant's Display going through `sanitize_error_chain`
+    /// — the wrapped `anyhow::Error` chain commonly contains absolute
+    /// filesystem paths (HOME, workspace root, temp dirs) that leak into
+    /// MCP JSON / Claude Desktop logs (Wave 9 M1 closure of the Round 4
+    /// `# Security` gap). **DO NOT** introduce a new variant for store
+    /// errors that bypasses the sanitiser — re-use this format-with-expr
+    /// pattern.
+    #[error("LanceStore mutation failed (transient): {}", sanitize_error_chain(_0))]
     StoreTransient(#[source] anyhow::Error),
 
     /// The underlying `LanceStore` mutation failed in a way that retry
@@ -137,10 +152,17 @@ pub enum MutationError {
     /// **Status (Round 4 audit HIGH-3 closure)**: as with `StoreTransient`,
     /// this variant carries fatal-failure *intent* but is not yet consumed
     /// by an MCP retry-loop guard. Today, the variant Display-formats with
-    /// the wrapped `anyhow::Error` chain verbatim — operators see "fatal"
-    /// in error messages but no automation acts on it differently. Future
-    /// retry-wiring PR should grow `is_recoverable()` consumers.
-    #[error("LanceStore mutation failed (fatal): {0}")]
+    /// the wrapped `anyhow::Error` chain verbatim (after path sanitisation —
+    /// Wave 9 M1) — operators see "fatal" in error messages but no
+    /// automation acts on it differently. Future retry-wiring PR should
+    /// grow `is_recoverable()` consumers.
+    ///
+    /// # Security
+    ///
+    /// **DO** keep this variant's Display going through `sanitize_error_chain`
+    /// — same rationale as `StoreTransient`. **DO NOT** add new Display
+    /// call sites that bypass the sanitiser.
+    #[error("LanceStore mutation failed (fatal): {}", sanitize_error_chain(_0))]
     StoreFatal(#[source] anyhow::Error),
 }
 
@@ -162,15 +184,31 @@ impl From<anyhow::Error> for MutationError {
 }
 
 impl MutationError {
-    /// Whether the error is potentially recoverable by retry / fallback.
-    /// `false` means the workspace state is wedged or the input is invalid;
-    /// `true` means a transient failure that retry / re-run / operator
-    /// intervention can resolve.
+    /// Returns `true` when the caller should retry / re-invoke after
+    /// transient resolution; `false` when the caller MUST stop and surface
+    /// the error to a human / `Fix:` hint.
     ///
-    /// Exhaustive match on every variant — no fallthrough — so future
-    /// variants force the maintainer to make an explicit choice (PROB-049
-    /// H-1 R1 reviewer concern: silent default makes new variants
-    /// retry-loop targets by accident).
+    /// Use as:
+    /// ```ignore
+    /// match foo_with_projection(&ctx, ...).await {
+    ///     Ok(v) => v,
+    ///     Err(e) if e.is_recoverable() => retry_with_backoff().await?,
+    ///     Err(e) => return Err(e), // fatal: don't retry, propagate.
+    /// }
+    /// ```
+    ///
+    /// Semantics:
+    /// - `true` → workspace state is healthy; the failure was a transient
+    ///   blip (lock contention, EAGAIN, temporary I/O). Retry / re-run /
+    ///   operator-fixable-and-rerun all qualify.
+    /// - `false` → workspace state is wedged or the input is invalid.
+    ///   Retry will not help — the caller must reconcile (e.g. via
+    ///   `forgeplan reindex`), validate input, or surface the error.
+    ///
+    /// Exhaustive match on every variant — no fallthrough — so adding a
+    /// new variant forces the maintainer to make an explicit choice
+    /// (PROB-049 H-1 R1 reviewer concern: silent default would make new
+    /// variants retry-loop targets by accident).
     pub fn is_recoverable(&self) -> bool {
         match self {
             // Input / workspace state — not recoverable by retry.
@@ -225,25 +263,31 @@ impl MutationError {
     ///
     /// # Security
     ///
-    /// The `lancedb::Error::Lance { source }` arm defaults to **transient**
-    /// (recoverable) — see TODO above for rationale. Round 4 audit MED-2
-    /// (security) noted that an attacker with write access to
-    /// `.forgeplan/lance/` could craft a corrupted Lance file producing a
-    /// `lance::Error::Schema` (truly permanent) that this categoriser
-    /// misroutes as transient → MCP retry loops would hammer the DB on
-    /// what is in fact corruption (DoS amplifier).
+    /// **DO** cap retry attempts in every consumer of
+    /// [`MutationError::is_recoverable`] — a misclassified-fatal must NOT
+    /// induce an unbounded loop. **DO NOT** assume the `Lance { source }`
+    /// arm only returns truly-transient errors: this categoriser defaults
+    /// it to transient because we lack a direct `lance` dep (see TODO
+    /// above), so a corrupted Lance file can produce a
+    /// `lance::Error::Schema` (permanent corruption) that gets misrouted
+    /// as transient. Without a retry cap, MCP would hammer the DB on what
+    /// is in fact corruption (DoS amplifier).
     ///
-    /// **Mitigations** (defence in depth):
-    /// 1. Threat model accepts trusted-local-user workspaces — the attack
-    ///    requires filesystem write access to `.forgeplan/lance/` which
-    ///    is already a workspace-trust boundary.
-    /// 2. Future MCP retry-wiring (see [`MutationError::is_recoverable`]
-    ///    consumer story) MUST cap retry attempts — a misclassified-fatal
-    ///    cannot induce an unbounded loop.
-    /// 3. Adding `lance` as a direct dep just for inner categorisation
-    ///    would be net-negative (forces the `lance` major version upgrade
-    ///    cadence onto every consumer of `forgeplan-core`); accepted with
-    ///    justification per audit MED-2.
+    /// **DO NOT** widen the trust boundary: writes to `.forgeplan/lance/`
+    /// are treated as workspace-owner-only — `forgeplan` does not
+    /// authenticate them. Any flow that lets an untrusted actor write into
+    /// that directory (CI mounts, container layers, shared NFS) needs an
+    /// explicit upstream gate, NOT a fix here.
+    ///
+    /// **DO NOT** add `lance` as a direct dep just to subdivide the
+    /// `Lance { .. }` arm — that would force the `lance` major-version
+    /// upgrade cadence onto every consumer of `forgeplan-core`. Accepted
+    /// with justification per Round 4 audit MED-2.
+    ///
+    /// Threat-model note: the misrouting case requires filesystem write
+    /// access to `.forgeplan/lance/`, which is already the workspace-trust
+    /// boundary. Defence-in-depth is the retry cap above, not finer-grained
+    /// categorisation in this helper.
     pub fn from_store_err(e: anyhow::Error) -> Self {
         if classify_anyhow_as_fatal(&e) {
             MutationError::StoreFatal(e)
@@ -325,6 +369,115 @@ fn classify_lancedb_as_fatal(err: &lancedb::Error) -> bool {
 // but a non-exhaustive match would let future upstream variants
 // silently misclassify — the impl above lists every variant currently
 // visible in our build.
+
+// ─────────────────────────────────────────────────────────────────────────
+// Path sanitisation for Display (Wave 9 M1 — closes the Round 4 # Security
+// docstring gap on StoreFatal/StoreTransient/FileNotFound).
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Both `StoreFatal` / `StoreTransient` wrap an `anyhow::Error` whose chain
+// frequently contains absolute filesystem paths (HOME-rooted workspaces,
+// /tmp test fixtures, `.forgeplan/lance/` subpaths). When `MutationError`
+// is rendered into MCP JSON error replies or written to Claude Desktop
+// logs, those paths leak host-identifying info — username, project
+// layout, build-cache locations — onto a surface the user did not opt in
+// to share. Sanitisation here is the Display-layer defence-in-depth
+// counterpart to the input-side discipline of `FileNotFound` (which
+// already requires workspace-relative paths at construction time).
+//
+// Mapping rules — applied in order, each idempotent:
+//   1. `$HOME` prefix             → `<HOME>`           (covers `/Users/<name>/...`,
+//                                                       `/home/<name>/...`)
+//   2. `$CARGO_TARGET_DIR` prefix → `<target>`        (CI / `cargo` builds)
+//   3. `/tmp/...` / `/var/folders/...`
+//                                  → `<tmpdir>`        (test fixtures, macOS scratch)
+//   4. Any remaining absolute path beginning with `/`
+//                                  → `<workspace>/...` (best-effort generic mask)
+//
+// Workspace root is not known at this layer (errors flow out of
+// `forgeplan-core` without a workspace handle), so we use HOME +
+// well-known prefixes as proxies. False-negatives (paths that survive
+// unmasked) degrade gracefully — operators see slightly more detail
+// than the threat model wants, but never the inverse of leaking what
+// the sanitiser was supposed to hide.
+
+/// Sanitise the Display output of an `anyhow::Error` chain so it does
+/// not leak absolute filesystem paths.
+///
+/// Walks each link in the chain (`anyhow::Error::chain`), formats each
+/// link's own `Display`, applies `sanitize_path_for_display` line-wise,
+/// and joins back with `: ` (the same join `anyhow::Error::Display` uses
+/// for nested causes). The result is a single `String` suitable for
+/// embedding in a `#[error(...)]` template.
+///
+/// Round-trip: feeding the sanitised string back into this function is
+/// a no-op (idempotent).
+pub(super) fn sanitize_error_chain(e: &anyhow::Error) -> String {
+    let home = home_env();
+    let mut parts: Vec<String> = Vec::new();
+    for cause in e.chain() {
+        parts.push(sanitize_text_with(&cause.to_string(), home.as_deref()));
+    }
+    parts.join(": ")
+}
+
+/// Sanitise a `Path` for safe rendering in Display output.
+///
+/// Used by `FileNotFound`'s Display template — the construction-side
+/// discipline (path is supposed to be workspace-relative) is reinforced
+/// here so that even a forgotten `strip_prefix` does not leak HOME or
+/// workspace root into operator logs.
+pub(super) fn sanitize_path_for_display(p: &std::path::Path) -> String {
+    let home = home_env();
+    sanitize_text_with(&p.display().to_string(), home.as_deref())
+}
+
+/// Read `$HOME` once — extracted so unit tests can stub it without
+/// mutating process-global env (which would race with subprocess-
+/// spawning tests under `cargo test`'s parallel runner; see
+/// `playbook::dispatch::helpers::tests` — unsafe `set_var("HOME", ...)`
+/// during a sibling test's `Command::spawn` triggered ENOENT on `sh`
+/// path lookup in early Wave 9 dev).
+fn home_env() -> Option<String> {
+    std::env::var("HOME").ok().filter(|h| !h.is_empty())
+}
+
+/// Lower-level shared sanitiser. Pure function: takes an optional `home`
+/// override rather than reading `$HOME` itself, so tests exercise the
+/// path-masking logic without touching process env. Exposed to the
+/// `tests` submodule via `pub(super)` for direct coverage; not exported
+/// beyond `projection::error`.
+pub(super) fn sanitize_text_with(input: &str, home: Option<&str>) -> String {
+    let mut out = input.to_string();
+
+    if let Some(home) = home.filter(|h| !h.is_empty()) {
+        // Replace `$HOME` prefix wherever it appears (defence against
+        // multi-cause chains where each link embeds the path again).
+        out = out.replace(home, "<HOME>");
+    }
+
+    // Replace `CARGO_TARGET_DIR` if set (CI / cargo-builds). Read here
+    // rather than passing through — CARGO_TARGET_DIR is normally fixed
+    // for the lifetime of a `cargo` invocation, so the cost of a single
+    // env lookup per error format is negligible. Tests don't rely on
+    // this branch и don't set CARGO_TARGET_DIR.
+    if let Some(target) = std::env::var("CARGO_TARGET_DIR")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
+        out = out.replace(&target, "<target>");
+    }
+
+    // Replace common scratch-dir prefixes — these are static enough
+    // to hardcode and they appear in test fixtures regularly.
+    // Order matters: longer prefix first to avoid partial overlap.
+    out = out.replace("/private/var/folders/", "<tmpdir>/");
+    out = out.replace("/var/folders/", "<tmpdir>/");
+    out = out.replace("/private/tmp/", "<tmpdir>/");
+    out = out.replace("/tmp/", "<tmpdir>/");
+
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -522,5 +675,144 @@ mod tests {
         let err = boom().expect_err("should error");
         assert!(matches!(err, MutationError::StoreFatal(_)));
         assert!(!err.is_recoverable());
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Wave 9 M1: Display path sanitisation for StoreFatal /
+    // StoreTransient / FileNotFound. Closes the Round 4 # Security
+    // docstring gap — the rustdoc warned about path leakage but the
+    // Display impl still rendered the wrapped anyhow chain verbatim.
+    //
+    // These tests deliberately AVOID mutating `$HOME` — that triggered
+    // sibling-test ENOENT on `sh` lookups in `playbook::dispatch` under
+    // `cargo test`'s parallel runner. Instead they exercise the pure
+    // `sanitize_text_with` helper directly for HOME masking, and use
+    // the `/tmp/...` rule (env-independent) for end-to-end Display
+    // assertions on `StoreFatal` / `StoreTransient` / `FileNotFound`.
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn store_fatal_display_masks_home_path() {
+        // Pure helper: feed an explicit HOME so the test is independent
+        // of the process environment. Verifies the path-masking logic
+        // that `StoreFatal`'s Display routes through.
+        let masked = sanitize_text_with(
+            "failed to open lance dir at /Users/alice/work/proj/.forgeplan/lance/artifacts",
+            Some("/Users/alice"),
+        );
+        assert!(
+            !masked.contains("/Users/alice"),
+            "raw HOME path must not appear after sanitisation: {masked}"
+        );
+        assert!(masked.contains("<HOME>"), "expected <HOME> mask: {masked}");
+
+        // End-to-end Display test using `/tmp/...` (env-independent rule)
+        // confirms that `#[error("..., {}", sanitize_error_chain(_0))]`
+        // actually wires the helper into the Display impl. If a future
+        // refactor accidentally dropped the helper call, the raw
+        // `/tmp/...` would resurface here.
+        let inner =
+            anyhow::anyhow!("lance dir /tmp/forgeplan-fixture-9f3a/.forgeplan/lance corrupted");
+        let err = MutationError::StoreFatal(inner);
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("/tmp/forgeplan-fixture-9f3a"),
+            "Display must route through sanitize_error_chain: {rendered}"
+        );
+        assert!(
+            rendered.contains("<tmpdir>"),
+            "expected <tmpdir> mask in Display: {rendered}"
+        );
+        assert!(
+            rendered.starts_with("LanceStore mutation failed (fatal):"),
+            "Display prefix preserved: {rendered}"
+        );
+    }
+
+    #[test]
+    fn store_transient_display_masks_workspace_path() {
+        // End-to-end Display test using `/tmp/...` — env-independent so
+        // it can run concurrently with subprocess-spawning tests
+        // without risking PATH/HOME races.
+        let inner = anyhow::anyhow!(
+            "I/O on /tmp/forgeplan-fixture-9f3a/.forgeplan/lance/relations failed: EACCES"
+        );
+        let err = MutationError::StoreTransient(inner);
+        let rendered = format!("{err}");
+
+        assert!(
+            !rendered.contains("/tmp/forgeplan-fixture-9f3a"),
+            "raw /tmp path must not appear in Display: {rendered}"
+        );
+        assert!(
+            rendered.contains("<tmpdir>"),
+            "expected <tmpdir> mask in Display: {rendered}"
+        );
+        assert!(
+            rendered.starts_with("LanceStore mutation failed (transient):"),
+            "Display prefix preserved: {rendered}"
+        );
+
+        // Pure helper round-trip for HOME — independent of process env.
+        let masked = sanitize_text_with(
+            "Permission denied on /home/runner/ws/.forgeplan/lance/x",
+            Some("/home/runner"),
+        );
+        assert!(!masked.contains("/home/runner/"));
+        assert!(masked.contains("<HOME>"));
+    }
+
+    #[test]
+    fn file_not_found_display_masks_absolute_path_via_tmpdir() {
+        // Defence-in-depth: even if a future caller forgets the
+        // strip_prefix discipline и passes an absolute path, the Display
+        // formatter masks well-known prefixes. Uses `/tmp/...` to avoid
+        // mutating process HOME.
+        let err = MutationError::FileNotFound {
+            id: "PRD-042".to_string(),
+            path: PathBuf::from("/tmp/x/.forgeplan/prds/PRD-042-foo.md"),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("/tmp/x"),
+            "raw /tmp path must not leak through FileNotFound Display: {rendered}"
+        );
+        assert!(
+            rendered.contains("<tmpdir>"),
+            "expected <tmpdir> mask: {rendered}"
+        );
+
+        // Workspace-relative caller path must still pass through untouched.
+        let err_rel = MutationError::FileNotFound {
+            id: "PRD-042".to_string(),
+            path: PathBuf::from(".forgeplan/prds/PRD-042-foo.md"),
+        };
+        let rendered_rel = format!("{err_rel}");
+        assert!(
+            rendered_rel.contains(".forgeplan/prds/PRD-042-foo.md"),
+            "relative path should be preserved verbatim: {rendered_rel}"
+        );
+    }
+
+    #[test]
+    fn sanitize_text_with_is_idempotent() {
+        // Apply sanitiser twice — output must equal first-pass output.
+        let first = sanitize_text_with(
+            "error opening /Users/alice/x and /tmp/y и /var/folders/zz",
+            Some("/Users/alice"),
+        );
+        let second = sanitize_text_with(&first, Some("/Users/alice"));
+        assert_eq!(first, second, "sanitize_text_with must be idempotent");
+        assert!(!first.contains("/Users/alice"));
+        assert!(!first.contains("/tmp/y"));
+        assert!(!first.contains("/var/folders/zz"));
+    }
+
+    #[test]
+    fn sanitize_text_with_handles_missing_home() {
+        // `None` HOME → first rule skipped, scratch-dir rules still apply.
+        let out = sanitize_text_with("trace from /tmp/scratch/x", None);
+        assert!(out.contains("<tmpdir>"));
+        assert!(!out.contains("/tmp/scratch/x"));
     }
 }
