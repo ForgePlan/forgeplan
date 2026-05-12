@@ -7,7 +7,7 @@
 
 - **v0.18.0** released (Production BM25 + Russian morphology + quality gates)
 - **193 artifacts**, 112 active, health: "Project looks healthy!"
-- **1940 tests**, 76 CLI commands, 71 MCP tools
+- **1940 tests**, 76 CLI commands, 72 MCP tools
 - **3 EPICs complete**: EPIC-001 (foundation), EPIC-002 (v2.0 vision), EPIC-003 (search+intelligence)
 
 ---
@@ -39,7 +39,7 @@
 | `health` + `tree` + `blocked` dashboards | `forgeplan diff` — artifact comparison (NOTE-030) |
 | Error hints with suggested next commands | `forgeplan watch` v2 — hot-reload (NOTE-030) |
 | Duplicate guard + stub detection (PRD-043) | VS Code extension (NOTE-030) |
-| 71 MCP tools for AI agents | **Website** — landing + docs portal (PRD-024) |
+| 72 MCP tools for AI agents | **Website** — landing + docs portal (PRD-024) |
 
 **Assessment:** CLI is mature, MCP is excellent. No GUI. Website and Desktop are the main gaps for user adoption.
 
@@ -83,7 +83,7 @@
 
 | Done | Gap |
 |---|---|
-| MCP server (71 tools, stdio transport) | **Linear/Jira sync** (NOTE-028) |
+| MCP server (72 tools, stdio transport) | **Linear/Jira sync** (NOTE-028) |
 | LLM integration (Gemini, configurable provider) | **GitHub Issues bridge** |
 | git-sync (frontmatter to LanceDB) | **Slack/Teams notifications** |
 | Claude Code hooks (safety, forge-mode) | **CI/CD pipeline gates** (NOTE-026) |

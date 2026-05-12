@@ -23,7 +23,7 @@ forgeplan serve
 
 ## What it exposes
 
-71 MCP tools mapped onto the core Forgeplan operations:
+72 MCP tools mapped onto the core Forgeplan operations:
 
 - **Artifact lifecycle** — `new`, `validate`, `review`, `activate`,
   `supersede`, `deprecate`, `stale`, `renew`, `reopen`

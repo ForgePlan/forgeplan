@@ -286,7 +286,7 @@ Excluded from checks:
 ```
 Actual MCP tool count (src): 63
 
-No drift — all docs are consistent with src (71 tools).
+No drift — all docs are consistent with src (72 tools).
 ```
 
 **Typical output on drift:**
@@ -294,9 +294,9 @@ No drift — all docs are consistent with src (71 tools).
 Actual MCP tool count (src): 65
 
 Drift detected (3 lines):
-  DRIFT: README.md:42:...71 MCP tools...  (number=63 context="71 MCP tools")
-  DRIFT: CLAUDE.md:28:...71 MCP tools...  (number=63 context="71 MCP tools")
-  DRIFT: website/src/content/index.mdx:17:...71 MCP tools...
+  DRIFT: README.md:42:...72 MCP tools...  (number=63 context="72 MCP tools")
+  DRIFT: CLAUDE.md:28:...72 MCP tools...  (number=63 context="72 MCP tools")
+  DRIFT: website/src/content/index.mdx:17:...72 MCP tools...
 
 Resolution: update each location to actual count (65) OR add a
 comment explaining why the historical number is preserved (e.g. CHANGELOG).

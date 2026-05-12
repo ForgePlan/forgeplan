@@ -16,7 +16,7 @@ Forgeplan's core value is its **methodological layer**: the R_eff weakest-link t
 
 As an orchestrator, Forgeplan does not generate documents itself for complex analysis tasks. Instead, it delegates to specialized plugins (c4-architecture, autoresearch, ddd-domain-expert, sparc:specification) through Playbook/Mapping primitives, then ingests their outputs into the artifact graph with scoring and lifecycle tracking.
 
-The system is distributed as a single binary (brew, install.sh, cargo) and a stdio-transport MCP server that any MCP-compatible AI agent (Claude Code, Cursor, Aider, Continue) can connect to through 71 tools.
+The system is distributed as a single binary (brew, install.sh, cargo) and a stdio-transport MCP server that any MCP-compatible AI agent (Claude Code, Cursor, Aider, Continue) can connect to through 72 tools.
 
 ### System Scope
 
@@ -28,7 +28,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 - Lifecycle state machine (draft → active → superseded/deprecated/stale)
 - Typed dependency graph with link traversal
 - Local semantic search (BGE-M3, fastembed, offline)
-- MCP server (stdio transport, 71 tools)
+- MCP server (stdio transport, 72 tools)
 - Multi-agent dispatch: file-overlap detection, skill-based routing, parallel/serial bucketing
 - Playbook runtime for orchestrating external plugin delegations
 - Ingest engine for mapping external plugin outputs to forge artifacts
@@ -85,7 +85,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 - **Type**: Programmatic User
 - **Description**: An AI coding agent connected to the Forgeplan MCP server over stdio. The agent issues tool calls during a coding session to read context, create artifacts, validate quality, and follow the Shape → Validate → Code → Evidence → Activate methodology without human micro-management.
 - **Goals**: Understand which ADRs govern the current code area; follow the correct artifact pipeline for the task depth; detect drift after code changes; stamp agent identity on artifacts it creates or modifies.
-- **Key Features Used**: All 71 MCP tools — most frequently: `forgeplan_route`, `forgeplan_new`, `forgeplan_validate`, `forgeplan_reason`, `forgeplan_score`, `forgeplan_activate`, `forgeplan_search`, `forgeplan_drift`, `forgeplan_dispatch`
+- **Key Features Used**: All 72 MCP tools — most frequently: `forgeplan_route`, `forgeplan_new`, `forgeplan_validate`, `forgeplan_reason`, `forgeplan_score`, `forgeplan_activate`, `forgeplan_search`, `forgeplan_drift`, `forgeplan_dispatch`
 
 ### Multi-Agent Orchestrator
 
@@ -135,7 +135,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 
 ### MCP Server Integration
 
-- **Description**: Full MCP server over stdio transport exposing 71 tools to any MCP-compatible AI agent. Tools cover the complete methodology workflow — from routing through activation — plus multi-agent dispatch and identity stamping.
+- **Description**: Full MCP server over stdio transport exposing 72 tools to any MCP-compatible AI agent. Tools cover the complete methodology workflow — from routing through activation — plus multi-agent dispatch and identity stamping.
 - **Users**: AI Agent via MCP, Multi-Agent Orchestrator
 
 ### Multi-Agent Dispatch
@@ -177,7 +177,7 @@ A solo developer starts a new feature and wants to record their decision trail.
 
 An AI coding agent (Claude Code) handles a sprint, following the Forgeplan methodology through MCP tools.
 
-1. **Connect**: Forgeplan MCP server starts via stdio; Claude Code discovers 71 tools
+1. **Connect**: Forgeplan MCP server starts via stdio; Claude Code discovers 72 tools
 2. **Check workspace health**: `forgeplan_health` — agent reads blind spots and stale artifacts before starting
 3. **Route the task**: `forgeplan_route` with the sprint description — receives depth, artifact pipeline, and reasoning
 4. **Read existing context**: `forgeplan_search` to find any existing PRDs/ADRs covering the work area
@@ -311,7 +311,7 @@ C4Context
     Rel(pm, forgeplan, "Creates PRDs and Epics, validates completeness", "CLI")
     Rel(brownfield, forgeplan, "Runs migration playbooks, ingests external plugin output", "CLI")
 
-    Rel(ai_agent, forgeplan, "Calls methodology tools during coding sessions", "MCP stdio (71 tools)")
+    Rel(ai_agent, forgeplan, "Calls methodology tools during coding sessions", "MCP stdio (72 tools)")
     Rel(orchestrator_agent, forgeplan, "Dispatches and claims artifact work across N agents", "MCP stdio")
 
     Rel(forgeplan, llm_providers, "Requests ADI reasoning and routing classification", "HTTP / OpenAI-compatible API")

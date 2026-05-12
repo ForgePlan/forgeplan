@@ -90,7 +90,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   NeedsAttention/Unhealthy), typed errors (PROB-049 H-class), claude --print
   dispatch refactor (PROB-050 A-4..A-15), CWE-426 binary substitution closed
   на двух surfaces (env + struct API)
-- **76 CLI commands**, **71 MCP tools**, **1977 tests**, **0 warnings** on both feature configs
+- **76 CLI commands**, **72 MCP tools**, **1977 tests**, **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
@@ -663,7 +663,7 @@ crates/
 │   ├── journal/ lifecycle/ link/ llm/ progress/ projection/
 │   ├── routing/ scoring/ search/ stale/ template/ validation/ workspace/
 ├── forgeplan-cli/     ← clap derive, 76 commands
-└── forgeplan-mcp/     ← rmcp stdio, 71 tools
+└── forgeplan-mcp/     ← rmcp stdio, 72 tools
 ```
 
 **Project structure**: `docs/README.md` — map of all documentation. Reference repositories in `sources/` (read-only).
