@@ -1,0 +1,35 @@
+# Security CI — cargo-deny gate
+#
+# Runs cargo-deny on push to dev and on pull requests targeting dev or main.
+# Initial rollout is non-blocking (continue-on-error: true) so we can establish
+# a clean baseline before flipping to a hard merge gate.
+#
+# Config: deny.toml at repo root.
+# Track promotion to blocking via RED LINE #10 (Dependabot mandate).
+
+name: security
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  schedule:
+    # Weekly scan to catch advisories that land between PRs (e.g. new RUSTSEC
+    # disclosures against pinned versions).
+    - cron: "23 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+          log-level: warn
