@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
@@ -10,6 +11,15 @@ pub async fn run(
     depth: Option<&str>,
     body: Option<&str>,
 ) -> anyhow::Result<()> {
+    // Wave 9 SEC-C1: validate new title BEFORE acquiring lock / touching DB.
+    // Mirrors `forgeplan new` — rejects empty/whitespace, oversize, control
+    // chars (incl. ANSI ESC), and bidi overrides (Trojan Source CWE-1007).
+    // Pre-fix, `--title` accepted any bytes and only failed downstream when
+    // YAML frontmatter rendering corrupted, leaving a half-mutated row.
+    if let Some(t) = title {
+        forgeplan_core::artifact::validate_title(t)?;
+    }
+
     let (ws, _lock, store) = common::open_store_locked().await?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
@@ -165,7 +175,13 @@ Fix: forgeplan list",
         println!("  Status:  {}", s);
     }
     if let Some(t) = title {
-        println!("  Title:   {}", t);
+        // LOG-001 defence (Wave 9 audit): even though `validate_title` above
+        // rejects control chars + bidi overrides, sanitise on the way out as
+        // belt-and-braces — keeps the rendered line safe even if a future
+        // refactor weakens the validator or the title travels through this
+        // print path from a different (non-validated) source. Sanitiser
+        // strips zero-width chars, ANSI, shell metas, and bidi.
+        println!("  Title:   {}", sanitize_for_hint(t));
     }
     if body.is_some() {
         println!("  Body:    updated");

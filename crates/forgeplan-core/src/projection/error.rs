@@ -422,7 +422,15 @@ fn classify_lancedb_as_fatal(err: &lancedb::Error) -> bool {
 ///
 /// Round-trip: feeding the sanitised string back into this function is
 /// a no-op (idempotent).
-pub(super) fn sanitize_error_chain(e: &anyhow::Error) -> String {
+///
+/// **Wave 9 SEC-H3 promotion**: was `pub(super)` — exposed to the wider
+/// workspace so `forgeplan-mcp` can route every `McpError::internal_error`
+/// payload through this same sanitiser. Pre-fix, only the typed
+/// `MutationError::StoreTransient/StoreFatal/FileNotFound` Display
+/// templates ran through here; the ~40 `format!("{e}")` call sites in
+/// `server.rs` leaked raw `anyhow::Error` chains (HOME paths, scratch
+/// dirs, CARGO_TARGET_DIR) into MCP responses returned to Claude Desktop.
+pub fn sanitize_error_chain(e: &anyhow::Error) -> String {
     let home = home_env();
     let mut parts: Vec<String> = Vec::new();
     for cause in e.chain() {

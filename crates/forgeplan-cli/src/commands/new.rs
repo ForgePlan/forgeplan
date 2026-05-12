@@ -13,60 +13,13 @@ use forgeplan_core::template::{get_embedded_template, render_template};
 
 use crate::commands::common;
 
-/// Maximum allowed title length in characters.
-///
-/// Chosen as a safe upper bound for filesystem path limits across platforms
-/// (macOS/Linux filenames cap at 255 bytes; we leave headroom for slug
-/// prefix/suffix, extension, and multi-byte characters).
-pub const MAX_TITLE_LEN: usize = 128;
-
-/// Validate an artifact title before any DB or filesystem writes.
-///
-/// Rejects:
-/// - Empty / whitespace-only titles
-/// - Titles longer than [`MAX_TITLE_LEN`] characters
-/// - **Control characters** (CWE-176) — would corrupt rendered headings
-///   and MCP responses passed to LLM agents
-/// - **BIDI override codepoints** (CWE-1007 / Trojan Source) —
-///   `U+202A..U+202E` and `U+2066..U+2069` can spoof displayed `Next:`
-///   commands suggested back to AI agents
-///
-/// Called at the very start of `run` so that invalid input never produces
-/// orphan DB rows. Per cross-phase security audit L3.
-pub fn validate_title(title: &str) -> Result<()> {
-    if title.trim().is_empty() {
-        anyhow::bail!("Title cannot be empty. Provide a non-empty title.");
-    }
-    let len = title.chars().count();
-    if len > MAX_TITLE_LEN {
-        anyhow::bail!(
-            "Title too long (got {} chars, max {}). Shorten the title.",
-            len,
-            MAX_TITLE_LEN
-        );
-    }
-    // Reject control chars and BIDI overrides. We allow newline-as-control
-    // (\n, \r, \t) is rejected because titles are single-line user input
-    // and embedded newlines break frontmatter rendering and CLI output.
-    for c in title.chars() {
-        if c.is_control() {
-            anyhow::bail!(
-                "Title contains control character (U+{:04X}). \
-                 Use plain printable text only.",
-                c as u32
-            );
-        }
-        // BIDI override / isolate codepoints (Trojan Source class).
-        if matches!(c as u32, 0x202A..=0x202E | 0x2066..=0x2069) {
-            anyhow::bail!(
-                "Title contains BIDI override character (U+{:04X}). \
-                 These can spoof rendered output — rejected for security.",
-                c as u32
-            );
-        }
-    }
-    Ok(())
-}
+// Wave 9 SEC-C1/C2 closure: title validator (and `MAX_TITLE_LEN`) now live in
+// `forgeplan_core::artifact::validation` so every mutation surface — CLI
+// `new`, CLI `update`, MCP `forgeplan_new`, MCP `forgeplan_update` — routes
+// through the same defensive check. The re-exports below preserve the
+// historical local public API (tests and external callers may import
+// `crate::commands::new::{validate_title, MAX_TITLE_LEN}`).
+pub use forgeplan_core::artifact::{MAX_TITLE_LEN, validate_title};
 
 pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<()> {
     // Validate title BEFORE any DB insert or filesystem write to prevent
