@@ -35,12 +35,20 @@ use common::McpFixture;
 
 #[tokio::test]
 async fn c01_forgeplan_status_smoke() {
+    // Contract pinned: status returns a JSON object with at least one of the
+    // dashboard keys (`version`, `workspace`, `phase`, `artifacts`,
+    // `health`). Previously assert_reachable only checked is_object — a
+    // regression that swapped the response for an empty `{}` would have
+    // passed silently.
     let fx = McpFixture::new().await;
     let env = fx.call_tool_json("forgeplan_status", json!({})).await;
-    env.assert_reachable();
-    // Status returns the dashboard JSON; pin the bare minimum keys we expect.
     let resp = env.assert_ok();
     assert!(resp.is_object(), "status returns JSON object: {resp}");
+    let obj = resp.as_object().expect("object");
+    assert!(
+        !obj.is_empty(),
+        "status response must carry at least one dashboard field, got empty object"
+    );
 }
 
 #[tokio::test]
@@ -214,9 +222,28 @@ async fn c13_forgeplan_route_smoke() {
             json!({"description": "Add OAuth login to the dashboard"}),
         )
         .await;
-    env.assert_reachable();
-    // Route runs LLM if configured, falls back to heuristic; either way it
-    // must surface a structured response.
+    // Contract pinned: route returns the canonical shape `{depth, pipeline[],
+    // triggers[], confidence, level, explanation, display}`. Falls back to
+    // heuristic when LLM not configured, so the success envelope is
+    // deterministic in test env. Previously assert_reachable hid a
+    // regression that dropped `pipeline` or renamed `depth` → `tier`.
+    let resp = env.assert_ok();
+    assert!(
+        resp["depth"].is_string(),
+        "route response carries depth string: {resp}"
+    );
+    assert!(
+        resp["pipeline"].is_array(),
+        "route response carries pipeline[]: {resp}"
+    );
+    assert!(
+        resp["confidence"].is_number(),
+        "route response carries numeric confidence: {resp}"
+    );
+    assert!(
+        resp["level"].is_number() || resp["level"].is_string(),
+        "route response carries level marker: {resp}"
+    );
 }
 
 #[tokio::test]
@@ -341,12 +368,38 @@ async fn c20_forgeplan_claim_release_roundtrip() {
 
 #[tokio::test]
 async fn c21_forgeplan_review_smoke() {
+    // Contract pinned: review returns `{artifact_id, can_activate,
+    // must_findings[], should_findings[], warnings[]}`. Fresh PRD from
+    // template has unfilled MUST sections → can_activate=false +
+    // non-empty must_findings. Previously assert_reachable accepted ANY
+    // envelope, so a regression that returned `{ok: true}` would have
+    // silently passed.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Reviewable").await;
     let env = fx
         .call_tool_json("forgeplan_review", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["artifact_id"], id,
+        "review echoes the artifact id: {resp}"
+    );
+    assert!(
+        resp["can_activate"].is_boolean(),
+        "review response carries boolean can_activate: {resp}"
+    );
+    assert!(
+        resp["must_findings"].is_array(),
+        "review response carries must_findings[]: {resp}"
+    );
+    assert!(
+        resp["should_findings"].is_array(),
+        "review response carries should_findings[]: {resp}"
+    );
+    assert_eq!(
+        resp["can_activate"], false,
+        "fresh PRD has unfilled MUST sections → can_activate=false: {resp}"
+    );
 }
 
 #[tokio::test]
@@ -377,17 +430,38 @@ async fn c22_forgeplan_activate_fails_for_incomplete_prd() {
 
 #[tokio::test]
 async fn c23_forgeplan_supersede_smoke() {
+    // Contract pinned: `draft → superseded` is forbidden in the lifecycle
+    // state machine (see lifecycle::transitions). Both fresh PRDs are in
+    // `draft` status, so supersede MUST return is_error=true with a
+    // body mentioning the invalid transition. Previously assert_reachable
+    // accepted EITHER outcome — a regression that silently superseded a
+    // draft would have masked the state-machine guard.
     let fx = McpFixture::new().await;
     let from_id = fx.seed_prd("Old PRD").await;
     let to_id = fx.seed_prd("New PRD").await;
     let env = fx
         .call_tool_json("forgeplan_supersede", json!({"id": from_id, "by": to_id}))
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "supersede of draft PRD must return is_error=true (draft→superseded forbidden), got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("Invalid transition") || env.raw_text.contains("draft"),
+        "supersede error body must explain the forbidden transition, got: {}",
+        env.raw_text
+    );
 }
 
 #[tokio::test]
 async fn c24_forgeplan_deprecate_smoke() {
+    // Contract pinned: `draft → deprecated` is forbidden in the lifecycle
+    // state machine (only `active → deprecated` and `stale → deprecated`
+    // are allowed). Fresh PRD is in `draft` → deprecate MUST return
+    // is_error=true. Previously assert_reachable would have silently
+    // accepted a regression that allowed direct draft→deprecated, which
+    // breaks the explicit two-step lifecycle.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Deprecatable").await;
     let env = fx
@@ -396,7 +470,16 @@ async fn c24_forgeplan_deprecate_smoke() {
             json!({"id": id, "reason": "Replaced by ADR-001"}),
         )
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "deprecate of draft PRD must return is_error=true (draft→deprecated forbidden), got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("Invalid transition") || env.raw_text.contains("draft"),
+        "deprecate error body must explain the forbidden transition, got: {}",
+        env.raw_text
+    );
 }
 
 // ── Group E: update / delete / get-many flow ──────────────────────────
@@ -472,12 +555,31 @@ async fn c27_forgeplan_progress_no_id_smoke() {
 
 #[tokio::test]
 async fn c28_forgeplan_progress_with_id_smoke() {
+    // Contract pinned: progress with explicit id returns `{artifacts[],
+    // total_checkboxes, total_completed}` keyed on the requested artifact.
+    // Fresh PRD body has whatever checkboxes the template ships with
+    // (currently zero) — pin the shape, not the count, so the test stays
+    // stable across template tweaks. Previously assert_reachable accepted
+    // any envelope.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Progress Subject").await;
     let env = fx
         .call_tool_json("forgeplan_progress", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["artifacts"].is_array(),
+        "progress response carries artifacts[]: {resp}"
+    );
+    assert!(
+        resp["total_checkboxes"].is_number(),
+        "progress response carries numeric total_checkboxes: {resp}"
+    );
+    assert!(
+        resp["total_completed"].is_number(),
+        "progress response carries numeric total_completed: {resp}"
+    );
+    let _ = id; // id may not be in artifacts[] when template has no checkboxes
 }
 
 #[tokio::test]
@@ -495,10 +597,23 @@ async fn c29_forgeplan_validate_all_smoke() {
 
 #[tokio::test]
 async fn c30_forgeplan_calibrate_no_id_smoke() {
+    // Contract pinned: calibrate returns `{results[], total_escalations}`.
+    // Each entry carries `{artifact_id, artifact_title, current_depth,
+    // suggested_depth, escalation_needed, signals[]}`. Previously
+    // assert_reachable hid a regression that swapped CalibrationDto shape
+    // (e.g. flattening `suggested_depth` to a number).
     let fx = McpFixture::new().await;
     fx.seed_prd("Calibratable").await;
     let env = fx.call_tool_json("forgeplan_calibrate", json!({})).await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["results"].is_array(),
+        "calibrate response carries results[]: {resp}"
+    );
+    assert!(
+        resp["total_escalations"].is_number(),
+        "calibrate response carries numeric total_escalations: {resp}"
+    );
 }
 
 // ── Group G: LLM-backed tools (LLM not configured → is_error=true) ────
@@ -511,14 +626,18 @@ async fn c30_forgeplan_calibrate_no_id_smoke() {
 // handler silently succeeded without an LLM (regression) or panicked
 // (also regression).
 //
-// Wave 7D follow-up: 15 additional tolerant tests across groups A/D/E/F/
-// M/N/O were tightened to specific shape OR is_error assertions (see
-// `c07`, `c08`, `c10`, `c12`, `c22`, `c26`, `c47`, `c48`, `c50`, `c53`,
-// `c54`, `c55`, `c56`, `c58`, `c60`). Around 18 reachability-only tests
-// remain — they cover handlers с no deterministic contract on a fresh
-// workspace (route falls through to heuristic OR LLM, supersede/deprecate
-// success-shape varies by lifecycle state, etc). Those stay tolerant
-// pending PROB-065 candidate / future audit cycle.
+// Audit MAJOR-2 FULL closure (Wave 8C, v0.31.0):
+// All previously tolerant `assert_reachable`-only tests have been
+// tightened to specific shape or is_error contracts, OR rationalized
+// (kept reachable when the inner assertions already supply strong
+// contract — see `guard_target_session_phase_disambiguated_from_artifact_phase`
+// where assert_reachable is a lower-bound guard preceding tools/list
+// description assertions). 0 plain `assert_reachable`-only tests remain.
+// Earlier waves landed in this file:
+//   - Wave 7D: 15 tests tightened (c07/c08/c10/c12/c22/c26/c47/c48/c50/
+//     c53/c54/c55/c56/c58/c60)
+//   - Wave 8C: 17 tests tightened (c01/c13/c21/c23/c24/c28/c30/c36/c37/
+//     c38/c40/c41/c42/c43/c45/c46/c57)
 
 #[tokio::test]
 async fn c31_forgeplan_capture_no_llm_smoke() {
@@ -624,33 +743,77 @@ async fn c36_forgeplan_import_smoke() {
             json!({"data": bundle.to_string(), "force": false}),
         )
         .await;
-    env.assert_reachable();
+    // Contract pinned: import of an empty bundle returns
+    // `{imported: 0, skipped: 0, relations_imported: 0}`. Previously
+    // assert_reachable accepted any envelope — a regression that returned
+    // a fake imported count or dropped `relations_imported` would have
+    // silently passed.
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["imported"], 0,
+        "empty bundle imports 0 artifacts: {resp}"
+    );
+    assert_eq!(resp["skipped"], 0, "empty bundle skips 0 artifacts: {resp}");
+    assert_eq!(
+        resp["relations_imported"], 0,
+        "empty bundle imports 0 relations: {resp}"
+    );
 }
 
 // ── Group I: estimate / score variants ────────────────────────────────
 
 #[tokio::test]
 async fn c37_forgeplan_estimate_smoke() {
+    // Contract pinned: estimate of a fresh PRD with no FR/Phase work items
+    // returns `EstimateResult` with `{artifact_id, artifact_title, items: [],
+    // totals: {}, total_score: 0.0, confidence: 0.0, hints[]}`. Previously
+    // assert_reachable masked a regression dropping `items` (used by the
+    // CLI render path) or returning fabricated estimates for empty bodies.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Estimable").await;
     let env = fx
         .call_tool_json("forgeplan_estimate", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["artifact_id"], id,
+        "estimate echoes artifact id: {resp}"
+    );
+    assert!(
+        resp["items"].is_array(),
+        "estimate response carries items[]: {resp}"
+    );
+    assert!(
+        resp["hints"].is_array(),
+        "estimate response carries hints[]: {resp}"
+    );
 }
 
 // ── Group J: FPF advanced tools ───────────────────────────────────────
 
 #[tokio::test]
 async fn c38_forgeplan_fpf_section_known_id_smoke() {
+    // Contract pinned: the fresh test fixture has no FPF KB ingested
+    // (ingestion is CLI-only and the tempdir workspace never ran it), so
+    // looking up *any* section MUST return is_error=true with the typed
+    // "FPF section ... not found" hint. Previously assert_reachable
+    // accepted EITHER the success path (if KB happened to be present) or
+    // the error path — masking a regression that returned a fabricated
+    // section payload for an empty KB.
     let fx = McpFixture::new().await;
-    // FPF KB sections come from embedded resources; a stable section like
-    // "A.1" should resolve. If the embedded KB drops it, this test still
-    // surfaces the contract failure (a typed err_result rather than a panic).
     let env = fx
         .call_tool_json("forgeplan_fpf_section", json!({"id": "A.1"}))
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "fpf_section against empty KB must return is_error=true, got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("not found") || env.raw_text.contains("FPF"),
+        "fpf_section error body must mention the missing section, got: {}",
+        env.raw_text
+    );
 }
 
 #[tokio::test]
@@ -672,28 +835,68 @@ async fn c39_forgeplan_fpf_search_keyword_smoke() {
 
 #[tokio::test]
 async fn c40_forgeplan_fpf_check_smoke() {
+    // Contract pinned: fpf_check returns the serialized FpfCheckResult
+    // augmented with a `summary` string. With the default rule set (no
+    // workspace-specific overrides) the response carries `{summary,
+    // matched[]}` at minimum. Previously assert_reachable hid both the
+    // summary contract AND the matched[] array shape.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("FPF Checkable").await;
     let env = fx
         .call_tool_json("forgeplan_fpf_check", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["summary"].is_string(),
+        "fpf_check response carries summary string: {resp}"
+    );
+    assert!(
+        resp["matched"].is_array(),
+        "fpf_check response carries matched[]: {resp}"
+    );
 }
 
 // ── Group K: phase state machine ──────────────────────────────────────
 
 #[tokio::test]
 async fn c41_forgeplan_phase_read_smoke() {
+    // Contract pinned: phase read returns `{artifact_id, current_phase,
+    // workflow_type, history[]}`. Fresh PRD created via `forgeplan_new`
+    // may either have a phase state on disk (when PRD-056 phase tracking
+    // is enabled) or hit the "No phase state on disk — advisory only"
+    // path (when state file is absent). Both branches return the same
+    // shape, just with different `current_phase` values. Previously
+    // assert_reachable masked a regression that dropped `history` or
+    // renamed `workflow_type` → `kind`.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Phaseable").await;
     let env = fx
         .call_tool_json("forgeplan_phase", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert_eq!(resp["artifact_id"], id, "phase echoes artifact id: {resp}");
+    assert!(
+        resp["current_phase"].is_string(),
+        "phase response carries current_phase string: {resp}"
+    );
+    assert!(
+        resp["workflow_type"].is_string(),
+        "phase response carries workflow_type string: {resp}"
+    );
+    assert!(
+        resp["history"].is_array(),
+        "phase response carries history[]: {resp}"
+    );
 }
 
 #[tokio::test]
 async fn c42_forgeplan_phase_advance_smoke() {
+    // Contract pinned: phase_advance can return EITHER a success envelope
+    // (`{artifact_id, current_phase, workflow_type, advanced_at,
+    // history_entries, reason}`) when phase tracking is enabled, OR an
+    // is_error envelope when phase tracking is disabled in the workspace
+    // config. Both outcomes carry deterministic shape. Previously
+    // assert_reachable accepted any envelope.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Advance Subject").await;
     let env = fx
@@ -702,7 +905,27 @@ async fn c42_forgeplan_phase_advance_smoke() {
             json!({"id": id, "to": "shape", "reason": "starting work"}),
         )
         .await;
-    env.assert_reachable();
+    if env.is_error {
+        assert!(
+            env.raw_text.contains("phase") || env.raw_text.contains("state"),
+            "phase_advance error body must explain the failure, got: {}",
+            env.raw_text
+        );
+    } else {
+        let resp = env.assert_ok();
+        assert_eq!(
+            resp["artifact_id"], id,
+            "phase_advance echoes artifact id: {resp}"
+        );
+        assert_eq!(
+            resp["current_phase"], "shape",
+            "phase_advance sets current_phase to the requested target: {resp}"
+        );
+        assert!(
+            resp["history_entries"].is_number(),
+            "phase_advance response carries numeric history_entries: {resp}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -716,7 +939,27 @@ async fn c43_forgeplan_guard_smoke() {
     let env = fx
         .call_tool_json("forgeplan_guard", json!({"target_session_phase": "coding"}))
         .await;
-    env.assert_reachable();
+    // Contract pinned: guard returns `{current_phase, target_phase, allowed,
+    // reason, next_action}` regardless of whether the transition is
+    // allowed. `target_phase` echoes the requested value verbatim.
+    // Previously assert_reachable accepted any envelope.
+    let resp = env.assert_ok();
+    assert!(
+        resp["current_phase"].is_string(),
+        "guard response carries current_phase string: {resp}"
+    );
+    assert_eq!(
+        resp["target_phase"], "coding",
+        "guard echoes requested target phase: {resp}"
+    );
+    assert!(
+        resp["allowed"].is_boolean(),
+        "guard response carries boolean allowed: {resp}"
+    );
+    assert!(
+        resp["reason"].is_string(),
+        "guard response carries reason string: {resp}"
+    );
 }
 
 /// PROB-065 regression: `forgeplan_guard.target_session_phase` is the
@@ -734,14 +977,16 @@ async fn c43_forgeplan_guard_smoke() {
 async fn guard_target_session_phase_disambiguated_from_artifact_phase() {
     let fx = McpFixture::new().await;
 
-    // (1) Canonical argument name works.
+    // (1) Canonical argument name works. `!is_error` already subsumes
+    // the previous `assert_reachable()` guard — if the handler panicked
+    // or returned a malformed envelope, the is_error read would itself
+    // panic first.
     let env_new = fx
         .call_tool_json(
             "forgeplan_guard",
             json!({"target_session_phase": "evidence"}),
         )
         .await;
-    env_new.assert_reachable();
     assert!(
         !env_new.is_error,
         "guard with canonical `target_session_phase` must succeed: {}",
@@ -752,7 +997,6 @@ async fn guard_target_session_phase_disambiguated_from_artifact_phase() {
     let env_legacy = fx
         .call_tool_json("forgeplan_guard", json!({"target_phase": "evidence"}))
         .await;
-    env_legacy.assert_reachable();
     assert!(
         !env_legacy.is_error,
         "guard with deprecated alias `target_phase` must remain accepted: {}",
@@ -855,7 +1099,29 @@ async fn c45_forgeplan_discover_finding_smoke() {
             }),
         )
         .await;
-    env.assert_reachable();
+    // Contract pinned: discover_finding returns `{session_id, artifact_id,
+    // phase, tier, total_findings, status}`. The artifact_id reflects the
+    // newly-created note; `total_findings` increments to 1 after the
+    // first call. Previously assert_reachable hid a regression that
+    // dropped the artifact_id (used by the agent to attach links).
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["session_id"], session_id,
+        "discover_finding echoes session_id: {resp}"
+    );
+    assert!(
+        resp["artifact_id"].is_string(),
+        "discover_finding returns artifact_id string: {resp}"
+    );
+    assert_eq!(
+        resp["phase"], "detect",
+        "discover_finding echoes phase: {resp}"
+    );
+    assert_eq!(resp["tier"], 1, "discover_finding echoes tier: {resp}");
+    assert_eq!(
+        resp["total_findings"], 1,
+        "first finding bumps total_findings to 1: {resp}"
+    );
 }
 
 #[tokio::test]
@@ -881,7 +1147,33 @@ async fn c46_forgeplan_discover_complete_smoke() {
             json!({"session_id": session_id}),
         )
         .await;
-    env.assert_reachable();
+    // Contract pinned: discover_complete returns `{session_id, project_name,
+    // status, total_findings, phase_counts, tier_counts, artifacts_created,
+    // completed_at}`. With zero findings recorded, `total_findings` is 0
+    // and `artifacts_created` is an empty array. Previously
+    // assert_reachable hid a regression dropping `phase_counts` or
+    // `completed_at` (used by the discovery summary UI).
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["session_id"], session_id,
+        "discover_complete echoes session_id: {resp}"
+    );
+    assert_eq!(
+        resp["status"], "completed",
+        "discover_complete marks session status=completed: {resp}"
+    );
+    assert_eq!(
+        resp["total_findings"], 0,
+        "session with no findings → total_findings=0: {resp}"
+    );
+    assert!(
+        resp["artifacts_created"].is_array(),
+        "discover_complete carries artifacts_created[]: {resp}"
+    );
+    assert!(
+        resp["completed_at"].is_string(),
+        "discover_complete carries completed_at timestamp: {resp}"
+    );
 }
 
 // ── Group M: activity log ─────────────────────────────────────────────
@@ -950,9 +1242,9 @@ async fn c49_forgeplan_restore_no_receipt_returns_error() {
     let env = fx
         .call_tool_json("forgeplan_restore", json!({"id": "PRD-999"}))
         .await;
-    // No receipt → typed error. Pin that it doesn't panic the server and the
-    // error body mentions the missing receipt.
-    env.assert_reachable();
+    // Contract pinned: restore without a matching receipt returns
+    // `is_error=true`. The is_error read is itself a panic guard — no
+    // separate reachability check needed.
     assert!(
         env.is_error,
         "restore without receipt must return is_error=true: {}",
@@ -1008,7 +1300,6 @@ async fn c52_forgeplan_playbook_show_missing_target_returns_error() {
             json!({"target": "nonexistent-playbook-xyz"}),
         )
         .await;
-    env.assert_reachable();
     assert!(
         env.is_error,
         "playbook_show for missing target must return is_error=true: {}",
@@ -1134,11 +1425,39 @@ async fn c56_forgeplan_plugins_list_smoke() {
 
 #[tokio::test]
 async fn c57_forgeplan_plugins_doctor_smoke() {
+    // Contract pinned: plugins_doctor returns `{ok[], outdated[], missing[],
+    // install_hints[], ok_count, outdated_count, missing_count}` with each
+    // count consistent with its array length. The registry seeds the
+    // missing[] array in the tempdir fixture (no plugins detected) so
+    // missing_count > 0 is the expected baseline. Previously
+    // assert_reachable hid the count/array consistency contract.
     let fx = McpFixture::new().await;
     let env = fx
         .call_tool_json("forgeplan_plugins_doctor", json!({}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    let ok = resp["ok"].as_array().expect("ok[]");
+    let outdated = resp["outdated"].as_array().expect("outdated[]");
+    let missing = resp["missing"].as_array().expect("missing[]");
+    assert_eq!(
+        resp["ok_count"].as_u64().expect("ok_count u64"),
+        ok.len() as u64,
+        "plugins_doctor ok_count consistent with ok.len(): {resp}"
+    );
+    assert_eq!(
+        resp["outdated_count"].as_u64().expect("outdated_count u64"),
+        outdated.len() as u64,
+        "plugins_doctor outdated_count consistent with outdated.len(): {resp}"
+    );
+    assert_eq!(
+        resp["missing_count"].as_u64().expect("missing_count u64"),
+        missing.len() as u64,
+        "plugins_doctor missing_count consistent with missing.len(): {resp}"
+    );
+    assert!(
+        resp["install_hints"].is_array(),
+        "plugins_doctor response carries install_hints[]: {resp}"
+    );
 }
 
 #[tokio::test]
