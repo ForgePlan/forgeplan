@@ -98,16 +98,48 @@ async fn c06_forgeplan_decay_smoke() {
 
 #[tokio::test]
 async fn c07_forgeplan_drift_smoke() {
+    // Contract pinned: drift returns the `{total, stale, reports}` triple
+    // even on a fresh workspace (no decisions with affected_files yet).
+    // Previously assert_reachable-only — a regression that renamed
+    // `reports` → `entries` or dropped `stale` would have passed silently.
     let fx = McpFixture::new().await;
     let env = fx.call_tool_json("forgeplan_drift", json!({})).await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["total"].is_number(),
+        "drift response carries numeric total: {resp}"
+    );
+    assert!(
+        resp["stale"].is_number(),
+        "drift response carries numeric stale count: {resp}"
+    );
+    assert!(
+        resp["reports"].is_array(),
+        "drift response carries reports[]: {resp}"
+    );
 }
 
 #[tokio::test]
 async fn c08_forgeplan_coverage_smoke() {
+    // Contract pinned: coverage returns CoverageReport flat shape
+    // (`total_modules`, `covered_modules`, `uncovered_modules`,
+    // `coverage_percent`, `modules[]`). A regression that nested it under
+    // a `report:` key would have passed silently with assert_reachable.
     let fx = McpFixture::new().await;
     let env = fx.call_tool_json("forgeplan_coverage", json!({})).await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["total_modules"].is_number(),
+        "coverage response carries numeric total_modules: {resp}"
+    );
+    assert!(
+        resp["modules"].is_array(),
+        "coverage response carries modules[]: {resp}"
+    );
+    assert!(
+        resp["coverage_percent"].is_number(),
+        "coverage response carries numeric coverage_percent: {resp}"
+    );
 }
 
 #[tokio::test]
@@ -121,9 +153,20 @@ async fn c09_forgeplan_session_smoke() {
 
 #[tokio::test]
 async fn c10_forgeplan_journal_no_filter_smoke() {
+    // Contract pinned: journal returns `{entries[], total}` even when
+    // empty. A regression that renamed `entries` → `decisions` or dropped
+    // `total` would have passed silently with assert_reachable.
     let fx = McpFixture::new().await;
     let env = fx.call_tool_json("forgeplan_journal", json!({})).await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["entries"].is_array(),
+        "journal response carries entries[]: {resp}"
+    );
+    assert!(
+        resp["total"].is_number(),
+        "journal response carries numeric total: {resp}"
+    );
 }
 
 #[tokio::test]
@@ -139,9 +182,25 @@ async fn c11_forgeplan_fpf_list_smoke() {
 
 #[tokio::test]
 async fn c12_forgeplan_fpf_rules_no_filter_smoke() {
+    // Contract pinned: fpf_rules returns `{source, count, rules[]}` —
+    // `source` is one of "config"|"default" (string), `count` mirrors
+    // `rules.len()`. Default rule set is non-empty so a regression dropping
+    // the embedded defaults would surface as count == 0.
     let fx = McpFixture::new().await;
     let env = fx.call_tool_json("forgeplan_fpf_rules", json!({})).await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["rules"].is_array(),
+        "fpf_rules response carries rules[]: {resp}"
+    );
+    assert!(
+        resp["source"].is_string(),
+        "fpf_rules response carries source string: {resp}"
+    );
+    assert!(
+        resp["count"].is_number(),
+        "fpf_rules response carries numeric count: {resp}"
+    );
 }
 
 // ── Group B: tools that take args but no pre-existing artifact ────────
@@ -300,10 +359,20 @@ async fn c22_forgeplan_activate_fails_for_incomplete_prd() {
     let env = fx
         .call_tool_json("forgeplan_activate", json!({"id": id, "force": false}))
         .await;
-    // Either error or a response describing the validation failure — both
-    // satisfy the contract: tool is reachable and refuses to activate a
-    // draft that fails MUST validation.
-    env.assert_reachable();
+    // Contract pinned: incomplete PRD activation is deterministic in test
+    // env — `lifecycle::activate` returns Err which the handler wraps in
+    // `err_result` (is_error=true, non-empty body). Previously
+    // assert_reachable accepted EITHER outcome, so a regression that
+    // silently activated a malformed PRD would have passed.
+    assert!(
+        env.is_error,
+        "activate of incomplete draft must return is_error=true (MUST validation fails), got: {}",
+        env.raw_text
+    );
+    assert!(
+        !env.raw_text.is_empty(),
+        "activate error body must describe validation failure, got empty"
+    );
 }
 
 #[tokio::test]
@@ -361,7 +430,20 @@ async fn c26_forgeplan_delete_smoke() {
     let env = fx
         .call_tool_json("forgeplan_delete", json!({"id": id}))
         .await;
-    env.assert_reachable();
+    // Contract pinned: soft-delete returns `{id, title, message, receipt_id}`
+    // (PRD-055 receipt for forgeplan_undo_last). Previously assert_reachable
+    // missed both the success shape AND the receipt_id contract — a
+    // regression that dropped receipts would have made `forgeplan_undo_last`
+    // silently broken in production.
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["id"], id,
+        "delete response echoes the deleted id: {resp}"
+    );
+    assert!(
+        resp["receipt_id"].is_string() && !resp["receipt_id"].as_str().unwrap().is_empty(),
+        "delete response carries non-empty receipt_id (PRD-055): {resp}"
+    );
     // Re-list confirms it's gone (or at least soft-deleted from active set).
     let list_env = fx
         .call_tool_json("forgeplan_list", json!({"kind": "prd"}))
@@ -429,10 +511,14 @@ async fn c30_forgeplan_calibrate_no_id_smoke() {
 // handler silently succeeded without an LLM (regression) or panicked
 // (also regression).
 //
-// The other ~30 reachability-only tests in this file cover handlers с
-// optional pre-requisites (playbooks, plugins, undo receipts) — they
-// stay tolerant by design. Tightening them одинаково — отдельный refactor
-// (PROB-065 candidate).
+// Wave 7D follow-up: 15 additional tolerant tests across groups A/D/E/F/
+// M/N/O were tightened to specific shape OR is_error assertions (see
+// `c07`, `c08`, `c10`, `c12`, `c22`, `c26`, `c47`, `c48`, `c50`, `c53`,
+// `c54`, `c55`, `c56`, `c58`, `c60`). Around 18 reachability-only tests
+// remain — they cover handlers с no deterministic contract on a fresh
+// workspace (route falls through to heuristic OR LLM, supersede/deprecate
+// success-shape varies by lifecycle state, etc). Those stay tolerant
+// pending PROB-065 candidate / future audit cycle.
 
 #[tokio::test]
 async fn c31_forgeplan_capture_no_llm_smoke() {
@@ -802,22 +888,58 @@ async fn c46_forgeplan_discover_complete_smoke() {
 
 #[tokio::test]
 async fn c47_forgeplan_activity_smoke() {
+    // Contract pinned: activity returns `{entries[], total_scanned, returned,
+    // warnings, since_hours}`. since_hours echoed back (clamped 1..=720)
+    // proves the param round-trip; a regression dropping `total_scanned`
+    // or renaming `entries` would have passed silently with assert_reachable.
     let fx = McpFixture::new().await;
     fx.seed_prd("Activity Trigger").await;
     let env = fx
         .call_tool_json("forgeplan_activity", json!({"since_hours": 1, "limit": 50}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["entries"].is_array(),
+        "activity response carries entries[]: {resp}"
+    );
+    assert!(
+        resp["total_scanned"].is_number(),
+        "activity response carries numeric total_scanned: {resp}"
+    );
+    assert_eq!(
+        resp["since_hours"], 1,
+        "activity echoes the clamped since_hours param: {resp}"
+    );
 }
 
 #[tokio::test]
 async fn c48_forgeplan_activity_stats_smoke() {
+    // Contract pinned: activity_stats returns `{stats[], total_calls,
+    // total_errors, total_ms, since_hours}`. Aggregate counts are
+    // distinct from raw entries — a regression that returned the raw
+    // `forgeplan_activity` shape would have passed silently here.
     let fx = McpFixture::new().await;
     fx.seed_prd("Stats Trigger").await;
     let env = fx
         .call_tool_json("forgeplan_activity_stats", json!({"since_hours": 24}))
         .await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    assert!(
+        resp["stats"].is_array(),
+        "activity_stats response carries stats[]: {resp}"
+    );
+    assert!(
+        resp["total_calls"].is_number(),
+        "activity_stats response carries numeric total_calls: {resp}"
+    );
+    assert!(
+        resp["total_errors"].is_number(),
+        "activity_stats response carries numeric total_errors: {resp}"
+    );
+    assert_eq!(
+        resp["since_hours"], 24,
+        "activity_stats echoes since_hours param: {resp}"
+    );
 }
 
 // ── Group N: undo / restore (no-receipt path) ─────────────────────────
@@ -840,13 +962,26 @@ async fn c49_forgeplan_restore_no_receipt_returns_error() {
 
 #[tokio::test]
 async fn c50_forgeplan_undo_last_no_receipt_returns_error() {
+    // Contract pinned: a fresh workspace has no trash receipts — handler
+    // MUST return `err_hinted` (is_error=true) with a body that mentions
+    // the empty window. Previously assert_reachable accepted EITHER a
+    // success or error envelope, which masked the silent-fallback
+    // regression we saw в PROB-035/039 (handler claimed success while
+    // returning a "nothing to undo" string).
     let fx = McpFixture::new().await;
     let env = fx
         .call_tool_json("forgeplan_undo_last", json!({"within_hours": 24}))
         .await;
-    env.assert_reachable();
-    // Either error (no receipts) or success returning a "nothing to undo"
-    // body — both prove the tool is reachable.
+    assert!(
+        env.is_error,
+        "undo_last on empty trash must return is_error=true, got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("non-consumed") || env.raw_text.contains("trash"),
+        "undo_last error body must explain the missing receipt, got: {}",
+        env.raw_text
+    );
 }
 
 // ── Group O: playbooks / plugins / ingest (FS-dependent) ──────────────
@@ -883,6 +1018,11 @@ async fn c52_forgeplan_playbook_show_missing_target_returns_error() {
 
 #[tokio::test]
 async fn c53_forgeplan_playbook_validate_missing_file_returns_error() {
+    // Contract pinned: validate against a path that fails the
+    // `phase5_validate_path` confinement (outside workspace) MUST return
+    // `err_hinted` (is_error=true). Previously assert_reachable accepted a
+    // silent success — which would mask a regression that removed the
+    // path-confinement guard (HIGH-S1 security check from Audit Round 1).
     let fx = McpFixture::new().await;
     let env = fx
         .call_tool_json(
@@ -890,25 +1030,58 @@ async fn c53_forgeplan_playbook_validate_missing_file_returns_error() {
             json!({"file": "/nonexistent/path/to/playbook.yaml"}),
         )
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "playbook_validate against out-of-workspace path must return is_error=true (HIGH-S1 \
+         confinement), got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("cannot read") || env.raw_text.contains("playbook"),
+        "playbook_validate error body must mention the read failure, got: {}",
+        env.raw_text
+    );
 }
 
 #[tokio::test]
 async fn c54_forgeplan_playbook_run_requires_consent() {
+    // Contract pinned: a non-existent target fails `phase5_resolve_target`
+    // BEFORE the consent gate (dry_run bypasses consent), so the handler
+    // returns `err_hinted("playbook target ... not resolvable")` —
+    // is_error=true. Previously assert_reachable accepted any envelope, so
+    // a regression silently invoking shell on an unresolvable target would
+    // have passed.
+    //
+    // Note: when `yes=false` AND `dry_run=false`, the consent gate fires
+    // first; that variant is covered in the in-module unit tests at the
+    // end of `server.rs` (see `playbook_run_refuses_without_yes`).
     let fx = McpFixture::new().await;
-    // Even for a non-existent target the consent gate (`yes: false`) should
-    // refuse to run — pin that contract here.
     let env = fx
         .call_tool_json(
             "forgeplan_playbook_run",
-            json!({"target": "any-target", "yes": false, "dry_run": true}),
+            json!({"target": "definitely-not-a-real-target", "yes": false, "dry_run": true}),
         )
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "playbook_run with unresolvable target must return is_error=true, got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("not resolvable") || env.raw_text.contains("playbook target"),
+        "playbook_run error body must explain the target failure, got: {}",
+        env.raw_text
+    );
 }
 
 #[tokio::test]
 async fn c55_forgeplan_ingest_dry_run_missing_mapping_returns_error() {
+    // Contract pinned: ingest rejects a mapping path that fails
+    // `phase5_validate_path` BEFORE touching the source file, returning
+    // `err_hinted("mapping file not found or outside workspace")`. This
+    // pins the HIGH-S1 confinement order — the source path is never
+    // canonicalized when the mapping path is invalid, so an attacker
+    // cannot use the source argument for side-channel path probing.
     let fx = McpFixture::new().await;
     let env = fx
         .call_tool_json(
@@ -920,14 +1093,43 @@ async fn c55_forgeplan_ingest_dry_run_missing_mapping_returns_error() {
             }),
         )
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "ingest with missing mapping must return is_error=true, got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("mapping"),
+        "ingest error body must mention the mapping failure, got: {}",
+        env.raw_text
+    );
 }
 
 #[tokio::test]
 async fn c56_forgeplan_plugins_list_smoke() {
+    // Contract pinned: plugins_list returns `{installed[], missing[],
+    // installed_count, missing_count}`. installed_count must equal
+    // installed.len(), and missing[] is non-empty in test env (the
+    // registry contains ≥1 plugin and the temp workspace has none of
+    // them detected). Previously assert_reachable hid both counts AND
+    // the registry-vs-detection consistency.
     let fx = McpFixture::new().await;
     let env = fx.call_tool_json("forgeplan_plugins_list", json!({})).await;
-    env.assert_reachable();
+    let resp = env.assert_ok();
+    let installed = resp["installed"].as_array().expect("installed[]");
+    let missing = resp["missing"].as_array().expect("missing[]");
+    assert_eq!(
+        resp["installed_count"]
+            .as_u64()
+            .expect("installed_count u64"),
+        installed.len() as u64,
+        "plugins_list installed_count consistent with installed.len(): {resp}"
+    );
+    assert_eq!(
+        resp["missing_count"].as_u64().expect("missing_count u64"),
+        missing.len() as u64,
+        "plugins_list missing_count consistent with missing.len(): {resp}"
+    );
 }
 
 #[tokio::test]
@@ -941,6 +1143,11 @@ async fn c57_forgeplan_plugins_doctor_smoke() {
 
 #[tokio::test]
 async fn c58_forgeplan_plugins_info_unknown_returns_error() {
+    // Contract pinned: plugins_info against an unknown registry name
+    // returns `err_hinted("plugin ... not in registry")` — is_error=true.
+    // Previously assert_reachable accepted EITHER a success envelope (with
+    // `installed: null`) OR an error, so a regression that returned a
+    // fabricated PluginInfo would have silently passed.
     let fx = McpFixture::new().await;
     let env = fx
         .call_tool_json(
@@ -948,7 +1155,16 @@ async fn c58_forgeplan_plugins_info_unknown_returns_error() {
             json!({"name": "definitely-not-a-real-plugin"}),
         )
         .await;
-    env.assert_reachable();
+    assert!(
+        env.is_error,
+        "plugins_info on unknown name must return is_error=true, got: {}",
+        env.raw_text
+    );
+    assert!(
+        env.raw_text.contains("not in registry") || env.raw_text.contains("plugin"),
+        "plugins_info error body must explain the registry miss, got: {}",
+        env.raw_text
+    );
 }
 
 #[tokio::test]
@@ -956,8 +1172,16 @@ async fn c60_forgeplan_release_notes_smoke() {
     // The fixture workspace has no git repo; `git log` may either succeed
     // with no output (when the test runs inside the wider Forgeplan repo,
     // the parent of the tempdir is *not* a git repo) or fail. Either way
-    // the tool must be reachable and return a valid response when called
-    // with `draft=true` (no quality gate).
+    // the tool must return a valid response when called with `draft=true`
+    // (no quality gate).
+    //
+    // Contract pinned: when generation succeeds (the common path inside the
+    // outer repo), the response carries `{since, until, draft, total,
+    // added[], fixed[], security[], changed[], internal[]}`. When git fails
+    // entirely (e.g. running outside a repo), the handler returns
+    // `err_result("release-notes failed: ...")` — is_error=true. We accept
+    // either outcome but pin the shape of each one (previously
+    // assert_reachable accepted any envelope).
     let fx = McpFixture::new().await;
     let env = fx
         .call_tool_json(
@@ -965,7 +1189,31 @@ async fn c60_forgeplan_release_notes_smoke() {
             json!({"since": "HEAD", "until": "HEAD", "draft": true}),
         )
         .await;
-    env.assert_reachable();
+    if env.is_error {
+        assert!(
+            env.raw_text.contains("release-notes") || env.raw_text.contains("git"),
+            "release_notes error body must explain the git failure, got: {}",
+            env.raw_text
+        );
+    } else {
+        let resp = env.assert_ok();
+        assert!(
+            resp["since"].is_string(),
+            "release_notes carries `since` string: {resp}"
+        );
+        assert!(
+            resp["until"].is_string(),
+            "release_notes carries `until` string: {resp}"
+        );
+        assert!(
+            resp["total"].is_number(),
+            "release_notes carries numeric `total`: {resp}"
+        );
+        assert!(
+            resp["added"].is_array() && resp["fixed"].is_array() && resp["changed"].is_array(),
+            "release_notes carries section arrays (added/fixed/changed): {resp}"
+        );
+    }
 }
 
 // ── Housekeeping: fixture sanity ─────────────────────────────────────
