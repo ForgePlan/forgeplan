@@ -64,6 +64,63 @@ pub fn tags_from_frontmatter(fm: &Frontmatter) -> Vec<String> {
     }
 }
 
+/// PROB-068: extract `(target, relation)` pairs from the `links:` block in
+/// frontmatter. Returns an empty `Vec` when the field is missing or has an
+/// unexpected shape — callers treat that as "no relations to restore".
+///
+/// Accepts the canonical shape used by `render_markdown_with_extras`:
+///
+/// ```yaml
+/// links:
+///   - target: PROB-061
+///     relation: informs
+///   - target: PRD-074
+///     relation: refines
+/// ```
+///
+/// Entries missing either field are silently dropped so a corrupted block
+/// can't poison the union-merge during `scan-import`.
+pub fn links_from_frontmatter(fm: &Frontmatter) -> Vec<(String, String)> {
+    let Some(v) = fm.get("links") else {
+        return Vec::new();
+    };
+    let serde_yaml::Value::Sequence(seq) = v else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(seq.len());
+    for item in seq {
+        let serde_yaml::Value::Mapping(map) = item else {
+            continue;
+        };
+        let target = map
+            .get(serde_yaml::Value::String("target".to_string()))
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string());
+        let relation = map
+            .get(serde_yaml::Value::String("relation".to_string()))
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string());
+        if let (Some(t), Some(r)) = (target, relation)
+            && !t.is_empty()
+            && !r.is_empty()
+        {
+            out.push((t, r));
+        }
+    }
+    out
+}
+
+/// PROB-068: extract `author:` value from frontmatter if it exists and is a
+/// non-empty string. Used during scan-import union-merge to preserve a
+/// human-supplied or agent-supplied author rather than overwriting it with
+/// the default `"scan-import"` marker.
+pub fn author_from_frontmatter(fm: &Frontmatter) -> Option<String> {
+    fm.get("author")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Extract `slug` field from frontmatter (PROB-060 / SPEC-005).
 ///
 /// Returns `Some(&str)` if the field is present and string-valued, `None`

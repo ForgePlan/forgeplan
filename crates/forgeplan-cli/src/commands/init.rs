@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::config::Config;
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::plugins::{
@@ -13,14 +14,14 @@ use forgeplan_core::plugins::{
     format_recommendations,
 };
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
-use forgeplan_core::workspace::{FORGEPLAN_DIR, find_workspace, init_workspace};
+use forgeplan_core::workspace::{ARTIFACT_DIRS, FORGEPLAN_DIR, find_workspace, init_workspace};
 
 use crate::ui;
 
 /// Default project name fallback (unified for both paths).
 const DEFAULT_PROJECT_NAME: &str = "my-project";
 
-pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
+pub async fn run(force: bool, non_interactive: bool, scan: bool, no_backup: bool) -> Result<()> {
     let cwd = env::current_dir()?;
 
     // Check if already initialized
@@ -48,27 +49,80 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             return Ok(());
         }
 
-        // Warn about data loss before --force reinit
-        if non_interactive {
-            eprintln!(
-                "WARNING: --force will delete ALL artifacts in .forgeplan/. \
-                 Run `forgeplan export` first to backup."
-            );
-        } else {
-            let proceed = cliclack::confirm(
-                "WARNING: --force will delete ALL artifacts in .forgeplan/. \
-                 Run `forgeplan export` first to backup. Continue?",
-            )
-            .initial_value(false)
-            .interact()?;
-            if !proceed {
-                eprintln!("  Aborted. Run `forgeplan export` to backup first.");
-                return Ok(());
-            }
-        }
+        // PROB-068: --force is now strictly additive.
+        // - Existing artifact .md bodies are NEVER overwritten.
+        // - config.yaml is regenerated (with backup) so stale defaults
+        //   from older versions can be refreshed.
+        // - LanceDB index is rebuilt from the existing markdown via the
+        //   subsequent scan-import flow (when --scan is requested).
+        //
+        // An auto-backup of the artifact directories is taken unless
+        // --no-backup is set. This protects against any future logic
+        // bug that might mutate file bodies under --force.
 
         // [SECURITY] Guard against symlink attack and workspace outside cwd
-        safe_remove_workspace(&existing, &cwd).await?;
+        ensure_workspace_under_cwd(&existing, &cwd)?;
+
+        if !no_backup {
+            let summary = create_force_backup(&existing, &cwd).await?;
+            if let Some(s) = summary.as_deref() {
+                if non_interactive {
+                    println!("  Auto-backup created at {} — use --no-backup to skip", s);
+                } else {
+                    cliclack::log::success(format!(
+                        "Auto-backup created at {} — use --no-backup to skip",
+                        s
+                    ))?;
+                }
+            }
+        } else if non_interactive {
+            eprintln!(
+                "  Skipping auto-backup (--no-backup). Existing artifact bodies are preserved."
+            );
+        }
+
+        // Additive reinit: refresh config + dirs + LanceDB index without
+        // touching existing artifact .md files.
+        let project_name = cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| DEFAULT_PROJECT_NAME.into());
+        refresh_existing_workspace(&existing, &project_name).await?;
+
+        if non_interactive {
+            println!(
+                "  Reinitialized {}/ in {} (config + indices refreshed, artifact bodies preserved)",
+                FORGEPLAN_DIR,
+                cwd.display()
+            );
+            if scan {
+                run_scan_import(&cwd, &existing).await?;
+            }
+            emit_recommendation_hints(&cwd);
+            let hints_vec = vec![
+                Hint::suggestion("Verify integrity").with_action("forgeplan health".to_string()),
+            ];
+            print!("{}", hints::render_next_action_line(&hints_vec));
+            return Ok(());
+        }
+
+        // Interactive: emit a success note via cliclack, run scan if asked,
+        // then exit before falling through to the create-from-scratch path.
+        ui::print_banner();
+        cliclack::intro(style(" forgeplan init --force ").bold())?;
+        cliclack::log::success(format!(
+            "Reinitialized config + indices at {} (artifact bodies preserved)",
+            existing.display()
+        ))?;
+        if scan {
+            run_scan_import(&cwd, &existing).await?;
+        }
+        cliclack::outro(format!("Done! Next: {}", style("forgeplan health").cyan()))?;
+        emit_recommendation_hints(&cwd);
+        let hints_vec =
+            vec![Hint::suggestion("Verify integrity").with_action("forgeplan health".to_string())];
+        print!("{}", hints::render_next_action_line(&hints_vec));
+        return Ok(());
     }
 
     // Non-interactive mode (for CI, tests, scripts)
@@ -322,9 +376,11 @@ async fn init_with_rollback(cwd: &std::path::Path, project_name: &str) -> Result
     Ok(())
 }
 
-/// Safely remove a workspace directory, guarding against symlinks and paths outside cwd.
-async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Path) -> Result<()> {
-    // Guard: workspace must be inside cwd
+/// PROB-068: assert workspace is safe to operate on under --force without
+/// any destructive action. Mirrors the historical symlink/escape guard
+/// from `safe_remove_workspace`, but never deletes — the additive
+/// `--force` flow only refreshes config + indices.
+fn ensure_workspace_under_cwd(workspace: &std::path::Path, cwd: &std::path::Path) -> Result<()> {
     let canonical_ws = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
@@ -336,7 +392,6 @@ async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Pat
         );
     }
 
-    // Guard: workspace must not be a symlink
     let meta = fs::symlink_metadata(workspace)?;
     if meta.file_type().is_symlink() {
         anyhow::bail!(
@@ -344,8 +399,134 @@ async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Pat
             workspace.display()
         );
     }
+    Ok(())
+}
 
-    tokio::fs::remove_dir_all(workspace).await?;
+/// PROB-068 Option C: snapshot artifact directories into
+/// `.forgeplan-backup-<UTC-timestamp>/` before any `--force` refresh.
+///
+/// Returns `Ok(Some(path))` with the backup directory name (relative to
+/// `cwd`) when artifacts were found and copied. Returns `Ok(None)` when
+/// the workspace had no artifact files worth backing up — there is
+/// nothing to lose so we skip the noise.
+///
+/// Failures (disk full, permissions, etc.) are returned as `Err` so
+/// `--force` aborts before doing anything else. The user can then free
+/// space, fix permissions, or pass `--no-backup` if they've already
+/// exported.
+async fn create_force_backup(
+    workspace: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<Option<String>> {
+    // Count existing markdown bodies — skip the backup if there's
+    // nothing to protect.
+    let mut artifact_count: usize = 0;
+    for dir_name in ARTIFACT_DIRS {
+        let dir = workspace.join(dir_name);
+        if !dir.exists() {
+            continue;
+        }
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        while let Some(entry) = rd.next_entry().await.transpose() {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".md") {
+                artifact_count += 1;
+            }
+        }
+    }
+    if artifact_count == 0 {
+        return Ok(None);
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let backup_name = format!(".forgeplan-backup-{}", timestamp);
+    let backup_root = cwd.join(&backup_name);
+    // Defensive: refuse to clobber an existing path with the same name.
+    if backup_root.exists() {
+        anyhow::bail!(
+            "Backup target {} already exists — refusing to overwrite. Move or remove it.",
+            backup_root.display()
+        );
+    }
+    tokio::fs::create_dir_all(&backup_root).await?;
+
+    for dir_name in ARTIFACT_DIRS {
+        let src = workspace.join(dir_name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = backup_root.join(dir_name);
+        copy_dir_recursive(&src, &dst).await?;
+    }
+
+    Ok(Some(backup_name))
+}
+
+/// Recursively copy a directory tree — used by `create_force_backup`.
+/// Only walks regular files / directories; symlinks are followed via
+/// the standard `fs::copy` semantics (target file contents are copied).
+async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut rd = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = rd.next_entry().await? {
+        let entry_path = entry.path();
+        let file_name = entry.file_name();
+        let dst_path = dst.join(&file_name);
+        let ft = entry.file_type().await?;
+        if ft.is_dir() {
+            Box::pin(copy_dir_recursive(&entry_path, &dst_path)).await?;
+        } else if ft.is_file() {
+            tokio::fs::copy(&entry_path, &dst_path).await?;
+        }
+        // Skip symlinks / specials; backup is best-effort for those.
+    }
+    Ok(())
+}
+
+/// PROB-068 Option A: additive refresh of an existing workspace.
+///
+/// - Ensures every `ARTIFACT_DIRS` entry exists (idempotent).
+/// - Rewrites `config.yaml` so users on older versions pick up new
+///   commented defaults. The previous config (if any) is moved aside
+///   as `config.yaml.bak-<timestamp>` so a manual diff is possible.
+/// - Reinitializes the LanceDB index in place — LanceStore::init is
+///   idempotent and will pick up existing rows on subsequent
+///   scan-import calls.
+///
+/// CRITICALLY: artifact .md files are never touched. Bodies, links,
+/// custom frontmatter, agent stamps — all preserved.
+async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &str) -> Result<()> {
+    // Ensure every artifact subdir exists.
+    for dir_name in ARTIFACT_DIRS {
+        let dir = workspace.join(dir_name);
+        tokio::fs::create_dir_all(&dir).await?;
+    }
+
+    // Rewrite config.yaml; move the old one aside so the user can diff.
+    let config_path = workspace.join("config.yaml");
+    if config_path.exists() {
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let backup_path = workspace.join(format!("config.yaml.bak-{}", ts));
+        let _ = tokio::fs::rename(&config_path, &backup_path).await;
+    }
+    let config = Config {
+        project_name: project_name.to_string(),
+        ..Config::default()
+    };
+    let yaml = serde_yaml::to_string(&config)?;
+    tokio::fs::write(&config_path, yaml).await?;
+
+    // Reinit LanceDB index. LanceStore::init is idempotent for an
+    // existing dataset, so this is safe to run repeatedly.
+    LanceStore::init(workspace).await?;
     Ok(())
 }
 
