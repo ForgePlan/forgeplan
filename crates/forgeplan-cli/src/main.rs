@@ -92,7 +92,12 @@ enum Commands {
     },
     /// Initialize a new .forgeplan/ workspace
     Init {
-        /// Force reinitialize even if .forgeplan/ exists
+        /// Reinitialize config + indices in an existing .forgeplan/.
+        /// PROB-068: --force is now strictly additive — it never
+        /// overwrites existing artifact .md bodies. Only `config.yaml`
+        /// is rewritten and missing directories / the LanceDB index
+        /// are recreated. An auto-backup is taken unless
+        /// `--no-backup` is also passed.
         #[arg(long)]
         force: bool,
         /// Non-interactive mode (skip prompts, use defaults)
@@ -101,6 +106,12 @@ enum Commands {
         /// Scan for existing documents and import them
         #[arg(long)]
         scan: bool,
+        /// Skip the safety auto-backup that `--force` would otherwise
+        /// create (`.forgeplan-backup-<timestamp>/`). PROB-068: backups
+        /// are on by default to protect against the historical data
+        /// loss vector; opt out only when you've already exported.
+        #[arg(long)]
+        no_backup: bool,
     },
     /// Create a new artifact from template
     New {
@@ -998,7 +1009,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::UndoLast { within_hours, json } => {
             commands::undo_last::run(within_hours, json).await
         }
-        Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
+        Commands::Init {
+            force,
+            yes,
+            scan,
+            no_backup,
+        } => commands::init::run(force, yes, scan, no_backup).await,
         Commands::New {
             kind,
             title,
