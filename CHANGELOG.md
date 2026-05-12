@@ -37,6 +37,19 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Added
 
+- **`forgeplan release-notes [--since <ref>] [--until <ref>] [--output text|markdown|json] [--draft]`**
+  — auto-generate Keep-a-Changelog–shaped release notes from artifacts
+  that changed between two git refs. Walks `git log --diff-filter=AM`
+  over `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`,
+  resolves each touched basename to a canonical artifact id (handles
+  pre-merge slug form per SPEC-005 and post-merge `KIND-NNN`),
+  categorises by kind + status + security-link: PRD→Added,
+  PROB→Fixed, EVID-on-security→Security, RFC/ADR/Spec/Epic→Changed,
+  plain EVID→Internal. Quality gate (default): only records with
+  `status==active` or `r_eff_score > 0` are emitted; `--draft` waives.
+  Companion MCP tool `forgeplan_release_notes` returns the same JSON
+  shape. Closes v0.31.0 Wave 4 MAJOR-3 (manual CHANGELOG sync pain) —
+  the feature self-uses at the next release. Refs: EVID-002.
 - **`forgeplan health --strict` flag** — exit 1 if verdict ∈
   {NeedsAttention, Unhealthy} OR any of {orphans, blind_spots,
   active_stubs, at_risk} > 0. Designed for CI gates that want a single

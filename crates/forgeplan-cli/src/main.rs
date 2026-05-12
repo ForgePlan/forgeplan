@@ -461,6 +461,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Generate Keep-a-Changelog–shaped release notes from artifacts that
+    /// changed between two git refs. Walks `git log` over
+    /// `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`
+    /// and categorises each touched artifact: PRD→Added, PROB→Fixed,
+    /// EVID-on-security→Security, RFC/ADR→Changed. Quality gate: only
+    /// artifacts with `status==active` or `r_eff_score > 0` are emitted
+    /// (override with `--draft`).
+    #[command(name = "release-notes")]
+    ReleaseNotes {
+        /// Git ref to start from (default: latest tag).
+        #[arg(long)]
+        since: Option<String>,
+        /// Git ref to end at (default: HEAD).
+        #[arg(long)]
+        until: Option<String>,
+        /// Output format: text, markdown (alias md), json. Default: markdown.
+        #[arg(long, default_value = "markdown")]
+        output: String,
+        /// Disable the quality gate — include active artifacts without
+        /// evidence and drafts with r_eff_score=0.
+        #[arg(long)]
+        draft: bool,
+    },
     /// Renew a stale artifact (stale → active) with extended validity
     Renew {
         /// Artifact ID
@@ -1231,6 +1254,12 @@ async fn main() -> anyhow::Result<()> {
             force,
             json,
         } => commands::release::run(&id, agent.as_deref(), force, json).await,
+        Commands::ReleaseNotes {
+            since,
+            until,
+            output,
+            draft,
+        } => commands::release_notes::run(since.as_deref(), until.as_deref(), &output, draft).await,
         Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
         Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,

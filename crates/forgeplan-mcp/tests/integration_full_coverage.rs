@@ -951,10 +951,27 @@ async fn c58_forgeplan_plugins_info_unknown_returns_error() {
     env.assert_reachable();
 }
 
+#[tokio::test]
+async fn c60_forgeplan_release_notes_smoke() {
+    // The fixture workspace has no git repo; `git log` may either succeed
+    // with no output (when the test runs inside the wider Forgeplan repo,
+    // the parent of the tempdir is *not* a git repo) or fail. Either way
+    // the tool must be reachable and return a valid response when called
+    // with `draft=true` (no quality gate).
+    let fx = McpFixture::new().await;
+    let env = fx
+        .call_tool_json(
+            "forgeplan_release_notes",
+            json!({"since": "HEAD", "until": "HEAD", "draft": true}),
+        )
+        .await;
+    env.assert_reachable();
+}
+
 // ── Housekeeping: fixture sanity ─────────────────────────────────────
 
 #[tokio::test]
-async fn c59_fixture_workspace_is_initialized() {
+async fn c61_fixture_workspace_is_initialized() {
     let fx = McpFixture::new().await;
     assert!(
         fx.workspace_path.exists(),
