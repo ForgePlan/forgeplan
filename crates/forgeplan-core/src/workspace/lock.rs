@@ -47,6 +47,17 @@ impl std::fmt::Debug for WorkspaceLock {
     }
 }
 
+impl WorkspaceLock {
+    /// Wrap an already-locked `File` in the RAII guard. Used by callers
+    /// that need a custom lock-file path (e.g. `artifact::id_alloc` for
+    /// cross-worktree per-kind locks). The caller is responsible for
+    /// having taken the exclusive `flock` before constructing the guard;
+    /// `Drop` will release it.
+    pub fn from_file(file: File) -> Self {
+        Self { file }
+    }
+}
+
 impl Drop for WorkspaceLock {
     fn drop(&mut self) {
         // Explicit unlock. `File`'s own Drop also closes + releases,

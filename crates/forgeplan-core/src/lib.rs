@@ -31,6 +31,7 @@ pub mod playbook;
 pub mod plugins;
 pub mod progress;
 pub mod projection;
+pub mod release_notes;
 pub mod routing;
 pub mod scan;
 pub mod scoring;

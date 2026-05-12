@@ -286,6 +286,20 @@ pub struct ClaimsListParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseNotesParams {
+    /// Git ref to start from (e.g. `v0.30.0`). Default: latest tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// Git ref to end at. Default: HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Disable the quality gate (include active artifacts without
+    /// evidence). Default: false.
+    #[serde(default)]
+    pub draft: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimDto {
     pub id: String,
     pub agent_id: String,

@@ -9,8 +9,47 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **PROB-067 — `forgeplan_new` ID-counter race across parallel git
+  worktrees**. Two workers in sibling worktrees of the same repo
+  invoking `forgeplan_new` simultaneously could each compute
+  `max(NNN)+1` and produce duplicate `EVID-NNN` numbers (or silently
+  overwrite a pre-existing artifact body, per the v0.31.0 sprint
+  incident with EVID-118/EVID-119). Fix combo Option B + Option D:
+  1. **Cross-worktree per-kind lock** — id allocation now serializes
+     through `<git-common-dir>/forgeplan/id-<KIND>.lock` (shared
+     across all worktrees of the same repo) with graceful fallback to
+     a workspace-local lock when no git common-dir is available
+     (fresh clones, non-git directories). Per-kind granularity keeps
+     `new prd` and `new evidence` allocations independent.
+  2. **Post-write collision detection** — after the projection write
+     the allocator re-checks that no sibling file owns the same
+     `{ID}-` prefix; on collision the file is rolled back and the
+     allocation retries with the next number (cap 5, panic above to
+     surface a broken lock instead of silent corruption).
+  Both `forgeplan new` (CLI) and `forgeplan_new` (MCP) call the new
+  `forgeplan_core::artifact::id_alloc::allocate_and_create_artifact`
+  entry point. New regression coverage: 3 unit tests in
+  `forgeplan_core::artifact::id_alloc::tests` + 2 CLI process-level
+  stress tests in `cli_prob_067_id_race.rs` (5 parallel `new evidence`
+  + 10 mixed-kind `new evidence`/`new note`). Refs: PROB-067, EVID-TBD.
+
 ### Added
 
+- **`forgeplan release-notes [--since <ref>] [--until <ref>] [--output text|markdown|json] [--draft]`**
+  — auto-generate Keep-a-Changelog–shaped release notes from artifacts
+  that changed between two git refs. Walks `git log --diff-filter=AM`
+  over `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`,
+  resolves each touched basename to a canonical artifact id (handles
+  pre-merge slug form per SPEC-005 and post-merge `KIND-NNN`),
+  categorises by kind + status + security-link: PRD→Added,
+  PROB→Fixed, EVID-on-security→Security, RFC/ADR/Spec/Epic→Changed,
+  plain EVID→Internal. Quality gate (default): only records with
+  `status==active` or `r_eff_score > 0` are emitted; `--draft` waives.
+  Companion MCP tool `forgeplan_release_notes` returns the same JSON
+  shape. Closes v0.31.0 Wave 4 MAJOR-3 (manual CHANGELOG sync pain) —
+  the feature self-uses at the next release. Refs: EVID-123.
 - **`forgeplan health --strict` flag** — exit 1 if verdict ∈
   {NeedsAttention, Unhealthy} OR any of {orphans, blind_spots,
   active_stubs, at_risk} > 0. Designed for CI gates that want a single

@@ -92,7 +92,12 @@ enum Commands {
     },
     /// Initialize a new .forgeplan/ workspace
     Init {
-        /// Force reinitialize even if .forgeplan/ exists
+        /// Reinitialize config + indices in an existing .forgeplan/.
+        /// PROB-068: --force is now strictly additive — it never
+        /// overwrites existing artifact .md bodies. Only `config.yaml`
+        /// is rewritten and missing directories / the LanceDB index
+        /// are recreated. An auto-backup is taken unless
+        /// `--no-backup` is also passed.
         #[arg(long)]
         force: bool,
         /// Non-interactive mode (skip prompts, use defaults)
@@ -101,6 +106,12 @@ enum Commands {
         /// Scan for existing documents and import them
         #[arg(long)]
         scan: bool,
+        /// Skip the safety auto-backup that `--force` would otherwise
+        /// create (`.forgeplan-backup-<timestamp>/`). PROB-068: backups
+        /// are on by default to protect against the historical data
+        /// loss vector; opt out only when you've already exported.
+        #[arg(long)]
+        no_backup: bool,
     },
     /// Create a new artifact from template
     New {
@@ -449,6 +460,29 @@ enum Commands {
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
+    },
+    /// Generate Keep-a-Changelog–shaped release notes from artifacts that
+    /// changed between two git refs. Walks `git log` over
+    /// `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`
+    /// and categorises each touched artifact: PRD→Added, PROB→Fixed,
+    /// EVID-on-security→Security, RFC/ADR→Changed. Quality gate: only
+    /// artifacts with `status==active` or `r_eff_score > 0` are emitted
+    /// (override with `--draft`).
+    #[command(name = "release-notes")]
+    ReleaseNotes {
+        /// Git ref to start from (default: latest tag).
+        #[arg(long)]
+        since: Option<String>,
+        /// Git ref to end at (default: HEAD).
+        #[arg(long)]
+        until: Option<String>,
+        /// Output format: text, markdown (alias md), json. Default: markdown.
+        #[arg(long, default_value = "markdown")]
+        output: String,
+        /// Disable the quality gate — include active artifacts without
+        /// evidence and drafts with r_eff_score=0.
+        #[arg(long)]
+        draft: bool,
     },
     /// Renew a stale artifact (stale → active) with extended validity
     Renew {
@@ -998,7 +1032,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::UndoLast { within_hours, json } => {
             commands::undo_last::run(within_hours, json).await
         }
-        Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
+        Commands::Init {
+            force,
+            yes,
+            scan,
+            no_backup,
+        } => commands::init::run(force, yes, scan, no_backup).await,
         Commands::New {
             kind,
             title,
@@ -1215,6 +1254,12 @@ async fn main() -> anyhow::Result<()> {
             force,
             json,
         } => commands::release::run(&id, agent.as_deref(), force, json).await,
+        Commands::ReleaseNotes {
+            since,
+            until,
+            output,
+            draft,
+        } => commands::release_notes::run(since.as_deref(), until.as_deref(), &output, draft).await,
         Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
         Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,

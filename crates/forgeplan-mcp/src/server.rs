@@ -1085,11 +1085,11 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        // PRD-057: serialize the next_id → create_artifact critical
-        // section against concurrent sub-agents sharing this workspace.
-        // Without the lock, two agents invoking forgeplan_new in the
-        // same millisecond could both get e.g. PRD-057 and then collide
-        // on the projection file. Held for the whole handler.
+        // PROB-067: the per-kind id-alloc lock now serializes
+        // `forgeplan_new` across worktrees. The legacy PRD-057 workspace
+        // lock remains in place as an outer guard for MCP-only handlers
+        // that mutate shared state beyond id allocation; it is acquired
+        // inside `id_alloc` for the critical section.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
             Ok(g) => g,
             Err(e) => {
@@ -1121,7 +1121,6 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&format!("{e}"))),
         };
 
-        let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
         let template_key = artifact_kind.template_key();
 
         // Duplicate detection (FR-004 of PRD-043) — non-blocking warnings.
@@ -1137,10 +1136,6 @@ impl ForgeplanServer {
             .map_err(|e| McpError::internal_error(format!("Duplicate scan failed: {e}"), None))?;
         let warnings = find_duplicate_warnings(&existing, &p.title);
 
-        let id = store
-            .next_id(&prefix)
-            .await
-            .map_err(|e| McpError::internal_error(format!("ID generation failed: {e}"), None))?;
         let template = match get_embedded_template(template_key) {
             Some(t) => t,
             None => {
@@ -1151,36 +1146,6 @@ impl ForgeplanServer {
         };
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        let nnn = id.split('-').next_back().unwrap_or("001").to_string();
-
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("NNN".into(), nnn.clone());
-        vars.insert("title".into(), p.title.clone());
-        vars.insert("Title".into(), p.title.clone());
-
-        let mut rendered = render_template(template, &vars);
-        rendered = rendered.replace("YYYY-MM-DD", &today);
-
-        // PROB-060 / SPEC-005 / ADR-012 — Phase 2.4 (CD-2 binding).
-        //
-        // Mirror the CLI `new` behavior: compute canonical slug + predicted
-        // number, then augment the rendered template's frontmatter with the
-        // identity triple (slug, predicted_number, assigned_number). Without
-        // this, MCP-created artifacts diverge from CLI-created artifacts:
-        // they would lack `slug` / `predicted_number` and `forgeplan_get`
-        // would return `id_canonical` falling back to lowercased display id.
-        //
-        // `augment_frontmatter_with_id_fields` is purely additive — body is
-        // preserved byte-for-byte; legacy callers that ignore the new fields
-        // are unaffected. Phase 1.x sets `assigned_number = predicted_number`
-        // (immediate assignment). Phase 2 CI bot will null `assigned_number`
-        // on create and stamp atomically on merge.
-        let predicted_number: u32 = nnn.parse().map_err(|e| {
-            McpError::internal_error(
-                format!("internal: failed to parse numeric prefix {nnn:?} from id {id}: {e}"),
-                None,
-            )
-        })?;
         let slug = slug_from_kind_title(&artifact_kind, &p.title).map_err(|e| {
             McpError::internal_error(
                 format!(
@@ -1190,48 +1155,75 @@ impl ForgeplanServer {
                 None,
             )
         })?;
-        rendered = augment_frontmatter_with_id_fields(&rendered, &slug, predicted_number).map_err(
-            |e| {
-                McpError::internal_error(
-                    format!("failed to augment frontmatter for {id}: {e}"),
-                    None,
-                )
-            },
-        )?;
 
-        let heading_pattern = format!("# {prefix}-{nnn}: ");
-        if let Some(pos) = rendered.find(&heading_pattern) {
-            let line_start = pos + heading_pattern.len();
-            if let Some(nl) = rendered[line_start..].find('\n') {
-                let old = &rendered[line_start..line_start + nl];
-                if old.contains('{') || old.contains('/') {
-                    let before = &rendered[..line_start];
-                    let after = &rendered[line_start + nl..];
-                    rendered = format!("{before}{}{after}", p.title);
+        // PROB-067 build closure: re-rendered for each retry attempt.
+        let title_owned = p.title.clone();
+        let today_owned = today.clone();
+        let template_key_owned = template_key.to_string();
+        let template_owned: String = template.to_string();
+        let slug_owned = slug.clone();
+        let artifact_kind_owned = artifact_kind.clone();
+        let build = move |id: &str, number: u32| -> anyhow::Result<NewArtifact> {
+            let nnn = id
+                .split('-')
+                .next_back()
+                .expect("id contract: must contain '-'")
+                .to_string();
+            let prefix = artifact_kind_owned
+                .prefix()
+                .trim_end_matches('-')
+                .to_uppercase();
+            let mut vars = std::collections::HashMap::new();
+            vars.insert("NNN".into(), nnn.clone());
+            vars.insert("title".into(), title_owned.clone());
+            vars.insert("Title".into(), title_owned.clone());
+            let mut rendered = render_template(&template_owned, &vars);
+            rendered = rendered.replace("YYYY-MM-DD", &today_owned);
+            rendered = augment_frontmatter_with_id_fields(&rendered, &slug_owned, number)
+                .map_err(|e| anyhow::anyhow!("failed to augment frontmatter for {id}: {e}"))?;
+            let heading_pattern = format!("# {prefix}-{nnn}: ");
+            if let Some(pos) = rendered.find(&heading_pattern) {
+                let line_start = pos + heading_pattern.len();
+                if let Some(nl) = rendered[line_start..].find('\n') {
+                    let old = &rendered[line_start..line_start + nl];
+                    if old.contains('{') || old.contains('/') {
+                        let before = &rendered[..line_start];
+                        let after = &rendered[line_start + nl..];
+                        rendered = format!("{before}{}{after}", title_owned);
+                    }
                 }
             }
-        }
-
-        let artifact = NewArtifact {
-            id: id.clone(),
-            kind: template_key.into(),
-            status: "draft".into(),
-            title: p.title.clone(),
-            body: rendered.clone(),
-            depth: "standard".into(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            tags: Vec::new(),
+            Ok(NewArtifact {
+                id: id.to_string(),
+                kind: template_key_owned.clone(),
+                status: "draft".into(),
+                title: title_owned.clone(),
+                body: rendered,
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
         };
-
-        // PRD-073 audit: helper writes file FIRST then syncs to LanceDB.
-        let filepath = projection::create_artifact_with_projection(
-            &projection::MutationContext::new(&ws, &store),
-            &artifact,
+        let allocated = forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
+            &ws,
+            &store,
+            &artifact_kind,
+            3,
+            &build,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("Create failed: {e}"), None))?;
+        .map_err(|e| McpError::internal_error(format!("Create failed (id-alloc): {e}"), None))?;
+        let id = allocated.id;
+        let predicted_number = allocated.number;
+        let filepath = allocated.filepath;
+        // PROB-067: rendered body carries the augmented frontmatter
+        // (slug / predicted_number / assigned_number) needed for
+        // response-shape derivation below — the on-disk projection
+        // re-renders frontmatter without those fields, so reading them
+        // back from the file would lose the identity triple.
+        let rendered = allocated.rendered_body;
 
         // PRD-057 FR-009: stamp the creator onto the fresh artifact so the
         // first modifier is attributable even without an update call.
@@ -6072,6 +6064,70 @@ impl ForgeplanServer {
             }
             Err(e) => Ok(err_result(&format!("release failed: {e}"))),
         }
+    }
+
+    #[tool(
+        description = "Auto-generate Keep-a-Changelog–shaped release notes from artifacts that \
+                       changed between two git refs. Walks `git log` over `.forgeplan/{prds, \
+                       problems, evidence, rfcs, adrs, specs, epics, solutions}/`, classifies \
+                       each touched artifact (PRD→Added, PROB→Fixed, EVID-on-security→Security, \
+                       RFC/ADR→Changed) and emits the structured payload. Quality gate (default): \
+                       only artifacts with status==active or r_eff_score > 0 are included. Pass \
+                       `draft: true` to waive the gate. `since` defaults to the latest git tag, \
+                       `until` defaults to HEAD. Example: `{since: \"v0.30.0\", draft: false}`.",
+        annotations(
+            title = "Generate Release Notes",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_release_notes(
+        &self,
+        Parameters(p): Parameters<ReleaseNotesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // `require_workspace` returns the `.forgeplan/` dir; git operations
+        // need the repository root (its parent).
+        let repo_root = match ws.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return Ok(err_result("workspace has no parent (bad .forgeplan/ path)")),
+        };
+        let notes = match forgeplan_core::release_notes::generate(
+            &store,
+            &repo_root,
+            p.since.as_deref(),
+            p.until.as_deref(),
+            p.draft,
+        )
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => return Ok(err_result(&format!("release-notes failed: {e}"))),
+        };
+
+        let value = forgeplan_core::release_notes::format_json(&notes);
+        let next_action = if notes.is_empty() {
+            format!(
+                "No artifacts changed between {} and {}. Widen range or pass draft=true.",
+                notes.since, notes.until
+            )
+        } else {
+            format!(
+                "{} entries. Paste under [Unreleased] in CHANGELOG.md.",
+                notes.total()
+            )
+        };
+        hinted_result(&value, next_action)
     }
 
     #[tool(

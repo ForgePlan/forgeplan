@@ -132,7 +132,7 @@ $ forgeplan activate PRD-001
 | **🎯 Quality scoring** | `R_eff` (weakest-link evidence trust) and `F-G-R` (formality, granularity, reliability), automatic. |
 | **🧭 Smart routing** | Analyzes your task, picks the right depth and artifact pipeline. No over-documenting typo fixes. |
 | **🧠 ADI reasoning** | Abduction → Deduction → Induction. Forces 3+ hypotheses before every decision. |
-| **🤖 MCP-native** | 71 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
+| **🤖 MCP-native** | 72 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
 | **🔍 Local semantic search** | fastembed (BGE-M3, 1024 dims). No network, no API keys, no egress. |
 | **⏰ Evidence decay** | Expired `valid_until` → artifact goes stale. Trust decays honestly, nothing rots in the dark. |
 
