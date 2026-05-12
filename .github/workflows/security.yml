@@ -1,6 +1,8 @@
 # Security CI — cargo-deny gate
 #
-# Runs cargo-deny on push to dev and on pull requests targeting dev or main.
+# Runs cargo-deny on push to dev/main + weekly cron. PR trigger disabled
+# initially — baseline cleanup needed (license-not-encountered + duplicate
+# warnings). Re-enable pull_request after baseline established.
 # Initial rollout is non-blocking (continue-on-error: true) so we can establish
 # a clean baseline before flipping to a hard merge gate.
 #
@@ -11,8 +13,6 @@ name: security
 
 on:
   push:
-    branches: [dev, main]
-  pull_request:
     branches: [dev, main]
   schedule:
     # Weekly scan to catch advisories that land between PRs (e.g. new RUSTSEC
