@@ -9,7 +9,6 @@ use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
 use forgeplan_core::git::{artifact_filenames_in_origin_dev, slug_exists_in_filenames};
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
 
 use crate::commands::common;
@@ -127,58 +126,17 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         }
     }
 
-    // Get next sequential ID from LanceDB
+    // PROB-067: id allocation moves under a cross-worktree per-kind lock
+    // with post-write collision detection. We compute the slug now (it
+    // depends only on title), then defer id resolution + projection
+    // write to `id_alloc::allocate_and_create_artifact` which invokes
+    // our build closure under the lock for each retry attempt.
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let id = store.next_id(&prefix).await?;
-
-    // The kind string used for template lookup
     let template_key = kind.template_key();
     let template = get_embedded_template(template_key)
         .ok_or_else(|| anyhow::anyhow!("No template found for kind '{}'", template_key))?;
-
-    // Build template variables.
-    //
-    // Audit H2b fix: `next_id` is contractually guaranteed to return
-    // `"{PREFIX}-{:03}"` (see `LanceStore::next_id`). The previous
-    // `.unwrap_or("001")` masked any contract violation by silently
-    // substituting a default — producing a frontmatter where `id` and
-    // `predicted_number` disagreed. Replace with `expect` so a future
-    // refactor of `next_id` that breaks the format fails loudly at the
-    // very first artifact creation rather than corrupting data.
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let nnn = id
-        .split('-')
-        .next_back()
-        .expect("next_id contract: returned id must contain '-'")
-        .to_string();
 
-    let mut vars = HashMap::new();
-    vars.insert("NNN".to_string(), nnn.clone());
-    vars.insert("title".to_string(), title.to_string());
-    vars.insert("Title".to_string(), title.to_string());
-
-    // Render the template with variable substitution
-    let mut rendered = render_template(template, &vars);
-
-    // Replace date placeholders
-    rendered = rendered.replace("YYYY-MM-DD", &today);
-
-    // PROB-060 / SPEC-005: augment frontmatter with `slug`, `predicted_number`,
-    // `assigned_number`. In Phase 1.x assigned = predicted (current immediate-
-    // assignment via counter is preserved). Phase 2 CI bot will null
-    // `assigned_number` for new artifacts and populate it atomically on merge
-    // to dev — at that point the contract becomes truly lazy.
-    //
-    // This step is purely additive: existing frontmatter fields are preserved,
-    // legacy artifacts (without these fields) continue to load via filename-
-    // derived id resolver, and downstream tooling that ignores unknown fields
-    // is unaffected.
-    let predicted_number: u32 = nnn.parse().with_context(|| {
-        format!(
-            "internal: failed to parse numeric prefix {:?} from id {}",
-            nnn, id
-        )
-    })?;
     let slug = slug_from_kind_title(&kind, title)
         .with_context(|| format!("failed to build canonical slug from title {:?}", title))?;
 
@@ -231,23 +189,6 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         }
     }
 
-    rendered = augment_frontmatter_with_id_fields(&rendered, &slug, predicted_number)
-        .with_context(|| format!("failed to augment frontmatter for {}", id))?;
-
-    // Replace full ID patterns like PRD-{NNN} that may remain after render
-    let heading_pattern = format!("# {}-{}: ", prefix, nnn);
-    if let Some(pos) = rendered.find(&heading_pattern) {
-        let line_start = pos + heading_pattern.len();
-        if let Some(nl) = rendered[line_start..].find('\n') {
-            let old_heading_text = &rendered[line_start..line_start + nl];
-            if old_heading_text.contains('{') || old_heading_text.contains('/') {
-                let before = &rendered[..line_start];
-                let after = &rendered[line_start + nl..];
-                rendered = format!("{}{}{}", before, title, after);
-            }
-        }
-    }
-
     // Lightweight kinds default to tactical depth; structured kinds default to standard
     let depth = match kind {
         ArtifactKind::Note
@@ -258,28 +199,64 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         _ => "standard",
     };
 
-    // Write to LanceDB (source of truth)
-    let artifact = NewArtifact {
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: title.to_string(),
-        body: rendered.clone(),
-        depth: depth.to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        // C1: new artifacts start untagged; users add tags later via `forgeplan tag`.
-        // TODO: add `--tag key=value` flag in future sprint.
-        tags: Vec::new(),
+    // PROB-067: allocate id + write file under a cross-worktree per-kind
+    // lock with post-write collision detection. The build closure renders
+    // the template + augments frontmatter for the id assigned by the
+    // allocator; on retry the closure is called again with a higher id,
+    // ensuring no stale rendering bleeds into the retried artifact.
+    let title_owned = title.to_string();
+    let today_owned = today.clone();
+    let template_key_owned = template_key.to_string();
+    let prefix_owned = prefix.clone();
+    let slug_owned = slug.clone();
+    let template_owned: String = template.to_string();
+    let depth_owned = depth.to_string();
+    let build = move |id: &str, number: u32| -> anyhow::Result<NewArtifact> {
+        let nnn = id
+            .split('-')
+            .next_back()
+            .expect("id contract: must contain '-'")
+            .to_string();
+        let mut vars = HashMap::new();
+        vars.insert("NNN".to_string(), nnn.clone());
+        vars.insert("title".to_string(), title_owned.clone());
+        vars.insert("Title".to_string(), title_owned.clone());
+        let mut rendered = render_template(&template_owned, &vars);
+        rendered = rendered.replace("YYYY-MM-DD", &today_owned);
+        rendered = augment_frontmatter_with_id_fields(&rendered, &slug_owned, number)
+            .with_context(|| format!("failed to augment frontmatter for {id}"))?;
+        let heading_pattern = format!("# {}-{}: ", prefix_owned, nnn);
+        if let Some(pos) = rendered.find(&heading_pattern) {
+            let line_start = pos + heading_pattern.len();
+            if let Some(nl) = rendered[line_start..].find('\n') {
+                let old_heading_text = &rendered[line_start..line_start + nl];
+                if old_heading_text.contains('{') || old_heading_text.contains('/') {
+                    let before = &rendered[..line_start];
+                    let after = &rendered[line_start + nl..];
+                    rendered = format!("{}{}{}", before, title_owned, after);
+                }
+            }
+        }
+        Ok(NewArtifact {
+            id: id.to_string(),
+            kind: template_key_owned.clone(),
+            status: "draft".to_string(),
+            title: title_owned.clone(),
+            body: rendered,
+            depth: depth_owned.clone(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        })
     };
-    // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
-    let filepath = projection::create_artifact_with_projection(
-        &projection::MutationContext::new(&workspace, &store),
-        &artifact,
+    let allocated = forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
+        &workspace, &store, &kind, 3, &build,
     )
     .await
-    .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
+    .with_context(|| format!("PROB-067 id-alloc failed for kind {prefix}"))?;
+    let id = allocated.id;
+    let filepath = allocated.filepath;
 
     // Log creation in change_log
     common::log_change(&store, &id, "create", "cli").await;

@@ -70,3 +70,4 @@ Lean Option A для consistency с PROB-060 pattern, accept Option B as quick m
 - CWE-362 (Concurrent Execution using Shared Resource with Improper Synchronization)
 
 
+
