@@ -6446,22 +6446,39 @@ impl ForgeplanServer {
             }
         });
 
+        // PROB-060 Phase 2.5: accept display id OR slug. Soft-deleted
+        // artifacts are gone from the main store, so resolve via receipt
+        // metadata: snapshot.id matches display id form; snapshot.slug
+        // (when stamped) matches slug form.
         let receipt = match forgeplan_core::undo::find_latest_for(&ws, &p.id).await {
-            Ok(Some(r)) => r,
-            Ok(None) => {
+            Ok(Some(r)) => Some(r),
+            Ok(None) => match forgeplan_core::undo::find_latest_for_slug(&ws, &p.id).await {
+                Ok(opt) => opt,
+                Err(e) => {
+                    return Ok(err_hinted(
+                        &format!("Failed to read trash: {e}"),
+                        "Check `.forgeplan/trash/` is readable and contains well-formed \
+                         receipt files.",
+                    ));
+                }
+            },
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("Failed to read trash: {e}"),
+                    "Check `.forgeplan/trash/` is readable and contains well-formed receipt \
+                     files.",
+                ));
+            }
+        };
+        let receipt = match receipt {
+            Some(r) => r,
+            None => {
                 let safe_id = sanitize_for_hint(&p.id);
                 return Ok(err_hinted(
                     &format!("No non-consumed receipt found for `{safe_id}`."),
                     "Check `.forgeplan/trash/` contents or use `forgeplan_activity --tool \
                      forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h` \
                      to see recent destructive ops. Receipts older than 30 days are purged.",
-                ));
-            }
-            Err(e) => {
-                return Ok(err_hinted(
-                    &format!("Failed to read trash: {e}"),
-                    "Check `.forgeplan/trash/` is readable and contains well-formed receipt \
-                     files.",
                 ));
             }
         };

@@ -23,7 +23,16 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         let _ = undo::purge_expired(&ws_clone, undo::DEFAULT_TTL_DAYS).await;
     });
 
+    // PROB-060 Phase 2.5: resolve receipt by display id OR slug. The
+    // artifact is no longer in the main store (soft-deleted), so we
+    // cannot use `store.resolve_id` here — receipts carry their own
+    // identity (snapshot.id is canonical display id; snapshot.slug is
+    // optional canonical slug captured at delete time).
     let receipt = match undo::find_latest_for(&ws, id).await? {
+        Some(r) => Some(r),
+        None => undo::find_latest_for_slug(&ws, id).await?,
+    };
+    let receipt = match receipt {
         Some(r) => r,
         None => {
             // PRD-071 contract: error path — direct user to widest activity
