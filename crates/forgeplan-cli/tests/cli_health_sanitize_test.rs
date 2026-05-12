@@ -281,6 +281,52 @@ fn health_text_strips_newline_injection_in_title() {
     );
 }
 
+/// Empty workspace E2E: `forgeplan init` + immediate
+/// `forgeplan health --json` MUST emit `verdict: "empty"`. The unit
+/// test `verdict_boundary_empty_workspace_short_circuits_before_threshold_checks`
+/// pins the same logic at the function level — this test confirms
+/// the wiring through the full CLI binary path: subcommand parser →
+/// LanceStore::open → health_report_with_phase → JSON serialiser.
+#[test]
+fn health_json_on_freshly_initialised_workspace_returns_verdict_empty() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let out = forgeplan()
+        .args(["health", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("spawn health --json");
+    assert!(
+        out.status.success(),
+        "health --json must exit 0 on empty ws; got status={:?}, stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("health --json must produce valid JSON");
+    let verdict = json
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .expect("verdict field present");
+    assert_eq!(
+        verdict, "empty",
+        "freshly-init workspace MUST return verdict='empty' E2E through CLI binary, got: {verdict:?}; full json={json}"
+    );
+    // Total artifact count is the short-circuit trigger — pin it
+    // explicitly so a future change that accidentally seeds an
+    // artifact (e.g. via init template) would surface here.
+    let total = json
+        .get("total")
+        .and_then(|v| v.as_u64())
+        .expect("total field present");
+    assert_eq!(total, 0, "fresh init must produce zero artifacts: {json}");
+}
+
 /// Duplicate-detection panel renders TITLE_A for the duplicate pair.
 /// Plant identical adversarial titles on both notes — the duplicates
 /// panel renders title_a after similarity match.
