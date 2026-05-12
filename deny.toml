@@ -55,11 +55,17 @@ allow = [
     "Zlib",
 ]
 exceptions = [
-    # webpki-roots — Mozilla CA bundle data, Mozilla licenses the data under
-    # CDLA-Permissive-2.0 (no copyleft, no patent grant restrictions). Scoped
-    # to this specific crate so a future code crate with the same license
-    # would still trigger triage.
+    # webpki-roots — Mozilla CA bundle data via rustls. Mozilla licenses the
+    # data under CDLA-Permissive-2.0 (no copyleft, no patent grant
+    # restrictions). Scoped to this specific crate so a future code crate
+    # with the same license would still trigger triage.
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    # webpki-root-certs — sister crate to `webpki-roots` (also rustls
+    # maintainers): identical Mozilla CA bundle data under the same
+    # CDLA-Permissive-2.0. Pulled in by `ureq` (via `hf-hub` → `fastembed`)
+    # which uses webpki-root-certs instead of webpki-roots. Both crates ship
+    # the same trust store with the same license; same justification applies.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
 ]
 
 [bans]
