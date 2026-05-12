@@ -42,6 +42,13 @@ impl McpFixture {
     /// Set up tempdir + workspace + LanceStore + ForgeplanServer +
     /// in-memory JSON-RPC client. Awaits the rmcp `initialize` handshake
     /// before returning so the first `call_tool` lands on a fully-ready peer.
+    ///
+    /// `#[allow(dead_code)]` because individual integration-test files
+    /// only use one of `new` / `new_with_seed`; Cargo compiles `common`
+    /// once per test binary and the other entry point becomes "dead" in
+    /// the file that does not call it (PROB-051 W1 verdict-consistency
+    /// test uses only `new_with_seed`).
+    #[allow(dead_code)]
     pub async fn new() -> Self {
         Self::new_with_seed(|_| std::future::ready(())).await
     }
