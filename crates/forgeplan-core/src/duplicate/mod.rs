@@ -17,11 +17,14 @@ pub const DUPLICATE_SIMILARITY_THRESHOLD: f64 = 0.7;
 
 /// Tokenize a title into a lowercase set of alphanumeric tokens with length >= 3.
 ///
-/// Exposed publicly (PROB-051 P-M1) so batch callers (e.g.
-/// `health::find_duplicate_pairs`) can pre-tokenize each title ONCE and
-/// reuse the resulting `HashSet` across the O(N²) pairwise comparison —
-/// avoiding `2 * N * (N-1)` redundant re-tokenizations per scan.
-pub fn tokenize_title(title: &str) -> HashSet<String> {
+/// `pub(crate)` (PROB-051 P-M1) so batch callers within `forgeplan-core`
+/// (e.g. `health::find_duplicate_pairs`) can pre-tokenize each title
+/// ONCE and reuse the resulting `HashSet` across the O(N²) pairwise
+/// comparison — avoiding `2 * N * (N-1)` redundant re-tokenizations per
+/// scan. External callers stay on the [`title_similarity`] convenience
+/// wrapper; promotion to `pub` is non-breaking if a future external use
+/// emerges, demotion later would be.
+pub(crate) fn tokenize_title(title: &str) -> HashSet<String> {
     title
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -33,9 +36,11 @@ pub fn tokenize_title(title: &str) -> HashSet<String> {
 /// Jaccard similarity between two pre-tokenized title sets, in `[0.0, 1.0]`.
 ///
 /// Returns `0.0` if either set is empty. Pure function — no tokenization.
-/// Preferred over `title_similarity` when callers loop over many pairs
-/// (PROB-051 P-M1 — `health::find_duplicate_pairs` calls this in a hot loop).
-pub fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+/// `pub(crate)` companion to [`tokenize_title`]; preferred over
+/// [`title_similarity`] when callers loop over many pairs (PROB-051 P-M1
+/// — `health::find_duplicate_pairs` calls this in a hot loop). External
+/// callers use [`title_similarity`].
+pub(crate) fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }

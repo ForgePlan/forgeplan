@@ -1,8 +1,10 @@
 # Changelog
 
-All notable changes to Forgeplan are documented here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/). Semver: `MAJOR.MINOR.PATCH`
-with pre-1.0 minor bumps for breaking changes.
+All notable changes to Forgeplan are documented here. Format extends
+[Keep a Changelog](https://keepachangelog.com/) with a `### Internal`
+section for engineering details (tests, refactoring, tooling) that do not
+fit the six user-facing categories. Semver: `MAJOR.MINOR.PATCH` with
+pre-1.0 minor bumps for breaking changes.
 
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
@@ -112,7 +114,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   (Dependabot mandate had no automated enforcement before release).
   Schema is cargo-deny 0.19+ (action @v2.x).
 
-### Tests
+### Internal
 
 - **+33 CLI integration tests** для 16 previously-untested commands
   in `crates/forgeplan-cli/tests/cli_uncovered_coverage.rs`: `embed`,

@@ -58,27 +58,21 @@ use crate::db::store::LanceStore;
 // connection state that is not safe to print), so neither does
 // `MutationContext`.
 //
-// **`Copy` is intentional, not accidental.** The struct is two
-// references (`&Path`, `&LanceStore`) — both pointer-sized — so
-// pass-by-value through `Copy` is strictly cheaper than passing by
-// reference: no indirection, no lifetime-elision noise at call sites,
-// and helpers can take `ctx: MutationContext<'_>` instead of
-// `ctx: &MutationContext<'_>` without a perf or safety cost. We deliberately
-// rebuild a fresh context per mutation site (`MutationContext::new(ws, store)`)
-// rather than caching one for the duration of a CLI / MCP request —
-// keeps the context lifecycle obvious и avoids a long-lived borrow
-// that could collide with future `&mut` paths into the store.
+// **Lifecycle**: rebuild a fresh `MutationContext::new(ws, store)` per
+// mutation site rather than caching one for the duration of a CLI / MCP
+// request — keeps the context lifecycle obvious and avoids a long-lived
+// borrow that could collide with future `&mut` paths into the store.
 //
-// **Caveat for external embedders**: future fields могут force the
-// `Copy` derive to disappear (e.g. an `Arc<TracingSpan>` is `Clone` but
-// not `Copy`). The `#[non_exhaustive]` attribute means callers MUST
-// already go through `MutationContext::new`, so dropping `Copy` is a
-// minor API tweak rather than a breaking-change cascade — but call
-// sites that today rely on implicit copy semantics (`let c = ctx;
-// foo(ctx); foo(c);`) would need to switch to `.clone()`. New helpers
-// should take `ctx: &MutationContext<'_>` if they don't need the
-// `Copy` ergonomics — that's forward-compatible with a hypothetical
-// `Copy`-loss bump.
+// **API guidance for new helpers**: take `ctx: &MutationContext<'_>` by
+// reference. The struct currently derives `Copy` (two pointer-sized
+// references) so by-value would compile equally well, but future fields
+// могут force `Copy` to disappear (e.g. an `Arc<TracingSpan>` is `Clone`
+// but not `Copy`). Taking by reference is forward-compatible with a
+// hypothetical `Copy`-loss bump. The `#[non_exhaustive]` attribute means
+// external embedders already MUST go through `MutationContext::new`, so
+// dropping `Copy` would be a minor API tweak rather than a breaking-
+// change cascade — but call sites that rely on implicit copy semantics
+// (`let c = ctx; foo(ctx); foo(c);`) would need to switch to `.clone()`.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct MutationContext<'a> {

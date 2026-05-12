@@ -1,7 +1,8 @@
 //! PROB-051 L-M3 — boundary tests at exact `VerdictThresholds` values.
 //!
-//! Each threshold class (`orphans`, `blind_spots`, `active_stubs`,
-//! `duplicates`) is exercised at three boundary points:
+//! Each critical threshold class (`orphans`, `blind_spots`,
+//! `active_stubs`, `duplicates`, `at_risk`) is exercised at three
+//! boundary points:
 //!
 //! - Just BELOW threshold (`t - 1`) → `NeedsAttention`
 //!   (warning present но никакая critical-class promoted).
@@ -18,19 +19,15 @@
 //! `>` ↔ `>=` would break a focused, named test.
 //!
 //! These tests do NOT cover phase mismatches (intentionally excluded
-//! from verdict promotion per PROB-063) или `stale`/`at_risk` (which
-//! only float verdict to `NeedsAttention`, never `Unhealthy`).
+//! from verdict promotion per PROB-063) или `stale` (advisory only —
+//! floats verdict to `NeedsAttention`, never `Unhealthy`).
 //!
 //! Construction pattern: build a minimal `HealthReport` directly via
 //! struct literal so each test stays self-contained (no shared
 //! fixture state, no async setup, no LanceDB).
-//!
-//! Future-proofing note: if W1's `at_risk_count` threshold lands as a
-//! NEW critical class with its own promotion path, add a matching
-//! `verdict_boundary_at_risk_*` triplet here.
 
 use forgeplan_core::health::{
-    ActiveStub, BlindSpot, DuplicatePair, HealthReport, Verdict, VerdictThresholds,
+    ActiveStub, AtRiskArtifact, BlindSpot, DuplicatePair, HealthReport, Verdict, VerdictThresholds,
 };
 
 /// Minimal `HealthReport` with the given total artifact count and all
@@ -86,6 +83,14 @@ fn spot(id: &str) -> BlindSpot {
         id: id.into(),
         title: "Boundary blind spot".into(),
         issue: "no evidence".into(),
+    }
+}
+
+fn at_risk(id: &str) -> AtRiskArtifact {
+    AtRiskArtifact {
+        id: id.into(),
+        title: "Boundary at-risk artifact".into(),
+        reason: "evidence stale".into(),
     }
 }
 
@@ -299,6 +304,64 @@ fn verdict_boundary_duplicates_just_above_threshold_is_unhealthy() {
         Verdict::Unhealthy,
         "duplicates = t+1 ({}) must promote to Unhealthy, got {v:?}",
         t.duplicates + 1
+    );
+}
+
+// ── at_risk (audit CR-002 — closes missing critical-class triplet) ──
+//
+// PROB-051 L-M1 promoted `at_risk` to a critical threshold class via
+// `VerdictThresholds::at_risk` (default `DEFAULT_UNHEALTHY_AT_RISK =
+// 10`). The original W3 test file omitted this triplet (docstring even
+// flagged it as future work — audit CR-002 caught the divergence).
+
+#[test]
+fn verdict_boundary_at_risk_just_below_threshold_is_needs_attention() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    r.at_risk = (0..t.at_risk - 1)
+        .map(|i| at_risk(&format!("PRD-{i:03}")))
+        .collect();
+    assert_eq!(r.at_risk.len(), t.at_risk - 1);
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::NeedsAttention,
+        "at_risk = t-1 ({}) must stay NeedsAttention, got {v:?}",
+        t.at_risk - 1
+    );
+}
+
+#[test]
+fn verdict_boundary_at_risk_exactly_at_threshold_is_needs_attention() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    r.at_risk = (0..t.at_risk)
+        .map(|i| at_risk(&format!("PRD-{i:03}")))
+        .collect();
+    assert_eq!(r.at_risk.len(), t.at_risk);
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::NeedsAttention,
+        "at_risk = t ({}) must stay NeedsAttention (strict `>` semantics), got {v:?}",
+        t.at_risk
+    );
+}
+
+#[test]
+fn verdict_boundary_at_risk_just_above_threshold_is_unhealthy() {
+    let mut r = baseline_report();
+    let t = VerdictThresholds::default();
+    r.at_risk = (0..=t.at_risk)
+        .map(|i| at_risk(&format!("PRD-{i:03}")))
+        .collect();
+    assert_eq!(r.at_risk.len(), t.at_risk + 1);
+    let v = r.compute_verdict_with(&t, 0);
+    assert_eq!(
+        v,
+        Verdict::Unhealthy,
+        "at_risk = t+1 ({}) must promote to Unhealthy, got {v:?}",
+        t.at_risk + 1
     );
 }
 

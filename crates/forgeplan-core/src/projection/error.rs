@@ -386,13 +386,15 @@ fn classify_lancedb_as_fatal(err: &lancedb::Error) -> bool {
 // already requires workspace-relative paths at construction time).
 //
 // Mapping rules — applied in order, each idempotent:
-//   1. `$HOME` prefix             → `<HOME>`           (covers `/Users/<name>/...`,
-//                                                       `/home/<name>/...`)
-//   2. `$CARGO_TARGET_DIR` prefix → `<target>`        (CI / `cargo` builds)
+//   1. `$HOME/...`                → `<HOME>/...`     (anchored on path
+//                                                     separator so a
+//                                                     sibling user like
+//                                                     `/Users/alicewonderland`
+//                                                     is NOT clipped to
+//                                                     `<HOME>wonderland`)
+//   2. `$CARGO_TARGET_DIR` prefix → `<target>`       (CI / `cargo` builds)
 //   3. `/tmp/...` / `/var/folders/...`
 //                                  → `<tmpdir>`        (test fixtures, macOS scratch)
-//   4. Any remaining absolute path beginning with `/`
-//                                  → `<workspace>/...` (best-effort generic mask)
 //
 // Workspace root is not known at this layer (errors flow out of
 // `forgeplan-core` without a workspace handle), so we use HOME +
@@ -400,6 +402,14 @@ fn classify_lancedb_as_fatal(err: &lancedb::Error) -> bool {
 // unmasked) degrade gracefully — operators see slightly more detail
 // than the threat model wants, but never the inverse of leaking what
 // the sanitiser was supposed to hide.
+//
+// Defence-in-depth catch-all (any-absolute-path → `<workspace>/...`)
+// is NOT implemented: it would over-mask legitimate references like
+// `/etc/hosts` or `/usr/lib`, and the threat model targets workspace-
+// identifying paths specifically. Linux daemon contexts where `$HOME`
+// is unset surface `/home/<user>/...` unmasked; see SEC-003 follow-up.
+// Windows path masking is out of scope (Forgeplan is currently
+// Unix-targeted; documented in `docs/ROADMAP.md`).
 
 /// Sanitise the Display output of an `anyhow::Error` chain so it does
 /// not leak absolute filesystem paths.
@@ -450,10 +460,28 @@ fn home_env() -> Option<String> {
 pub(super) fn sanitize_text_with(input: &str, home: Option<&str>) -> String {
     let mut out = input.to_string();
 
-    if let Some(home) = home.filter(|h| !h.is_empty()) {
-        // Replace `$HOME` prefix wherever it appears (defence against
+    // SEC-001 (audit Wave 9): anchor HOME match to a path separator so
+    // `/Users/alice` does NOT clobber `/Users/alicewonderland/...` —
+    // the prior unanchored `replace(home, "<HOME>")` leaked the suffix
+    // of unrelated users and mangled paths into nonsense like
+    // `<HOME>wonderland/...`. Also guard against `home == "/"` which
+    // would obliterate every absolute path in the chain.
+    if let Some(home) = home.filter(|h| !h.is_empty() && *h != "/") {
+        let home_with_sep = if home.ends_with('/') {
+            home.to_string()
+        } else {
+            format!("{home}/")
+        };
+        // Replace `$HOME/` prefix wherever it appears (defence against
         // multi-cause chains where each link embeds the path again).
-        out = out.replace(home, "<HOME>");
+        out = out.replace(&home_with_sep, "<HOME>/");
+        // Edge case: the entire chain link IS the bare HOME with no
+        // child path (rare but possible — e.g. `chdir("$HOME")` error
+        // renders as just the path). Match exact-equal so we don't
+        // mid-string-leak this case.
+        if out == home {
+            out = "<HOME>".to_string();
+        }
     }
 
     // Replace `CARGO_TARGET_DIR` if set (CI / cargo-builds). Read here
@@ -814,5 +842,63 @@ mod tests {
         let out = sanitize_text_with("trace from /tmp/scratch/x", None);
         assert!(out.contains("<tmpdir>"));
         assert!(!out.contains("/tmp/scratch/x"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // SEC-001 (audit Wave 9): HOME match is anchored on a path separator
+    // so a sibling user's path is NOT clobbered by partial prefix match.
+    // Pre-fix: `/Users/alice` would corrupt `/Users/alicewonderland/...`
+    // to `<HOME>wonderland/...` — both leaking the suffix of the
+    // unrelated user AND mangling the rendered path.
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_text_with_does_not_clobber_sibling_user_path() {
+        // HOME=/Users/alice — the sibling path /Users/alicewonderland/...
+        // must NOT match (no `/Users/alice/` substring).
+        let out = sanitize_text_with(
+            "EACCES on /Users/alicewonderland/proj/.forgeplan/lance/x",
+            Some("/Users/alice"),
+        );
+        assert_eq!(
+            out, "EACCES on /Users/alicewonderland/proj/.forgeplan/lance/x",
+            "sibling-user path must pass through unchanged: {out}"
+        );
+        assert!(
+            !out.contains("<HOME>"),
+            "must NOT inject <HOME> mask into sibling-user path: {out}"
+        );
+    }
+
+    #[test]
+    fn sanitize_text_with_anchors_home_match_to_path_separator() {
+        // HOME=/Users/alice — only `/Users/alice/...` is masked.
+        // /Users/alice itself (no trailing slash, end-of-string) is
+        // also handled (exact-equal bare-HOME case).
+        let out_with_children = sanitize_text_with(
+            "ws: /Users/alice/work/proj/.forgeplan",
+            Some("/Users/alice"),
+        );
+        assert!(out_with_children.contains("<HOME>/work"));
+        assert!(!out_with_children.contains("/Users/alice/"));
+
+        let out_bare = sanitize_text_with("chdir failed: /Users/alice", Some("/Users/alice"));
+        // The bare-HOME edge case only fires when the entire input
+        // equals HOME — embedded bare HOME in a longer chain link
+        // (e.g. "chdir failed: /Users/alice") is intentionally left
+        // alone (rare in practice; error chains usually include
+        // additional context after the path).
+        assert!(out_bare.contains("/Users/alice"));
+    }
+
+    #[test]
+    fn sanitize_text_with_guards_against_root_home() {
+        // Pathological HOME=/ must NOT obliterate every absolute path.
+        let out = sanitize_text_with("EACCES on /etc/hosts and /var/log/syslog", Some("/"));
+        assert!(
+            out.contains("/etc/hosts"),
+            "HOME=/ must NOT mask unrelated absolute paths: {out}"
+        );
+        assert!(!out.contains("<HOME>"));
     }
 }

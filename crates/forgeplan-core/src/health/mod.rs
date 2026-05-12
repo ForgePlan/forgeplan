@@ -76,10 +76,12 @@
 //! let mut stricter = VerdictThresholds::default();
 //! stricter.duplicates = 0;
 //! let strict_verdict = report.compute_verdict_with(&stricter, phase_mismatches.len());
-//! assert!(matches!(
-//!     strict_verdict,
-//!     Verdict::Healthy | Verdict::NeedsAttention | Verdict::Unhealthy | Verdict::Empty
-//! ));
+//! // A workspace with even one duplicate pair under `stricter.duplicates = 0`
+//! // is promoted straight to Unhealthy (zero-tolerance gate). Use this
+//! // pattern in CI to enforce stronger contracts than the default thresholds.
+//! if !report.possible_duplicates.is_empty() {
+//!     assert_eq!(strict_verdict, Verdict::Unhealthy);
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -538,10 +540,16 @@ pub async fn health_report_with_phase(
     // PROB-062: populate gitignore drift here (not in
     // `health_report_inner`) because only this entry point knows the
     // workspace root path. Advisory — NEVER folded into the verdict.
-    // Workspace root = parent of `.forgeplan/`; fall back to the
-    // workspace path itself when the parent cannot be derived (an
-    // unusual symlink layout) so we still attempt the scan.
-    let drift_root = workspace.parent().unwrap_or(workspace);
+    // Workspace root = parent of `.forgeplan/`. `Path::parent()` returns
+    // `Some("")` (NOT `None`) for relative single-segment paths like
+    // `.forgeplan`, so we explicitly handle the empty-parent case too:
+    // fall back to `workspace` itself rather than passing `""` to git
+    // (which would silently default to CWD). Defensive against unusual
+    // symlink layouts that produce a real `None`.
+    let drift_root = match workspace.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => workspace,
+    };
     report.gitignore_drift = detect_gitignore_drift(drift_root);
 
     Ok((report, phase_mismatches))
@@ -551,15 +559,6 @@ pub async fn health_report_with_phase(
 /// from [`health_report`] so [`health_report_with_phase`] can reuse the
 /// same logic without re-scanning.
 async fn health_report_from_records(
-    store: &LanceStore,
-    all: &[ArtifactRecord],
-    all_relations: &[(String, String, String)],
-) -> anyhow::Result<HealthReport> {
-    let _ = (store, all, all_relations);
-    health_report_inner(store, all, all_relations).await
-}
-
-async fn health_report_inner(
     store: &LanceStore,
     all: &[ArtifactRecord],
     all_relations: &[(String, String, String)],

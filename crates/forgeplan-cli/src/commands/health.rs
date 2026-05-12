@@ -1,4 +1,5 @@
 use console::style;
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::health;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
@@ -278,12 +279,16 @@ pub async fn run(
             style("!").yellow().bold(),
             ui::styled_count(report.at_risk.len(), true)
         );
+        // LOG-001 (audit Wave 9): sanitize title + reason so an
+        // attacker-controlled artifact title (ANSI escapes, bidi
+        // overrides, zero-width chars) cannot hijack operator's
+        // terminal output (CWE-117 / CWE-150).
         for item in &report.at_risk {
             println!(
                 "    {} \"{}\" — {}",
                 style(&item.id).yellow(),
-                item.title,
-                style(&item.reason).red()
+                sanitize_for_hint(&item.title),
+                style(sanitize_for_hint(&item.reason)).red()
             );
         }
     }
@@ -300,8 +305,8 @@ pub async fn run(
             println!(
                 "    {} \"{}\" — {}",
                 style(&spot.id).yellow(),
-                spot.title,
-                style(&spot.issue).red()
+                sanitize_for_hint(&spot.title),
+                style(sanitize_for_hint(&spot.issue)).red()
             );
         }
     }
@@ -350,7 +355,7 @@ pub async fn run(
                 style(&d.id_a).yellow(),
                 style(&d.id_b).yellow(),
                 pct,
-                d.title_a
+                sanitize_for_hint(&d.title_a)
             );
         }
         if total_dups > display_limit {
@@ -375,7 +380,7 @@ pub async fn run(
             println!(
                 "    {} \"{}\" — phase: {}",
                 style(&m.id).yellow(),
-                m.title,
+                sanitize_for_hint(&m.title),
                 style(&m.current_phase).yellow()
             );
         }
@@ -395,8 +400,8 @@ pub async fn run(
         for d in &report.gitignore_drift {
             println!(
                 "    {} — {}",
-                style(&d.path).yellow(),
-                style(&d.reason).dim()
+                style(sanitize_for_hint(&d.path)).yellow(),
+                style(sanitize_for_hint(&d.reason)).dim()
             );
         }
     }
@@ -414,7 +419,7 @@ pub async fn run(
                 "    {} ({}) \"{}\" — {} markers",
                 style(&s.id).yellow(),
                 s.kind,
-                s.title,
+                sanitize_for_hint(&s.title),
                 s.markers_found
             );
         }
@@ -433,20 +438,12 @@ pub async fn run(
         }
     }
 
-    // Overall health summary — drive off the verdict aggregator so the CLI
-    // banner cannot disagree with `next_actions` (PROB-029 closure: previously
-    // `has_issues` here missed `active_stubs` + `possible_duplicates` and
-    // could print "Project looks healthy!" right after a list of warnings).
-    //
-    // Round 4 audit closures:
-    // - MED-2: drive the literal off `Verdict::human_summary()` so the
-    //   text only lives in one place (no more banner-vs-summary drift).
-    // - LOW-4: render the summary for ALL three verdict levels (Healthy /
-    //   NeedsAttention / Unhealthy), not only Healthy. Pre-Round-4 the
-    //   banner disappeared entirely on non-Healthy workspaces — silent
-    //   regression vs the pre-PR-C banner that was at least always
-    //   present (just sometimes wrong). Now: gradient signalling per
-    //   PROB-029 AC-2 spirit.
+    // Overall health summary — drive the literal off `Verdict::human_summary()`
+    // (single source of truth) and render for ALL three verdict levels so the
+    // banner is always present, with colour signalling the severity gradient
+    // (green/yellow/red + dim-cyan for future `#[non_exhaustive]` variants).
+    // PROB-029 anti-contradiction guarantee: banner cannot disagree with
+    // `next_actions` because both fold off the same verdict aggregator.
     if report.total > 0 {
         let summary = report.verdict.human_summary();
         let styled = match report.verdict {

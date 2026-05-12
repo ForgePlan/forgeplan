@@ -2941,6 +2941,26 @@ impl ForgeplanServer {
             "stale_count": report.stale_count,
             "orphans": report.orphans,
             "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
+            // Audit CR-001 (Wave 9): MCP surfaces FULL possible_duplicates +
+            // active_stubs arrays to match CLI --json shape. Pre-fix MCP
+            // omitted both fields → agents reading `verdict == "unhealthy"`
+            // could not inspect WHY without an extra round-trip. Mirrors
+            // CLI shape exactly so consumers do not branch on surface.
+            "possible_duplicates": report.possible_duplicates.iter().map(|d| serde_json::json!({
+                "id_a": d.id_a,
+                "id_b": d.id_b,
+                "similarity": d.similarity,
+                "title_a": d.title_a,
+                "title_b": d.title_b,
+                "kind": d.kind,
+            })).collect::<Vec<_>>(),
+            "active_stubs": report.active_stubs.iter().map(|s| serde_json::json!({
+                "id": s.id,
+                "kind": s.kind,
+                "title": s.title,
+                "markers_found": s.markers_found,
+                "message": s.message,
+            })).collect::<Vec<_>>(),
             // Dual-key emission — same payload under both legacy
             // (`phase_mismatches`) and MCP-canonical
             // (`advisory_phase_mismatches`) names. Single-binding payload
