@@ -178,6 +178,15 @@ pub async fn run(
             // key is possible in a major-version bump.
             "phase_mismatches": phase_mismatches_payload,
             "advisory_phase_mismatches": phase_mismatches_payload,
+            // PROB-062: advisory gitignore-drift entries (tracked files
+            // matching canonical forgeplan ignore patterns). Same
+            // advisory class as `phase_mismatches` — does NOT promote
+            // the verdict. CI scripts that want to gate on drift can
+            // check `gitignore_drift.length > 0` explicitly.
+            "gitignore_drift": report.gitignore_drift.iter().map(|d| serde_json::json!({
+                "path": d.path,
+                "reason": d.reason,
+            })).collect::<Vec<_>>(),
             "_next_action": hints::primary_action(&hints_vec),
         });
         let mut json_data = json_data;
@@ -355,6 +364,26 @@ pub async fn run(
                 style(&m.id).yellow(),
                 m.title,
                 style(&m.current_phase).yellow()
+            );
+        }
+    }
+
+    // PROB-062: gitignore drift advisory — tracked files matching
+    // canonical forgeplan ignore patterns (derived state, per-machine
+    // runtime). Advisory like phase mismatches — printed for visibility
+    // but never promoted into the verdict aggregator.
+    if !report.gitignore_drift.is_empty() {
+        println!();
+        println!(
+            "  {} Gitignore drift ({}):",
+            style("◈").yellow().bold(),
+            ui::styled_count(report.gitignore_drift.len(), true)
+        );
+        for d in &report.gitignore_drift {
+            println!(
+                "    {} — {}",
+                style(&d.path).yellow(),
+                style(&d.reason).dim()
             );
         }
     }

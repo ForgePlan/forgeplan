@@ -373,7 +373,128 @@ async fn init_with_rollback(cwd: &std::path::Path, project_name: &str) -> Result
         let _ = tokio::fs::remove_dir_all(&ws).await;
         return Err(e);
     }
+    // PROB-062: ensure root .gitignore has the canonical forgeplan section.
+    // Failure is non-fatal — workspace is already created and usable; the
+    // user just won't get the auto-managed ignore rules. Log a warning so
+    // they can fix it manually.
+    if let Err(e) = ensure_canonical_gitignore_section(cwd) {
+        eprintln!(
+            "warning: could not write canonical .gitignore section: {e} \
+             (workspace created successfully; add the forgeplan section manually)"
+        );
+    }
     Ok(())
+}
+
+/// PROB-062: marker line that opens the forgeplan-managed `.gitignore`
+/// section. Anything between `GITIGNORE_BEGIN_MARKER` and
+/// `GITIGNORE_END_MARKER` is rewritten on every `forgeplan init`; lines
+/// outside are preserved verbatim so user-authored rules survive.
+pub(crate) const GITIGNORE_BEGIN_MARKER: &str =
+    "# === forgeplan workspace runtime state (managed by `forgeplan init`) ===";
+pub(crate) const GITIGNORE_END_MARKER: &str = "# === end forgeplan section ===";
+
+/// PROB-062: canonical body of the forgeplan-managed `.gitignore` section.
+///
+/// Lists every path under `.forgeplan/` that is derived state, per-machine
+/// runtime data, or local cache — files git should never see. The marker
+/// boundaries let `forgeplan init` rewrite this block idempotently without
+/// disturbing user-authored rules.
+///
+/// Mirrors the patterns also enforced by `detect_gitignore_drift` in
+/// `forgeplan-core/src/health/mod.rs` — adding a new ignored path here
+/// SHOULD be paired with a drift-detector update so the two surfaces
+/// agree.
+pub(crate) const GITIGNORE_CANONICAL_BODY: &str = "\
+.forgeplan/lance/
+.forgeplan/.fastembed_cache/
+.forgeplan/session.yaml
+.forgeplan/state/
+.forgeplan/trash/
+.forgeplan/logs/
+.forgeplan/locks/
+";
+
+/// PROB-062: render the full forgeplan-managed block, including its
+/// marker boundaries. Used by both the writer and the unit tests so the
+/// canonical shape is defined in exactly one place.
+pub(crate) fn canonical_gitignore_block() -> String {
+    format!(
+        "{begin}\n{body}{end}\n",
+        begin = GITIGNORE_BEGIN_MARKER,
+        body = GITIGNORE_CANONICAL_BODY,
+        end = GITIGNORE_END_MARKER,
+    )
+}
+
+/// PROB-062: create or refresh the canonical forgeplan section in the
+/// **root** `.gitignore` (next to `.forgeplan/`).
+///
+/// Behaviour:
+/// - If `.gitignore` does not exist → create it with just the managed block.
+/// - If `.gitignore` exists without our markers → append the managed block,
+///   preserving the existing content as-is.
+/// - If `.gitignore` exists WITH our markers → replace whatever is between
+///   them with `GITIGNORE_CANONICAL_BODY` (idempotent for re-runs;
+///   self-healing when an older managed block needs an update).
+///
+/// The function never deletes user-authored rules and never edits content
+/// outside the marker block.
+pub(crate) fn ensure_canonical_gitignore_section(workspace_root: &Path) -> Result<()> {
+    let gitignore_path = workspace_root.join(".gitignore");
+    let managed_block = canonical_gitignore_block();
+
+    if !gitignore_path.exists() {
+        fs::write(&gitignore_path, managed_block)?;
+        return Ok(());
+    }
+
+    let existing = fs::read_to_string(&gitignore_path)?;
+    let new_contents = rewrite_gitignore(&existing, &managed_block);
+    if new_contents != existing {
+        fs::write(&gitignore_path, new_contents)?;
+    }
+    Ok(())
+}
+
+/// PROB-062: pure rewrite — given the current `.gitignore` text and the
+/// canonical managed block, return the text that the file should hold.
+///
+/// Extracted from `ensure_canonical_gitignore_section` so unit tests can
+/// pin the exact replace/append semantics without touching the disk.
+pub(crate) fn rewrite_gitignore(existing: &str, managed_block: &str) -> String {
+    match (
+        existing.find(GITIGNORE_BEGIN_MARKER),
+        existing.find(GITIGNORE_END_MARKER),
+    ) {
+        (Some(begin_idx), Some(end_idx)) if end_idx > begin_idx => {
+            // Replace the marker block (including markers themselves)
+            // with the canonical version. Preserve everything before
+            // the begin marker and after the end marker (plus its
+            // trailing newline, if any).
+            let before = &existing[..begin_idx];
+            // Advance past the end marker line, swallowing its `\n` so
+            // we don't leave a blank line behind on repeated rewrites.
+            let after_end = end_idx + GITIGNORE_END_MARKER.len();
+            let tail_start = if existing[after_end..].starts_with('\n') {
+                after_end + 1
+            } else {
+                after_end
+            };
+            let after = &existing[tail_start..];
+            format!("{before}{managed_block}{after}")
+        }
+        _ => {
+            // No managed block present — append.
+            if existing.is_empty() {
+                managed_block.to_string()
+            } else if existing.ends_with('\n') {
+                format!("{existing}\n{managed_block}")
+            } else {
+                format!("{existing}\n\n{managed_block}")
+            }
+        }
+    }
 }
 
 /// PROB-068: assert workspace is safe to operate on under --force without
@@ -527,6 +648,19 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
     // Reinit LanceDB index. LanceStore::init is idempotent for an
     // existing dataset, so this is safe to run repeatedly.
     LanceStore::init(workspace).await?;
+
+    // PROB-062: refresh the canonical .gitignore section. The workspace
+    // root is the parent of `.forgeplan/` for the standard layout; fall
+    // back gracefully if we cannot derive it (atypical setups, e.g.
+    // `.forgeplan` symlinked elsewhere).
+    if let Some(root) = workspace.parent()
+        && let Err(e) = ensure_canonical_gitignore_section(root)
+    {
+        eprintln!(
+            "warning: could not refresh canonical .gitignore section during --force \
+             reinit: {e}"
+        );
+    }
     Ok(())
 }
 
@@ -783,4 +917,142 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod gitignore_tests {
+    //! PROB-062 — canonical `.gitignore` section management.
+    //!
+    //! Each test isolates its own scratch dir to keep the rewriter pure
+    //! (no shared state, parallel-safe). The behaviour pinned here is
+    //! the contract `ensure_canonical_gitignore_section` advertises to
+    //! `forgeplan init` and to the drift detector in `health/mod.rs`.
+
+    use super::{
+        GITIGNORE_BEGIN_MARKER, GITIGNORE_CANONICAL_BODY, GITIGNORE_END_MARKER,
+        canonical_gitignore_block, ensure_canonical_gitignore_section, rewrite_gitignore,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// The canonical block embeds the markers and body verbatim — drift
+    /// here means `detect_gitignore_drift` and the writer disagree.
+    #[test]
+    fn canonical_block_contains_markers_and_body() {
+        let block = canonical_gitignore_block();
+        assert!(block.starts_with(GITIGNORE_BEGIN_MARKER));
+        assert!(block.trim_end().ends_with(GITIGNORE_END_MARKER));
+        assert!(block.contains(GITIGNORE_CANONICAL_BODY));
+        // All canonical patterns must be present so a single missing
+        // entry trips this test rather than silently leaking later.
+        for line in GITIGNORE_CANONICAL_BODY.lines() {
+            assert!(
+                block.contains(line),
+                "canonical block missing pattern: {line}"
+            );
+        }
+    }
+
+    /// Missing `.gitignore` → create one with just the managed block.
+    #[test]
+    fn ensure_canonical_gitignore_section_creates_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+        assert!(!path.exists());
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert_eq!(written, canonical_gitignore_block());
+    }
+
+    /// Re-running on an already-managed file MUST leave the file bit-
+    /// identical — that's the "idempotent" contract.
+    #[test]
+    fn ensure_canonical_gitignore_section_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+        let first_pass = fs::read_to_string(&path).unwrap();
+        let first_modified = fs::metadata(&path).unwrap().modified().unwrap();
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+        let second_pass = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(first_pass, second_pass);
+        // mtime should also be untouched on a no-op rewrite — we early-
+        // return when the contents match, sparing the disk a write.
+        let second_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(first_modified, second_modified);
+    }
+
+    /// Existing user rules outside the marker block MUST survive a
+    /// rewrite — only the managed section is rewritten.
+    #[test]
+    fn ensure_canonical_gitignore_section_preserves_user_rules() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+        let user_rules = "# user-authored rules\ntarget/\nnode_modules/\n";
+        fs::write(&path, user_rules).unwrap();
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        // Original lines must be present, exactly as written.
+        assert!(written.contains("# user-authored rules"));
+        assert!(written.contains("target/"));
+        assert!(written.contains("node_modules/"));
+        // Canonical block must also be present.
+        assert!(written.contains(GITIGNORE_BEGIN_MARKER));
+        assert!(written.contains(GITIGNORE_END_MARKER));
+        assert!(written.contains(".forgeplan/lance/"));
+    }
+
+    /// An older or hand-edited managed block must be replaced wholesale.
+    /// The marker boundaries define the rewrite scope; everything else
+    /// stays put.
+    #[test]
+    fn ensure_canonical_gitignore_section_updates_existing_marker_block() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+        let stale = format!(
+            "# user\ntarget/\n\n{begin}\n.forgeplan/old-derived/\n{end}\n# trailing user\n*.log\n",
+            begin = GITIGNORE_BEGIN_MARKER,
+            end = GITIGNORE_END_MARKER,
+        );
+        fs::write(&path, &stale).unwrap();
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        // Stale entry inside the managed block is gone.
+        assert!(!written.contains(".forgeplan/old-derived/"));
+        // Fresh entries are present.
+        assert!(written.contains(".forgeplan/lance/"));
+        assert!(written.contains(".forgeplan/state/"));
+        // Content outside the managed block is preserved on both sides.
+        assert!(written.contains("# user\ntarget/"));
+        assert!(written.contains("# trailing user\n*.log"));
+    }
+
+    /// Unit-level coverage on the pure rewriter so we can pin the
+    /// append semantics without hitting the filesystem.
+    #[test]
+    fn rewrite_gitignore_appends_with_blank_line_when_missing() {
+        let block = canonical_gitignore_block();
+        let existing = "target/\nnode_modules/\n";
+        let result = rewrite_gitignore(existing, &block);
+        assert!(result.starts_with("target/\nnode_modules/\n\n"));
+        assert!(result.ends_with(GITIGNORE_END_MARKER.trim_end()) || result.ends_with('\n'));
+        assert!(result.contains(GITIGNORE_BEGIN_MARKER));
+    }
+
+    /// Empty file → write just the block (no leading newlines).
+    #[test]
+    fn rewrite_gitignore_empty_input_writes_block_as_is() {
+        let block = canonical_gitignore_block();
+        let result = rewrite_gitignore("", &block);
+        assert_eq!(result, block);
+    }
 }
