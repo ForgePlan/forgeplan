@@ -35,22 +35,31 @@ ignore = [
 # High confidence (default is 0.8) reduces false positives when inferring
 # from LICENSE text. Aligned with cargo-deny's own recommended baseline.
 confidence-threshold = 0.93
+# All licenses here are OSI-approved permissive or weak-copyleft compatible
+# with shipping forgeplan as a single binary under MIT. CDLA-Permissive-2.0
+# is whitelisted only for webpki-roots (data-license over Mozilla CA bundle,
+# not code). Re-justify before adding any new license — most modern Rust
+# crates ship MIT OR Apache-2.0.
 allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "0BSD",                 # mock_instant — BSD Zero Clause, public-domain-equivalent
+    "BSL-1.0",              # xxhash-rust — Boost Software License, OSI-approved
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "MPL-2.0",
     "CC0-1.0",
     "Zlib",
-    "OpenSSL",
 ]
 exceptions = [
-    # { allow = ["GPL-3.0"], crate = "specific-crate" },
+    # webpki-roots — Mozilla CA bundle data, Mozilla licenses the data under
+    # CDLA-Permissive-2.0 (no copyleft, no patent grant restrictions). Scoped
+    # to this specific crate so a future code crate with the same license
+    # would still trigger triage.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
 ]
 
 [bans]
@@ -62,7 +71,41 @@ multiple-versions = "warn"
 wildcards = "warn"
 highlight = "all"
 deny = []
-skip = []
+# Transitive-only duplicate suppressions. Each entry MUST cite the upstream
+# ecosystem that pins it — if a duplicate originates from forgeplan's own
+# crates, fix it instead of adding here. Re-evaluate at every major bump of
+# arrow / datafusion / lance / tantivy / rmcp / cliclack.
+skip = [
+    # arrow/datafusion ecosystem (arrow 57 + datafusion 52 + lance 4 +
+    # lancedb 0.27 + tantivy) — they pin older patch versions of crypto/
+    # hashing/random utilities that more modern parts of the tree (reqwest,
+    # rmcp, cliclack) already moved past.
+    { crate = "bitflags@1", reason = "tantivy/itertools pin v1; rest of tree on v2" },
+    { crate = "cpufeatures@0.2", reason = "older sha2/digest pin; newer crypto crates already on 0.3" },
+    { crate = "darling@0.20", reason = "schemars 0.8 derive; schemars 1.x ecosystem on 0.23" },
+    { crate = "darling_core@0.20", reason = "follows darling@0.20" },
+    { crate = "darling_macro@0.20", reason = "follows darling@0.20" },
+    { crate = "foldhash@0.1", reason = "hashbrown 0.15 transitive; hashbrown 0.16+ on 0.2" },
+    { crate = "getrandom@0.2", reason = "rand 0.8 / older rustls path" },
+    { crate = "getrandom@0.3", reason = "rand 0.9 / newer rustls path" },
+    { crate = "hashbrown@0.14", reason = "indexmap 2.x older minor; datafusion ecosystem on 0.15/0.16/0.17" },
+    { crate = "hashbrown@0.15", reason = "arrow/datafusion ecosystem pin" },
+    { crate = "hashbrown@0.16", reason = "lance/tantivy intermediate" },
+    { crate = "itertools@0.13", reason = "datafusion 52 pin; rest of tree on 0.14" },
+    { crate = "linux-raw-sys@0.4", reason = "rustix 0.38 transitive; rustix 1.x on linux-raw-sys 0.11" },
+    { crate = "lz4_flex@0.11", reason = "arrow-ipc 57 pin; lance/parquet on 0.12" },
+    { crate = "nom@7", reason = "older parser deps; newer crates on nom 8" },
+    { crate = "rand@0.8", reason = "rand_distr 0.4 / forgeplan rng path" },
+    { crate = "rand_chacha@0.3", reason = "follows rand@0.8" },
+    { crate = "rand_core@0.6", reason = "follows rand@0.8" },
+    { crate = "rand_distr@0.4", reason = "rand 0.8 ecosystem" },
+    { crate = "rustix@0.38", reason = "tempfile/filetime older path; rust-ide ecosystem on 1.x" },
+    { crate = "schemars@0.8", reason = "rmcp uses 0.8; our own schema codegen on 1.x" },
+    { crate = "schemars_derive@0.8", reason = "follows schemars@0.8" },
+    { crate = "snafu@0.8", reason = "lance/datafusion error stack pin; rest on 0.9" },
+    { crate = "snafu-derive@0.8", reason = "follows snafu@0.8" },
+    { crate = "syn@1", reason = "older proc-macro crates pin syn 1; rest of tree on syn 2" },
+]
 skip-tree = []
 
 [sources]

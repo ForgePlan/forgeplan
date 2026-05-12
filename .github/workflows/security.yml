@@ -1,10 +1,14 @@
 # Security CI — cargo-deny gate
 #
-# Runs cargo-deny on push to dev/main + weekly cron. PR trigger disabled
-# initially — baseline cleanup needed (license-not-encountered + duplicate
-# warnings). Re-enable pull_request after baseline established.
-# Initial rollout is non-blocking (continue-on-error: true) so we can establish
-# a clean baseline before flipping to a hard merge gate.
+# Runs cargo-deny on push to dev/main, pull requests targeting them, and a
+# weekly cron. PR baseline cleaned in Wave 8B (chore/cargo-deny-baseline):
+# license allow list extended for 0BSD / BSL-1.0 + scoped CDLA exception for
+# webpki-roots; transitive duplicates from arrow/datafusion/lance/tantivy
+# documented in [[bans.skip]].
+#
+# continue-on-error: true is retained as a safety net so an emerging advisory
+# doesn't immediately block merges before triage. Flip to a hard gate by
+# removing that line once the team confirms steady-state green for one cycle.
 #
 # Config: deny.toml at repo root.
 # Track promotion to blocking via RED LINE #10 (Dependabot mandate).
