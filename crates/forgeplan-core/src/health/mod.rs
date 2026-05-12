@@ -155,6 +155,30 @@ pub enum Verdict {
 
 impl Verdict {
     /// Stable, agent-readable label. Matches the serde wire format.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forgeplan_core::health::Verdict;
+    ///
+    /// assert_eq!(Verdict::Empty.as_str(), "empty");
+    /// assert_eq!(Verdict::Healthy.as_str(), "healthy");
+    /// assert_eq!(Verdict::NeedsAttention.as_str(), "needs_attention");
+    /// assert_eq!(Verdict::Unhealthy.as_str(), "unhealthy");
+    /// ```
+    ///
+    /// The returned label matches the serde wire format, so JSON
+    /// consumers can compare verdict strings directly against this
+    /// value:
+    ///
+    /// ```
+    /// use forgeplan_core::health::Verdict;
+    ///
+    /// let json = serde_json::to_string(&Verdict::NeedsAttention).unwrap();
+    /// // serde emits `"needs_attention"` (with surrounding quotes).
+    /// assert_eq!(json, "\"needs_attention\"");
+    /// assert!(json.contains(Verdict::NeedsAttention.as_str()));
+    /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             Verdict::Empty => "empty",
@@ -167,6 +191,27 @@ impl Verdict {
     /// Human-friendly one-line summary for CLI rendering. Avoids the
     /// pre-PROB-029 phrase "Project looks healthy" when the verdict is
     /// not `Healthy` — that phrase was the original bug surface.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forgeplan_core::health::Verdict;
+    ///
+    /// // Healthy keeps the historical phrasing — это сознательно.
+    /// assert!(Verdict::Healthy.human_summary().contains("healthy"));
+    ///
+    /// // Non-Healthy verdicts NEVER contain the misleading phrase
+    /// // "looks healthy" — that's the PROB-029 anti-contradiction
+    /// // guarantee.
+    /// assert!(!Verdict::NeedsAttention.human_summary().contains("looks healthy"));
+    /// assert!(!Verdict::Unhealthy.human_summary().contains("looks healthy"));
+    ///
+    /// // Empty workspaces get a distinct onboarding hint instead of a
+    /// // "healthy" message — CI gates that auto-promote on
+    /// // `verdict == "healthy"` must NOT promote uninitialized
+    /// // projects.
+    /// assert!(Verdict::Empty.human_summary().contains("forgeplan new"));
+    /// ```
     pub fn human_summary(self) -> &'static str {
         match self {
             Verdict::Empty => "Workspace has no artifacts — run `forgeplan new` to start.",
