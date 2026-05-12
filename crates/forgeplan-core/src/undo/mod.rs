@@ -99,6 +99,13 @@ pub struct ArtifactSnapshot {
     /// Absolute path where the markdown projection lived before the
     /// destructive op. Restore writes the body back to this path.
     pub projection_path: String,
+    /// Canonical slug from frontmatter (PROB-060 Phase 2.5 closure).
+    /// Captured at soft-delete time so `restore <slug>` can locate the
+    /// receipt after the artifact has been removed from the main store.
+    /// `None` for legacy pre-Phase-1.5 artifacts that never had a slug
+    /// (lookup falls back to display id form only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
 }
 
 /// A soft-delete receipt — one JSON file per destructive operation.
@@ -341,6 +348,24 @@ pub async fn find_latest_for(
         .find(|r| r.snapshot.id == artifact_id && !r.consumed))
 }
 
+/// Find the most recent non-consumed receipt by canonical slug (PROB-060
+/// Phase 2.5). Receipts written before Phase 2.5 closure have no `slug`
+/// stamped — those are skipped here and remain reachable via display id
+/// only. Receipts for legacy pre-Phase-1.5 artifacts also have no slug
+/// (no slug ever existed) and are handled identically.
+///
+/// Slug comparison is case-insensitive to match `resolve_id` semantics.
+pub async fn find_latest_for_slug(workspace: &Path, slug: &str) -> anyhow::Result<Option<Receipt>> {
+    let all = list_receipts(workspace).await?;
+    Ok(all.into_iter().find(|r| {
+        !r.consumed
+            && r.snapshot
+                .slug
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(slug))
+    }))
+}
+
 /// Mark a receipt as consumed on disk (rewrite the file in place).
 /// Called by restore after a successful recovery so undo-last won't
 /// re-apply the same receipt.
@@ -482,6 +507,16 @@ pub async fn soft_delete_capture(
         .display()
         .to_string();
 
+    // PROB-060 Phase 2.5: parse slug from body frontmatter so restore
+    // can find this receipt by slug after the artifact is removed from
+    // the main store. Best-effort: legacy pre-Phase-1.5 artifacts have
+    // no slug field and that's a documented compatibility case.
+    let slug = crate::artifact::frontmatter::parse_frontmatter(&record.body)
+        .ok()
+        .and_then(|(fm, _body)| {
+            crate::artifact::frontmatter::slug_from_frontmatter(&fm).map(str::to_string)
+        });
+
     let snapshot = ArtifactSnapshot {
         id: record.id.clone(),
         kind: record.kind.clone(),
@@ -494,6 +529,7 @@ pub async fn soft_delete_capture(
         valid_until: record.valid_until.clone(),
         relations,
         projection_path: projection_path.clone(),
+        slug,
     };
 
     let receipt = Receipt {
@@ -560,6 +596,7 @@ mod tests {
                 direction: RelationDirection::Outgoing,
             }],
             projection_path: format!("/ws/.forgeplan/prds/{id}-sample.md"),
+            slug: None,
         }
     }
 

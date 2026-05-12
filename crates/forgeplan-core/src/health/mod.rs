@@ -191,6 +191,15 @@ pub struct HealthReport {
     pub next_actions: Vec<String>,
     pub possible_duplicates: Vec<DuplicatePair>,
     pub active_stubs: Vec<ActiveStub>,
+    /// PROB-062 — files tracked by git despite matching the canonical
+    /// forgeplan `.gitignore` patterns (derived index, per-machine
+    /// runtime state, embedding cache). Advisory like `phase_mismatches`
+    /// — populated by `health_report_with_phase` (which knows the
+    /// workspace path); the legacy `health_report` path leaves this
+    /// empty. NEVER folded into [`HealthReport::verdict`] — same
+    /// rationale as PROB-063 phase mismatches: advisory by name,
+    /// advisory in behaviour.
+    pub gitignore_drift: Vec<GitignoreDrift>,
     /// **Best-known verdict for user-facing display.** Aggregates all
     /// warning classes Forgeplan currently understands. Equals
     /// [`HealthReport::partial_verdict`] when this report comes из
@@ -294,6 +303,22 @@ pub struct PhaseMismatch {
     pub advisory: String,
 }
 
+/// PROB-062 — `.gitignore` drift advisory entry.
+///
+/// Records a single file that the local git index tracks even though it
+/// sits under a path the canonical forgeplan `.gitignore` section marks
+/// as derived/per-machine state (e.g. `.forgeplan/lance/`,
+/// `.forgeplan/state/`, `.forgeplan/.fastembed_cache/`). Strictly
+/// advisory — like [`PhaseMismatch`], it is excluded from the verdict
+/// aggregator so a single leaked `lance/` file does not flip the whole
+/// workspace to `Unhealthy`. The `reason` field carries a one-line
+/// human-readable explanation suitable for the CLI dashboard.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GitignoreDrift {
+    pub path: String,
+    pub reason: String,
+}
+
 /// Generate a full health report for the workspace.
 ///
 /// Single-scan fast path. CLI legacy callers and any consumer that does
@@ -393,6 +418,15 @@ pub async fn health_report_with_phase(
     // PROB-051 L-H3 closure: re-fold the verdict so CLI/MCP parity holds.
     report.verdict =
         report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
+
+    // PROB-062: populate gitignore drift here (not in
+    // `health_report_inner`) because only this entry point knows the
+    // workspace root path. Advisory — NEVER folded into the verdict.
+    // Workspace root = parent of `.forgeplan/`; fall back to the
+    // workspace path itself when the parent cannot be derived (an
+    // unusual symlink layout) so we still attempt the scan.
+    let drift_root = workspace.parent().unwrap_or(workspace);
+    report.gitignore_drift = detect_gitignore_drift(drift_root);
 
     Ok((report, phase_mismatches))
 }
@@ -508,6 +542,12 @@ async fn health_report_inner(
         next_actions,
         possible_duplicates,
         active_stubs,
+        // PROB-062: drift detection requires the workspace root path
+        // (to invoke `git ls-files`). The legacy `health_report` entry
+        // point does not know the workspace path, so this field stays
+        // empty here. `health_report_with_phase` populates it after
+        // construction.
+        gitignore_drift: Vec::new(),
         verdict,
         partial_verdict: verdict,
     })
@@ -603,6 +643,117 @@ fn compute_verdict_from_signals(
     } else {
         Verdict::Healthy
     }
+}
+
+/// PROB-062: list of `.forgeplan/`-relative path **prefixes** that the
+/// canonical gitignore section in `forgeplan init` marks as derived /
+/// per-machine state. A tracked file matching any prefix here is
+/// flagged by `detect_gitignore_drift` as advisory drift.
+///
+/// Each entry pairs the path-prefix glob (relative to the workspace
+/// root, NOT to `.forgeplan/`) with the reason printed to the user.
+/// Keep this aligned with `GITIGNORE_CANONICAL_BODY` in
+/// `forgeplan-cli/src/commands/init.rs` — if the two drift apart, the
+/// drift detector will miss new ignore rules or false-positive on
+/// removed ones.
+const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
+    (
+        ".forgeplan/lance/",
+        "LanceDB index — derived state, rebuild via `forgeplan scan-import`",
+    ),
+    (
+        ".forgeplan/.fastembed_cache/",
+        "BGE-M3 embedding model cache — ~600 MB, per-machine",
+    ),
+    (
+        ".forgeplan/session.yaml",
+        "per-machine session state — generates merge conflicts when tracked",
+    ),
+    (
+        ".forgeplan/state/",
+        "per-artifact phase state — per-workspace, gitignored per PRD-058",
+    ),
+    (
+        ".forgeplan/trash/",
+        "soft-deleted artifacts — local recovery buffer",
+    ),
+    (".forgeplan/logs/", "local audit logs — per-machine"),
+    (".forgeplan/locks/", "runtime mutexes — per-machine"),
+];
+
+/// PROB-062: detect files currently tracked by git that match the
+/// canonical forgeplan `.gitignore` patterns.
+///
+/// Uses `git ls-files -- .forgeplan` so the scan is bounded to the
+/// workspace subtree (no full-repo walk). Failures are intentionally
+/// **silent**: if `git` is missing, the workspace is not a git repo, or
+/// the subprocess fails for any reason, this returns an empty `Vec`.
+/// The check is purely advisory — it must never crash a health report
+/// nor demand git as a hard dependency of `forgeplan health`.
+///
+/// Each returned [`GitignoreDrift`] carries the offending path
+/// (relative to the workspace root) and a short reason copied from
+/// [`GITIGNORE_DRIFT_PATTERNS`]. Multiple files under the same prefix
+/// each yield a separate entry so the CLI can list them individually;
+/// callers that want a deduplicated summary can group by `reason`.
+///
+/// Output is alphabetical by `path` for stable rendering.
+pub fn detect_gitignore_drift(workspace_root: &Path) -> Vec<GitignoreDrift> {
+    use std::process::Command;
+
+    // Bail early without invoking git when there is no `.forgeplan/`
+    // subtree to scan — keeps unit tests on bare temp dirs cheap.
+    if !workspace_root.join(".forgeplan").exists() {
+        return Vec::new();
+    }
+
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("ls-files")
+        .arg("--")
+        .arg(".forgeplan")
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        // Any failure (git missing, not a repo, permission denied) →
+        // silent empty — drift detection is advisory, not a gate.
+        _ => return Vec::new(),
+    };
+
+    let stdout = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut drifts: Vec<GitignoreDrift> = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        for (prefix, reason) in GITIGNORE_DRIFT_PATTERNS {
+            // Match either an exact-file pattern (e.g. `session.yaml`)
+            // or any path under a directory prefix.
+            let is_dir_prefix = prefix.ends_with('/');
+            let matched = if is_dir_prefix {
+                trimmed.starts_with(*prefix)
+            } else {
+                trimmed == *prefix
+            };
+            if matched {
+                drifts.push(GitignoreDrift {
+                    path: trimmed.to_string(),
+                    reason: (*reason).to_string(),
+                });
+                // First match wins — patterns are disjoint by design.
+                break;
+            }
+        }
+    }
+
+    drifts.sort_by(|a, b| a.path.cmp(&b.path));
+    drifts
 }
 
 /// Find active artifacts that look like stubs (template-only content).
@@ -1421,6 +1572,7 @@ mod tests {
             next_actions: Vec::new(),
             possible_duplicates: Vec::new(),
             active_stubs: Vec::new(),
+            gitignore_drift: Vec::new(),
             verdict: Verdict::Healthy,
             partial_verdict: Verdict::Healthy,
         }
@@ -1911,5 +2063,162 @@ mod tests {
             "L-H3: zero phase mismatches → verdicts match"
         );
         assert!(mismatches.is_empty(), "no phase state file → no mismatches");
+    }
+
+    // ── PROB-062 gitignore drift detector ─────────────────────────
+
+    /// `git` may be missing or this may run outside a repo — the
+    /// detector must return `Vec::new()` instead of panicking.
+    #[test]
+    fn detect_gitignore_drift_no_forgeplan_dir_returns_empty() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        // Bare temp dir — no `.forgeplan/`, no git repo.
+        let drifts = detect_gitignore_drift(tmp.path());
+        assert!(drifts.is_empty());
+    }
+
+    /// Plain `.forgeplan/` without a git repo wrapper: the subprocess
+    /// fails silently, detector returns empty Vec. Confirms we never
+    /// surface git errors as drift entries.
+    #[test]
+    fn detect_gitignore_drift_no_git_repo_returns_empty() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".forgeplan/lance")).unwrap();
+        std::fs::write(tmp.path().join(".forgeplan/lance/data.lance"), "x").unwrap();
+
+        let drifts = detect_gitignore_drift(tmp.path());
+        // No git repo → subprocess fails → empty.
+        assert!(drifts.is_empty());
+    }
+
+    /// Real-shape integration: init a git repo, `git add` a file under
+    /// `.forgeplan/lance/`, and confirm the detector flags it with the
+    /// canonical reason. Skipped silently when `git` is missing — the
+    /// detector contract is "no git = no drift" so we should not
+    /// hard-fail CI on a stripped image.
+    #[test]
+    fn detect_gitignore_drift_flags_tracked_lance_files() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        // Skip test if git is not installed (CI minimum image guard).
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Bootstrap a minimal git repo. `-q` keeps the test log clean.
+        let init = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q", "--initial-branch=main"])
+            .status()
+            .unwrap();
+        assert!(init.success(), "git init failed");
+        // Disable any user signing requirement so add-without-config works.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.email", "test@example.com"])
+            .status();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.name", "test"])
+            .status();
+
+        // Seed a leaked LanceDB file + a leaked session.yaml + a leaked
+        // state file. All three should be flagged.
+        std::fs::create_dir_all(root.join(".forgeplan/lance")).unwrap();
+        std::fs::write(root.join(".forgeplan/lance/data.lance"), "x").unwrap();
+        std::fs::write(root.join(".forgeplan/session.yaml"), "focus: PRD-001\n").unwrap();
+        std::fs::create_dir_all(root.join(".forgeplan/state")).unwrap();
+        std::fs::write(root.join(".forgeplan/state/PRD-001.yaml"), "phase: code\n").unwrap();
+
+        // Force-add despite any existing top-level `.gitignore` — the
+        // whole point is to simulate a workspace where someone already
+        // committed these files.
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "-f", ".forgeplan"])
+            .status()
+            .unwrap();
+        assert!(add.success(), "git add failed");
+
+        let drifts = detect_gitignore_drift(root);
+
+        // Three leaked files → three drift entries. Use a path set so
+        // the test does not pin sort order beyond `assert_eq` length.
+        let paths: Vec<&str> = drifts.iter().map(|d| d.path.as_str()).collect();
+        assert!(
+            paths.contains(&".forgeplan/lance/data.lance"),
+            "expected lance leak in {paths:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/session.yaml"),
+            "expected session.yaml leak in {paths:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/state/PRD-001.yaml"),
+            "expected state leak in {paths:?}"
+        );
+
+        // Reasons must come from the canonical table — guards against
+        // copy-paste drift between writer and detector.
+        for d in &drifts {
+            assert!(
+                !d.reason.is_empty(),
+                "drift entry without reason: {:?}",
+                d.path
+            );
+        }
+        // Output is sorted alphabetically — pin the contract.
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted, "drift entries must be alphabetised");
+    }
+
+    /// Tracked files that DON'T match any canonical pattern (e.g. a
+    /// regular PRD markdown body) must be ignored — drift is opt-in to
+    /// the patterns table.
+    #[test]
+    fn detect_gitignore_drift_ignores_tracked_artifact_bodies() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q", "--initial-branch=main"])
+            .status();
+
+        std::fs::create_dir_all(root.join(".forgeplan/prds")).unwrap();
+        std::fs::write(
+            root.join(".forgeplan/prds/PRD-001-x.md"),
+            "---\nid: PRD-001\n---\n# body\n",
+        )
+        .unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "-f", ".forgeplan"])
+            .status();
+
+        let drifts = detect_gitignore_drift(root);
+        assert!(
+            drifts.is_empty(),
+            "PRD body should not be flagged as drift: {drifts:?}"
+        );
     }
 }

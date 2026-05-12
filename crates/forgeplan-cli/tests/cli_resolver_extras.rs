@@ -222,23 +222,10 @@ fn review_accepts_display_id_form() {
 
 // ── restore: recover soft-deleted artifact ────────────────────────────
 //
-// Documented limitation (Phase 2.5): `forgeplan restore <ID>` does NOT
-// accept slug input because soft-deleted artifacts are removed from the
-// main LanceDB table — `resolve_id` cannot find them. Receipt lookup в
-// `.forgeplan/trash/` is keyed by canonical display id (`PRD-001`),
-// not slug.
-//
-// Fix would require deeper undo.rs changes:
-//   1. Stamp slug into receipt body when capturing soft-delete
-//   2. Add `undo::find_latest_for_slug` helper
-//   3. Wire restore.rs to try both paths (display id direct, slug via stamp)
-//
-// Estimated scope: ~1-2h refactor + audit. Out of Phase 2.5 micro-sprint
-// scope (which targets resolver wiring at call-site, not deeper storage
-// schema changes).
-//
-// Workaround: agents/users use display id (`forgeplan restore PRD-001`)
-// для restore until proper fix lands.
+// Both display id (`PRD-001`) and slug (`prd-foo`) forms accepted.
+// PROB-060 Phase 2.5 closure: snapshots stamp the canonical slug at
+// soft-delete time, and `undo::find_latest_for_slug` resolves receipts
+// by it. See `crates/forgeplan-core/src/undo/mod.rs::find_latest_for_slug`.
 
 #[test]
 fn restore_accepts_display_id_form() {
@@ -261,13 +248,9 @@ fn restore_accepts_display_id_form() {
     assert_eq!(restored["id"], "PRD-001");
 }
 
-/// Slug input для restore — known limitation. See module-level docs above.
-/// Test ignored с explicit rationale; delete it once undo.rs gains slug-aware
-/// receipt lookup.
 #[test]
-#[ignore = "Phase 2.5 limitation — restore needs deeper undo.rs slug awareness, not just resolver wiring (artifact removed from main store; receipts keyed by display id)"]
-fn restore_accepts_slug_form_deferred() {
-    let dir = workspace_with_one_prd("Smoke restore slug deferred");
+fn restore_accepts_slug_form() {
+    let dir = workspace_with_one_prd("Smoke restore slug");
     let workspace = dir.path();
     let slug = slug_for(workspace, "PRD-001");
 
@@ -282,4 +265,8 @@ fn restore_accepts_slug_form_deferred() {
         .current_dir(workspace)
         .assert()
         .success();
+
+    // Verify the artifact is back and addressable by both forms.
+    let restored = get_json(workspace, &slug);
+    assert_eq!(restored["id"], "PRD-001");
 }
