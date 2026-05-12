@@ -330,14 +330,20 @@ pub async fn run(
     }
 
     // Possible duplicates
+    // PROB-051 L-M2: report carries the FULL list (verdict aggregator
+    // needs the unclipped count). Display-side cap is the CLI's call —
+    // print top-N by similarity and surface the overflow as a one-line
+    // summary so operators know more pairs exist.
     if !report.possible_duplicates.is_empty() {
+        let total_dups = report.possible_duplicates.len();
+        let display_limit = health::DUPLICATE_PAIRS_DISPLAY_LIMIT;
         println!();
         println!(
             "  {} Possible duplicates ({}):",
             style("⧗").yellow().bold(),
-            ui::styled_count(report.possible_duplicates.len(), true)
+            ui::styled_count(total_dups, true)
         );
-        for d in &report.possible_duplicates {
+        for d in report.possible_duplicates.iter().take(display_limit) {
             let pct = (d.similarity * 100.0).round() as u32;
             println!(
                 "    {} ↔ {} ({}%) — \"{}\"",
@@ -345,6 +351,13 @@ pub async fn run(
                 style(&d.id_b).yellow(),
                 pct,
                 d.title_a
+            );
+        }
+        if total_dups > display_limit {
+            println!(
+                "    {} {} more pair(s) — see `forgeplan health --json` for the full list",
+                style("…").dim(),
+                total_dups - display_limit
             );
         }
     }

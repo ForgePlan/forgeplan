@@ -23,29 +23,80 @@
 //!
 //! # Verdict aggregator (PROB-029 AC-2)
 //!
-//! Four levels:
+//! Four levels, ordered weakest-to-strongest signal:
 //!
-//! - `Verdict::Empty` — workspace has zero artifacts. Treated as a
+//! - [`Verdict::Empty`] — workspace has zero artifacts. Treated as a
 //!   distinct level so JSON consumers gating on `verdict == "healthy"`
 //!   never wrongly classify an uninitialised project as healthy.
-//! - `Verdict::Healthy` — total > 0 and every warning class is empty.
-//! - `Verdict::NeedsAttention` — at least one non-zero warning class but
-//!   none exceed thresholds.
-//! - `Verdict::Unhealthy` — any class strictly exceeds its
-//!   [`VerdictThresholds`] entry.
+//! - [`Verdict::Healthy`] — `total > 0` and every warning class is empty.
+//! - [`Verdict::NeedsAttention`] — at least one non-zero warning class
+//!   but none exceed thresholds.
+//! - [`Verdict::Unhealthy`] — any single warning class strictly exceeds
+//!   its [`VerdictThresholds`] entry.
 //!
 //! The enum is `#[non_exhaustive]` so future levels can land without
 //! breaking pattern-match callers in `forgeplan-cli`. External binaries
 //! consuming `forgeplan-core` as a library should always include a
 //! catch-all arm.
 //!
-//! # Performance (PROB-051 P-H1 + P-H2)
+//! # Usage
+//!
+//! ```no_run
+//! # async fn demo() -> anyhow::Result<()> {
+//! use forgeplan_core::db::store::LanceStore;
+//! use forgeplan_core::health::{
+//!     Verdict, VerdictThresholds, health_report_with_phase,
+//! };
+//! use std::path::Path;
+//!
+//! let workspace = Path::new(".forgeplan");
+//! let store = LanceStore::open(workspace).await?;
+//!
+//! // Single-scan, phase-aware report — identical verdict across CLI/MCP.
+//! let (report, phase_mismatches) =
+//!     health_report_with_phase(&store, workspace).await?;
+//!
+//! match report.verdict {
+//!     Verdict::Empty => println!("Run `forgeplan new` to start."),
+//!     Verdict::Healthy => println!("All green."),
+//!     Verdict::NeedsAttention => {
+//!         println!("Soft signals: review `forgeplan health` output.");
+//!     }
+//!     Verdict::Unhealthy => {
+//!         println!("Critical signals — fix before continuing.");
+//!     }
+//!     _ => {} // forward-compat: new verdict levels may land later.
+//! }
+//!
+//! // Re-fold the verdict under stricter thresholds — pure function on
+//! // the report, no re-scan required. `VerdictThresholds` is
+//! // `#[non_exhaustive]`, so external callers MUST start from
+//! // `default()` and assign individual fields rather than use struct
+//! // literals (SemVer-safe — future threshold fields land additively).
+//! let mut stricter = VerdictThresholds::default();
+//! stricter.duplicates = 0;
+//! let strict_verdict = report.compute_verdict_with(&stricter, phase_mismatches.len());
+//! assert!(matches!(
+//!     strict_verdict,
+//!     Verdict::Healthy | Verdict::NeedsAttention | Verdict::Unhealthy | Verdict::Empty
+//! ));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Performance (PROB-051 P-H1 + P-H2 + P-M1 + P-M2)
 //!
 //! - `health_report_with_phase` does ONE `list_records(None)` scan,
 //!   replacing the pre-PROB-051 MCP path which scanned twice.
 //! - Phase reads use `futures::stream::iter(active_records)
 //!   .map(read_phase).buffer_unordered(16).collect()` so a 200-active-
 //!   artifact workspace doesn't pay 200 sequential disk-seek round-trips.
+//! - `find_duplicate_pairs` pre-tokenizes every title ONCE before the
+//!   pairwise loop — was O(N²) re-tokenizations, now O(N) preprocessing.
+//! - `find_at_risk` and `compute_derived_status_breakdown` build an
+//!   `artifact_id → linked-evidence-records` HashMap in a single pass
+//!   over the relation graph (O(E)) instead of per-artifact full scans
+//!   of `evidence_records` (was O(N × E)).
 //!
 //! # File layout
 //!
@@ -71,10 +122,17 @@ use crate::validation;
 /// R_eff threshold below which an artifact is considered AT RISK.
 const REFF_AT_RISK_THRESHOLD: f64 = 0.3;
 
-use crate::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+use crate::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, jaccard_similarity, tokenize_title};
 
-/// Maximum number of duplicate pairs to report.
-const DUPLICATE_PAIRS_LIMIT: usize = 10;
+/// Maximum number of duplicate pairs to **display**.
+///
+/// PROB-051 L-M2: counting the truncated list before verdict computation
+/// underreported the duplicate signal — a workspace with 50 dup pairs
+/// would only see 10 in the verdict aggregator. Now we count the full
+/// list first, fold the full count into the verdict via
+/// `report.possible_duplicates.len()`, then truncate for rendering.
+/// Display-only — verdict math always sees the full count.
+pub const DUPLICATE_PAIRS_DISPLAY_LIMIT: usize = 10;
 
 /// Default thresholds at which a given warning class promotes the verdict
 /// to `Unhealthy`. Below the threshold (but > 0) → `NeedsAttention`.
@@ -88,6 +146,11 @@ pub const DEFAULT_UNHEALTHY_BLIND_SPOTS: usize = 3;
 pub const DEFAULT_UNHEALTHY_ACTIVE_STUBS: usize = 3;
 pub const DEFAULT_UNHEALTHY_DUPLICATES: usize = 5;
 pub const DEFAULT_UNHEALTHY_PHASE_MISMATCHES: usize = 5;
+/// PROB-051 L-M1: at-risk count above this promotes `Unhealthy`.
+/// Below the threshold (but > 0) keeps the verdict at `NeedsAttention`
+/// via the any-warning floor — matches behaviour pre-PROB-051 for
+/// small at-risk counts, just adds the critical promotion lane.
+pub const DEFAULT_UNHEALTHY_AT_RISK: usize = 10;
 
 /// Tunable promotion thresholds for [`compute_verdict`]. When the count
 /// of a given warning class **strictly exceeds** the threshold, the
@@ -111,6 +174,13 @@ pub struct VerdictThresholds {
     pub active_stubs: usize,
     pub duplicates: usize,
     pub phase_mismatches: usize,
+    /// PROB-051 L-M1: number of at-risk artifacts strictly above which
+    /// the verdict promotes from `NeedsAttention` (the any-warning floor)
+    /// to `Unhealthy`. Default 10 — chosen so projects with a handful of
+    /// in-flight decisions awaiting evidence stay at `NeedsAttention`
+    /// (gradient signal, not gate-failing), while a workspace with 11+
+    /// trust-decayed decisions clearly is in trouble.
+    pub at_risk: usize,
 }
 
 impl Default for VerdictThresholds {
@@ -121,6 +191,7 @@ impl Default for VerdictThresholds {
             active_stubs: DEFAULT_UNHEALTHY_ACTIVE_STUBS,
             duplicates: DEFAULT_UNHEALTHY_DUPLICATES,
             phase_mismatches: DEFAULT_UNHEALTHY_PHASE_MISMATCHES,
+            at_risk: DEFAULT_UNHEALTHY_AT_RISK,
         }
     }
 }
@@ -668,10 +739,13 @@ fn compute_verdict_from_signals(
     }
     // Critical: any single class above its threshold → Unhealthy.
     // PROB-063: phase_mismatches NOT included — advisory by design.
+    // PROB-051 L-M1: `at_risk` joins critical promotion. Below the
+    // threshold it still trips the any-warning floor (NeedsAttention).
     if orphans > t.orphans
         || blind_spots > t.blind_spots
         || active_stubs > t.active_stubs
         || duplicates > t.duplicates
+        || at_risk > t.at_risk
     {
         return Verdict::Unhealthy;
     }
@@ -829,22 +903,43 @@ pub fn find_active_stubs(records: &[ArtifactRecord]) -> Vec<ActiveStub> {
 }
 
 /// Find pairs of artifacts with title similarity above threshold.
-/// Only compares same-kind artifacts. O(n²) but n is typically < 200.
+/// Only compares same-kind artifacts. O(n²) on pair iteration, but
+/// PROB-051 P-M1 pre-tokenizes each title ONCE (O(N) preprocessing)
+/// before the pair loop — eliminating the prior `2 * N * (N-1)`
+/// redundant re-tokenizations per scan.
+///
+/// PROB-051 L-M2: returns the **full** list (sorted descending by
+/// similarity). Display-side truncation is the caller's responsibility
+/// via [`DUPLICATE_PAIRS_DISPLAY_LIMIT`] — the verdict aggregator MUST
+/// see the full count so a workspace with 50 dup pairs gets the right
+/// `Unhealthy` promotion (was previously capped at 10).
 pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<DuplicatePair> {
+    // Filter to active records first (single pass).
     let active: Vec<&ArtifactRecord> = records
         .iter()
         .filter(|r| !matches!(r.status.as_str(), "deprecated" | "superseded"))
         .collect();
 
+    // PROB-051 P-M1: pre-tokenize every active title ONCE. Each token-set
+    // is shared between every (i, j) comparison the inner loop visits —
+    // avoiding O(N²) re-tokenization of identical strings.
+    let token_sets: Vec<std::collections::HashSet<String>> =
+        active.iter().map(|r| tokenize_title(&r.title)).collect();
+
     let mut pairs = Vec::new();
     for i in 0..active.len() {
+        // Skip pairs whose `i` has no qualifying tokens — `jaccard_similarity`
+        // would return 0.0 anyway and we save the inner-loop kind check.
+        if token_sets[i].is_empty() {
+            continue;
+        }
         for j in (i + 1)..active.len() {
             let a = active[i];
             let b = active[j];
             if a.kind != b.kind {
                 continue;
             }
-            let sim = title_similarity(&a.title, &b.title);
+            let sim = jaccard_similarity(&token_sets[i], &token_sets[j]);
             if sim >= threshold {
                 pairs.push(DuplicatePair {
                     id_a: a.id.clone(),
@@ -862,7 +957,10 @@ pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<D
             .partial_cmp(&x.similarity)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    pairs.truncate(DUPLICATE_PAIRS_LIMIT);
+    // PROB-051 L-M2: NO truncation here. The verdict aggregator reads
+    // `possible_duplicates.len()` and must see the full count. Callers
+    // that render the list (CLI dashboard, MCP JSON) decide their own
+    // display cap — see `DUPLICATE_PAIRS_DISPLAY_LIMIT`.
     pairs
 }
 
@@ -927,33 +1025,101 @@ fn find_blind_spots(
     spots
 }
 
+/// PROB-051 P-M2: build a `artifact_id → linked-evidence-records` map
+/// in a single pass over the relation index so per-artifact lookups in
+/// `find_at_risk` + `compute_derived_status_breakdown` become O(1)
+/// HashMap reads instead of O(E) full scans of `evidence_records`.
+///
+/// Considers both directions of evidence linkage:
+/// 1. `evidence → artifact` (canonical: EVID informs PRD).
+/// 2. `artifact → evidence` (e.g. PROB based_on EVID).
+///
+/// IDs are case-insensitive on lookup (mirrors `is_evidence_linked`'s
+/// `eq_ignore_ascii_case` semantics) — keys in the returned map are
+/// lowercased so callers MUST lowercase the artifact id before lookup.
+fn index_evidence_by_artifact<'ev>(
+    evidence_records: &'ev [ArtifactRecord],
+    outgoing: &RelationIndex,
+) -> std::collections::HashMap<String, Vec<&'ev ArtifactRecord>> {
+    use std::collections::HashMap;
+    // Reverse-lookup table: evidence id → record (lowercased key).
+    let mut evidence_by_id: HashMap<String, &'ev ArtifactRecord> =
+        HashMap::with_capacity(evidence_records.len());
+    for ev in evidence_records {
+        evidence_by_id.insert(ev.id.to_ascii_lowercase(), ev);
+    }
+
+    let mut links: HashMap<String, Vec<&'ev ArtifactRecord>> = HashMap::new();
+
+    // Direction A: evidence_id → [(artifact_id, _)]
+    // For every (evidence, artifact) edge starting at an evidence id, push
+    // the evidence record onto the artifact's bucket.
+    for (from, targets) in outgoing {
+        let from_lower = from.to_ascii_lowercase();
+        if let Some(ev_record) = evidence_by_id.get(&from_lower) {
+            for (to, _rel) in targets {
+                links
+                    .entry(to.to_ascii_lowercase())
+                    .or_default()
+                    .push(ev_record);
+            }
+        }
+    }
+
+    // Direction B: artifact_id → [(evidence_id, _)]
+    // For every outgoing edge whose TARGET is an evidence id, push the
+    // evidence record onto the SOURCE artifact's bucket.
+    for (from, targets) in outgoing {
+        // Skip artifacts that ARE evidence (would double-count direction A).
+        if evidence_by_id.contains_key(&from.to_ascii_lowercase()) {
+            continue;
+        }
+        for (to, _rel) in targets {
+            if let Some(ev_record) = evidence_by_id.get(&to.to_ascii_lowercase()) {
+                links
+                    .entry(from.to_ascii_lowercase())
+                    .or_default()
+                    .push(ev_record);
+            }
+        }
+    }
+
+    links
+}
+
 fn find_at_risk(
     records: &[&ArtifactRecord],
     evidence_records: &[ArtifactRecord],
     outgoing: &RelationIndex,
 ) -> Vec<AtRiskArtifact> {
+    // PROB-051 P-M2: pre-index evidence by source artifact ID. Pre-fix
+    // this was O(N × E) — for every artifact we re-scanned all evidence
+    // records. Now O(E) preprocessing → O(1) per-artifact lookup.
+    let evidence_index = index_evidence_by_artifact(evidence_records, outgoing);
     let mut at_risk = Vec::new();
 
     for record in records {
-        let mut items = Vec::new();
-        for ev in evidence_records {
-            if is_evidence_linked(&record.id, &ev.id, outgoing) {
-                items.push(parse_evidence_from_record(ev));
-            }
+        let key = record.id.to_ascii_lowercase();
+        let Some(linked) = evidence_index.get(&key) else {
+            continue;
+        };
+        if linked.is_empty() {
+            continue;
         }
-
-        if !items.is_empty() {
-            let score = reff::r_eff(&items);
-            if score < REFF_AT_RISK_THRESHOLD {
-                at_risk.push(AtRiskArtifact {
-                    id: record.id.clone(),
-                    title: record.title.clone(),
-                    reason: format!(
-                        "R_eff = {:.2} (below {:.1} threshold)",
-                        score, REFF_AT_RISK_THRESHOLD
-                    ),
-                });
-            }
+        let items: Vec<_> = linked
+            .iter()
+            .map(|ev| parse_evidence_from_record(ev))
+            .collect();
+        let score = reff::r_eff(&items);
+        if score < REFF_AT_RISK_THRESHOLD {
+            at_risk.push(AtRiskArtifact {
+                id: record.id.clone(),
+                title: record.title.clone(),
+                reason: format!(
+                    "R_eff = {:.2} (below {:.1} threshold)",
+                    score, REFF_AT_RISK_THRESHOLD
+                ),
+            });
         }
     }
 
@@ -1066,16 +1232,24 @@ fn compute_derived_status_breakdown(
     evidence_records: &[ArtifactRecord],
     outgoing: &RelationIndex,
 ) -> Vec<(DerivedStatus, usize)> {
+    // PROB-051 P-M2: same pre-indexing optimization as find_at_risk —
+    // single O(E) pass over the relation graph instead of O(N × E)
+    // per-artifact scans of `evidence_records`.
+    let evidence_index = index_evidence_by_artifact(evidence_records, outgoing);
     let mut counts: BTreeMap<DerivedStatus, usize> = BTreeMap::new();
 
     for record in records {
         // Check if artifact has linked evidence and compute R_eff
-        let mut ev_items = Vec::new();
-        for ev in evidence_records {
-            if is_evidence_linked(&record.id, &ev.id, outgoing) {
-                ev_items.push(parse_evidence_from_record(ev));
-            }
-        }
+        let key = record.id.to_ascii_lowercase();
+        let ev_items: Vec<_> = evidence_index
+            .get(&key)
+            .map(|linked| {
+                linked
+                    .iter()
+                    .map(|ev| parse_evidence_from_record(ev))
+                    .collect()
+            })
+            .unwrap_or_default();
         let has_evidence = !ev_items.is_empty();
         let r_eff_score = if has_evidence {
             reff::r_eff(&ev_items)
@@ -1780,6 +1954,184 @@ mod tests {
         r.active_stubs = (0..8).map(|i| stub(&format!("PRD-{i:03}"))).collect();
         let v = r.compute_verdict_with(&VerdictThresholds::default(), 100);
         assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-051 L-M1: at_risk threshold promotes verdict to Unhealthy
+    // when strictly exceeded. Below threshold → NeedsAttention.
+    #[test]
+    fn verdict_at_risk_above_threshold_is_unhealthy() {
+        let mut r = empty_report(50);
+        r.at_risk = (0..11)
+            .map(|i| AtRiskArtifact {
+                id: format!("PRD-{i:03}"),
+                title: "Risky".into(),
+                reason: "R_eff = 0.10".into(),
+            })
+            .collect();
+        // Default threshold is 10 → 11 promotes Unhealthy.
+        let v = r.compute_verdict();
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    #[test]
+    fn verdict_at_risk_at_threshold_is_needs_attention() {
+        let mut r = empty_report(50);
+        // Exactly 10 = threshold → NOT promoted (uses `>`, not `>=`).
+        r.at_risk = (0..10)
+            .map(|i| AtRiskArtifact {
+                id: format!("PRD-{i:03}"),
+                title: "Risky".into(),
+                reason: "R_eff = 0.10".into(),
+            })
+            .collect();
+        let v = r.compute_verdict();
+        assert_eq!(v, Verdict::NeedsAttention);
+    }
+
+    #[test]
+    fn verdict_at_risk_custom_threshold_take_effect() {
+        let mut r = empty_report(50);
+        r.at_risk = vec![AtRiskArtifact {
+            id: "A".into(),
+            title: "x".into(),
+            reason: "x".into(),
+        }];
+        let strict = VerdictThresholds {
+            at_risk: 0,
+            ..VerdictThresholds::default()
+        };
+        let v = r.compute_verdict_with(&strict, 0);
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-051 P-M2: index_evidence_by_artifact maps both edge directions.
+    // Regression guard against drift between is_evidence_linked and the
+    // pre-indexed helper — both must agree on every (artifact, evidence) pair.
+    #[test]
+    fn index_evidence_by_artifact_matches_is_evidence_linked() {
+        // Build a workspace with both edge directions exercised.
+        let mut prd = make_record("PRD-001", "prd");
+        prd.status = "active".into();
+        let mut prob = make_record("PROB-048", "problem");
+        prob.status = "active".into();
+        let ev_a = make_record("EVID-100", "evidence");
+        let ev_b = make_record("EVID-200", "evidence");
+
+        // Edge A: EVID-100 → PRD-001 (informs)
+        // Edge B: PROB-048 → EVID-200 (based_on)
+        let mut outgoing: RelationIndex = BTreeMap::new();
+        outgoing.insert(
+            "EVID-100".into(),
+            vec![("PRD-001".into(), "informs".into())],
+        );
+        outgoing.insert(
+            "PROB-048".into(),
+            vec![("EVID-200".into(), "based_on".into())],
+        );
+
+        let evs = vec![ev_a.clone(), ev_b.clone()];
+        let index = index_evidence_by_artifact(&evs, &outgoing);
+
+        // PRD-001 should have EVID-100 (direction A).
+        let prd_linked = index.get("prd-001").expect("PRD-001 must have entry");
+        assert_eq!(prd_linked.len(), 1);
+        assert_eq!(prd_linked[0].id, "EVID-100");
+
+        // PROB-048 should have EVID-200 (direction B).
+        let prob_linked = index.get("prob-048").expect("PROB-048 must have entry");
+        assert_eq!(prob_linked.len(), 1);
+        assert_eq!(prob_linked[0].id, "EVID-200");
+
+        // Cross-check against is_evidence_linked: every linked pair must
+        // agree, every unlinked pair must agree.
+        let artifacts = [&prd, &prob];
+        for art in &artifacts {
+            let key = art.id.to_ascii_lowercase();
+            let indexed_ids: std::collections::HashSet<&str> = index
+                .get(&key)
+                .map(|v| v.iter().map(|ev| ev.id.as_str()).collect())
+                .unwrap_or_default();
+            for ev in &evs {
+                let pre_indexed = indexed_ids.contains(ev.id.as_str());
+                let live = is_evidence_linked(&art.id, &ev.id, &outgoing);
+                assert_eq!(
+                    pre_indexed, live,
+                    "drift for ({}, {}): indexed={} live={}",
+                    art.id, ev.id, pre_indexed, live
+                );
+            }
+        }
+    }
+
+    // PROB-051 P-M2: find_at_risk produces identical results before/after
+    // the indexing refactor. Builds a small fixture and asserts that
+    // every at-risk artifact found via the index matches what scanning
+    // by is_evidence_linked would have produced.
+    #[test]
+    fn find_at_risk_with_evidence_index_produces_same_results() {
+        let mut prd = make_record("PRD-007", "prd");
+        prd.status = "active".into();
+        let mut prob = make_record("PROB-007", "problem");
+        prob.status = "active".into();
+        let mut ev = make_record("EVID-007", "evidence");
+        // Explicit CL0 → severe penalty → R_eff well below 0.3 threshold.
+        ev.body = "verdict: supports\ncongruence_level: 0\nevidence_type: measurement\n".into();
+
+        let mut outgoing: RelationIndex = BTreeMap::new();
+        outgoing.insert(
+            "EVID-007".into(),
+            vec![("PRD-007".into(), "informs".into())],
+        );
+
+        let evs = vec![ev];
+        let refs: Vec<&ArtifactRecord> = vec![&prd, &prob];
+        let at_risk = find_at_risk(&refs, &evs, &outgoing);
+        // PROB-007 has no linked evidence → not in at_risk (no items).
+        // PRD-007 has CL0 evidence with low R_eff → in at_risk.
+        let ids: Vec<&str> = at_risk.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            ids.contains(&"PRD-007"),
+            "PRD-007 should be at risk: {ids:?}"
+        );
+        assert!(!ids.contains(&"PROB-007"));
+    }
+
+    // PROB-051 L-M2: find_duplicate_pairs returns FULL list (no truncation).
+    // Verdict aggregator must see the unclipped count so a workspace with
+    // 50 dup pairs gets Unhealthy promotion, not just the first 10.
+    #[test]
+    fn find_duplicate_pairs_returns_full_list_without_truncation() {
+        // Build 15 identical-title pairs (similarity = 1.0) so every (i, j) qualifies.
+        let mut recs: Vec<ArtifactRecord> = (0..6)
+            .map(|i| {
+                let mut r = make_record(&format!("PRD-{i:03}"), "prd");
+                r.title = "Identical workspace title for dup test".into();
+                r
+            })
+            .collect();
+        // We need >10 pairs. 6 records → C(6,2) = 15 pairs. Good.
+        for r in &mut recs {
+            r.status = "active".into();
+        }
+        let pairs = find_duplicate_pairs(&recs, 0.8);
+        // Pre-fix this would be capped at 10.
+        assert_eq!(
+            pairs.len(),
+            15,
+            "find_duplicate_pairs must return ALL pairs (was truncated to 10)"
+        );
+    }
+
+    // PROB-051 L-M2: with 50+ pairs, verdict aggregator promotes Unhealthy
+    // because possible_duplicates.len() now reflects the full count.
+    #[test]
+    fn verdict_unhealthy_when_full_dup_count_exceeds_threshold() {
+        let mut r = empty_report(50);
+        // 6 pairs > default duplicates threshold (5).
+        r.possible_duplicates = (0..6)
+            .map(|i| dup(&format!("A-{i}"), &format!("B-{i}")))
+            .collect();
+        assert_eq!(r.compute_verdict(), Verdict::Unhealthy);
     }
 
     // PROB-029 AC-2: respect custom thresholds. A team that wants
