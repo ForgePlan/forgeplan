@@ -6075,6 +6075,70 @@ impl ForgeplanServer {
     }
 
     #[tool(
+        description = "Auto-generate Keep-a-Changelog–shaped release notes from artifacts that \
+                       changed between two git refs. Walks `git log` over `.forgeplan/{prds, \
+                       problems, evidence, rfcs, adrs, specs, epics, solutions}/`, classifies \
+                       each touched artifact (PRD→Added, PROB→Fixed, EVID-on-security→Security, \
+                       RFC/ADR→Changed) and emits the structured payload. Quality gate (default): \
+                       only artifacts with status==active or r_eff_score > 0 are included. Pass \
+                       `draft: true` to waive the gate. `since` defaults to the latest git tag, \
+                       `until` defaults to HEAD. Example: `{since: \"v0.30.0\", draft: false}`.",
+        annotations(
+            title = "Generate Release Notes",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_release_notes(
+        &self,
+        Parameters(p): Parameters<ReleaseNotesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // `require_workspace` returns the `.forgeplan/` dir; git operations
+        // need the repository root (its parent).
+        let repo_root = match ws.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return Ok(err_result("workspace has no parent (bad .forgeplan/ path)")),
+        };
+        let notes = match forgeplan_core::release_notes::generate(
+            &store,
+            &repo_root,
+            p.since.as_deref(),
+            p.until.as_deref(),
+            p.draft,
+        )
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => return Ok(err_result(&format!("release-notes failed: {e}"))),
+        };
+
+        let value = forgeplan_core::release_notes::format_json(&notes);
+        let next_action = if notes.is_empty() {
+            format!(
+                "No artifacts changed between {} and {}. Widen range or pass draft=true.",
+                notes.since, notes.until
+            )
+        } else {
+            format!(
+                "{} entries. Paste under [Unreleased] in CHANGELOG.md.",
+                notes.total()
+            )
+        };
+        hinted_result(&value, next_action)
+    }
+
+    #[tool(
         description = "List live claims in the workspace, sorted by expiry ascending. Skips \
                        expired claims (they're considered practically released). Used by \
                        orchestrators to build dispatch plans and by sub-agents to avoid \

@@ -57,6 +57,7 @@ pub mod recall;
 pub mod reconcile_ids;
 pub mod reindex;
 pub mod release;
+pub mod release_notes;
 pub mod remember;
 pub mod renew;
 pub mod reopen;
