@@ -18,8 +18,6 @@ name: security
 on:
   push:
     branches: [dev, main]
-  pull_request:
-    branches: [dev, main]
   schedule:
     # Weekly scan to catch advisories that land between PRs (e.g. new RUSTSEC
     # disclosures against pinned versions).
