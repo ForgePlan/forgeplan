@@ -18,8 +18,8 @@ name = "forgeplan"
 path = "src/main.rs"
 
 [dependencies]
-forgeplan-core = { path = "../forgeplan-core", version = "0.30.0" }
-forgeplan-mcp = { path = "../forgeplan-mcp", version = "0.30.0" }
+forgeplan-core = { path = "../forgeplan-core", version = "0.31.0" }
+forgeplan-mcp = { path = "../forgeplan-mcp", version = "0.31.0" }
 clap = { version = "4", features = ["derive"] }
 anyhow.workspace = true
 chrono.workspace = true

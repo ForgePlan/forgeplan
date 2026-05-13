@@ -196,10 +196,10 @@ Three entry points — pick the one that matches what you need right now.
 
 <table>
 <tr>
-<td align="center"><b>282</b><br>tracked artifacts</td>
-<td align="center"><b>1977</b><br>tests passing</td>
+<td align="center"><b>327</b><br>tracked artifacts</td>
+<td align="center"><b>2724</b><br>tests passing</td>
 <td align="center"><b>76</b><br>CLI commands</td>
-<td align="center"><b>63</b><br>MCP tools</td>
+<td align="center"><b>72</b><br>MCP tools</td>
 </tr>
 </table>
 
