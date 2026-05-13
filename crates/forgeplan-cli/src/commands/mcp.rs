@@ -1181,14 +1181,24 @@ mod tests {
         assert!(which_on_path("definitely-not-a-real-binary-xyz-9999").is_none());
     }
 
+    // FR-018 / PROB-070: serialize PATH mutators against each other and
+    // against any other test in the workspace that mutates PATH/HOME under
+    // the same lock name. The lock key `env_path` is workspace-wide via
+    // `serial_test::serial(env_path)` — any future test that touches
+    // process-global PATH should adopt the same key to opt into the
+    // serialization. Prior to this change, parallel `set_var("PATH", ...)`
+    // calls raced with subprocess-spawning sibling tests (e.g. in
+    // `playbook::dispatch`) and `which_on_path_finds_fake_binary` flaked
+    // intermittently under `cargo test --workspace`.
     #[test]
+    #[serial_test::serial(env_path)]
     fn which_on_path_finds_fake_binary() {
         let dir = tempfile::tempdir().unwrap();
         let bin = make_fake_binary(dir.path(), "fp-test-xyz");
 
         // Prepend our tempdir to PATH for this test only.
-        // SAFETY: serial test risk if other tests mutate PATH concurrently;
-        // we save/restore to minimize impact.
+        // SAFETY: PATH mutation is now serialized via the `env_path` lock
+        // above; save/restore preserves the parent process env between tests.
         let old_path = std::env::var_os("PATH");
         let new_path = match &old_path {
             Some(p) => std::env::join_paths(
@@ -1211,8 +1221,10 @@ mod tests {
         assert_eq!(found, Some(bin));
     }
 
+    // FR-018: same serialization rationale as `which_on_path_finds_fake_binary`.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial(env_path)]
     fn which_on_path_skips_non_executable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fp-noexec-xyz");

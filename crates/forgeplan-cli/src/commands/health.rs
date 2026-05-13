@@ -30,6 +30,17 @@ fn parse_fail_on(fail_on: &str) -> std::collections::HashMap<String, usize> {
 /// alone — consistent with PROB-063: advisory ≠ critical) are NOT counted
 /// as failures.
 ///
+/// **FR-021 / DOC-003**: duplicates (`possible_duplicates`) and stale
+/// evidence (`stale_count`) are deliberately **not** counted here as direct
+/// critical signals. They feed the verdict promotion gates inside
+/// `compute_verdict_from_signals` and trigger `Some(1)` indirectly when
+/// they push the verdict to `NeedsAttention` or `Unhealthy`. This is
+/// intentional: a single duplicate pair should not block CI, but
+/// crossing the duplicate threshold (`VerdictThresholds.duplicates`)
+/// should — same reasoning for staleness. Operators reading this function
+/// in isolation might expect a direct `report.possible_duplicates > 0`
+/// branch; the absence is by design.
+///
 /// Pure function on the report so unit tests can pin the contract without
 /// invoking the CLI shell.
 fn strict_exit_code(report: &health::HealthReport) -> Option<i32> {
