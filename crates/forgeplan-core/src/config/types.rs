@@ -320,7 +320,21 @@ impl LlmConfig {
         }
     }
 
-    /// Resolve API key from environment variable.
+    /// Resolve API key from environment variable, falling back to
+    /// `.forgeplan/secrets.env` when the variable is unset in the
+    /// process environment.
+    ///
+    /// PRD-077 FR-023: until v0.32.0 this was a thin `std::env::var`
+    /// wrapper and users had to `source .forgeplan/secrets.env` manually
+    /// before every `forgeplan reason`. The file-based fallback closes
+    /// that gap so the dotenv-style template W1 writes on
+    /// `forgeplan init` actually wires into the LLM call path.
+    ///
+    /// The workspace is discovered by walking up from CWD (see
+    /// `crate::workspace::find_workspace`). If no `.forgeplan/` is found
+    /// (e.g. unit tests, ad-hoc CLI invocation outside a workspace) the
+    /// helper falls back to `std::env::var` only — matching pre-PRD-077
+    /// behavior.
     pub fn resolve_api_key(&self) -> Option<String> {
         let env_name = self
             .api_key_env
@@ -332,7 +346,17 @@ impl LlmConfig {
                 "ollama" => None,
                 _ => None,
             })?;
-        std::env::var(env_name).ok()
+
+        // Try workspace-aware resolver first (process env → secrets.env).
+        let cwd = std::env::current_dir().ok();
+        if let Some(cwd) = cwd
+            && let Some(ws) = crate::workspace::find_workspace(&cwd)
+        {
+            return crate::config::secrets::resolve_api_key(&ws, env_name);
+        }
+
+        // Outside a workspace — preserve pre-PRD-077 behavior.
+        std::env::var(env_name).ok().filter(|v| !v.is_empty())
     }
 
     /// Whether this provider uses Anthropic-specific headers.
