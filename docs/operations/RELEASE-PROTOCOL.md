@@ -20,9 +20,17 @@ polish. This protocol pins the surrounding workflow so the tool is
 actually used and the post-merge sync step is not forgotten (RED LINE
 #9).
 
-The v0.31.0 cut (PR #283 → #284 → #285) is the canonical reference flow
+The v0.31.0 cut (PR #282 → #284 → #285) is the canonical reference flow
 — anything that worked there is the source of truth; anything that broke
 is captured under [Common pitfalls](#common-pitfalls).
+
+(Audit fix 2026-05-14: an earlier draft of this document cited PR #283
+as the integration PR. That was a typo — PR #283 was a v0.32 wave-9
+integration merge to `dev`, not part of the v0.31.0 cut. The last
+feature PR landing in v0.31.0 was PR #282 `feat/v031-w8-quality → dev`.
+Verify the chain for any release via `gh pr list --state merged --base
+main --search vX.Y` plus the immediately-preceding feature merge to
+`dev`.)
 
 ---
 
@@ -203,7 +211,7 @@ gh pr create --base dev --head chore/sync-main-to-dev-after-vX.Y.Z \
 Branch protection blocks direct push to `dev`, so this PR is the only
 sanctioned path. **Without it, `dev` forever lags `Cargo.toml`'s version
 and the next release creates merge conflicts on the manifest.** See PR
-#225 (sync-after-v0.30.0) and PR #285 (sync-after-v0.31.0) as the
+#262 (sync-after-v0.30.0) and PR #285 (sync-after-v0.31.0) as the
 canonical examples — every release ships with one.
 
 Approve and merge the sync-PR yourself after CI passes (low-risk
@@ -343,5 +351,8 @@ config.yaml edits, and existing secrets.env keys are preserved.
 - [`GIT-WORKFLOW.ru.md`](GIT-WORKFLOW.ru.md) — daily flow, branching strategy,
   PR pipeline
 - [`QUALITY-GATES.ru.md`](QUALITY-GATES.ru.md) — full CI gate reference
-- v0.31.0 cut: PR #283 (Wave 9 integration) → PR #284 (release/v0.31.0 →
-  main) → PR #285 (sync-after) — canonical reference flow
+- v0.31.0 cut: PR #282 (`feat/v031-w8-quality → dev`, last v0.31 feature
+  PR) → PR #284 (release/v0.31.0 → main) → PR #285 (sync-after) —
+  canonical reference flow. (Note: PR #283 was a v0.32 wave-9
+  integration merge to dev, NOT part of the v0.31 cut — earlier drafts
+  of this document mis-attributed it; corrected 2026-05-14 per audit.)

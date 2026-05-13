@@ -20,9 +20,16 @@ Forgeplan ship'ает `forgeplan release-notes` not for nothing: ship-нуть
 реально использовался и post-merge sync step не забывался (RED LINE
 #9).
 
-v0.31.0 cut (PR #283 → #284 → #285) — canonical reference flow. Всё что
+v0.31.0 cut (PR #282 → #284 → #285) — canonical reference flow. Всё что
 там сработало — source of truth; всё что сломалось — captured в
 [Common pitfalls](#common-pitfalls).
+
+(Audit fix 2026-05-14: ранний draft этого документа цитировал PR #283
+как integration PR. Это была typo — PR #283 был v0.32 wave-9
+integration merge в `dev`, не часть v0.31.0 cut. Последний feature PR
+landing в v0.31.0 был PR #282 `feat/v031-w8-quality → dev`. Verify
+chain для любого релиза через `gh pr list --state merged --base main
+--search vX.Y` плюс immediately-preceding feature merge в `dev`.)
 
 ---
 
@@ -198,7 +205,7 @@ gh pr create --base dev --head chore/sync-main-to-dev-after-vX.Y.Z \
 Branch protection блокирует direct push в `dev`, так что этот PR —
 единственный sanctioned path. **Без него `dev` forever lag'ает за
 `Cargo.toml` версией, и следующий релиз создаст merge conflicts на
-manifest.** См. PR #225 (sync-after-v0.30.0) и PR #285
+manifest.** См. PR #262 (sync-after-v0.30.0) и PR #285
 (sync-after-v0.31.0) как canonical examples — каждый релиз ship'ается
 с одним.
 
@@ -341,5 +348,8 @@ edits, и existing secrets.env ключи сохраняются.
 - [`GIT-WORKFLOW.ru.md`](GIT-WORKFLOW.ru.md) — daily flow, branching
   strategy, PR pipeline
 - [`QUALITY-GATES.ru.md`](QUALITY-GATES.ru.md) — full CI gate reference
-- v0.31.0 cut: PR #283 (Wave 9 integration) → PR #284 (release/v0.31.0
-  → main) → PR #285 (sync-after) — canonical reference flow
+- v0.31.0 cut: PR #282 (`feat/v031-w8-quality → dev`, последний v0.31
+  feature PR) → PR #284 (release/v0.31.0 → main) → PR #285 (sync-after)
+  — canonical reference flow. (Note: PR #283 был v0.32 wave-9
+  integration merge в dev, НЕ часть v0.31 cut — ранние drafts этого
+  документа mis-attribute'или его; corrected 2026-05-14 per audit.)
