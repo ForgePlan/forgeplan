@@ -347,6 +347,25 @@ pub async fn run(
         }
     }
 
+    // LOG-003 FR-020: surface phase state file read errors. Non-zero
+    // indicates workspace corruption risk — artifacts failed to read
+    // and were silently dropped from phase-mismatch list, leaving verdict
+    // potentially under-computed. This is advisory-level (like phase
+    // mismatches and gitignore drift) but requires operator attention
+    // to diagnose corruption.
+    if report.phase_read_errors > 0 {
+        println!();
+        println!(
+            "  {} Phase state errors ({}):",
+            style("⚠").red().bold(),
+            report.phase_read_errors
+        );
+        println!(
+            "    {} state files unreadable — workspace may be corrupted (see logs)",
+            report.phase_read_errors
+        );
+    }
+
     // Active stubs (direct-edit bypasses of activate gate)
     if !report.active_stubs.is_empty() {
         println!();

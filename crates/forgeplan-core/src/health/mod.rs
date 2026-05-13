@@ -319,6 +319,14 @@ pub struct HealthReport {
     /// rationale as PROB-063 phase mismatches: advisory by name,
     /// advisory in behaviour.
     pub gitignore_drift: Vec<GitignoreDrift>,
+    /// LOG-003 FR-020: count of artifacts where phase state file read
+    /// failed (corrupted YAML, IO error, symlink attack, etc.).
+    /// Zero is expected. Non-zero indicates workspace corruption risk —
+    /// artifact is silently dropped from phase-mismatch list, leaving
+    /// verdict potentially under-computed. Advisory only; never folded
+    /// into verdict aggregator. Populated by `health_report_with_phase`,
+    /// zero for legacy `health_report` path.
+    pub phase_read_errors: usize,
     /// **Best-known verdict for user-facing display.** Aggregates all
     /// warning classes Forgeplan currently understands. Equals
     /// [`HealthReport::partial_verdict`] when this report comes из
@@ -486,7 +494,7 @@ pub async fn health_report_with_phase(
         .map(|c| crate::phase::is_enabled(&c))
         .unwrap_or(true);
 
-    let phase_mismatches: Vec<PhaseMismatch> = if config_enabled {
+    let (phase_mismatches, phase_read_error_count): (Vec<PhaseMismatch>, usize) = if config_enabled {
         // PROB-051 P-H2 closure: parallelise read_phase via
         // buffer_unordered. Concurrency cap of 16 chosen as a safe
         // default for typical workspace sizes (≤300 active artifacts);
@@ -503,40 +511,58 @@ pub async fn health_report_with_phase(
             .map(|r| (r.id.clone(), r.title.clone(), r.status.clone()))
             .collect();
         let workspace_owned = workspace.to_path_buf();
-        futures::stream::iter(active_records)
+        let results: Vec<(Option<PhaseMismatch>, bool)> = futures::stream::iter(active_records)
             .map(|(id, title, status)| {
                 let ws = workspace_owned.clone();
                 async move {
-                    let phase = crate::phase::store::read_phase(&ws, &id)
-                        .await
-                        .ok()
-                        .flatten();
-                    phase.and_then(|s| {
-                        let early =
-                            matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
-                        early.then(|| PhaseMismatch {
-                            id,
-                            title,
-                            status,
-                            current_phase: s.current_phase.as_str().to_string(),
-                            advisory: "status=active but phase is early-cycle — \
-                                       Code/Evidence likely skipped"
-                                .to_string(),
-                        })
-                    })
+                    match crate::phase::store::read_phase(&ws, &id).await {
+                        Ok(Some(s)) => {
+                            let early =
+                                matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
+                            (early.then(|| PhaseMismatch {
+                                id,
+                                title,
+                                status,
+                                current_phase: s.current_phase.as_str().to_string(),
+                                advisory: "status=active but phase is early-cycle — \
+                                           Code/Evidence likely skipped"
+                                    .to_string(),
+                            }), false)
+                        }
+                        Ok(None) => (None, false),
+                        Err(e) => {
+                            // LOG-003 FR-020: explicit logging on phase read error.
+                            // Artifact is silently dropped from phase-mismatch list,
+                            // potentially under-computing verdict. Logged here for
+                            // forensics + counted in HealthReport.
+                            tracing::warn!(
+                                artifact = %id,
+                                err = %e,
+                                "phase state file read failed during health scan — \
+                                 artifact dropped from phase-mismatch list"
+                            );
+                            (None, true)  // (no mismatch, error occurred)
+                        }
+                    }
                 }
             })
             .buffer_unordered(16)
-            .filter_map(|opt| async move { opt })
             .collect()
-            .await
+            .await;
+
+        let errors = results.iter().filter(|(_, is_error)| *is_error).count();
+        let mismatches = results.into_iter().filter_map(|(m, _)| m).collect();
+        (mismatches, errors)
     } else {
-        Vec::new()
+        (Vec::new(), 0)
     };
 
     // PROB-051 L-H3 closure: re-fold the verdict so CLI/MCP parity holds.
     report.verdict =
         report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
+
+    // LOG-003 FR-020: set phase_read_errors from the parallel read results.
+    report.phase_read_errors = phase_read_error_count;
 
     // PROB-062: populate gitignore drift here (not in
     // `health_report_inner`) because only this entry point knows the
@@ -664,6 +690,9 @@ async fn health_report_from_records(
         // empty here. `health_report_with_phase` populates it after
         // construction.
         gitignore_drift: Vec::new(),
+        // LOG-003 FR-020: phase read errors count. Zero for legacy path;
+        // populated by `health_report_with_phase` if any reads fail.
+        phase_read_errors: 0,
         verdict,
         partial_verdict: verdict,
     })
@@ -861,6 +890,8 @@ pub fn health_report_to_json(
         // under both names — legacy CLI alias + MCP-canonical key.
         "phase_mismatches": phase_mismatches_payload,
         "advisory_phase_mismatches": phase_mismatches_payload,
+        // LOG-003 FR-020: emit phase_read_errors count in health JSON.
+        "phase_read_errors": report.phase_read_errors,
         "gitignore_drift": gitignore_drift,
     })
 }
@@ -1958,6 +1989,7 @@ mod tests {
             possible_duplicates: Vec::new(),
             active_stubs: Vec::new(),
             gitignore_drift: Vec::new(),
+            phase_read_errors: 0,
             verdict: Verdict::Healthy,
             partial_verdict: Verdict::Healthy,
         }
@@ -2868,6 +2900,19 @@ mod tests {
         assert!(
             drifts.is_empty(),
             "PRD body should not be flagged as drift: {drifts:?}"
+        );
+    }
+
+    /// LOG-003 FR-020 regression: HealthReport.phase_read_errors field
+    /// is correctly initialized to 0 in both the legacy `health_report`
+    /// path (no phase state files read) and is properly populated when
+    /// phase reads fail in `health_report_with_phase`.
+    #[test]
+    fn phase_read_errors_field_initialized() {
+        let report = empty_report(5);
+        assert_eq!(
+            report.phase_read_errors, 0,
+            "legacy health_report path must initialize phase_read_errors to 0"
         );
     }
 }
