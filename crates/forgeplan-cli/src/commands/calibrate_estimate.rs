@@ -1,6 +1,7 @@
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::estimate::types::ItemSource;
 use forgeplan_core::estimate::{calculator, confidence, extractor, scorer};
 use forgeplan_core::hints::{self, Hint};
@@ -134,7 +135,14 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
 
     // Display
     println!();
-    println!("{} — {}", style(artifact_id).bold(), record.title);
+    // SEC-H1 (CWE-117 / CWE-150): title is attacker-controllable via
+    // frontmatter; sanitize before TTY emission to neutralise
+    // ANSI/bidi/control bytes.
+    println!(
+        "{} — {}",
+        style(artifact_id).bold(),
+        sanitize_for_hint(&record.title)
+    );
     println!("{}", "─".repeat(50));
     println!(
         "  Estimated:  {:.1}h (confidence {:.0}%)",

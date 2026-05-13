@@ -1,39 +1,15 @@
 # Changelog
 
-All notable changes to Forgeplan are documented here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/). Semver: `MAJOR.MINOR.PATCH`
-with pre-1.0 minor bumps for breaking changes.
+All notable changes to Forgeplan are documented here. Format extends
+[Keep a Changelog](https://keepachangelog.com/) with a `### Internal`
+section for engineering details (tests, refactoring, tooling) that do not
+fit the six user-facing categories. Semver: `MAJOR.MINOR.PATCH` with
+pre-1.0 minor bumps for breaking changes.
 
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
-
-### Fixed
-
-- **PROB-067 — `forgeplan_new` ID-counter race across parallel git
-  worktrees**. Two workers in sibling worktrees of the same repo
-  invoking `forgeplan_new` simultaneously could each compute
-  `max(NNN)+1` and produce duplicate `EVID-NNN` numbers (or silently
-  overwrite a pre-existing artifact body, per the v0.31.0 sprint
-  incident with EVID-118/EVID-119). Fix combo Option B + Option D:
-  1. **Cross-worktree per-kind lock** — id allocation now serializes
-     through `<git-common-dir>/forgeplan/id-<KIND>.lock` (shared
-     across all worktrees of the same repo) with graceful fallback to
-     a workspace-local lock when no git common-dir is available
-     (fresh clones, non-git directories). Per-kind granularity keeps
-     `new prd` and `new evidence` allocations independent.
-  2. **Post-write collision detection** — after the projection write
-     the allocator re-checks that no sibling file owns the same
-     `{ID}-` prefix; on collision the file is rolled back and the
-     allocation retries with the next number (cap 5, panic above to
-     surface a broken lock instead of silent corruption).
-  Both `forgeplan new` (CLI) and `forgeplan_new` (MCP) call the new
-  `forgeplan_core::artifact::id_alloc::allocate_and_create_artifact`
-  entry point. New regression coverage: 3 unit tests in
-  `forgeplan_core::artifact::id_alloc::tests` + 2 CLI process-level
-  stress tests in `cli_prob_067_id_race.rs` (5 parallel `new evidence`
-  + 10 mixed-kind `new evidence`/`new note`). Refs: PROB-067, EVID-TBD.
 
 ### Added
 
@@ -67,6 +43,32 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   для backward compat. Future deprecation possible в major version bump.
   Closes PROB-064 advisory/critical mismatch reporting drift between
   CLI and MCP surfaces. Refs: EVID-118.
+
+### Fixed
+
+- **PROB-067 — `forgeplan_new` ID-counter race across parallel git
+  worktrees**. Two workers in sibling worktrees of the same repo
+  invoking `forgeplan_new` simultaneously could each compute
+  `max(NNN)+1` and produce duplicate `EVID-NNN` numbers (or silently
+  overwrite a pre-existing artifact body, per the v0.31.0 sprint
+  incident with EVID-118/EVID-119). Fix combo Option B + Option D:
+  1. **Cross-worktree per-kind lock** — id allocation now serializes
+     through `<git-common-dir>/forgeplan/id-<KIND>.lock` (shared
+     across all worktrees of the same repo) with graceful fallback to
+     a workspace-local lock when no git common-dir is available
+     (fresh clones, non-git directories). Per-kind granularity keeps
+     `new prd` and `new evidence` allocations independent.
+  2. **Post-write collision detection** — after the projection write
+     the allocator re-checks that no sibling file owns the same
+     `{ID}-` prefix; on collision the file is rolled back and the
+     allocation retries with the next number (cap 5, panic above to
+     surface a broken lock instead of silent corruption).
+  Both `forgeplan new` (CLI) and `forgeplan_new` (MCP) call the new
+  `forgeplan_core::artifact::id_alloc::allocate_and_create_artifact`
+  entry point. New regression coverage: 3 unit tests in
+  `forgeplan_core::artifact::id_alloc::tests` + 2 CLI process-level
+  stress tests in `cli_prob_067_id_race.rs` (5 parallel `new evidence`
+  + 10 mixed-kind `new evidence`/`new note`). Refs: PROB-067, EVID-TBD.
 
 ### Security
 
@@ -112,7 +114,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   (Dependabot mandate had no automated enforcement before release).
   Schema is cargo-deny 0.19+ (action @v2.x).
 
-### Tests
+### Internal
 
 - **+33 CLI integration tests** для 16 previously-untested commands
   in `crates/forgeplan-cli/tests/cli_uncovered_coverage.rs`: `embed`,

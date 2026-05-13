@@ -1,6 +1,7 @@
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
@@ -98,7 +99,10 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         style(&new_id).bold().green(),
         artifact_kind.template_key()
     );
-    println!("  Title: \"{}\"", title);
+    // SEC-H1 (CWE-117 / CWE-150): title came from the source memory artifact's
+    // frontmatter (attacker-controllable for adversarial imports); sanitize
+    // before TTY emission to neutralise ANSI/bidi/control bytes.
+    println!("  Title: \"{}\"", sanitize_for_hint(&title));
     println!(
         "  Status: draft — fill required sections, then: forgeplan validate {}",
         new_id

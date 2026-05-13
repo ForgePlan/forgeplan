@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scoring::decay;
 
@@ -22,7 +23,14 @@ pub async fn run() -> anyhow::Result<()> {
 
     for entry in &entries {
         let drop = entry.fresh_r_eff - entry.current_r_eff;
-        println!("  {} \"{}\"", entry.artifact_id, entry.artifact_title);
+        // SEC-H1 (CWE-117 / CWE-150): artifact titles are attacker-
+        // controllable via frontmatter; sanitize before TTY emission to
+        // neutralise ANSI/bidi/control bytes.
+        println!(
+            "  {} \"{}\"",
+            entry.artifact_id,
+            sanitize_for_hint(&entry.artifact_title)
+        );
         println!(
             "    R_eff: {:.2} → {:.2} (drop: {:.2})",
             entry.fresh_r_eff, entry.current_r_eff, drop

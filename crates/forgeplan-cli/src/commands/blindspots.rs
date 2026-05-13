@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::health;
 use forgeplan_core::hints::{self, Hint};
 
@@ -25,8 +26,11 @@ pub async fn run() -> anyhow::Result<()> {
             report.blind_spots.len()
         );
         for spot in &report.blind_spots {
-            println!("    {} \"{}\"", spot.id, spot.title);
-            println!("      → {}", spot.issue);
+            // SEC-H1 (CWE-117 / CWE-150): titles and issue text are
+            // attacker-controllable via frontmatter; sanitize before TTY
+            // emission to neutralise ANSI/bidi/control bytes.
+            println!("    {} \"{}\"", spot.id, sanitize_for_hint(&spot.title));
+            println!("      → {}", sanitize_for_hint(&spot.issue));
         }
     }
 

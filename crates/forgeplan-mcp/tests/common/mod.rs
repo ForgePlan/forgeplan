@@ -30,6 +30,12 @@ use tempfile::TempDir;
 /// owns the tempdir so dropping the test releases all temp state.
 pub struct McpFixture {
     _tempdir: TempDir,
+    // `#[allow(dead_code)]` because not every integration-test binary reads
+    // this field — `mcp_new_update_title_validation.rs` only uses the JSON-RPC
+    // client and never touches the filesystem path directly. Cargo compiles
+    // `common` once per test binary and surfaces "never read" as a hard
+    // error under `-D warnings`.
+    #[allow(dead_code)]
     pub workspace_path: PathBuf,
     /// rmcp client peer — every test issues `call_tool` through this.
     client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
@@ -42,6 +48,13 @@ impl McpFixture {
     /// Set up tempdir + workspace + LanceStore + ForgeplanServer +
     /// in-memory JSON-RPC client. Awaits the rmcp `initialize` handshake
     /// before returning so the first `call_tool` lands on a fully-ready peer.
+    ///
+    /// `#[allow(dead_code)]` because individual integration-test files
+    /// only use one of `new` / `new_with_seed`; Cargo compiles `common`
+    /// once per test binary and the other entry point becomes "dead" in
+    /// the file that does not call it (PROB-051 W1 verdict-consistency
+    /// test uses only `new_with_seed`).
+    #[allow(dead_code)]
     pub async fn new() -> Self {
         Self::new_with_seed(|_| std::future::ready(())).await
     }
@@ -129,6 +142,25 @@ impl McpFixture {
         .unwrap_or_else(|e| panic!("tool `{name}` rpc error: {e}"));
 
         CallToolEnvelope::from(result)
+    }
+
+    /// Same as `call_tool_json` but returns the rmcp `Result` instead of
+    /// panicking on RPC errors. Used by SEC-C2 validation tests which
+    /// EXPECT `McpError::invalid_params` (a JSON-RPC error code) and
+    /// must inspect the error message rather than treat it as fatal.
+    #[allow(dead_code)]
+    pub async fn try_call_tool(
+        &self,
+        name: &'static str,
+        args: Value,
+    ) -> Result<CallToolResult, rmcp::service::ServiceError> {
+        let params = CallToolRequestParams::new(name).with_arguments(value_to_object(args));
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client.peer().call_tool(params),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("tool `{name}` timed out (15s)"))
     }
 
     /// Issue a `tools/list` JSON-RPC request and return the paginated tool

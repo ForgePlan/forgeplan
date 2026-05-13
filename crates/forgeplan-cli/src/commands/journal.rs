@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::journal;
 
@@ -47,9 +48,15 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
             ""
         };
 
+        // SEC-H1 (CWE-117 / CWE-150): titles are attacker-controllable via
+        // frontmatter; sanitize before TTY emission to neutralise
+        // ANSI/bidi/control bytes.
         println!(
             "  {}  {} [{}] \"{}\"",
-            date, entry.id, entry.kind, entry.title
+            date,
+            entry.id,
+            entry.kind,
+            sanitize_for_hint(&entry.title)
         );
         if entry.evidence_count > 0 {
             println!(

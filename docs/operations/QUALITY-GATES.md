@@ -237,9 +237,12 @@ unrecognized — add a standard heading or check the alias list in CLAUDE.md.
 exit 1 (CI failure).
 
 **Background (PROB-050):** during the v0.28.0 audit, an external OpenAI agent
-found 18 locations in documentation with stale tool counts (28 / 37 / 45 / 47
-tools vs. actual 63). This script prevents recurrence: every PR that adds or
-removes an MCP tool will fail CI until documentation is updated.
+found ~18 locations in documentation with stale MCP-tool counters (several
+distinct historical values against the actual count at v0.28.0). This script
+prevents recurrence: every PR that adds or removes an MCP tool now fails CI
+until documentation catches up. Numbers intentionally kept abstract here so
+this section does not itself become a drift target — see the live count
+emitted by `scripts/check-mcp-tool-count.sh`.
 
 **Source of truth:** count of async functions matching `async fn forgeplan_*(`
 in `crates/forgeplan-mcp/src/server.rs`.
@@ -282,23 +285,24 @@ Excluded from checks:
 ./scripts/check-mcp-tool-count.sh --help
 ```
 
-**Typical output on success:**
+**Typical output on success** (concrete numbers vary per release —
+`<ACTUAL>` is the live count from `grep -c 'async fn forgeplan_' …/server.rs`):
 ```
-Actual MCP tool count (src): 63
+Actual MCP tool count (src): <ACTUAL>
 
-No drift — all docs are consistent with src (72 tools).
+No drift — all docs are consistent with src (<ACTUAL>).
 ```
 
-**Typical output on drift:**
+**Typical output on drift** (`<ACTUAL>` ≠ `<STALE>`):
 ```
-Actual MCP tool count (src): 65
+Actual MCP tool count (src): <ACTUAL>
 
 Drift detected (3 lines):
-  DRIFT: README.md:42:...72 MCP tools...  (number=63 context="72 MCP tools")
-  DRIFT: CLAUDE.md:28:...72 MCP tools...  (number=63 context="72 MCP tools")
-  DRIFT: website/src/content/index.mdx:17:...72 MCP tools...
+  DRIFT: README.md:42:...<STALE> MCP …    (number=<STALE> context="<STALE> MCP …")
+  DRIFT: CLAUDE.md:28:...<STALE> MCP …    (number=<STALE> context="<STALE> MCP …")
+  DRIFT: website/src/content/index.mdx:17:...<STALE> MCP …
 
-Resolution: update each location to actual count (65) OR add a
+Resolution: update each location to actual count (<ACTUAL>) OR add a
 comment explaining why the historical number is preserved (e.g. CHANGELOG).
 ```
 

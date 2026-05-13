@@ -3,6 +3,7 @@
 pub async fn run() -> anyhow::Result<()> {
     use crate::commands::common;
     use crate::ui;
+    use forgeplan_core::artifact::sanitize::sanitize_for_hint;
     use forgeplan_core::embed::Embedder;
     use forgeplan_core::hints::{self, Hint};
 
@@ -42,7 +43,15 @@ pub async fn run() -> anyhow::Result<()> {
         match embedder.embed(&text) {
             Ok(vec) => {
                 store.update_embedding(&record.id, &vec).await?;
-                println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
+                // SEC-H1 (CWE-117 / CWE-150): titles are attacker-
+                // controllable via frontmatter; sanitize before TTY
+                // emission to neutralise ANSI/bidi/control bytes.
+                println!(
+                    "  {} [{}] \"{}\"",
+                    record.id,
+                    record.kind,
+                    sanitize_for_hint(&record.title)
+                );
                 ok += 1;
             }
             Err(e) => {
