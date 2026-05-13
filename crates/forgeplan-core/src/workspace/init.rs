@@ -129,6 +129,23 @@ pub const ARTIFACT_DIRS: &[&str] = &[
     "discovery",
 ];
 
+/// PRD-077 FR-002: commented template appended to `.forgeplan/secrets.yaml`
+/// on init. Documents the **convention** (this file is local-only, never
+/// committed) and lists the env vars that `config.yaml::llm.api_key_env`
+/// references by default. Forgeplan code MUST NOT read this file — it is
+/// purely a convenience surface so users have a canonical place to keep
+/// real keys during local development (paired with `source` or `direnv`).
+const SECRETS_TEMPLATE: &str = "\
+# secrets.yaml — local-only API keys. NEVER commit this file.
+# forgeplan reads keys from env vars whose NAMES are declared in config.yaml::llm.api_key_env.
+# This file is a convenience: a place to keep your real keys during local dev.
+# Copy any line below and uncomment it (and `source .forgeplan/secrets.yaml` or use direnv).
+#
+# export GEMINI_API_KEY=\"sk-...\"
+# export OPENAI_API_KEY=\"sk-...\"
+# export ANTHROPIC_API_KEY=\"sk-ant-...\"
+";
+
 /// Initialize a `.forgeplan/` workspace in the given directory.
 /// Returns the path to `.forgeplan/`.
 pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf> {
@@ -140,6 +157,22 @@ pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf
     for dir in ARTIFACT_DIRS {
         fs::create_dir_all(fp_dir.join(dir))?;
     }
+    // PRD-077 FR-001: write a `.gitkeep` placeholder into every artifact
+    // subdir so git tracks the directory even before the user creates
+    // any artifacts. Without this, empty subdirs vanish on `git add` and
+    // teammates fresh-cloning the repo see no skeleton — they then run
+    // `forgeplan init` themselves, generating local-only directories
+    // that desync from the committed state. The file is empty (zero
+    // bytes); git treats it as a normal tracked file. Idempotent: if a
+    // `.gitkeep` already exists in a subdir (re-init scenarios after
+    // partial rollback, or manual placement), we leave it untouched so
+    // we never clobber a user-customized placeholder.
+    for dir in ARTIFACT_DIRS {
+        let keep = fp_dir.join(dir).join(".gitkeep");
+        if !keep.exists() {
+            fs::write(&keep, b"")?;
+        }
+    }
     // Write config.yaml with commented estimate section
     let config = Config {
         project_name: project_name.into(),
@@ -149,6 +182,15 @@ pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf
     // Append commented config templates for all optional sections
     yaml.push_str(CONFIG_TEMPLATES);
     fs::write(fp_dir.join("config.yaml"), yaml)?;
+    // PRD-077 FR-002: create a template `secrets.yaml` next to config.yaml.
+    // This file is **template-only** (forgeplan does NOT read it) and is
+    // gitignored by the canonical managed block (PRD-077 FR-003) so
+    // accidental commits are caught at health-check time (FR-006).
+    // Idempotent: skip if a user-edited file already exists.
+    let secrets_path = fp_dir.join("secrets.yaml");
+    if !secrets_path.exists() {
+        fs::write(&secrets_path, SECRETS_TEMPLATE)?;
+    }
     Ok(fp_dir)
 }
 
