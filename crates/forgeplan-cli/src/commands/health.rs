@@ -100,99 +100,40 @@ pub async fn run(
     // No hints → workspace healthy → render `Done.` terminal indicator.
 
     if json {
-        // PR-E Round 6 audit MED fix: `Verdict::Empty` now exists as a 4th
-        // enum variant. `human_summary()` returns the empty-workspace
-        // text directly, so the Round 5 manual `total == 0` branch is no
-        // longer needed — typed `verdict` and `verdict_summary` agree
-        // by construction (no consumer can read `verdict == "healthy"`
-        // for an empty workspace).
-        let verdict_summary = report.verdict.human_summary();
-        // PROB-064: compute the phase-mismatch payload ONCE and reference it
-        // under both `phase_mismatches` (legacy CLI key) and
-        // `advisory_phase_mismatches` (MCP-canonical key) for cross-surface
-        // consistency. Single source of truth — the two JSON keys cannot
-        // drift apart.
-        let phase_mismatches_payload: Vec<serde_json::Value> = phase_mismatches
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "id": m.id,
-                    "title": m.title,
-                    "status": m.status,
-                    "current_phase": m.current_phase,
-                    "advisory": m.advisory,
-                })
-            })
-            .collect();
-        // `--strict` adds a parseable `exit_code` field so CI scripts can
-        // branch on a single integer instead of recomputing the gate from
-        // counts. Field is only present when `--strict` was requested —
-        // omitting it in default mode keeps legacy consumers untouched.
+        // Wave 9 ARCH-C1 closure: route the JSON shape through the
+        // unified `forgeplan_core::health::health_report_to_json` helper
+        // so CLI and MCP surfaces emit IDENTICAL key sets and shapes by
+        // construction. Pre-fix the two surfaces hand-rolled `json!(...)`
+        // literals with subtly different shapes (`by_kind` object vs
+        // tuple; missing `possible_duplicates` on MCP — see PROB-064 /
+        // CR-001). The helper also bundles SEC-M1 closure — every
+        // title / message / reason / issue / advisory string is
+        // sanitised before serialisation (CWE-117 / CWE-1007 defence).
+        let mut json_data =
+            forgeplan_core::health::health_report_to_json(&report, &phase_mismatches);
+        // Layer in CLI-specific keys AFTER the helper builds the
+        // shared shape: `project` (workspace identity, not part of the
+        // core health domain) and `_next_action` (CLI hint protocol).
+        // `--strict` adds a parseable `exit_code` field so CI scripts
+        // can branch on a single integer.
         let strict_exit = if strict {
             strict_exit_code(&report).unwrap_or(0)
         } else {
             0
         };
-        let json_data = serde_json::json!({
-            "project": config.project_name,
-            "total": report.total,
-            // PROB-029 closure (Round 4 audit HIGH-1): expose the typed
-            // verdict + human-readable summary so programmatic consumers
-            // (CI scripts, agent-IDE plugins via `forgeplan health --json`)
-            // can branch on `verdict` directly. Without this, --json output
-            // had only raw counts and `next_actions` strings — re-implementing
-            // the verdict aggregation downstream would silently drift.
-            "verdict": report.verdict.as_str(),
-            "verdict_summary": verdict_summary,
-            "by_kind": report.by_kind.iter().map(|(k, v)| serde_json::json!({"kind": k, "count": v})).collect::<Vec<_>>(),
-            "by_status": report.by_status.iter().map(|(s, v)| serde_json::json!({"status": s, "count": v})).collect::<Vec<_>>(),
-            "at_risk": report.at_risk.iter().map(|a| serde_json::json!({"id": a.id, "title": a.title, "reason": a.reason})).collect::<Vec<_>>(),
-            "blind_spots": report.blind_spots.iter().map(|b| serde_json::json!({"id": b.id, "title": b.title, "issue": b.issue})).collect::<Vec<_>>(),
-            "stale_count": report.stale_count,
-            "orphans": report.orphans,
-            "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
-            "next_actions": report.next_actions,
-            "possible_duplicates": report.possible_duplicates.iter().map(|d| serde_json::json!({
-                "id_a": d.id_a,
-                "id_b": d.id_b,
-                "similarity": d.similarity,
-                "title_a": d.title_a,
-                "title_b": d.title_b,
-                "kind": d.kind,
-            })).collect::<Vec<_>>(),
-            "active_stubs": report.active_stubs.iter().map(|s| serde_json::json!({
-                "id": s.id,
-                "kind": s.kind,
-                "title": s.title,
-                "markers_found": s.markers_found,
-                "message": s.message,
-            })).collect::<Vec<_>>(),
-            // PROB-051 L-H3 + PROB-064: surface phase mismatches in CLI --json
-            // under BOTH legacy (`phase_mismatches`) and MCP-canonical
-            // (`advisory_phase_mismatches`) keys. Same data, two names —
-            // additive aliasing so agents/CI scripts written against either
-            // surface keep working. MCP `forgeplan_health` emits only
-            // `advisory_phase_mismatches`; pre-PROB-064 CLI emitted only
-            // `phase_mismatches`; consumers branching on the MCP name when
-            // moved to the CLI surface silently saw `null` (PROB-064 root
-            // cause). Future deprecation of the legacy `phase_mismatches`
-            // key is possible in a major-version bump.
-            "phase_mismatches": phase_mismatches_payload,
-            "advisory_phase_mismatches": phase_mismatches_payload,
-            // PROB-062: advisory gitignore-drift entries (tracked files
-            // matching canonical forgeplan ignore patterns). Same
-            // advisory class as `phase_mismatches` — does NOT promote
-            // the verdict. CI scripts that want to gate on drift can
-            // check `gitignore_drift.length > 0` explicitly.
-            "gitignore_drift": report.gitignore_drift.iter().map(|d| serde_json::json!({
-                "path": d.path,
-                "reason": d.reason,
-            })).collect::<Vec<_>>(),
-            "_next_action": hints::primary_action(&hints_vec),
-        });
-        let mut json_data = json_data;
-        if strict && let serde_json::Value::Object(ref mut map) = json_data {
-            map.insert("exit_code".to_string(), serde_json::json!(strict_exit));
+        if let serde_json::Value::Object(ref mut map) = json_data {
+            map.insert(
+                "project".to_string(),
+                serde_json::Value::String(config.project_name.clone()),
+            );
+            map.insert(
+                "_next_action".to_string(),
+                serde_json::to_value(hints::primary_action(&hints_vec))
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            if strict {
+                map.insert("exit_code".to_string(), serde_json::json!(strict_exit));
+            }
         }
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         if strict && strict_exit != 0 {

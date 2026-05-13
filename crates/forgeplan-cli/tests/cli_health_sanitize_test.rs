@@ -1,29 +1,32 @@
-//! Wave 9 edge-case worker — LOG-001 surface: `forgeplan health` text
-//! output MUST sanitise artifact titles before printing.
+//! Wave 9 LOG-001 surface tests — historically used `forgeplan update
+//! --title <adversarial>` to plant ANSI / BEL / bidi / newline payloads
+//! that the `forgeplan health` rendering path then had to sanitise on
+//! the way out. The Wave-9-final audit (SEC-C1) closed that ingress
+//! vector at the CLI front-door: `forgeplan update --title` now routes
+//! through `forgeplan_core::artifact::validate_title` BEFORE touching
+//! LanceDB, so control chars and bidi overrides are rejected with
+//! exit-1 before they can land in a stored title.
 //!
-//! Threat model: an attacker plants an adversarial title (ANSI escape
-//! sequences, bidi overrides, zero-width chars, terminal-bell BEL,
-//! injected newlines) in a `.forgeplan/*/X-NNN-*.md` frontmatter file.
-//! `forgeplan health` reads that title via LanceStore and prints it
-//! into terminal output for blind-spots / at-risk / active-stubs /
-//! duplicates panels. Without sanitisation, ANSI escapes hijack the
-//! cursor (CWE-150 control char in display content), bidi overrides
-//! flip line direction (CWE-1007 visually deceptive content), and
-//! newline injection mangles the layout.
+//! That means the adversarial-payload path through `update --title`
+//! can no longer set up the fixture these tests needed. Two payloads
+//! are still relevant to LOG-001's *display-time* defence-in-depth
+//! (which remains in place — `sanitize_for_hint` still runs on every
+//! interpolation in `commands/health.rs`):
 //!
-//! LOG-001 fix routes every title interpolation through
-//! `sanitize_for_hint` (which strips controls + invisibles + shell
-//! metachars). This file pins the contract end-to-end via a real
-//! fixture workspace and the CLI binary, so a future refactor that
-//! drops the `sanitize_for_hint` call on any of the four panels fails
-//! here first.
+//! - **Zero-width chars** (`U+200B`, `U+FEFF`) are NOT rejected by
+//!   `validate_title` (they are not `is_control()` and they are not in
+//!   the bidi override range). They CAN reach a stored title via
+//!   `--title` and the health panel must strip them when rendering.
+//! - **Empty-workspace verdict** (no payload at all) is a pure
+//!   wiring check that survives unchanged.
 //!
-//! Coverage limits: we use `update --title` to plant adversarial
-//! payloads on already-active artifacts (force-activated to bypass the
-//! evidence gate so the artifact lands in a panel that prints its
-//! title). Some payloads (lone newline as first char) get whitespace-
-//! trimmed by `sanitize_for_hint`, so the `forgeplan new` path itself
-//! is less expressive than `update --title` for testing — we use both.
+//! The other payloads (`\x1b[2J`, `\x07`, `\u{202E}`, `\n`) are now
+//! rejected at validate-time. Tests that historically asserted "title
+//! rendered without ESC byte" are converted to assert "validator
+//! rejects the title with exit-1 and a control-character / bidi error
+//! message". This pins SEC-C1 closure end-to-end through the CLI
+//! binary (mirrors the unit-test coverage in
+//! `forgeplan-core::artifact::validation::tests`).
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -50,11 +53,12 @@ fn first_id_with_prefix(ws: &std::path::Path, subdir: &str, prefix: &str) -> Str
     name.split('-').take(2).collect::<Vec<_>>().join("-")
 }
 
-/// Init workspace + create a PRD + force-activate it (bypasses
-/// evidence gate so the PRD lands in the blind-spots panel — which
-/// renders the title). Then update the title to an adversarial
-/// payload via `update --title`.
-fn fixture_with_adversarial_title(payload: &str) -> (TempDir, String) {
+/// Init workspace + create a PRD that we can rename. Helper kept
+/// around so the (now smaller) set of LOG-001 display-time tests stays
+/// readable. Post-SEC-C1, `update --title` rejects most adversarial
+/// payloads up-front — only zero-width / printable-bidi-isolate-free
+/// payloads make it through to the display layer.
+fn fixture_with_safe_title(initial: &str) -> (TempDir, String) {
     let tmp = TempDir::new().unwrap();
     forgeplan()
         .args(["init", "-y"])
@@ -63,7 +67,7 @@ fn fixture_with_adversarial_title(payload: &str) -> (TempDir, String) {
         .success();
 
     forgeplan()
-        .args(["new", "prd", "Innocent placeholder"])
+        .args(["new", "prd", initial])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -79,123 +83,114 @@ fn fixture_with_adversarial_title(payload: &str) -> (TempDir, String) {
         .assert()
         .success();
 
-    // Update title to adversarial payload. `update --title` accepts
-    // arbitrary bytes (no validation of control chars at this layer —
-    // sanitisation is the Display-side defence).
+    (tmp, id)
+}
+
+/// **SEC-C1 closure** (Wave-9 final audit) — `forgeplan update --title`
+/// MUST reject ANSI escape payloads at validate-time, before any
+/// LanceDB write. Pre-fix the CLI accepted any byte sequence and the
+/// rendering path picked up the defence; SEC-C1 moves the defence
+/// upstream so adversarial titles never enter the store.
+#[test]
+fn update_title_rejects_ansi_escape() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Initial"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let id = first_id_with_prefix(tmp.path(), "prds", "PRD-");
+
+    // ANSI escape sequences contain ESC (U+001B), which is a control
+    // char — validator rejects with exit-1 and "control character" msg.
+    let out = forgeplan()
+        .args(["update", &id, "--title", "\x1b[2Jpwn\x1b[H"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("spawn update");
+    assert!(
+        !out.status.success(),
+        "ANSI escape title must be rejected: stdout={}, stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("control character"),
+        "rejection message must mention control character (got: {stderr})"
+    );
+    assert!(
+        stderr.contains("U+001B"),
+        "rejection message must include the offending codepoint (got: {stderr})"
+    );
+}
+
+/// **SEC-C1 closure** — bidi override (`U+202E`) rejected with a
+/// "BIDI override" error message. Validates the second branch of
+/// `validate_title` (bidi range check) is wired through the CLI binary.
+#[test]
+fn update_title_rejects_bidi_override() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Initial"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let id = first_id_with_prefix(tmp.path(), "prds", "PRD-");
+
+    let out = forgeplan()
+        .args(["update", &id, "--title", "before\u{202E}REVERSED"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("spawn update");
+    assert!(
+        !out.status.success(),
+        "bidi-override title must be rejected: stdout={}, stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("BIDI override"),
+        "rejection message must mention BIDI override (got: {stderr})"
+    );
+    assert!(
+        stderr.contains("U+202E"),
+        "rejection message must include the offending codepoint (got: {stderr})"
+    );
+}
+
+/// **LOG-001 display-time defence** (retained post-SEC-C1) — zero-width
+/// characters slip past `validate_title` (they are not `is_control()`
+/// and not in the bidi override range). They CAN reach a stored title
+/// via `update --title`, so the health panel must still strip them on
+/// the render path via `sanitize_for_hint`.
+///
+/// This pins the defence-in-depth chain: SEC-C1 closes the loud
+/// payloads, LOG-001's display strip handles the residual invisibles.
+#[test]
+fn health_text_strips_zero_width_chars_in_title() {
+    let (tmp, id) = fixture_with_safe_title("Innocent placeholder");
+
+    // U+200B ZWSP and U+FEFF BOM are NOT controls and NOT in the bidi
+    // override range — `validate_title` accepts them. They are
+    // stripped at display-time by `sanitize_for_hint`.
+    let payload = "in\u{200B}vis\u{FEFF}ible";
     forgeplan()
         .args(["update", &id, "--title", payload])
         .current_dir(tmp.path())
         .assert()
         .success();
-
-    let id_str = id.to_string();
-    (tmp, id_str)
-}
-
-/// ANSI clear-screen / cursor-home escape (`\x1b[2J\x1b[H`). The
-/// sanitised stdout MUST NOT contain raw ESC (0x1b) bytes inside the
-/// rendered title — the `is_control()` filter in `sanitize_for_hint`
-/// strips them. Note: the rest of stdout legitimately contains ESC
-/// from `console::style(...)` (for colouring), so the test scope is
-/// the TITLE rendering specifically, not all stdout.
-///
-/// The defence is the ESC byte strip: without ESC, `[2J` is plain
-/// inert text. CWE-150 (control char in display content) requires
-/// the ESC byte to trigger terminal interpretation.
-#[test]
-fn health_text_strips_ansi_escape_in_title() {
-    let payload = "\x1b[2Jpwn\x1b[H";
-    let (tmp, _id) = fixture_with_adversarial_title(payload);
-
-    let out = forgeplan()
-        .args(["health"])
-        .current_dir(tmp.path())
-        .output()
-        .expect("spawn health");
-    assert!(
-        out.status.success(),
-        "health must exit 0, got {:?}: stderr={}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout_bytes = out.stdout;
-    let stdout = String::from_utf8_lossy(&stdout_bytes);
-
-    // Find the lines containing the (sanitised) title: PRD-NNN "title"
-    // in the blind-spots / active-stubs panels.
-    let title_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.contains("PRD-") && l.contains("\""))
-        .collect();
-    assert!(
-        !title_lines.is_empty(),
-        "expected at least one PRD title rendering line: stdout={stdout}"
-    );
-
-    // CRITICAL: extract the quoted title substring per line and
-    // assert no raw ESC byte survives there. (ESC outside the
-    // quoted title legitimately comes from console::style.)
-    for line in &title_lines {
-        // Extract the text between the first pair of quotes.
-        let after_first = line.split_once('"').map(|(_, rest)| rest).unwrap_or(line);
-        let title_only = after_first
-            .split_once('"')
-            .map(|(t, _)| t)
-            .unwrap_or(after_first);
-        assert!(
-            !title_only.contains('\x1b'),
-            "raw ESC byte must not appear inside rendered title: line={line:?}, title={title_only:?}"
-        );
-    }
-
-    // The plain text part ("pwn") survives sanitisation.
-    assert!(
-        stdout.contains("pwn"),
-        "non-control payload should survive sanitisation: stdout={stdout}"
-    );
-}
-
-/// Bidi override (U+202E RLO, U+202C PDF). These flip terminal text
-/// rendering and are explicitly rejected in `sanitize_for_hint`'s
-/// invisible-range check (`\u{202A}..='\u{202E}'`).
-#[test]
-fn health_text_strips_bidi_override_in_title() {
-    let payload = "before\u{202E}REVERSED\u{202C}after";
-    let (tmp, _id) = fixture_with_adversarial_title(payload);
-
-    let out = forgeplan()
-        .args(["health"])
-        .current_dir(tmp.path())
-        .output()
-        .expect("spawn health");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-
-    // The bidi codepoints encode as multi-byte UTF-8: U+202E = E2 80 AE,
-    // U+202C = E2 80 AC. Check the codepoints aren't present in the
-    // decoded string (which `from_utf8_lossy` decodes).
-    assert!(
-        !stdout.contains('\u{202E}'),
-        "U+202E RLO must be stripped: stdout={stdout}"
-    );
-    assert!(
-        !stdout.contains('\u{202C}'),
-        "U+202C PDF must be stripped: stdout={stdout}"
-    );
-    // The plain alphabetic context survives.
-    assert!(
-        stdout.contains("before") && stdout.contains("REVERSED") && stdout.contains("after"),
-        "non-bidi parts survive sanitisation: stdout={stdout}"
-    );
-}
-
-/// Zero-width characters (U+200B ZWSP, U+FEFF BOM). Strip cleanly
-/// per the invisible-range filter — they would otherwise let an
-/// attacker plant visually-identical titles to bypass duplicate
-/// detection or hide payload boundaries.
-#[test]
-fn health_text_strips_zero_width_chars_in_title() {
-    let payload = "in\u{200B}vis\u{FEFF}ible";
-    let (tmp, _id) = fixture_with_adversarial_title(payload);
 
     let out = forgeplan()
         .args(["health"])
@@ -219,66 +214,67 @@ fn health_text_strips_zero_width_chars_in_title() {
     );
 }
 
-/// Terminal BEL (`\x07`) — annoying, low-impact, but still a control
-/// char that should be stripped. Pins the `is_control()` branch in
-/// `sanitize_for_hint`.
+/// **SEC-C1 closure** — terminal BEL (`\x07`) is a control char and
+/// rejected by `validate_title` before reaching the store. Pre-SEC-C1
+/// this test asserted display-time strip; post-SEC-C1 it asserts the
+/// front-door reject.
 #[test]
-fn health_text_strips_bell_in_title() {
-    let payload = "\x07alert\x07loud";
-    let (tmp, _id) = fixture_with_adversarial_title(payload);
+fn update_title_rejects_bell_control_char() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Initial"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let id = first_id_with_prefix(tmp.path(), "prds", "PRD-");
 
     let out = forgeplan()
-        .args(["health"])
+        .args(["update", &id, "--title", "\x07alert\x07loud"])
         .current_dir(tmp.path())
         .output()
-        .expect("spawn health");
-    let stdout = out.stdout;
-
-    // BEL must not survive — `is_control()` true for 0x07.
-    assert!(
-        !stdout.contains(&0x07),
-        "BEL (0x07) must be stripped from health stdout"
-    );
-    let s = String::from_utf8_lossy(&stdout);
-    // Visible payload survives (concatenated).
-    assert!(
-        s.contains("alertloud"),
-        "non-control payload concatenated after BEL strip: stdout={s}"
-    );
+        .expect("spawn update");
+    assert!(!out.status.success(), "BEL title must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("control character"), "got: {stderr}");
+    assert!(stderr.contains("U+0007"), "got: {stderr}");
 }
 
-/// Injected newlines in a title. `is_control()` is true for `\n` so
-/// `sanitize_for_hint` strips it. Pin that adjacent text concatenates
-/// without a layout break.
+/// **SEC-C1 closure** — newline injection in title is a control char
+/// (`\n` is `is_control()`) and rejected at validate-time. Pre-SEC-C1
+/// the YAML frontmatter render layer would catch the corruption
+/// further downstream; post-SEC-C1 the validator stops it at the door.
 #[test]
-fn health_text_strips_newline_injection_in_title() {
-    let payload = "foo\nbar\n--- spoof header ---";
-    let (tmp, _id) = fixture_with_adversarial_title(payload);
+fn update_title_rejects_newline_injection() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "prd", "Initial"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let id = first_id_with_prefix(tmp.path(), "prds", "PRD-");
 
     let out = forgeplan()
-        .args(["health"])
+        .args(["update", &id, "--title", "foo\nbar\n--- spoof header ---"])
         .current_dir(tmp.path())
         .output()
-        .expect("spawn health");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-
-    // Find the line that contains the (sanitised) artifact title. The
-    // blind-spots panel format is `    PRD-NNN "TITLE" — issue`. The
-    // sanitised title MUST appear on a single line — no newlines
-    // smuggled in via the payload.
-    //
-    // We can't grep-by-line uniquely (the rest of stdout has many
-    // newlines from layout), but we CAN check the concrete payload
-    // segments concatenate: "foo" then "bar" then "--- spoof header ---"
-    // appear in order, but no `\nbar\n` substring survives.
+        .expect("spawn update");
     assert!(
-        !stdout.contains("foo\nbar"),
-        "newline-between-payload must be stripped: stdout={stdout}"
+        !out.status.success(),
+        "newline-injection title must be rejected"
     );
-    assert!(
-        stdout.contains("foobar"),
-        "after newline strip, fragments concatenate: stdout={stdout}"
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("control character"), "got: {stderr}");
+    assert!(stderr.contains("U+000A"), "got: {stderr}");
 }
 
 /// Empty workspace E2E: `forgeplan init` + immediate
@@ -327,11 +323,14 @@ fn health_json_on_freshly_initialised_workspace_returns_verdict_empty() {
     assert_eq!(total, 0, "fresh init must produce zero artifacts: {json}");
 }
 
-/// Duplicate-detection panel renders TITLE_A for the duplicate pair.
-/// Plant identical adversarial titles on both notes — the duplicates
-/// panel renders title_a after similarity match.
+/// **LOG-001 display-time defence** — duplicate-detection panel renders
+/// `title_a` for each pair. Per SEC-C1 the loud ANSI variant can no
+/// longer reach the store via `update --title`, so this test now uses
+/// a zero-width payload (accepted by `validate_title`, stripped at
+/// display by `sanitize_for_hint`) to keep the LOG-001 contract pinned
+/// on the duplicates surface.
 #[test]
-fn health_text_strips_ansi_in_duplicates_panel() {
+fn health_text_strips_invisibles_in_duplicates_panel() {
     let tmp = TempDir::new().unwrap();
     forgeplan()
         .args(["init", "-y"])
@@ -340,9 +339,7 @@ fn health_text_strips_ansi_in_duplicates_panel() {
         .success();
 
     // Two notes with identical titles. Second needs --allow-duplicate
-    // to bypass the new-time similarity check. The duplicate detector
-    // for health runs over the indexed titles and flags them as a
-    // pair regardless.
+    // to bypass the new-time similarity check.
     forgeplan()
         .args(["new", "note", "Same title note"])
         .current_dir(tmp.path())
@@ -354,18 +351,19 @@ fn health_text_strips_ansi_in_duplicates_panel() {
         .assert()
         .success();
 
-    // Update both titles to identical adversarial payload — preserves
-    // similarity (still identical) AND injects an ANSI escape.
+    // Update both titles to identical zero-width payload — preserves
+    // similarity (still identical after invisibles strip) AND exercises
+    // the display-time invisible-stripping defence on this panel.
     let note1 = first_id_with_prefix(tmp.path(), "notes", "NOTE-001");
     let note2 = first_id_with_prefix(tmp.path(), "notes", "NOTE-002");
-    let adversarial = "\x1b[31mRED\x1b[0m";
+    let zero_width_payload = "in\u{200B}vis\u{FEFF}ible-title";
     forgeplan()
-        .args(["update", &note1, "--title", adversarial])
+        .args(["update", &note1, "--title", zero_width_payload])
         .current_dir(tmp.path())
         .assert()
         .success();
     forgeplan()
-        .args(["update", &note2, "--title", adversarial])
+        .args(["update", &note2, "--title", zero_width_payload])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -378,32 +376,15 @@ fn health_text_strips_ansi_in_duplicates_panel() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    // Check the duplicates panel rendering. If the panel printed
-    // title_a un-sanitised, an ESC byte would appear inside the
-    // quoted title. Find the panel header line and the entries
-    // beneath it.
-    if stdout.contains("Possible duplicates") {
-        // The duplicates panel exists. Lines following it have the
-        // shape `    NOTE-XXX ↔ NOTE-YYY (NN%) — "TITLE"`. Title is
-        // between the first pair of `"` quotes on the entry line.
-        let dup_lines: Vec<&str> = stdout
-            .lines()
-            .filter(|l| l.contains("NOTE-") && l.contains("\"") && l.contains("%"))
-            .collect();
-        for line in dup_lines {
-            let after_first = line.split_once('"').map(|(_, r)| r).unwrap_or(line);
-            let title_only = after_first
-                .split_once('"')
-                .map(|(t, _)| t)
-                .unwrap_or(after_first);
-            assert!(
-                !title_only.contains('\x1b'),
-                "duplicates-panel title must not contain raw ESC: line={line:?}, title={title_only:?}"
-            );
-        }
-    }
-    // If the duplicates panel does not appear (similarity below
-    // threshold after both renames), the test passes trivially —
-    // the LOG-001 coverage is exercised by the other panels
-    // (blind-spots / active-stubs) in the sibling tests above.
+    // The codepoints (decoded via from_utf8_lossy) must not survive
+    // into stdout — `sanitize_for_hint` strips them in the duplicates
+    // panel rendering path.
+    assert!(
+        !stdout.contains('\u{200B}'),
+        "U+200B ZWSP must be stripped from duplicates panel: stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains('\u{FEFF}'),
+        "U+FEFF BOM must be stripped from duplicates panel: stdout={stdout}"
+    );
 }

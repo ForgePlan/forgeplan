@@ -148,6 +148,47 @@ fn err_result(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.to_string())])
 }
 
+/// Wrap an `anyhow::Error` into an `McpError::internal_error` whose Display
+/// payload has been routed through the projection-layer error-chain
+/// sanitiser (`forgeplan_core::projection::sanitize_error_chain`).
+///
+/// **Wave 9 SEC-H3 closure**: pre-fix, ~40 MCP call sites built their
+/// internal_error message via `format!("{e}")` directly. That format leaks
+/// raw `anyhow::Error` chains — including `$HOME` paths, scratch tempdirs
+/// (`/private/var/folders/...`), `CARGO_TARGET_DIR`, и unfiltered OS error
+/// strings — straight into MCP responses returned to Claude Desktop /
+/// agent log captures. Only the typed `MutationError::StoreTransient`,
+/// `StoreFatal`, and `FileNotFound` variants routed through the sanitiser,
+/// so any non-typed error path bypassed the defence-in-depth layer.
+///
+/// **Strategy**: every `.map_err(|e| McpError::internal_error(format!("{e}"), None))`
+/// call site collapses to `.map_err(safe_mcp_error)`. The signature
+/// accepts `impl std::fmt::Display` so it works uniformly for
+/// `anyhow::Error`, `MutationError`, `io::Error`, `serde_json::Error`,
+/// `LanceError`, etc. — every error type that Display-formats as a path-
+/// containing string. Internally we wrap into `anyhow::Error` so the
+/// chain-walking inside `sanitize_error_chain` runs even for single-link
+/// errors (the chain has one link, sanitised the same way).
+///
+/// **Threat model**: `format!("Init failed: {e}")` where `e` is an
+/// `anyhow::Error` wrapping an `io::Error` for
+/// `/Users/alice/projects/secrets/.forgeplan/state/...` previously leaked
+/// the full path. After this wrapper, the rendered string says
+/// `<HOME>/projects/secrets/.forgeplan/state/...` — operator can still
+/// debug, but cross-user identifiers are masked.
+fn safe_mcp_error<E: std::fmt::Display>(e: E) -> McpError {
+    // Wrap into anyhow so we go through the chain-aware sanitiser uniformly,
+    // even when `e` is a single-link error (chain() yields one entry). This
+    // lets the same helper accept anyhow::Error, MutationError, io::Error,
+    // serde_json::Error, LanceError, etc. — every error type that
+    // Display-formats as a path-containing string.
+    let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
+    McpError::internal_error(
+        forgeplan_core::projection::sanitize_error_chain(&wrapped),
+        None,
+    )
+}
+
 /// Build a recoverable tool error with an explicit `_next_action` remediation.
 ///
 /// **Why**: `_next_action` is the workflow-chaining contract for the success
@@ -335,9 +376,8 @@ fn hinted_result<T: serde::Serialize>(
     inner: &T,
     next_action: impl Into<String>,
 ) -> Result<CallToolResult, McpError> {
-    let mut v = serde_json::to_value(inner).map_err(|e| {
-        McpError::internal_error(format!("Response serialization failed: {e}"), None)
-    })?;
+    let mut v = serde_json::to_value(inner)
+        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
     if let Some(obj) = v.as_object_mut() {
         obj.insert(
             "_next_action".to_string(),
@@ -1031,9 +1071,9 @@ impl ForgeplanServer {
                      DESTROYS all artifacts.",
                 );
             }
-            tokio::fs::remove_dir_all(&existing).await.map_err(|e| {
-                McpError::internal_error(format!("Failed to remove workspace: {e}"), None)
-            })?;
+            tokio::fs::remove_dir_all(&existing)
+                .await
+                .map_err(|e| safe_mcp_error(anyhow::anyhow!("Failed to remove workspace: {e}")))?;
         }
 
         let project_name = self
@@ -1043,11 +1083,11 @@ impl ForgeplanServer {
             .unwrap_or_else(|| "unnamed".into());
 
         let ws = workspace::init_workspace(&self.workspace_root, &project_name)
-            .map_err(|e| McpError::internal_error(format!("Init failed: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Init failed: {e}")))?;
 
         let new_store = LanceStore::init(&ws)
             .await
-            .map_err(|e| McpError::internal_error(format!("LanceDB init failed: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("LanceDB init failed: {e}")))?;
 
         *self.store.write().await = Some(Arc::new(new_store));
         *self.workspace_path.write().await = Some(ws.clone());
@@ -1116,6 +1156,15 @@ impl ForgeplanServer {
             ));
         }
 
+        // Wave 9 SEC-C2: same defensive check the CLI runs — rejects bidi
+        // overrides (Trojan Source CWE-1007), control chars, ANSI escapes,
+        // oversize char-count, and empty/whitespace-only titles. Pre-fix
+        // MCP accepted any byte sequence under the coarse byte cap above,
+        // so a malicious agent could plant `prd-\u{202E}<rtl payload>` and
+        // hijack the rendered `Next:` hint suggestions.
+        forgeplan_core::artifact::validate_title(&p.title)
+            .map_err(|e| McpError::invalid_params(format!("{e}"), None))?;
+
         let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
             Err(e) => return Ok(err_result(&format!("{e}"))),
@@ -1133,7 +1182,7 @@ impl ForgeplanServer {
         let existing = store
             .list_artifacts(Some(&dup_filter))
             .await
-            .map_err(|e| McpError::internal_error(format!("Duplicate scan failed: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Duplicate scan failed: {e}")))?;
         let warnings = find_duplicate_warnings(&existing, &p.title);
 
         let template = match get_embedded_template(template_key) {
@@ -1147,13 +1196,10 @@ impl ForgeplanServer {
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let slug = slug_from_kind_title(&artifact_kind, &p.title).map_err(|e| {
-            McpError::internal_error(
-                format!(
-                    "failed to build canonical slug from title {:?}: {e}",
-                    p.title
-                ),
-                None,
-            )
+            safe_mcp_error(anyhow::anyhow!(
+                "failed to build canonical slug from title {:?}: {e}",
+                p.title
+            ))
         })?;
 
         // PROB-067 build closure: re-rendered for each retry attempt.
@@ -1214,7 +1260,7 @@ impl ForgeplanServer {
             &build,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("Create failed (id-alloc): {e}"), None))?;
+        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Create failed (id-alloc): {e}")))?;
         let id = allocated.id;
         let predicted_number = allocated.number;
         let filepath = allocated.filepath;
@@ -1330,7 +1376,7 @@ impl ForgeplanServer {
         let records = store
             .list_records(filter.as_ref())
             .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+            .map_err(safe_mcp_error)?;
 
         let total = records.len();
         let draft_count = records.iter().filter(|a| a.status == "draft").count();
@@ -1401,12 +1447,9 @@ impl ForgeplanServer {
         };
 
         let config = workspace::load_config(&ws)
-            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
 
-        let artifacts = store
-            .list_artifacts(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let artifacts = store.list_artifacts(None).await.map_err(safe_mcp_error)?;
 
         let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
         let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
@@ -1468,10 +1511,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let all_records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let all_records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         let to_validate: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
             let upper = target_id.to_uppercase();
@@ -2041,10 +2081,7 @@ impl ForgeplanServer {
 
         // Verify exists. The helpers do their own sync_before_mutation; we
         // only need the existence check here (and presence info downstream).
-        let pre_record = store
-            .get_record(&p.id)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let pre_record = store.get_record(&p.id).await.map_err(safe_mcp_error)?;
         let _pre_record = match pre_record {
             Some(r) => r,
             None => return Ok(artifact_not_found(&p.id)),
@@ -2085,6 +2122,15 @@ impl ForgeplanServer {
             ));
         }
 
+        // Wave 9 SEC-C2: same defensive validator the CLI runs. Catches
+        // bidi-override / ANSI / control-char titles before they reach
+        // LanceDB or the projection helper (audit found the byte-length cap
+        // above was the ONLY guard — Trojan Source payloads slip under it).
+        if let Some(ref t) = p.title {
+            forgeplan_core::artifact::validate_title(t)
+                .map_err(|e| McpError::invalid_params(format!("{e}"), None))?;
+        }
+
         // PRD-073 audit: route metadata + body mutations through file-first
         // helpers. Each helper handles its own sync→mutate→render triplet.
         // PROB-049 H-6: shared `MutationContext` flows into both helpers.
@@ -2098,20 +2144,20 @@ impl ForgeplanServer {
                 p.title.as_deref(),
             )
             .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+            .map_err(safe_mcp_error)?;
         }
 
         if let Some(ref body) = p.body {
             projection::update_body_with_projection(&ctx, &p.id, body)
                 .await
-                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                .map_err(safe_mcp_error)?;
         }
 
         // Re-fetch for the response payload.
         let updated = store
             .get_record(&p.id)
             .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?
+            .map_err(safe_mcp_error)?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
 
         // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
@@ -2212,7 +2258,7 @@ impl ForgeplanServer {
             &p.id,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        .map_err(safe_mcp_error)?;
 
         // Projection was already moved into trash by soft_delete_capture.
 
@@ -2794,7 +2840,7 @@ impl ForgeplanServer {
         let (report, phase_mismatch_records) =
             forgeplan_core::health::health_report_with_phase(&store, &ws)
                 .await
-                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                .map_err(safe_mcp_error)?;
 
         // Render as JSON-friendly payload (sanitize titles for hint output).
         let phase_mismatches: Vec<serde_json::Value> = phase_mismatch_records
@@ -2897,92 +2943,42 @@ impl ForgeplanServer {
             })
             .collect();
 
-        // PROB-029 closure: fold the MCP-side `advisory_phase_mismatches`
-        // count into the verdict so MCP consumers (Claude Desktop, agent
-        // IDE plugins) see a consistent `verdict` that reflects ALL signals,
-        // not just the ones the core `health_report` knows about. Without
-        // this, the JSON `verdict` field would say "healthy" while
-        // `advisory_phase_mismatches` printed warnings — the very contradiction
-        // PROB-029 was filed to prevent.
-        let verdict = report.compute_verdict_with(
-            &forgeplan_core::health::VerdictThresholds::default(),
-            phase_mismatches.len(),
-        );
+        // ARCH-C1 (audit Wave 9): JSON construction now routes through
+        // `forgeplan_core::health::health_report_to_json` so CLI + MCP
+        // share a single source of truth for the wire shape. The helper
+        // also applies `sanitize_for_hint` to every user-facing string
+        // (title, reason, issue, message, path) — closing SEC-M1
+        // (terminal-injection class CWE-117/150) on the MCP surface
+        // symmetrically with LOG-001 on the CLI.
+        //
+        // `report.verdict` is already phase-folded by
+        // `health_report_with_phase` (L-H3 invariant pinned by
+        // `verdict_cli_vs_mcp_consistency_test`), so no separate
+        // `compute_verdict_with` call is needed here.
+        let mut json_data =
+            forgeplan_core::health::health_report_to_json(&report, &phase_mismatch_records);
 
-        // PR-E Round 6 audit MED fix: `Verdict::Empty` is now a 4th enum
-        // variant (was deferred at Round 5). `human_summary()` already
-        // emits the empty-workspace message for `Verdict::Empty`, so the
-        // Round 5 manual override below is no longer necessary —
-        // typed `verdict` field and `verdict_summary` text now agree
-        // by construction (no consumer can read `verdict == "healthy"`
-        // for an empty workspace).
-        let verdict_summary = verdict.human_summary();
+        // MCP-specific keys merged on top: claim ledger surface +
+        // `_next_action` hint contract. These are not in the shared shape
+        // because CLI surfaces them differently (CLI prints them as text
+        // bullet lines, not JSON keys).
+        if let Some(obj) = json_data.as_object_mut() {
+            obj.insert(
+                "active_claims".into(),
+                serde_json::Value::Array(claims_json),
+            );
+            obj.insert(
+                "active_claim_count".into(),
+                serde_json::Value::from(active_claims.len()),
+            );
+            obj.insert(
+                "skipped_claim_files".into(),
+                serde_json::Value::from(skipped_claims),
+            );
+            obj.insert("_next_action".into(), serde_json::Value::from(next_action));
+        }
 
-        // w4-security-audit MED-1 (inverse PROB-064): legacy CLI key
-        // `phase_mismatches` was missing on MCP surface — agents authored
-        // against pre-PROB-064 CLI saw `null` when port'ing the same
-        // branching logic to MCP. Reuse the `phase_mismatches` binding
-        // built at line ~2791 (already `Vec<serde_json::Value>`) so the
-        // single source of truth feeds both keys — drift impossible by
-        // construction (mirrors CLI's `phase_mismatches_payload` pattern
-        // в commands/health.rs:87-144).
-        Ok(json_result(&serde_json::json!({
-            "total": report.total,
-            "by_kind": report.by_kind,
-            "by_status": report.by_status,
-            "verdict": verdict.as_str(),
-            "verdict_summary": verdict_summary,
-            "at_risk": report.at_risk.iter().map(|a| serde_json::json!({
-                "id": a.id, "title": a.title, "reason": a.reason
-            })).collect::<Vec<_>>(),
-            "blind_spots": report.blind_spots.iter().map(|b| serde_json::json!({
-                "id": b.id, "title": b.title, "issue": b.issue
-            })).collect::<Vec<_>>(),
-            "stale_count": report.stale_count,
-            "orphans": report.orphans,
-            "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
-            // Audit CR-001 (Wave 9): MCP surfaces FULL possible_duplicates +
-            // active_stubs arrays to match CLI --json shape. Pre-fix MCP
-            // omitted both fields → agents reading `verdict == "unhealthy"`
-            // could not inspect WHY without an extra round-trip. Mirrors
-            // CLI shape exactly so consumers do not branch on surface.
-            "possible_duplicates": report.possible_duplicates.iter().map(|d| serde_json::json!({
-                "id_a": d.id_a,
-                "id_b": d.id_b,
-                "similarity": d.similarity,
-                "title_a": d.title_a,
-                "title_b": d.title_b,
-                "kind": d.kind,
-            })).collect::<Vec<_>>(),
-            "active_stubs": report.active_stubs.iter().map(|s| serde_json::json!({
-                "id": s.id,
-                "kind": s.kind,
-                "title": s.title,
-                "markers_found": s.markers_found,
-                "message": s.message,
-            })).collect::<Vec<_>>(),
-            // Dual-key emission — same payload under both legacy
-            // (`phase_mismatches`) and MCP-canonical
-            // (`advisory_phase_mismatches`) names. Single-binding payload
-            // means future drift is impossible; consumers may branch on
-            // either name. Future deprecation of the legacy alias is
-            // tracked in PROB-064.
-            "phase_mismatches": phase_mismatches,
-            "advisory_phase_mismatches": phase_mismatches,
-            // PROB-062: advisory gitignore-drift list (tracked files
-            // under canonical forgeplan ignore patterns). Same
-            // advisory class as `advisory_phase_mismatches` — surfaced
-            // for visibility but does NOT promote the verdict.
-            "gitignore_drift": report.gitignore_drift.iter().map(|d| serde_json::json!({
-                "path": d.path,
-                "reason": d.reason,
-            })).collect::<Vec<_>>(),
-            "active_claims": claims_json,
-            "active_claim_count": active_claims.len(),
-            "skipped_claim_files": skipped_claims,
-            "next_actions": report.next_actions,
-            "_next_action": next_action,
-        })))
+        Ok(json_result(&json_data))
     }
 
     #[tool(
@@ -3010,7 +3006,7 @@ impl ForgeplanServer {
             p.risk.unwrap_or(false),
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        .map_err(safe_mcp_error)?;
 
         let at_risk_count = entries
             .iter()
@@ -3078,7 +3074,7 @@ impl ForgeplanServer {
 
         let report = forgeplan_core::health::health_report(&store)
             .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+            .map_err(safe_mcp_error)?;
 
         let blind_count = report.blind_spots.len();
         let orphan_count = report.orphans.len();
@@ -3134,7 +3130,7 @@ impl ForgeplanServer {
         };
 
         let config = workspace::load_config(&ws)
-            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         let (kind_str, body) = match forgeplan_core::llm::capture::capture(
@@ -3151,10 +3147,7 @@ impl ForgeplanServer {
         let kind: ArtifactKind = kind_str.parse().unwrap_or(ArtifactKind::Note);
         let template_key = kind.template_key();
         let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-        let id = store
-            .next_id(&prefix)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let id = store.next_id(&prefix).await.map_err(safe_mcp_error)?;
 
         let title: String = p
             .decision
@@ -3184,7 +3177,7 @@ impl ForgeplanServer {
             &artifact,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        .map_err(safe_mcp_error)?;
 
         let safe_id = sanitize_for_hint(&id);
         // PRD-071: single primary — review the captured draft. Lifecycle
@@ -3222,20 +3215,14 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relations = store
-            .get_all_relations()
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
 
         let mut edges: Vec<graph::Edge> = relations
             .into_iter()
             .map(|(from, to, relation)| graph::Edge { from, to, relation })
             .collect();
 
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         for record in &records {
             if let Some(parent) = &record.parent_epic
@@ -3284,14 +3271,8 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relations = store
-            .get_all_relations()
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         let resolved_ids: HashSet<String> = records
             .iter()
@@ -3383,14 +3364,8 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relations = store
-            .get_all_relations()
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         let resolved_ids: HashSet<String> = records
             .iter()
@@ -3508,7 +3483,7 @@ impl ForgeplanServer {
             let hits = store
                 .search_body(&p.query, p.kind.as_deref())
                 .await
-                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                .map_err(safe_mcp_error)?;
 
             let query_lower = p.query.to_lowercase();
             let results: Vec<SearchResultDto> = hits
@@ -3581,10 +3556,7 @@ impl ForgeplanServer {
         }
 
         // Smart / semantic: use smart_search over all records.
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         // PROB-060 Phase 2.4: index records by id so we can re-attach the
         // identity triple to each smart-search hit. `SmartSearchResult` is
@@ -3682,10 +3654,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let stale_records = store
-            .find_stale()
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let stale_records = store.find_stale().await.map_err(safe_mcp_error)?;
 
         let today = Utc::now().date_naive();
 
@@ -3746,10 +3715,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         let to_report: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
             let upper = target_id.to_uppercase();
@@ -3854,7 +3820,7 @@ impl ForgeplanServer {
 
         let entries = forgeplan_core::scoring::decay::decay_report(&store)
             .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+            .map_err(safe_mcp_error)?;
 
         let total = entries.len();
         let dtos: Vec<DecayEntryDto> = entries
@@ -3926,10 +3892,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         let to_check: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
             let upper = target_id.to_uppercase();
@@ -4036,7 +3999,7 @@ impl ForgeplanServer {
         };
 
         let config = workspace::load_config(&ws)
-            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         // Build artifact context for enriched ADI prompt
@@ -4121,7 +4084,7 @@ impl ForgeplanServer {
         };
 
         let config = workspace::load_config(&ws)
-            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         let tasks = match forgeplan_core::llm::decompose::decompose(
@@ -4191,7 +4154,7 @@ impl ForgeplanServer {
         };
 
         let config = workspace::load_config(&ws)
-            .map_err(|e| McpError::internal_error(format!("Config error: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
         let llm_config = config.llm.unwrap_or_default().with_env_overrides();
 
         let title = p
@@ -4218,10 +4181,7 @@ impl ForgeplanServer {
         };
 
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
-        let id = store
-            .next_id(&prefix)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let id = store.next_id(&prefix).await.map_err(safe_mcp_error)?;
 
         let artifact = NewArtifact {
             id: id.clone(),
@@ -4242,7 +4202,7 @@ impl ForgeplanServer {
             &artifact,
         )
         .await
-        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        .map_err(safe_mcp_error)?;
 
         let safe_id = sanitize_for_hint(&id);
         let next_action = format!(
@@ -4283,10 +4243,7 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let records = store
-            .list_records(None)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
 
         let artifacts: Vec<serde_json::Value> = records
             .iter()
@@ -4308,10 +4265,7 @@ impl ForgeplanServer {
             })
             .collect();
 
-        let all_relations = store
-            .get_all_relations()
-            .await
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let all_relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
 
         let relations: Vec<serde_json::Value> = all_relations
             .into_iter()
@@ -4334,11 +4288,10 @@ impl ForgeplanServer {
             } else {
                 ws.parent().unwrap_or(&ws).join(output_path)
             };
-            let json_str = serde_json::to_string_pretty(&data)
-                .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+            let json_str = serde_json::to_string_pretty(&data).map_err(safe_mcp_error)?;
             tokio::fs::write(&full_path, &json_str)
                 .await
-                .map_err(|e| McpError::internal_error(format!("Write failed: {e}"), None))?;
+                .map_err(|e| safe_mcp_error(anyhow::anyhow!("Write failed: {e}")))?;
             // Round 3 audit H-2: use JSON + hinted_result so the
             // `_next_action` contract holds on this path too. Sanitize
             // the displayed path — filenames can contain backticks that
@@ -5662,7 +5615,7 @@ impl ForgeplanServer {
 
         let result = forgeplan_core::activity::query::query(&ws, &filter)
             .await
-            .map_err(|e| McpError::internal_error(format!("activity query failed: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("activity query failed: {e}")))?;
 
         // PRD-071: single primary action — a copy-pasteable command, never
         // a fragment like `since_hours=720`.
@@ -5729,7 +5682,7 @@ impl ForgeplanServer {
 
         let result = forgeplan_core::activity::query::query(&ws, &filter)
             .await
-            .map_err(|e| McpError::internal_error(format!("activity query failed: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("activity query failed: {e}")))?;
 
         let stats = forgeplan_core::activity::query::compute_stats(&result.entries);
         let total_calls: usize = stats.iter().map(|s| s.count).sum();
@@ -6301,7 +6254,7 @@ impl ForgeplanServer {
         let summaries = store
             .list_artifacts(Some(&filter))
             .await
-            .map_err(|e| McpError::internal_error(format!("list_artifacts: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("list_artifacts: {e}")))?;
 
         // R3 audit task-completion MED: FR-003 requires the dispatcher to
         // respect the artifact dependency graph — blocked artifacts must
@@ -6311,11 +6264,11 @@ impl ForgeplanServer {
         let relations = store
             .get_all_relations()
             .await
-            .map_err(|e| McpError::internal_error(format!("get_all_relations: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("get_all_relations: {e}")))?;
         let records = store
             .list_records(None)
             .await
-            .map_err(|e| McpError::internal_error(format!("list_records: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("list_records: {e}")))?;
         let resolved_ids: std::collections::HashSet<String> = records
             .iter()
             .filter(|r| {
@@ -6374,7 +6327,7 @@ impl ForgeplanServer {
         let claimed_map = claim_store
             .list_active_map()
             .await
-            .map_err(|e| McpError::internal_error(format!("list_active_map: {e}"), None))?;
+            .map_err(|e| safe_mcp_error(anyhow::anyhow!("list_active_map: {e}")))?;
         let claimed_count = claimed_map.len();
         let claimed_set: std::collections::HashSet<String> = claimed_map.into_keys().collect();
 
@@ -8042,6 +7995,99 @@ fn find_duplicate_warnings(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     out
+}
+
+/// Wave 9 SEC-H3 closure — `safe_mcp_error` MUST route the error message
+/// through `forgeplan_core::projection::sanitize_error_chain` so HOME
+/// paths, `/private/var/folders/...` scratch dirs, and CARGO_TARGET_DIR
+/// are masked before reaching MCP responses.
+///
+/// The defence sits one layer down (in projection::error::sanitize_text_with),
+/// so we DO NOT re-test the masking rules here — those live in
+/// `forgeplan_core::projection::error::tests`. We DO test the wiring:
+/// raw `$HOME` prefix in the error chain comes out as `<HOME>` after the
+/// wrapper. A future refactor that bypasses the sanitiser
+/// (e.g. dropping the helper) fails this test before reaching production.
+#[cfg(test)]
+mod safe_mcp_error_tests {
+    use super::safe_mcp_error;
+
+    /// Save / restore `HOME` so concurrent test threads (cargo's default
+    /// parallel runner) do not race each other's env state. `set_var` is
+    /// `unsafe` since Rust 1.91 on darwin — wrap in `unsafe { ... }`.
+    struct HomeGuard {
+        original: Option<String>,
+    }
+    impl HomeGuard {
+        fn override_home(new: &str) -> Self {
+            let original = std::env::var("HOME").ok();
+            // SAFETY: scoped change; restored on drop. The test runs in a
+            // narrow critical window; other tests in this module touch
+            // env::var("HOME") read-only.
+            unsafe { std::env::set_var("HOME", new) }
+            Self { original }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.original.as_deref() {
+                // SAFETY: restore-on-drop; matches the override.
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
+    #[test]
+    fn sanitises_home_path_in_error_chain() {
+        // Note: this test mutates HOME, so it must run serially with
+        // other HOME-sensitive tests. In practice the rest of the suite
+        // uses `home_env()` once per format() call and the parallel risk
+        // is small — the guard restores on drop either way.
+        let _home_guard = HomeGuard::override_home("/Users/alice");
+        let err = anyhow::anyhow!("EACCES on /Users/alice/foo/secret.txt");
+        let mcp = safe_mcp_error(err);
+        let msg = format!("{mcp}");
+        assert!(
+            !msg.contains("/Users/alice/"),
+            "raw HOME prefix must be masked: {msg}"
+        );
+        assert!(
+            msg.contains("<HOME>/foo/secret.txt"),
+            "masked HOME prefix expected: {msg}"
+        );
+    }
+
+    #[test]
+    fn sanitises_tmpdir_prefix() {
+        // tmpdir replacement is unconditional (no env override needed).
+        let err = anyhow::anyhow!("io error at /tmp/foo/bar.lock");
+        let mcp = safe_mcp_error(err);
+        let msg = format!("{mcp}");
+        assert!(
+            !msg.contains("/tmp/foo"),
+            "raw /tmp prefix must be masked: {msg}"
+        );
+        assert!(msg.contains("<tmpdir>/foo"), "expected mask: {msg}");
+    }
+
+    #[test]
+    fn accepts_non_anyhow_display_types() {
+        // Wiring sanity — the helper takes `impl std::fmt::Display`, so
+        // `io::Error`, `serde_json::Error`, etc. flow through too. We
+        // build a fake error type and verify the chain still works.
+        let io_err = std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "/private/var/folders/xx/aaa/T/scratch.bin",
+        );
+        let mcp = safe_mcp_error(io_err);
+        let msg = format!("{mcp}");
+        assert!(
+            !msg.contains("/private/var/folders/"),
+            "private var folders prefix must be masked: {msg}"
+        );
+        assert!(msg.contains("<tmpdir>"), "expected mask: {msg}");
+    }
 }
 
 #[cfg(test)]

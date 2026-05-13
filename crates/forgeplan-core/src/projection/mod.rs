@@ -65,9 +65,13 @@ use crate::artifact::frontmatter::{self, Frontmatter};
 use crate::artifact::types::{ArtifactKind, slugify};
 
 mod context;
-mod error;
+pub mod error;
 pub use context::MutationContext;
 pub use error::{MutationError, MutationResult};
+// Wave 9 SEC-H3: re-export the error-chain sanitiser at the projection
+// module root so `forgeplan-mcp::server::safe_mcp_error` can reach it
+// without spelling out the `error::` submodule.
+pub use error::sanitize_error_chain;
 
 /// Compute the on-disk filename slug for a given artifact title.
 ///

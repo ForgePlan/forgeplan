@@ -113,6 +113,7 @@ use std::path::Path;
 use futures::StreamExt;
 
 use crate::artifact::frontmatter::Frontmatter;
+use crate::artifact::sanitize::sanitize_for_hint;
 use crate::artifact::types::DECISION_KINDS_EVIDENCE;
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
@@ -696,6 +697,172 @@ pub fn compute_verdict(
         phase_mismatches,
         thresholds,
     )
+}
+
+/// Render a [`HealthReport`] (+ associated phase mismatches) as the unified
+/// JSON shape consumed by both `forgeplan health --json` and the MCP
+/// `forgeplan_health` tool.
+///
+/// **Wave 9 ARCH-C1 closure**: pre-fix the two surfaces each constructed
+/// their own `serde_json::json!(...)` literal with subtly different
+/// shapes (CLI emitted `by_kind` / `by_status` as `{kind, count}`
+/// objects; MCP emitted raw `[(string, usize)]` tuples). Three audit
+/// agents independently flagged the duplication as a contradiction risk:
+/// a key that lands in only one surface goes undetected until an agent
+/// branches on the missing field via `null`. CR-001 was the most recent
+/// example (`possible_duplicates` / `active_stubs` missing on MCP).
+///
+/// **Wave 9 SEC-M1 closure** (bundled with the extraction): all
+/// title / message / reason / issue / advisory strings are routed through
+/// `sanitize_for_hint` BEFORE serialisation. Pre-fix the MCP surface
+/// emitted raw titles into JSON returned to LLM agents — a malicious
+/// title containing zero-width chars, bidi overrides, or shell
+/// metacharacters became an indirect prompt-injection vector
+/// (CWE-117 / CWE-1007). Sanitisation here closes both surfaces at once
+/// since the helper is the only path.
+///
+/// **Shape decisions**:
+/// - `by_kind` and `by_status` use the object form (`{kind, count}` /
+///   `{status, count}`) — matching pre-fix CLI behaviour. The MCP
+///   surface previously emitted raw `[name, count]` tuples; this
+///   extraction unifies on the object form because object-shaped JSON
+///   is forward-compatible (new fields can be added without breaking
+///   tuple-positional consumers).
+/// - Caller-specific keys (`project` / `exit_code` for CLI,
+///   `active_claims` / `active_claim_count` / `skipped_claim_files`
+///   for MCP) are inserted by the caller AFTER this helper returns.
+///   The helper emits an object so the caller can use
+///   `.as_object_mut().insert(...)` to layer in those fields.
+///
+/// **Key set returned** (alphabetised, comprehensive):
+/// `active_stubs`, `advisory_phase_mismatches`, `at_risk`,
+/// `blind_spots`, `by_derived_status`, `by_kind`, `by_status`,
+/// `gitignore_drift`, `next_actions`, `orphans`, `phase_mismatches`,
+/// `possible_duplicates`, `stale_count`, `total`, `verdict`,
+/// `verdict_summary`.
+///
+/// The `phase_mismatches` and `advisory_phase_mismatches` keys carry
+/// the SAME payload — the legacy CLI alias remains for backward
+/// compatibility per PROB-064. Future deprecation can drop the legacy
+/// alias in a major-version bump.
+pub fn health_report_to_json(
+    report: &HealthReport,
+    phase_mismatches: &[PhaseMismatch],
+) -> serde_json::Value {
+    let verdict_summary = report.verdict.human_summary();
+
+    // SEC-M1: every user-facing string interpolated into the JSON
+    // payload is sanitised here so the two surfaces (CLI + MCP) cannot
+    // diverge on what gets stripped. Sanitiser strips zero-width,
+    // bidi, control chars, ANSI escapes, and POSIX shell metas — same
+    // contract `Next:` hint emission already runs through.
+    let by_kind: Vec<serde_json::Value> = report
+        .by_kind
+        .iter()
+        .map(|(k, v)| serde_json::json!({ "kind": k, "count": v }))
+        .collect();
+    let by_status: Vec<serde_json::Value> = report
+        .by_status
+        .iter()
+        .map(|(s, v)| serde_json::json!({ "status": s, "count": v }))
+        .collect();
+    let by_derived_status: Vec<serde_json::Value> = report
+        .by_derived_status
+        .iter()
+        .map(|(ds, v)| serde_json::json!({ "status": ds.label(), "count": v }))
+        .collect();
+    let at_risk: Vec<serde_json::Value> = report
+        .at_risk
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "title": sanitize_for_hint(&a.title),
+                "reason": sanitize_for_hint(&a.reason),
+            })
+        })
+        .collect();
+    let blind_spots: Vec<serde_json::Value> = report
+        .blind_spots
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id,
+                "title": sanitize_for_hint(&b.title),
+                "issue": sanitize_for_hint(&b.issue),
+            })
+        })
+        .collect();
+    let possible_duplicates: Vec<serde_json::Value> = report
+        .possible_duplicates
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "id_a": d.id_a,
+                "id_b": d.id_b,
+                "similarity": d.similarity,
+                "title_a": sanitize_for_hint(&d.title_a),
+                "title_b": sanitize_for_hint(&d.title_b),
+                "kind": d.kind,
+            })
+        })
+        .collect();
+    let active_stubs: Vec<serde_json::Value> = report
+        .active_stubs
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "kind": s.kind,
+                "title": sanitize_for_hint(&s.title),
+                "markers_found": s.markers_found,
+                "message": sanitize_for_hint(&s.message),
+            })
+        })
+        .collect();
+    let phase_mismatches_payload: Vec<serde_json::Value> = phase_mismatches
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "title": sanitize_for_hint(&m.title),
+                "status": m.status,
+                "current_phase": m.current_phase,
+                "advisory": sanitize_for_hint(&m.advisory),
+            })
+        })
+        .collect();
+    let gitignore_drift: Vec<serde_json::Value> = report
+        .gitignore_drift
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "path": sanitize_for_hint(&d.path),
+                "reason": sanitize_for_hint(&d.reason),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "total": report.total,
+        "verdict": report.verdict.as_str(),
+        "verdict_summary": verdict_summary,
+        "by_kind": by_kind,
+        "by_status": by_status,
+        "by_derived_status": by_derived_status,
+        "at_risk": at_risk,
+        "blind_spots": blind_spots,
+        "stale_count": report.stale_count,
+        "orphans": report.orphans,
+        "next_actions": report.next_actions,
+        "possible_duplicates": possible_duplicates,
+        "active_stubs": active_stubs,
+        // PROB-064: dual-key emission of phase mismatches. Same payload
+        // under both names — legacy CLI alias + MCP-canonical key.
+        "phase_mismatches": phase_mismatches_payload,
+        "advisory_phase_mismatches": phase_mismatches_payload,
+        "gitignore_drift": gitignore_drift,
+    })
 }
 
 /// Internal: shared verdict logic over raw counts. Lets `health_report`
