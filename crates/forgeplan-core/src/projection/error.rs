@@ -452,6 +452,19 @@ fn home_env() -> Option<String> {
     std::env::var("HOME").ok().filter(|h| !h.is_empty())
 }
 
+/// Returns `true` if `c` can legitimately appear inside a filesystem path
+/// component identifier — letters, digits, underscore, hyphen, dot, slash.
+///
+/// Used by `sanitize_text_with`'s SEC-H2 boundary check to decide whether
+/// a bare-HOME match (no trailing `/`) is followed by content that would
+/// "extend" the path (e.g. `/Users/alicewonderland` — `w` is a path-id
+/// char so the match is rejected to preserve the SEC-001 sibling-user
+/// anti-leak contract), or by a true boundary (whitespace, punctuation,
+/// end-of-string — safe to mask).
+fn is_path_identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/'
+}
+
 /// Lower-level shared sanitiser. Pure function: takes an optional `home`
 /// override rather than reading `$HOME` itself, so tests exercise the
 /// path-masking logic without touching process env. Exposed to the
@@ -481,6 +494,62 @@ pub(super) fn sanitize_text_with(input: &str, home: Option<&str>) -> String {
         // mid-string-leak this case.
         if out == home {
             out = "<HOME>".to_string();
+        }
+
+        // SEC-H2 (Wave 9 audit follow-up): also mask bare HOME at end-of-
+        // string OR followed by a non-path-character boundary (whitespace,
+        // punctuation, end-of-line). Captures the
+        // "chdir failed: /Users/alice" case where HOME is embedded
+        // mid-string with no children — the prior two passes miss it
+        // (`/Users/alice/` substring absent, `out == home` false), so the
+        // username leaks through MCP error JSON and Claude Desktop logs
+        // (CWE-200).
+        //
+        // Boundary char-class: anything that is NOT a path-identifier
+        // character. Path-identifier = `[A-Za-z0-9_\-./]` — letters, digits,
+        // underscore, hyphen, dot, slash. End-of-string is also a boundary.
+        // This ensures `/Users/alicewonderland` (where the next char after
+        // HOME is `w`, alphanumeric) is NOT masked — the sibling-username
+        // anti-leak contract from SEC-001 stays intact.
+        //
+        // The trailing-slash HOME case (`home == "/Users/alice/"`) cannot
+        // hit this branch because the prefix replace above already would
+        // have consumed any occurrence (every appearance of the literal
+        // home ends in `/`, which is a path-id char, so the boundary check
+        // would never fire anyway).
+        if !home.ends_with('/') {
+            let mut result = String::with_capacity(out.len());
+            let mut last_end = 0;
+            // Iterate every match position of `home` as a substring.
+            // `find` returns byte offsets; HOME is ASCII in practice but
+            // the slicing below uses `out[..idx]` / `out[end..]` which
+            // are valid char boundaries because we only ever slice at
+            // the boundary of a matched ASCII byte run.
+            let mut search_from = 0;
+            while let Some(rel_idx) = out[search_from..].find(home) {
+                let start = search_from + rel_idx;
+                let end = start + home.len();
+                // What is the char *after* the matched HOME? `None` = EOS.
+                let next_is_boundary = out[end..]
+                    .chars()
+                    .next()
+                    .map(is_path_identifier_char)
+                    .map(|is_id| !is_id)
+                    .unwrap_or(true);
+                if next_is_boundary {
+                    result.push_str(&out[last_end..start]);
+                    result.push_str("<HOME>");
+                    last_end = end;
+                }
+                search_from = end;
+            }
+            if last_end != 0 {
+                // We made at least one substitution; flush the tail and
+                // commit.
+                result.push_str(&out[last_end..]);
+                out = result;
+            }
+            // else: no substitutions — leave `out` as-is.
         }
     }
 
@@ -883,12 +952,137 @@ mod tests {
         assert!(!out_with_children.contains("/Users/alice/"));
 
         let out_bare = sanitize_text_with("chdir failed: /Users/alice", Some("/Users/alice"));
-        // The bare-HOME edge case only fires when the entire input
-        // equals HOME — embedded bare HOME in a longer chain link
-        // (e.g. "chdir failed: /Users/alice") is intentionally left
-        // alone (rare in practice; error chains usually include
-        // additional context after the path).
-        assert!(out_bare.contains("/Users/alice"));
+        // SEC-H2 (Wave 9 follow-up): bare HOME at end-of-string (no
+        // trailing slash, no children) is NOW masked. The third pass in
+        // `sanitize_text_with` catches this case via the path-identifier
+        // boundary check — EOS counts as a boundary, so the username no
+        // longer leaks through error chains like "chdir failed: $HOME".
+        // Pre-fix this assertion pinned the leak (`contains("/Users/alice")`);
+        // post-fix it asserts the mask landed and the raw path is gone.
+        assert!(
+            !out_bare.contains("/Users/alice"),
+            "bare HOME at EOS must be masked (SEC-H2): {out_bare}"
+        );
+        assert!(
+            out_bare.contains("<HOME>"),
+            "expected <HOME> mask for bare-HOME EOS case: {out_bare}"
+        );
+        assert_eq!(out_bare, "chdir failed: <HOME>");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // SEC-H2 (Wave 9 audit follow-up): bare HOME at end-of-string or
+    // followed by a non-path-identifier boundary character must be
+    // masked. Pre-fix, SEC-001's path-separator anchor was tight enough
+    // to skip these cases — "chdir failed: /Users/alice" leaked the
+    // username through MCP error JSON и Claude Desktop logs (CWE-200).
+    // Each test below pins a distinct boundary class so a regression
+    // (e.g. dropping `:` from the boundary set) fails fast.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Bare HOME at the end of the string (no trailing char at all).
+    /// Boundary = end-of-string; the path-identifier check returns
+    /// `Some(true)` only when followed by a path-id char, so EOS is
+    /// treated as a boundary and the mask fires.
+    #[test]
+    fn sanitize_text_with_masks_bare_home_at_end_of_string() {
+        let out = sanitize_text_with("failed: /Users/alice", Some("/Users/alice"));
+        assert_eq!(
+            out, "failed: <HOME>",
+            "bare HOME at EOS must be masked (SEC-H2): {out}"
+        );
+        assert!(
+            !out.contains("/Users/alice"),
+            "raw HOME must not survive at EOS: {out}"
+        );
+    }
+
+    /// Bare HOME followed by whitespace (space). Whitespace is the most
+    /// common boundary in human-readable error messages
+    /// (e.g. "$HOME failed to open"); must mask.
+    #[test]
+    fn sanitize_text_with_masks_bare_home_followed_by_whitespace() {
+        let out = sanitize_text_with("/Users/alice failed", Some("/Users/alice"));
+        assert_eq!(
+            out, "<HOME> failed",
+            "bare HOME followed by whitespace must be masked (SEC-H2): {out}"
+        );
+        assert!(!out.contains("/Users/alice"));
+
+        // Tab + newline also count as boundary whitespace.
+        let out_tab = sanitize_text_with("/Users/alice\tnext", Some("/Users/alice"));
+        assert_eq!(out_tab, "<HOME>\tnext", "tab boundary: {out_tab}");
+        let out_nl = sanitize_text_with("/Users/alice\nnext", Some("/Users/alice"));
+        assert_eq!(out_nl, "<HOME>\nnext", "newline boundary: {out_nl}");
+    }
+
+    /// Bare HOME followed by a colon — common in log lines like
+    /// "home dir: $HOME: too big" where the path is sandwiched by
+    /// punctuation. Pin so a future tightening that drops `:` from the
+    /// boundary set fails here.
+    #[test]
+    fn sanitize_text_with_masks_bare_home_followed_by_colon() {
+        let out = sanitize_text_with("home dir: /Users/alice: too big", Some("/Users/alice"));
+        assert_eq!(
+            out, "home dir: <HOME>: too big",
+            "bare HOME followed by `:` must be masked (SEC-H2): {out}"
+        );
+        assert!(!out.contains("/Users/alice"));
+
+        // Other punctuation boundaries: `,` `;` `)` `]` `}` `"` `'`.
+        for (suffix, expected_suffix) in [
+            (",", ","),
+            (";", ";"),
+            (")", ")"),
+            ("]", "]"),
+            ("}", "}"),
+            ("\"", "\""),
+            ("'", "'"),
+        ] {
+            let input = format!("at /Users/alice{suffix} done");
+            let expected = format!("at <HOME>{expected_suffix} done");
+            let out = sanitize_text_with(&input, Some("/Users/alice"));
+            assert_eq!(out, expected, "punctuation boundary {suffix:?}: {out}");
+        }
+    }
+
+    /// Negative control: bare HOME followed by an alphanumeric char
+    /// (extending the path component, like `/Users/alicewonderland`)
+    /// MUST NOT match. This preserves the SEC-001 sibling-user anti-
+    /// leak contract — the path-identifier boundary check rejects the
+    /// match when the next char is `[A-Za-z0-9_\-./]`.
+    #[test]
+    fn sanitize_text_with_does_not_mask_sibling_username_with_boundary() {
+        // `w` is alphanumeric → not a boundary → no mask.
+        let out = sanitize_text_with("foo /Users/alicewonderland and", Some("/Users/alice"));
+        assert_eq!(
+            out, "foo /Users/alicewonderland and",
+            "sibling-username extension must pass through unchanged: {out}"
+        );
+        assert!(
+            !out.contains("<HOME>"),
+            "no mask should be applied — `alicewonderland` is a different user: {out}"
+        );
+
+        // Other non-slash path-identifier suffix chars: `_`, `-`, `.`,
+        // digits — extending the username component (`alice_bob`,
+        // `alice-bob`, `alice.bob`, `alice9`). These are NOT the
+        // canonical HOME directory and must pass through unchanged.
+        // Note: `/` is intentionally excluded — `/Users/alice/X` IS the
+        // canonical HOME-with-child case and the prefix-replace pass
+        // SHOULD mask it (covered by other tests).
+        for ext in ["_x", "-bob", ".bak", "9"] {
+            let input = format!("path: /Users/alice{ext} and");
+            let out = sanitize_text_with(&input, Some("/Users/alice"));
+            assert!(
+                !out.contains("<HOME>"),
+                "extension {ext:?} is a non-slash path-id char — must NOT trigger mask: {out}"
+            );
+            assert!(
+                out.contains(&format!("/Users/alice{ext}")),
+                "raw path with extension {ext:?} must pass through: {out}"
+            );
+        }
     }
 
     #[test]
