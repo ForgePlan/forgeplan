@@ -142,7 +142,13 @@ pub struct SerialEntry {
     ///   - `blocked by dependencies: <PARENT_ID>[, <PARENT_ID>...]`
     ///     (was `blocked by dependency on <PARENT_ID>` pre-CR-H4 — that
     ///     phrasing lied on multi-parent graphs because a `HashMap`
-    ///     keyed by source kept only the last-seen target)
+    ///     keyed by source kept only the last-seen target. The new
+    ///     phrasing lists every structural parent: `based_on`,
+    ///     `refines`, `supersedes`, `contradicts` per
+    ///     [`graph::topological::is_structural_relation`].)
+    ///   - `blocked by dependencies: unresolved` — fallback when the
+    ///     blocked artifact has no resolvable structural parent in the
+    ///     relation list (rare; surfaces orphaned blocked entries).
     ///   - `epic boundary mismatch`
     ///   - `no agent with matching skill`
     ///   - `already claimed by another agent`
@@ -187,25 +193,32 @@ impl std::fmt::Display for SerialEntry {
 /// Two contract bugs in one expression:
 ///
 /// 1. **`_rel` was dropped** — any edge counted as a blocker, including
-///    `informs`, `relates_to`, `clarifies`, etc. that have nothing to do
-///    with dependency order. Result: artifacts got marked "blocked" by
-///    edges that should have been pure cross-references.
+///    `informs` and other informational cross-references that have
+///    nothing to do with dependency order. Result: artifacts got marked
+///    "blocked" by edges that should have been pure cross-references.
 ///
 /// 2. **`HashMap::from_iter` keeps only the last-seen value on key
 ///    collision** — when an artifact had multiple parents (`A
-///    depends_on B`, `A depends_on C`), the lookup reported one
-///    arbitrary parent. Agent fixing the blocker would activate `B`,
-///    rerun dispatch, get told "still blocked on B" (now reported as
-///    `C`), and have no idea what they missed.
+///    based_on B`, `A based_on C`), the lookup reported one arbitrary
+///    parent. Agent fixing the blocker would activate `B`, rerun
+///    dispatch, get told "still blocked on B" (now reported as `C`),
+///    and have no idea what they missed.
 ///
 /// Post-fix:
 ///
-/// - Filter relations to `depends_on` and `blocks` only. These are the
-///   two structural relations that mean "X needs Y resolved before it
-///   can be worked on" in our typed link vocabulary.
-/// - Accumulate **all** parents per blocked id into a `Vec<String>`,
-///   sort + dedupe for deterministic output (so agents can grep the
-///   reason and so plan equality holds across reruns).
+/// - Filter relations through
+///   [`graph::topological::is_structural_relation`] — the canonical
+///   list of dependency-gating relation types (`based_on`, `refines`,
+///   `supersedes`, `contradicts`). Sharing this predicate with
+///   [`kahn_sort`] guarantees the dispatcher's "what counts as a
+///   blocker?" answer is consistent across the two code paths
+///   (blocked-set computation and reason rendering). Pre-fix code
+///   accepted `depends_on` / `blocks` which are NOT in our typed link
+///   vocabulary at all — those filters would silently drop every
+///   real-world relation and report "unresolved" forever.
+/// - Accumulate **all** parents per blocked id into a `BTreeSet`,
+///   sort + dedupe for free, deterministic output (so agents can grep
+///   the reason and so plan equality holds across reruns).
 /// - Render `blocked by dependencies: PRD-001, PRD-002, RFC-003` —
 ///   plural, comma-separated, every actionable parent listed.
 ///
@@ -222,10 +235,11 @@ where
     // on the per-source set which is negligible at our scale.
     let mut parents_by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (src, tgt, rel) in relations {
-        let rel_s = rel.as_ref();
-        // CR-H4 fix #1: filter on relation type. Only structural
-        // dependency relations gate parallelism.
-        if rel_s != "depends_on" && rel_s != "blocks" {
+        // CR-H4 fix #1: filter on relation type via the canonical
+        // structural-relation predicate. Sharing with `kahn_sort`
+        // keeps "what blocks dispatch?" and "what blocks the topo
+        // sort?" answers identical.
+        if !crate::graph::topological::is_structural_relation(rel.as_ref()) {
             continue;
         }
         parents_by_source
@@ -263,7 +277,7 @@ pub fn build_blocker_reasons_from_slice(
     // CLI/MCP call sites to clone or reformat their relation lists.
     let mut parents_by_source: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for (src, tgt, rel) in relations {
-        if rel != "depends_on" && rel != "blocks" {
+        if !crate::graph::topological::is_structural_relation(rel) {
             continue;
         }
         parents_by_source
@@ -869,6 +883,15 @@ mod tests {
     // CR-H4 — build_blocker_reasons{_from_slice} multi-parent + relation filter
     // ────────────────────────────────────────────────────────────────────
 
+    // CR-H4 test fixtures use `based_on` and `refines` — those are
+    // the actual structural relation types in our typed link
+    // vocabulary, see `crate::graph::topological::STRUCTURAL_RELATIONS`.
+    // An earlier draft of this test suite used `depends_on` / `blocks`
+    // which do NOT exist in the vocabulary — the test would have
+    // passed against a buggy helper that filtered for `depends_on`
+    // while the real CLI/MCP path filters for `based_on`. The fix
+    // shares `is_structural_relation` between the helper and
+    // `kahn_sort`, so the two surfaces can no longer drift.
     #[test]
     fn build_blocker_reasons_single_parent_renders_singular_form() {
         // Backward-compat readability: when there's exactly one parent
@@ -879,7 +902,7 @@ mod tests {
         let relations = vec![(
             "PRD-002".to_string(),
             "PRD-001".to_string(),
-            "depends_on".to_string(),
+            "based_on".to_string(),
         )];
         let blocked = vec!["PRD-002".to_string()];
         let entries = build_blocker_reasons_from_slice(&relations, &blocked);
@@ -898,17 +921,17 @@ mod tests {
             (
                 "PRD-010".to_string(),
                 "PRD-001".to_string(),
-                "depends_on".to_string(),
+                "based_on".to_string(),
             ),
             (
                 "PRD-010".to_string(),
                 "PRD-002".to_string(),
-                "depends_on".to_string(),
+                "based_on".to_string(),
             ),
             (
                 "PRD-010".to_string(),
                 "RFC-003".to_string(),
-                "depends_on".to_string(),
+                "refines".to_string(),
             ),
         ];
         let blocked = vec!["PRD-010".to_string()];
@@ -920,44 +943,60 @@ mod tests {
     }
 
     #[test]
-    fn build_blocker_reasons_filters_non_dependency_relation_types() {
-        // CR-H4 core fix: only `depends_on` and `blocks` are structural
-        // blockers. Pre-fix, `_rel` was discarded — `informs`,
-        // `relates_to`, `clarifies` etc. all counted as blockers,
-        // producing false "blocked by" entries for cross-references.
-        let relations = vec![
-            (
-                "PRD-100".to_string(),
-                "PRD-077".to_string(),
-                "informs".to_string(), // cross-ref, NOT a blocker
-            ),
-            (
-                "PRD-100".to_string(),
-                "PRD-099".to_string(),
-                "relates_to".to_string(), // ditto
-            ),
-        ];
+    fn build_blocker_reasons_filters_non_structural_relation_types() {
+        // CR-H4 core fix: only structural relations (based_on, refines,
+        // supersedes, contradicts) gate parallelism. Pre-fix, `_rel`
+        // was discarded — `informs` counted as a blocker, producing
+        // false "blocked by" entries for purely informational
+        // cross-references.
+        let relations = vec![(
+            "PRD-100".to_string(),
+            "PRD-077".to_string(),
+            "informs".to_string(), // informational, NOT a blocker
+        )];
         let blocked = vec!["PRD-100".to_string()];
         let entries = build_blocker_reasons_from_slice(&relations, &blocked);
         assert_eq!(
             entries[0].reason, "blocked by dependencies: unresolved",
-            "CR-H4: non-structural relations must NOT count as blockers"
+            "CR-H4: `informs` is informational; must NOT count as blocker"
         );
     }
 
     #[test]
-    fn build_blocker_reasons_accepts_blocks_as_structural_too() {
-        // `blocks` is the inverse direction of `depends_on` but
-        // semantically still means "Y must resolve before X can ship".
-        // Both must be honoured.
-        let relations = vec![(
-            "PRD-A".to_string(),
-            "PRD-B".to_string(),
-            "blocks".to_string(),
-        )];
+    fn build_blocker_reasons_accepts_all_structural_variants() {
+        // All four members of `STRUCTURAL_RELATIONS` must be honoured:
+        // `based_on`, `refines`, `supersedes`, `contradicts`. Sharing
+        // `is_structural_relation` with `kahn_sort` keeps this list
+        // synchronized — if a future change adds a fifth structural
+        // type, both surfaces pick it up at once.
+        let relations = vec![
+            (
+                "PRD-A".to_string(),
+                "PRD-B".to_string(),
+                "based_on".to_string(),
+            ),
+            (
+                "PRD-A".to_string(),
+                "PRD-C".to_string(),
+                "refines".to_string(),
+            ),
+            (
+                "PRD-A".to_string(),
+                "PRD-D".to_string(),
+                "supersedes".to_string(),
+            ),
+            (
+                "PRD-A".to_string(),
+                "PRD-E".to_string(),
+                "contradicts".to_string(),
+            ),
+        ];
         let blocked = vec!["PRD-A".to_string()];
         let entries = build_blocker_reasons_from_slice(&relations, &blocked);
-        assert_eq!(entries[0].reason, "blocked by dependencies: PRD-B");
+        assert_eq!(
+            entries[0].reason, "blocked by dependencies: PRD-B, PRD-C, PRD-D, PRD-E",
+            "CR-H4: all 4 structural relation types must produce blockers"
+        );
     }
 
     #[test]
@@ -969,12 +1008,12 @@ mod tests {
             (
                 "PRD-X".to_string(),
                 "PRD-1".to_string(),
-                "depends_on".to_string(),
+                "based_on".to_string(),
             ),
             (
                 "PRD-X".to_string(),
                 "PRD-1".to_string(),
-                "depends_on".to_string(),
+                "based_on".to_string(),
             ),
         ];
         let blocked = vec!["PRD-X".to_string()];
@@ -1003,7 +1042,7 @@ mod tests {
             (
                 String::from("PRD-2"),
                 String::from("PRD-1"),
-                String::from("depends_on"),
+                String::from("based_on"),
             ),
             (
                 String::from("PRD-2"),
@@ -1027,12 +1066,12 @@ mod tests {
             (
                 "PRD-A".to_string(),
                 "PRD-Z".to_string(),
-                "depends_on".to_string(),
+                "based_on".to_string(),
             ),
             (
                 "PRD-B".to_string(),
                 "PRD-Y".to_string(),
-                "depends_on".to_string(),
+                "based_on".to_string(),
             ),
         ];
         let blocked = vec!["PRD-B".to_string(), "PRD-A".to_string()];

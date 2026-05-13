@@ -46,13 +46,17 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 - **CR-H4: dispatch multi-parent blocker reason** — `forgeplan dispatch`
   and `forgeplan_dispatch` MCP tool previously reported a single
   arbitrary parent for blocked artifacts (`HashMap` collapsed
-  multi-parent edges to last-seen target) AND counted
-  `informs`/`relates_to`/etc. as structural blockers (the relation type
-  was dropped in the lookup build). Both fixed by extracting
-  `build_blocker_reasons_from_slice` to `forgeplan_core::dispatch` —
-  CLI and MCP now share one implementation. Only `depends_on` and
-  `blocks` relations gate parallelism; multiple parents are listed
-  alphabetically.
+  multi-parent edges to last-seen target) AND counted `informs` as a
+  structural blocker (the relation type was dropped in the lookup
+  build). Both fixed by extracting `build_blocker_reasons_from_slice`
+  to `forgeplan_core::dispatch` — CLI and MCP now share one
+  implementation. The helper uses
+  `graph::topological::is_structural_relation` (the same predicate
+  `kahn_sort` uses), so the canonical structural-relation list
+  (`based_on`, `refines`, `supersedes`, `contradicts`) drives both
+  "what blocks the topo sort?" and "what blocks dispatch?" — they can
+  no longer drift. Multiple parents are listed alphabetically:
+  `blocked by dependencies: PRD-001, PRD-002, RFC-003`.
 
 ## [0.31.0] - 2026-05-13
 
