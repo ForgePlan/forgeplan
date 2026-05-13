@@ -6347,34 +6347,33 @@ impl ForgeplanServer {
             );
         }
 
-        // PRD-077 FR-010: surface blocked-by-dependency artifacts in the
-        // serial queue with a structured reason naming the unresolved
-        // parent. Without this they were invisible from the agent's
-        // perspective — only present in `reasoning[]`, not actionable.
-        let blocker_lookup: std::collections::HashMap<String, String> = relations
-            .iter()
-            .map(|(src, tgt, _rel)| (src.clone(), tgt.clone()))
-            .collect();
-        for blocked_id in &skipped_blocked {
-            let parent = blocker_lookup
-                .get(blocked_id)
-                .cloned()
-                .unwrap_or_else(|| "unresolved".to_string());
-            plan.serial_queue
-                .push(forgeplan_core::dispatch::SerialEntry {
-                    id: blocked_id.clone(),
-                    reason: format!("blocked by dependency on {parent}"),
-                });
-        }
+        // PRD-077 FR-010 + CR-H4: surface blocked-by-dependency artifacts
+        // in the serial queue with a structured reason naming **every**
+        // unresolved parent. Without this they were invisible from the
+        // agent's perspective — only present in `reasoning[]`, not
+        // actionable.
+        //
+        // Helper lives in `forgeplan_core::dispatch::build_blocker_reasons_from_slice`
+        // so CLI and MCP surfaces share one implementation. Pre-CR-H4
+        // bug: the inline HashMap collapsed multi-parent edges to a
+        // single arbitrary parent AND counted non-`depends_on`/`blocks`
+        // relations (e.g. `informs`) as structural blockers. Both fixed
+        // by the helper.
+        plan.serial_queue
+            .extend(forgeplan_core::dispatch::build_blocker_reasons_from_slice(
+                &relations,
+                &skipped_blocked,
+            ));
 
-        let serial_queue_dto = plan
+        // CR-H3 — `DispatchSerialEntry` is `#[non_exhaustive]` so we go
+        // through the `From<SerialEntry>` impl rather than a
+        // struct-literal mapping. Centralising the conversion in `types`
+        // keeps the wire shape under a single contract surface.
+        let serial_queue_dto: Vec<DispatchSerialEntry> = plan
             .serial_queue
             .into_iter()
-            .map(|e| DispatchSerialEntry {
-                id: e.id,
-                reason: e.reason,
-            })
-            .collect::<Vec<_>>();
+            .map(DispatchSerialEntry::from)
+            .collect();
 
         let dto = DispatchResponse {
             buckets: plan.buckets,

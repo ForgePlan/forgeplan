@@ -130,28 +130,25 @@ pub async fn run(
         );
     }
 
-    // PRD-077 FR-010: enrich serial entries with `blocked by dependency on <PARENT_ID>`
-    // when applicable. The bare structural-dep skip ran before
-    // `compute_dispatch_plan`, so those entries are already in
-    // `skipped_blocked` (and the `reasoning` log) — push them into the
-    // structured serial queue with a precise dependency-source reason
-    // so downstream agents can fix the root cause without re-running
-    // `forgeplan_blocked`.
-    let blocker_lookup: std::collections::HashMap<String, String> = relations
-        .iter()
-        .map(|(src, tgt, _rel)| (src.clone(), tgt.clone()))
-        .collect();
-    for blocked_id in &skipped_blocked {
-        let parent = blocker_lookup
-            .get(blocked_id)
-            .cloned()
-            .unwrap_or_else(|| "unresolved".to_string());
-        plan.serial_queue
-            .push(forgeplan_core::dispatch::SerialEntry {
-                id: blocked_id.clone(),
-                reason: format!("blocked by dependency on {parent}"),
-            });
-    }
+    // PRD-077 FR-010 + CR-H4: enrich serial entries with
+    // `blocked by dependencies: <PARENT>[, <PARENT>...]` when applicable.
+    // The bare structural-dep skip ran before `compute_dispatch_plan`, so
+    // those entries are already in `skipped_blocked` (and the `reasoning`
+    // log) — push them into the structured serial queue with a precise
+    // dependency-source reason so downstream agents can fix the root
+    // cause without re-running `forgeplan_blocked`.
+    //
+    // Helper extracted to `forgeplan_core::dispatch::build_blocker_reasons_from_slice`
+    // so CLI and MCP surfaces can't drift (CR-H4 closure mandate).
+    // Pre-CR-H4 bug: the inline HashMap collapsed multi-parent edges to
+    // a single arbitrary parent AND counted non-`depends_on`/`blocks`
+    // relations (e.g. `informs`) as structural blockers. Both fixed by
+    // the helper.
+    plan.serial_queue
+        .extend(forgeplan_core::dispatch::build_blocker_reasons_from_slice(
+            &relations,
+            &skipped_blocked,
+        ));
 
     // Hint: pick the first non-empty bucket's first artifact to show
     // exactly what the agent should claim next; if every bucket is empty
