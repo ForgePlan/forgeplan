@@ -11,6 +11,35 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-05-13
+
+Sprint headline: **Wave 9 polish + 5-agent adversarial audit closure.**
+Closes PROB-051 end-to-end (R_eff=0.80 grade B), addresses 19 audit
+findings (1 CRITICAL, 2 HIGH, 9 MED, 7 LOW) across logic, architecture,
+security, and test-quality dimensions. 26 commits, ~3500 LOC net.
+
+Key security closures landing in this release:
+- **SEC-C1+C2 input gate** — `validate_title` lifted to `forgeplan-core::artifact::validation`
+  and gated at all 4 mutation paths (CLI new, CLI update, MCP new, MCP update). Pre-fix,
+  3 of 4 paths bypassed control-char + BIDI override rejection — Trojan Source titles
+  could be planted via `forgeplan update` or MCP.
+- **SEC-H1 output gate** — `sanitize_for_hint` propagated to 8 CLI command print sites
+  (list, search, blindspots, journal, decay, embed, promote, calibrate-estimate). LOG-001
+  closure for the v0.30 audit was partial; this completes it.
+- **SEC-H2 HOME sanitizer hardening** — `sanitize_text_with` now masks bare HOME at
+  end-of-string or followed by a non-path boundary character. Pre-fix, error chains of
+  the form `"chdir failed: /Users/alice"` leaked the username through MCP error JSON
+  and Claude Desktop logs.
+- **SEC-H3 MCP error sanitisation** — all 40+ `McpError::internal_error` call sites
+  route through `sanitize_error_chain`. Pre-fix only 3 typed-error variants (`StoreFatal`,
+  `StoreTransient`, `FileNotFound`) went through the sanitiser.
+- **ARCH-C1 health JSON helper extract** — `pub fn forgeplan_core::health::health_report_to_json`
+  is now the single source of truth for the CLI `--json` + MCP `forgeplan_health` wire
+  shape. Eliminates the third recurrence of "two surfaces serialising the same domain
+  object" (PROB-064 was the first, CR-001 the second). Helper also bundles SEC-M1
+  closure — every title/message/reason/issue/advisory string is sanitised before
+  serialisation.
+
 ### Added
 
 - **`forgeplan release-notes [--since <ref>] [--until <ref>] [--output text|markdown|json] [--draft]`**

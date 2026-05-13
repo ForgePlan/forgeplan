@@ -86,11 +86,15 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
-- **v0.29.0** (2026-05-05) — verdict aggregator (`Verdict::Empty`/Healthy/
-  NeedsAttention/Unhealthy), typed errors (PROB-049 H-class), claude --print
-  dispatch refactor (PROB-050 A-4..A-15), CWE-426 binary substitution closed
-  на двух surfaces (env + struct API)
-- **76 CLI commands**, **72 MCP tools**, **1977 tests**, **0 warnings** on both feature configs
+- **v0.31.0** (2026-05-13) — Wave 9 polish: 19-finding adversarial audit
+  closure. SEC-C1+C2 input gate (`validate_title` lifted to core, gated at all
+  4 mutation paths — CLI new/update + MCP new/update). SEC-H1 output gate
+  (`sanitize_for_hint` on 8 CLI command print sites, completes LOG-001 from
+  v0.30). SEC-H2 HOME sanitiser bare-string masking. SEC-H3 MCP error chain
+  sanitisation across 40+ `McpError::internal_error` sites. ARCH-C1
+  `health_report_to_json` helper extract — single source of truth for
+  CLI/MCP wire shape. PROB-051 closed end-to-end (R_eff=0.80 grade B).
+- **76 CLI commands**, **72 MCP tools**, **2724 tests**, **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
