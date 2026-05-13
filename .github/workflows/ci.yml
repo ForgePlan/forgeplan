@@ -39,7 +39,7 @@ jobs:
     if: github.event_name == 'pull_request' && (github.base_ref == 'dev' || (github.base_ref == 'main' && !startsWith(github.head_ref, 'release/')))
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
         with:
           fetch-depth: 0  # Full history for git diff to work correctly
 
@@ -77,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
 
       - name: Check Rust enum vs bash validator drift
         run: |
@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
 
       - name: Run validator audit on workspace
         run: |
@@ -126,20 +126,20 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@8831f7d0fe4f53106efaaae06f841781588520e5  # stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
           components: clippy, rustfmt
 
       - name: Install protoc
-        uses: arduino/setup-protoc@a4e79b8d4c1e3bc2a1f6c8e9d5b2c4f6a8e1d3f5  # v3.0.0
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@676c0e67b665684f17941acf5cc3af83bcf10228  # v0.0.6
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
 
       - name: Probe sccache backend
         # Probe whether the GHA cache backend is healthy. If reachable,
@@ -172,7 +172,7 @@ jobs:
           fi
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2.0.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -194,18 +194,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install protoc
-        uses: arduino/setup-protoc@a4e79b8d4c1e3bc2a1f6c8e9d5b2c4f6a8e1d3f5  # v3.0.0
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@676c0e67b665684f17941acf5cc3af83bcf10228  # v0.0.6
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
 
       - name: Probe sccache backend
         # Same probe pattern as in the check job — see comment above.
@@ -231,10 +231,10 @@ jobs:
           fi
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2.0.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3235f8901fd37ffed0052b276cec25a362fb82e9  # v2.0.1
+        uses: taiki-e/install-action@3235f8901fd37ffed0052b276cec25a362fb82e9  # v2.33.60
         with:
           tool: cargo-nextest
 
@@ -258,18 +258,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install protoc
-        uses: arduino/setup-protoc@a4e79b8d4c1e3bc2a1f6c8e9d5b2c4f6a8e1d3f5  # v3.0.0
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@676c0e67b665684f17941acf5cc3af83bcf10228  # v0.0.6
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
 
       - name: Probe sccache backend
         run: |
@@ -294,7 +294,7 @@ jobs:
           fi
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2.0.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
       - name: Build forgeplan binary
         run: cargo build --bin forgeplan
@@ -304,7 +304,7 @@ jobs:
 
       - name: Upload smoke logs on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.0.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.8.0
         with:
           name: smoke-test-logs
           path: /tmp/forgeplan-smoke-*
