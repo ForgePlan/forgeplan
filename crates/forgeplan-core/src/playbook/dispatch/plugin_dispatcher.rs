@@ -398,7 +398,14 @@ mod tests {
     /// AC-2 PRD-072: when no `claude` binary is available on PATH and no
     /// override is set, dispatcher returns `DelegateMissing` with the
     /// step's `fallback_hint` surfaced as the reason.
+    // CR-H6: this test calls `remove_var("PATH")` / `set_var("PATH", ...)`
+    // — full PATH mutator. The internal `env_guard()` mutex coordinates
+    // within this module; `#[serial_test::serial(env_path)]` extends the
+    // serialization to peer tests in other modules via the shared lock
+    // key. Defensive supplement: both mechanisms must be honoured by
+    // every PATH-mutating test so the workspace-wide invariant holds.
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     async fn plugin_dispatcher_returns_delegate_missing_when_claude_absent() {
         let _guard = env_guard().await;
         let saved_path = std::env::var_os("PATH");
@@ -434,7 +441,9 @@ mod tests {
 
     /// Default install message when step omits `fallback_hint`. Must
     /// mention `claude` so the user knows which binary to install.
+    // CR-H6: PATH mutator — locked under `env_path` key.
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     async fn plugin_dispatcher_default_missing_message_when_no_fallback_hint() {
         let _guard = env_guard().await;
         let saved_path = std::env::var_os("PATH");

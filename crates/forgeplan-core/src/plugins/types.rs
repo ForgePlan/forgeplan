@@ -527,7 +527,14 @@ mod tests {
 
     // ── PluginSource paths ─────────────────────────────────────────────────
 
+    // CR-H6 (audit closure): HOME mutator — locked under `env_home`
+    // key so this test cannot run in parallel with any other HOME
+    // mutator in this crate's test binary. The function-internal
+    // comment about "single-threaded for env" is now enforced by the
+    // serial_test macro rather than left to convention; the assertion
+    // about restore-after-test still applies.
     #[test]
+    #[serial_test::serial(env_home)]
     fn plugin_source_default_paths_expand_tilde() {
         // SAFETY: tests are single-threaded for env in this module; we set
         // and read HOME consistently. Restore after.

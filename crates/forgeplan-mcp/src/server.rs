@@ -8066,12 +8066,14 @@ mod safe_mcp_error_tests {
         }
     }
 
+    // CR-H6 (audit closure): HOME mutator — locked under `env_home`
+    // key. Promotes the prior "in practice the parallel risk is small"
+    // comment to a hard contract: no other HOME-mutating test in this
+    // test binary can interleave. The `HomeGuard` Drop still restores
+    // HOME on panic for safety.
     #[test]
+    #[serial_test::serial(env_home)]
     fn sanitises_home_path_in_error_chain() {
-        // Note: this test mutates HOME, so it must run serially with
-        // other HOME-sensitive tests. In practice the rest of the suite
-        // uses `home_env()` once per format() call and the parallel risk
-        // is small — the guard restores on drop either way.
         let _home_guard = HomeGuard::override_home("/Users/alice");
         let err = anyhow::anyhow!("EACCES on /Users/alice/foo/secret.txt");
         let mcp = safe_mcp_error(err);
@@ -10208,6 +10210,18 @@ mod phase5_tests {
     /// `HOME` env var (cargo runs tests in parallel by default within a
     /// crate). Uses `tokio::sync::Mutex` so the guard can be held across
     /// `.await` points (clippy::await_holding_lock).
+    ///
+    /// CR-H6 (audit closure) equivalence: this mutex serves the same
+    /// purpose as `#[serial_test::serial(env_home)]` but with async
+    /// semantics. Tests in this module use `let _g = test_lock().await`
+    /// as the first line; the lock is process-wide just like a
+    /// `serial_test` lock keyed by `env_home`. Both mechanisms are
+    /// in-process — cargo runs each crate's tests as a separate binary,
+    /// so neither protects against `forgeplan-cli` or `forgeplan-core`
+    /// tests running concurrently. Cross-crate races are bounded by
+    /// cargo's default of running one test binary at a time per crate.
+    /// Documented here as a contract so a future audit doesn't ask
+    /// "why isn't this tagged with the macro?".
     async fn test_lock() -> tokio::sync::MutexGuard<'static, ()> {
         use std::sync::OnceLock;
         use tokio::sync::Mutex;
