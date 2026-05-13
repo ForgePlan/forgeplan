@@ -1012,7 +1012,7 @@ mod tests {
             ),
         ];
         let blocked = vec!["PRD-2".to_string()];
-        let via_iter: Vec<SerialEntry> = build_blocker_reasons(owned.clone().into_iter(), &blocked);
+        let via_iter: Vec<SerialEntry> = build_blocker_reasons(owned.clone(), &blocked);
         let via_slice = build_blocker_reasons_from_slice(&owned, &blocked);
         assert_eq!(via_iter, via_slice);
     }
