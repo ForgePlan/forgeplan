@@ -46,12 +46,12 @@ jobs:
       - name: Fetch base
         run: git fetch origin dev:refs/remotes/origin/dev --no-tags --depth=200
 
-      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.0.0
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.10.1
         with:
           toolchain: stable
           components: ''
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2.0.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           workspaces: crates/forgeplan-cli
           cache-targets: release
@@ -135,7 +135,7 @@ jobs:
 
       - name: Comment on PR
         if: github.event_name == 'pull_request' && failure() && env.DRY_RUN_MODE != 'true'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.0.1
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.0.2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

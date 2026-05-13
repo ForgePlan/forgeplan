@@ -10,7 +10,16 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
-    # Automatically approve and merge version updates for actions
-    auto-merge: true
-    automerge-options:
-      auto-merge-method: "squash"
+
+  # Enable version updates for Cargo dependencies (Rust)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    groups:
+      rust-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
