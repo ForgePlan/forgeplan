@@ -174,10 +174,10 @@ pub fn extract_plain_text(body: &str) -> String {
 
 /// Load and validate LLM config — fails early with actionable message if not configured.
 ///
-/// PRD-077 FR-008 — On failure the error message contains the structured Hint
+/// PRD-077 FR-008 / CR-C4 — On failure the error message contains the structured Hint
 /// protocol so the agent can route to remediation without guessing:
 ///   - what was missing (config field name OR env var name)
-///   - `Fix: edit .forgeplan/config.yaml::llm or export <ENV> in .forgeplan/secrets.yaml`
+///   - `Fix: edit .forgeplan/config.yaml::llm or export <ENV> in .forgeplan/secrets.env`
 ///   - one-line copy-paste solution
 pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::LlmConfig> {
     let cfg = config()?;
@@ -188,7 +188,7 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
                 "LLM not configured. Missing `llm:` block in .forgeplan/config.yaml — \
                  the `reason` command requires an external LLM provider.\n\
                  Fix: edit .forgeplan/config.yaml and add an `llm:` block; \
-                 then export the API key via .forgeplan/secrets.yaml\n\
+                 then export the API key via .forgeplan/secrets.env\n\
                  Copy-paste:\n\
                  \n\
                  # 1) .forgeplan/config.yaml\n\
@@ -197,8 +197,8 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
                  \x20\x20model: models/gemini-2.5-flash\n\
                  \x20\x20api_key_env: GEMINI_API_KEY\n\
                  \n\
-                 # 2) .forgeplan/secrets.yaml  (gitignored; source it from your shell rc)\n\
-                 export GEMINI_API_KEY=sk-..."
+                 # 2) .forgeplan/secrets.env  (gitignored; source it from your shell rc)\n\
+                 export GEMINI_API_KEY=<your-key-here>"
             )
         })?
         .with_env_overrides();
@@ -207,12 +207,12 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
         anyhow::bail!(
             "API key not found for LLM provider '{provider}'. Environment variable \
              `{env}` is unset — the `reason` command needs this to call the LLM.\n\
-             Fix: export {env} in .forgeplan/secrets.yaml (gitignored) and source \
+             Fix: export {env} in .forgeplan/secrets.env (gitignored) and source \
              it from your shell rc\n\
              Copy-paste:\n\
              \n\
-             # .forgeplan/secrets.yaml\n\
-             export {env}=sk-...",
+             # .forgeplan/secrets.env\n\
+             export {env}=<your-key-here>",
             provider = llm.provider,
             env = env_name,
         );
