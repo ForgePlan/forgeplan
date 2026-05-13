@@ -130,6 +130,29 @@ pub async fn run(
         );
     }
 
+    // PRD-077 FR-010: enrich serial entries with `blocked by dependency on <PARENT_ID>`
+    // when applicable. The bare structural-dep skip ran before
+    // `compute_dispatch_plan`, so those entries are already in
+    // `skipped_blocked` (and the `reasoning` log) — push them into the
+    // structured serial queue with a precise dependency-source reason
+    // so downstream agents can fix the root cause without re-running
+    // `forgeplan_blocked`.
+    let blocker_lookup: std::collections::HashMap<String, String> = relations
+        .iter()
+        .map(|(src, tgt, _rel)| (src.clone(), tgt.clone()))
+        .collect();
+    for blocked_id in &skipped_blocked {
+        let parent = blocker_lookup
+            .get(blocked_id)
+            .cloned()
+            .unwrap_or_else(|| "unresolved".to_string());
+        plan.serial_queue
+            .push(forgeplan_core::dispatch::SerialEntry {
+                id: blocked_id.clone(),
+                reason: format!("blocked by dependency on {parent}"),
+            });
+    }
+
     // Hint: pick the first non-empty bucket's first artifact to show
     // exactly what the agent should claim next; if every bucket is empty
     // (no candidates), nudge toward listing draft artifacts to seed work.
@@ -195,8 +218,12 @@ pub async fn run(
             "Serial queue ({} item(s) — re-dispatch when an agent frees):",
             plan.serial_queue.len()
         );
-        for id in &plan.serial_queue {
-            println!("  {id}");
+        // PRD-077 FR-010: print the per-entry reason indented under the ID
+        // so agents see the cause of deferral inline — no need to cross-
+        // reference `reasoning[]`.
+        for entry in &plan.serial_queue {
+            println!("  {}", entry.id);
+            println!("    reason: {}", entry.reason);
         }
     }
 

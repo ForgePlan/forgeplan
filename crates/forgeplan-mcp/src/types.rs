@@ -361,10 +361,20 @@ pub struct DispatchParams {
     pub overlap_threshold: Option<f64>,
 }
 
+/// PRD-077 FR-010 — each serial-queue entry now carries a structured
+/// `reason` so agents can route to the correct remediation (add
+/// `affected_files`, wait for blocker, lower threshold, …) without having
+/// to scan the `reasoning[]` audit log.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DispatchSerialEntry {
+    pub id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DispatchResponse {
     pub buckets: Vec<Vec<String>>,
-    pub serial_queue: Vec<String>,
+    pub serial_queue: Vec<DispatchSerialEntry>,
     pub reasoning: Vec<String>,
     pub generated_at: String,
     pub agent_count: usize,

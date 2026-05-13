@@ -6347,9 +6347,38 @@ impl ForgeplanServer {
             );
         }
 
+        // PRD-077 FR-010: surface blocked-by-dependency artifacts in the
+        // serial queue with a structured reason naming the unresolved
+        // parent. Without this they were invisible from the agent's
+        // perspective — only present in `reasoning[]`, not actionable.
+        let blocker_lookup: std::collections::HashMap<String, String> = relations
+            .iter()
+            .map(|(src, tgt, _rel)| (src.clone(), tgt.clone()))
+            .collect();
+        for blocked_id in &skipped_blocked {
+            let parent = blocker_lookup
+                .get(blocked_id)
+                .cloned()
+                .unwrap_or_else(|| "unresolved".to_string());
+            plan.serial_queue
+                .push(forgeplan_core::dispatch::SerialEntry {
+                    id: blocked_id.clone(),
+                    reason: format!("blocked by dependency on {parent}"),
+                });
+        }
+
+        let serial_queue_dto = plan
+            .serial_queue
+            .into_iter()
+            .map(|e| DispatchSerialEntry {
+                id: e.id,
+                reason: e.reason,
+            })
+            .collect::<Vec<_>>();
+
         let dto = DispatchResponse {
             buckets: plan.buckets,
-            serial_queue: plan.serial_queue,
+            serial_queue: serial_queue_dto,
             reasoning: plan.reasoning,
             generated_at: plan.generated_at,
             agent_count: plan.agent_count,
@@ -9263,11 +9292,12 @@ mod claim_mcp_tests {
         let body = response_json(&r);
 
         let all_ids = extract_ids_flat(&body["buckets"]);
+        // PRD-077 FR-010: serial_queue is now `[{id, reason}, ...]`.
         let serial: Vec<String> = body["serial_queue"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| v.as_str().unwrap().to_string())
+            .map(|v| v["id"].as_str().unwrap().to_string())
             .collect();
         let visible: std::collections::HashSet<&String> =
             all_ids.iter().chain(serial.iter()).collect();
@@ -9409,11 +9439,12 @@ mod claim_mcp_tests {
         // section (extracted via Inc 2 fallback) or be empty — either way
         // it must reappear somewhere once released.
         let in_buckets = extract_ids_flat(&final_body["buckets"]).contains(&created_id);
+        // PRD-077 FR-010: serial_queue entries are now `{id, reason}` objects.
         let in_serial = final_body["serial_queue"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v.as_str() == Some(created_id.as_str()));
+            .any(|v| v["id"].as_str() == Some(created_id.as_str()));
         assert!(
             in_buckets || in_serial,
             "released artifact {created_id} must reappear in plan"
