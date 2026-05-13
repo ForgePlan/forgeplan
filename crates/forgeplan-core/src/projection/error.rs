@@ -445,7 +445,15 @@ pub fn sanitize_error_chain(e: &anyhow::Error) -> String {
 /// discipline (path is supposed to be workspace-relative) is reinforced
 /// here so that even a forgotten `strip_prefix` does not leak HOME or
 /// workspace root into operator logs.
-pub(super) fn sanitize_path_for_display(p: &std::path::Path) -> String {
+///
+/// **Wave 1.5 SEC-H3 promotion**: was `pub(super)` — exposed to the wider
+/// workspace so `forgeplan-core::phase::store` (symlink-rejection
+/// `tracing::warn!` site) and any other log emission can route
+/// untrusted `path.display()` through the same HOME / scratch-dir
+/// masking discipline. Phase store paths are constructed from the
+/// workspace path which is absolute — without this mask, tracing logs
+/// leak `/Users/<username>/proj/.forgeplan/state/PRD-001.yaml` (CWE-200).
+pub fn sanitize_path_for_display(p: &std::path::Path) -> String {
     let home = home_env();
     sanitize_text_with(&p.display().to_string(), home.as_deref())
 }

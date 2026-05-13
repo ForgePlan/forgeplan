@@ -541,9 +541,29 @@ pub async fn health_report_with_phase(
                             // Artifact is silently dropped from phase-mismatch list,
                             // potentially under-computing verdict. Logged here for
                             // forensics + counted in HealthReport.
+                            //
+                            // **Wave 1.5 SEC-H3 (CWE-200 / log injection
+                            // defence-in-depth)**: route the anyhow chain
+                            // through `sanitize_error_chain` so HOME paths,
+                            // scratch dirs, and CARGO_TARGET_DIR are masked
+                            // before landing in tracing logs. Today
+                            // `read_phase` does not call `with_context(path)`,
+                            // but a future enrichment can without anyone
+                            // noticing — pre-emptive sanitisation makes the
+                            // log-leak class compile-time safe.
+                            //
+                            // `id` is also routed through `sanitize_for_hint`:
+                            // the value originated as a frontmatter slug and
+                            // ran through `validate_artifact_id` at every
+                            // mutation surface — defensive sanitisation is a
+                            // belt-and-suspenders measure against a future
+                            // bug-bypass.
+                            let safe_err = crate::projection::sanitize_error_chain(&e);
+                            let safe_id =
+                                crate::artifact::sanitize::sanitize_for_hint(&id);
                             tracing::warn!(
-                                artifact = %id,
-                                err = %e,
+                                artifact = %safe_id,
+                                err = %safe_err,
                                 "phase state file read failed during health scan — \
                                  artifact dropped from phase-mismatch list"
                             );
