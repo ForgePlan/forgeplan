@@ -39,13 +39,19 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // default lock timeout.
     let (_ws, store) = common::open_store().await?;
 
-    // PRD-071 contract: when LLM is unavailable, emit a `Fix:` marker line so
-    // the agent can route to setup-skill instead of guessing.
+    // PRD-071 hint contract + PRD-077 FR-008: when LLM is unavailable, emit a
+    // structured `Fix:` line so the agent has a deterministic next step. The
+    // underlying error from `require_llm_config` already contains a `Fix:`
+    // marker + copy-paste secrets.yaml snippet; we additionally surface the
+    // setup-skill shortcut for agents that prefer the guided workflow.
     let llm_config = match common::require_llm_config() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: {}", e);
-            eprintln!("Fix: forgeplan setup-skill");
+            eprintln!(
+                "Fix: edit .forgeplan/config.yaml::llm or export the API key in \
+                 .forgeplan/secrets.yaml (see `forgeplan setup-skill` for a guided walk-through)"
+            );
             anyhow::bail!("LLM not configured");
         }
     };
@@ -130,8 +136,48 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Error: ADI reasoning failed: {}", e);
-            eprintln!("Fix: forgeplan setup-skill");
+            // PRD-077 FR-008: classify the failure so the Fix: hint points at
+            // the actual remediation (auth → rotate key; rate-limit → wait;
+            // network → check connectivity). Heuristic match on the error
+            // string keeps us decoupled from LLM-provider-specific error
+            // types — substring search is intentionally tolerant.
+            let msg = e.to_string();
+            let lower = msg.to_ascii_lowercase();
+            eprintln!("Error: ADI reasoning failed: {}", msg);
+            let env = llm_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("GEMINI_API_KEY");
+            if lower.contains("auth") || lower.contains("401") || lower.contains("403") {
+                eprintln!(
+                    "Fix: API key rejected by `{provider}` — rotate `{env}` in \
+                     .forgeplan/secrets.yaml (or run `forgeplan setup-skill`)",
+                    provider = llm_config.provider,
+                );
+            } else if lower.contains("rate") || lower.contains("429") || lower.contains("quota") {
+                eprintln!(
+                    "Fix: rate-limit hit on `{provider}` — wait 60 s and retry, \
+                     or switch model in .forgeplan/config.yaml::llm.model",
+                    provider = llm_config.provider,
+                );
+            } else if lower.contains("network")
+                || lower.contains("timeout")
+                || lower.contains("dns")
+            {
+                eprintln!(
+                    "Fix: network error reaching `{provider}` — check connectivity, \
+                     then retry `forgeplan reason {id}`",
+                    provider = llm_config.provider,
+                    id = record.id,
+                );
+            } else {
+                eprintln!(
+                    "Fix: verify .forgeplan/config.yaml::llm and `{env}` in \
+                     .forgeplan/secrets.yaml; rerun `forgeplan reason {id}` (or \
+                     `forgeplan setup-skill` for guided fix)",
+                    id = record.id,
+                );
+            }
             anyhow::bail!("LLM call failed");
         }
     };

@@ -117,14 +117,46 @@ impl ArtifactCandidate {
     }
 }
 
+/// One artifact deferred to the serial queue, with a structured explanation
+/// of why the dispatcher couldn't place it in a parallel bucket.
+///
+/// PRD-077 FR-010 — agents on the receiving end of `forgeplan dispatch`
+/// previously saw bare IDs (`PRD-042`) and had no way to distinguish "missing
+/// frontmatter" from "blocked by dependency" from "file overlap". Carrying
+/// the reason inline avoids forcing them to parse the `reasoning[]` audit
+/// log to figure out causality.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerialEntry {
+    pub id: String,
+    /// Machine- and human-readable reason. Stable phrases the CLI/MCP
+    /// callers can substring-match:
+    ///   - `missing affected_files frontmatter`
+    ///   - `file overlap >=<threshold> with bucket <N>`
+    ///   - `blocked by dependency on <PARENT_ID>`
+    ///   - `epic boundary mismatch`
+    ///   - `no agent with matching skill`
+    ///   - `already claimed by another agent`
+    pub reason: String,
+}
+
+impl SerialEntry {
+    fn new(id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
 /// A plan returned to the orchestrator. `buckets[i]` is the ordered list
 /// of artifact IDs agent `i` should work on (typically one, sometimes two
 /// when they're truly disjoint). `serial_queue` holds everything that
-/// couldn't be parallelized safely and should be processed one-at-a-time.
+/// couldn't be parallelized safely and should be processed one-at-a-time,
+/// each entry carrying a structured `reason` per PRD-077 FR-010.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchPlan {
     pub buckets: Vec<Vec<String>>,
-    pub serial_queue: Vec<String>,
+    pub serial_queue: Vec<SerialEntry>,
     pub reasoning: Vec<String>,
     /// RFC3339 timestamp — orchestrator can detect stale plans and
     /// re-dispatch when the workspace state changes (R-6).
@@ -217,7 +249,10 @@ pub fn compute_dispatch_plan(
     // unbounded caller input would otherwise allocate proportional Vec.
     let agent_count = agent_count.clamp(1, MAX_AGENTS);
     let mut buckets: Vec<Vec<ArtifactCandidate>> = vec![Vec::new(); agent_count];
-    let mut serial_queue_full: Vec<ArtifactCandidate> = Vec::new();
+    // PRD-077 FR-010: serial entries carry (id, structured reason). The
+    // reason value is stable enough that downstream CLI/MCP can render
+    // it verbatim and tests can substring-match on the canonical phrases.
+    let mut serial_entries: Vec<SerialEntry> = Vec::new();
 
     // R3 audit L-2 (rust-pro): normalize claimed IDs to uppercase so a
     // lowercase-imported artifact ID still matches the claim key (claims
@@ -245,7 +280,10 @@ pub fn compute_dispatch_plan(
                  deferred for safety)",
                 cand.id
             ));
-            serial_queue_full.push(cand.clone());
+            serial_entries.push(SerialEntry::new(
+                cand.id.clone(),
+                "missing affected_files frontmatter",
+            ));
             continue;
         }
 
@@ -256,15 +294,25 @@ pub fn compute_dispatch_plan(
         let mut order: Vec<usize> = (0..buckets.len()).collect();
         order.sort_by_key(|&i| (buckets[i].len(), i));
 
+        // PRD-077 FR-010: track WHY each bucket rejected — keep the most
+        // specific reason for the serial entry (file overlap > skill
+        // mismatch > "no bucket fit"). Order of preference: overlap with
+        // an actually-placed artifact is most actionable.
+        let mut skill_blocks = 0usize;
+        let mut conflict_with: Option<usize> = None;
         for i in order {
             let skills = agent_skills.get(i).map(Vec::as_slice).unwrap_or(&[]);
             if !skill_match(skills, cand.domain.as_deref()) {
+                skill_blocks += 1;
                 continue;
             }
             let any_conflict = buckets[i]
                 .iter()
                 .any(|existing| conflicts(existing, cand, overlap_threshold));
             if any_conflict {
+                if conflict_with.is_none() {
+                    conflict_with = Some(i);
+                }
                 continue;
             }
             reasoning.push(format!(
@@ -281,12 +329,18 @@ pub fn compute_dispatch_plan(
             continue 'outer;
         }
 
-        // No bucket fit — defer to serial.
-        reasoning.push(format!(
-            "{}: serialized (conflicts with every bucket or no matching skill)",
-            cand.id
-        ));
-        serial_queue_full.push(cand.clone());
+        // No bucket fit — defer to serial. Pick the most informative reason.
+        let reason = if let Some(b) = conflict_with {
+            format!("file overlap >={overlap_threshold:.2} with bucket {b}")
+        } else if skill_blocks > 0 {
+            "no agent with matching skill".to_string()
+        } else {
+            // Fallback when neither overlap nor skill applied — e.g. all
+            // buckets full of conflicts but loop ran out before counting.
+            "conflicts with every bucket".to_string()
+        };
+        reasoning.push(format!("{}: serialized ({reason})", cand.id));
+        serial_entries.push(SerialEntry::new(cand.id.clone(), reason));
     }
 
     DispatchPlan {
@@ -294,7 +348,7 @@ pub fn compute_dispatch_plan(
             .into_iter()
             .map(|b| b.into_iter().map(|c| c.id).collect())
             .collect(),
-        serial_queue: serial_queue_full.into_iter().map(|c| c.id).collect(),
+        serial_queue: serial_entries,
         reasoning,
         generated_at: Utc::now().to_rfc3339(),
         agent_count,
@@ -398,7 +452,13 @@ mod tests {
             DEFAULT_OVERLAP_THRESHOLD,
         );
         assert_eq!(plan1.buckets[0], vec!["PRD-A"]);
-        assert_eq!(plan1.serial_queue, vec!["PRD-B"]);
+        assert_eq!(plan1.serial_queue.len(), 1);
+        assert_eq!(plan1.serial_queue[0].id, "PRD-B");
+        assert!(
+            plan1.serial_queue[0].reason.contains("file overlap"),
+            "PRD-077 FR-010: serial reason must classify overlap (got: {})",
+            plan1.serial_queue[0].reason
+        );
         assert!(
             plan1
                 .reasoning
@@ -420,7 +480,12 @@ mod tests {
             DEFAULT_OVERLAP_THRESHOLD,
         );
         assert!(plan.buckets[0].is_empty());
-        assert_eq!(plan.serial_queue, vec!["PRD-NO-FILES"]);
+        assert_eq!(plan.serial_queue.len(), 1);
+        assert_eq!(plan.serial_queue[0].id, "PRD-NO-FILES");
+        assert_eq!(
+            plan.serial_queue[0].reason, "missing affected_files frontmatter",
+            "PRD-077 FR-010: empty affected_files must produce canonical reason"
+        );
         assert!(
             plan.reasoning
                 .iter()
@@ -478,7 +543,12 @@ mod tests {
             DEFAULT_OVERLAP_THRESHOLD,
         );
         assert!(plan.buckets[0].is_empty());
-        assert_eq!(plan.serial_queue, vec!["PRD-UI"]);
+        assert_eq!(plan.serial_queue.len(), 1);
+        assert_eq!(plan.serial_queue[0].id, "PRD-UI");
+        assert_eq!(
+            plan.serial_queue[0].reason, "no agent with matching skill",
+            "PRD-077 FR-010: skill mismatch must produce canonical reason"
+        );
     }
 
     #[test]
@@ -596,7 +666,8 @@ mod tests {
         let plan = compute_dispatch_plan(&[a, b], 1, &[], &HashSet::new(), 1.0 / 3.0);
         // Only first fits; second must serialize because overlap >= threshold.
         assert_eq!(plan.buckets[0], vec!["PRD-A"]);
-        assert_eq!(plan.serial_queue, vec!["PRD-B"]);
+        assert_eq!(plan.serial_queue.len(), 1);
+        assert_eq!(plan.serial_queue[0].id, "PRD-B");
     }
 
     #[test]
