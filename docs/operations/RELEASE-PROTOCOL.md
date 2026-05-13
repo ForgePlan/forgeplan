@@ -285,6 +285,42 @@ under `docs/operations/dependabot-triage-YYYY-MM-DD.md`.
 
 ---
 
+## Migration notes for existing workspaces (SEC-H1, CR-C4 — v0.32.0+)
+
+`forgeplan init` short-circuits when `.forgeplan/` already exists. That
+means contributors who upgraded `forgeplan` between releases do NOT
+automatically receive newly-shipped workspace files (e.g. `.gitkeep`
+placeholders from PRD-077 FR-001, `secrets.env` template from FR-002).
+
+`forgeplan init --force` is the migration entry point. It is **strictly
+additive** (PROB-068 contract):
+
+- Existing artifact `.md` bodies are NEVER overwritten.
+- `config.yaml` is regenerated (the previous version is moved aside as
+  `config.yaml.bak-<timestamp>` so contributors can diff their custom
+  edits and re-apply them on top of new defaults).
+- `.gitkeep` placeholders are backfilled into every artifact subdir
+  where one is missing (SEC-H1).
+- `secrets.env` template is backfilled if missing — never clobbers an
+  existing file the contributor may have populated with real keys
+  (SEC-H1).
+- The canonical `.gitignore` section is refreshed (PROB-062).
+
+When announcing a release that ships new workspace skeleton files,
+include this snippet in the release notes:
+
+```
+For existing workspaces created before vX.Y.Z, run:
+
+    git pull
+    forgeplan init --force
+
+This is idempotent and additive — your artifact bodies, custom
+config.yaml edits, and existing secrets.env keys are preserved.
+```
+
+---
+
 ## Quick checklist (copy into PR description)
 
 ```

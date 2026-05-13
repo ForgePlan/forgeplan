@@ -375,3 +375,113 @@ fn new_evidence_keeps_validate_hint_at_tactical_depth() {
         "tactical-depth evidence must NOT trigger reason hint:\n{stdout}"
     );
 }
+
+/// SEC-H1 — `forgeplan init --force` backfills `.gitkeep` placeholders +
+/// `secrets.env` template into an existing workspace that was created
+/// before PRD-077 FR-001 / FR-002 landed.
+///
+/// Real bug context: Илья and explosivebit both have `.forgeplan/`
+/// workspaces created on v0.30.x — they have ARTIFACT_DIRS but NO
+/// `.gitkeep` placeholders and NO `secrets.env`. `forgeplan init`
+/// short-circuits when the workspace already exists; without this
+/// backfill in `refresh_existing_workspace`, the PRD-077 fix never
+/// reaches the workspaces it was authored for.
+///
+/// Migration contract: `git pull && forgeplan init --force` is the
+/// single command that brings every existing workspace up to spec.
+/// Idempotent — a second `--force` run is a no-op.
+#[test]
+fn init_force_backfills_gitkeep_and_secrets_env_in_existing_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    if !bootstrap_git_repo(root) {
+        return;
+    }
+
+    // Simulate a pre-PRD-077 workspace: subdirs exist, but no .gitkeep
+    // placeholders and no secrets.env. This is the state Илья's and
+    // explosivebit's workspaces are in right now.
+    let fp_dir = root.join(".forgeplan");
+    fs::create_dir_all(&fp_dir).unwrap();
+    for dir in ARTIFACT_DIRS {
+        fs::create_dir_all(fp_dir.join(dir)).unwrap();
+    }
+    // Place a dummy config.yaml so `find_workspace` accepts the dir as
+    // initialised (the CLI's "is this a workspace?" probe checks for
+    // `.forgeplan/` presence; we want the short-circuit branch to fire
+    // so `--force` is exercised end-to-end).
+    fs::write(fp_dir.join("config.yaml"), "project_name: legacy-ws\n").unwrap();
+
+    // Sanity: pre-state has neither .gitkeep nor secrets.env.
+    for dir in ARTIFACT_DIRS {
+        assert!(
+            !fp_dir.join(dir).join(".gitkeep").exists(),
+            "pre-state contract: legacy workspace must NOT have {}/.gitkeep before --force",
+            dir
+        );
+    }
+    assert!(
+        !fp_dir.join("secrets.env").exists(),
+        "pre-state contract: legacy workspace must NOT have secrets.env before --force"
+    );
+
+    // Run `forgeplan init --force` — the migration path.
+    forgeplan()
+        .args(["init", "--force", "--no-backup", "-y"])
+        .current_dir(root)
+        .assert()
+        .success();
+
+    // Post-state: every artifact subdir got its .gitkeep + secrets.env
+    // template was created.
+    for dir in ARTIFACT_DIRS {
+        let keep = fp_dir.join(dir).join(".gitkeep");
+        assert!(
+            keep.exists(),
+            "SEC-H1 contract: `--force` MUST backfill {}/.gitkeep on \
+             legacy workspaces.\n  Missing: {}",
+            dir,
+            keep.display()
+        );
+    }
+    let secrets = fp_dir.join("secrets.env");
+    assert!(
+        secrets.exists(),
+        "SEC-H1 contract: `--force` MUST backfill secrets.env on legacy \
+         workspaces.\n  Missing: {}",
+        secrets.display()
+    );
+    let body = fs::read_to_string(&secrets).unwrap();
+    assert!(
+        body.contains("NEVER commit this file"),
+        "SEC-H1: backfilled secrets.env missing canonical header:\n{body}"
+    );
+
+    // Second `--force` run MUST be idempotent — no panic, no clobber.
+    // We pre-populate a user-customised .gitkeep + secrets.env, then
+    // verify the second run preserves the customisations.
+    let custom_keep = fp_dir.join("prds").join(".gitkeep");
+    fs::write(&custom_keep, b"# custom").unwrap();
+    let custom_secrets_body = "# my own header\nexport GEMINI_API_KEY=\"realkey\"\n";
+    fs::write(&secrets, custom_secrets_body).unwrap();
+
+    forgeplan()
+        .args(["init", "--force", "--no-backup", "-y"])
+        .current_dir(root)
+        .assert()
+        .success();
+
+    let after_keep = fs::read_to_string(&custom_keep).unwrap();
+    assert_eq!(
+        after_keep, "# custom",
+        "SEC-H1 idempotency: existing .gitkeep MUST NOT be clobbered by a \
+         second --force run"
+    );
+    let after_secrets = fs::read_to_string(&secrets).unwrap();
+    assert_eq!(
+        after_secrets, custom_secrets_body,
+        "SEC-H1 idempotency: existing secrets.env MUST NOT be clobbered \
+         by a second --force run (user keys would be lost)"
+    );
+}

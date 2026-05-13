@@ -282,6 +282,43 @@ justification** (explicit risk-take statement). Файл triage doc под
 
 ---
 
+## Migration notes для существующих workspace'ов (SEC-H1, CR-C4 — v0.32.0+)
+
+`forgeplan init` short-circuit'ится когда `.forgeplan/` уже существует. Это
+значит что контрибьюторы которые upgrade'или `forgeplan` между релизами
+**не получают автоматически** newly-shipped workspace файлы (например
+`.gitkeep` плейсхолдеры из PRD-077 FR-001, `secrets.env` template из
+FR-002).
+
+`forgeplan init --force` — migration entry point. Он **strictly additive**
+(PROB-068 контракт):
+
+- Existing artifact `.md` bodies НИКОГДА не перезаписываются.
+- `config.yaml` регенерируется (предыдущая версия сдвигается в сторону
+  как `config.yaml.bak-<timestamp>` чтобы контрибьютор мог diff'нуть
+  свои custom edits и переприменить их поверх new defaults).
+- `.gitkeep` плейсхолдеры backfill'ятся в каждый artifact subdir где
+  они отсутствуют (SEC-H1).
+- `secrets.env` template backfill'ится если missing — **никогда** не
+  clobber'ит существующий файл который контрибьютор мог заполнить
+  реальными ключами (SEC-H1).
+- Canonical `.gitignore` секция refresh'ится (PROB-062).
+
+При анонсе релиза который shipи'т новые workspace skeleton файлы,
+включай в release notes такой блок:
+
+```
+Для existing workspace'ов созданных до vX.Y.Z, выполни:
+
+    git pull
+    forgeplan init --force
+
+Это idempotent и additive — твои artifact bodies, custom config.yaml
+edits, и existing secrets.env ключи сохраняются.
+```
+
+---
+
 ## Quick checklist (copy в PR description)
 
 ```

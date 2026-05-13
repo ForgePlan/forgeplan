@@ -613,9 +613,18 @@ async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Res
     Ok(())
 }
 
-/// PROB-068 Option A: additive refresh of an existing workspace.
+/// PROB-068 Option A + SEC-H1: additive refresh of an existing workspace.
 ///
 /// - Ensures every `ARTIFACT_DIRS` entry exists (idempotent).
+/// - Writes a `.gitkeep` placeholder into every artifact subdir where one
+///   is missing (SEC-H1 — existing workspaces created before PRD-077
+///   FR-001 landed have no `.gitkeep` files, so empty subdirs vanish on
+///   `git add`. `forgeplan init --force` is the migration path: idempotent
+///   writes only fill the gaps; user-customised placeholders are
+///   preserved.)
+/// - Writes a `secrets.env` template if it is missing (SEC-H1 — same
+///   migration story for PRD-077 FR-002 / CR-C4. Never clobbers an
+///   existing template the user may have customised.)
 /// - Rewrites `config.yaml` so users on older versions pick up new
 ///   commented defaults. The previous config (if any) is moved aside
 ///   as `config.yaml.bak-<timestamp>` so a manual diff is possible.
@@ -630,6 +639,63 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
     for dir_name in ARTIFACT_DIRS {
         let dir = workspace.join(dir_name);
         tokio::fs::create_dir_all(&dir).await?;
+    }
+
+    // SEC-H1: backfill `.gitkeep` placeholders into every artifact subdir
+    // where one is missing. Existing workspaces created before PRD-077
+    // FR-001 (v0.31.0+) have empty subdirs that git silently drops on
+    // commit/push — the bug PRD-077 was meant to fix. `forgeplan init`
+    // short-circuits when `.forgeplan/` already exists, so without this
+    // backfill the fix never reaches the very workspaces it was authored
+    // for. Idempotent: skip if `.gitkeep` already exists (preserves any
+    // user-customised placeholder content).
+    for dir_name in ARTIFACT_DIRS {
+        let keep = workspace.join(dir_name).join(".gitkeep");
+        if !keep.exists() {
+            // Best-effort: failure to write a single placeholder must
+            // not abort the whole refresh — the rest of the migration
+            // still has value (config refresh, gitignore section, etc.).
+            if let Err(e) = tokio::fs::write(&keep, b"").await {
+                eprintln!("warning: could not backfill {}: {e}", keep.display());
+            }
+        }
+    }
+
+    // SEC-H1: backfill the `secrets.env` template if missing. Same
+    // motivation: existing workspaces need this file to appear on the
+    // first `forgeplan init --force` after PRD-077 / CR-C4 land. The
+    // template content lives in `forgeplan_core::workspace::init`; we
+    // duplicate the body inline here rather than expose it as a public
+    // constant so the canonical creation path (`init_workspace`) stays
+    // the single source of truth (and a future template change there
+    // gets backfilled here on the next `--force`).
+    //
+    // Idempotent: if the user already edited the file (real keys
+    // copy-pasted in), we leave it alone — no clobber under any
+    // circumstance.
+    let secrets_path = workspace.join("secrets.env");
+    if !secrets_path.exists() {
+        // Template body: keep in sync with
+        // `forgeplan_core::workspace::init::SECRETS_TEMPLATE`. Both
+        // surfaces emit the same documentation header so a workspace
+        // refreshed via `--force` is indistinguishable from one created
+        // fresh.
+        const REFRESH_SECRETS_TEMPLATE: &str = "\
+# secrets.env — local-only API keys. NEVER commit this file.
+# forgeplan reads keys from env vars whose NAMES are declared in config.yaml::llm.api_key_env.
+# This file is a convenience: a place to keep your real keys during local dev.
+# Copy any line below and uncomment it (and `source .forgeplan/secrets.env` or use direnv).
+#
+# export GEMINI_API_KEY=\"<your-key-here>\"
+# export OPENAI_API_KEY=\"<your-key-here>\"
+# export ANTHROPIC_API_KEY=\"<your-key-here>\"
+";
+        if let Err(e) = tokio::fs::write(&secrets_path, REFRESH_SECRETS_TEMPLATE).await {
+            eprintln!(
+                "warning: could not backfill {}: {e}",
+                secrets_path.display()
+            );
+        }
     }
 
     // Rewrite config.yaml; move the old one aside so the user can diff.
