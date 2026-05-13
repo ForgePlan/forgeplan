@@ -144,7 +144,14 @@ pub const ARTIFACT_DIRS: &[&str] = &[
 /// `<your-key-here>` rather than a literal `sk-...` prefix so secret
 /// scanners (TruffleHog / gitleaks) do not raise false positives on the
 /// template itself.
-const SECRETS_TEMPLATE: &str = "\
+/// Canonical body of `.forgeplan/secrets.env` written on `forgeplan init`
+/// and on `forgeplan init --force` (via `refresh_existing_workspace`).
+///
+/// Exposed as `pub` so the CLI's refresh path uses the same template
+/// instead of an inline duplicate (round-2 audit SEC-M-R2-4 closure).
+/// A drift between fresh-init and migration-refresh users would be a
+/// silent UX failure on a security-sensitive file.
+pub const SECRETS_TEMPLATE: &str = "\
 # secrets.env — local-only API keys. NEVER commit this file.
 # forgeplan reads keys from env vars whose NAMES are declared in config.yaml::llm.api_key_env.
 # This file is a convenience: a place to keep your real keys during local dev.

@@ -675,22 +675,12 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
     // circumstance.
     let secrets_path = workspace.join("secrets.env");
     if !secrets_path.exists() {
-        // Template body: keep in sync with
-        // `forgeplan_core::workspace::init::SECRETS_TEMPLATE`. Both
-        // surfaces emit the same documentation header so a workspace
-        // refreshed via `--force` is indistinguishable from one created
-        // fresh.
-        const REFRESH_SECRETS_TEMPLATE: &str = "\
-# secrets.env — local-only API keys. NEVER commit this file.
-# forgeplan reads keys from env vars whose NAMES are declared in config.yaml::llm.api_key_env.
-# This file is a convenience: a place to keep your real keys during local dev.
-# Copy any line below and uncomment it (and `source .forgeplan/secrets.env` or use direnv).
-#
-# export GEMINI_API_KEY=\"<your-key-here>\"
-# export OPENAI_API_KEY=\"<your-key-here>\"
-# export ANTHROPIC_API_KEY=\"<your-key-here>\"
-";
-        if let Err(e) = tokio::fs::write(&secrets_path, REFRESH_SECRETS_TEMPLATE).await {
+        // Round-2 audit SEC-M-R2-4: re-use the canonical template from
+        // forgeplan-core instead of an inline duplicate. Drift between
+        // fresh-init and refresh body would be a silent UX failure on
+        // a security-sensitive file.
+        use forgeplan_core::workspace::init::SECRETS_TEMPLATE;
+        if let Err(e) = tokio::fs::write(&secrets_path, SECRETS_TEMPLATE).await {
             eprintln!(
                 "warning: could not backfill {}: {e}",
                 secrets_path.display()

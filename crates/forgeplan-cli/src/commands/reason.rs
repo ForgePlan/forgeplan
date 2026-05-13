@@ -47,7 +47,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // **Wave 1.5 SEC-C3 (single Fix: owner)**: `require_llm_config` is the
     // canonical owner of the `Fix:` hint for the missing-LLM path — its
     // anyhow error message already contains the structured `Fix:` marker +
-    // copy-paste secrets.yaml snippet. Reason.rs MUST NOT emit a second
+    // copy-paste secrets.env snippet. Reason.rs MUST NOT emit a second
     // `Fix:` line here (PRD-071 contract requires ONE `Fix:` line per
     // logical output — two confuse agents). We surface the error verbatim
     // through `sanitize_error_chain` so an attacker who poisoned
@@ -192,7 +192,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             if lower.contains("auth") || lower.contains("401") || lower.contains("403") {
                 eprintln!(
                     "Fix: API key rejected by `{provider}` — rotate `{env}` in \
-                     .forgeplan/secrets.yaml (or run `forgeplan setup-skill`)"
+                     .forgeplan/secrets.env (or run `forgeplan setup-skill`)"
                 );
             } else if lower.contains("rate") || lower.contains("429") || lower.contains("quota") {
                 eprintln!(
@@ -210,7 +210,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             } else {
                 eprintln!(
                     "Fix: verify .forgeplan/config.yaml::llm and `{env}` in \
-                     .forgeplan/secrets.yaml; rerun `forgeplan reason {id}` (or \
+                     .forgeplan/secrets.env; rerun `forgeplan reason {id}` (or \
                      `forgeplan setup-skill` for guided fix)"
                 );
             }
@@ -515,7 +515,7 @@ mod tests {
         let canonical_owner_msg = "LLM not configured. Missing `llm:` block in .forgeplan/config.yaml — \
              the `reason` command requires an external LLM provider.\n\
              Fix: edit .forgeplan/config.yaml and add an `llm:` block; \
-             then export the API key via .forgeplan/secrets.yaml\n\
+             then export the API key via .forgeplan/secrets.env\n\
              Copy-paste:";
         // Sanitised form mirrors reason.rs: `sanitize_error_chain(&e)`.
         // Build an anyhow error to feed through the sanitiser identical

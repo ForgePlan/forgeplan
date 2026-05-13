@@ -413,6 +413,15 @@ fn init_force_backfills_gitkeep_and_secrets_env_in_existing_workspace() {
     // so `--force` is exercised end-to-end).
     fs::write(fp_dir.join("config.yaml"), "project_name: legacy-ws\n").unwrap();
 
+    // Round-2 audit R2-M5 — plant a REAL artifact file in the legacy
+    // workspace before the `--force` migration. The user's actual fear
+    // is "did `--force` nuke my PRDs?" — without this plant the test
+    // only proves `.gitkeep` + `secrets.env` were backfilled, NOT that
+    // pre-existing artifact bodies survived.
+    let legacy_prd_path = fp_dir.join("prds").join("PRD-001-legacy-do-not-clobber.md");
+    let legacy_prd_body = "---\nid: PRD-001\nkind: prd\ntitle: legacy do-not-clobber\nstatus: active\n---\n\n# PRD-001: legacy artifact\n\nThis MUST survive `forgeplan init --force` per SEC-H1 contract.\n";
+    fs::write(&legacy_prd_path, legacy_prd_body).unwrap();
+
     // Sanity: pre-state has neither .gitkeep nor secrets.env.
     for dir in ARTIFACT_DIRS {
         assert!(
@@ -456,6 +465,21 @@ fn init_force_backfills_gitkeep_and_secrets_env_in_existing_workspace() {
     assert!(
         body.contains("NEVER commit this file"),
         "SEC-H1: backfilled secrets.env missing canonical header:\n{body}"
+    );
+
+    // Round-2 audit R2-M5: the user's PRIMARY fear is data loss. Verify
+    // the legacy artifact file we planted survived `--force` byte-for-byte.
+    let preserved = fs::read_to_string(&legacy_prd_path).unwrap_or_else(|e| {
+        panic!(
+            "SEC-H1 DATA LOSS: legacy artifact file deleted by --force: {} ({e})",
+            legacy_prd_path.display()
+        )
+    });
+    assert_eq!(
+        preserved, legacy_prd_body,
+        "SEC-H1 DATA LOSS: `forgeplan init --force` modified pre-existing \
+         artifact file body. This is the primary regression the migration \
+         path MUST NOT have."
     );
 
     // Second `--force` run MUST be idempotent — no panic, no clobber.
