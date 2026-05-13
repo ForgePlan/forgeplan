@@ -61,9 +61,15 @@ fn new_creates_artifact() {
         .stdout(predicate::str::contains("PRD-001"));
 
     let prd_dir = tmp.path().join(".forgeplan/prds");
+    // PRD-077 FR-001: `forgeplan init` now writes a `.gitkeep` placeholder
+    // into every artifact subdir so git tracks the empty skeleton. Filter
+    // it out before counting created artifacts — the contract under test
+    // is "exactly one PRD landed", not "the directory has exactly one
+    // entry".
     let entries: Vec<_> = std::fs::read_dir(&prd_dir)
         .unwrap()
         .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != ".gitkeep")
         .collect();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].file_name().to_string_lossy().contains("PRD-001"));
