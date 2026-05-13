@@ -1021,8 +1021,8 @@ const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
     (".forgeplan/logs/", "local audit logs — per-machine"),
     (".forgeplan/locks/", "runtime mutexes — per-machine"),
     (
-        ".forgeplan/secrets.yaml",
-        "local API-key template (PRD-077) — MUST NEVER be committed; remove from git index immediately",
+        ".forgeplan/secrets.env",
+        "local API-key template (PRD-077 / CR-C4) — MUST NEVER be committed; remove from git index immediately",
     ),
 ];
 

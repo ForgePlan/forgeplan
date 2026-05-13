@@ -49,3 +49,14 @@ test-helpers = []
 
 [dev-dependencies]
 tempfile = "3"
+# CR-H6 (audit closure): mark every test that mutates process-global
+# PATH / HOME with `#[serial_test::serial(env_path)]` or
+# `#[serial_test::serial(env_home)]` so they cannot run in parallel
+# inside this crate's test binary. The locks are in-process — cargo
+# runs each crate's tests as a separate binary, so the lock in this
+# crate does NOT protect against `forgeplan-cli` or `forgeplan-mcp`
+# tests running simultaneously. The pragmatic mitigation is to tag
+# every PATH/HOME mutator within each crate so intra-crate parallelism
+# is safe; cross-crate races are bounded by cargo's default behaviour
+# of running one test binary at a time per crate.
+serial_test = "3"

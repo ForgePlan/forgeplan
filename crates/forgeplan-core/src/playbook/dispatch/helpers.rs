@@ -497,7 +497,19 @@ mod tests {
         assert_eq!(env.get("CARGO_HOME"), Some(&"/home/x/.cargo".to_string()));
     }
 
+    // CR-H6 (audit closure): `#[serial_test::serial(env_path)]` adds a
+    // sync, in-process lock keyed by `env_path` that any other test in
+    // this crate (or this crate's test binary) can opt into without
+    // taking the dispatcher-specific async mutex. Defensive supplement
+    // to the existing `DISPATCH_ENV_LOCK` — both keep PATH-mutating
+    // tests sequential. Caveat: serial_test locks are in-process, so
+    // they do not coordinate against the `forgeplan-cli` or
+    // `forgeplan-mcp` test binaries running in parallel. Cargo runs
+    // each crate's tests as a separate binary, so the cross-crate race
+    // risk is bounded by cargo's per-crate parallelism, which is the
+    // pragmatic compromise.
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)] // DISPATCH_ENV_LOCK pins env vars across spawn for test isolation
     async fn resolve_forgeplan_binary_respects_env_override() {
         // PROB-050 A-14 strengthen (Round 3 audit, test-coverage HIGH-1):
@@ -712,7 +724,9 @@ mod tests {
     /// Serializes против peer dispatcher tests via `DISPATCH_ENV_LOCK`
     /// because all PATH-mutating tests in this crate share that mutex.
     #[cfg(unix)]
+    // CR-H6: PATH mutator — locked under `env_path` key.
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)] // DISPATCH_ENV_LOCK pins env vars across spawn for test isolation
     async fn which_in_path_canonicalizes_symlink_to_real_target() {
         let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
@@ -756,8 +770,10 @@ mod tests {
     /// AC-2 — Group/world-writable binary MUST be rejected on Unix
     /// (mode bits 0o022 set). Pre-PROB-052 this was a CWE-426 hijack vector
     /// because `is_file()` made no permission distinction.
+    // CR-H6: PATH mutator — locked under `env_path` key.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)]
     async fn which_in_path_rejects_group_writable_binary() {
         let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
@@ -793,8 +809,10 @@ mod tests {
     /// AC-3 — Cross-platform: on Windows the Unix permission gate is
     /// skipped (Windows ACL is out of PROB-052 scope, documented in PRD).
     /// PATH lookup + canonicalize must still apply.
+    // CR-H6: PATH mutator — locked under `env_path` key.
     #[cfg(not(unix))]
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)]
     async fn which_in_path_windows_skips_permission_gate() {
         let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
@@ -828,8 +846,10 @@ mod tests {
     /// Round 7 audit MED-4 — empty PATH entry (POSIX `:` interpreted as `.`)
     /// must be skipped explicitly. Implicit cwd lookup is a hijack vector
     /// when forgeplan is invoked inside a hostile cloned repo.
+    // CR-H6: PATH mutator — locked under `env_path` key.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)]
     async fn which_in_path_skips_empty_path_entries() {
         let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
@@ -856,8 +876,14 @@ mod tests {
     /// AgentDispatcher MUST go through `resolve_safe_path`. This test asserts
     /// a group-writable override is rejected just like a PATH-resolved one.
     /// Pre-Round-7 the override branch was unguarded.
+    // CR-H6: this test does NOT mutate PATH directly, but it shares the
+    // `DISPATCH_ENV_LOCK` with the other dispatcher tests so we tag it
+    // under the same `env_path` key for predictable scheduling
+    // (otherwise it could acquire DISPATCH_ENV_LOCK while a peer test
+    // holds it, leaving serial_test queueing behaviour split).
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)]
     async fn resolve_safe_path_rejects_group_writable_override() {
         use std::os::unix::fs::PermissionsExt;
@@ -884,8 +910,11 @@ mod tests {
     /// canonical path, mirroring the PATH-resolution semantics. Ensures the
     /// dispatcher consumer call sites can rely on a single canonical
     /// PathBuf rather than the original (potentially symlinked) input.
+    // CR-H6: shared DISPATCH_ENV_LOCK acquirer — tagged for predictable
+    // serial_test scheduling alongside peer dispatcher tests.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)]
     async fn resolve_safe_path_canonicalizes_safe_override() {
         use std::os::unix::fs::{PermissionsExt, symlink};
@@ -917,8 +946,10 @@ mod tests {
     /// covers the default Homebrew posture where `/usr/local/bin` is
     /// 0o775 group=admin and any admin user can plant a binary that the
     /// dispatcher will then run on behalf of the workspace owner.
+    // CR-H6: PATH mutator — locked under `env_path` key.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     #[allow(clippy::await_holding_lock)]
     async fn which_in_path_rejects_group_writable_parent_dir() {
         let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;

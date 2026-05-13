@@ -1,8 +1,12 @@
-//! PRD-077 FR-007 — `forgeplan reason --help` must surface the LLM
+//! PRD-077 FR-007 / CR-C4 — `forgeplan reason --help` must surface the LLM
 //! requirement. Without this users see only "Analyze an artifact using FPF
 //! ADI reasoning cycle" and don't realise they need an API key in
-//! `.forgeplan/secrets.yaml`. Regression fixture against the discovery gap
+//! `.forgeplan/secrets.env`. Regression fixture against the discovery gap
 //! identified by the 5-agent research panel on 2026-05-13.
+//!
+//! CR-C4 audit closure (2026-05-14): the file is `secrets.env` (dotenv
+//! convention), not `secrets.yaml`. The body is shell `export` syntax,
+//! which `.yaml` linters reject; the rename is part of W1.5 F3 fixes.
 
 use assert_cmd::Command;
 
@@ -23,10 +27,10 @@ fn reason_help_mentions_llm_and_env_var_and_secrets_file() {
     // The long_about must mention at least two of:
     //   - LLM (the requirement)
     //   - GEMINI_API_KEY or api_key_env (the env var pointer)
-    //   - secrets.yaml (where to put the key)
+    //   - secrets.env (where to put the key — dotenv convention, CR-C4)
     let mentions_llm = stdout.contains("LLM");
     let mentions_env = stdout.contains("GEMINI_API_KEY") || stdout.contains("api_key_env");
-    let mentions_secrets = stdout.contains("secrets.yaml");
+    let mentions_secrets = stdout.contains("secrets.env");
 
     let hits = [mentions_llm, mentions_env, mentions_secrets]
         .iter()
@@ -34,7 +38,7 @@ fn reason_help_mentions_llm_and_env_var_and_secrets_file() {
         .count();
     assert!(
         hits >= 2,
-        "FR-007 contract: reason --help must mention >=2 of {{LLM, GEMINI_API_KEY/api_key_env, secrets.yaml}}; \
+        "FR-007 contract: reason --help must mention >=2 of {{LLM, GEMINI_API_KEY/api_key_env, secrets.env}}; \
          got LLM={mentions_llm} env={mentions_env} secrets={mentions_secrets}\n\nfull output:\n{stdout}"
     );
 

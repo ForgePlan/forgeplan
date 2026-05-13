@@ -129,21 +129,30 @@ pub const ARTIFACT_DIRS: &[&str] = &[
     "discovery",
 ];
 
-/// PRD-077 FR-002: commented template appended to `.forgeplan/secrets.yaml`
-/// on init. Documents the **convention** (this file is local-only, never
-/// committed) and lists the env vars that `config.yaml::llm.api_key_env`
-/// references by default. Forgeplan code MUST NOT read this file — it is
-/// purely a convenience surface so users have a canonical place to keep
-/// real keys during local development (paired with `source` or `direnv`).
+/// PRD-077 FR-002 / CR-C4: commented template appended to
+/// `.forgeplan/secrets.env` on init. Documents the **convention** (this
+/// file is local-only, never committed) and lists the env vars that
+/// `config.yaml::llm.api_key_env` references by default. Forgeplan code
+/// MUST NOT read this file — it is purely a convenience surface so users
+/// have a canonical place to keep real keys during local development
+/// (paired with `source` or `direnv`).
+///
+/// File extension is `.env` (dotenv/direnv convention) — not `.yaml`. The
+/// body is shell syntax (`export KEY="VALUE"`); a `.yaml` extension would
+/// be picked up by YAML linters and `serde_yaml::from_str`, both of which
+/// reject `export` lines (CR-C4 audit closure). The placeholder uses
+/// `<your-key-here>` rather than a literal `sk-...` prefix so secret
+/// scanners (TruffleHog / gitleaks) do not raise false positives on the
+/// template itself.
 const SECRETS_TEMPLATE: &str = "\
-# secrets.yaml — local-only API keys. NEVER commit this file.
+# secrets.env — local-only API keys. NEVER commit this file.
 # forgeplan reads keys from env vars whose NAMES are declared in config.yaml::llm.api_key_env.
 # This file is a convenience: a place to keep your real keys during local dev.
-# Copy any line below and uncomment it (and `source .forgeplan/secrets.yaml` or use direnv).
+# Copy any line below and uncomment it (and `source .forgeplan/secrets.env` or use direnv).
 #
-# export GEMINI_API_KEY=\"sk-...\"
-# export OPENAI_API_KEY=\"sk-...\"
-# export ANTHROPIC_API_KEY=\"sk-ant-...\"
+# export GEMINI_API_KEY=\"<your-key-here>\"
+# export OPENAI_API_KEY=\"<your-key-here>\"
+# export ANTHROPIC_API_KEY=\"<your-key-here>\"
 ";
 
 /// Initialize a `.forgeplan/` workspace in the given directory.
@@ -182,12 +191,12 @@ pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf
     // Append commented config templates for all optional sections
     yaml.push_str(CONFIG_TEMPLATES);
     fs::write(fp_dir.join("config.yaml"), yaml)?;
-    // PRD-077 FR-002: create a template `secrets.yaml` next to config.yaml.
-    // This file is **template-only** (forgeplan does NOT read it) and is
-    // gitignored by the canonical managed block (PRD-077 FR-003) so
-    // accidental commits are caught at health-check time (FR-006).
-    // Idempotent: skip if a user-edited file already exists.
-    let secrets_path = fp_dir.join("secrets.yaml");
+    // PRD-077 FR-002 / CR-C4: create a template `secrets.env` next to
+    // config.yaml. This file is **template-only** (forgeplan does NOT
+    // read it) and is gitignored by the canonical managed block (PRD-077
+    // FR-003) so accidental commits are caught at health-check time
+    // (FR-006). Idempotent: skip if a user-edited file already exists.
+    let secrets_path = fp_dir.join("secrets.env");
     if !secrets_path.exists() {
         fs::write(&secrets_path, SECRETS_TEMPLATE)?;
     }

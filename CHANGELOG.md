@@ -11,6 +11,53 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`forgeplan_core::dispatch::SerialEntry`** is now `#[non_exhaustive]`
+  (CR-H3). Downstream Rust callers can no longer use struct-literal
+  construction or exhaustive pattern-matching across crate boundaries —
+  use `SerialEntry::new(id, reason)` instead. The JSON wire format is
+  unchanged (serde keeps the same shape). Added `Display` impl rendering
+  `<id> (<reason>)` for uniform CLI output.
+- **`forgeplan_mcp::types::DispatchSerialEntry`** mirrors the same
+  `#[non_exhaustive]` + `Display` + `new` contract (CR-H3). Added
+  `From<forgeplan_core::dispatch::SerialEntry>` so server.rs can flatten
+  the core type into the MCP DTO without manual destructuring.
+- **Dispatch serial-queue reason phrasing** changed (CR-H4): `blocked by
+  dependency on <PARENT>` → `blocked by dependencies: <PARENT>[,
+  <PARENT>...]`. The new phrasing is plural even with one parent and
+  lists every unresolved parent (sorted). Substring-matchers should
+  switch from `"blocked by dependency"` to `"blocked by dependencies"`.
+
+### Fixed
+
+- **CR-C4: `secrets.yaml` → `secrets.env`** — the template shipped by
+  `forgeplan init` was named `.yaml` but contained shell `export` syntax,
+  failing YAML lint and `serde_yaml::from_str`. Renamed to `.env`
+  (dotenv/direnv convention) across all 7 code surfaces + 2 doc
+  surfaces. Existing workspaces migrate via `forgeplan init --force`.
+  Also removes the literal `sk-...` placeholder from the template — that
+  prefix was raising TruffleHog/gitleaks false-positives on every CI run.
+- **SEC-H1: backfill on existing workspaces** — `forgeplan init --force`
+  now writes `.gitkeep` placeholders into every empty artifact subdir
+  and creates the `secrets.env` template if missing. Idempotent — never
+  clobbers a user-edited template containing real keys. Closes the
+  migration gap for workspaces created before PRD-077 FR-001 / FR-002.
+- **CR-H4: dispatch multi-parent blocker reason** — `forgeplan dispatch`
+  and `forgeplan_dispatch` MCP tool previously reported a single
+  arbitrary parent for blocked artifacts (`HashMap` collapsed
+  multi-parent edges to last-seen target) AND counted `informs` as a
+  structural blocker (the relation type was dropped in the lookup
+  build). Both fixed by extracting `build_blocker_reasons_from_slice`
+  to `forgeplan_core::dispatch` — CLI and MCP now share one
+  implementation. The helper uses
+  `graph::topological::is_structural_relation` (the same predicate
+  `kahn_sort` uses), so the canonical structural-relation list
+  (`based_on`, `refines`, `supersedes`, `contradicts`) drives both
+  "what blocks the topo sort?" and "what blocks dispatch?" — they can
+  no longer drift. Multiple parents are listed alphabetically:
+  `blocked by dependencies: PRD-001, PRD-002, RFC-003`.
+
 ## [0.31.0] - 2026-05-13
 
 Sprint headline: **Wave 9 polish + 5-agent adversarial audit closure.**

@@ -355,11 +355,11 @@ enum Commands {
     ///
     /// API KEY: A real API key MUST be set in the environment variable named by
     /// `llm.api_key_env` (default `GEMINI_API_KEY`). For local development the
-    /// recommended pattern is to source `.forgeplan/secrets.yaml` (gitignored)
-    /// which exports the key. Example:
+    /// recommended pattern is to source `.forgeplan/secrets.env` (gitignored,
+    /// dotenv/direnv convention) which exports the key. Example:
     ///
-    ///     # .forgeplan/secrets.yaml (gitignored, sourced by your shell rc)
-    ///     export GEMINI_API_KEY=sk-...
+    ///     # .forgeplan/secrets.env (gitignored, sourced by your shell rc)
+    ///     export GEMINI_API_KEY=<your-key-here>
     ///
     /// Without the key the command exits with `Error: API key not found...` and
     /// emits a `Fix:` hint pointing at the setup-skill workflow. Every other

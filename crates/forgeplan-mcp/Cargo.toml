@@ -42,3 +42,11 @@ serde_yaml.workspace = true
 # server feature; this dev-only addition gives `()` the `Service<RoleClient>`
 # impl needed by `ServiceExt::serve(transport)`.
 rmcp = { version = "1.2", features = ["server", "transport-io", "client"] }
+# CR-H6 (audit closure): tag every test that mutates HOME (or PATH) with
+# `#[serial_test::serial(env_home)]` so they cannot run in parallel within
+# this test binary. NB: serial_test locks are in-process — they do NOT
+# coordinate across `cargo test --workspace` because each crate runs as a
+# separate binary. The existing async `test_lock()` mutex in server.rs
+# already serializes HOME-mutating tests; this dev-dep adds the macro
+# attribute as a defensive supplement / contract documentation.
+serial_test = "3"
