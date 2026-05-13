@@ -339,8 +339,11 @@ Hooks в `.claude/hooks/` блокируют нарушения методоло
 | `pre-commit-fmt.sh` | коммит если `cargo fmt --check` dirty | git commit |
 | `commit-test-check.sh` | коммит если новая `pub fn` без теста | git commit |
 | `pr-todo-check.sh` | PR с незакрытыми P0 | pre-push |
+| `pre-pr-evidence-check.sh` | PR если артефакт без linked evidence | pre-gh-pr-create |
 
 **Hooks — safety net, НЕ замена дисциплины**. LLM должен помнить правила во время работы, а не полагаться что hook остановит.
+
+**Evidence enforcement**: каждый артефакт (PRD, RFC, ADR, EPIC, SPEC, PROB), упомянутый в PR, должен иметь связанное доказательство (`EVID` с `informs` или `based_on` связью). Обход: `FORGEPLAN_SKIP_EVIDENCE=1 gh pr create`, или branch patterns (`docs/*`, `chore/sync-*`). Подробно: [`docs/methodology/EVIDENCE-PROTOCOL.md`](docs/methodology/EVIDENCE-PROTOCOL.md) (EN) и [`docs/methodology/EVIDENCE-PROTOCOL.ru.md`](docs/methodology/EVIDENCE-PROTOCOL.ru.md) (RU).
 
 CI также содержит **drift detector** (`scripts/check-mcp-tool-count.sh`) — блокирует PR если число MCP-инструментов в docs расходится с кодом. Полный CI-гейт reference: [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md).
 
