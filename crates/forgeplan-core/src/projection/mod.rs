@@ -72,6 +72,11 @@ pub use error::{MutationError, MutationResult};
 // module root so `forgeplan-mcp::server::safe_mcp_error` can reach it
 // without spelling out the `error::` submodule.
 pub use error::sanitize_error_chain;
+// Wave 1.5 SEC-H3 follow-up: re-export the path-display sanitiser as
+// well so tracing log sites (e.g. `phase::store::read_phase` symlink
+// rejection) can mask `path.display()` through the same HOME /
+// scratch-dir discipline (CWE-200).
+pub use error::sanitize_path_for_display;
 
 /// Compute the on-disk filename slug for a given artifact title.
 ///
