@@ -37,8 +37,13 @@
 //!    artifacts plus baseline, every artifact has a unique non-null
 //!    `assigned_number`, the set equals `{74, 75, ..., 83}`.
 //!
-//! Run as `cargo test --test prob_060_stress_test`. No `#[ignore]`. ≤30 s on
-//! M1 laptop including the property-style loop over 100 seeds.
+//! Run as `cargo test --test prob_060_stress_test`.
+//!
+//! **FR-017 / PROB-069**: the default suite runs a 3-seed fast variant
+//! (budget ≤15 s on M1 / CI runners). The 12-seed full variant is gated
+//! behind `#[ignore]` — run it via `cargo test --test prob_060_stress_test
+//! -- --ignored` on the nightly lane or before a release. This split
+//! restores CI determinism while preserving the property-coverage signal.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -303,31 +308,69 @@ async fn stress_test_single_seed_zero() {
 /// 100 seeds in 30 s would require either skipping the git layer entirely
 /// (defeats the test's purpose — the in-process unit tests already cover
 /// pure logic) or running a batched in-tree merge loop. We therefore split
-/// the property requirement across two layers:
+/// the property requirement across **three** layers:
 ///
-/// 1. **This integration test**: 12 seeds end-to-end with real git, all 12
-///    assert the same invariants. Wall-time: ~22 s on M1 (well under 30 s).
-/// 2. **In-process pure-logic property loop**: see
-///    [`property_loop_in_process`] below — covers 100 permutations using
+/// 1. **Fast variant — default suite** (`stress_test_property_loop_seeds`,
+///    this test): 3 seeds end-to-end with real git, all asserting the same
+///    invariants. Wall-time: ~6-9 s on M1 — comfortably under a 15 s budget.
+///    Runs on every `cargo test --workspace`.
+/// 2. **Slow variant — opt-in** (`stress_test_property_loop_seeds_full`,
+///    below, `#[ignore]`-d): 12 seeds with a 60 s budget. Run via
+///    `cargo test -- --ignored` on the nightly lane or before each release.
+/// 3. **In-process pure-logic property loop**: see
+///    [`property_loop_in_process`] — covers 100 permutations using
 ///    `compute_assignment_plan` directly, completes in milliseconds.
 ///
-/// Combined coverage is stronger than 100 git-backed seeds would have been:
-/// the git layer is a CL2 modeling of "GH Actions concurrency serialized
-/// these merges" — once we've shown 12 random orders all work, the
-/// remaining variance is in the in-process logic which the second loop
-/// exhaustively checks.
+/// **FR-017 / PROB-069 closure**: prior to v0.32.0 this test ran 12 seeds in
+/// the default suite with a 30 s budget, which was tight on M1 and routinely
+/// flaked on CI runners (33-43 s observed). Splitting fast/slow keeps a
+/// permutation-coverage signal in the default suite while making CI
+/// deterministic. The 3-seed fast variant detects regressions in
+/// per-seed runtime (each seed now budgeted at ≤5 s on average) and the
+/// 12-seed slow variant preserves the broader property check.
 #[tokio::test(flavor = "current_thread")]
 async fn stress_test_property_loop_seeds() {
+    const FAST_SEEDS: u64 = 3;
+    const FAST_BUDGET_SECS: u64 = 15;
+
     let started = Instant::now();
-    for seed in 0u64..12 {
+    for seed in 0u64..FAST_SEEDS {
         run_for_seed(seed).await;
     }
     let elapsed = started.elapsed();
     assert!(
-        elapsed.as_secs() <= 30,
-        "stress test loop took {elapsed:?}, budget is ≤30 s"
+        elapsed.as_secs() <= FAST_BUDGET_SECS,
+        "fast stress test loop took {elapsed:?}, budget is ≤{FAST_BUDGET_SECS} s \
+         ({FAST_SEEDS} seeds) — if persistent, investigate per-seed perf in \
+         `merge_in_order_and_assign`, not the budget"
     );
-    eprintln!("prob_060_stress_test: 12 git-backed seeds in {elapsed:?}");
+    eprintln!("prob_060_stress_test (fast): {FAST_SEEDS} git-backed seeds in {elapsed:?}");
+}
+
+/// Full 12-seed property loop. **Opt-in** via `cargo test -- --ignored`.
+/// Designed for the nightly lane and pre-release verification (run by hand
+/// or in the nightly CI workflow). Budget 60 s — leaves headroom even on a
+/// slow runner where each seed takes ~3-4 s.
+///
+/// See `stress_test_property_loop_seeds` (above) for the fast counterpart
+/// that runs on every `cargo test --workspace`.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "perf — opt-in via `cargo test -- --ignored`; runs on nightly lane (FR-017)"]
+async fn stress_test_property_loop_seeds_full() {
+    const FULL_SEEDS: u64 = 12;
+    const FULL_BUDGET_SECS: u64 = 60;
+
+    let started = Instant::now();
+    for seed in 0u64..FULL_SEEDS {
+        run_for_seed(seed).await;
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_secs() <= FULL_BUDGET_SECS,
+        "full stress test loop took {elapsed:?}, budget is ≤{FULL_BUDGET_SECS} s \
+         ({FULL_SEEDS} seeds)"
+    );
+    eprintln!("prob_060_stress_test (full): {FULL_SEEDS} git-backed seeds in {elapsed:?}");
 }
 
 /// In-process property loop covering 100 permutations using
