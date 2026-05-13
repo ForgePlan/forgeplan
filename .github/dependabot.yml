@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Enable version updates for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    # Automatically approve and merge version updates for actions
+    auto-merge: true
+    automerge-options:
+      auto-merge-method: "squash"

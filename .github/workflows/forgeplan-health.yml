@@ -12,16 +12,16 @@ jobs:
     name: Forgeplan Health Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@8831f7d0fe4f53106efaaae06f841781588520e5  # stable
 
       - name: Rust compilation cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2.0.1
 
       - name: Build forgeplan
         run: cargo build -p forgeplan

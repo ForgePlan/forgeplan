@@ -51,6 +51,7 @@ fn baseline_report() -> HealthReport {
         possible_duplicates: Vec::new(),
         active_stubs: Vec::new(),
         gitignore_drift: Vec::new(),
+        phase_read_errors: 0,
         // Placeholder verdicts; tests recompute via `compute_verdict_with`.
         verdict: Verdict::Healthy,
         partial_verdict: Verdict::Healthy,
