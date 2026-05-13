@@ -2943,92 +2943,42 @@ impl ForgeplanServer {
             })
             .collect();
 
-        // PROB-029 closure: fold the MCP-side `advisory_phase_mismatches`
-        // count into the verdict so MCP consumers (Claude Desktop, agent
-        // IDE plugins) see a consistent `verdict` that reflects ALL signals,
-        // not just the ones the core `health_report` knows about. Without
-        // this, the JSON `verdict` field would say "healthy" while
-        // `advisory_phase_mismatches` printed warnings — the very contradiction
-        // PROB-029 was filed to prevent.
-        let verdict = report.compute_verdict_with(
-            &forgeplan_core::health::VerdictThresholds::default(),
-            phase_mismatches.len(),
-        );
+        // ARCH-C1 (audit Wave 9): JSON construction now routes through
+        // `forgeplan_core::health::health_report_to_json` so CLI + MCP
+        // share a single source of truth for the wire shape. The helper
+        // also applies `sanitize_for_hint` to every user-facing string
+        // (title, reason, issue, message, path) — closing SEC-M1
+        // (terminal-injection class CWE-117/150) on the MCP surface
+        // symmetrically with LOG-001 on the CLI.
+        //
+        // `report.verdict` is already phase-folded by
+        // `health_report_with_phase` (L-H3 invariant pinned by
+        // `verdict_cli_vs_mcp_consistency_test`), so no separate
+        // `compute_verdict_with` call is needed here.
+        let mut json_data =
+            forgeplan_core::health::health_report_to_json(&report, &phase_mismatch_records);
 
-        // PR-E Round 6 audit MED fix: `Verdict::Empty` is now a 4th enum
-        // variant (was deferred at Round 5). `human_summary()` already
-        // emits the empty-workspace message for `Verdict::Empty`, so the
-        // Round 5 manual override below is no longer necessary —
-        // typed `verdict` field and `verdict_summary` text now agree
-        // by construction (no consumer can read `verdict == "healthy"`
-        // for an empty workspace).
-        let verdict_summary = verdict.human_summary();
+        // MCP-specific keys merged on top: claim ledger surface +
+        // `_next_action` hint contract. These are not in the shared shape
+        // because CLI surfaces them differently (CLI prints them as text
+        // bullet lines, not JSON keys).
+        if let Some(obj) = json_data.as_object_mut() {
+            obj.insert(
+                "active_claims".into(),
+                serde_json::Value::Array(claims_json),
+            );
+            obj.insert(
+                "active_claim_count".into(),
+                serde_json::Value::from(active_claims.len()),
+            );
+            obj.insert(
+                "skipped_claim_files".into(),
+                serde_json::Value::from(skipped_claims),
+            );
+            obj.insert("_next_action".into(), serde_json::Value::from(next_action));
+        }
 
-        // w4-security-audit MED-1 (inverse PROB-064): legacy CLI key
-        // `phase_mismatches` was missing on MCP surface — agents authored
-        // against pre-PROB-064 CLI saw `null` when port'ing the same
-        // branching logic to MCP. Reuse the `phase_mismatches` binding
-        // built at line ~2791 (already `Vec<serde_json::Value>`) so the
-        // single source of truth feeds both keys — drift impossible by
-        // construction (mirrors CLI's `phase_mismatches_payload` pattern
-        // в commands/health.rs:87-144).
-        Ok(json_result(&serde_json::json!({
-            "total": report.total,
-            "by_kind": report.by_kind,
-            "by_status": report.by_status,
-            "verdict": verdict.as_str(),
-            "verdict_summary": verdict_summary,
-            "at_risk": report.at_risk.iter().map(|a| serde_json::json!({
-                "id": a.id, "title": a.title, "reason": a.reason
-            })).collect::<Vec<_>>(),
-            "blind_spots": report.blind_spots.iter().map(|b| serde_json::json!({
-                "id": b.id, "title": b.title, "issue": b.issue
-            })).collect::<Vec<_>>(),
-            "stale_count": report.stale_count,
-            "orphans": report.orphans,
-            "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
-            // Audit CR-001 (Wave 9): MCP surfaces FULL possible_duplicates +
-            // active_stubs arrays to match CLI --json shape. Pre-fix MCP
-            // omitted both fields → agents reading `verdict == "unhealthy"`
-            // could not inspect WHY without an extra round-trip. Mirrors
-            // CLI shape exactly so consumers do not branch on surface.
-            "possible_duplicates": report.possible_duplicates.iter().map(|d| serde_json::json!({
-                "id_a": d.id_a,
-                "id_b": d.id_b,
-                "similarity": d.similarity,
-                "title_a": d.title_a,
-                "title_b": d.title_b,
-                "kind": d.kind,
-            })).collect::<Vec<_>>(),
-            "active_stubs": report.active_stubs.iter().map(|s| serde_json::json!({
-                "id": s.id,
-                "kind": s.kind,
-                "title": s.title,
-                "markers_found": s.markers_found,
-                "message": s.message,
-            })).collect::<Vec<_>>(),
-            // Dual-key emission — same payload under both legacy
-            // (`phase_mismatches`) and MCP-canonical
-            // (`advisory_phase_mismatches`) names. Single-binding payload
-            // means future drift is impossible; consumers may branch on
-            // either name. Future deprecation of the legacy alias is
-            // tracked in PROB-064.
-            "phase_mismatches": phase_mismatches,
-            "advisory_phase_mismatches": phase_mismatches,
-            // PROB-062: advisory gitignore-drift list (tracked files
-            // under canonical forgeplan ignore patterns). Same
-            // advisory class as `advisory_phase_mismatches` — surfaced
-            // for visibility but does NOT promote the verdict.
-            "gitignore_drift": report.gitignore_drift.iter().map(|d| serde_json::json!({
-                "path": d.path,
-                "reason": d.reason,
-            })).collect::<Vec<_>>(),
-            "active_claims": claims_json,
-            "active_claim_count": active_claims.len(),
-            "skipped_claim_files": skipped_claims,
-            "next_actions": report.next_actions,
-            "_next_action": next_action,
-        })))
+        Ok(json_result(&json_data))
     }
 
     #[tool(
