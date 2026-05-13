@@ -494,7 +494,8 @@ pub async fn health_report_with_phase(
         .map(|c| crate::phase::is_enabled(&c))
         .unwrap_or(true);
 
-    let (phase_mismatches, phase_read_error_count): (Vec<PhaseMismatch>, usize) = if config_enabled {
+    let (phase_mismatches, phase_read_error_count): (Vec<PhaseMismatch>, usize) = if config_enabled
+    {
         // PROB-051 P-H2 closure: parallelise read_phase via
         // buffer_unordered. Concurrency cap of 16 chosen as a safe
         // default for typical workspace sizes (≤300 active artifacts);
@@ -517,17 +518,22 @@ pub async fn health_report_with_phase(
                 async move {
                     match crate::phase::store::read_phase(&ws, &id).await {
                         Ok(Some(s)) => {
-                            let early =
-                                matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
-                            (early.then(|| PhaseMismatch {
-                                id,
-                                title,
-                                status,
-                                current_phase: s.current_phase.as_str().to_string(),
-                                advisory: "status=active but phase is early-cycle — \
+                            let early = matches!(
+                                s.current_phase,
+                                Phase::Shape | Phase::Validate | Phase::Adi
+                            );
+                            (
+                                early.then(|| PhaseMismatch {
+                                    id,
+                                    title,
+                                    status,
+                                    current_phase: s.current_phase.as_str().to_string(),
+                                    advisory: "status=active but phase is early-cycle — \
                                            Code/Evidence likely skipped"
-                                    .to_string(),
-                            }), false)
+                                        .to_string(),
+                                }),
+                                false,
+                            )
                         }
                         Ok(None) => (None, false),
                         Err(e) => {
@@ -541,7 +547,7 @@ pub async fn health_report_with_phase(
                                 "phase state file read failed during health scan — \
                                  artifact dropped from phase-mismatch list"
                             );
-                            (None, true)  // (no mismatch, error occurred)
+                            (None, true) // (no mismatch, error occurred)
                         }
                     }
                 }
