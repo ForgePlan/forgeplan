@@ -39,6 +39,11 @@ pub mod list;
 pub mod log_cmd;
 pub mod mcp;
 pub mod migrate;
+// PROB-060 Phase 0b — EVID-A CI ID-assignment binary (Worker 1).
+pub mod ci_assign_id;
+// PROB-060 Phase 0b — EVID-C migration dry-run scanner (Worker 3).
+pub mod migrate_dry_run;
+// PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge identity drift.
 pub mod new;
 pub mod order;
 pub mod phase;
@@ -49,8 +54,10 @@ pub mod progress;
 pub mod promote;
 pub mod reason;
 pub mod recall;
+pub mod reconcile_ids;
 pub mod reindex;
 pub mod release;
+pub mod release_notes;
 pub mod remember;
 pub mod renew;
 pub mod reopen;

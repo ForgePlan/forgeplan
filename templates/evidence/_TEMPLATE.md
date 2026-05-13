@@ -1,3 +1,12 @@
+---
+id: EVID-{NNN}
+title: "{title}"
+status: draft
+kind: evidence
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
+
 # EVID-{NNN}: {Evidence Title}
 
 | Field | Value |
@@ -5,7 +14,7 @@
 | Status | Draft |
 | Created | YYYY-MM-DD |
 | Valid Until | YYYY-MM-DD |
-| Target | ADR-{NNN} (решение которое подтверждаем/опровергаем) |
+| Target | ADR-<id> (решение которое подтверждаем/опровергаем) |
 
 <!-- REQUIRED for R_eff scoring. Legal values documented in templates/evidence/README.md. -->
 
@@ -37,4 +46,4 @@ congruence_level: 3
 
 | Artifact | Relation |
 |----------|----------|
-| ADR-{NNN} | informs |
+| ADR-<id> | informs |

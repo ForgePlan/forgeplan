@@ -7,6 +7,13 @@ use crate::commands::common;
 pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     let (ws, _lock, store) = common::open_store_locked().await?;
 
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
+
     // Sync file→LanceDB before lifecycle call (preserve user edits)
     if let Some(record) = store.get_record(id).await? {
         projection::sync_file_to_store(&store, &ws, &record).await?;
@@ -99,12 +106,21 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
 
     // PRD-071: primary action is to validate the freshly-minted draft so
     // the user can fill MUST sections and chain into activation.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the validate command stays canonical. The reopen
+    // path creates the new artifact via lifecycle, which keeps the
+    // display id in `result.new_id`; refs_form_from_body falls back to it
+    // when the freshly created body has no slug yet.
+    let new_ref_form = match store.get_record(&result.new_id).await? {
+        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
+        None => result.new_id.clone(),
+    };
     let next_hints: Vec<Hint> = vec![
         Hint::info(format!(
             "New draft {} created — fill MUST sections",
-            result.new_id
+            new_ref_form
         ))
-        .with_action(format!("forgeplan validate {}", result.new_id)),
+        .with_action(format!("forgeplan validate {}", new_ref_form)),
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 

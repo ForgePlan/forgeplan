@@ -1,13 +1,172 @@
 # Changelog
 
-All notable changes to Forgeplan are documented here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/). Semver: `MAJOR.MINOR.PATCH`
-with pre-1.0 minor bumps for breaking changes.
+All notable changes to Forgeplan are documented here. Format extends
+[Keep a Changelog](https://keepachangelog.com/) with a `### Internal`
+section for engineering details (tests, refactoring, tooling) that do not
+fit the six user-facing categories. Semver: `MAJOR.MINOR.PATCH` with
+pre-1.0 minor bumps for breaking changes.
 
 This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
+
+## [0.31.0] - 2026-05-13
+
+Sprint headline: **Wave 9 polish + 5-agent adversarial audit closure.**
+Closes PROB-051 end-to-end (R_eff=0.80 grade B), addresses 19 audit
+findings (1 CRITICAL, 2 HIGH, 9 MED, 7 LOW) across logic, architecture,
+security, and test-quality dimensions. 26 commits, ~3500 LOC net.
+
+Key security closures landing in this release:
+- **SEC-C1+C2 input gate** — `validate_title` lifted to `forgeplan-core::artifact::validation`
+  and gated at all 4 mutation paths (CLI new, CLI update, MCP new, MCP update). Pre-fix,
+  3 of 4 paths bypassed control-char + BIDI override rejection — Trojan Source titles
+  could be planted via `forgeplan update` or MCP.
+- **SEC-H1 output gate** — `sanitize_for_hint` propagated to 8 CLI command print sites
+  (list, search, blindspots, journal, decay, embed, promote, calibrate-estimate). LOG-001
+  closure for the v0.30 audit was partial; this completes it.
+- **SEC-H2 HOME sanitizer hardening** — `sanitize_text_with` now masks bare HOME at
+  end-of-string or followed by a non-path boundary character. Pre-fix, error chains of
+  the form `"chdir failed: /Users/alice"` leaked the username through MCP error JSON
+  and Claude Desktop logs.
+- **SEC-H3 MCP error sanitisation** — all 40+ `McpError::internal_error` call sites
+  route through `sanitize_error_chain`. Pre-fix only 3 typed-error variants (`StoreFatal`,
+  `StoreTransient`, `FileNotFound`) went through the sanitiser.
+- **ARCH-C1 health JSON helper extract** — `pub fn forgeplan_core::health::health_report_to_json`
+  is now the single source of truth for the CLI `--json` + MCP `forgeplan_health` wire
+  shape. Eliminates the third recurrence of "two surfaces serialising the same domain
+  object" (PROB-064 was the first, CR-001 the second). Helper also bundles SEC-M1
+  closure — every title/message/reason/issue/advisory string is sanitised before
+  serialisation.
+
+### Added
+
+- **`forgeplan release-notes [--since <ref>] [--until <ref>] [--output text|markdown|json] [--draft]`**
+  — auto-generate Keep-a-Changelog–shaped release notes from artifacts
+  that changed between two git refs. Walks `git log --diff-filter=AM`
+  over `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`,
+  resolves each touched basename to a canonical artifact id (handles
+  pre-merge slug form per SPEC-005 and post-merge `KIND-NNN`),
+  categorises by kind + status + security-link: PRD→Added,
+  PROB→Fixed, EVID-on-security→Security, RFC/ADR/Spec/Epic→Changed,
+  plain EVID→Internal. Quality gate (default): only records with
+  `status==active` or `r_eff_score > 0` are emitted; `--draft` waives.
+  Companion MCP tool `forgeplan_release_notes` returns the same JSON
+  shape. Closes v0.31.0 Wave 4 MAJOR-3 (manual CHANGELOG sync pain) —
+  the feature self-uses at the next release. Refs: EVID-123.
+- **`forgeplan health --strict` flag** — exit 1 if verdict ∈
+  {NeedsAttention, Unhealthy} OR any of {orphans, blind_spots,
+  active_stubs, at_risk} > 0. Designed for CI gates that want a single
+  boolean signal (default `forgeplan health` always exits 0 — advisory
+  tool). Empty workspaces (verdict=Empty) exit 0 — "no artifacts" is not
+  a critical signal. Advisory-only signals (phase mismatches alone) stay
+  advisory and exit 0, consistent with PROB-063 (advisory ≠ critical).
+  JSON mode (`--json --strict`) adds a parseable `exit_code` integer
+  field so CI scripts can branch on a single value instead of
+  recomputing the gate from counts. Backward compatible: legacy
+  `--ci`/`--fail-on` thresholds path untouched.
+- **`advisory_phase_mismatches` JSON key** в `forgeplan health --json`
+  output (alias for legacy `phase_mismatches`, matches MCP
+  `forgeplan_health` cross-surface). Non-breaking: legacy key retained
+  для backward compat. Future deprecation possible в major version bump.
+  Closes PROB-064 advisory/critical mismatch reporting drift between
+  CLI and MCP surfaces. Refs: EVID-118.
+
+### Fixed
+
+- **PROB-067 — `forgeplan_new` ID-counter race across parallel git
+  worktrees**. Two workers in sibling worktrees of the same repo
+  invoking `forgeplan_new` simultaneously could each compute
+  `max(NNN)+1` and produce duplicate `EVID-NNN` numbers (or silently
+  overwrite a pre-existing artifact body, per the v0.31.0 sprint
+  incident with EVID-118/EVID-119). Fix combo Option B + Option D:
+  1. **Cross-worktree per-kind lock** — id allocation now serializes
+     through `<git-common-dir>/forgeplan/id-<KIND>.lock` (shared
+     across all worktrees of the same repo) with graceful fallback to
+     a workspace-local lock when no git common-dir is available
+     (fresh clones, non-git directories). Per-kind granularity keeps
+     `new prd` and `new evidence` allocations independent.
+  2. **Post-write collision detection** — after the projection write
+     the allocator re-checks that no sibling file owns the same
+     `{ID}-` prefix; on collision the file is rolled back and the
+     allocation retries with the next number (cap 5, panic above to
+     surface a broken lock instead of silent corruption).
+  Both `forgeplan new` (CLI) and `forgeplan_new` (MCP) call the new
+  `forgeplan_core::artifact::id_alloc::allocate_and_create_artifact`
+  entry point. New regression coverage: 3 unit tests in
+  `forgeplan_core::artifact::id_alloc::tests` + 2 CLI process-level
+  stress tests in `cli_prob_067_id_race.rs` (5 parallel `new evidence`
+  + 10 mixed-kind `new evidence`/`new note`). Refs: PROB-067, EVID-TBD.
+
+### Security
+
+- **Bump openssl 0.10.78 → 0.10.79** — closes two GitHub Dependabot
+  alerts on the transitive dependency tree (reqwest → rustls → lance):
+  - **#27 (HIGH)** — rust-openssl undefined behavior в
+    `X509Ref::ocsp_responders` для non-UTF-8 OCSP URLs (CVE pending).
+  - **#28 (MEDIUM)** — heap buffer overflow при AES key-wrap-with-padding
+    encryption.
+
+- **Bump mermaid 11.14.0 → 11.15.0 в `website/`** — closes four GitHub
+  Dependabot alerts on the documentation site dependency tree:
+  - **#32 (MEDIUM, GHSA-6m6c-36f7-fhxh)** — Gantt charts vulnerable to
+    infinite-loop DoS.
+  - **#31 (MEDIUM, GHSA-ghcm-xqfw-q4vr)** — improper sanitization of
+    `classDef` in state diagrams (HTML injection).
+  - **#30 (MEDIUM, GHSA-87f9-hvmw-gh4p)** — improper sanitization of
+    configuration (CSS injection).
+  - **#29 (MEDIUM, GHSA-xcj9-5m2h-648r)** — improper sanitization of
+    `classDefs` in diagrams (CSS injection).
+
+- **Bump uuid 11.1.0 → 14.0.0 в `website/`** — closes Dependabot alert
+  **#26 (MEDIUM, GHSA-w5hq-g745-h8pq)** — missing buffer bounds check в
+  `v3/v5/v6` when buf is provided. Major bump landed via mermaid 11.15.0
+  broadening its peer range (`^11 || ^12 || ^13 || ^14`); npm resolved
+  to latest 14.0.0. `npm audit` reports 0 vulnerabilities post-bump.
+
+- **`lru` 0.12.5 alert deferred** (#3, LOW, GHSA-rhfx-m35p-ff5j) —
+  `IterMut` Stacked Borrows violation. Blocked upstream: `tantivy
+  v0.24.2` pins `lru = "^0.12.0"`, and `lance v4.0.0` pins
+  `tantivy = "=0.24.1"`. Bump requires `lance ≥4.1` (not yet released
+  с newer tantivy). Justification: LOW severity, Forgeplan не использует
+  `lru::IterMut` напрямую — code path is tantivy-internal text index
+  iteration, not exposed через our search API. Tracked для re-triage
+  on next lance upstream release.
+
+- **`cargo-deny` CI gate added** — new `.github/workflows/security.yml`
+  runs `cargo deny check advisories licenses bans sources` on push to
+  dev/main, on PRs against dev/main, и weekly cron (Mon 07:23 UTC).
+  Config: `deny.toml` at repo root. Initial rollout
+  `continue-on-error: true` — establishes baseline, then flips to
+  blocking after first clean run. Closes RED LINE #10 mechanism gap
+  (Dependabot mandate had no automated enforcement before release).
+  Schema is cargo-deny 0.19+ (action @v2.x).
+
+### Internal
+
+- **+33 CLI integration tests** для 16 previously-untested commands
+  in `crates/forgeplan-cli/tests/cli_uncovered_coverage.rs`: `embed`,
+  `tree`, `git_sync`, `log_cmd`, `context`, `promote`, `reopen`,
+  `scan_import`, `setup_skill`, `tag`, `recall`, `remember`, `migrate`,
+  `migrate_dry_run`, `reconcile_ids`, `ci_assign_id`. The `watch`
+  command is intentionally deferred — long-running foreground watcher
+  is untestable via `assert_cmd` без SIGTERM handling и timing races
+  (module-level unit tests cover the core debouncer logic).
+- **+59 MCP tool contract tests** в
+  `crates/forgeplan-mcp/tests/integration_full_coverage.rs` — coverage
+  expanded 14 → 61 unique handlers (100% user-facing tools reachable
+  через JSON-RPC duplex transport). LLM-dependent group (capture /
+  reason / decompose / generate) pins `is_error=true` contract; other
+  reachability-only assertions tracked for future tightening
+  (PROB-065 candidate).
+- **+6 smoke-test.sh operations** (13 → 19): `tree`, `progress`,
+  `claim/release` cycle, `dispatch` planner JSON, `phase-advance`
+  round-trip. Runtime budget ≤3s on warm cache.
+- **Shared MCP test fixture** extracted to
+  `crates/forgeplan-mcp/tests/common/mod.rs` (McpFixture + helpers) —
+  removes ~200 LOC of verbatim duplication between `integration_e2e.rs`
+  и `integration_full_coverage.rs`.
 
 ## [0.30.0] — 2026-05-06 — defensive sprint: security trio + cache self-healing + MCP transport parity + Wave 3 paper cuts
 

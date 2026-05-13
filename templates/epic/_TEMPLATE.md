@@ -14,9 +14,9 @@ depth: standard / deep / critical
 ## Progress (Aggregated)
 
 ```
-PRD-001  ████████████████████████  8/8   (100%) DONE
-PRD-002  ██████████████░░░░░░░░░░  7/12  ( 58%)
-PRD-003  ░░░░░░░░░░░░░░░░░░░░░░░░  0/6   (  0%)
+PRD-<id-a>  ████████████████████████  8/8   (100%) DONE
+PRD-<id-b>  ██████████████░░░░░░░░░░  7/12  ( 58%)
+PRD-<id-c>  ░░░░░░░░░░░░░░░░░░░░░░░░  0/6   (  0%)
 ─────────────────────────────────────────────────
 TOTAL                              15/26 (57.7%)
 ```
@@ -49,24 +49,24 @@ TOTAL                              15/26 (57.7%)
 
 | Type | ID | Title | Status | Owner |
 |------|------|-------|--------|-------|
-| PRD | PRD-001 | ... | Approved | ... |
-| PRD | PRD-002 | ... | Draft | ... |
-| SPEC | SPEC-001 | ... | Approved | ... |
-| RFC | RFC-101 | ... | Implemented | ... |
-| RFC | RFC-102 | ... | Draft | ... |
-| ADR | ADR-015 | ... | Accepted | ... |
+| PRD | PRD-<id> | ... | Approved | ... |
+| PRD | PRD-<id> | ... | Draft | ... |
+| SPEC | SPEC-<id> | ... | Approved | ... |
+| RFC | RFC-<id> | ... | Implemented | ... |
+| RFC | RFC-<id> | ... | Draft | ... |
+| ADR | ADR-<id> | ... | Accepted | ... |
 
 ## Dependency Graph
 
 ```mermaid
 graph TD
-    EPIC[EPIC-{NNN}] --> PRD1[PRD-001]
-    EPIC --> PRD2[PRD-002]
-    EPIC --> PRD3[PRD-003]
-    PRD1 --> SPEC1[SPEC-001]
-    PRD1 --> RFC1[RFC-101]
-    PRD2 --> RFC2[RFC-102]
-    RFC1 --> ADR1[ADR-015]
+    EPIC[EPIC-<id>] --> PRD1[PRD-<id-a>]
+    EPIC --> PRD2[PRD-<id-b>]
+    EPIC --> PRD3[PRD-<id-c>]
+    PRD1 --> SPEC1[SPEC-<id>]
+    PRD1 --> RFC1[RFC-<id-a>]
+    PRD2 --> RFC2[RFC-<id-b>]
+    RFC1 --> ADR1[ADR-<id>]
     RFC2 --> ADR1
     PRD3 -.->|blocked by| PRD2
 ```
@@ -74,14 +74,14 @@ graph TD
 ## Phases
 
 ### Phase 1: Foundation
-- PRD-001 -> SPEC-001 -> RFC-101
-- ADR-015
+- PRD-<id-a> -> SPEC-<id> -> RFC-<id-a>
+- ADR-<id>
 
 ### Phase 2: Core
-- PRD-002 -> RFC-102
+- PRD-<id-b> -> RFC-<id-b>
 
 ### Phase 3: Enhancement
-- PRD-003 (depends on Phase 2)
+- PRD-<id-c> (depends on Phase 2)
 
 ## Risks
 
@@ -104,11 +104,11 @@ graph TD
 ### Phase 1 Complete — YYYY-MM-DD
 | Artifact | Status | Key Outcome |
 |----------|--------|-------------|
-| PRD-001 | Done | Requirements locked |
-| RFC-101 | Done | Architecture implemented |
+| PRD-<id-a> | Done | Requirements locked |
+| RFC-<id-a> | Done | Architecture implemented |
 -->
 
 ## Related
 
-- Epic-{NNN}: {link}
+- Epic-<id>: {link}
 - Roadmap: {link}

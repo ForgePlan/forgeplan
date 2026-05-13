@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::config::Config;
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::plugins::{
@@ -13,14 +14,14 @@ use forgeplan_core::plugins::{
     format_recommendations,
 };
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
-use forgeplan_core::workspace::{FORGEPLAN_DIR, find_workspace, init_workspace};
+use forgeplan_core::workspace::{ARTIFACT_DIRS, FORGEPLAN_DIR, find_workspace, init_workspace};
 
 use crate::ui;
 
 /// Default project name fallback (unified for both paths).
 const DEFAULT_PROJECT_NAME: &str = "my-project";
 
-pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
+pub async fn run(force: bool, non_interactive: bool, scan: bool, no_backup: bool) -> Result<()> {
     let cwd = env::current_dir()?;
 
     // Check if already initialized
@@ -48,27 +49,80 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool) -> Result<()> {
             return Ok(());
         }
 
-        // Warn about data loss before --force reinit
-        if non_interactive {
-            eprintln!(
-                "WARNING: --force will delete ALL artifacts in .forgeplan/. \
-                 Run `forgeplan export` first to backup."
-            );
-        } else {
-            let proceed = cliclack::confirm(
-                "WARNING: --force will delete ALL artifacts in .forgeplan/. \
-                 Run `forgeplan export` first to backup. Continue?",
-            )
-            .initial_value(false)
-            .interact()?;
-            if !proceed {
-                eprintln!("  Aborted. Run `forgeplan export` to backup first.");
-                return Ok(());
-            }
-        }
+        // PROB-068: --force is now strictly additive.
+        // - Existing artifact .md bodies are NEVER overwritten.
+        // - config.yaml is regenerated (with backup) so stale defaults
+        //   from older versions can be refreshed.
+        // - LanceDB index is rebuilt from the existing markdown via the
+        //   subsequent scan-import flow (when --scan is requested).
+        //
+        // An auto-backup of the artifact directories is taken unless
+        // --no-backup is set. This protects against any future logic
+        // bug that might mutate file bodies under --force.
 
         // [SECURITY] Guard against symlink attack and workspace outside cwd
-        safe_remove_workspace(&existing, &cwd).await?;
+        ensure_workspace_under_cwd(&existing, &cwd)?;
+
+        if !no_backup {
+            let summary = create_force_backup(&existing, &cwd).await?;
+            if let Some(s) = summary.as_deref() {
+                if non_interactive {
+                    println!("  Auto-backup created at {} — use --no-backup to skip", s);
+                } else {
+                    cliclack::log::success(format!(
+                        "Auto-backup created at {} — use --no-backup to skip",
+                        s
+                    ))?;
+                }
+            }
+        } else if non_interactive {
+            eprintln!(
+                "  Skipping auto-backup (--no-backup). Existing artifact bodies are preserved."
+            );
+        }
+
+        // Additive reinit: refresh config + dirs + LanceDB index without
+        // touching existing artifact .md files.
+        let project_name = cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| DEFAULT_PROJECT_NAME.into());
+        refresh_existing_workspace(&existing, &project_name).await?;
+
+        if non_interactive {
+            println!(
+                "  Reinitialized {}/ in {} (config + indices refreshed, artifact bodies preserved)",
+                FORGEPLAN_DIR,
+                cwd.display()
+            );
+            if scan {
+                run_scan_import(&cwd, &existing).await?;
+            }
+            emit_recommendation_hints(&cwd);
+            let hints_vec = vec![
+                Hint::suggestion("Verify integrity").with_action("forgeplan health".to_string()),
+            ];
+            print!("{}", hints::render_next_action_line(&hints_vec));
+            return Ok(());
+        }
+
+        // Interactive: emit a success note via cliclack, run scan if asked,
+        // then exit before falling through to the create-from-scratch path.
+        ui::print_banner();
+        cliclack::intro(style(" forgeplan init --force ").bold())?;
+        cliclack::log::success(format!(
+            "Reinitialized config + indices at {} (artifact bodies preserved)",
+            existing.display()
+        ))?;
+        if scan {
+            run_scan_import(&cwd, &existing).await?;
+        }
+        cliclack::outro(format!("Done! Next: {}", style("forgeplan health").cyan()))?;
+        emit_recommendation_hints(&cwd);
+        let hints_vec =
+            vec![Hint::suggestion("Verify integrity").with_action("forgeplan health".to_string())];
+        print!("{}", hints::render_next_action_line(&hints_vec));
+        return Ok(());
     }
 
     // Non-interactive mode (for CI, tests, scripts)
@@ -319,12 +373,135 @@ async fn init_with_rollback(cwd: &std::path::Path, project_name: &str) -> Result
         let _ = tokio::fs::remove_dir_all(&ws).await;
         return Err(e);
     }
+    // PROB-062: ensure root .gitignore has the canonical forgeplan section.
+    // Failure is non-fatal — workspace is already created and usable; the
+    // user just won't get the auto-managed ignore rules. Log a warning so
+    // they can fix it manually.
+    if let Err(e) = ensure_canonical_gitignore_section(cwd) {
+        eprintln!(
+            "warning: could not write canonical .gitignore section: {e} \
+             (workspace created successfully; add the forgeplan section manually)"
+        );
+    }
     Ok(())
 }
 
-/// Safely remove a workspace directory, guarding against symlinks and paths outside cwd.
-async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Path) -> Result<()> {
-    // Guard: workspace must be inside cwd
+/// PROB-062: marker line that opens the forgeplan-managed `.gitignore`
+/// section. Anything between `GITIGNORE_BEGIN_MARKER` and
+/// `GITIGNORE_END_MARKER` is rewritten on every `forgeplan init`; lines
+/// outside are preserved verbatim so user-authored rules survive.
+pub(crate) const GITIGNORE_BEGIN_MARKER: &str =
+    "# === forgeplan workspace runtime state (managed by `forgeplan init`) ===";
+pub(crate) const GITIGNORE_END_MARKER: &str = "# === end forgeplan section ===";
+
+/// PROB-062: canonical body of the forgeplan-managed `.gitignore` section.
+///
+/// Lists every path under `.forgeplan/` that is derived state, per-machine
+/// runtime data, or local cache — files git should never see. The marker
+/// boundaries let `forgeplan init` rewrite this block idempotently without
+/// disturbing user-authored rules.
+///
+/// Mirrors the patterns also enforced by `detect_gitignore_drift` in
+/// `forgeplan-core/src/health/mod.rs` — adding a new ignored path here
+/// SHOULD be paired with a drift-detector update so the two surfaces
+/// agree.
+pub(crate) const GITIGNORE_CANONICAL_BODY: &str = "\
+.forgeplan/lance/
+.forgeplan/.fastembed_cache/
+.forgeplan/session.yaml
+.forgeplan/state/
+.forgeplan/trash/
+.forgeplan/logs/
+.forgeplan/locks/
+";
+
+/// PROB-062: render the full forgeplan-managed block, including its
+/// marker boundaries. Used by both the writer and the unit tests so the
+/// canonical shape is defined in exactly one place.
+pub(crate) fn canonical_gitignore_block() -> String {
+    format!(
+        "{begin}\n{body}{end}\n",
+        begin = GITIGNORE_BEGIN_MARKER,
+        body = GITIGNORE_CANONICAL_BODY,
+        end = GITIGNORE_END_MARKER,
+    )
+}
+
+/// PROB-062: create or refresh the canonical forgeplan section in the
+/// **root** `.gitignore` (next to `.forgeplan/`).
+///
+/// Behaviour:
+/// - If `.gitignore` does not exist → create it with just the managed block.
+/// - If `.gitignore` exists without our markers → append the managed block,
+///   preserving the existing content as-is.
+/// - If `.gitignore` exists WITH our markers → replace whatever is between
+///   them with `GITIGNORE_CANONICAL_BODY` (idempotent for re-runs;
+///   self-healing when an older managed block needs an update).
+///
+/// The function never deletes user-authored rules and never edits content
+/// outside the marker block.
+pub(crate) fn ensure_canonical_gitignore_section(workspace_root: &Path) -> Result<()> {
+    let gitignore_path = workspace_root.join(".gitignore");
+    let managed_block = canonical_gitignore_block();
+
+    if !gitignore_path.exists() {
+        fs::write(&gitignore_path, managed_block)?;
+        return Ok(());
+    }
+
+    let existing = fs::read_to_string(&gitignore_path)?;
+    let new_contents = rewrite_gitignore(&existing, &managed_block);
+    if new_contents != existing {
+        fs::write(&gitignore_path, new_contents)?;
+    }
+    Ok(())
+}
+
+/// PROB-062: pure rewrite — given the current `.gitignore` text and the
+/// canonical managed block, return the text that the file should hold.
+///
+/// Extracted from `ensure_canonical_gitignore_section` so unit tests can
+/// pin the exact replace/append semantics without touching the disk.
+pub(crate) fn rewrite_gitignore(existing: &str, managed_block: &str) -> String {
+    match (
+        existing.find(GITIGNORE_BEGIN_MARKER),
+        existing.find(GITIGNORE_END_MARKER),
+    ) {
+        (Some(begin_idx), Some(end_idx)) if end_idx > begin_idx => {
+            // Replace the marker block (including markers themselves)
+            // with the canonical version. Preserve everything before
+            // the begin marker and after the end marker (plus its
+            // trailing newline, if any).
+            let before = &existing[..begin_idx];
+            // Advance past the end marker line, swallowing its `\n` so
+            // we don't leave a blank line behind on repeated rewrites.
+            let after_end = end_idx + GITIGNORE_END_MARKER.len();
+            let tail_start = if existing[after_end..].starts_with('\n') {
+                after_end + 1
+            } else {
+                after_end
+            };
+            let after = &existing[tail_start..];
+            format!("{before}{managed_block}{after}")
+        }
+        _ => {
+            // No managed block present — append.
+            if existing.is_empty() {
+                managed_block.to_string()
+            } else if existing.ends_with('\n') {
+                format!("{existing}\n{managed_block}")
+            } else {
+                format!("{existing}\n\n{managed_block}")
+            }
+        }
+    }
+}
+
+/// PROB-068: assert workspace is safe to operate on under --force without
+/// any destructive action. Mirrors the historical symlink/escape guard
+/// from `safe_remove_workspace`, but never deletes — the additive
+/// `--force` flow only refreshes config + indices.
+fn ensure_workspace_under_cwd(workspace: &std::path::Path, cwd: &std::path::Path) -> Result<()> {
     let canonical_ws = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
@@ -336,7 +513,6 @@ async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Pat
         );
     }
 
-    // Guard: workspace must not be a symlink
     let meta = fs::symlink_metadata(workspace)?;
     if meta.file_type().is_symlink() {
         anyhow::bail!(
@@ -344,8 +520,147 @@ async fn safe_remove_workspace(workspace: &std::path::Path, cwd: &std::path::Pat
             workspace.display()
         );
     }
+    Ok(())
+}
 
-    tokio::fs::remove_dir_all(workspace).await?;
+/// PROB-068 Option C: snapshot artifact directories into
+/// `.forgeplan-backup-<UTC-timestamp>/` before any `--force` refresh.
+///
+/// Returns `Ok(Some(path))` with the backup directory name (relative to
+/// `cwd`) when artifacts were found and copied. Returns `Ok(None)` when
+/// the workspace had no artifact files worth backing up — there is
+/// nothing to lose so we skip the noise.
+///
+/// Failures (disk full, permissions, etc.) are returned as `Err` so
+/// `--force` aborts before doing anything else. The user can then free
+/// space, fix permissions, or pass `--no-backup` if they've already
+/// exported.
+async fn create_force_backup(
+    workspace: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<Option<String>> {
+    // Count existing markdown bodies — skip the backup if there's
+    // nothing to protect.
+    let mut artifact_count: usize = 0;
+    for dir_name in ARTIFACT_DIRS {
+        let dir = workspace.join(dir_name);
+        if !dir.exists() {
+            continue;
+        }
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        while let Some(entry) = rd.next_entry().await.transpose() {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".md") {
+                artifact_count += 1;
+            }
+        }
+    }
+    if artifact_count == 0 {
+        return Ok(None);
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let backup_name = format!(".forgeplan-backup-{}", timestamp);
+    let backup_root = cwd.join(&backup_name);
+    // Defensive: refuse to clobber an existing path with the same name.
+    if backup_root.exists() {
+        anyhow::bail!(
+            "Backup target {} already exists — refusing to overwrite. Move or remove it.",
+            backup_root.display()
+        );
+    }
+    tokio::fs::create_dir_all(&backup_root).await?;
+
+    for dir_name in ARTIFACT_DIRS {
+        let src = workspace.join(dir_name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = backup_root.join(dir_name);
+        copy_dir_recursive(&src, &dst).await?;
+    }
+
+    Ok(Some(backup_name))
+}
+
+/// Recursively copy a directory tree — used by `create_force_backup`.
+/// Only walks regular files / directories; symlinks are followed via
+/// the standard `fs::copy` semantics (target file contents are copied).
+async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut rd = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = rd.next_entry().await? {
+        let entry_path = entry.path();
+        let file_name = entry.file_name();
+        let dst_path = dst.join(&file_name);
+        let ft = entry.file_type().await?;
+        if ft.is_dir() {
+            Box::pin(copy_dir_recursive(&entry_path, &dst_path)).await?;
+        } else if ft.is_file() {
+            tokio::fs::copy(&entry_path, &dst_path).await?;
+        }
+        // Skip symlinks / specials; backup is best-effort for those.
+    }
+    Ok(())
+}
+
+/// PROB-068 Option A: additive refresh of an existing workspace.
+///
+/// - Ensures every `ARTIFACT_DIRS` entry exists (idempotent).
+/// - Rewrites `config.yaml` so users on older versions pick up new
+///   commented defaults. The previous config (if any) is moved aside
+///   as `config.yaml.bak-<timestamp>` so a manual diff is possible.
+/// - Reinitializes the LanceDB index in place — LanceStore::init is
+///   idempotent and will pick up existing rows on subsequent
+///   scan-import calls.
+///
+/// CRITICALLY: artifact .md files are never touched. Bodies, links,
+/// custom frontmatter, agent stamps — all preserved.
+async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &str) -> Result<()> {
+    // Ensure every artifact subdir exists.
+    for dir_name in ARTIFACT_DIRS {
+        let dir = workspace.join(dir_name);
+        tokio::fs::create_dir_all(&dir).await?;
+    }
+
+    // Rewrite config.yaml; move the old one aside so the user can diff.
+    let config_path = workspace.join("config.yaml");
+    if config_path.exists() {
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let backup_path = workspace.join(format!("config.yaml.bak-{}", ts));
+        let _ = tokio::fs::rename(&config_path, &backup_path).await;
+    }
+    let config = Config {
+        project_name: project_name.to_string(),
+        ..Config::default()
+    };
+    let yaml = serde_yaml::to_string(&config)?;
+    tokio::fs::write(&config_path, yaml).await?;
+
+    // Reinit LanceDB index. LanceStore::init is idempotent for an
+    // existing dataset, so this is safe to run repeatedly.
+    LanceStore::init(workspace).await?;
+
+    // PROB-062: refresh the canonical .gitignore section. The workspace
+    // root is the parent of `.forgeplan/` for the standard layout; fall
+    // back gracefully if we cannot derive it (atypical setups, e.g.
+    // `.forgeplan` symlinked elsewhere).
+    if let Some(root) = workspace.parent()
+        && let Err(e) = ensure_canonical_gitignore_section(root)
+    {
+        eprintln!(
+            "warning: could not refresh canonical .gitignore section during --force \
+             reinit: {e}"
+        );
+    }
     Ok(())
 }
 
@@ -602,4 +917,142 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod gitignore_tests {
+    //! PROB-062 — canonical `.gitignore` section management.
+    //!
+    //! Each test isolates its own scratch dir to keep the rewriter pure
+    //! (no shared state, parallel-safe). The behaviour pinned here is
+    //! the contract `ensure_canonical_gitignore_section` advertises to
+    //! `forgeplan init` and to the drift detector in `health/mod.rs`.
+
+    use super::{
+        GITIGNORE_BEGIN_MARKER, GITIGNORE_CANONICAL_BODY, GITIGNORE_END_MARKER,
+        canonical_gitignore_block, ensure_canonical_gitignore_section, rewrite_gitignore,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// The canonical block embeds the markers and body verbatim — drift
+    /// here means `detect_gitignore_drift` and the writer disagree.
+    #[test]
+    fn canonical_block_contains_markers_and_body() {
+        let block = canonical_gitignore_block();
+        assert!(block.starts_with(GITIGNORE_BEGIN_MARKER));
+        assert!(block.trim_end().ends_with(GITIGNORE_END_MARKER));
+        assert!(block.contains(GITIGNORE_CANONICAL_BODY));
+        // All canonical patterns must be present so a single missing
+        // entry trips this test rather than silently leaking later.
+        for line in GITIGNORE_CANONICAL_BODY.lines() {
+            assert!(
+                block.contains(line),
+                "canonical block missing pattern: {line}"
+            );
+        }
+    }
+
+    /// Missing `.gitignore` → create one with just the managed block.
+    #[test]
+    fn ensure_canonical_gitignore_section_creates_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+        assert!(!path.exists());
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert_eq!(written, canonical_gitignore_block());
+    }
+
+    /// Re-running on an already-managed file MUST leave the file bit-
+    /// identical — that's the "idempotent" contract.
+    #[test]
+    fn ensure_canonical_gitignore_section_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+        let first_pass = fs::read_to_string(&path).unwrap();
+        let first_modified = fs::metadata(&path).unwrap().modified().unwrap();
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+        let second_pass = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(first_pass, second_pass);
+        // mtime should also be untouched on a no-op rewrite — we early-
+        // return when the contents match, sparing the disk a write.
+        let second_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(first_modified, second_modified);
+    }
+
+    /// Existing user rules outside the marker block MUST survive a
+    /// rewrite — only the managed section is rewritten.
+    #[test]
+    fn ensure_canonical_gitignore_section_preserves_user_rules() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+        let user_rules = "# user-authored rules\ntarget/\nnode_modules/\n";
+        fs::write(&path, user_rules).unwrap();
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        // Original lines must be present, exactly as written.
+        assert!(written.contains("# user-authored rules"));
+        assert!(written.contains("target/"));
+        assert!(written.contains("node_modules/"));
+        // Canonical block must also be present.
+        assert!(written.contains(GITIGNORE_BEGIN_MARKER));
+        assert!(written.contains(GITIGNORE_END_MARKER));
+        assert!(written.contains(".forgeplan/lance/"));
+    }
+
+    /// An older or hand-edited managed block must be replaced wholesale.
+    /// The marker boundaries define the rewrite scope; everything else
+    /// stays put.
+    #[test]
+    fn ensure_canonical_gitignore_section_updates_existing_marker_block() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".gitignore");
+        let stale = format!(
+            "# user\ntarget/\n\n{begin}\n.forgeplan/old-derived/\n{end}\n# trailing user\n*.log\n",
+            begin = GITIGNORE_BEGIN_MARKER,
+            end = GITIGNORE_END_MARKER,
+        );
+        fs::write(&path, &stale).unwrap();
+
+        ensure_canonical_gitignore_section(dir.path()).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        // Stale entry inside the managed block is gone.
+        assert!(!written.contains(".forgeplan/old-derived/"));
+        // Fresh entries are present.
+        assert!(written.contains(".forgeplan/lance/"));
+        assert!(written.contains(".forgeplan/state/"));
+        // Content outside the managed block is preserved on both sides.
+        assert!(written.contains("# user\ntarget/"));
+        assert!(written.contains("# trailing user\n*.log"));
+    }
+
+    /// Unit-level coverage on the pure rewriter so we can pin the
+    /// append semantics without hitting the filesystem.
+    #[test]
+    fn rewrite_gitignore_appends_with_blank_line_when_missing() {
+        let block = canonical_gitignore_block();
+        let existing = "target/\nnode_modules/\n";
+        let result = rewrite_gitignore(existing, &block);
+        assert!(result.starts_with("target/\nnode_modules/\n\n"));
+        assert!(result.ends_with(GITIGNORE_END_MARKER.trim_end()) || result.ends_with('\n'));
+        assert!(result.contains(GITIGNORE_BEGIN_MARKER));
+    }
+
+    /// Empty file → write just the block (no leading newlines).
+    #[test]
+    fn rewrite_gitignore_empty_input_writes_block_as_is() {
+        let block = canonical_gitignore_block();
+        let result = rewrite_gitignore("", &block);
+        assert_eq!(result, block);
+    }
 }

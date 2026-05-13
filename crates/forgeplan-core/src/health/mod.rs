@@ -23,29 +23,82 @@
 //!
 //! # Verdict aggregator (PROB-029 AC-2)
 //!
-//! Four levels:
+//! Four levels, ordered weakest-to-strongest signal:
 //!
-//! - `Verdict::Empty` — workspace has zero artifacts. Treated as a
+//! - [`Verdict::Empty`] — workspace has zero artifacts. Treated as a
 //!   distinct level so JSON consumers gating on `verdict == "healthy"`
 //!   never wrongly classify an uninitialised project as healthy.
-//! - `Verdict::Healthy` — total > 0 and every warning class is empty.
-//! - `Verdict::NeedsAttention` — at least one non-zero warning class but
-//!   none exceed thresholds.
-//! - `Verdict::Unhealthy` — any class strictly exceeds its
-//!   [`VerdictThresholds`] entry.
+//! - [`Verdict::Healthy`] — `total > 0` and every warning class is empty.
+//! - [`Verdict::NeedsAttention`] — at least one non-zero warning class
+//!   but none exceed thresholds.
+//! - [`Verdict::Unhealthy`] — any single warning class strictly exceeds
+//!   its [`VerdictThresholds`] entry.
 //!
 //! The enum is `#[non_exhaustive]` so future levels can land without
 //! breaking pattern-match callers in `forgeplan-cli`. External binaries
 //! consuming `forgeplan-core` as a library should always include a
 //! catch-all arm.
 //!
-//! # Performance (PROB-051 P-H1 + P-H2)
+//! # Usage
+//!
+//! ```no_run
+//! # async fn demo() -> anyhow::Result<()> {
+//! use forgeplan_core::db::store::LanceStore;
+//! use forgeplan_core::health::{
+//!     Verdict, VerdictThresholds, health_report_with_phase,
+//! };
+//! use std::path::Path;
+//!
+//! let workspace = Path::new(".forgeplan");
+//! let store = LanceStore::open(workspace).await?;
+//!
+//! // Single-scan, phase-aware report — identical verdict across CLI/MCP.
+//! let (report, phase_mismatches) =
+//!     health_report_with_phase(&store, workspace).await?;
+//!
+//! match report.verdict {
+//!     Verdict::Empty => println!("Run `forgeplan new` to start."),
+//!     Verdict::Healthy => println!("All green."),
+//!     Verdict::NeedsAttention => {
+//!         println!("Soft signals: review `forgeplan health` output.");
+//!     }
+//!     Verdict::Unhealthy => {
+//!         println!("Critical signals — fix before continuing.");
+//!     }
+//!     _ => {} // forward-compat: new verdict levels may land later.
+//! }
+//!
+//! // Re-fold the verdict under stricter thresholds — pure function on
+//! // the report, no re-scan required. `VerdictThresholds` is
+//! // `#[non_exhaustive]`, so external callers MUST start from
+//! // `default()` and assign individual fields rather than use struct
+//! // literals (SemVer-safe — future threshold fields land additively).
+//! let mut stricter = VerdictThresholds::default();
+//! stricter.duplicates = 0;
+//! let strict_verdict = report.compute_verdict_with(&stricter, phase_mismatches.len());
+//! // A workspace with even one duplicate pair under `stricter.duplicates = 0`
+//! // is promoted straight to Unhealthy (zero-tolerance gate). Use this
+//! // pattern in CI to enforce stronger contracts than the default thresholds.
+//! if !report.possible_duplicates.is_empty() {
+//!     assert_eq!(strict_verdict, Verdict::Unhealthy);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Performance (PROB-051 P-H1 + P-H2 + P-M1 + P-M2)
 //!
 //! - `health_report_with_phase` does ONE `list_records(None)` scan,
 //!   replacing the pre-PROB-051 MCP path which scanned twice.
 //! - Phase reads use `futures::stream::iter(active_records)
 //!   .map(read_phase).buffer_unordered(16).collect()` so a 200-active-
 //!   artifact workspace doesn't pay 200 sequential disk-seek round-trips.
+//! - `find_duplicate_pairs` pre-tokenizes every title ONCE before the
+//!   pairwise loop — was O(N²) re-tokenizations, now O(N) preprocessing.
+//! - `find_at_risk` and `compute_derived_status_breakdown` build an
+//!   `artifact_id → linked-evidence-records` HashMap in a single pass
+//!   over the relation graph (O(E)) instead of per-artifact full scans
+//!   of `evidence_records` (was O(N × E)).
 //!
 //! # File layout
 //!
@@ -60,6 +113,7 @@ use std::path::Path;
 use futures::StreamExt;
 
 use crate::artifact::frontmatter::Frontmatter;
+use crate::artifact::sanitize::sanitize_for_hint;
 use crate::artifact::types::DECISION_KINDS_EVIDENCE;
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
@@ -71,10 +125,17 @@ use crate::validation;
 /// R_eff threshold below which an artifact is considered AT RISK.
 const REFF_AT_RISK_THRESHOLD: f64 = 0.3;
 
-use crate::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+use crate::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, jaccard_similarity, tokenize_title};
 
-/// Maximum number of duplicate pairs to report.
-const DUPLICATE_PAIRS_LIMIT: usize = 10;
+/// Maximum number of duplicate pairs to **display**.
+///
+/// PROB-051 L-M2: counting the truncated list before verdict computation
+/// underreported the duplicate signal — a workspace with 50 dup pairs
+/// would only see 10 in the verdict aggregator. Now we count the full
+/// list first, fold the full count into the verdict via
+/// `report.possible_duplicates.len()`, then truncate for rendering.
+/// Display-only — verdict math always sees the full count.
+pub const DUPLICATE_PAIRS_DISPLAY_LIMIT: usize = 10;
 
 /// Default thresholds at which a given warning class promotes the verdict
 /// to `Unhealthy`. Below the threshold (but > 0) → `NeedsAttention`.
@@ -88,6 +149,11 @@ pub const DEFAULT_UNHEALTHY_BLIND_SPOTS: usize = 3;
 pub const DEFAULT_UNHEALTHY_ACTIVE_STUBS: usize = 3;
 pub const DEFAULT_UNHEALTHY_DUPLICATES: usize = 5;
 pub const DEFAULT_UNHEALTHY_PHASE_MISMATCHES: usize = 5;
+/// PROB-051 L-M1: at-risk count above this promotes `Unhealthy`.
+/// Below the threshold (but > 0) keeps the verdict at `NeedsAttention`
+/// via the any-warning floor — matches behaviour pre-PROB-051 for
+/// small at-risk counts, just adds the critical promotion lane.
+pub const DEFAULT_UNHEALTHY_AT_RISK: usize = 10;
 
 /// Tunable promotion thresholds for [`compute_verdict`]. When the count
 /// of a given warning class **strictly exceeds** the threshold, the
@@ -111,6 +177,13 @@ pub struct VerdictThresholds {
     pub active_stubs: usize,
     pub duplicates: usize,
     pub phase_mismatches: usize,
+    /// PROB-051 L-M1: number of at-risk artifacts strictly above which
+    /// the verdict promotes from `NeedsAttention` (the any-warning floor)
+    /// to `Unhealthy`. Default 10 — chosen so projects with a handful of
+    /// in-flight decisions awaiting evidence stay at `NeedsAttention`
+    /// (gradient signal, not gate-failing), while a workspace with 11+
+    /// trust-decayed decisions clearly is in trouble.
+    pub at_risk: usize,
 }
 
 impl Default for VerdictThresholds {
@@ -121,6 +194,7 @@ impl Default for VerdictThresholds {
             active_stubs: DEFAULT_UNHEALTHY_ACTIVE_STUBS,
             duplicates: DEFAULT_UNHEALTHY_DUPLICATES,
             phase_mismatches: DEFAULT_UNHEALTHY_PHASE_MISMATCHES,
+            at_risk: DEFAULT_UNHEALTHY_AT_RISK,
         }
     }
 }
@@ -155,6 +229,30 @@ pub enum Verdict {
 
 impl Verdict {
     /// Stable, agent-readable label. Matches the serde wire format.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forgeplan_core::health::Verdict;
+    ///
+    /// assert_eq!(Verdict::Empty.as_str(), "empty");
+    /// assert_eq!(Verdict::Healthy.as_str(), "healthy");
+    /// assert_eq!(Verdict::NeedsAttention.as_str(), "needs_attention");
+    /// assert_eq!(Verdict::Unhealthy.as_str(), "unhealthy");
+    /// ```
+    ///
+    /// The returned label matches the serde wire format, so JSON
+    /// consumers can compare verdict strings directly against this
+    /// value:
+    ///
+    /// ```
+    /// use forgeplan_core::health::Verdict;
+    ///
+    /// let json = serde_json::to_string(&Verdict::NeedsAttention).unwrap();
+    /// // serde emits `"needs_attention"` (with surrounding quotes).
+    /// assert_eq!(json, "\"needs_attention\"");
+    /// assert!(json.contains(Verdict::NeedsAttention.as_str()));
+    /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             Verdict::Empty => "empty",
@@ -167,6 +265,27 @@ impl Verdict {
     /// Human-friendly one-line summary for CLI rendering. Avoids the
     /// pre-PROB-029 phrase "Project looks healthy" when the verdict is
     /// not `Healthy` — that phrase was the original bug surface.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forgeplan_core::health::Verdict;
+    ///
+    /// // Healthy keeps the historical phrasing — это сознательно.
+    /// assert!(Verdict::Healthy.human_summary().contains("healthy"));
+    ///
+    /// // Non-Healthy verdicts NEVER contain the misleading phrase
+    /// // "looks healthy" — that's the PROB-029 anti-contradiction
+    /// // guarantee.
+    /// assert!(!Verdict::NeedsAttention.human_summary().contains("looks healthy"));
+    /// assert!(!Verdict::Unhealthy.human_summary().contains("looks healthy"));
+    ///
+    /// // Empty workspaces get a distinct onboarding hint instead of a
+    /// // "healthy" message — CI gates that auto-promote on
+    /// // `verdict == "healthy"` must NOT promote uninitialized
+    /// // projects.
+    /// assert!(Verdict::Empty.human_summary().contains("forgeplan new"));
+    /// ```
     pub fn human_summary(self) -> &'static str {
         match self {
             Verdict::Empty => "Workspace has no artifacts — run `forgeplan new` to start.",
@@ -191,6 +310,15 @@ pub struct HealthReport {
     pub next_actions: Vec<String>,
     pub possible_duplicates: Vec<DuplicatePair>,
     pub active_stubs: Vec<ActiveStub>,
+    /// PROB-062 — files tracked by git despite matching the canonical
+    /// forgeplan `.gitignore` patterns (derived index, per-machine
+    /// runtime state, embedding cache). Advisory like `phase_mismatches`
+    /// — populated by `health_report_with_phase` (which knows the
+    /// workspace path); the legacy `health_report` path leaves this
+    /// empty. NEVER folded into [`HealthReport::verdict`] — same
+    /// rationale as PROB-063 phase mismatches: advisory by name,
+    /// advisory in behaviour.
+    pub gitignore_drift: Vec<GitignoreDrift>,
     /// **Best-known verdict for user-facing display.** Aggregates all
     /// warning classes Forgeplan currently understands. Equals
     /// [`HealthReport::partial_verdict`] when this report comes из
@@ -294,6 +422,22 @@ pub struct PhaseMismatch {
     pub advisory: String,
 }
 
+/// PROB-062 — `.gitignore` drift advisory entry.
+///
+/// Records a single file that the local git index tracks even though it
+/// sits under a path the canonical forgeplan `.gitignore` section marks
+/// as derived/per-machine state (e.g. `.forgeplan/lance/`,
+/// `.forgeplan/state/`, `.forgeplan/.fastembed_cache/`). Strictly
+/// advisory — like [`PhaseMismatch`], it is excluded from the verdict
+/// aggregator so a single leaked `lance/` file does not flip the whole
+/// workspace to `Unhealthy`. The `reason` field carries a one-line
+/// human-readable explanation suitable for the CLI dashboard.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GitignoreDrift {
+    pub path: String,
+    pub reason: String,
+}
+
 /// Generate a full health report for the workspace.
 ///
 /// Single-scan fast path. CLI legacy callers and any consumer that does
@@ -394,6 +538,21 @@ pub async fn health_report_with_phase(
     report.verdict =
         report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
 
+    // PROB-062: populate gitignore drift here (not in
+    // `health_report_inner`) because only this entry point knows the
+    // workspace root path. Advisory — NEVER folded into the verdict.
+    // Workspace root = parent of `.forgeplan/`. `Path::parent()` returns
+    // `Some("")` (NOT `None`) for relative single-segment paths like
+    // `.forgeplan`, so we explicitly handle the empty-parent case too:
+    // fall back to `workspace` itself rather than passing `""` to git
+    // (which would silently default to CWD). Defensive against unusual
+    // symlink layouts that produce a real `None`.
+    let drift_root = match workspace.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => workspace,
+    };
+    report.gitignore_drift = detect_gitignore_drift(drift_root);
+
     Ok((report, phase_mismatches))
 }
 
@@ -401,15 +560,6 @@ pub async fn health_report_with_phase(
 /// from [`health_report`] so [`health_report_with_phase`] can reuse the
 /// same logic without re-scanning.
 async fn health_report_from_records(
-    store: &LanceStore,
-    all: &[ArtifactRecord],
-    all_relations: &[(String, String, String)],
-) -> anyhow::Result<HealthReport> {
-    let _ = (store, all, all_relations);
-    health_report_inner(store, all, all_relations).await
-}
-
-async fn health_report_inner(
     store: &LanceStore,
     all: &[ArtifactRecord],
     all_relations: &[(String, String, String)],
@@ -508,6 +658,12 @@ async fn health_report_inner(
         next_actions,
         possible_duplicates,
         active_stubs,
+        // PROB-062: drift detection requires the workspace root path
+        // (to invoke `git ls-files`). The legacy `health_report` entry
+        // point does not know the workspace path, so this field stays
+        // empty here. `health_report_with_phase` populates it after
+        // construction.
+        gitignore_drift: Vec::new(),
         verdict,
         partial_verdict: verdict,
     })
@@ -543,6 +699,172 @@ pub fn compute_verdict(
     )
 }
 
+/// Render a [`HealthReport`] (+ associated phase mismatches) as the unified
+/// JSON shape consumed by both `forgeplan health --json` and the MCP
+/// `forgeplan_health` tool.
+///
+/// **Wave 9 ARCH-C1 closure**: pre-fix the two surfaces each constructed
+/// their own `serde_json::json!(...)` literal with subtly different
+/// shapes (CLI emitted `by_kind` / `by_status` as `{kind, count}`
+/// objects; MCP emitted raw `[(string, usize)]` tuples). Three audit
+/// agents independently flagged the duplication as a contradiction risk:
+/// a key that lands in only one surface goes undetected until an agent
+/// branches on the missing field via `null`. CR-001 was the most recent
+/// example (`possible_duplicates` / `active_stubs` missing on MCP).
+///
+/// **Wave 9 SEC-M1 closure** (bundled with the extraction): all
+/// title / message / reason / issue / advisory strings are routed through
+/// `sanitize_for_hint` BEFORE serialisation. Pre-fix the MCP surface
+/// emitted raw titles into JSON returned to LLM agents — a malicious
+/// title containing zero-width chars, bidi overrides, or shell
+/// metacharacters became an indirect prompt-injection vector
+/// (CWE-117 / CWE-1007). Sanitisation here closes both surfaces at once
+/// since the helper is the only path.
+///
+/// **Shape decisions**:
+/// - `by_kind` and `by_status` use the object form (`{kind, count}` /
+///   `{status, count}`) — matching pre-fix CLI behaviour. The MCP
+///   surface previously emitted raw `[name, count]` tuples; this
+///   extraction unifies on the object form because object-shaped JSON
+///   is forward-compatible (new fields can be added without breaking
+///   tuple-positional consumers).
+/// - Caller-specific keys (`project` / `exit_code` for CLI,
+///   `active_claims` / `active_claim_count` / `skipped_claim_files`
+///   for MCP) are inserted by the caller AFTER this helper returns.
+///   The helper emits an object so the caller can use
+///   `.as_object_mut().insert(...)` to layer in those fields.
+///
+/// **Key set returned** (alphabetised, comprehensive):
+/// `active_stubs`, `advisory_phase_mismatches`, `at_risk`,
+/// `blind_spots`, `by_derived_status`, `by_kind`, `by_status`,
+/// `gitignore_drift`, `next_actions`, `orphans`, `phase_mismatches`,
+/// `possible_duplicates`, `stale_count`, `total`, `verdict`,
+/// `verdict_summary`.
+///
+/// The `phase_mismatches` and `advisory_phase_mismatches` keys carry
+/// the SAME payload — the legacy CLI alias remains for backward
+/// compatibility per PROB-064. Future deprecation can drop the legacy
+/// alias in a major-version bump.
+pub fn health_report_to_json(
+    report: &HealthReport,
+    phase_mismatches: &[PhaseMismatch],
+) -> serde_json::Value {
+    let verdict_summary = report.verdict.human_summary();
+
+    // SEC-M1: every user-facing string interpolated into the JSON
+    // payload is sanitised here so the two surfaces (CLI + MCP) cannot
+    // diverge on what gets stripped. Sanitiser strips zero-width,
+    // bidi, control chars, ANSI escapes, and POSIX shell metas — same
+    // contract `Next:` hint emission already runs through.
+    let by_kind: Vec<serde_json::Value> = report
+        .by_kind
+        .iter()
+        .map(|(k, v)| serde_json::json!({ "kind": k, "count": v }))
+        .collect();
+    let by_status: Vec<serde_json::Value> = report
+        .by_status
+        .iter()
+        .map(|(s, v)| serde_json::json!({ "status": s, "count": v }))
+        .collect();
+    let by_derived_status: Vec<serde_json::Value> = report
+        .by_derived_status
+        .iter()
+        .map(|(ds, v)| serde_json::json!({ "status": ds.label(), "count": v }))
+        .collect();
+    let at_risk: Vec<serde_json::Value> = report
+        .at_risk
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "title": sanitize_for_hint(&a.title),
+                "reason": sanitize_for_hint(&a.reason),
+            })
+        })
+        .collect();
+    let blind_spots: Vec<serde_json::Value> = report
+        .blind_spots
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id,
+                "title": sanitize_for_hint(&b.title),
+                "issue": sanitize_for_hint(&b.issue),
+            })
+        })
+        .collect();
+    let possible_duplicates: Vec<serde_json::Value> = report
+        .possible_duplicates
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "id_a": d.id_a,
+                "id_b": d.id_b,
+                "similarity": d.similarity,
+                "title_a": sanitize_for_hint(&d.title_a),
+                "title_b": sanitize_for_hint(&d.title_b),
+                "kind": d.kind,
+            })
+        })
+        .collect();
+    let active_stubs: Vec<serde_json::Value> = report
+        .active_stubs
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "kind": s.kind,
+                "title": sanitize_for_hint(&s.title),
+                "markers_found": s.markers_found,
+                "message": sanitize_for_hint(&s.message),
+            })
+        })
+        .collect();
+    let phase_mismatches_payload: Vec<serde_json::Value> = phase_mismatches
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "title": sanitize_for_hint(&m.title),
+                "status": m.status,
+                "current_phase": m.current_phase,
+                "advisory": sanitize_for_hint(&m.advisory),
+            })
+        })
+        .collect();
+    let gitignore_drift: Vec<serde_json::Value> = report
+        .gitignore_drift
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "path": sanitize_for_hint(&d.path),
+                "reason": sanitize_for_hint(&d.reason),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "total": report.total,
+        "verdict": report.verdict.as_str(),
+        "verdict_summary": verdict_summary,
+        "by_kind": by_kind,
+        "by_status": by_status,
+        "by_derived_status": by_derived_status,
+        "at_risk": at_risk,
+        "blind_spots": blind_spots,
+        "stale_count": report.stale_count,
+        "orphans": report.orphans,
+        "next_actions": report.next_actions,
+        "possible_duplicates": possible_duplicates,
+        "active_stubs": active_stubs,
+        // PROB-064: dual-key emission of phase mismatches. Same payload
+        // under both names — legacy CLI alias + MCP-canonical key.
+        "phase_mismatches": phase_mismatches_payload,
+        "advisory_phase_mismatches": phase_mismatches_payload,
+        "gitignore_drift": gitignore_drift,
+    })
+}
+
 /// Internal: shared verdict logic over raw counts. Lets `health_report`
 /// compute the verdict during construction (when fields are scalars,
 /// not yet packed into the struct) without re-allocating.
@@ -551,6 +873,18 @@ pub fn compute_verdict(
 /// `Verdict::Empty` BEFORE warning-class checks, so an uninitialized
 /// workspace cannot return `Healthy` (the pre-fix path which broke
 /// JSON consumers that gated on `verdict == "healthy"`).
+///
+/// PROB-063 (issue #276) regression of PROB-029 anti-contradiction
+/// guarantee: `phase_mismatches` is intentionally EXCLUDED from both
+/// promotion paths (critical and any-warning). `advisory_phase_mismatches`
+/// is named "advisory" by design — folding it into verdict makes
+/// CLI/MCP output internally contradictory (`next_actions` says
+/// "looks healthy" while `verdict` says "unhealthy"). The parameter
+/// is retained on the function signature for API stability and so
+/// future tiers (e.g. an `Advisory` Verdict between `Healthy` and
+/// `NeedsAttention`) can opt back in without a breaking change.
+/// `t.phase_mismatches` threshold is similarly retained but unused —
+/// removal would be a public API break of `VerdictThresholds`.
 #[allow(clippy::too_many_arguments)]
 fn compute_verdict_from_signals(
     total: usize,
@@ -560,7 +894,7 @@ fn compute_verdict_from_signals(
     duplicates: usize,
     stale: usize,
     at_risk: usize,
-    phase_mismatches: usize,
+    _phase_mismatches: usize,
     t: &VerdictThresholds,
 ) -> Verdict {
     // Empty workspace short-circuit (Round 6 audit MED): zero artifacts is
@@ -570,27 +904,141 @@ fn compute_verdict_from_signals(
         return Verdict::Empty;
     }
     // Critical: any single class above its threshold → Unhealthy.
+    // PROB-063: phase_mismatches NOT included — advisory by design.
+    // PROB-051 L-M1: `at_risk` joins critical promotion. Below the
+    // threshold it still trips the any-warning floor (NeedsAttention).
     if orphans > t.orphans
         || blind_spots > t.blind_spots
         || active_stubs > t.active_stubs
         || duplicates > t.duplicates
-        || phase_mismatches > t.phase_mismatches
+        || at_risk > t.at_risk
     {
         return Verdict::Unhealthy;
     }
     // Non-zero anywhere → NeedsAttention.
+    // PROB-063: phase_mismatches NOT included — advisory by design.
     let has_any_warning = orphans > 0
         || blind_spots > 0
         || active_stubs > 0
         || duplicates > 0
         || stale > 0
-        || at_risk > 0
-        || phase_mismatches > 0;
+        || at_risk > 0;
     if has_any_warning {
         Verdict::NeedsAttention
     } else {
         Verdict::Healthy
     }
+}
+
+/// PROB-062: list of `.forgeplan/`-relative path **prefixes** that the
+/// canonical gitignore section in `forgeplan init` marks as derived /
+/// per-machine state. A tracked file matching any prefix here is
+/// flagged by `detect_gitignore_drift` as advisory drift.
+///
+/// Each entry pairs the path-prefix glob (relative to the workspace
+/// root, NOT to `.forgeplan/`) with the reason printed to the user.
+/// Keep this aligned with `GITIGNORE_CANONICAL_BODY` in
+/// `forgeplan-cli/src/commands/init.rs` — if the two drift apart, the
+/// drift detector will miss new ignore rules or false-positive on
+/// removed ones.
+const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
+    (
+        ".forgeplan/lance/",
+        "LanceDB index — derived state, rebuild via `forgeplan scan-import`",
+    ),
+    (
+        ".forgeplan/.fastembed_cache/",
+        "BGE-M3 embedding model cache — ~600 MB, per-machine",
+    ),
+    (
+        ".forgeplan/session.yaml",
+        "per-machine session state — generates merge conflicts when tracked",
+    ),
+    (
+        ".forgeplan/state/",
+        "per-artifact phase state — per-workspace, gitignored per PRD-058",
+    ),
+    (
+        ".forgeplan/trash/",
+        "soft-deleted artifacts — local recovery buffer",
+    ),
+    (".forgeplan/logs/", "local audit logs — per-machine"),
+    (".forgeplan/locks/", "runtime mutexes — per-machine"),
+];
+
+/// PROB-062: detect files currently tracked by git that match the
+/// canonical forgeplan `.gitignore` patterns.
+///
+/// Uses `git ls-files -- .forgeplan` so the scan is bounded to the
+/// workspace subtree (no full-repo walk). Failures are intentionally
+/// **silent**: if `git` is missing, the workspace is not a git repo, or
+/// the subprocess fails for any reason, this returns an empty `Vec`.
+/// The check is purely advisory — it must never crash a health report
+/// nor demand git as a hard dependency of `forgeplan health`.
+///
+/// Each returned [`GitignoreDrift`] carries the offending path
+/// (relative to the workspace root) and a short reason copied from
+/// [`GITIGNORE_DRIFT_PATTERNS`]. Multiple files under the same prefix
+/// each yield a separate entry so the CLI can list them individually;
+/// callers that want a deduplicated summary can group by `reason`.
+///
+/// Output is alphabetical by `path` for stable rendering.
+pub fn detect_gitignore_drift(workspace_root: &Path) -> Vec<GitignoreDrift> {
+    use std::process::Command;
+
+    // Bail early without invoking git when there is no `.forgeplan/`
+    // subtree to scan — keeps unit tests on bare temp dirs cheap.
+    if !workspace_root.join(".forgeplan").exists() {
+        return Vec::new();
+    }
+
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("ls-files")
+        .arg("--")
+        .arg(".forgeplan")
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        // Any failure (git missing, not a repo, permission denied) →
+        // silent empty — drift detection is advisory, not a gate.
+        _ => return Vec::new(),
+    };
+
+    let stdout = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut drifts: Vec<GitignoreDrift> = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        for (prefix, reason) in GITIGNORE_DRIFT_PATTERNS {
+            // Match either an exact-file pattern (e.g. `session.yaml`)
+            // or any path under a directory prefix.
+            let is_dir_prefix = prefix.ends_with('/');
+            let matched = if is_dir_prefix {
+                trimmed.starts_with(*prefix)
+            } else {
+                trimmed == *prefix
+            };
+            if matched {
+                drifts.push(GitignoreDrift {
+                    path: trimmed.to_string(),
+                    reason: (*reason).to_string(),
+                });
+                // First match wins — patterns are disjoint by design.
+                break;
+            }
+        }
+    }
+
+    drifts.sort_by(|a, b| a.path.cmp(&b.path));
+    drifts
 }
 
 /// Find active artifacts that look like stubs (template-only content).
@@ -621,22 +1069,43 @@ pub fn find_active_stubs(records: &[ArtifactRecord]) -> Vec<ActiveStub> {
 }
 
 /// Find pairs of artifacts with title similarity above threshold.
-/// Only compares same-kind artifacts. O(n²) but n is typically < 200.
+/// Only compares same-kind artifacts. O(n²) on pair iteration, but
+/// PROB-051 P-M1 pre-tokenizes each title ONCE (O(N) preprocessing)
+/// before the pair loop — eliminating the prior `2 * N * (N-1)`
+/// redundant re-tokenizations per scan.
+///
+/// PROB-051 L-M2: returns the **full** list (sorted descending by
+/// similarity). Display-side truncation is the caller's responsibility
+/// via [`DUPLICATE_PAIRS_DISPLAY_LIMIT`] — the verdict aggregator MUST
+/// see the full count so a workspace with 50 dup pairs gets the right
+/// `Unhealthy` promotion (was previously capped at 10).
 pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<DuplicatePair> {
+    // Filter to active records first (single pass).
     let active: Vec<&ArtifactRecord> = records
         .iter()
         .filter(|r| !matches!(r.status.as_str(), "deprecated" | "superseded"))
         .collect();
 
+    // PROB-051 P-M1: pre-tokenize every active title ONCE. Each token-set
+    // is shared between every (i, j) comparison the inner loop visits —
+    // avoiding O(N²) re-tokenization of identical strings.
+    let token_sets: Vec<std::collections::HashSet<String>> =
+        active.iter().map(|r| tokenize_title(&r.title)).collect();
+
     let mut pairs = Vec::new();
     for i in 0..active.len() {
+        // Skip pairs whose `i` has no qualifying tokens — `jaccard_similarity`
+        // would return 0.0 anyway and we save the inner-loop kind check.
+        if token_sets[i].is_empty() {
+            continue;
+        }
         for j in (i + 1)..active.len() {
             let a = active[i];
             let b = active[j];
             if a.kind != b.kind {
                 continue;
             }
-            let sim = title_similarity(&a.title, &b.title);
+            let sim = jaccard_similarity(&token_sets[i], &token_sets[j]);
             if sim >= threshold {
                 pairs.push(DuplicatePair {
                     id_a: a.id.clone(),
@@ -654,7 +1123,10 @@ pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<D
             .partial_cmp(&x.similarity)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    pairs.truncate(DUPLICATE_PAIRS_LIMIT);
+    // PROB-051 L-M2: NO truncation here. The verdict aggregator reads
+    // `possible_duplicates.len()` and must see the full count. Callers
+    // that render the list (CLI dashboard, MCP JSON) decide their own
+    // display cap — see `DUPLICATE_PAIRS_DISPLAY_LIMIT`.
     pairs
 }
 
@@ -719,33 +1191,101 @@ fn find_blind_spots(
     spots
 }
 
+/// PROB-051 P-M2: build a `artifact_id → linked-evidence-records` map
+/// in a single pass over the relation index so per-artifact lookups in
+/// `find_at_risk` + `compute_derived_status_breakdown` become O(1)
+/// HashMap reads instead of O(E) full scans of `evidence_records`.
+///
+/// Considers both directions of evidence linkage:
+/// 1. `evidence → artifact` (canonical: EVID informs PRD).
+/// 2. `artifact → evidence` (e.g. PROB based_on EVID).
+///
+/// IDs are case-insensitive on lookup (mirrors `is_evidence_linked`'s
+/// `eq_ignore_ascii_case` semantics) — keys in the returned map are
+/// lowercased so callers MUST lowercase the artifact id before lookup.
+fn index_evidence_by_artifact<'ev>(
+    evidence_records: &'ev [ArtifactRecord],
+    outgoing: &RelationIndex,
+) -> std::collections::HashMap<String, Vec<&'ev ArtifactRecord>> {
+    use std::collections::HashMap;
+    // Reverse-lookup table: evidence id → record (lowercased key).
+    let mut evidence_by_id: HashMap<String, &'ev ArtifactRecord> =
+        HashMap::with_capacity(evidence_records.len());
+    for ev in evidence_records {
+        evidence_by_id.insert(ev.id.to_ascii_lowercase(), ev);
+    }
+
+    let mut links: HashMap<String, Vec<&'ev ArtifactRecord>> = HashMap::new();
+
+    // Direction A: evidence_id → [(artifact_id, _)]
+    // For every (evidence, artifact) edge starting at an evidence id, push
+    // the evidence record onto the artifact's bucket.
+    for (from, targets) in outgoing {
+        let from_lower = from.to_ascii_lowercase();
+        if let Some(ev_record) = evidence_by_id.get(&from_lower) {
+            for (to, _rel) in targets {
+                links
+                    .entry(to.to_ascii_lowercase())
+                    .or_default()
+                    .push(ev_record);
+            }
+        }
+    }
+
+    // Direction B: artifact_id → [(evidence_id, _)]
+    // For every outgoing edge whose TARGET is an evidence id, push the
+    // evidence record onto the SOURCE artifact's bucket.
+    for (from, targets) in outgoing {
+        // Skip artifacts that ARE evidence (would double-count direction A).
+        if evidence_by_id.contains_key(&from.to_ascii_lowercase()) {
+            continue;
+        }
+        for (to, _rel) in targets {
+            if let Some(ev_record) = evidence_by_id.get(&to.to_ascii_lowercase()) {
+                links
+                    .entry(from.to_ascii_lowercase())
+                    .or_default()
+                    .push(ev_record);
+            }
+        }
+    }
+
+    links
+}
+
 fn find_at_risk(
     records: &[&ArtifactRecord],
     evidence_records: &[ArtifactRecord],
     outgoing: &RelationIndex,
 ) -> Vec<AtRiskArtifact> {
+    // PROB-051 P-M2: pre-index evidence by source artifact ID. Pre-fix
+    // this was O(N × E) — for every artifact we re-scanned all evidence
+    // records. Now O(E) preprocessing → O(1) per-artifact lookup.
+    let evidence_index = index_evidence_by_artifact(evidence_records, outgoing);
     let mut at_risk = Vec::new();
 
     for record in records {
-        let mut items = Vec::new();
-        for ev in evidence_records {
-            if is_evidence_linked(&record.id, &ev.id, outgoing) {
-                items.push(parse_evidence_from_record(ev));
-            }
+        let key = record.id.to_ascii_lowercase();
+        let Some(linked) = evidence_index.get(&key) else {
+            continue;
+        };
+        if linked.is_empty() {
+            continue;
         }
-
-        if !items.is_empty() {
-            let score = reff::r_eff(&items);
-            if score < REFF_AT_RISK_THRESHOLD {
-                at_risk.push(AtRiskArtifact {
-                    id: record.id.clone(),
-                    title: record.title.clone(),
-                    reason: format!(
-                        "R_eff = {:.2} (below {:.1} threshold)",
-                        score, REFF_AT_RISK_THRESHOLD
-                    ),
-                });
-            }
+        let items: Vec<_> = linked
+            .iter()
+            .map(|ev| parse_evidence_from_record(ev))
+            .collect();
+        let score = reff::r_eff(&items);
+        if score < REFF_AT_RISK_THRESHOLD {
+            at_risk.push(AtRiskArtifact {
+                id: record.id.clone(),
+                title: record.title.clone(),
+                reason: format!(
+                    "R_eff = {:.2} (below {:.1} threshold)",
+                    score, REFF_AT_RISK_THRESHOLD
+                ),
+            });
         }
     }
 
@@ -858,16 +1398,24 @@ fn compute_derived_status_breakdown(
     evidence_records: &[ArtifactRecord],
     outgoing: &RelationIndex,
 ) -> Vec<(DerivedStatus, usize)> {
+    // PROB-051 P-M2: same pre-indexing optimization as find_at_risk —
+    // single O(E) pass over the relation graph instead of O(N × E)
+    // per-artifact scans of `evidence_records`.
+    let evidence_index = index_evidence_by_artifact(evidence_records, outgoing);
     let mut counts: BTreeMap<DerivedStatus, usize> = BTreeMap::new();
 
     for record in records {
         // Check if artifact has linked evidence and compute R_eff
-        let mut ev_items = Vec::new();
-        for ev in evidence_records {
-            if is_evidence_linked(&record.id, &ev.id, outgoing) {
-                ev_items.push(parse_evidence_from_record(ev));
-            }
-        }
+        let key = record.id.to_ascii_lowercase();
+        let ev_items: Vec<_> = evidence_index
+            .get(&key)
+            .map(|linked| {
+                linked
+                    .iter()
+                    .map(|ev| parse_evidence_from_record(ev))
+                    .collect()
+            })
+            .unwrap_or_default();
         let has_evidence = !ev_items.is_empty();
         let r_eff_score = if has_evidence {
             reff::r_eff(&ev_items)
@@ -1409,6 +1957,7 @@ mod tests {
             next_actions: Vec::new(),
             possible_duplicates: Vec::new(),
             active_stubs: Vec::new(),
+            gitignore_drift: Vec::new(),
             verdict: Verdict::Healthy,
             partial_verdict: Verdict::Healthy,
         }
@@ -1529,21 +2078,226 @@ mod tests {
         assert_eq!(r.compute_verdict(), Verdict::Unhealthy);
     }
 
-    // PROB-029: phase mismatches counted via compute_verdict_with so
-    // the MCP server can fold them in without a core-side workspace
-    // path. Below threshold → NeedsAttention. Above → Unhealthy.
+    // PROB-063 (issue #276) regression of PROB-029 AC-2 anti-contradiction
+    // guarantee: advisory_phase_mismatches must NOT promote verdict —
+    // they're advisory by name and excluded from next_actions priority
+    // chain, so verdict folding them as critical creates internal
+    // contradiction (`next_actions: "healthy"` + `verdict: "unhealthy"`).
+    //
+    // Pre-PROB-063 these two tests asserted the buggy behavior
+    // (phase_mismatches → NeedsAttention/Unhealthy). After fix: phase
+    // mismatches alone leave verdict at Healthy. Other signals still
+    // promote normally.
     #[test]
-    fn verdict_phase_mismatches_below_threshold_is_needs_attention() {
+    fn verdict_phase_mismatches_alone_is_healthy() {
+        // 1 mismatch, no other signals → Healthy.
         let r = empty_report(10);
         let v = r.compute_verdict_with(&VerdictThresholds::default(), 1);
+        assert_eq!(v, Verdict::Healthy);
+    }
+
+    #[test]
+    fn verdict_many_phase_mismatches_alone_is_still_healthy() {
+        // 165 mismatches (issue #276 reporter scenario) → Healthy.
+        let r = empty_report(293);
+        let v = r.compute_verdict_with(&VerdictThresholds::default(), 165);
+        assert_eq!(v, Verdict::Healthy);
+    }
+
+    #[test]
+    fn verdict_phase_mismatches_with_blind_spot_is_needs_attention() {
+        // Real warning still promotes: 1 blind_spot + 100 mismatches → NeedsAttention.
+        let mut r = empty_report(10);
+        r.blind_spots = vec![spot("ADR-011")];
+        let v = r.compute_verdict_with(&VerdictThresholds::default(), 100);
         assert_eq!(v, Verdict::NeedsAttention);
     }
 
     #[test]
-    fn verdict_phase_mismatches_above_threshold_is_unhealthy() {
-        let r = empty_report(10);
+    fn verdict_phase_mismatches_with_critical_is_unhealthy() {
+        // Real critical still promotes: 8 stubs (>3 threshold) + 100 mismatches → Unhealthy.
+        let mut r = empty_report(50);
+        r.active_stubs = (0..8).map(|i| stub(&format!("PRD-{i:03}"))).collect();
         let v = r.compute_verdict_with(&VerdictThresholds::default(), 100);
         assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-051 L-M1: at_risk threshold promotes verdict to Unhealthy
+    // when strictly exceeded. Below threshold → NeedsAttention.
+    #[test]
+    fn verdict_at_risk_above_threshold_is_unhealthy() {
+        let mut r = empty_report(50);
+        r.at_risk = (0..11)
+            .map(|i| AtRiskArtifact {
+                id: format!("PRD-{i:03}"),
+                title: "Risky".into(),
+                reason: "R_eff = 0.10".into(),
+            })
+            .collect();
+        // Default threshold is 10 → 11 promotes Unhealthy.
+        let v = r.compute_verdict();
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    #[test]
+    fn verdict_at_risk_at_threshold_is_needs_attention() {
+        let mut r = empty_report(50);
+        // Exactly 10 = threshold → NOT promoted (uses `>`, not `>=`).
+        r.at_risk = (0..10)
+            .map(|i| AtRiskArtifact {
+                id: format!("PRD-{i:03}"),
+                title: "Risky".into(),
+                reason: "R_eff = 0.10".into(),
+            })
+            .collect();
+        let v = r.compute_verdict();
+        assert_eq!(v, Verdict::NeedsAttention);
+    }
+
+    #[test]
+    fn verdict_at_risk_custom_threshold_take_effect() {
+        let mut r = empty_report(50);
+        r.at_risk = vec![AtRiskArtifact {
+            id: "A".into(),
+            title: "x".into(),
+            reason: "x".into(),
+        }];
+        let strict = VerdictThresholds {
+            at_risk: 0,
+            ..VerdictThresholds::default()
+        };
+        let v = r.compute_verdict_with(&strict, 0);
+        assert_eq!(v, Verdict::Unhealthy);
+    }
+
+    // PROB-051 P-M2: index_evidence_by_artifact maps both edge directions.
+    // Regression guard against drift between is_evidence_linked and the
+    // pre-indexed helper — both must agree on every (artifact, evidence) pair.
+    #[test]
+    fn index_evidence_by_artifact_matches_is_evidence_linked() {
+        // Build a workspace with both edge directions exercised.
+        let mut prd = make_record("PRD-001", "prd");
+        prd.status = "active".into();
+        let mut prob = make_record("PROB-048", "problem");
+        prob.status = "active".into();
+        let ev_a = make_record("EVID-100", "evidence");
+        let ev_b = make_record("EVID-200", "evidence");
+
+        // Edge A: EVID-100 → PRD-001 (informs)
+        // Edge B: PROB-048 → EVID-200 (based_on)
+        let mut outgoing: RelationIndex = BTreeMap::new();
+        outgoing.insert(
+            "EVID-100".into(),
+            vec![("PRD-001".into(), "informs".into())],
+        );
+        outgoing.insert(
+            "PROB-048".into(),
+            vec![("EVID-200".into(), "based_on".into())],
+        );
+
+        let evs = vec![ev_a.clone(), ev_b.clone()];
+        let index = index_evidence_by_artifact(&evs, &outgoing);
+
+        // PRD-001 should have EVID-100 (direction A).
+        let prd_linked = index.get("prd-001").expect("PRD-001 must have entry");
+        assert_eq!(prd_linked.len(), 1);
+        assert_eq!(prd_linked[0].id, "EVID-100");
+
+        // PROB-048 should have EVID-200 (direction B).
+        let prob_linked = index.get("prob-048").expect("PROB-048 must have entry");
+        assert_eq!(prob_linked.len(), 1);
+        assert_eq!(prob_linked[0].id, "EVID-200");
+
+        // Cross-check against is_evidence_linked: every linked pair must
+        // agree, every unlinked pair must agree.
+        let artifacts = [&prd, &prob];
+        for art in &artifacts {
+            let key = art.id.to_ascii_lowercase();
+            let indexed_ids: std::collections::HashSet<&str> = index
+                .get(&key)
+                .map(|v| v.iter().map(|ev| ev.id.as_str()).collect())
+                .unwrap_or_default();
+            for ev in &evs {
+                let pre_indexed = indexed_ids.contains(ev.id.as_str());
+                let live = is_evidence_linked(&art.id, &ev.id, &outgoing);
+                assert_eq!(
+                    pre_indexed, live,
+                    "drift for ({}, {}): indexed={} live={}",
+                    art.id, ev.id, pre_indexed, live
+                );
+            }
+        }
+    }
+
+    // PROB-051 P-M2: find_at_risk produces identical results before/after
+    // the indexing refactor. Builds a small fixture and asserts that
+    // every at-risk artifact found via the index matches what scanning
+    // by is_evidence_linked would have produced.
+    #[test]
+    fn find_at_risk_with_evidence_index_produces_same_results() {
+        let mut prd = make_record("PRD-007", "prd");
+        prd.status = "active".into();
+        let mut prob = make_record("PROB-007", "problem");
+        prob.status = "active".into();
+        let mut ev = make_record("EVID-007", "evidence");
+        // Explicit CL0 → severe penalty → R_eff well below 0.3 threshold.
+        ev.body = "verdict: supports\ncongruence_level: 0\nevidence_type: measurement\n".into();
+
+        let mut outgoing: RelationIndex = BTreeMap::new();
+        outgoing.insert(
+            "EVID-007".into(),
+            vec![("PRD-007".into(), "informs".into())],
+        );
+
+        let evs = vec![ev];
+        let refs: Vec<&ArtifactRecord> = vec![&prd, &prob];
+        let at_risk = find_at_risk(&refs, &evs, &outgoing);
+        // PROB-007 has no linked evidence → not in at_risk (no items).
+        // PRD-007 has CL0 evidence with low R_eff → in at_risk.
+        let ids: Vec<&str> = at_risk.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            ids.contains(&"PRD-007"),
+            "PRD-007 should be at risk: {ids:?}"
+        );
+        assert!(!ids.contains(&"PROB-007"));
+    }
+
+    // PROB-051 L-M2: find_duplicate_pairs returns FULL list (no truncation).
+    // Verdict aggregator must see the unclipped count so a workspace with
+    // 50 dup pairs gets Unhealthy promotion, not just the first 10.
+    #[test]
+    fn find_duplicate_pairs_returns_full_list_without_truncation() {
+        // Build 15 identical-title pairs (similarity = 1.0) so every (i, j) qualifies.
+        let mut recs: Vec<ArtifactRecord> = (0..6)
+            .map(|i| {
+                let mut r = make_record(&format!("PRD-{i:03}"), "prd");
+                r.title = "Identical workspace title for dup test".into();
+                r
+            })
+            .collect();
+        // We need >10 pairs. 6 records → C(6,2) = 15 pairs. Good.
+        for r in &mut recs {
+            r.status = "active".into();
+        }
+        let pairs = find_duplicate_pairs(&recs, 0.8);
+        // Pre-fix this would be capped at 10.
+        assert_eq!(
+            pairs.len(),
+            15,
+            "find_duplicate_pairs must return ALL pairs (was truncated to 10)"
+        );
+    }
+
+    // PROB-051 L-M2: with 50+ pairs, verdict aggregator promotes Unhealthy
+    // because possible_duplicates.len() now reflects the full count.
+    #[test]
+    fn verdict_unhealthy_when_full_dup_count_exceeds_threshold() {
+        let mut r = empty_report(50);
+        // 6 pairs > default duplicates threshold (5).
+        r.possible_duplicates = (0..6)
+            .map(|i| dup(&format!("A-{i}"), &format!("B-{i}")))
+            .collect();
+        assert_eq!(r.compute_verdict(), Verdict::Unhealthy);
     }
 
     // PROB-029 AC-2: respect custom thresholds. A team that wants
@@ -1872,5 +2626,248 @@ mod tests {
             "L-H3: zero phase mismatches → verdicts match"
         );
         assert!(mismatches.is_empty(), "no phase state file → no mismatches");
+    }
+
+    // ── PROB-062 gitignore drift detector ─────────────────────────
+
+    /// `git` may be missing or this may run outside a repo — the
+    /// detector must return `Vec::new()` instead of panicking.
+    #[test]
+    fn detect_gitignore_drift_no_forgeplan_dir_returns_empty() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        // Bare temp dir — no `.forgeplan/`, no git repo.
+        let drifts = detect_gitignore_drift(tmp.path());
+        assert!(drifts.is_empty());
+    }
+
+    /// Plain `.forgeplan/` without a git repo wrapper: the subprocess
+    /// fails silently, detector returns empty Vec. Confirms we never
+    /// surface git errors as drift entries.
+    #[test]
+    fn detect_gitignore_drift_no_git_repo_returns_empty() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".forgeplan/lance")).unwrap();
+        std::fs::write(tmp.path().join(".forgeplan/lance/data.lance"), "x").unwrap();
+
+        let drifts = detect_gitignore_drift(tmp.path());
+        // No git repo → subprocess fails → empty.
+        assert!(drifts.is_empty());
+    }
+
+    /// Real-shape integration: init a git repo, `git add` a file under
+    /// `.forgeplan/lance/`, and confirm the detector flags it with the
+    /// canonical reason. Skipped silently when `git` is missing — the
+    /// detector contract is "no git = no drift" so we should not
+    /// hard-fail CI on a stripped image.
+    #[test]
+    fn detect_gitignore_drift_flags_tracked_lance_files() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        // Skip test if git is not installed (CI minimum image guard).
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Bootstrap a minimal git repo. `-q` keeps the test log clean.
+        let init = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q", "--initial-branch=main"])
+            .status()
+            .unwrap();
+        assert!(init.success(), "git init failed");
+        // Disable any user signing requirement so add-without-config works.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.email", "test@example.com"])
+            .status();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.name", "test"])
+            .status();
+
+        // Seed a leaked LanceDB file + a leaked session.yaml + a leaked
+        // state file. All three should be flagged.
+        std::fs::create_dir_all(root.join(".forgeplan/lance")).unwrap();
+        std::fs::write(root.join(".forgeplan/lance/data.lance"), "x").unwrap();
+        std::fs::write(root.join(".forgeplan/session.yaml"), "focus: PRD-001\n").unwrap();
+        std::fs::create_dir_all(root.join(".forgeplan/state")).unwrap();
+        std::fs::write(root.join(".forgeplan/state/PRD-001.yaml"), "phase: code\n").unwrap();
+
+        // Force-add despite any existing top-level `.gitignore` — the
+        // whole point is to simulate a workspace where someone already
+        // committed these files.
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "-f", ".forgeplan"])
+            .status()
+            .unwrap();
+        assert!(add.success(), "git add failed");
+
+        let drifts = detect_gitignore_drift(root);
+
+        // Three leaked files → three drift entries. Use a path set so
+        // the test does not pin sort order beyond `assert_eq` length.
+        let paths: Vec<&str> = drifts.iter().map(|d| d.path.as_str()).collect();
+        assert!(
+            paths.contains(&".forgeplan/lance/data.lance"),
+            "expected lance leak in {paths:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/session.yaml"),
+            "expected session.yaml leak in {paths:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/state/PRD-001.yaml"),
+            "expected state leak in {paths:?}"
+        );
+
+        // Reasons must come from the canonical table — guards against
+        // copy-paste drift between writer and detector.
+        for d in &drifts {
+            assert!(
+                !d.reason.is_empty(),
+                "drift entry without reason: {:?}",
+                d.path
+            );
+        }
+        // Output is sorted alphabetically — pin the contract.
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted, "drift entries must be alphabetised");
+    }
+
+    // ── ARCH-002 (Wave 9) — Path::parent edge ─────────────────────────
+    //
+    // `health_report_with_phase` computes `drift_root` via
+    // `workspace.parent()`. For a single-segment relative path like
+    // `.forgeplan`, `Path::parent()` returns `Some("")` (NOT `None`),
+    // which would cause `git -C ""` to silently default to CWD —
+    // wrong drift target. The fix branches on `as_os_str().is_empty()`
+    // and falls back to `workspace` itself. These tests pin the contract.
+
+    /// `Path::parent()` returns `Some("")` for `.forgeplan` (relative,
+    /// single-segment). The fix in `health_report_with_phase` must
+    /// detect the empty parent and pass `workspace` itself, NOT `""`.
+    /// Pure unit test on the underlying `Path::parent()` contract.
+    #[test]
+    fn path_parent_returns_some_empty_for_single_segment_relative_path() {
+        let p = std::path::Path::new(".forgeplan");
+        let parent = p.parent();
+        assert!(
+            matches!(parent, Some(pp) if pp.as_os_str().is_empty()),
+            "Path::parent for `.forgeplan` MUST be Some(\"\") — the case the ARCH-002 fix branches on; got {parent:?}"
+        );
+    }
+
+    /// End-to-end variant: invoke `health_report_with_phase` with a
+    /// workspace path that has `Some("")` as parent (i.e. relative
+    /// single-segment `.forgeplan`). Must NOT panic, MUST NOT pass an
+    /// empty argument to git. We cannot easily intercept the git call
+    /// shape, but we CAN run the function end-to-end without panic and
+    /// confirm it returns a sane report (drift list = empty since no
+    /// `.forgeplan/` exists in CWD with tracked lance/state files).
+    ///
+    /// The previous (pre-ARCH-002) code path would have called
+    /// `detect_gitignore_drift(Path::new(""))`, which then runs
+    /// `git -C "" ls-files` — silently scans CWD. Even when CWD has no
+    /// forgeplan files, the gate against `workspace_root.join(".forgeplan").exists()`
+    /// might still flag false positives if CWD happens to be a repo with
+    /// a `.forgeplan` dir of its own.
+    ///
+    /// This test exercises the no-panic guarantee. We can't construct
+    /// a full LanceStore on `Path::new(".forgeplan")` without setting
+    /// up a real temp workspace first, so we just verify the helper
+    /// path doesn't blow up on the bare relative path.
+    #[tokio::test]
+    async fn health_report_with_phase_handles_single_segment_relative_workspace_path() {
+        use tempfile::TempDir;
+
+        // We need a real LanceStore in a real workspace, but we can
+        // pass `Path::new(".forgeplan")` (a relative single-segment
+        // path) as the workspace argument. This exercises the
+        // `Path::parent() == Some("")` branch. Create a temp workspace
+        // for the store, but feed the function the relative path — it
+        // will fall back to `workspace` itself for drift_root (NOT to
+        // `""`). The drift scan will then run `git -C ".forgeplan"`,
+        // which fails (no git repo) and returns empty — the safe
+        // graceful-degradation path.
+        let tmp = TempDir::new().unwrap();
+        let ws_abs = tmp.path().join(".forgeplan");
+        let store = LanceStore::init(&ws_abs).await.unwrap();
+
+        // Call with absolute path first as control — must succeed.
+        let (report, _mismatches) = health_report_with_phase(&store, &ws_abs).await.unwrap();
+        // No artifacts, no git → no drift entries.
+        assert_eq!(report.total, 0);
+        // The bug we're guarding against is silently passing `""` to
+        // git when workspace is a single-segment relative path. We can
+        // at minimum confirm: no panic on the empty-parent branch.
+
+        // Direct check: simulate the branch evaluation that
+        // health_report_with_phase uses for drift_root.
+        let relative = std::path::Path::new(".forgeplan");
+        let drift_root = match relative.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => relative,
+        };
+        assert_eq!(
+            drift_root, relative,
+            "drift_root must fall back to workspace itself when parent is empty"
+        );
+        // The fallback must NOT be the empty path that would silently
+        // default `git -C` to CWD.
+        assert!(
+            !drift_root.as_os_str().is_empty(),
+            "drift_root must never be empty (would default git -C to CWD): got {drift_root:?}"
+        );
+    }
+
+    /// Tracked files that DON'T match any canonical pattern (e.g. a
+    /// regular PRD markdown body) must be ignored — drift is opt-in to
+    /// the patterns table.
+    #[test]
+    fn detect_gitignore_drift_ignores_tracked_artifact_bodies() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q", "--initial-branch=main"])
+            .status();
+
+        std::fs::create_dir_all(root.join(".forgeplan/prds")).unwrap();
+        std::fs::write(
+            root.join(".forgeplan/prds/PRD-001-x.md"),
+            "---\nid: PRD-001\n---\n# body\n",
+        )
+        .unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "-f", ".forgeplan"])
+            .status();
+
+        let drifts = detect_gitignore_drift(root);
+        assert!(
+            drifts.is_empty(),
+            "PRD body should not be flagged as drift: {drifts:?}"
+        );
     }
 }

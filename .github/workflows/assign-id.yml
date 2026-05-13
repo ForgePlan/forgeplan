@@ -1,0 +1,147 @@
+name: Assign artifact ID (PROB-060 Phase 0b prototype)
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: 'PR number for manual dry-run'
+        required: false
+        type: string
+      dry-run-only:
+        description: 'Run in dry-run mode (no push, no commit)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: forgeplan-id-assign
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  assign:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'ready-to-merge' &&
+       !github.event.pull_request.draft &&
+       github.event.pull_request.base.ref == 'dev') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.inputs.pr-number || github.event.pull_request.number }}
+      DRY_RUN_MODE: ${{ github.event.inputs.dry-run-only || false }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch base
+        run: git fetch origin dev:refs/remotes/origin/dev --no-tags --depth=200
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: ''
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/forgeplan-cli
+          cache-targets: release
+
+      # PROB-060 Phase 0b SEC-3 [policy]: this `cargo build --release` step
+      # compiles PR-controlled code (incl. any PR-supplied `build.rs`) с
+      # GITHUB_TOKEN active. Mitigation is the `ready-to-merge` label gate
+      # — see `.github/SECURITY-PROB-060.md` for the mandatory PR review
+      # checklist that maintainers MUST run before applying the label.
+      # Phase 2.1 productionization will rebuild from a trusted ref.
+      - name: Build forgeplan
+        run: cargo build --release -p forgeplan-cli --bin forgeplan
+
+      - name: Assign IDs
+        id: assign
+        run: |
+          DRY_RUN_FLAG=""
+          if [[ "$DRY_RUN_MODE" == "true" ]]; then
+            DRY_RUN_FLAG="--dry-run-only"
+          fi
+
+          ./target/release/forgeplan ci-assign-id \
+            --pr "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --base origin/dev \
+            --json \
+            $DRY_RUN_FLAG > /tmp/assignment.json
+
+          cat /tmp/assignment.json | jq .
+
+          # PROB-060 Phase 0b SEC-2 [CWE-94] fix Part A: pass commit_msg
+          # to GITHUB_OUTPUT through a heredoc rather than a raw `echo
+          # "k=$(jq …)"`. Multi-line или metacharacter-laden values from
+          # PR-controlled YAML would otherwise corrupt the GITHUB_OUTPUT
+          # file format и leak control over the variable.
+          # See: https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
+          if [[ "$DRY_RUN_MODE" != "true" ]]; then
+            {
+              echo "commit_msg<<FORGEPLAN_EOF"
+              jq -r '.commit_message_suggested' /tmp/assignment.json
+              echo "FORGEPLAN_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      # PROB-060 Phase 0b SEC-2 [CWE-94] fix Part A (continued): pass
+      # commit_msg through an env var rather than embedding `${{ … }}`
+      # directly in the shell script body. `${{ }}` is interpolated
+      # verbatim by the GitHub Actions runner *before* shell parsing, so
+      # a slug containing `"; rm -rf /` would break out of the `git
+      # commit -m "…"` quotes. Env-var pass keeps the value confined to
+      # a shell parameter where `"$COMMIT_MSG"` quoting holds.
+      #
+      # HIGH-2 [CWE-94] fix: Also apply env-var pattern to HEAD_REF.
+      # Branch names allow $, backticks, (), &, | which can RCE via unquoted
+      # interpolation. Fork PR with evil$(cmd) triggers RCE in runner's
+      # GITHUB_TOKEN context (write to contents + PRs). Now passed via env var
+      # + validated: only alphanumeric, dots, underscores, slashes, hyphens.
+      - name: Commit and push
+        if: github.event_name == 'pull_request' && env.DRY_RUN_MODE != 'true'
+        env:
+          COMMIT_MSG: ${{ steps.assign.outputs.commit_msg }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if git diff --quiet; then
+            echo "no changes detected"
+            exit 0
+          fi
+
+          # Validate HEAD_REF against whitelist to prevent RCE
+          if ! [[ "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "ERROR: invalid branch name in HEAD_REF: $HEAD_REF (rejected by security filter)"
+            echo "Branch names must contain only alphanumeric, dots, underscores, slashes, or hyphens"
+            exit 1
+          fi
+
+          git config user.name  "forgeplan-bot"
+          git config user.email "bot@forgeplan.dev"
+          git add -A
+          git commit -m "$COMMIT_MSG"
+          git push origin "HEAD:refs/heads/$HEAD_REF"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && failure() && env.DRY_RUN_MODE != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'ID assignment workflow failed. Check logs in Actions tab.'
+            })

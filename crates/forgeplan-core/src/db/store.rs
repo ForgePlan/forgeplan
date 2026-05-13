@@ -824,6 +824,99 @@ impl LanceStore {
         Ok(None)
     }
 
+    /// Resolve a user-supplied id-like input to a canonical artifact id.
+    ///
+    /// PROB-060 / SPEC-005 Phase 1.5 — enforces ADR-012 invariants I-3 + I-4
+    /// ("lookup accepts both formats and resolves to the same canonical
+    /// artifact").
+    ///
+    /// Accepts two input shapes:
+    /// (a) Display id form (`PRD-074`, `prd-074`, `Prd-74` — case-insensitive
+    /// prefix; trailing digits parsed as u32 then zero-padded to 3 width)
+    /// resolved by direct DB lookup; (b) slug form (`prd-auth-system` —
+    /// lowercase + dashes, kind prefix + content) resolved by scanning records
+    /// of that kind and parsing each frontmatter for the `slug` field
+    /// (compared case-insensitively).
+    ///
+    /// Returns `Ok(None)` when neither path matches an existing artifact.
+    /// Returns `Ok(Some(canonical_id))` where `canonical_id` is the value
+    /// of the `id` column in the DB (current Phase 1.x form: `KIND-NNN`).
+    ///
+    /// # Performance
+    /// Display id path is O(1) on indexed DB lookup. Slug path is O(n) over
+    /// records of one kind only (filtered first) — for ~50 PRDs this is
+    /// ~50 frontmatter parses, acceptable for CLI; not benchmarked.
+    pub async fn resolve_id(&self, input: &str) -> anyhow::Result<Option<String>> {
+        // Audit Phase 1.5 M1: trim whitespace from copy-paste / LLM input.
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(None);
+        }
+
+        // ---- Path 1: display id form (KIND-NNN) ----
+        // Accept any case for prefix; trailing digits as u32.
+        // Audit Phase 1.5 H2: when input shape is unambiguously display-id
+        // (alpha prefix + digit suffix + valid kind), do NOT fall through
+        // to slug scan on miss — slug shape requires lowercase + dashes
+        // separating words, which digit-only suffix cannot satisfy.
+        if let Some((prefix, rest)) = input.split_once('-')
+            && !prefix.is_empty()
+            && !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit())
+            && prefix.chars().all(|c| c.is_ascii_alphabetic())
+            && let Ok(num) = rest.parse::<u32>()
+        {
+            // Validate prefix maps to a real kind before hitting DB.
+            let prefix_lower = prefix.to_ascii_lowercase();
+            if crate::artifact::types::ArtifactKind::from_slug_prefix(&prefix_lower).is_some() {
+                let normalized = format!("{}-{num:03}", prefix.to_uppercase());
+                if let Some(rec) = self.get_record(&normalized).await? {
+                    return Ok(Some(rec.id));
+                }
+                // Display-id shape with valid kind but DB miss → don't waste
+                // a full slug scan; the input cannot match any slug.
+                return Ok(None);
+            }
+        }
+
+        // ---- Path 2: slug form (lowercase prefix + dashes + content) ----
+        // Detect by: input is all-lowercase ASCII alphanumeric + dashes,
+        // and starts with a known kind prefix.
+        let is_slug_shape = !input.is_empty()
+            && input
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !is_slug_shape {
+            return Ok(None);
+        }
+        let Some((kind_prefix, _suffix)) = input.split_once('-') else {
+            return Ok(None);
+        };
+        let Some(kind) = crate::artifact::types::ArtifactKind::from_slug_prefix(kind_prefix) else {
+            return Ok(None);
+        };
+
+        // Filter to records of that kind only (saves scanning all artifacts).
+        let filter = ArtifactFilter {
+            kind: Some(kind.template_key().to_string()),
+            status: None,
+        };
+        let records = self.list_records(Some(&filter)).await?;
+        for record in records {
+            let Ok((fm, _body)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
+            else {
+                continue;
+            };
+            if let Some(slug) = crate::artifact::frontmatter::slug_from_frontmatter(&fm)
+                && slug.eq_ignore_ascii_case(input)
+            {
+                return Ok(Some(record.id));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// List artifacts as full records with optional kind/status filter.
     pub async fn list_records(
         &self,
@@ -1744,6 +1837,232 @@ mod tests {
 
         let result = store.get_artifact("MISSING-999").await.unwrap();
         assert!(result.is_none());
+    }
+
+    // PROB-060 / SPEC-005 Phase 1.5 — resolve_id accepts both display id
+    // and slug form (ADR-012 invariants I-3 + I-4).
+
+    fn artifact_with_slug(id: &str, slug: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: format!("Title for {}", id),
+            body: format!(
+                "---\nid: {}\nslug: {}\npredicted_number: 1\nassigned_number: 1\n---\n\n## Body\n",
+                id, slug
+            ),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_id_display_form_uppercase() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        let resolved = store.resolve_id("PRD-074").await.unwrap();
+        assert_eq!(resolved, Some("PRD-074".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_id_display_form_lowercase() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        let resolved = store.resolve_id("prd-074").await.unwrap();
+        assert_eq!(resolved, Some("PRD-074".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_id_display_form_unpadded() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        // Input "PRD-74" (no padding) should resolve to canonical "PRD-074".
+        let resolved = store.resolve_id("PRD-74").await.unwrap();
+        assert_eq!(resolved, Some("PRD-074".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_id_slug_form() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        let resolved = store.resolve_id("prd-auth-system").await.unwrap();
+        assert_eq!(resolved, Some("PRD-074".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_id_slug_form_with_multi_segment_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system-v2-rollout"))
+            .await
+            .unwrap();
+        let resolved = store
+            .resolve_id("prd-auth-system-v2-rollout")
+            .await
+            .unwrap();
+        assert_eq!(resolved, Some("PRD-074".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_id_returns_none_for_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        // Wrong slug.
+        assert_eq!(store.resolve_id("prd-other-thing").await.unwrap(), None);
+        // Wrong display id.
+        assert_eq!(store.resolve_id("PRD-999").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_id_returns_none_for_garbage() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        assert_eq!(store.resolve_id("").await.unwrap(), None);
+        assert_eq!(store.resolve_id("nonsense").await.unwrap(), None);
+        assert_eq!(store.resolve_id("--").await.unwrap(), None);
+        assert_eq!(store.resolve_id("foo-bar").await.unwrap(), None); // unknown kind prefix
+    }
+
+    #[tokio::test]
+    async fn resolve_id_distinguishes_kinds() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        // Same suffix but wrong kind prefix → no match.
+        assert_eq!(store.resolve_id("rfc-auth-system").await.unwrap(), None);
+    }
+
+    // Audit Phase 1.5 fixes — regression tests.
+
+    #[tokio::test]
+    async fn audit_phase15_m1_resolve_id_strips_whitespace() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        // Leading/trailing whitespace + tab + newline.
+        assert_eq!(
+            store.resolve_id("  PRD-074  ").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+        assert_eq!(
+            store.resolve_id("\tprd-auth-system\n").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_phase15_h2_display_id_miss_does_not_trigger_slug_scan() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        // Display-id shape with valid kind but missing artifact: must
+        // short-circuit to None instead of scanning slugs.
+        assert_eq!(store.resolve_id("PRD-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id("prd-999").await.unwrap(), None);
+        // Note: this asserts behavior is correct; performance check is not
+        // expressible in a unit test. Manual benchmark confirms no scan.
+    }
+
+    #[tokio::test]
+    async fn resolve_id_mixed_case_display_form() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.resolve_id("Prd-74").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+        assert_eq!(
+            store.resolve_id("pRd-074").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_id_kind_prefix_only_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        // No suffix at all — both paths reject.
+        assert_eq!(store.resolve_id("prd-").await.unwrap(), None);
+        assert_eq!(store.resolve_id("PRD-").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_id_uppercase_slug_returns_none() {
+        // is_slug_shape requires lowercase — uppercase input doesn't match
+        // slug path. Should return None (callers must pass canonical lowercase).
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+        assert_eq!(store.resolve_id("PRD-AUTH-SYSTEM").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_id_legacy_artifact_without_slug_field_still_resolves_by_display_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        // Legacy artifact: no slug field in body.
+        let legacy = NewArtifact {
+            id: "PRD-018".to_string(),
+            kind: "prd".to_string(),
+            status: "active".to_string(),
+            title: "Legacy artifact".to_string(),
+            body: "---\nid: PRD-018\n---\n\n## Body\n".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&legacy).await.unwrap();
+
+        // Display form works.
+        assert_eq!(
+            store.resolve_id("PRD-018").await.unwrap(),
+            Some("PRD-018".to_string())
+        );
+        // Slug form returns None (no slug field) — caller must fall back to verbatim.
+        assert_eq!(store.resolve_id("prd-legacy-artifact").await.unwrap(), None);
     }
 
     #[tokio::test]

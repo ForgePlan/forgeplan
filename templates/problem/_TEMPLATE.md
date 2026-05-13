@@ -5,7 +5,7 @@ status: Draft
 created: YYYY-MM-DD
 depth: tactical / standard / deep
 context: "{grouping tag}"
-parent_epic: EPIC-{NNN}
+parent_epic: null
 ---
 
 # PROB-{NNN}: {Problem Title}

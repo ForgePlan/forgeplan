@@ -2317,7 +2317,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forgeplan"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2333,6 +2333,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "predicates",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
@@ -2341,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "forgeplan-core"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -2375,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "forgeplan-mcp"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4636,15 +4637,14 @@ dependencies = [
 
 [[package]]
 name = "openssl"
-version = "0.10.78"
+version = "0.10.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f38c4372413cdaaf3cc79dd92d29d7d9f5ab09b51b10dded508fb90bb70b9222"
+checksum = "bf0b434746ee2832f4f0baf10137e1cabb18cbe6912c69e2e33263c45250f542"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
  "foreign-types",
  "libc",
- "once_cell",
  "openssl-macros",
  "openssl-sys",
 ]
@@ -4668,9 +4668,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.114"
+version = "0.9.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13ce1245cd07fcc4cfdb438f7507b0c7e4f3849a69fd84d52374c66d83741bb6"
+checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
 dependencies = [
  "cc",
  "libc",
@@ -5569,6 +5569,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
 ]

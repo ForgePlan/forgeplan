@@ -226,8 +226,14 @@ async fn process_detected_file_inner(
     // frontmatter → every imported artifact ended up with two
     // `---…---` blocks stacked on disk. Split FM from body here and
     // keep only the body portion downstream.
+    //
+    // PROB-068 union-merge: also pull out `author:` and `links:` so the
+    // round-trip (markdown → LanceDB → markdown) doesn't drop them. The
+    // historical bug overwrote `author: <human>` with `scan-import` and
+    // wiped the `links:` block because `maybe_write_projection` passed
+    // an empty `&[]` to the renderer.
     let mut warnings: Vec<String> = Vec::new();
-    let (tags, status, body_only) =
+    let (tags, status, body_only, fm_author, fm_links) =
         match crate::artifact::frontmatter::parse_frontmatter(&file.content) {
             Ok((fm, body)) => {
                 let tags = crate::artifact::frontmatter::tags_from_frontmatter(&fm);
@@ -242,10 +248,24 @@ async fn process_detected_file_inner(
                     }
                     None => "draft".to_string(), // no frontmatter status → default (AC-5)
                 };
-                (tags, status, body)
+                let author = crate::artifact::frontmatter::author_from_frontmatter(&fm);
+                let links = crate::artifact::frontmatter::links_from_frontmatter(&fm);
+                (tags, status, body, author, links)
             }
-            Err(_) => (Vec::new(), "draft".to_string(), file.content.clone()),
+            Err(_) => (
+                Vec::new(),
+                "draft".to_string(),
+                file.content.clone(),
+                None,
+                Vec::new(),
+            ),
         };
+
+    // PROB-068: preserve human-supplied author when the source frontmatter
+    // had one; default `scan-import` only when the file had no author key.
+    let effective_author = fm_author
+        .clone()
+        .unwrap_or_else(|| "scan-import".to_string());
 
     // R2 audit rust-pro HIGH #3: a previous run may have successfully
     // written to LanceDB but failed the projection write — the DB row
@@ -254,12 +274,23 @@ async fn process_detected_file_inner(
     // than silently leaving the artifact orphaned.
     match store.get_artifact(&artifact_id).await {
         Ok(Some(_)) => {
-            // Heal-on-retry: if projection is missing, try to write it
-            // from the existing source file content. Do not return Skipped
-            // until the file exists too.
+            // PROB-068 heal-on-retry: when the artifact already exists
+            // but the projection is missing, restore it from the
+            // *source* frontmatter so author / links survive the
+            // round-trip. Relations that aren't yet known to LanceDB
+            // are also inserted so subsequent renders pick them up.
             if let Some(ws) = workspace
                 && !projection_exists(ws, &detection.kind, &artifact_id).await
             {
+                // Best-effort: missing relations get added; existing
+                // ones are silently de-duplicated by add_relation.
+                for (target, relation) in &fm_links {
+                    if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
+                        warnings.push(format!(
+                            "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
+                        ));
+                    }
+                }
                 maybe_write_projection(
                     ws,
                     &artifact_id,
@@ -268,6 +299,8 @@ async fn process_detected_file_inner(
                     &status,
                     &tags,
                     &body_only,
+                    &effective_author,
+                    &fm_links,
                     &mut warnings,
                 )
                 .await;
@@ -295,7 +328,7 @@ async fn process_detected_file_inner(
         title: title.clone(),
         body: body_only.clone(),
         depth: "standard".to_string(),
-        author: Some("scan-import".to_string()),
+        author: Some(effective_author.clone()),
         parent_epic: None,
         valid_until: None,
         tags: tags.clone(),
@@ -307,6 +340,17 @@ async fn process_detected_file_inner(
             warnings,
             ..entry_base
         };
+    }
+
+    // PROB-068: restore typed relations parsed from source frontmatter so
+    // the LanceDB row carries them, and the next render emits the same
+    // `links:` block back to disk.
+    for (target, relation) in &fm_links {
+        if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
+            warnings.push(format!(
+                "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
+            ));
+        }
     }
 
     // PRD-058 FR-001 (ADR-003 compliance): write the markdown projection.
@@ -323,6 +367,8 @@ async fn process_detected_file_inner(
             &status,
             &tags,
             &body_only,
+            &effective_author,
+            &fm_links,
             &mut warnings,
         )
         .await;
@@ -387,6 +433,11 @@ async fn projection_exists(workspace: &Path, kind: &ArtifactKind, artifact_id: &
 /// land in the file's frontmatter (not just LanceDB). Without that, the
 /// next `forgeplan reindex` (files-first per ADR-003) would re-read the
 /// empty-tags file and null the DB column.
+///
+/// PROB-068 union-merge: `author` and `links` are now passed through
+/// from the source frontmatter (or fall back to defaults for files that
+/// never had them) so the round-trip preserves human/agent metadata
+/// instead of stomping it with `scan-import` + empty `links:`.
 #[allow(clippy::too_many_arguments)]
 async fn maybe_write_projection(
     workspace: &Path,
@@ -396,6 +447,8 @@ async fn maybe_write_projection(
     status: &str,
     tags: &[String],
     body: &str,
+    author: &str,
+    links: &[(String, String)],
     warnings: &mut Vec<String>,
 ) {
     use crate::db::store::ArtifactRecord;
@@ -409,7 +462,7 @@ async fn maybe_write_projection(
         title: title.to_string(),
         body: body.to_string(),
         depth: "standard".to_string(),
-        author: Some("scan-import".to_string()),
+        author: Some(author.to_string()),
         parent_epic: None,
         valid_until: None,
         r_eff_score: 0.0,
@@ -419,7 +472,7 @@ async fn maybe_write_projection(
         body_hash: None,
         embedding: None,
     };
-    if let Err(e) = render_projection_record(workspace, &record, &[]).await {
+    if let Err(e) = render_projection_record(workspace, &record, links).await {
         warnings.push(format!(
             "projection write failed for {artifact_id}: {e} — \
              artifact is in LanceDB but .forgeplan/{kind_str}s/ is missing a .md file; \

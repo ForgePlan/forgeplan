@@ -2,42 +2,24 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
+use forgeplan_core::artifact::frontmatter::augment_frontmatter_with_id_fields;
 use forgeplan_core::artifact::store::ArtifactSummary;
-use forgeplan_core::artifact::types::ArtifactKind;
+use forgeplan_core::artifact::types::{ArtifactKind, slug_from_kind_title};
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::duplicate::{DUPLICATE_SIMILARITY_THRESHOLD, title_similarity};
+use forgeplan_core::git::{artifact_filenames_in_origin_dev, slug_exists_in_filenames};
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::projection;
 use forgeplan_core::template::{get_embedded_template, render_template};
 
 use crate::commands::common;
 
-/// Maximum allowed title length in characters.
-///
-/// Chosen as a safe upper bound for filesystem path limits across platforms
-/// (macOS/Linux filenames cap at 255 bytes; we leave headroom for slug
-/// prefix/suffix, extension, and multi-byte characters).
-pub const MAX_TITLE_LEN: usize = 128;
-
-/// Validate an artifact title before any DB or filesystem writes.
-///
-/// Rejects empty titles (including whitespace-only) and titles longer than
-/// [`MAX_TITLE_LEN`] characters. Called at the very start of `run` so that
-/// invalid input never produces orphan DB rows.
-pub fn validate_title(title: &str) -> Result<()> {
-    if title.trim().is_empty() {
-        anyhow::bail!("Title cannot be empty. Provide a non-empty title.");
-    }
-    let len = title.chars().count();
-    if len > MAX_TITLE_LEN {
-        anyhow::bail!(
-            "Title too long (got {} chars, max {}). Shorten the title.",
-            len,
-            MAX_TITLE_LEN
-        );
-    }
-    Ok(())
-}
+// Wave 9 SEC-C1/C2 closure: title validator (and `MAX_TITLE_LEN`) now live in
+// `forgeplan_core::artifact::validation` so every mutation surface — CLI
+// `new`, CLI `update`, MCP `forgeplan_new`, MCP `forgeplan_update` — routes
+// through the same defensive check. The re-exports below preserve the
+// historical local public API (tests and external callers may import
+// `crate::commands::new::{validate_title, MAX_TITLE_LEN}`).
+pub use forgeplan_core::artifact::{MAX_TITLE_LEN, validate_title};
 
 pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<()> {
     // Validate title BEFORE any DB insert or filesystem write to prevent
@@ -97,40 +79,65 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         }
     }
 
-    // Get next sequential ID from LanceDB
+    // PROB-067: id allocation moves under a cross-worktree per-kind lock
+    // with post-write collision detection. We compute the slug now (it
+    // depends only on title), then defer id resolution + projection
+    // write to `id_alloc::allocate_and_create_artifact` which invokes
+    // our build closure under the lock for each retry attempt.
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let id = store.next_id(&prefix).await?;
-
-    // The kind string used for template lookup
     let template_key = kind.template_key();
     let template = get_embedded_template(template_key)
         .ok_or_else(|| anyhow::anyhow!("No template found for kind '{}'", template_key))?;
-
-    // Build template variables
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let nnn = id.split('-').next_back().unwrap_or("001").to_string();
 
-    let mut vars = HashMap::new();
-    vars.insert("NNN".to_string(), nnn.clone());
-    vars.insert("title".to_string(), title.to_string());
-    vars.insert("Title".to_string(), title.to_string());
+    let slug = slug_from_kind_title(&kind, title)
+        .with_context(|| format!("failed to build canonical slug from title {:?}", title))?;
 
-    // Render the template with variable substitution
-    let mut rendered = render_template(template, &vars);
-
-    // Replace date placeholders
-    rendered = rendered.replace("YYYY-MM-DD", &today);
-
-    // Replace full ID patterns like PRD-{NNN} that may remain after render
-    let heading_pattern = format!("# {}-{}: ", prefix, nnn);
-    if let Some(pos) = rendered.find(&heading_pattern) {
-        let line_start = pos + heading_pattern.len();
-        if let Some(nl) = rendered[line_start..].find('\n') {
-            let old_heading_text = &rendered[line_start..line_start + nl];
-            if old_heading_text.contains('{') || old_heading_text.contains('/') {
-                let before = &rendered[..line_start];
-                let after = &rendered[line_start + nl..];
-                rendered = format!("{}{}{}", before, title, after);
+    // PROB-060 / SPEC-005 Phase 1.3 — pre-create remote slug uniqueness check.
+    //
+    // Best-effort: fetch origin/dev and check if the slug already exists upstream.
+    // Soft-fail by design — offline / non-git / no remote workspaces continue
+    // without warning. The remote check IS the value-add of Phase 1.3 (workspace-
+    // local uniqueness was already implicit via filesystem).
+    //
+    // Skip the check when --allow-duplicate is set (caller has already accepted
+    // the risk of similar artifacts) — saves the network round-trip.
+    if !allow_duplicate {
+        let remote_files = artifact_filenames_in_origin_dev(&workspace, kind.dir_name());
+        if slug_exists_in_filenames(&slug, &remote_files) {
+            // **Advisory** check — between the fetch above and the actual merge a
+            // teammate can push a colliding slug (TOCTOU). True atomic guarantee
+            // arrives in Phase 2 with the CI bot. Audit C1: phrase accordingly.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                // Non-tty: single canonical message via bail (no separate
+                // eprintln, audit L2). Suppress the warning duplicate.
+                anyhow::bail!(
+                    "Advisory: slug {:?} appears to exist in origin/dev — \
+                         it may collide at merge. \
+                         Non-interactive shell cannot prompt.\n\
+                         Fix: forgeplan new {} \"{}\" --allow-duplicate",
+                    slug,
+                    kind_str,
+                    title
+                );
+            }
+            // Interactive shell: warn + prompt to confirm.
+            eprintln!(
+                "advisory: slug {:?} appears in origin/dev — may collide at merge \
+                     (Phase 2 CI bot will resolve definitively).",
+                slug
+            );
+            let proceed = cliclack::confirm(format!(
+                "Continue creating slug {:?} despite advisory?",
+                slug
+            ))
+            .initial_value(false)
+            .interact()
+            .unwrap_or(false);
+            if !proceed {
+                println!("Cancelled");
+                return Ok(());
             }
         }
     }
@@ -145,28 +152,64 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         _ => "standard",
     };
 
-    // Write to LanceDB (source of truth)
-    let artifact = NewArtifact {
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: title.to_string(),
-        body: rendered.clone(),
-        depth: depth.to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        // C1: new artifacts start untagged; users add tags later via `forgeplan tag`.
-        // TODO: add `--tag key=value` flag in future sprint.
-        tags: Vec::new(),
+    // PROB-067: allocate id + write file under a cross-worktree per-kind
+    // lock with post-write collision detection. The build closure renders
+    // the template + augments frontmatter for the id assigned by the
+    // allocator; on retry the closure is called again with a higher id,
+    // ensuring no stale rendering bleeds into the retried artifact.
+    let title_owned = title.to_string();
+    let today_owned = today.clone();
+    let template_key_owned = template_key.to_string();
+    let prefix_owned = prefix.clone();
+    let slug_owned = slug.clone();
+    let template_owned: String = template.to_string();
+    let depth_owned = depth.to_string();
+    let build = move |id: &str, number: u32| -> anyhow::Result<NewArtifact> {
+        let nnn = id
+            .split('-')
+            .next_back()
+            .expect("id contract: must contain '-'")
+            .to_string();
+        let mut vars = HashMap::new();
+        vars.insert("NNN".to_string(), nnn.clone());
+        vars.insert("title".to_string(), title_owned.clone());
+        vars.insert("Title".to_string(), title_owned.clone());
+        let mut rendered = render_template(&template_owned, &vars);
+        rendered = rendered.replace("YYYY-MM-DD", &today_owned);
+        rendered = augment_frontmatter_with_id_fields(&rendered, &slug_owned, number)
+            .with_context(|| format!("failed to augment frontmatter for {id}"))?;
+        let heading_pattern = format!("# {}-{}: ", prefix_owned, nnn);
+        if let Some(pos) = rendered.find(&heading_pattern) {
+            let line_start = pos + heading_pattern.len();
+            if let Some(nl) = rendered[line_start..].find('\n') {
+                let old_heading_text = &rendered[line_start..line_start + nl];
+                if old_heading_text.contains('{') || old_heading_text.contains('/') {
+                    let before = &rendered[..line_start];
+                    let after = &rendered[line_start + nl..];
+                    rendered = format!("{}{}{}", before, title_owned, after);
+                }
+            }
+        }
+        Ok(NewArtifact {
+            id: id.to_string(),
+            kind: template_key_owned.clone(),
+            status: "draft".to_string(),
+            title: title_owned.clone(),
+            body: rendered,
+            depth: depth_owned.clone(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        })
     };
-    // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
-    let filepath = projection::create_artifact_with_projection(
-        &projection::MutationContext::new(&workspace, &store),
-        &artifact,
+    let allocated = forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
+        &workspace, &store, &kind, 3, &build,
     )
     .await
-    .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
+    .with_context(|| format!("PROB-067 id-alloc failed for kind {prefix}"))?;
+    let id = allocated.id;
+    let filepath = allocated.filepath;
 
     // Log creation in change_log
     common::log_change(&store, &id, "create", "cli").await;
@@ -319,6 +362,52 @@ mod tests {
         assert!(validate_title(&t2).is_err());
     }
 
+    // Cross-phase security audit L3 — control char + BIDI override rejection.
+
+    #[test]
+    fn audit_l3_validate_title_rejects_control_chars() {
+        // Embedded newline / tab / NUL must be rejected.
+        let cases = [
+            "Auth\nSystem",
+            "Auth\tSystem",
+            "Auth\0System",
+            "Auth\rSystem",
+        ];
+        for case in cases {
+            let err = validate_title(case).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("control"),
+                "expected 'control' in error for {case:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_l3_validate_title_rejects_bidi_overrides() {
+        // U+202E (RTL override) is the canonical Trojan Source attack char.
+        let cases = [
+            "Auth\u{202E}System", // RTL override
+            "Auth\u{202A}System", // LTR embedding
+            "Auth\u{2066}System", // LTR isolate
+            "Auth\u{2069}System", // pop directional isolate
+        ];
+        for case in cases {
+            let err = validate_title(case).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("bidi") || err.contains("control"),
+                "expected 'bidi' in error for {case:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_l3_validate_title_accepts_unicode_letters() {
+        // Make sure we don't over-reject legitimate non-ASCII content.
+        assert!(validate_title("Тестовая система").is_ok());
+        assert!(validate_title("システム認証").is_ok());
+        assert!(validate_title("Système d'auth").is_ok());
+    }
+
     #[test]
     fn find_duplicate_picks_exact_over_substring() {
         let existing = vec![
@@ -330,4 +419,8 @@ mod tests {
         assert_eq!(id, "PRD-003");
         assert!((score - 1.0).abs() < 1e-9);
     }
+
+    // augment_frontmatter_with_id_fields tests live in
+    // crates/forgeplan-core/src/artifact/frontmatter.rs (cross-phase audit
+    // code-analyzer #1: pure frontmatter logic relocated to core).
 }

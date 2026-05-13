@@ -56,7 +56,23 @@ use crate::db::store::LanceStore;
 /// existing callers use the builder, not literals.
 // `LanceStore` does not implement `Debug` (it wraps internal Arc'd
 // connection state that is not safe to print), so neither does
-// `MutationContext`. `Clone` + `Copy` are cheap (two references).
+// `MutationContext`.
+//
+// **Lifecycle**: rebuild a fresh `MutationContext::new(ws, store)` per
+// mutation site rather than caching one for the duration of a CLI / MCP
+// request — keeps the context lifecycle obvious and avoids a long-lived
+// borrow that could collide with future `&mut` paths into the store.
+//
+// **API guidance for new helpers**: take `ctx: &MutationContext<'_>` by
+// reference. The struct currently derives `Copy` (two pointer-sized
+// references) so by-value would compile equally well, but future fields
+// могут force `Copy` to disappear (e.g. an `Arc<TracingSpan>` is `Clone`
+// but not `Copy`). Taking by reference is forward-compatible with a
+// hypothetical `Copy`-loss bump. The `#[non_exhaustive]` attribute means
+// external embedders already MUST go through `MutationContext::new`, so
+// dropping `Copy` would be a minor API tweak rather than a breaking-
+// change cascade — but call sites that rely on implicit copy semantics
+// (`let c = ctx; foo(ctx); foo(c);`) would need to switch to `.clone()`.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct MutationContext<'a> {

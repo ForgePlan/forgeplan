@@ -59,6 +59,7 @@ async fn soft_delete_capture_writes_receipt_before_mutation() {
         valid_until: record.valid_until.clone(),
         relations: Vec::new(),
         projection_path: "".into(),
+        slug: None,
     };
     let receipt = forgeplan_core::undo::Receipt {
         receipt_id: receipt_id.clone(),
@@ -116,6 +117,7 @@ async fn receipt_captures_full_body_and_metadata() {
             valid_until: Some("2027-01-01".into()),
             relations: vec![],
             projection_path: "/ws/.forgeplan/prds/PRD-001-captured.md".into(),
+            slug: None,
         },
         reason: Some("No longer relevant".into()),
         replacement: None,
@@ -158,6 +160,7 @@ async fn supersede_receipt_captures_replacement() {
             valid_until: None,
             relations: vec![],
             projection_path: "".into(),
+            slug: None,
         },
         reason: None,
         replacement: Some("PRD-002".into()),
@@ -199,6 +202,7 @@ async fn find_latest_returns_newest_non_consumed() {
                 valid_until: None,
                 relations: vec![],
                 projection_path: "".into(),
+                slug: None,
             },
             reason: None,
             replacement: None,

@@ -16,7 +16,15 @@ use std::collections::HashSet;
 pub const DUPLICATE_SIMILARITY_THRESHOLD: f64 = 0.7;
 
 /// Tokenize a title into a lowercase set of alphanumeric tokens with length >= 3.
-fn tokenize_title(title: &str) -> HashSet<String> {
+///
+/// `pub(crate)` (PROB-051 P-M1) so batch callers within `forgeplan-core`
+/// (e.g. `health::find_duplicate_pairs`) can pre-tokenize each title
+/// ONCE and reuse the resulting `HashSet` across the O(N²) pairwise
+/// comparison — avoiding `2 * N * (N-1)` redundant re-tokenizations per
+/// scan. External callers stay on the [`title_similarity`] convenience
+/// wrapper; promotion to `pub` is non-breaking if a future external use
+/// emerges, demotion later would be.
+pub(crate) fn tokenize_title(title: &str) -> HashSet<String> {
     title
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -25,22 +33,36 @@ fn tokenize_title(title: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Jaccard similarity between two title token sets, in `[0.0, 1.0]`.
+/// Jaccard similarity between two pre-tokenized title sets, in `[0.0, 1.0]`.
 ///
-/// Returns `0.0` if either title has no qualifying tokens.
-pub fn title_similarity(a: &str, b: &str) -> f64 {
-    let ta = tokenize_title(a);
-    let tb = tokenize_title(b);
-    if ta.is_empty() || tb.is_empty() {
+/// Returns `0.0` if either set is empty. Pure function — no tokenization.
+/// `pub(crate)` companion to [`tokenize_title`]; preferred over
+/// [`title_similarity`] when callers loop over many pairs (PROB-051 P-M1
+/// — `health::find_duplicate_pairs` calls this in a hot loop). External
+/// callers use [`title_similarity`].
+pub(crate) fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() || b.is_empty() {
         return 0.0;
     }
-    let intersection = ta.intersection(&tb).count() as f64;
-    let union = ta.union(&tb).count() as f64;
+    let intersection = a.intersection(b).count() as f64;
+    let union = a.union(b).count() as f64;
     if union == 0.0 {
         0.0
     } else {
         intersection / union
     }
+}
+
+/// Jaccard similarity between two title strings, in `[0.0, 1.0]`.
+///
+/// Returns `0.0` if either title has no qualifying tokens. Convenience
+/// wrapper around `tokenize_title` + `jaccard_similarity` for single-pair
+/// callers (e.g. CLI `new` duplicate warning). Hot-loop callers should
+/// pre-tokenize via `tokenize_title` and use `jaccard_similarity` directly.
+pub fn title_similarity(a: &str, b: &str) -> f64 {
+    let ta = tokenize_title(a);
+    let tb = tokenize_title(b);
+    jaccard_similarity(&ta, &tb)
 }
 
 #[cfg(test)]
@@ -101,6 +123,47 @@ mod tests {
         let above: f64 = 0.71;
         assert!(above > DUPLICATE_SIMILARITY_THRESHOLD);
         assert!(above >= DUPLICATE_SIMILARITY_THRESHOLD);
+    }
+
+    // PROB-051 P-M1: jaccard_similarity on pre-tokenized sets matches
+    // title_similarity (same math, no tokenization) — regression guard
+    // so the hot-loop refactor in health::find_duplicate_pairs cannot
+    // silently drift from the canonical scalar form.
+    #[test]
+    fn jaccard_matches_title_similarity_for_same_input() {
+        let pairs = [
+            ("Auth System", "Auth System"),
+            ("Auth System", "Auth System Design"),
+            ("AUTH system", "auth SYSTEM"),
+            ("Auth", "Billing"),
+            ("", "Auth"),
+        ];
+        for (a, b) in pairs {
+            let ta = tokenize_title(a);
+            let tb = tokenize_title(b);
+            let from_strings = title_similarity(a, b);
+            let from_sets = jaccard_similarity(&ta, &tb);
+            assert!(
+                (from_strings - from_sets).abs() < 1e-12,
+                "jaccard mismatch for ({a:?}, {b:?}): strings={from_strings} sets={from_sets}"
+            );
+        }
+    }
+
+    // PROB-051 P-M1: tokenize_title is now `pub` — pin the contract
+    // (no leading underscores, alphanumeric only, ≥3 chars, lowercase).
+    #[test]
+    fn tokenize_title_contract() {
+        let toks = tokenize_title("FPF Knowledge: System v2!");
+        // "FPF" → "fpf", "Knowledge" → "knowledge", "System" → "system", "v2" → 2 chars filtered out
+        assert!(toks.contains("fpf"));
+        assert!(toks.contains("knowledge"));
+        assert!(toks.contains("system"));
+        assert!(!toks.contains("v2"), "2-char tokens must be filtered");
+        // lowercase
+        for t in &toks {
+            assert_eq!(*t, t.to_lowercase());
+        }
     }
 
     #[test]

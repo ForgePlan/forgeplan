@@ -11,10 +11,18 @@
 //!
 //! PRD-057 FR-004..006, FR-014, AC-2, AC-3.
 
+use crate::artifact::identity::{self, MAX_FIELD_LEN as IDENTITY_MAX_FIELD_LEN};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// Maximum permitted agent-string length. Mirrors the per-field cap in
+/// `artifact::identity::MAX_FIELD_LEN` (64) doubled to leave room for the
+/// canonical `name/version` shape — even though we forbid the `/` delimiter
+/// in the free-form claim agent string, we still allow other reasonable
+/// composite forms (e.g. `worker-1-staging`) up to this length.
+const MAX_AGENT_LEN: usize = IDENTITY_MAX_FIELD_LEN;
 
 /// Upper bound on a single claim YAML file. Matches the 64 KB cap in
 /// `artifact::frontmatter::parse_frontmatter` — defense against a
@@ -91,6 +99,12 @@ pub enum ClaimError {
     InvalidId(String),
     #[error("agent id must be non-empty")]
     EmptyAgent,
+    #[error(
+        "agent id contains invalid characters (allowed: printable non-path, no controls, no bidi/ZWJ, no `/`, `\\`, NUL): {0:?}"
+    )]
+    InvalidAgent(String),
+    #[error("agent id exceeds {MAX_AGENT_LEN} bytes")]
+    AgentTooLong(usize),
     #[error("claim file exceeds {MAX_CLAIM_FILE_BYTES} bytes — refusing to parse")]
     FileTooLarge,
     #[error("io error: {0}")]
@@ -127,6 +141,85 @@ fn validate_id(id: &str) -> Result<(), ClaimError> {
     // but explicit rejection of traversal sequences is cheap insurance.
     if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
         return Err(ClaimError::InvalidId(id.to_string()));
+    }
+    Ok(())
+}
+
+/// Validate the free-form agent string accepted by `forgeplan claim --agent`.
+///
+/// Closes PROB-066: CLI surface previously only checked `is_empty()`, while
+/// the MCP write-stamping path enforced a full character-class filter via
+/// `AgentIdentity::new`. The asymmetry let a malicious or careless caller
+/// land `\n`, `\u{202E}` (RLO), `\u{200B}` (ZWSP), ANSI escapes, or the `/`
+/// delimiter into the YAML body — corrupting the file (newline) or spoofing
+/// the operator's terminal (bidi/control chars) when `claim_id` was echoed
+/// by `forgeplan claims`.
+///
+/// The character-class rejection delegates to `is_identity_char_forbidden`
+/// so CLI and MCP identity surfaces stay symmetric — the single source of
+/// truth lives in `artifact::identity`.
+///
+/// **CLI-strict variant** — rejects `/` outright so the operator cannot
+/// enshrine the canonical MCP `name/version` shape as a CLI argument
+/// (`smoke-test/v1` was the audit-flagged case). Use this from
+/// `forgeplan claim --agent <STR>` and similar operator-supplied surfaces.
+///
+/// For the canonical `name/version` form emitted by `AgentIdentity::as_frontmatter_value`
+/// (legitimate on the MCP write-stamping path), see
+/// [`validate_agent_id_relaxed`] which keeps the same controls/bidi/NUL
+/// filter but allows `/`.
+///
+/// Rejections:
+/// - empty / whitespace-only string → `EmptyAgent`
+/// - length > `MAX_AGENT_LEN` (64) bytes → `AgentTooLong`
+/// - any character matching `is_identity_char_forbidden` (controls, bidi,
+///   ZWJ, BOM, format chars, variation selectors, tag chars, `/`, `\`, NUL)
+///   → `InvalidAgent`
+pub fn validate_agent_id(agent: &str) -> Result<(), ClaimError> {
+    let trimmed = agent.trim();
+    if trimmed.is_empty() {
+        return Err(ClaimError::EmptyAgent);
+    }
+    if trimmed.len() > MAX_AGENT_LEN {
+        return Err(ClaimError::AgentTooLong(trimmed.len()));
+    }
+    if trimmed.chars().any(identity::is_identity_char_forbidden) {
+        return Err(ClaimError::InvalidAgent(trimmed.to_string()));
+    }
+    Ok(())
+}
+
+/// Same defence class as [`validate_agent_id`] but keeps `/` and `\` legal.
+///
+/// Used inside `ClaimStore::claim`/`ClaimStore::release` so the MCP path
+/// (which passes the canonical `AgentIdentity::as_frontmatter_value()` form
+/// — e.g. `claude-code/1.0.50`) still works while the dangerous classes
+/// (controls, bidi/ZWJ, BOM, format chars, NUL) remain rejected.
+///
+/// CLI-side callers should call the stricter [`validate_agent_id`] BEFORE
+/// reaching the store — defense-in-depth from operator typo / pasted
+/// payload, with this function as the final filter that catches anything
+/// bypassing the CLI guard.
+fn validate_agent_id_relaxed(agent: &str) -> Result<(), ClaimError> {
+    let trimmed = agent.trim();
+    if trimmed.is_empty() {
+        return Err(ClaimError::EmptyAgent);
+    }
+    if trimmed.len() > MAX_AGENT_LEN {
+        return Err(ClaimError::AgentTooLong(trimmed.len()));
+    }
+    // Same forbidden classes minus `/` and `\` — those are part of the
+    // canonical `name/version` shape on the MCP path.
+    if trimmed
+        .chars()
+        .any(|c| c != '/' && c != '\\' && identity::is_identity_char_forbidden(c))
+    {
+        return Err(ClaimError::InvalidAgent(trimmed.to_string()));
+    }
+    // NUL is still always banned — it would corrupt the YAML body even on
+    // the MCP path.
+    if trimmed.contains('\0') {
+        return Err(ClaimError::InvalidAgent(trimmed.to_string()));
     }
     Ok(())
 }
@@ -241,12 +334,23 @@ impl ClaimStore {
         note: Option<String>,
     ) -> Result<Claim, ClaimError> {
         validate_id(id)?;
-        if agent.is_empty() {
-            return Err(ClaimError::EmptyAgent);
-        }
+        // PROB-066: full character-class filter (mirrors AgentIdentity::new).
+        // Previously only is_empty() was checked — letting `\n`, `\u{202E}`,
+        // ANSI escapes, NUL through. The store uses the relaxed variant
+        // because the MCP path legitimately passes the `name/version` shape
+        // (`claude-code/1.0.50`) via `AgentIdentity::as_frontmatter_value()`.
+        // CLI surfaces apply the stricter `validate_agent_id` BEFORE
+        // reaching this point.
+        validate_agent_id_relaxed(agent)?;
         if ttl < MIN_TTL || ttl > MAX_TTL {
             return Err(ClaimError::TtlOutOfRange(ttl));
         }
+
+        // Persist the trimmed form — validate_agent_id accepted ` foo ` as
+        // equivalent to `foo`, so the on-disk value must reflect that
+        // canonicalisation. Otherwise `is_held_by(agent)` round-trips break
+        // (caller passes `foo`, file says ` foo `).
+        let agent = agent.trim();
 
         self.ensure_dir().await?;
 
@@ -290,9 +394,18 @@ impl ClaimStore {
         // on a missing claim doesn't silently succeed. Only `force = true`
         // legitimately waives the agent requirement (orchestrator reaping
         // a dead holder without knowing whose it is).
-        if !force && agent.is_empty() {
-            return Err(ClaimError::EmptyAgent);
+        //
+        // PROB-066: extend the guard from is_empty() to the full identity
+        // char-class — release must reject the same agent strings as claim,
+        // otherwise a hostile caller could trigger error-path `eprintln!`
+        // with bidi-override / ANSI escape bytes already neutralised at the
+        // write site (we don't want the inverse asymmetry either).
+        if !force {
+            validate_agent_id_relaxed(agent)?;
         }
+        // Match the trim semantics applied at write time so callers can
+        // pass `" foo "` against a stored `foo` consistently.
+        let agent = agent.trim();
 
         let path = self.path_for(id);
         if !force
@@ -879,5 +992,154 @@ mod tests {
             );
             assert!(!s.contains(".tmp."), "tempfile leaked: {s}");
         }
+    }
+
+    // ── PROB-066 hardening: agent-string validation parity with MCP ──────
+
+    #[test]
+    fn validate_agent_id_accepts_alphanumeric_hyphen() {
+        // PROB-066 positive class — the operator-friendly form recommended
+        // in the CLI Fix hint must round-trip cleanly.
+        for good in [
+            "smoke-test-v1",
+            "worker-1",
+            "agent_42",
+            "Orchestrator",
+            "ci_runner",
+            "x", // single-char minimum
+        ] {
+            assert!(
+                validate_agent_id(good).is_ok(),
+                "expected accept of {good:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_slash() {
+        // PROB-066 core: the `/` delimiter that AgentIdentity::new rejects
+        // must also be rejected here. `smoke-test/v1` was the enshrined
+        // CLI form that motivated this fix.
+        let err = validate_agent_id("smoke-test/v1").unwrap_err();
+        assert!(matches!(err, ClaimError::InvalidAgent(_)));
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_control_chars() {
+        // YAML-injection vector: an unsanitized newline в agent_id
+        // corrupted the on-disk .yaml body.
+        for bad in [
+            "foo\nbar",      // LF
+            "tab\there",     // TAB
+            "bell\u{0007}!", // BEL
+            "cr\rlf",        // CR
+        ] {
+            let err = validate_agent_id(bad).unwrap_err();
+            assert!(
+                matches!(err, ClaimError::InvalidAgent(_)),
+                "expected InvalidAgent for {bad:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_bidi_override() {
+        // Terminal-spoof vector: when `forgeplan claims` echoes agent_id,
+        // a bidi-override sequence inverts the rendered string. Reject all
+        // ZWJ / RTL / BOM / tag / variation-selector classes that
+        // is_identity_char_forbidden covers.
+        for bad in [
+            "orch\u{202E}drawkcab", // RLO
+            "agent\u{200B}zwsp",    // ZWSP
+            "client\u{200D}zwj",    // ZWJ
+            "bom\u{FEFF}prefix",    // BOM
+            "tag\u{E0041}chars",    // TAG-A
+        ] {
+            let err = validate_agent_id(bad).unwrap_err();
+            assert!(
+                matches!(err, ClaimError::InvalidAgent(_)),
+                "expected InvalidAgent for {bad:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_id_caps_length_at_64() {
+        // Length cap mirrors MAX_FIELD_LEN in artifact::identity. At the
+        // boundary the value is accepted; one byte over → AgentTooLong.
+        let at_boundary = "x".repeat(64);
+        assert!(validate_agent_id(&at_boundary).is_ok());
+
+        let over = "x".repeat(65);
+        let err = validate_agent_id(&over).unwrap_err();
+        assert!(matches!(err, ClaimError::AgentTooLong(65)));
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_empty_and_whitespace() {
+        // Empty and whitespace-only must surface EmptyAgent (preserving the
+        // existing typed-error contract that callers / hints depend on).
+        for bad in ["", "   ", "\t\t", "\n  "] {
+            let err = validate_agent_id(bad).unwrap_err();
+            // Note: `\n` and `\t` are control chars, but trim() strips them
+            // first so the empty branch fires.
+            assert!(
+                matches!(err, ClaimError::EmptyAgent),
+                "expected EmptyAgent for {bad:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_newline_agent_at_store_layer() {
+        // PROB-066 defense-in-depth: even if a caller bypasses the CLI
+        // strict guard, ClaimStore::claim still refuses control / bidi /
+        // NUL classes (newline below would otherwise corrupt the YAML body).
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let err = store
+            .claim("PRD-066", "evil\nx: y", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClaimError::InvalidAgent(_)));
+        // No file must have been written.
+        assert!(!ws(&tmp).join("claims/PRD-066.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn claim_store_still_accepts_canonical_slash_form() {
+        // MCP write-stamping path passes `AgentIdentity::as_frontmatter_value()`
+        // — e.g. `claude-code/1.0.50`. The relaxed store-layer validator must
+        // keep that legitimate shape working; the strict CLI-side filter is
+        // what rejects user-typed `smoke-test/v1`.
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let claim = store
+            .claim("PRD-068", "claude-code/1.0.50", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        assert_eq!(claim.agent_id, "claude-code/1.0.50");
+    }
+
+    #[tokio::test]
+    async fn release_rejects_control_char_agent_without_force() {
+        // PROB-066 A-3: validation must hit both claim() and release().
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        store
+            .claim("PRD-067", "owner-1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        let err = store
+            .release("PRD-067", "evil\nx: y", false)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ClaimError::InvalidAgent(_)),
+            "expected InvalidAgent, got {err:?}"
+        );
+        // The original claim is still on disk — release was refused before
+        // any filesystem mutation.
+        assert!(store.get("PRD-067").await.unwrap().is_some());
     }
 }

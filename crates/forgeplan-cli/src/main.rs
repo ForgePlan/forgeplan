@@ -1,5 +1,7 @@
-mod commands;
-mod ui;
+// PROB-060 Phase 0b: integration tests need to call select command modules
+// in-process. To avoid duplicating module trees, share via the (small)
+// library facade in `src/lib.rs` and import from there in the binary.
+use forgeplan::commands;
 
 use clap::{Parser, Subcommand};
 
@@ -90,7 +92,12 @@ enum Commands {
     },
     /// Initialize a new .forgeplan/ workspace
     Init {
-        /// Force reinitialize even if .forgeplan/ exists
+        /// Reinitialize config + indices in an existing .forgeplan/.
+        /// PROB-068: --force is now strictly additive — it never
+        /// overwrites existing artifact .md bodies. Only `config.yaml`
+        /// is rewritten and missing directories / the LanceDB index
+        /// are recreated. An auto-backup is taken unless
+        /// `--no-backup` is also passed.
         #[arg(long)]
         force: bool,
         /// Non-interactive mode (skip prompts, use defaults)
@@ -99,6 +106,12 @@ enum Commands {
         /// Scan for existing documents and import them
         #[arg(long)]
         scan: bool,
+        /// Skip the safety auto-backup that `--force` would otherwise
+        /// create (`.forgeplan-backup-<timestamp>/`). PROB-068: backups
+        /// are on by default to protect against the historical data
+        /// loss vector; opt out only when you've already exported.
+        #[arg(long)]
+        no_backup: bool,
     },
     /// Create a new artifact from template
     New {
@@ -448,6 +461,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Generate Keep-a-Changelog–shaped release notes from artifacts that
+    /// changed between two git refs. Walks `git log` over
+    /// `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`
+    /// and categorises each touched artifact: PRD→Added, PROB→Fixed,
+    /// EVID-on-security→Security, RFC/ADR→Changed. Quality gate: only
+    /// artifacts with `status==active` or `r_eff_score > 0` are emitted
+    /// (override with `--draft`).
+    #[command(name = "release-notes")]
+    ReleaseNotes {
+        /// Git ref to start from (default: latest tag).
+        #[arg(long)]
+        since: Option<String>,
+        /// Git ref to end at (default: HEAD).
+        #[arg(long)]
+        until: Option<String>,
+        /// Output format: text, markdown (alias md), json. Default: markdown.
+        #[arg(long, default_value = "markdown")]
+        output: String,
+        /// Disable the quality gate — include active artifacts without
+        /// evidence and drafts with r_eff_score=0.
+        #[arg(long)]
+        draft: bool,
+    },
     /// Renew a stale artifact (stale → active) with extended validity
     Renew {
         /// Artifact ID
@@ -554,6 +590,13 @@ enum Commands {
         /// Fail thresholds for --ci (e.g., "orphans=5,blind_spots=3,stale=2")
         #[arg(long)]
         fail_on: Option<String>,
+        /// Strict mode: exit 1 if verdict is NeedsAttention/Unhealthy or
+        /// any of {orphans, blind_spots, active_stubs, at_risk} > 0.
+        /// Designed for CI gates that want a single boolean signal.
+        /// Empty workspaces and advisory-only signals (e.g. phase mismatches)
+        /// keep exit 0.
+        #[arg(long)]
+        strict: bool,
     },
     /// Capture a decision from conversation into a Note or ADR artifact
     Capture {
@@ -638,6 +681,55 @@ enum Commands {
     },
     /// Run schema migrations on existing workspace
     Migrate,
+    /// PROB-060 Phase 0b — atomic CI assigner of `assigned_number`. Walks
+    /// `.forgeplan/**/*.md` in `--head`, finds candidates with
+    /// `assigned_number: null`, computes `next = max(assigned_number)+1`
+    /// per kind from `--base` git ref, rewrites frontmatter (no file
+    /// rename — Phase 2.1). LanceDB-free per ADR-003. Wrapped in production
+    /// by `.github/workflows/assign-id.yml` `concurrency: forgeplan-id-assign`.
+    CiAssignId {
+        /// PR number (informational, used in commit message). Required in CI.
+        #[arg(long, default_value_t = 0)]
+        pr: u64,
+        /// Repo slug "owner/name" (informational). Default: detect from origin.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git ref for "destination" state for max(assigned_number) lookup.
+        #[arg(long, default_value = "origin/dev")]
+        base: String,
+        /// Git ref for "incoming" PR state.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// Workspace root. Default: cwd.
+        #[arg(long)]
+        workspace: Option<std::path::PathBuf>,
+        /// Do not write frontmatter; print what would change.
+        #[arg(long)]
+        dry_run: bool,
+        /// On slug collision (slug already exists on --base), suggest
+        /// `<slug>-<assigned_number>` rename. Phase 0b: warning only.
+        #[arg(long)]
+        auto_suffix: bool,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// PROB-060 Phase 0b — EVID-C migration dry-run. Scans all artifacts
+    /// in `.forgeplan/`, computes the slug each would receive under
+    /// SPEC-005 rules, and detects per-kind collisions before Phase 4
+    /// migration. Read-only — never mutates `.md` files.
+    ///
+    /// Hybrid resolution: default = fail-and-list (exit 1 on collisions);
+    /// `--auto-suffix` adds `suggested_resolution` per collision in JSON.
+    MigrateDryRun(commands::migrate_dry_run::MigrateDryRunArgs),
+    /// PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge
+    /// identity drift. Scans `.forgeplan/<kind>/*.md`, detects four
+    /// drift categories (filename mismatch, missing `predicted_number`,
+    /// body-links drift, duplicate `assigned_number`), and either
+    /// reports (`--check-only`) or auto-fixes the safe categories.
+    /// LanceDB is never touched; run `forgeplan scan-import` afterwards
+    /// if the index needs to be rebuilt.
+    ReconcileIds(commands::reconcile_ids::ReconcileIdsArgs),
     /// Rebuild LanceDB index from .md files (files-first sync)
     Reindex,
     /// Generate embeddings for all artifacts (semantic search)
@@ -940,7 +1032,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::UndoLast { within_hours, json } => {
             commands::undo_last::run(within_hours, json).await
         }
-        Commands::Init { force, yes, scan } => commands::init::run(force, yes, scan).await,
+        Commands::Init {
+            force,
+            yes,
+            scan,
+            no_backup,
+        } => commands::init::run(force, yes, scan, no_backup).await,
         Commands::New {
             kind,
             title,
@@ -1140,7 +1237,8 @@ async fn main() -> anyhow::Result<()> {
             json,
             ci,
             fail_on,
-        } => commands::health::run(compact, json, ci, fail_on).await,
+            strict,
+        } => commands::health::run(compact, json, ci, fail_on, strict).await,
         Commands::Route {
             description,
             explain,
@@ -1156,6 +1254,12 @@ async fn main() -> anyhow::Result<()> {
             force,
             json,
         } => commands::release::run(&id, agent.as_deref(), force, json).await,
+        Commands::ReleaseNotes {
+            since,
+            until,
+            output,
+            draft,
+        } => commands::release_notes::run(since.as_deref(), until.as_deref(), &output, draft).await,
         Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
         Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,
@@ -1195,6 +1299,53 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => commands::phase_advance::run(&id, to, reason.as_deref(), json).await,
         Commands::Migrate => commands::migrate::run().await,
+        Commands::CiAssignId {
+            pr,
+            repo,
+            base,
+            head,
+            workspace,
+            dry_run,
+            auto_suffix,
+            json,
+        } => {
+            // PROB-060 Phase 0b — propagate exit codes 0/1/2/3/4 per CD-1.
+            let args = commands::ci_assign_id::CiAssignIdArgs {
+                pr,
+                repo,
+                base,
+                head,
+                workspace,
+                dry_run,
+                auto_suffix,
+                json,
+            };
+            let code = commands::ci_assign_id::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Commands::MigrateDryRun(args) => {
+            // PROB-060 Phase 0b — propagate non-zero exit codes via std::process::exit
+            // so shells distinguish "no collisions (0)" / "collisions (1)" /
+            // "scan error (2)". Returning anyhow::Result<()> alone collapses
+            // 1/2 to a generic 1.
+            let code = commands::migrate_dry_run::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Commands::ReconcileIds(args) => {
+            // PROB-060 Phase 2.4 — same exit-code propagation as
+            // migrate-dry-run. 0 = clean, 1 = drift detected, 2 = scan error.
+            let code = commands::reconcile_ids::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Commands::Reindex => commands::reindex::run().await,
         Commands::Embed => commands::embed::run().await,
         Commands::Log {

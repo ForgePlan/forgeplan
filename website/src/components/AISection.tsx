@@ -49,7 +49,7 @@ export default function AISection() {
                 AI Amplifies,<br />Doesn't Replace
               </h2>
               <p className="text-sm text-forge-dim max-w-[400px]" style={{ opacity: fade(0.08) }}>
-                63 MCP tools let Claude, GPT, or any AI agent create, validate, and manage artifacts.
+                72 MCP tools let Claude, GPT, or any AI agent create, validate, and manage artifacts.
                 But decisions are yours. Structure + AI = force multiplier.
               </p>
             </div>

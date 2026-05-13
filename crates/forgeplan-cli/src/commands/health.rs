@@ -1,4 +1,5 @@
 use console::style;
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::health;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
@@ -20,11 +21,38 @@ fn parse_fail_on(fail_on: &str) -> std::collections::HashMap<String, usize> {
     thresholds
 }
 
+/// Compute the `--strict` exit code for a built health report.
+///
+/// Returns `Some(1)` when the workspace surfaces any critical signal
+/// (verdict ∈ {NeedsAttention, Unhealthy} OR any of orphans / blind_spots
+/// / active_stubs / at_risk > 0). Returns `None` otherwise (caller emits
+/// exit 0). Empty workspaces and advisory-only signals (phase mismatches
+/// alone — consistent with PROB-063: advisory ≠ critical) are NOT counted
+/// as failures.
+///
+/// Pure function on the report so unit tests can pin the contract without
+/// invoking the CLI shell.
+fn strict_exit_code(report: &health::HealthReport) -> Option<i32> {
+    if !report.orphans.is_empty()
+        || !report.blind_spots.is_empty()
+        || !report.active_stubs.is_empty()
+        || !report.at_risk.is_empty()
+    {
+        return Some(1);
+    }
+    match report.verdict {
+        health::Verdict::NeedsAttention | health::Verdict::Unhealthy => Some(1),
+        // `Empty` and `Healthy` (plus any forward-compat variants) → no signal
+        _ => None,
+    }
+}
+
 pub async fn run(
     compact: bool,
     json: bool,
     ci: bool,
     fail_on: Option<String>,
+    strict: bool,
 ) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
@@ -72,60 +100,45 @@ pub async fn run(
     // No hints → workspace healthy → render `Done.` terminal indicator.
 
     if json {
-        // PR-E Round 6 audit MED fix: `Verdict::Empty` now exists as a 4th
-        // enum variant. `human_summary()` returns the empty-workspace
-        // text directly, so the Round 5 manual `total == 0` branch is no
-        // longer needed — typed `verdict` and `verdict_summary` agree
-        // by construction (no consumer can read `verdict == "healthy"`
-        // for an empty workspace).
-        let verdict_summary = report.verdict.human_summary();
-        let json_data = serde_json::json!({
-            "project": config.project_name,
-            "total": report.total,
-            // PROB-029 closure (Round 4 audit HIGH-1): expose the typed
-            // verdict + human-readable summary so programmatic consumers
-            // (CI scripts, agent-IDE plugins via `forgeplan health --json`)
-            // can branch on `verdict` directly. Without this, --json output
-            // had only raw counts and `next_actions` strings — re-implementing
-            // the verdict aggregation downstream would silently drift.
-            "verdict": report.verdict.as_str(),
-            "verdict_summary": verdict_summary,
-            "by_kind": report.by_kind.iter().map(|(k, v)| serde_json::json!({"kind": k, "count": v})).collect::<Vec<_>>(),
-            "by_status": report.by_status.iter().map(|(s, v)| serde_json::json!({"status": s, "count": v})).collect::<Vec<_>>(),
-            "at_risk": report.at_risk.iter().map(|a| serde_json::json!({"id": a.id, "title": a.title, "reason": a.reason})).collect::<Vec<_>>(),
-            "blind_spots": report.blind_spots.iter().map(|b| serde_json::json!({"id": b.id, "title": b.title, "issue": b.issue})).collect::<Vec<_>>(),
-            "stale_count": report.stale_count,
-            "orphans": report.orphans,
-            "by_derived_status": report.by_derived_status.iter().map(|(ds, v)| serde_json::json!({"status": ds.label(), "count": v})).collect::<Vec<_>>(),
-            "next_actions": report.next_actions,
-            "possible_duplicates": report.possible_duplicates.iter().map(|d| serde_json::json!({
-                "id_a": d.id_a,
-                "id_b": d.id_b,
-                "similarity": d.similarity,
-                "title_a": d.title_a,
-                "title_b": d.title_b,
-                "kind": d.kind,
-            })).collect::<Vec<_>>(),
-            "active_stubs": report.active_stubs.iter().map(|s| serde_json::json!({
-                "id": s.id,
-                "kind": s.kind,
-                "title": s.title,
-                "markers_found": s.markers_found,
-                "message": s.message,
-            })).collect::<Vec<_>>(),
-            // PROB-051 L-H3: surface phase mismatches in CLI --json so
-            // operators using `forgeplan health --json | jq .phase_mismatches`
-            // see the same data as MCP `forgeplan_health`.
-            "phase_mismatches": phase_mismatches.iter().map(|m| serde_json::json!({
-                "id": m.id,
-                "title": m.title,
-                "status": m.status,
-                "current_phase": m.current_phase,
-                "advisory": m.advisory,
-            })).collect::<Vec<_>>(),
-            "_next_action": hints::primary_action(&hints_vec),
-        });
+        // Wave 9 ARCH-C1 closure: route the JSON shape through the
+        // unified `forgeplan_core::health::health_report_to_json` helper
+        // so CLI and MCP surfaces emit IDENTICAL key sets and shapes by
+        // construction. Pre-fix the two surfaces hand-rolled `json!(...)`
+        // literals with subtly different shapes (`by_kind` object vs
+        // tuple; missing `possible_duplicates` on MCP — see PROB-064 /
+        // CR-001). The helper also bundles SEC-M1 closure — every
+        // title / message / reason / issue / advisory string is
+        // sanitised before serialisation (CWE-117 / CWE-1007 defence).
+        let mut json_data =
+            forgeplan_core::health::health_report_to_json(&report, &phase_mismatches);
+        // Layer in CLI-specific keys AFTER the helper builds the
+        // shared shape: `project` (workspace identity, not part of the
+        // core health domain) and `_next_action` (CLI hint protocol).
+        // `--strict` adds a parseable `exit_code` field so CI scripts
+        // can branch on a single integer.
+        let strict_exit = if strict {
+            strict_exit_code(&report).unwrap_or(0)
+        } else {
+            0
+        };
+        if let serde_json::Value::Object(ref mut map) = json_data {
+            map.insert(
+                "project".to_string(),
+                serde_json::Value::String(config.project_name.clone()),
+            );
+            map.insert(
+                "_next_action".to_string(),
+                serde_json::to_value(hints::primary_action(&hints_vec))
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            if strict {
+                map.insert("exit_code".to_string(), serde_json::json!(strict_exit));
+            }
+        }
         println!("{}", serde_json::to_string_pretty(&json_data)?);
+        if strict && strict_exit != 0 {
+            std::process::exit(strict_exit);
+        }
         return Ok(());
     }
 
@@ -207,12 +220,16 @@ pub async fn run(
             style("!").yellow().bold(),
             ui::styled_count(report.at_risk.len(), true)
         );
+        // LOG-001 (audit Wave 9): sanitize title + reason so an
+        // attacker-controlled artifact title (ANSI escapes, bidi
+        // overrides, zero-width chars) cannot hijack operator's
+        // terminal output (CWE-117 / CWE-150).
         for item in &report.at_risk {
             println!(
                 "    {} \"{}\" — {}",
                 style(&item.id).yellow(),
-                item.title,
-                style(&item.reason).red()
+                sanitize_for_hint(&item.title),
+                style(sanitize_for_hint(&item.reason)).red()
             );
         }
     }
@@ -229,8 +246,8 @@ pub async fn run(
             println!(
                 "    {} \"{}\" — {}",
                 style(&spot.id).yellow(),
-                spot.title,
-                style(&spot.issue).red()
+                sanitize_for_hint(&spot.title),
+                style(sanitize_for_hint(&spot.issue)).red()
             );
         }
     }
@@ -259,21 +276,34 @@ pub async fn run(
     }
 
     // Possible duplicates
+    // PROB-051 L-M2: report carries the FULL list (verdict aggregator
+    // needs the unclipped count). Display-side cap is the CLI's call —
+    // print top-N by similarity and surface the overflow as a one-line
+    // summary so operators know more pairs exist.
     if !report.possible_duplicates.is_empty() {
+        let total_dups = report.possible_duplicates.len();
+        let display_limit = health::DUPLICATE_PAIRS_DISPLAY_LIMIT;
         println!();
         println!(
             "  {} Possible duplicates ({}):",
             style("⧗").yellow().bold(),
-            ui::styled_count(report.possible_duplicates.len(), true)
+            ui::styled_count(total_dups, true)
         );
-        for d in &report.possible_duplicates {
+        for d in report.possible_duplicates.iter().take(display_limit) {
             let pct = (d.similarity * 100.0).round() as u32;
             println!(
                 "    {} ↔ {} ({}%) — \"{}\"",
                 style(&d.id_a).yellow(),
                 style(&d.id_b).yellow(),
                 pct,
-                d.title_a
+                sanitize_for_hint(&d.title_a)
+            );
+        }
+        if total_dups > display_limit {
+            println!(
+                "    {} {} more pair(s) — see `forgeplan health --json` for the full list",
+                style("…").dim(),
+                total_dups - display_limit
             );
         }
     }
@@ -291,8 +321,28 @@ pub async fn run(
             println!(
                 "    {} \"{}\" — phase: {}",
                 style(&m.id).yellow(),
-                m.title,
+                sanitize_for_hint(&m.title),
                 style(&m.current_phase).yellow()
+            );
+        }
+    }
+
+    // PROB-062: gitignore drift advisory — tracked files matching
+    // canonical forgeplan ignore patterns (derived state, per-machine
+    // runtime). Advisory like phase mismatches — printed for visibility
+    // but never promoted into the verdict aggregator.
+    if !report.gitignore_drift.is_empty() {
+        println!();
+        println!(
+            "  {} Gitignore drift ({}):",
+            style("◈").yellow().bold(),
+            ui::styled_count(report.gitignore_drift.len(), true)
+        );
+        for d in &report.gitignore_drift {
+            println!(
+                "    {} — {}",
+                style(sanitize_for_hint(&d.path)).yellow(),
+                style(sanitize_for_hint(&d.reason)).dim()
             );
         }
     }
@@ -310,7 +360,7 @@ pub async fn run(
                 "    {} ({}) \"{}\" — {} markers",
                 style(&s.id).yellow(),
                 s.kind,
-                s.title,
+                sanitize_for_hint(&s.title),
                 s.markers_found
             );
         }
@@ -329,20 +379,12 @@ pub async fn run(
         }
     }
 
-    // Overall health summary — drive off the verdict aggregator so the CLI
-    // banner cannot disagree with `next_actions` (PROB-029 closure: previously
-    // `has_issues` here missed `active_stubs` + `possible_duplicates` and
-    // could print "Project looks healthy!" right after a list of warnings).
-    //
-    // Round 4 audit closures:
-    // - MED-2: drive the literal off `Verdict::human_summary()` so the
-    //   text only lives in one place (no more banner-vs-summary drift).
-    // - LOW-4: render the summary for ALL three verdict levels (Healthy /
-    //   NeedsAttention / Unhealthy), not only Healthy. Pre-Round-4 the
-    //   banner disappeared entirely on non-Healthy workspaces — silent
-    //   regression vs the pre-PR-C banner that was at least always
-    //   present (just sometimes wrong). Now: gradient signalling per
-    //   PROB-029 AC-2 spirit.
+    // Overall health summary — drive the literal off `Verdict::human_summary()`
+    // (single source of truth) and render for ALL three verdict levels so the
+    // banner is always present, with colour signalling the severity gradient
+    // (green/yellow/red + dim-cyan for future `#[non_exhaustive]` variants).
+    // PROB-029 anti-contradiction guarantee: banner cannot disagree with
+    // `next_actions` because both fold off the same verdict aggregator.
     if report.total > 0 {
         let summary = report.verdict.human_summary();
         let styled = match report.verdict {
@@ -415,6 +457,14 @@ pub async fn run(
         } else {
             println!("CI PASSED — health within thresholds");
         }
+    }
+
+    // `--strict` gate: exit non-zero when any critical signal trips. Runs
+    // AFTER human rendering so operators still see the dashboard before
+    // the CI failure. JSON path handles its own exit above to keep the
+    // `exit_code` field in the payload.
+    if strict && let Some(code) = strict_exit_code(&report) {
+        std::process::exit(code);
     }
 
     Ok(())

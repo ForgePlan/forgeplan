@@ -313,3 +313,5 @@ stays scoped to the typed-error migration:
 | 3d | Drift detection in `sync_metadata` / `sync_relation` + `HashSet` dedup in `add_links_batch` | ⏳ pending |
 | 5 | EVID-094 supplement: clone reproducibility at CL3 + closure | ⏳ pending |
 
+
+

@@ -4,7 +4,7 @@ title: "{title}"
 status: Proposed
 depth: standard / deep / critical
 valid_until: YYYY-MM-DD
-problem_ref: PROB-{NNN}
+problem_ref: null
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 ---
@@ -154,7 +154,7 @@ TOTAL                               0/0  (  0%)
 
 | Artifact | Type | Relation |
 |----------|------|----------|
-| RFC-{NNN} | RFC | based_on |
-| PROB-{NNN} | ProblemCard | based_on |
-| SOL-{NNN} | SolutionPortfolio | based_on |
-| SPEC-{NNN} | Spec | implements |
+| RFC-<id> | RFC | based_on |
+| PROB-<id> | ProblemCard | based_on |
+| SOL-<id> | SolutionPortfolio | based_on |
+| SPEC-<id> | Spec | implements |

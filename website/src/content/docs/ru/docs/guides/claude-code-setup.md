@@ -120,7 +120,7 @@ forgeplan route "task description"   # определяет глубину
 }
 ```
 
-Это предоставляет AI агентам доступ к 63 инструментам: create, validate, score, search, graph, reason, route, плюс оркестрация playbook'ов, FPF KB, dispatch, claims, и другие.
+Это предоставляет AI агентам доступ к 72 инструментам: create, validate, score, search, graph, reason, route, плюс оркестрация playbook'ов, FPF KB, dispatch, claims, и другие.
 
 ## Интеграция памяти (Hindsight)
 

@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
@@ -10,7 +11,26 @@ pub async fn run(
     depth: Option<&str>,
     body: Option<&str>,
 ) -> anyhow::Result<()> {
+    // Wave 9 SEC-C1: validate new title BEFORE acquiring lock / touching DB.
+    // Mirrors `forgeplan new` — rejects empty/whitespace, oversize, control
+    // chars (incl. ANSI ESC), and bidi overrides (Trojan Source CWE-1007).
+    // Pre-fix, `--title` accepted any bytes and only failed downstream when
+    // YAML frontmatter rendering corrupted, leaving a half-mutated row.
+    if let Some(t) = title {
+        forgeplan_core::artifact::validate_title(t)?;
+    }
+
     let (ws, _lock, store) = common::open_store_locked().await?;
+
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    // Resolve once at the top so every downstream operation (lifecycle,
+    // projection, log_change, hint rendering) sees the canonical DB id
+    // regardless of which form the user passed.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
 
     // Verify artifact exists (keep original for old projection cleanup)
     let original = store.get_record(id).await?.ok_or_else(|| {
@@ -155,7 +175,13 @@ Fix: forgeplan list",
         println!("  Status:  {}", s);
     }
     if let Some(t) = title {
-        println!("  Title:   {}", t);
+        // LOG-001 defence (Wave 9 audit): even though `validate_title` above
+        // rejects control chars + bidi overrides, sanitise on the way out as
+        // belt-and-braces — keeps the rendered line safe even if a future
+        // refactor weakens the validator or the title travels through this
+        // print path from a different (non-validated) source. Sanitiser
+        // strips zero-width chars, ANSI, shell metas, and bidi.
+        println!("  Title:   {}", sanitize_for_hint(t));
     }
     if body.is_some() {
         println!("  Body:    updated");
@@ -163,8 +189,17 @@ Fix: forgeplan list",
 
     // PRD-071: any update — re-validate to make sure the artifact still
     // satisfies its kind+depth rules.
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
+    // id post-merge so the re-validation command stays canonical for
+    // commit `Refs:` lines.
+    let updated_record = store.get_record(id).await?;
+    let ref_form = match &updated_record {
+        Some(r) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id),
+        None => id.to_string(),
+    };
     let next_hints: Vec<Hint> = vec![
-        Hint::info("Updated — re-run validator").with_action(format!("forgeplan validate {}", id)),
+        Hint::info("Updated — re-run validator")
+            .with_action(format!("forgeplan validate {}", ref_form)),
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 

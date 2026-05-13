@@ -49,6 +49,12 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             anyhow::bail!("LLM not configured");
         }
     };
+    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
+    let id = store
+        .resolve_id(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = id.as_str();
     let record = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(
             "Artifact '{}' not found\n\
@@ -133,18 +139,30 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // PRD-071 contract: deterministic Next: action for the agent — verify R_eff
     // after ADI. If evidence_needed is non-empty, point at evidence creation
     // first (the prerequisite for a meaningful score).
+    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug pre-merge and
+    // display id post-merge so the agent's next command keeps canonical
+    // refs in commit messages.
+    //
+    // **HIGH-3 (Round-1 audit, CWE-117 / prompt injection)**: defence in
+    // depth — even though `refs_form_from_body` rejects slugs failing the
+    // SPEC-005 grammar, we sanitize the result before splicing it into
+    // hint strings. Mirrors MCP server's existing `sanitize_for_hint`
+    // discipline.
+    let raw_ref =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
+    let ref_form = forgeplan_core::artifact::sanitize::sanitize_for_hint(&raw_ref);
     let mut hints_vec: Vec<Hint> = Vec::new();
     if !adi_output.evidence_needed.is_empty() {
         hints_vec.push(
             Hint::suggestion("Add the missing evidence flagged by ADI").with_action(format!(
                 "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX {} --relation informs",
-                record.id
+                ref_form
             )),
         );
     } else {
         hints_vec.push(
             Hint::suggestion("Verify R_eff after ADI")
-                .with_action(format!("forgeplan score {}", record.id)),
+                .with_action(format!("forgeplan score {}", ref_form)),
         );
     }
 
@@ -184,7 +202,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         }
         println!(
             "\n  Tip: forgeplan new evidence \"<description>\"  # then link to {}",
-            record.id
+            ref_form
         );
     }
 

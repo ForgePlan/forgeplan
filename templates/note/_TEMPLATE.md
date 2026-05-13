@@ -1,3 +1,12 @@
+---
+id: NOTE-{NNN}
+title: "{title}"
+status: draft
+kind: note
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
+
 # NOTE-{NNN}: {Title}
 
 | Field | Value |
