@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
@@ -140,7 +141,15 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
     println!("Found {} artifact(s) matching \"{}\":\n", hits.len(), query);
 
     for record in &hits {
-        println!("  {} [{}] \"{}\"", record.id, record.kind, record.title);
+        // SEC-H1 (CWE-117 / CWE-150): titles are attacker-controllable via
+        // frontmatter / CSV import; sanitize before TTY emission to
+        // neutralise ANSI/bidi/control bytes.
+        println!(
+            "  {} [{}] \"{}\"",
+            record.id,
+            record.kind,
+            sanitize_for_hint(&record.title)
+        );
 
         let query_lower = query.to_lowercase();
         let mut match_count = 0;
@@ -249,12 +258,13 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
             query
         );
         for h in &hits {
+            // SEC-H1: sanitize attacker-controllable title before TTY emission.
             println!(
                 "  {:.2}  {} [{}] \"{}\"",
                 h.similarity(),
                 h.record.id,
                 h.record.kind,
-                h.record.title
+                sanitize_for_hint(&h.record.title)
             );
         }
 
@@ -405,9 +415,14 @@ async fn run_smart(
                 "kw={:.2} sem={:.2} r={:.2} g={:.2}",
                 kw_channel, r.semantic_score, r.r_eff, r.graph_centrality
             );
+            // SEC-H1: sanitize attacker-controllable title before TTY emission.
             println!(
                 "  {:.2}  {} [{}|{}] \"{}\"",
-                r.score, r.id, r.kind, r.status, r.title
+                r.score,
+                r.id,
+                r.kind,
+                r.status,
+                sanitize_for_hint(&r.title)
             );
             if let Some(parent) = &r.expanded_from {
                 println!("        via {} (expanded neighbor)", parent);

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::search::filter::ArtifactFilter as QueryFilter;
 
@@ -151,13 +152,16 @@ pub async fn run(
             String::new()
         };
 
+        // SEC-H1 (CWE-117 / CWE-150): titles are attacker-controllable via
+        // frontmatter / CSV import / scripted creation; sanitize before
+        // emitting to operator's TTY to neutralise ANSI/bidi/control bytes.
         println!(
             "{:<id_w$}  {:<kind_w$}  {}{}  {}",
             style(&a.id).bold(),
             a.kind,
             status_styled,
             status_padding,
-            a.title,
+            sanitize_for_hint(&a.title),
             id_w = id_width,
             kind_w = kind_width,
         );
