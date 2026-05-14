@@ -219,3 +219,60 @@ async fn bench_health_scaling_1k_5k_10k() {
         "warm scan at N=10000 exceeded 30s: {warm_10k:?}"
     );
 }
+
+/// FR-026 (v0.32.0 smoke variant): small-scale 3-point bench at
+/// N ∈ {10, 50, 100}. Runs in well under 1 second on a modern dev
+/// machine and is NOT ignored — it executes as part of the regular
+/// `cargo test --features test-helpers` pass so a per-artifact-ratio
+/// regression surfaces immediately without paying the 10k-artifact
+/// cost of the full bench.
+///
+/// Uses a more generous ratio gate (3.0×) than the full bench because
+/// the absolute timings are dominated by per-call overhead at small N
+/// (seed cost amortises poorly). Catches catastrophic regressions
+/// (clear O(N²) shape) without flaking on jitter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bench_health_scaling_smoke_3_points() {
+    // Small N points — total seed across the three runs is 160 artifacts,
+    // bounded well under 1 second even on a slow CI runner.
+    let points = [(10_usize, 2_usize), (50, 10), (100, 20)];
+
+    let mut results: Vec<(usize, Duration, Duration)> = Vec::new();
+    for (n, active) in points {
+        let (cold, warm) = measure_one(n, active).await;
+        results.push((n, cold, warm));
+    }
+
+    // Per-artifact ratio gate — looser than the full bench because the
+    // absolute warm-scan time at N=10 is dominated by fixed overhead
+    // (LanceDB query plan setup, table scan startup), so per-artifact
+    // µs is artificially inflated. A genuine O(N²) regression would
+    // still produce ratio ≥ 10× and bust the gate.
+    let per_smallest = results[0].2.as_micros() as f64 / results[0].0 as f64;
+    let per_largest = results[2].2.as_micros() as f64 / results[2].0 as f64;
+    // Inverted ratio handles the small-N overhead inflation cleanly:
+    // we accept per_largest ≤ per_smallest × 3 (linear or sublinear);
+    // O(N²) drift would put per_largest ≫ per_smallest × 3.
+    let ratio = per_largest / per_smallest;
+
+    eprintln!(
+        "[bench-smoke] per-artifact ratio (100 vs 10): {ratio:.2}× (gate: ≤ 3.0×, looser \
+         than 10k variant due to fixed-overhead inflation at N=10)"
+    );
+
+    assert!(
+        ratio <= 3.0,
+        "FR-026 smoke scaling regression: per-artifact warm latency at N=100 \
+         ({per_largest:.2} µs/artifact) is {ratio:.2}× the N=10 rate ({per_smallest:.2} \
+         µs/artifact). Suspect catastrophic O(N²) drift in health_report_with_phase."
+    );
+
+    // Generous absolute ceiling — 100-artifact warm scan completes well
+    // under 5 seconds even on a slow runner. If exceeded, something is
+    // very wrong (likely a deadlock or runaway loop, not jitter).
+    let warm_100 = results[2].2;
+    assert!(
+        warm_100 < Duration::from_secs(5),
+        "warm scan at N=100 exceeded 5s — suspect deadlock or runaway: {warm_100:?}"
+    );
+}
