@@ -740,6 +740,13 @@ enum Commands {
     /// Hybrid resolution: default = fail-and-list (exit 1 on collisions);
     /// `--auto-suffix` adds `suggested_resolution` per collision in JSON.
     MigrateDryRun(commands::migrate_dry_run::MigrateDryRunArgs),
+    /// PRD-077 FR-023 Part B — import known API-key env vars
+    /// (GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) from the
+    /// process environment into `.forgeplan/secrets.env` so keys live
+    /// project-local instead of in your shell rc. Default is dry-run;
+    /// pass `--apply` to write.
+    #[command(name = "migrate-secrets")]
+    MigrateSecretsCommand(commands::migrate_secrets::MigrateSecretsArgs),
     /// PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge
     /// identity drift. Scans `.forgeplan/<kind>/*.md`, detects four
     /// drift categories (filename mismatch, missing `predicted_number`,
@@ -1350,6 +1357,16 @@ async fn main() -> anyhow::Result<()> {
             // "scan error (2)". Returning anyhow::Result<()> alone collapses
             // 1/2 to a generic 1.
             let code = commands::migrate_dry_run::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Commands::MigrateSecretsCommand(args) => {
+            // PRD-077 FR-023 Part B — same exit-code propagation as
+            // migrate-dry-run: 0 success, 1 partial failure, 2 workspace
+            // not found.
+            let code = commands::migrate_secrets::run(args).await?;
             if code != 0 {
                 std::process::exit(code);
             }

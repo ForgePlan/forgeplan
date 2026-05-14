@@ -165,3 +165,4 @@ All FRs reversible by `git revert`. No on-disk artifact format changes. No Lance
 - User direction 2026-05-13: "оставим config.yaml как есть и просто добавим secrets.yaml + в ignore" (file renamed to `secrets.env` during CR-C4 fix — body is shell syntax not YAML)
 - User direction 2026-05-13: "Нужно чтобы всё работало идеально — каждый пункт и тем более со скиллами чтобы было чётко и синхронизировано"
 
+
