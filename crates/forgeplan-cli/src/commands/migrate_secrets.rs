@@ -378,6 +378,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn inspect_with_empty_env_and_empty_file_marks_all_absent() {
         let result = inspect_with_synthetic_existing(&[]);
         assert_eq!(result.len(), 3);
@@ -400,6 +401,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn inspect_marks_existing_in_file_correctly() {
         // Synthetic: pretend the file contains GEMINI_API_KEY.
         let result = inspect_with_synthetic_existing(&[("GEMINI_API_KEY", "filevalue")]);
@@ -418,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn apply_writes_atomic_file_with_canonical_template_header() {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = tmp.path().to_path_buf();
@@ -470,6 +473,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn apply_creates_backup_when_pre_existing_file_has_content() {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = tmp.path().to_path_buf();
@@ -511,6 +515,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn apply_refuses_value_containing_single_quote() {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = tmp.path().to_path_buf();
