@@ -548,3 +548,83 @@ fn generate_emits_contract_marker_without_llm() {
     );
     assert_text_contract("generate (no LLM)", &out);
 }
+
+// ----------------------------------------------------------------------------
+// Group E: PROB-071 follow-up regression pins (v0.32.0)
+// ----------------------------------------------------------------------------
+//
+// These tests pin the CURRENT state of known hint-contract error paths so a
+// future change that accidentally splits one `Fix:` line into two (or zero)
+// surfaces immediately. They do NOT attempt to fix the PROB-071 multi-`Fix:`
+// debt — that is v0.33+ scope. The goal here is regression containment: if
+// the current state is "exactly one `Fix:` line on this path", capture that
+// invariant in a test so it stays that way until the explicit refactor.
+
+/// Counts `Fix:` markers in combined stdout+stderr — symmetric with
+/// `count_next_markers`. The contract permits one `Fix:` per error path
+/// (paired with `Error:`). Splitting into multiple `Fix:` lines violates
+/// the "single primary remediation" intent.
+fn count_fix_markers(output: &str) -> usize {
+    output
+        .lines()
+        .filter(|l| l.trim_start().starts_with("Fix:"))
+        .count()
+}
+
+/// PROB-071 regression pin: `forgeplan get NONEXISTENT-999` emits exactly
+/// ONE `Fix:` line. The current output shape (v0.32.0) is:
+///
+///   Next: forgeplan new prd "<title>"
+///   Error: Artifact 'NONEXISTENT-999' not found
+///   Fix: forgeplan list
+///
+/// Pinning this prevents future divergence: a refactor that re-introduces
+/// the "double Fix:" pattern (one from the resolver, one from the command-
+/// level error handler) will fail this test rather than silently confuse
+/// agents reading the hint stream.
+#[test]
+fn get_nonexistent_emits_exactly_one_fix_marker() {
+    let ws = setup_workspace();
+    let out = run(&ws, &["get", "NONEXISTENT-999"]);
+    assert!(!out.status.success(), "get of a nonexistent ID must fail");
+
+    let body = combined(&out);
+    let fix_count = count_fix_markers(&body);
+    assert_eq!(
+        fix_count, 1,
+        "PROB-071 regression: expected exactly ONE `Fix:` line on `get NONEXISTENT-999`, \
+         got {fix_count}. Full output:\n{body}"
+    );
+
+    // Also pin: the `Fix:` line must carry a concrete command (not a stub).
+    let fix_line = body
+        .lines()
+        .find(|l| l.trim_start().starts_with("Fix:"))
+        .expect("Fix: line present (asserted above)");
+    assert!(
+        !has_forbidden_placeholder(fix_line),
+        "Fix: line must not contain a forbidden placeholder: {fix_line}"
+    );
+    // The current renderer suggests `forgeplan list` as the remediation.
+    // If a future change moves to a different remediation that is fine —
+    // but it must be a concrete forgeplan command, not bare prose.
+    assert!(
+        fix_line.contains("forgeplan "),
+        "Fix: line must reference a forgeplan command, got: {fix_line}"
+    );
+}
+
+/// Companion pin: the same error path must also emit at most ONE `Next:`
+/// marker (in this case the setup-PRD scaffold hint). Multi-`Next:` is a
+/// separate violation surface that PROB-071 also tracks.
+#[test]
+fn get_nonexistent_emits_at_most_one_next_marker() {
+    let ws = setup_workspace();
+    let out = run(&ws, &["get", "NONEXISTENT-999"]);
+    let body = combined(&out);
+    let next_count = count_next_markers(&body);
+    assert!(
+        next_count <= 1,
+        "PROB-071 regression: expected ≤ 1 `Next:` line on error path, got {next_count}:\n{body}"
+    );
+}
