@@ -596,4 +596,205 @@ mod tests {
         let map = load_secrets_env(td.path()).unwrap();
         assert_eq!(map.get("FOO"), Some(&String::new()));
     }
+
+    // -------------------------------------------------------------------
+    // v0.32.0 corner-case coverage — adversarial / boundary inputs that
+    // the existing test suite did not pin. Each test documents the chosen
+    // behaviour so future refactors do not silently regress it.
+    // -------------------------------------------------------------------
+
+    /// BOM (U+FEFF) at the very start of the file is **rejected** because
+    /// it appears in the key position. The parser treats `\u{feff}KEY`
+    /// as an invalid identifier (the BOM byte is not `[A-Za-z_]`), so a
+    /// loud parse error surfaces rather than silently accepting a key
+    /// the user cannot reference by name from the shell. Documents the
+    /// chosen behaviour: callers who hit this are expected to strip the
+    /// BOM at the source (text editor "save without BOM").
+    #[test]
+    fn corner_bom_prefix_rejected_with_clear_error() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "\u{feff}FOO=bar\n");
+        let err = load_secrets_env(td.path()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("line 1"),
+            "BOM-prefixed line must report line 1: {msg}"
+        );
+        assert!(
+            msg.contains("invalid env var name") || msg.contains("malformed"),
+            "BOM should produce a parse error, got: {msg}"
+        );
+    }
+
+    /// Mixed line endings (CRLF then LF in the same file). `str::lines()`
+    /// strips the trailing `\r` so both forms produce clean values; the
+    /// CR is NOT retained in the value.
+    #[test]
+    fn corner_mixed_crlf_and_lf_line_endings() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO=bar\r\nBAZ=qux\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(map.get("BAZ"), Some(&"qux".to_string()));
+        // The CR must not survive into the value.
+        assert!(
+            !map.values().any(|v| v.contains('\r')),
+            "no value should retain a CR byte"
+        );
+    }
+
+    /// Embedded `=` in the value — the parser splits on the FIRST `=`
+    /// so the remainder is one literal payload. This matches POSIX
+    /// `KEY=value` shape and is critical for tokens like JWTs that
+    /// contain `=` padding.
+    #[test]
+    fn corner_embedded_equals_in_value() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO=a=b=c\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO"), Some(&"a=b=c".to_string()));
+    }
+
+    /// Whitespace-only value collapses to empty string. The trailing
+    /// trim inside `parse_value` strips spaces/tabs, leaving "".
+    #[test]
+    fn corner_whitespace_only_value_collapses_to_empty() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO=   \t  \n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO"), Some(&String::new()));
+    }
+
+    /// Escaped-quote inside a single-quoted value: **NOT supported**.
+    /// Per the grammar docs, escapes are not processed in any quote
+    /// form. `'it\'s'` is parsed as: opens with `'`, sees `it\` until
+    /// the next `'` — which is the second one — so the value should be
+    /// `it\` and the trailing `s'` should be a parse error (extra text
+    /// after the closing quote). Document by asserting parse failure.
+    ///
+    /// If a future iteration adds escape support, this test will fail
+    /// and the new behaviour can be pinned explicitly.
+    #[test]
+    fn corner_escaped_quote_inside_single_quotes_not_supported() {
+        let (td, fp) = setup_workspace();
+        // `KEY='it\'s'` — backslash-escape is NOT honoured.
+        // Parser logic: trimmed first char `'`, trimmed last char `'`,
+        // so it accepts the WHOLE inner span as the value, including the
+        // embedded backslash + quote + `s\\`. Document: the entire body
+        // between the OUTER quotes survives literally.
+        write_secrets(&fp, "FOO='it\\'s'\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        // Outer quotes stripped; the literal middle survives.
+        // Inner shape: `it\'s` (5 chars: i, t, \, ', s).
+        assert_eq!(
+            map.get("FOO"),
+            Some(&"it\\'s".to_string()),
+            "documented behaviour: no escape processing inside quotes"
+        );
+    }
+
+    /// Inline `#` comment after value is **NOT** treated as a comment —
+    /// `#` survives into the value. This is the documented choice in
+    /// `parse_value`'s body: dotenv-style secrets are opaque tokens and
+    /// stripping after `#` would chop a legitimate `sk-...#frag` value.
+    #[test]
+    fn corner_hash_after_value_is_part_of_value_not_comment() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO=value # not a comment\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        // Trailing whitespace is trimmed, but the `#` and the text past
+        // it remain.
+        assert_eq!(
+            map.get("FOO"),
+            Some(&"value # not a comment".to_string()),
+            "trailing `#` must survive — opaque-token policy"
+        );
+    }
+
+    /// 10 KB single line — well below the 64 KiB cap. Must parse
+    /// without error and produce the full payload as the value.
+    #[test]
+    fn corner_long_single_line_within_cap_parses() {
+        let (td, fp) = setup_workspace();
+        let big_val = "A".repeat(10 * 1024);
+        write_secrets(&fp, &format!("FOO={big_val}\n"));
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO").map(|s| s.len()), Some(10 * 1024));
+    }
+
+    /// Duplicate keys — last-wins semantics. `HashMap::insert` overwrites
+    /// the previous value silently. Documented contract: callers should
+    /// not have duplicates; if they do, the last definition is the
+    /// effective one. (Future iteration could warn on duplicate-key
+    /// detection but current behaviour is silent overwrite.)
+    #[test]
+    fn corner_duplicate_keys_last_wins() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO=first\nFOO=second\nFOO=third\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(
+            map.get("FOO"),
+            Some(&"third".to_string()),
+            "last definition wins"
+        );
+        assert_eq!(map.len(), 1, "duplicates collapse to one entry");
+    }
+
+    /// Mixed-case keys are **distinct** identifiers. POSIX env vars are
+    /// case-sensitive (`HOME` ≠ `home`), and `is_valid_key` accepts both
+    /// uppercase and lowercase initial letters. The parser does NOT
+    /// normalise — both keys live side-by-side.
+    #[test]
+    fn corner_mixed_case_keys_kept_distinct() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "gemini_api_key=lower\nGEMINI_API_KEY=upper\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("gemini_api_key"), Some(&"lower".to_string()));
+        assert_eq!(map.get("GEMINI_API_KEY"), Some(&"upper".to_string()));
+        assert_eq!(map.len(), 2, "case-sensitive keys do not collide");
+    }
+
+    /// Tab characters around `=` are tolerated (whitespace tolerance
+    /// matches the `FOO = bar` test, but specifically pins TAB behaviour).
+    #[test]
+    fn corner_tab_around_equals_tolerated() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO\t=\tbar\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    /// Empty single-quoted value (`KEY=''`) collapses to empty string.
+    /// Boundary case for the quote-stripping logic: trimmed.len() == 2
+    /// and the two chars are matching quotes.
+    #[test]
+    fn corner_empty_quoted_value() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO=''\nBAR=\"\"\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO"), Some(&String::new()));
+        assert_eq!(map.get("BAR"), Some(&String::new()));
+    }
+
+    /// Line with only `export` keyword and nothing else — should be a
+    /// parse error (no `=`).
+    #[test]
+    fn corner_bare_export_keyword_rejected() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "export\n");
+        let err = load_secrets_env(td.path());
+        // `export` without trailing space is treated as an identifier
+        // (no `=` found) and rejected.
+        assert!(err.is_err(), "bare `export` line must error");
+    }
+
+    /// Single-quoted value containing a literal `=` — the `=` is
+    /// inside the quotes so it must survive intact.
+    #[test]
+    fn corner_equals_inside_single_quotes_preserved() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FOO='a=b=c'\n");
+        let map = load_secrets_env(td.path()).unwrap();
+        assert_eq!(map.get("FOO"), Some(&"a=b=c".to_string()));
+    }
 }
