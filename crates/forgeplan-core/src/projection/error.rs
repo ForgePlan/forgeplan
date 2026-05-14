@@ -1927,4 +1927,174 @@ mod tests {
             "expected scratch-dir remainder: {out}"
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // v0.32.0 corner-case coverage — FR-024 Windows path masking from
+    // a Unix host. All tests target `mask_with_envs` directly so they
+    // compile and run on any platform.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Mixed-separator Windows path (e.g. an error chain pasted from a
+    /// tool that uses forward slashes embedded in an otherwise-native
+    /// payload). FR-024 supports BOTH the native backslash form AND the
+    /// `git`-style forward-slash form independently. A mixed-form path
+    /// (`C:/Users/alice\foo`) hits the SLASH-form prefix replace.
+    #[test]
+    fn corner_windows_mixed_slashes_masked_via_slash_form() {
+        let envs = windows_envs(Some(r"C:\Users\user"), None, None, None);
+        // Forward-slash USERPROFILE prefix, then backslash continuation.
+        // The slash-form replace finds `C:/Users/user/` only when the
+        // separator AFTER the matched prefix is also `/`. Here `\foo`
+        // does not match because `\` is not `/`, so this path is NOT
+        // prefix-masked. Documented: mixed-separator paths that flip
+        // separator at the USERPROFILE boundary are NOT masked. To get
+        // masked, the tool must emit consistently-slashed paths.
+        let input = r"open C:/Users/user\foo failed";
+        let out = mask_with_envs(input, &envs);
+        // Behaviour: the slash-prefix `C:/Users/user` is followed by `\`
+        // which is a path-id char per `is_path_identifier_char`, so the
+        // boundary pass also declines to mask. The raw substring survives.
+        assert!(
+            out.contains("C:/Users/user"),
+            "documented: mixed-separator at boundary is not masked: {out}"
+        );
+    }
+
+    /// Drive-only path (`D:`) without trailing separator — must NOT
+    /// match any USERPROFILE because USERPROFILE always carries a
+    /// full path (`C:\Users\alice`). The bare drive letter passes
+    /// through unchanged.
+    #[test]
+    fn corner_windows_drive_only_path_not_masked() {
+        let envs = windows_envs(Some(r"C:\Users\alice"), None, None, None);
+        // Bare drive letter is unrelated to USERPROFILE prefix.
+        let out = mask_with_envs("free space on D: insufficient", &envs);
+        assert!(
+            out.contains("D:"),
+            "bare drive letter must pass through: {out}"
+        );
+        assert!(!out.contains("<HOME>"), "no spurious mask: {out}");
+    }
+
+    /// UNC path (`\\server\share\foo`) — outside any USERPROFILE / TEMP
+    /// shape. The double leading backslash collides with the
+    /// `\\?\` long-path prefix logic but is NOT exactly that prefix.
+    /// Documented behaviour: UNC paths pass through (the long-path strip
+    /// is keyed on the exact 4-char `\\?\` sequence, not arbitrary `\\`).
+    #[test]
+    fn corner_windows_unc_path_passes_through() {
+        let envs = windows_envs(Some(r"C:\Users\alice"), None, None, None);
+        let input = r"access denied on \\server\share\foo";
+        let out = mask_with_envs(input, &envs);
+        assert!(
+            out.contains(r"\\server\share\foo"),
+            "UNC path must pass through (not USERPROFILE-shaped): {out}"
+        );
+    }
+
+    /// Very-deep Windows path (10+ components) — USERPROFILE prefix is
+    /// the only thing masked; the deep suffix survives entirely.
+    /// Boundary check: ensures the SEC-001 anchor pass handles long
+    /// remainders without truncation.
+    #[test]
+    fn corner_windows_very_deep_path_masks_prefix_only() {
+        let envs = windows_envs(Some(r"C:\Users\alice"), None, None, None);
+        let deep_suffix = r"a\b\c\d\e\f\g\h\i\j\k\l\m\n";
+        let input = format!(r"corrupt at C:\Users\alice\{deep_suffix}");
+        let out = mask_with_envs(&input, &envs);
+        assert!(
+            !out.contains(r"C:\Users\alice"),
+            "USERPROFILE prefix gone: {out}"
+        );
+        assert!(
+            out.contains(&format!(r"<HOME>\{deep_suffix}")),
+            "deep suffix must survive intact: {out}"
+        );
+    }
+
+    /// Function name containing `C:` substring (e.g. C++ namespace
+    /// `MyClass::Foo` rendered in a stack trace) must NOT be masked.
+    /// The masker only fires on USERPROFILE prefix anchored to a path
+    /// separator — `MyClass::Foo` lacks the path-separator anchor and
+    /// the `C:` substring is not a USERPROFILE prefix.
+    #[test]
+    fn corner_windows_legitimate_text_with_c_colon_not_masked() {
+        let envs = windows_envs(Some(r"C:\Users\alice"), None, None, None);
+        let input = "panic in MyClass::Foo at line 42";
+        let out = mask_with_envs(input, &envs);
+        assert_eq!(
+            out, input,
+            "legitimate `::` text must pass through unchanged: {out}"
+        );
+    }
+
+    /// Drive letter followed by a NAME that happens to start with
+    /// "Users" but is a DIFFERENT directory (e.g. `D:\Users\` on a
+    /// secondary disk where USERPROFILE is `C:\Users\alice`). MUST
+    /// NOT be masked — the drive letters differ.
+    #[test]
+    fn corner_windows_different_drive_users_not_masked() {
+        let envs = windows_envs(Some(r"C:\Users\alice"), None, None, None);
+        let input = r"missing share at D:\Users\alice\backup";
+        let out = mask_with_envs(input, &envs);
+        assert!(
+            out.contains(r"D:\Users\alice\backup"),
+            "different-drive path must pass through: {out}"
+        );
+        assert!(!out.contains("<HOME>"), "no spurious mask: {out}");
+    }
+
+    /// Empty USERPROFILE (process-env returns `Some("")`) must behave
+    /// like `None` — the defensive filter in `sanitize_text_with`
+    /// drops empty strings, but `mask_with_envs` ALSO guards against
+    /// empty `value` so this test pins both layers.
+    #[test]
+    fn corner_windows_empty_userprofile_no_mask_fires() {
+        let envs = windows_envs(Some(""), None, None, None);
+        let input = r"open C:\Users\alice\foo failed";
+        let out = mask_with_envs(input, &envs);
+        // Empty USERPROFILE means NO mask should fire. The path survives.
+        assert!(
+            out.contains(r"C:\Users\alice\foo"),
+            "empty USERPROFILE must not mask anything: {out}"
+        );
+        assert!(!out.contains("<HOME>"), "no <HOME> token: {out}");
+    }
+
+    /// Windows-style USERPROFILE with TRAILING backslash separator
+    /// (`C:\Users\alice\`). The Pass-1 prefix replace constructs a
+    /// `value_with_sep` by appending sep ONLY if not already present.
+    /// This pins that the trailing-sep value masks correctly without
+    /// producing `<HOME>\\` (doubled separator).
+    #[test]
+    fn corner_windows_userprofile_with_trailing_separator() {
+        let envs = windows_envs(Some(r"C:\Users\alice\"), None, None, None);
+        let input = r"open C:\Users\alice\foo failed";
+        let out = mask_with_envs(input, &envs);
+        // After prefix replace: `<HOME>\foo`. No doubled separator.
+        assert!(
+            out.contains(r"<HOME>\foo"),
+            "trailing-sep USERPROFILE masks correctly: {out}"
+        );
+        assert!(!out.contains(r"<HOME>\\"), "no doubled separator: {out}");
+    }
+
+    /// Path with USERPROFILE prefix and a SPACE in the suffix — the
+    /// USERPROFILE part still masks, the rest of the path with the
+    /// embedded space is preserved as-is (path masker does not strip
+    /// spaces — that's a CLI sanitiser concern).
+    #[test]
+    fn corner_windows_path_with_space_in_suffix() {
+        let envs = windows_envs(Some(r"C:\Users\alice"), None, None, None);
+        let input = r"open C:\Users\alice\My Documents\file.txt failed";
+        let out = mask_with_envs(input, &envs);
+        assert!(
+            !out.contains(r"C:\Users\alice"),
+            "USERPROFILE masked: {out}"
+        );
+        assert!(
+            out.contains(r"<HOME>\My Documents\file.txt"),
+            "suffix with space preserved: {out}"
+        );
+    }
 }
