@@ -1,0 +1,80 @@
+# Performance CI — multi-point health bench (PRD-077 FR-026)
+#
+# Runs the ignored health_bench tests with --ignored to capture scaling
+# numbers at N ∈ {1000, 5000, 10000}. The bench itself asserts that the
+# per-artifact warm-latency ratio (10k vs 1k) stays ≤ 2× — linear scaling
+# expected, quadratic would fail loudly.
+#
+# Triggers:
+#   - workflow_dispatch — manual on-demand run from the Actions UI
+#   - schedule — weekly Monday 09:17 UTC, just after the security cron,
+#     so perf trend artifacts accumulate week-over-week
+#
+# Output: stdout from the bench is captured as a workflow artifact named
+# `perf-output-<sha>.txt` for trend tracking. No alerts — humans read the
+# artifacts when curious or when investigating regressions.
+#
+# Security: no untrusted inputs are interpolated into `run:` blocks.
+# `github.sha` is trusted (controlled by the workflow trigger, not user
+# content). `secrets.GITHUB_TOKEN` flows only into protoc install.
+
+name: perf
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 09:17 UTC — offset from security.yml's 07:23 to avoid contention.
+    - cron: '17 9 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  health-bench:
+    name: Multi-point health bench (1k / 5k / 10k)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.1.7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable (pinned)
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          shared-key: perf-bench
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+
+      - name: Run multi-point health bench
+        id: bench
+        run: |
+          set -euo pipefail
+          mkdir -p target/perf-output
+          # Both bench tests share the same fixture seeding helper. We run them
+          # serially (no --jobs override) so the timings reflect a single-core-
+          # contention shape close to MCP request latency.
+          cargo test -p forgeplan-core --features test-helpers \
+            --test health_bench -- --ignored --nocapture --test-threads=1 \
+            2>&1 | tee target/perf-output/bench.log
+          echo ""
+          echo "=== summary (first 40 lines) ==="
+          head -40 target/perf-output/bench.log
+
+      - name: Upload bench output as artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.8.0
+        with:
+          name: perf-output-${{ github.sha }}
+          path: target/perf-output/bench.log
+          retention-days: 90
