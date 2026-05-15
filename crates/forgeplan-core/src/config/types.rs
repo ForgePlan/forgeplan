@@ -481,6 +481,217 @@ impl MemoryConfig {
 }
 
 #[cfg(test)]
+mod llm_resolve_api_key_tests {
+    //! PRD-077 FR-023 / audit T2 + L3 closure — pin the provider→env-var
+    //! mapping and the outside-workspace fallback. Without these tests, a
+    //! one-character swap in the `match self.provider.as_str()` table
+    //! (`"openai" => "ANTHROPIC_API_KEY"` etc.) would silently route auth
+    //! requests with the wrong key — failing at HTTP time with an opaque
+    //! 401 instead of failing loudly here.
+    //!
+    //! These tests mutate process env vars, so each one carries
+    //! `#[serial_test::serial(env_llm_keys)]` to coordinate with other
+    //! env-mutating tests across the workspace (CR-H6 discipline).
+    //!
+    //! The workspace-aware path (process env → secrets.env file) is covered
+    //! by `crate::config::secrets::tests`; here we cover only the wrapper:
+    //! provider mapping + the no-workspace branch.
+    use super::*;
+    use serial_test::serial;
+
+    fn cfg(provider: &str) -> LlmConfig {
+        LlmConfig {
+            provider: provider.to_string(),
+            api_key_env: None,
+            ..Default::default()
+        }
+    }
+
+    /// Run `body` with `key` temporarily unset, then restore the original
+    /// value. The closure is responsible for setting any other vars it
+    /// needs; we only manage the one whose absence the test cares about.
+    fn with_unset_var<F: FnOnce()>(key: &str, body: F) {
+        let prev = std::env::var(key).ok();
+        unsafe {
+            std::env::remove_var(key);
+        }
+        body();
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn openai_provider_resolves_openai_api_key_env() {
+        // Outside a workspace, the wrapper falls back to std::env::var only.
+        // Use a tempdir cwd to guarantee no .forgeplan/ is found.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        with_unset_var("ANTHROPIC_API_KEY", || {
+            with_unset_var("GEMINI_API_KEY", || {
+                unsafe {
+                    std::env::set_var("OPENAI_API_KEY", "sk-openai-marker");
+                }
+                let got = cfg("openai").resolve_api_key();
+                assert_eq!(got.as_deref(), Some("sk-openai-marker"));
+                unsafe {
+                    std::env::remove_var("OPENAI_API_KEY");
+                }
+            });
+        });
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn claude_provider_resolves_anthropic_api_key_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        with_unset_var("OPENAI_API_KEY", || {
+            with_unset_var("GEMINI_API_KEY", || {
+                unsafe {
+                    std::env::set_var("ANTHROPIC_API_KEY", "sk-anthropic-marker");
+                }
+                let got = cfg("claude").resolve_api_key();
+                assert_eq!(got.as_deref(), Some("sk-anthropic-marker"));
+                unsafe {
+                    std::env::remove_var("ANTHROPIC_API_KEY");
+                }
+            });
+        });
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn gemini_provider_resolves_gemini_api_key_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        with_unset_var("OPENAI_API_KEY", || {
+            with_unset_var("ANTHROPIC_API_KEY", || {
+                unsafe {
+                    std::env::set_var("GEMINI_API_KEY", "sk-gemini-marker");
+                }
+                let got = cfg("gemini").resolve_api_key();
+                assert_eq!(got.as_deref(), Some("sk-gemini-marker"));
+                unsafe {
+                    std::env::remove_var("GEMINI_API_KEY");
+                }
+            });
+        });
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn ollama_provider_returns_none_with_no_lookup() {
+        // ollama uses no auth header — wrapper short-circuits to None before
+        // any env lookup. Even with every canonical key set, result is None.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        unsafe {
+            std::env::set_var("OPENAI_API_KEY", "noise");
+            std::env::set_var("ANTHROPIC_API_KEY", "noise");
+            std::env::set_var("GEMINI_API_KEY", "noise");
+        }
+        assert_eq!(cfg("ollama").resolve_api_key(), None);
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("GEMINI_API_KEY");
+        }
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn unknown_provider_returns_none_with_no_lookup() {
+        // "custom" / "anything-else" falls into the `_ => None` arm.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        unsafe {
+            std::env::set_var("OPENAI_API_KEY", "noise");
+        }
+        assert_eq!(cfg("custom").resolve_api_key(), None);
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn api_key_env_override_takes_precedence_over_provider_default() {
+        // When `api_key_env` is set, it wins over the provider's canonical
+        // env var name. This is the "self-hosted gateway" use case where
+        // users route OpenAI-compatible calls through their own env-var.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        with_unset_var("OPENAI_API_KEY", || {
+            unsafe {
+                std::env::set_var("MY_CUSTOM_GATEWAY_KEY", "sk-custom-marker");
+            }
+            let mut config = cfg("openai");
+            config.api_key_env = Some("MY_CUSTOM_GATEWAY_KEY".to_string());
+            let got = config.resolve_api_key();
+            assert_eq!(got.as_deref(), Some("sk-custom-marker"));
+            unsafe {
+                std::env::remove_var("MY_CUSTOM_GATEWAY_KEY");
+            }
+        });
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    #[test]
+    #[serial(env_llm_keys)]
+    fn outside_workspace_empty_env_returns_none() {
+        // Outside a workspace, an empty-string env value falls back to None
+        // (the `.filter(|v| !v.is_empty())` guard). Without this, a stray
+        // `export GEMINI_API_KEY=` in a shell rc would surface as a 0-char
+        // "valid" key and produce an opaque 401 from the LLM endpoint.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        with_unset_var("OPENAI_API_KEY", || {
+            with_unset_var("ANTHROPIC_API_KEY", || {
+                unsafe {
+                    std::env::set_var("GEMINI_API_KEY", "");
+                }
+                assert_eq!(cfg("gemini").resolve_api_key(), None);
+                unsafe {
+                    std::env::remove_var("GEMINI_API_KEY");
+                }
+            });
+        });
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod integrity_tests {
     use super::*;
 
