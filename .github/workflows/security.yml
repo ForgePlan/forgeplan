@@ -27,6 +27,10 @@ on:
     # Weekly scan to catch advisories that land between commits (e.g. new
     # RUSTSEC disclosures against pinned versions). Runs Monday 07:23 UTC.
     - cron: "23 7 * * 1"
+  # Manual escape hatch — ADR-013 §FAQ Q1 promises a one-click GitHub UI
+  # trigger as the same-day recovery path when a CVE drops between cron runs.
+  # Without `workflow_dispatch` here the "Run workflow" button is absent.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,7 +39,9 @@ jobs:
   cargo-deny:
     name: cargo-deny check
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # ADR-013 picked "honest CI signal" — do NOT add `continue-on-error: true`
+    # here; that suppresses the job exit and makes the security badge green
+    # even when cargo-deny reports a real advisory failure.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.0.0
       - uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1  # v2.0.18

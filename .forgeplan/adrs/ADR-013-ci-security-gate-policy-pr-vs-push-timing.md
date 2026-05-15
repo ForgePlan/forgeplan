@@ -95,13 +95,13 @@ If the team decides to revert to PR-time scanning:
 **Q: What if a critical CVE lands on `dev` and is not discovered until the weekly scan?**
 
 A: The project maintainer can:
-1. Manually trigger the workflow from the GitHub Actions UI (`workflow_dispatch` is not explicitly configured, but push/schedule runs are manual-triggerable via the UI).
-2. Alternatively, open a test PR or push a dummy commit to `dev` to trigger the `push` event immediately.
+1. Manually trigger the workflow from the GitHub Actions UI via the `workflow_dispatch` event (configured in `security.yml::on` — the "Run workflow" button appears in the Actions tab).
+2. Alternatively, push a no-op commit to `dev` to trigger the `push` event immediately.
 3. If a CRITICAL CVE is confirmed, file an emergency patch PR to `main` or revert the offending dependency.
 
-**Q: What about the `continue-on-error: true` line? Should we remove it now?**
+**Q: What about `continue-on-error: true`?**
 
-A: No. Under Option B, `continue-on-error: true` is safe to keep because the workflow only runs post-merge on dev (not a merge blocker). Reviewers do not see the result on PRs, so false confidence is not a concern. If/when this policy changes, `continue-on-error` should be revisited.
+A: Removed. It was inherited from the pre-ADR-013 configuration but contradicts the "honest CI signal" trade-off this ADR was meant to encode: with `continue-on-error: true` the workflow conclusion is always success regardless of cargo-deny exit code, so a CRITICAL advisory landing on `dev` would not turn the security badge red. The v0.32 Wave 4 audit (security review of this branch) flagged this as a CRITICAL finding (S1) — the gate was effectively cosmetic. Fixed in the same commit that publishes this ADR amendment: the workflow now lets cargo-deny's exit propagate, and the badge will reflect actual advisory state.
 
 **Q: Won't this regress our security posture?**
 
