@@ -289,6 +289,28 @@ fn apply_migration(
     Ok(backup_path)
 }
 
+/// PRD-071 hint contract — single source of truth for the `Next:` / `Done.`
+/// marker emitted by both text and JSON renderers.
+///
+/// Returns `None` when the workflow is terminal (nothing to migrate or apply
+/// already complete) — text mode prints `Done.`, JSON mode emits
+/// `"_next_action": null`.
+///
+/// Returns `Some("forgeplan reason <ID>")` after a successful `--apply` so
+/// the agent can verify keys resolve.
+///
+/// Returns `Some("forgeplan migrate-secrets --apply")` in dry-run mode when
+/// there are entries that would be added.
+fn compute_next_action(report: &MigrationReport) -> Option<&'static str> {
+    if report.added_count() == 0 {
+        None
+    } else if report.applied {
+        Some("forgeplan reason <ID>")
+    } else {
+        Some("forgeplan migrate-secrets --apply")
+    }
+}
+
 fn render_text(report: &MigrationReport, apply: bool) {
     let mode = if apply { "APPLY" } else { "DRY-RUN" };
     println!("forgeplan migrate-secrets — {mode}");
@@ -312,25 +334,29 @@ fn render_text(report: &MigrationReport, apply: bool) {
 
     println!();
     let added = report.added_count();
+    let next_action = compute_next_action(report);
+
     if added == 0 {
         println!("Nothing to migrate. ✓");
-        return;
-    }
-
-    if report.applied {
+    } else if report.applied {
         println!("Applied: {added} new entries appended to secrets.env.");
         if let Some(bak) = &report.backup_path {
             println!("Backup: {}", bak.display());
         }
         println!();
-        println!("Next steps:");
-        println!("  1. Verify secrets.env contents are correct");
-        println!(
-            "  2. Optional: unset these vars from your shell rc to enforce project-local isolation"
-        );
-        println!("  3. Run `forgeplan reason <ID>` to confirm LLM keys resolve from the file");
+        println!("Verify secrets.env contents are correct, then optionally unset");
+        println!("the migrated vars from your shell rc to enforce project-local isolation.");
     } else {
         println!("Would apply {added} new entries. Re-run with --apply to write.");
+    }
+
+    // PRD-071 hint contract — exactly one terminal marker per stdout.
+    // Free-form prose above is for humans; this is what agent parsers grep
+    // for (`^Next: ` or `^Done\.$`).
+    println!();
+    match next_action {
+        Some(cmd) => println!("Next: {cmd}"),
+        None => println!("Done."),
     }
 }
 
@@ -348,12 +374,18 @@ fn render_json(report: &MigrationReport) {
             json!({ "name": name, "status": status_str, "value_len": value_len })
         })
         .collect();
+    // PRD-071 hint contract — `_next_action` mirrors the text-mode `Next:` /
+    // `Done.` marker so MCP/JSON callers can drive the workflow without
+    // parsing prose. `null` is the JSON encoding of `Done.` (no further
+    // action required).
+    let next_action = compute_next_action(report);
     let payload = json!({
         "applied": report.applied,
         "added_count": report.added_count(),
         "secrets_path": report.secrets_path.display().to_string(),
         "backup_path": report.backup_path.as_ref().map(|p| p.display().to_string()),
         "entries": entries,
+        "_next_action": next_action,
     });
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
 }
@@ -699,12 +731,14 @@ mod tests {
                 json!({ "name": name, "status": status_str, "value_len": value_len })
             })
             .collect();
+        let next_action = compute_next_action(&report);
         let payload = json!({
             "applied": report.applied,
             "added_count": report.added_count(),
             "secrets_path": report.secrets_path.display().to_string(),
             "backup_path": report.backup_path.as_ref().map(|p| p.display().to_string()),
             "entries": entries,
+            "_next_action": next_action,
         });
         let s = serde_json::to_string_pretty(&payload).unwrap();
 
@@ -795,5 +829,55 @@ mod tests {
         unsafe {
             std::env::remove_var("GEMINI_API_KEY");
         }
+    }
+
+    // PRD-071 hint contract regression tests — `compute_next_action` is the
+    // single source of truth for both text and JSON renderers, so pinning
+    // its four branches here is enough to prevent contract drift.
+
+    fn mk_report(statuses: Vec<(&str, KeyStatus)>, applied: bool) -> MigrationReport {
+        MigrationReport {
+            statuses: statuses
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+            applied,
+            backup_path: None,
+            secrets_path: PathBuf::from("/tmp/.forgeplan/secrets.env"),
+        }
+    }
+
+    #[test]
+    fn next_action_is_done_when_nothing_to_migrate() {
+        // No process env keys set → all entries are AbsentInEnv → terminal.
+        let r = mk_report(vec![("GEMINI_API_KEY", KeyStatus::AbsentInEnv)], false);
+        assert_eq!(compute_next_action(&r), None);
+    }
+
+    #[test]
+    fn next_action_is_done_when_all_keys_already_in_file() {
+        let r = mk_report(vec![("GEMINI_API_KEY", KeyStatus::AlreadyInFile)], false);
+        assert_eq!(compute_next_action(&r), None);
+    }
+
+    #[test]
+    fn next_action_dry_run_points_at_apply() {
+        let r = mk_report(
+            vec![("GEMINI_API_KEY", KeyStatus::WouldAdd { value_len: 42 })],
+            false,
+        );
+        assert_eq!(
+            compute_next_action(&r),
+            Some("forgeplan migrate-secrets --apply")
+        );
+    }
+
+    #[test]
+    fn next_action_after_apply_points_at_reason() {
+        let r = mk_report(
+            vec![("GEMINI_API_KEY", KeyStatus::WouldAdd { value_len: 42 })],
+            true,
+        );
+        assert_eq!(compute_next_action(&r), Some("forgeplan reason <ID>"));
     }
 }
