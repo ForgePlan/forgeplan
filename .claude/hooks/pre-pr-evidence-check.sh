@@ -42,13 +42,60 @@ else
   command_str=$(echo "$payload" | grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed 's/.*"command"[[:space:]]*:[[:space:]]*"//;s/"$//' || true)
 fi
 
-# Narrow to `gh pr create` ONLY. Anything else passes silently.
-if [[ -z "$command_str" ]] || ! [[ "$command_str" =~ (^|[[:space:]\;\&\|])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$) ]]; then
+# Narrow to `gh pr create` ONLY — and only when it is the actual command
+# being executed, NOT when the literal string appears inside an argument
+# of another command (e.g. a `git commit -m '... gh pr create ...'`
+# whose commit message documents the command in prose).
+#
+# S3 audit closure follow-on: the previous regex accepted `gh pr create`
+# anywhere it was preceded by `(^|space|;|&|\|)`, which fires false-
+# positively whenever the literal text appears inside a quoted heredoc
+# or string argument. To narrow correctly we must look at the FIRST
+# real command in the line, after stripping leading env-var assignments
+# (FOO=bar BAZ=1) and whitespace. That command must literally be
+# `gh pr create`.
+if [[ -z "$command_str" ]]; then
   exit 0
 fi
 
-# --no-evidence-check flag on the gh pr create command line → bypass
-if [[ "$command_str" =~ --no-evidence-check ]]; then
+stripped="$command_str"
+# Drop leading whitespace.
+stripped="${stripped#"${stripped%%[![:space:]]*}"}"
+# Strip any number of leading SHELLVAR=value assignments (with their
+# trailing whitespace). The regex matches one assignment + its trailing
+# whitespace; loop until none remain.
+while [[ "$stripped" =~ ^[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+ ]]; do
+  stripped="${stripped#"${BASH_REMATCH[0]}"}"
+done
+
+# The first command tokens must be `gh pr create` (with any whitespace).
+if ! [[ "$stripped" =~ ^gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$) ]]; then
+  exit 0
+fi
+
+# S3 audit closure: split the command around the `gh pr create` token so we
+# can apply bypass detection token-aware-ly instead of substring-naive-ly.
+#
+# Previously both bypass tokens were matched against the entire reconstructed
+# command string. Anything containing the literal substring — including the
+# value of `--body "..."`, `--title "..."`, or label content — triggered a
+# silent bypass. Concrete repros from the security audit:
+#   gh pr create --body "see --no-evidence-check ADR"     → silent bypass
+#   gh pr create --body "FORGEPLAN_SKIP_EVIDENCE=1 hack"  → silent bypass
+#
+# The two regions we care about:
+#   ENV_PREFIX — everything BEFORE the first `gh ` token. This is where shell
+#                env-var assignments live syntactically (`FOO=1 gh ...`).
+#   ARGV_HEAD  — everything AFTER `gh pr create` up to the FIRST quote
+#                character. This is the unquoted flag region; quoted argument
+#                values (--body, --title) are excluded by construction.
+env_prefix="${command_str%%gh pr create*}"
+post_gh="${command_str#*gh pr create}"
+argv_head="${post_gh%%[\"\']*}"
+
+# --no-evidence-check flag → bypass. Must be a standalone token in argv_head
+# (the unquoted flag region), not buried in a quoted body or title.
+if [[ "$argv_head" =~ (^|[[:space:]])--no-evidence-check([[:space:]]|$) ]]; then
   exit 0
 fi
 
@@ -57,8 +104,10 @@ fi
 if [[ "${FORGEPLAN_SKIP_EVIDENCE:-}" == "1" ]]; then
   exit 0
 fi
-# Also detect inline env-var assignment in the command itself.
-if [[ "$command_str" =~ FORGEPLAN_SKIP_EVIDENCE=1 ]]; then
+# Also detect inline env-var assignment, but ONLY in the env-prefix region
+# (before `gh pr create`). A mention of the var inside --body is prose,
+# not a bypass.
+if [[ "$env_prefix" =~ (^|[[:space:]\;\&\|])FORGEPLAN_SKIP_EVIDENCE=1([[:space:]]|$) ]]; then
   exit 0
 fi
 
