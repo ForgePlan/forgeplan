@@ -33,7 +33,8 @@
 //! ## Exit codes
 //!
 //! - 0 — success (nothing to do, or migration applied cleanly)
-//! - 1 — at least one error occurred (backup failed, write failed, etc.)
+//! - 1 — at least one error occurred (backup failed, write failed,
+//!       OR env-vs-file value conflict left unresolved)
 //! - 2 — workspace not found
 //!
 //! ## Security
@@ -79,10 +80,23 @@ pub struct MigrateSecretsArgs {
 /// Result of inspecting one canonical key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KeyStatus {
-    /// Variable not set in process env — nothing to migrate.
+    /// Variable not set (or set to empty/whitespace-only) in process env —
+    /// nothing to migrate.
     AbsentInEnv,
-    /// In process env AND already in secrets.env — no-op.
+    /// In process env, in secrets.env, AND values match — no-op.
     AlreadyInFile,
+    /// In process env, in secrets.env, BUT values differ.
+    ///
+    /// L1 audit closure: previously this was classified as `AlreadyInFile`
+    /// with no warning — the user-visible result was a silent no-op, and
+    /// the stale value in `secrets.env` remained the persisted truth even
+    /// after the user re-`export`'ed a fresh key into their shell. The
+    /// `Conflict` variant surfaces the divergence so the renderer can
+    /// produce a clear "env-vs-file mismatch" message; without an explicit
+    /// `--force` flag the apply path treats the conflict as a non-success
+    /// state (idempotent: re-running with the same conflict will surface
+    /// it again).
+    Conflict { env_len: usize },
     /// In process env, NOT in secrets.env — would be (or was) added.
     WouldAdd { value_len: usize },
 }
@@ -178,24 +192,47 @@ pub async fn run(args: MigrateSecretsArgs) -> anyhow::Result<i32> {
         render_text(&report, args.apply);
     }
 
+    // L1 audit closure: any unresolved conflict (env value diverges from
+    // file value) is a partial-fail state, even though the file write
+    // itself succeeded. Exit 1 so a script driving migrate-secrets via
+    // CI / orchestration can detect the divergence without parsing text.
+    let has_conflict = report
+        .statuses
+        .iter()
+        .any(|(_, s)| matches!(s, KeyStatus::Conflict { .. }));
+    if has_conflict {
+        return Ok(1);
+    }
+
     Ok(0)
 }
 
 /// For each canonical key, classify what would (or did) happen.
+///
+/// L3 audit closure: empty AND whitespace-only env values are both treated
+/// as `AbsentInEnv`. A shell rc with `export GEMINI_API_KEY="   "` (common
+/// failure mode of an unset variable substitution surviving the quotes)
+/// previously surfaced as a 3-character "valid" key, which the LLM client
+/// then sent and got back an opaque 401. Trim-first matches the symmetric
+/// behaviour in `forgeplan_core::config::secrets::resolve_api_key` so the
+/// two surfaces agree on what "set" means.
+///
+/// L1 audit closure: when the same key is present in BOTH process env and
+/// secrets.env, we now compare values. Equal values → `AlreadyInFile`
+/// (no-op, as before). Divergent values → `Conflict { env_len }`. The
+/// caller decides how to render and whether to exit 1.
 fn inspect_canonical_keys(existing: &HashMap<String, String>) -> Vec<(String, KeyStatus)> {
     CANONICAL_KEYS
         .iter()
         .map(|name| {
             let status = match std::env::var(name) {
-                Ok(v) if v.is_empty() => KeyStatus::AbsentInEnv,
                 Err(_) => KeyStatus::AbsentInEnv,
-                Ok(v) => {
-                    if existing.contains_key(*name) {
-                        KeyStatus::AlreadyInFile
-                    } else {
-                        KeyStatus::WouldAdd { value_len: v.len() }
-                    }
-                }
+                Ok(v) if v.trim().is_empty() => KeyStatus::AbsentInEnv,
+                Ok(v) => match existing.get(*name) {
+                    Some(file_v) if file_v == &v => KeyStatus::AlreadyInFile,
+                    Some(_) => KeyStatus::Conflict { env_len: v.len() },
+                    None => KeyStatus::WouldAdd { value_len: v.len() },
+                },
             };
             ((*name).to_string(), status)
         })
@@ -348,7 +385,12 @@ fn render_text(report: &MigrationReport, apply: bool) {
                 println!("  · {name}: not set in process env — skip");
             }
             KeyStatus::AlreadyInFile => {
-                println!("  ✓ {name}: already in secrets.env — skip");
+                println!("  ✓ {name}: already in secrets.env (values match) — skip");
+            }
+            KeyStatus::Conflict { env_len } => {
+                println!(
+                    "  ⚠ {name}: env value ({env_len} chars) DIFFERS from secrets.env — file value kept, env value NOT persisted"
+                );
             }
             KeyStatus::WouldAdd { value_len } => {
                 let verb = if report.applied { "added" } else { "would add" };
@@ -394,6 +436,7 @@ fn render_json(report: &MigrationReport) {
             let (status_str, value_len) = match status {
                 KeyStatus::AbsentInEnv => ("absent_in_env", None),
                 KeyStatus::AlreadyInFile => ("already_in_file", None),
+                KeyStatus::Conflict { env_len } => ("conflict", Some(*env_len)),
                 KeyStatus::WouldAdd { value_len } => ("would_add", Some(*value_len)),
             };
             json!({ "name": name, "status": status_str, "value_len": value_len })
@@ -460,19 +503,78 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn inspect_marks_existing_in_file_correctly() {
-        // Synthetic: pretend the file contains GEMINI_API_KEY.
+        // Synthetic: pretend the file contains GEMINI_API_KEY="filevalue".
         let result = inspect_with_synthetic_existing(&[("GEMINI_API_KEY", "filevalue")]);
         let (_, status) = result
             .iter()
             .find(|(n, _)| n == "GEMINI_API_KEY")
             .expect("GEMINI_API_KEY in canonical set");
-        // If the process env DOESN'T have GEMINI_API_KEY set, the result is
-        // AbsentInEnv (process env wins the question "is there anything to
-        // consider migrating"). If the env DOES have it, we get AlreadyInFile
-        // because the synthetic file claims it too.
+        // L1 audit closure changed the semantics: env-vs-file value match
+        // matters. Three outcomes are now legitimate:
+        //   - Env absent (or whitespace-only) → AbsentInEnv
+        //   - Env set, value == "filevalue"   → AlreadyInFile
+        //   - Env set, value != "filevalue"   → Conflict
+        // We don't seed env in this test (would race with parallel runs);
+        // we just assert the result is one of the three valid shapes.
         match std::env::var("GEMINI_API_KEY") {
-            Ok(v) if !v.is_empty() => assert_eq!(*status, KeyStatus::AlreadyInFile),
-            _ => assert_eq!(*status, KeyStatus::AbsentInEnv),
+            Ok(v) if v.trim().is_empty() => assert_eq!(*status, KeyStatus::AbsentInEnv),
+            Ok(v) if v == "filevalue" => assert_eq!(*status, KeyStatus::AlreadyInFile),
+            Ok(_) => assert!(
+                matches!(status, KeyStatus::Conflict { .. }),
+                "env-set-with-different-value must be Conflict, got {status:?}"
+            ),
+            Err(_) => assert_eq!(*status, KeyStatus::AbsentInEnv),
+        }
+    }
+
+    /// L1 audit closure regression — when env value differs from file
+    /// value the result MUST be `Conflict`, not silent `AlreadyInFile`.
+    #[test]
+    #[serial_test::serial(env_llm_keys)]
+    fn inspect_marks_env_vs_file_value_mismatch_as_conflict() {
+        // Save + restore in case the dev machine has a real value.
+        let prev = std::env::var("GEMINI_API_KEY").ok();
+        unsafe { std::env::set_var("GEMINI_API_KEY", "fresh-env-value") };
+
+        let result = inspect_with_synthetic_existing(&[("GEMINI_API_KEY", "stale-file-value")]);
+        let (_, status) = result
+            .iter()
+            .find(|(n, _)| n == "GEMINI_API_KEY")
+            .expect("GEMINI_API_KEY in canonical set");
+        assert!(
+            matches!(status, KeyStatus::Conflict { env_len: 15 }),
+            "env != file must be Conflict (15-char env), got {status:?}"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GEMINI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("GEMINI_API_KEY") },
+        }
+    }
+
+    /// L3 audit closure regression — whitespace-only env value MUST be
+    /// treated as absent. Previously a 3-char "   " value surfaced as a
+    /// valid `WouldAdd`, producing an opaque 401 from the LLM endpoint.
+    #[test]
+    #[serial_test::serial(env_llm_keys)]
+    fn inspect_treats_whitespace_only_env_value_as_absent() {
+        let prev = std::env::var("OPENAI_API_KEY").ok();
+        unsafe { std::env::set_var("OPENAI_API_KEY", "   ") };
+
+        let result = inspect_with_synthetic_existing(&[]);
+        let (_, status) = result
+            .iter()
+            .find(|(n, _)| n == "OPENAI_API_KEY")
+            .expect("OPENAI_API_KEY in canonical set");
+        assert_eq!(
+            *status,
+            KeyStatus::AbsentInEnv,
+            "whitespace-only env value must classify as AbsentInEnv"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
         }
     }
 
@@ -751,6 +853,7 @@ mod tests {
                 let (status_str, value_len) = match status {
                     KeyStatus::AbsentInEnv => ("absent_in_env", None),
                     KeyStatus::AlreadyInFile => ("already_in_file", None),
+                    KeyStatus::Conflict { env_len } => ("conflict", Some(*env_len)),
                     KeyStatus::WouldAdd { value_len } => ("would_add", Some(*value_len)),
                 };
                 json!({ "name": name, "status": status_str, "value_len": value_len })

@@ -356,7 +356,14 @@ impl LlmConfig {
         }
 
         // Outside a workspace — preserve pre-PRD-077 behavior.
-        std::env::var(env_name).ok().filter(|v| !v.is_empty())
+        //
+        // L3 audit closure: trim-first match with `config::secrets::resolve_api_key`
+        // so the two surfaces agree on what "set" means. Whitespace-only
+        // values (e.g. `export FOO="   "` from a broken variable expansion)
+        // surface as `None` here just as they do in the workspace-aware path.
+        std::env::var(env_name)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
     }
 
     /// Whether this provider uses Anthropic-specific headers.
@@ -668,9 +675,9 @@ mod llm_resolve_api_key_tests {
     #[serial(env_llm_keys)]
     fn outside_workspace_empty_env_returns_none() {
         // Outside a workspace, an empty-string env value falls back to None
-        // (the `.filter(|v| !v.is_empty())` guard). Without this, a stray
-        // `export GEMINI_API_KEY=` in a shell rc would surface as a 0-char
-        // "valid" key and produce an opaque 401 from the LLM endpoint.
+        // (the `.filter(|v| !v.trim().is_empty())` guard). Without this, a
+        // stray `export GEMINI_API_KEY=` in a shell rc would surface as a
+        // 0-char "valid" key and produce an opaque 401 from the LLM endpoint.
         let tmp = tempfile::tempdir().unwrap();
         let prev_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -679,6 +686,31 @@ mod llm_resolve_api_key_tests {
             with_unset_var("ANTHROPIC_API_KEY", || {
                 unsafe {
                     std::env::set_var("GEMINI_API_KEY", "");
+                }
+                assert_eq!(cfg("gemini").resolve_api_key(), None);
+                unsafe {
+                    std::env::remove_var("GEMINI_API_KEY");
+                }
+            });
+        });
+
+        std::env::set_current_dir(prev_cwd).unwrap();
+    }
+
+    /// L3 audit closure regression — outside a workspace, a
+    /// whitespace-only env value must surface as None (not a 3-char
+    /// "valid" key that the LLM endpoint will reject with an opaque 401).
+    #[test]
+    #[serial(env_llm_keys)]
+    fn outside_workspace_whitespace_only_env_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        with_unset_var("OPENAI_API_KEY", || {
+            with_unset_var("ANTHROPIC_API_KEY", || {
+                unsafe {
+                    std::env::set_var("GEMINI_API_KEY", "   ");
                 }
                 assert_eq!(cfg("gemini").resolve_api_key(), None);
                 unsafe {

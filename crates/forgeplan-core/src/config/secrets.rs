@@ -176,9 +176,17 @@ pub fn load_secrets_env(workspace: &Path) -> Result<HashMap<String, String>> {
 /// in their logs; a follow-up `forgeplan health` will report the same
 /// file (PRD-077 FR-006).
 pub fn resolve_api_key(workspace: &Path, env_var_name: &str) -> Option<String> {
-    // (1) Process env — wins. Empty string treated as unset (see fn docs).
+    // (1) Process env — wins. Empty AND whitespace-only values are treated
+    // as unset (see fn docs).
+    //
+    // L3 audit closure: a shell rc with `export GEMINI_API_KEY="   "` (a
+    // common failure mode of an unset variable substitution surviving the
+    // surrounding quotes) previously returned a 3-char "valid" key. The
+    // LLM provider then surfaced an opaque 401, masking the real cause.
+    // `.trim().is_empty()` matches the same trim-first semantics used by
+    // `forgeplan-cli/commands/migrate_secrets::inspect_canonical_keys`.
     if let Ok(v) = std::env::var(env_var_name)
-        && !v.is_empty()
+        && !v.trim().is_empty()
     {
         return Some(v);
     }
@@ -535,6 +543,30 @@ mod tests {
 
         unsafe {
             std::env::remove_var("FORGEPLAN_TEST_EMPTY");
+        }
+    }
+
+    /// L3 audit closure regression — whitespace-only env value falls
+    /// through to the file just like an empty string. A shell rc with
+    /// `export FOO="   "` must not surface as a valid 3-char key.
+    #[test]
+    fn resolve_treats_whitespace_only_env_as_unset() {
+        let (td, fp) = setup_workspace();
+        write_secrets(&fp, "FORGEPLAN_TEST_WS=from-file\n");
+
+        unsafe {
+            std::env::set_var("FORGEPLAN_TEST_WS", "   ");
+        }
+
+        let result = resolve_api_key(td.path(), "FORGEPLAN_TEST_WS");
+        assert_eq!(
+            result,
+            Some("from-file".to_string()),
+            "whitespace-only env must fall through to file value"
+        );
+
+        unsafe {
+            std::env::remove_var("FORGEPLAN_TEST_WS");
         }
     }
 
