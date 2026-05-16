@@ -270,16 +270,41 @@ fn apply_migration(
     }
 
     // Atomic write: tempfile in same dir + rename.
+    //
+    // S4 audit closure (CWE-377/732/367 TOCTOU): on Unix, the tempfile MUST
+    // be opened at 0600 from the start. Previously we used `fs::File::create`
+    // which honours the process umask (typical user shells: 0022 → file mode
+    // 0644), then did a post-rename `set_permissions(0o600)`. That left a
+    // microsecond-wide window where the file at `secrets.env` was world-
+    // readable after rename but before chmod — a local attacker watching
+    // the directory (inotify/fanotify) could open an FD in that window and
+    // retain readable access to the secret payload across the chmod.
+    //
+    // `OpenOptions::mode(0o600).create_new(true)` opens with the desired
+    // permissions atomically and refuses to clobber a colliding tempfile
+    // (mitigates the predictable-name issue from concurrent invocations —
+    // a separate process at the same PID is impossible, but signal-driven
+    // replay or test parallelism could collide).
     let tmp = parent.join(format!(".secrets.env.tmp-{}", std::process::id()));
     {
-        let mut f = fs::File::create(&tmp)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
         f.write_all(body.as_bytes())?;
         f.sync_all()?;
     }
     fs::rename(&tmp, secrets_path)?;
 
-    // chmod 0600 on Unix — owner-only. Best-effort; we don't fail if the
-    // FS doesn't support it (Windows native, network mounts).
+    // On non-Unix (Windows native, network mounts) the open-time mode is
+    // ignored — best-effort post-rename chmod stands in. On Unix this is
+    // redundant (file is already 0600) but harmless and preserves symmetry
+    // across the two `apply_migration` write paths (this one + the
+    // template-replacement path elsewhere in the file).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
