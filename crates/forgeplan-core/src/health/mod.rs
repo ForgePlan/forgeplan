@@ -155,6 +155,17 @@ pub const DEFAULT_UNHEALTHY_PHASE_MISMATCHES: usize = 5;
 /// small at-risk counts, just adds the critical promotion lane.
 pub const DEFAULT_UNHEALTHY_AT_RISK: usize = 10;
 
+/// L2 audit closure — phase state file read failures (corrupted YAML,
+/// symlink rejection, IO error) above this threshold promote verdict
+/// to `Unhealthy`. Below the threshold any non-zero count still trips
+/// the any-warning floor (`NeedsAttention`).
+///
+/// Default 3: a single transient corruption (operator manually edited a
+/// state file mid-write, FS hiccup) stays at NeedsAttention; widespread
+/// state corruption (4+ files unreadable) is a workspace-integrity
+/// problem that masks BLOCKED state and must surface loudly.
+pub const DEFAULT_UNHEALTHY_PHASE_READ_ERRORS: usize = 3;
+
 /// Tunable promotion thresholds for [`compute_verdict`]. When the count
 /// of a given warning class **strictly exceeds** the threshold, the
 /// verdict is promoted to `Unhealthy`. Counts in `1..=threshold` keep
@@ -184,6 +195,11 @@ pub struct VerdictThresholds {
     /// (gradient signal, not gate-failing), while a workspace with 11+
     /// trust-decayed decisions clearly is in trouble.
     pub at_risk: usize,
+    /// L2 audit closure: number of phase state file read failures
+    /// strictly above which verdict promotes to `Unhealthy`. Any non-zero
+    /// count still trips the any-warning floor (`NeedsAttention`). See
+    /// [`DEFAULT_UNHEALTHY_PHASE_READ_ERRORS`].
+    pub phase_read_errors: usize,
 }
 
 impl Default for VerdictThresholds {
@@ -195,6 +211,7 @@ impl Default for VerdictThresholds {
             duplicates: DEFAULT_UNHEALTHY_DUPLICATES,
             phase_mismatches: DEFAULT_UNHEALTHY_PHASE_MISMATCHES,
             at_risk: DEFAULT_UNHEALTHY_AT_RISK,
+            phase_read_errors: DEFAULT_UNHEALTHY_PHASE_READ_ERRORS,
         }
     }
 }
@@ -322,10 +339,18 @@ pub struct HealthReport {
     /// LOG-003 FR-020: count of artifacts where phase state file read
     /// failed (corrupted YAML, IO error, symlink attack, etc.).
     /// Zero is expected. Non-zero indicates workspace corruption risk —
-    /// artifact is silently dropped from phase-mismatch list, leaving
-    /// verdict potentially under-computed. Advisory only; never folded
-    /// into verdict aggregator. Populated by `health_report_with_phase`,
-    /// zero for legacy `health_report` path.
+    /// artifact is silently dropped from phase-mismatch list.
+    ///
+    /// L2 audit closure (was: "advisory only; never folded into verdict
+    /// aggregator"): now folded into verdict via
+    /// [`VerdictThresholds::phase_read_errors`]. Any non-zero count trips
+    /// the [`Verdict::NeedsAttention`] floor; counts above the threshold
+    /// promote to [`Verdict::Unhealthy`]. Pre-fix, mass YAML corruption
+    /// could mask a BLOCKED state as HEALTHY because the phase-mismatch
+    /// count zeroed out when reads failed.
+    ///
+    /// Populated by `health_report_with_phase`; zero for legacy
+    /// `health_report` path.
     pub phase_read_errors: usize,
     /// **Best-known verdict for user-facing display.** Aggregates all
     /// warning classes Forgeplan currently understands. Equals
@@ -689,6 +714,7 @@ async fn health_report_from_records(
         stale_count,
         at_risk.len(),
         0, // phase_mismatches injected by upstream callers via compute_verdict_with()
+        0, // phase_read_errors zero in legacy path; with-phase populates the report field
         &VerdictThresholds::default(),
     );
 
@@ -749,6 +775,7 @@ pub fn compute_verdict(
         report.stale_count,
         report.at_risk.len(),
         phase_mismatches,
+        report.phase_read_errors,
         thresholds,
     )
 }
@@ -951,6 +978,7 @@ fn compute_verdict_from_signals(
     stale: usize,
     at_risk: usize,
     _phase_mismatches: usize,
+    phase_read_errors: usize,
     t: &VerdictThresholds,
 ) -> Verdict {
     // Empty workspace short-circuit (Round 6 audit MED): zero artifacts is
@@ -963,22 +991,33 @@ fn compute_verdict_from_signals(
     // PROB-063: phase_mismatches NOT included — advisory by design.
     // PROB-051 L-M1: `at_risk` joins critical promotion. Below the
     // threshold it still trips the any-warning floor (NeedsAttention).
+    // L2 audit closure: phase_read_errors above threshold IS unhealthy —
+    // mass YAML corruption silently drops artifacts from the mismatch
+    // list, masking BLOCKED state. Distinct from phase_mismatches
+    // (which is intentionally advisory because the artifact exists,
+    // just at the wrong phase); read errors mean the workspace state
+    // is unreadable.
     if orphans > t.orphans
         || blind_spots > t.blind_spots
         || active_stubs > t.active_stubs
         || duplicates > t.duplicates
         || at_risk > t.at_risk
+        || phase_read_errors > t.phase_read_errors
     {
         return Verdict::Unhealthy;
     }
     // Non-zero anywhere → NeedsAttention.
     // PROB-063: phase_mismatches NOT included — advisory by design.
+    // L2 audit closure: any non-zero phase_read_errors trips the floor
+    // (a single corrupted YAML deserves operator attention even if
+    // below the Unhealthy threshold).
     let has_any_warning = orphans > 0
         || blind_spots > 0
         || active_stubs > 0
         || duplicates > 0
         || stale > 0
-        || at_risk > 0;
+        || at_risk > 0
+        || phase_read_errors > 0;
     if has_any_warning {
         Verdict::NeedsAttention
     } else {
@@ -2964,6 +3003,56 @@ mod tests {
         assert_eq!(
             report.phase_read_errors, 0,
             "legacy health_report path must initialize phase_read_errors to 0"
+        );
+    }
+
+    /// L2 audit closure regression — a single phase_read_error must
+    /// promote a clean workspace from `Healthy` to `NeedsAttention`.
+    /// Before the fix, the field was advisory and a corrupted state
+    /// file silently zeroed the phase-mismatch count, masking BLOCKED.
+    #[test]
+    fn phase_read_errors_one_promotes_to_needs_attention() {
+        let mut report = empty_report(5);
+        report.phase_read_errors = 1;
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::NeedsAttention,
+            "single phase_read_error must trip the any-warning floor: got {v:?}"
+        );
+    }
+
+    /// L2 audit closure regression — mass YAML corruption (above the
+    /// default 3-error threshold) must promote to `Unhealthy`. A `dev`
+    /// pipeline that auto-promotes on `verdict == "healthy"` must NOT
+    /// silently pass when many phase state files are unreadable.
+    #[test]
+    fn phase_read_errors_above_threshold_promotes_to_unhealthy() {
+        let mut report = empty_report(20);
+        // Default threshold = 3; use 4 (strictly above) to confirm
+        // the > comparison, not >=.
+        report.phase_read_errors = 4;
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Unhealthy,
+            "4 phase_read_errors must promote past the default threshold: got {v:?}"
+        );
+    }
+
+    /// L2 audit closure regression — zero phase_read_errors on an
+    /// otherwise-clean workspace must remain `Healthy` (no false
+    /// positive from the new fold).
+    #[test]
+    fn phase_read_errors_zero_keeps_healthy() {
+        let report = empty_report(5);
+        // empty_report already produces phase_read_errors=0; confirm.
+        assert_eq!(report.phase_read_errors, 0);
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Healthy,
+            "zero phase_read_errors must NOT degrade a clean report: got {v:?}"
         );
     }
 
