@@ -132,10 +132,19 @@ pub const ARTIFACT_DIRS: &[&str] = &[
 /// PRD-077 FR-002 / CR-C4: commented template appended to
 /// `.forgeplan/secrets.env` on init. Documents the **convention** (this
 /// file is local-only, never committed) and lists the env vars that
-/// `config.yaml::llm.api_key_env` references by default. Forgeplan code
-/// MUST NOT read this file — it is purely a convenience surface so users
-/// have a canonical place to keep real keys during local development
-/// (paired with `source` or `direnv`).
+/// `config.yaml::llm.api_key_env` references by default.
+///
+/// F5+L6 audit closure (was: "Forgeplan code MUST NOT read this file —
+/// it is purely a convenience surface"): as of PRD-077 FR-023 Part A
+/// (v0.32.0), forgeplan DOES read this file via
+/// [`crate::config::secrets::resolve_api_key`] when the corresponding
+/// canonical env var is unset in the process environment. Precedence:
+/// process env (non-empty, non-whitespace) → `secrets.env` value → None.
+/// The "MUST NOT" claim in the original docstring was correct when
+/// W1 wrote it during sprint Wave 1, but stale by the time W8 merged
+/// the loader. A contributor reading this comment to understand the
+/// invariant would have concluded — incorrectly — that they could
+/// refactor away the reader.
 ///
 /// File extension is `.env` (dotenv/direnv convention) — not `.yaml`. The
 /// body is shell syntax (`export KEY="VALUE"`); a `.yaml` extension would
