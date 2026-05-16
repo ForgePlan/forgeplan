@@ -613,6 +613,68 @@ mod tests {
         assert_eq!(map.get("PERMISSIVE_OK"), Some(&"yes".to_string()));
     }
 
+    /// T5 audit closure — pin the actual `tracing::warn!` emission, not
+    /// just the side-effect-free "load succeeded" behaviour.
+    ///
+    /// Pre-fix the existing `permissive_mode_logs_warn_but_still_loads`
+    /// test only asserted that load returned `Ok(_)` under 0o644. A
+    /// future refactor that silently drops the `tracing::warn!` call
+    /// (e.g. someone "cleaning up logging") would not be caught — the
+    /// load would still succeed, the test would still pass, and the
+    /// only operator signal that the secrets file is world-readable
+    /// would disappear.
+    ///
+    /// `#[traced_test]` from `tracing-test` captures all events emitted
+    /// during the test on a thread-local subscriber. `logs_contain`
+    /// performs a substring search over the captured payload.
+    #[cfg(unix)]
+    #[test]
+    #[tracing_test::traced_test]
+    fn permissive_mode_emits_warn_event() {
+        use std::os::unix::fs::PermissionsExt;
+        let (td, fp) = setup_workspace();
+        let path = fp.join("secrets.env");
+        fs::write(&path, "PERMISSIVE_WARN_TEST=yes\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let _map = load_secrets_env(td.path()).unwrap();
+
+        // The warn message is constructed in `warn_on_permissive_mode`
+        // and must contain the actionable substring so operators can
+        // grep the fix-it command. Drop ANY part of this and the test
+        // catches the regression.
+        assert!(
+            logs_contain("permissions are more permissive than 0600"),
+            "expected permissive-mode warn event to be emitted"
+        );
+        assert!(
+            logs_contain("chmod 0600 .forgeplan/secrets.env"),
+            "warn must include the chmod fix-it command"
+        );
+    }
+
+    /// T5 audit closure — negative case: 0o600 (correct perms) must NOT
+    /// emit the warn event. Without this, a regression that always
+    /// fires the warn regardless of mode would also pass the positive
+    /// test above.
+    #[cfg(unix)]
+    #[test]
+    #[tracing_test::traced_test]
+    fn strict_mode_does_not_emit_warn_event() {
+        use std::os::unix::fs::PermissionsExt;
+        let (td, fp) = setup_workspace();
+        let path = fp.join("secrets.env");
+        fs::write(&path, "STRICT_OK=yes\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let _map = load_secrets_env(td.path()).unwrap();
+
+        assert!(
+            !logs_contain("permissions are more permissive than 0600"),
+            "0o600 perms must NOT trigger the warn (false positive would mask real issues)"
+        );
+    }
+
     #[test]
     fn export_with_extra_whitespace() {
         let (td, fp) = setup_workspace();

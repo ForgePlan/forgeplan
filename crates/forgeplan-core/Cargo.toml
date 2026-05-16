@@ -60,3 +60,13 @@ tempfile = "3"
 # is safe; cross-crate races are bounded by cargo's default behaviour
 # of running one test binary at a time per crate.
 serial_test = "3"
+# T5 audit closure — captures tracing events in unit tests so we can
+# assert that `warn_on_permissive_mode` actually emits its warning when
+# secrets.env permissions are too open. Without this, a future refactor
+# that silently drops the `tracing::warn!` call would not be caught.
+#
+# `no-env-filter` feature is REQUIRED because forgeplan emits with custom
+# targets (e.g. `target: "forgeplan::secrets"`). The default crate-name
+# filter (`forgeplan_core=trace`) would exclude those events; this
+# feature substitutes plain `trace` so any target passes through.
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
