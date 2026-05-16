@@ -148,6 +148,37 @@ fn err_result(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.to_string())])
 }
 
+/// Sister to `safe_mcp_error` for the `err_result` / `CallToolResult::error`
+/// family — wraps an error through the projection-layer chain sanitiser
+/// before rendering into the user-facing text payload.
+///
+/// **Wave 4 S5 audit closure**: the SEC-H3 sweep (which became
+/// `safe_mcp_error`) collapsed all `McpError::internal_error(format!("{e}"))`
+/// sites onto the sanitiser, but the parallel `safe_err_result("", e)`
+/// family (which returns `CallToolResult::error` instead of `McpError`)
+/// was missed. ~40+ such sites remain in `server.rs`; each one leaks
+/// `$HOME`, scratch tempdirs, and OS error strings into the MCP transcript.
+/// This helper closes that gap with the same semantics:
+///
+///   safe_err_result("workspace lock", e)
+///     → CallToolResult::error with text "workspace lock: <sanitised>"
+///   safe_err_result("", e)
+///     → CallToolResult::error with text "<sanitised>" (no prefix)
+///
+/// The error is wrapped via `anyhow::anyhow!("{e}")` so single-link errors
+/// (io::Error, MutationError, serde_json::Error, LanceError, etc.) go
+/// through the chain walker uniformly — same strategy as `safe_mcp_error`.
+fn safe_err_result<E: std::fmt::Display>(prefix: &str, e: E) -> CallToolResult {
+    let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
+    let sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+    let msg = if prefix.is_empty() {
+        sanitised
+    } else {
+        format!("{prefix}: {sanitised}")
+    };
+    CallToolResult::error(vec![Content::text(msg)])
+}
+
 /// Wrap an `anyhow::Error` into an `McpError::internal_error` whose Display
 /// payload has been routed through the projection-layer error-chain
 /// sanitiser (`forgeplan_core::projection::sanitize_error_chain`).
@@ -1167,7 +1198,7 @@ impl ForgeplanServer {
 
         let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let template_key = artifact_kind.template_key();
@@ -1617,7 +1648,7 @@ impl ForgeplanServer {
         let _lock_guard = match ws_opt.as_ref() {
             Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
                 Ok(g) => Some(g),
-                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
             },
             None => None,
         };
@@ -1625,7 +1656,7 @@ impl ForgeplanServer {
         let target = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let outgoing = store.get_relations(&p.id).await.unwrap_or_else(|e| {
@@ -1836,7 +1867,7 @@ impl ForgeplanServer {
         // mutators against the shared LanceDB.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
             Ok(g) => g,
-            Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
         };
 
         let relation = match link::normalize_relation(p.relation.as_str()) {
@@ -1970,7 +2001,7 @@ impl ForgeplanServer {
         let canonical = match store.resolve_id(&p.id).await {
             Ok(Some(c)) => c,
             Ok(None) => p.id.clone(),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         match store.get_record(&canonical).await {
             Ok(Some(r)) => {
@@ -2038,7 +2069,7 @@ impl ForgeplanServer {
                 hinted_result(&ArtifactRecordDto::from(r), next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
-            Err(e) => Ok(err_result(&format!("{e}"))),
+            Err(e) => Ok(safe_err_result("", e)),
         }
     }
 
@@ -2225,7 +2256,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         // PRD-055 soft-delete: write receipt + move projection to trash
@@ -2440,7 +2471,7 @@ impl ForgeplanServer {
         let _lock_guard = match ws_opt.as_ref() {
             Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
                 Ok(g) => Some(g),
-                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
             },
             None => None,
         };
@@ -2450,9 +2481,7 @@ impl ForgeplanServer {
             && let Err(e) =
                 forgeplan_core::projection::sync_before_mutation(ws, &store, &p.id).await
         {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync failed: {e}"
-            )));
+            return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
@@ -2582,7 +2611,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
@@ -2606,9 +2635,7 @@ impl ForgeplanServer {
 
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
         if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync failed: {e}"
-            )));
+            return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
@@ -2719,7 +2746,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
@@ -2744,9 +2771,7 @@ impl ForgeplanServer {
         // ADR-003 / PROB-048 file-first: flush user file edits → store before
         // lifecycle transition so they aren't lost.
         if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync failed: {e}"
-            )));
+            return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
         match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
@@ -3995,7 +4020,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let config = workspace::load_config(&ws)
@@ -4080,7 +4105,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let config = workspace::load_config(&ws)
@@ -4150,7 +4175,7 @@ impl ForgeplanServer {
 
         let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let config = workspace::load_config(&ws)
@@ -4361,8 +4386,15 @@ impl ForgeplanServer {
         let data: serde_json::Value = match serde_json::from_str(&p.data) {
             Ok(v) => v,
             Err(e) => {
+                // S5 audit closure: sanitise the underlying error chain
+                // before interpolating it into the hint-bearing payload.
+                // The hint string (Hint: …) is static and contains no
+                // sensitive surface — it appends safely after the
+                // sanitised error.
+                let sanitised =
+                    forgeplan_core::projection::sanitize_error_chain(&anyhow::anyhow!("{e}"));
                 return Ok(err_result(&format!(
-                    "Invalid JSON in import data: {e}\n\nHint: supply a JSON string produced by \
+                    "Invalid JSON in import data: {sanitised}\n\nHint: supply a JSON string produced by \
                  `forgeplan export` — structure: {{\"artifacts\": [...], \"relations\": [...]}}."
                 )));
             }
@@ -4427,7 +4459,7 @@ impl ForgeplanServer {
             )
             .await
             {
-                return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
+                return Ok(safe_err_result(&format!("Failed to import {id}"), e));
             }
             imported += 1;
         }
@@ -4940,7 +4972,7 @@ impl ForgeplanServer {
 
         let mut val = match serde_json::to_value(&result) {
             Ok(v) => v,
-            Err(e) => return Ok(err_result(&format!("serialize failed: {e}"))),
+            Err(e) => return Ok(safe_err_result("serialize failed", e)),
         };
         if let Some(obj) = val.as_object_mut() {
             obj.insert("summary".to_string(), serde_json::Value::String(summary));
@@ -5085,7 +5117,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("Failed to retrieve artifact: {e}"))),
+            Err(e) => return Ok(safe_err_result("Failed to retrieve artifact", e)),
         };
 
         // Schema enum GradeKind already guarantees valid value — no runtime check needed.
@@ -5203,7 +5235,7 @@ impl ForgeplanServer {
         // Build JSON response with optional grade hint
         let mut result_json = match serde_json::to_value(&result) {
             Ok(v) => v,
-            Err(e) => return Ok(err_result(&format!("Serialization error: {e}"))),
+            Err(e) => return Ok(safe_err_result("Serialization error", e)),
         };
 
         // Resolve highlighted grade: explicit grade > my_grade (auto-domain) > none
@@ -5361,7 +5393,7 @@ impl ForgeplanServer {
         let protocol = forgeplan_core::discover::Protocol::default();
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(err_result(&format!("Failed to save session: {e}")));
+            return Ok(safe_err_result("Failed to save session", e));
         }
 
         Ok(json_result(&serde_json::json!({
@@ -5423,18 +5455,18 @@ impl ForgeplanServer {
         // Load session
         let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
             Ok(s) => s,
-            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+            Err(e) => return Ok(safe_err_result("Session not found", e)),
         };
 
         // Create artifact from finding
         let artifact_kind: ArtifactKind = match p.kind.parse() {
             Ok(k) => k,
-            Err(e) => return Ok(err_result(&format!("Invalid kind: {e}"))),
+            Err(e) => return Ok(safe_err_result("Invalid kind", e)),
         };
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
         let id = match store.next_id(&prefix).await {
             Ok(id) => id,
-            Err(e) => return Ok(err_result(&format!("ID generation failed: {e}"))),
+            Err(e) => return Ok(safe_err_result("ID generation failed", e)),
         };
 
         // Build tags: source=tier{N} + phase={phase_name} + optionally legacy-doc for tier 3
@@ -5478,7 +5510,7 @@ impl ForgeplanServer {
         )
         .await
         {
-            return Ok(err_result(&format!("Failed to create artifact: {e}")));
+            return Ok(safe_err_result("Failed to create artifact", e));
         }
 
         // Update session
@@ -5496,7 +5528,7 @@ impl ForgeplanServer {
         session.current_phase = phase;
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(err_result(&format!("Failed to update session: {e}")));
+            return Ok(safe_err_result("Failed to update session", e));
         }
 
         Ok(json_result(&serde_json::json!({
@@ -5538,13 +5570,13 @@ impl ForgeplanServer {
 
         let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
             Ok(s) => s,
-            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+            Err(e) => return Ok(safe_err_result("Session not found", e)),
         };
 
         session.complete();
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(err_result(&format!("Failed to save session: {e}")));
+            return Ok(safe_err_result("Failed to save session", e));
         }
 
         let phase_counts = session.phase_counts();
@@ -5970,7 +6002,7 @@ impl ForgeplanServer {
                     "Try claiming a different artifact: `forgeplan_dispatch agents=3`.",
                 ))
             }
-            Err(e) => Ok(err_result(&format!("claim failed: {e}"))),
+            Err(e) => Ok(safe_err_result("claim failed", e)),
         }
     }
 
@@ -6043,7 +6075,7 @@ impl ForgeplanServer {
                     "Use `force: true` (orchestrator override) if the holder has crashed.",
                 ))
             }
-            Err(e) => Ok(err_result(&format!("release failed: {e}"))),
+            Err(e) => Ok(safe_err_result("release failed", e)),
         }
     }
 
@@ -6093,7 +6125,7 @@ impl ForgeplanServer {
         .await
         {
             Ok(n) => n,
-            Err(e) => return Ok(err_result(&format!("release-notes failed: {e}"))),
+            Err(e) => return Ok(safe_err_result("release-notes failed", e)),
         };
 
         let value = forgeplan_core::release_notes::format_json(&notes);
@@ -6168,7 +6200,7 @@ impl ForgeplanServer {
                 };
                 hinted_result(&dto, hint)
             }
-            Err(e) => Ok(err_result(&format!("list_active failed: {e}"))),
+            Err(e) => Ok(safe_err_result("list_active failed", e)),
         }
     }
 
@@ -8117,6 +8149,88 @@ mod safe_mcp_error_tests {
             "private var folders prefix must be masked: {msg}"
         );
         assert!(msg.contains("<tmpdir>"), "expected mask: {msg}");
+    }
+}
+
+/// Wave 4 S5 audit closure — `safe_err_result` sister to `safe_mcp_error`
+/// for the `CallToolResult::error` family. Same sanitiser, same chain
+/// walker; this test pins the wiring so a regression that drops the
+/// sanitiser call fails before reaching production.
+#[cfg(test)]
+mod safe_err_result_tests {
+    use super::safe_err_result;
+
+    struct HomeGuard {
+        original: Option<String>,
+    }
+    impl HomeGuard {
+        fn override_home(new: &str) -> Self {
+            let original = std::env::var("HOME").ok();
+            unsafe { std::env::set_var("HOME", new) }
+            Self { original }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.original.as_deref() {
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
+    /// Extract the text payload from a `CallToolResult` so we can grep it
+    /// for masked vs raw paths. Returns concatenated text of all content
+    /// blocks; the helper currently uses one but the test is robust to
+    /// future multi-block payloads.
+    fn payload_of(r: &rmcp::model::CallToolResult) -> String {
+        r.content
+            .iter()
+            .filter_map(|c| match &c.raw {
+                rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    #[serial_test::serial(env_home)]
+    fn sanitises_home_path_with_prefix() {
+        let _home_guard = HomeGuard::override_home("/Users/alice");
+        let err = anyhow::anyhow!("EACCES on /Users/alice/proj/.forgeplan/locks/workspace.lock");
+        let result = safe_err_result("workspace lock", err);
+        let msg = payload_of(&result);
+        assert!(
+            !msg.contains("/Users/alice/"),
+            "raw HOME prefix must be masked: {msg}"
+        );
+        assert!(
+            msg.starts_with("workspace lock: "),
+            "prefix must be preserved verbatim: {msg}"
+        );
+        assert!(
+            msg.contains("<HOME>/proj/.forgeplan/locks/workspace.lock"),
+            "masked HOME prefix expected: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_prefix_omits_separator() {
+        // `safe_err_result("", e)` should produce just the sanitised
+        // payload without a leading `: ` separator.
+        let err = anyhow::anyhow!("io error at /tmp/foo/bar.lock");
+        let result = safe_err_result("", err);
+        let msg = payload_of(&result);
+        assert!(
+            !msg.starts_with(": "),
+            "empty prefix must not produce ': ' prefix: {msg}"
+        );
+        assert!(
+            !msg.contains("/tmp/foo"),
+            "raw /tmp prefix must be masked: {msg}"
+        );
+        assert!(msg.contains("<tmpdir>/foo"), "expected mask: {msg}");
     }
 }
 
