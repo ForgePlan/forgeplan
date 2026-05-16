@@ -414,6 +414,8 @@ pub(crate) const GITIGNORE_CANONICAL_BODY: &str = "\
 .forgeplan/logs/
 .forgeplan/locks/
 .forgeplan/secrets.env
+.forgeplan/secrets.env.bak-*
+.forgeplan/.secrets.env.tmp-*
 ";
 
 /// PROB-062: render the full forgeplan-managed block, including its

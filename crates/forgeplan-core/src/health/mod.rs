@@ -1024,6 +1024,22 @@ const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
         ".forgeplan/secrets.env",
         "local API-key template (PRD-077 / CR-C4) — MUST NEVER be committed; remove from git index immediately",
     ),
+    // S2 audit closure: backup files written by `forgeplan migrate-secrets`
+    // (e.g. `secrets.env.bak-1715692800`) contain real key payloads but
+    // share none of the literal name with the canonical gitignore line
+    // above. Without the glob below, a `git add .` immediately after
+    // `migrate-secrets --apply` commits the backup with zero feedback.
+    (
+        ".forgeplan/secrets.env.bak-*",
+        "secrets backup written by migrate-secrets — contains real key values, MUST NEVER be committed",
+    ),
+    // Atomic-write intermediate from `migrate-secrets` — short-lived in
+    // normal flow, but a crash mid-write can leave it behind. Same threat
+    // profile as the backup above.
+    (
+        ".forgeplan/.secrets.env.tmp-*",
+        "atomic-write intermediate from migrate-secrets — contains the new file body, treat as secret",
+    ),
 ];
 
 /// PROB-062: detect files currently tracked by git that match the
@@ -1078,10 +1094,16 @@ pub fn detect_gitignore_drift(workspace_root: &Path) -> Vec<GitignoreDrift> {
             continue;
         }
         for (prefix, reason) in GITIGNORE_DRIFT_PATTERNS {
-            // Match either an exact-file pattern (e.g. `session.yaml`)
-            // or any path under a directory prefix.
-            let is_dir_prefix = prefix.ends_with('/');
-            let matched = if is_dir_prefix {
+            // Three matcher shapes:
+            //   1. `dir/` → directory prefix, any path beneath
+            //   2. `file.bak-*` → suffix-glob, prefix-match on the literal
+            //      portion (S2 audit closure: catches timestamped backup
+            //      files and atomic-write tempfiles that share a literal
+            //      stem with the canonical gitignore entry)
+            //   3. exact literal — equal-string match
+            let matched = if let Some(literal) = prefix.strip_suffix('*') {
+                trimmed.starts_with(literal)
+            } else if prefix.ends_with('/') {
                 trimmed.starts_with(*prefix)
             } else {
                 trimmed == *prefix
@@ -2943,5 +2965,96 @@ mod tests {
             report.phase_read_errors, 0,
             "legacy health_report path must initialize phase_read_errors to 0"
         );
+    }
+
+    /// S2 audit closure: timestamped backup files written by
+    /// `forgeplan migrate-secrets` (`secrets.env.bak-<unix-ts>`) and the
+    /// atomic-write intermediates (`.secrets.env.tmp-<pid>`) must be
+    /// flagged as drift if they ever appear in `git ls-files`.
+    ///
+    /// Previously the matcher only supported exact-literal and
+    /// directory-prefix shapes, so the timestamped backups slipped
+    /// through silently. The suffix-glob shape (`*-` ending) added
+    /// to the matcher closes the gap.
+    #[test]
+    fn detect_gitignore_drift_flags_timestamped_secrets_backups() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q", "--initial-branch=main"])
+            .status();
+        // Required for some git versions to permit add without identity.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.email", "test@example.com"])
+            .status();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.name", "test"])
+            .status();
+
+        std::fs::create_dir_all(root.join(".forgeplan")).unwrap();
+        // Two timestamped backups + one atomic-write intermediate.
+        std::fs::write(
+            root.join(".forgeplan/secrets.env.bak-1700000000"),
+            "export GEMINI_API_KEY='leaked-1'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".forgeplan/secrets.env.bak-1700000050"),
+            "export OPENAI_API_KEY='leaked-2'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".forgeplan/.secrets.env.tmp-12345"),
+            "export ANTHROPIC_API_KEY='leaked-3'\n",
+        )
+        .unwrap();
+
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "-f", ".forgeplan"])
+            .status();
+
+        let drifts = detect_gitignore_drift(root);
+        let paths: Vec<&str> = drifts.iter().map(|d| d.path.as_str()).collect();
+
+        assert!(
+            paths.contains(&".forgeplan/secrets.env.bak-1700000000"),
+            "timestamped backup must be flagged: {drifts:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/secrets.env.bak-1700000050"),
+            "second timestamped backup must be flagged: {drifts:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/.secrets.env.tmp-12345"),
+            "atomic-write tempfile must be flagged: {drifts:?}"
+        );
+        // All three carry secret-risk reasons (not generic "lance" or
+        // "session" reasons).
+        for d in &drifts {
+            if d.path.starts_with(".forgeplan/secrets") || d.path.starts_with(".forgeplan/.secrets")
+            {
+                assert!(
+                    d.reason.contains("MUST NEVER be committed")
+                        || d.reason.contains("treat as secret")
+                        || d.reason.contains("real key"),
+                    "secret-risk path must carry an alarming reason: {d:?}"
+                );
+            }
+        }
     }
 }
