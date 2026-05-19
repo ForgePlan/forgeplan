@@ -738,6 +738,16 @@ struct LinkParams {
     /// backward compatibility with pre-#286 callers.
     #[serde(default)]
     replace: bool,
+    /// Issue #288: optional auto-activate of the source artifact when this
+    /// link completes the evidence pack. When `true` AND the source is an
+    /// evidence artifact in draft status AND its body declares both
+    /// `verdict` and `congruence_level` structured fields AND R_eff > 0
+    /// after the link lands, the source is silently activated
+    /// (draft → active) in the same call. The response carries
+    /// `auto_activated` so the caller knows the transition happened.
+    /// Defaults to `false` so pre-#288 callers see no behaviour change.
+    #[serde(default)]
+    auto_activate_source_if_complete: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2015,7 +2025,82 @@ impl ForgeplanServer {
                 format!("Linked: {} --{}--> {}", p.source, relation, p.target)
             }
         };
-        hinted_result(&LinkResponse { message }, next_action)
+
+        // Issue #288 part A: optional auto-activate of the source artifact
+        // when this link completes the evidence pack. Profile B (reviewer)
+        // agents are physically denied `forgeplan_activate` — without this,
+        // every link from a complete EVID requires a separate orchestrator
+        // call to flip draft → active, and that step is routinely forgotten
+        // during commit/PR context switches (the marketplace observation
+        // that triggered the issue).
+        //
+        // Issue #288 part C: enhanced _next_action when the source is a
+        // complete-but-still-draft EVID — suggests activation in the hint
+        // chain so callers without the auto-activate flag still see the
+        // next step.
+        let mut auto_activated: Option<String> = None;
+        let mut completion_hint: Option<String> = None;
+        let safe_src = sanitize_for_hint(&p.source);
+        if let Ok(Some(src_record)) = store.get_record(&p.source).await
+            && src_record.kind.eq_ignore_ascii_case("evidence")
+            && src_record.status.eq_ignore_ascii_case("draft")
+            && forgeplan_core::scoring::evidence::is_evidence_complete(&src_record.body)
+        {
+            // Fresh R_eff post-link. The sync_score_target wrapper above
+            // already persisted the recomputed score; reading the record
+            // again picks up the cached column without a second graph walk.
+            let r_eff_after = src_record.r_eff_score;
+            if r_eff_after > 0.0 {
+                if p.auto_activate_source_if_complete {
+                    match forgeplan_core::lifecycle::activate(&store, &p.source, false).await {
+                        Ok(_) => {
+                            // Re-render after activation so the file's
+                            // status: reflects active (same discipline as
+                            // forgeplan_activate tool above).
+                            if let Err(e) =
+                                projection::render_after_mutation(&ws, &store, &p.source).await
+                            {
+                                tracing::warn!(
+                                    "auto-activate post-render for {} failed: {e}",
+                                    p.source
+                                );
+                            }
+                            auto_activated = Some(p.source.clone());
+                            completion_hint = Some(format!(
+                                "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence). \
+                                 Source auto-activated draft → active. Reconcile parents: \
+                                 `forgeplan_score_all`."
+                            ));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "auto-activate of {} failed: {e} (link succeeded; user can retry forgeplan_activate manually)",
+                                p.source
+                            );
+                            completion_hint = Some(format!(
+                                "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence). \
+                                 Auto-activate failed; activate manually: \
+                                 `forgeplan_activate {safe_src}`."
+                            ));
+                        }
+                    }
+                } else {
+                    completion_hint = Some(format!(
+                        "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence, draft). \
+                         Activate: `forgeplan_activate {safe_src}`."
+                    ));
+                }
+            }
+        }
+
+        let final_next_action = completion_hint.unwrap_or(next_action);
+        hinted_result(
+            &LinkResponse {
+                message,
+                auto_activated,
+            },
+            final_next_action,
+        )
     }
 
     #[tool(
@@ -2111,6 +2196,7 @@ impl ForgeplanServer {
         hinted_result(
             &LinkResponse {
                 message: format!("Unlinked: {} --{}--> {}", p.source, relation, p.target),
+                auto_activated: None,
             },
             "Unlinked. R_eff recomputed on source. Reconcile parents: `forgeplan_score_all`.",
         )

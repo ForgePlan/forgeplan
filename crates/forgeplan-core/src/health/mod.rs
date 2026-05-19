@@ -166,6 +166,11 @@ pub const DEFAULT_UNHEALTHY_AT_RISK: usize = 10;
 /// problem that masks BLOCKED state and must surface loudly.
 pub const DEFAULT_UNHEALTHY_PHASE_READ_ERRORS: usize = 3;
 
+/// Issue #288 — default `Unhealthy` threshold for ready-to-activate
+/// stale drafts. 5 is generous enough for a "batch activate Monday
+/// morning" workflow, strict enough to catch genuine workflow drift.
+pub const DEFAULT_UNHEALTHY_STALE_READY_DRAFTS: usize = 5;
+
 /// Tunable promotion thresholds for [`compute_verdict`]. When the count
 /// of a given warning class **strictly exceeds** the threshold, the
 /// verdict is promoted to `Unhealthy`. Counts in `1..=threshold` keep
@@ -200,6 +205,13 @@ pub struct VerdictThresholds {
     /// count still trips the any-warning floor (`NeedsAttention`). See
     /// [`DEFAULT_UNHEALTHY_PHASE_READ_ERRORS`].
     pub phase_read_errors: usize,
+    /// Issue #288: number of `StaleDraft` entries with
+    /// `recommendation = ReadyToActivate` strictly above which the verdict
+    /// promotes to `Unhealthy`. Below the threshold, any non-zero count
+    /// still trips the any-warning floor (`NeedsAttention`). Default 5 —
+    /// 1-4 ready drafts is a common "I'll batch-activate next morning"
+    /// state; 5+ suggests workflow drift.
+    pub stale_ready_drafts: usize,
 }
 
 impl Default for VerdictThresholds {
@@ -212,6 +224,7 @@ impl Default for VerdictThresholds {
             phase_mismatches: DEFAULT_UNHEALTHY_PHASE_MISMATCHES,
             at_risk: DEFAULT_UNHEALTHY_AT_RISK,
             phase_read_errors: DEFAULT_UNHEALTHY_PHASE_READ_ERRORS,
+            stale_ready_drafts: DEFAULT_UNHEALTHY_STALE_READY_DRAFTS,
         }
     }
 }
@@ -313,6 +326,55 @@ impl Verdict {
     }
 }
 
+/// Issue #288: a draft artifact that has been sitting in `draft` status
+/// long enough to warrant attention. Surfaced by `health_report` so
+/// operators / agents can decide whether to activate (complete EVID,
+/// ready) or finish filling (still missing fields).
+///
+/// Reported per-artifact with an explicit `recommendation` so consumers
+/// can branch without re-computing the heuristic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleDraft {
+    /// Artifact id (display form: `EVID-127`, `PRD-077`, …).
+    pub id: String,
+    /// Artifact kind (`evidence`, `prd`, …).
+    pub kind: String,
+    /// Hours since `created_at` per the artifact record. The threshold
+    /// for "stale" lives in `DEFAULT_STALE_DRAFT_HOURS` so the heuristic
+    /// is configurable in one place.
+    pub age_hours: i64,
+    /// For evidence artifacts: `true` when the body contains a parseable
+    /// `verdict` field. For non-evidence: always `true` (the field is
+    /// evidence-specific; not having one is not a draft completeness
+    /// signal for PRDs / RFCs / etc.).
+    pub verdict_set: bool,
+    /// `true` when the artifact has at least one outgoing relation. A
+    /// drafted EVID with no link to a PRD is an orphan-in-the-making,
+    /// not a ready-to-activate one.
+    pub has_links: bool,
+    /// Recommended next action class. Consumers pick a tier based on
+    /// this — auto-fix, ADI loop, or escalate to user.
+    pub recommendation: StaleDraftRecommendation,
+}
+
+/// Issue #288: recommendation tier for a `StaleDraft`. The CLI / MCP
+/// renderer uses this to compose the actionable next step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleDraftRecommendation {
+    /// EVID is complete (verdict + CL set), has links, R_eff > 0,
+    /// status still draft → just activate.
+    ReadyToActivate,
+    /// Either incomplete (missing structured fields on EVID) OR has no
+    /// links (orphan in the making). Needs operator decision.
+    IncompleteOrOrphan,
+}
+
+/// Issue #288: default "stale" threshold for `StaleDraft` detection.
+/// 24 hours strikes a balance: longer than a typical in-session pause
+/// but short enough that the next morning's session sees yesterday's
+/// half-finished EVIDs.
+pub const DEFAULT_STALE_DRAFT_HOURS: i64 = 24;
+
 /// Full health report for a Forgeplan workspace.
 #[derive(Debug, Clone)]
 pub struct HealthReport {
@@ -352,6 +414,22 @@ pub struct HealthReport {
     /// Populated by `health_report_with_phase`; zero for legacy
     /// `health_report` path.
     pub phase_read_errors: usize,
+    /// Issue #288: artifacts that have been in `draft` status long enough
+    /// (default 24h, see [`DEFAULT_STALE_DRAFT_HOURS`]) to warrant a
+    /// status decision. Each entry carries a `recommendation` so the
+    /// renderer can compose a targeted next-action message instead of a
+    /// generic "you have drafts" warning.
+    ///
+    /// Population: only by `health_report_with_phase` (it has the path
+    /// context required to read `created_at` via the store). The legacy
+    /// `health_report` path leaves this empty.
+    ///
+    /// Folded into [`HealthReport::verdict`]: any entry with
+    /// `recommendation = ReadyToActivate` trips the any-warning floor
+    /// (`Verdict::NeedsAttention`). The threshold for promoting to
+    /// `Verdict::Unhealthy` lives in
+    /// [`VerdictThresholds::stale_ready_drafts`].
+    pub stale_drafts: Vec<StaleDraft>,
     /// **Best-known verdict for user-facing display.** Aggregates all
     /// warning classes Forgeplan currently understands. Equals
     /// [`HealthReport::partial_verdict`] when this report comes из
@@ -629,6 +707,80 @@ pub async fn health_report_with_phase(
     };
     report.gitignore_drift = detect_gitignore_drift(drift_root);
 
+    // Issue #288: stale-draft detection. Walk all draft artifacts; an
+    // artifact older than DEFAULT_STALE_DRAFT_HOURS in `draft` status
+    // becomes a `StaleDraft` entry with a recommendation tier.
+    //
+    // The walk is bounded by the `all` Vec already loaded above (one scan
+    // total — no extra I/O). Relations are indexed once via `outgoing`.
+    let outgoing_set: std::collections::HashMap<&str, bool> = {
+        let mut m = std::collections::HashMap::new();
+        for (src, _, _) in &all_relations {
+            m.insert(src.as_str(), true);
+        }
+        m
+    };
+    let now = chrono::Utc::now();
+    for record in &all {
+        if !record.status.eq_ignore_ascii_case("draft") {
+            continue;
+        }
+        // Parse created_at; on parse failure, skip this artifact (we'd
+        // rather miss one entry than crash the whole health scan).
+        let created = match chrono::DateTime::parse_from_rfc3339(&record.created_at) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => continue,
+        };
+        let age_hours = (now - created).num_hours();
+        if age_hours < DEFAULT_STALE_DRAFT_HOURS {
+            continue;
+        }
+        let verdict_set = if record.kind.eq_ignore_ascii_case("evidence") {
+            // For EVID, verdict_set is the explicit body field — even if
+            // CL is missing the operator at least picked a verdict shape.
+            crate::scoring::evidence::extract_field(&record.body, "verdict")
+                .as_deref()
+                .map(|s| {
+                    matches!(
+                        s.to_lowercase().as_str(),
+                        "supports" | "weakens" | "refutes"
+                    )
+                })
+                .unwrap_or(false)
+        } else {
+            // verdict is evidence-specific; default true for other kinds
+            // so the recommendation logic below treats them uniformly.
+            true
+        };
+        let has_links = outgoing_set.contains_key(record.id.as_str());
+        // ReadyToActivate semantics (per issue #288):
+        //   - kind=evidence + complete + has_links + R_eff>0
+        // Everything else falls into IncompleteOrOrphan (advisory only).
+        let recommendation = if record.kind.eq_ignore_ascii_case("evidence")
+            && crate::scoring::evidence::is_evidence_complete(&record.body)
+            && has_links
+            && record.r_eff_score > 0.0
+        {
+            StaleDraftRecommendation::ReadyToActivate
+        } else {
+            StaleDraftRecommendation::IncompleteOrOrphan
+        };
+        report.stale_drafts.push(StaleDraft {
+            id: record.id.clone(),
+            kind: record.kind.clone(),
+            age_hours,
+            verdict_set,
+            has_links,
+            recommendation,
+        });
+    }
+
+    // Re-fold verdict now that gitignore_drift, phase_read_errors, AND
+    // stale_drafts are all populated. The internal `compute_verdict`
+    // helper takes the report and the phase_mismatches count.
+    report.verdict =
+        report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
+
     Ok((report, phase_mismatches))
 }
 
@@ -715,6 +867,7 @@ async fn health_report_from_records(
         at_risk.len(),
         0, // phase_mismatches injected by upstream callers via compute_verdict_with()
         0, // phase_read_errors zero in legacy path; with-phase populates the report field
+        0, // stale_ready_drafts zero in legacy path; with-phase populates the report field
         &VerdictThresholds::default(),
     );
 
@@ -744,6 +897,10 @@ async fn health_report_from_records(
         // LOG-003 FR-020: phase read errors count. Zero for legacy path;
         // populated by `health_report_with_phase` if any reads fail.
         phase_read_errors: 0,
+        // Issue #288: stale-draft detection requires `created_at` reads
+        // from the store. The legacy `health_report` path skips it;
+        // `health_report_with_phase` populates it after construction.
+        stale_drafts: Vec::new(),
         verdict,
         partial_verdict: verdict,
     })
@@ -766,6 +923,14 @@ pub fn compute_verdict(
     thresholds: &VerdictThresholds,
     phase_mismatches: usize,
 ) -> Verdict {
+    // Issue #288: count only ReadyToActivate drafts for verdict folding.
+    // IncompleteOrOrphan items are advisory ("you have stuff to finish")
+    // and feed the floor, but never the Unhealthy threshold.
+    let stale_ready = report
+        .stale_drafts
+        .iter()
+        .filter(|d| d.recommendation == StaleDraftRecommendation::ReadyToActivate)
+        .count();
     compute_verdict_from_signals(
         report.total,
         report.orphans.len(),
@@ -776,6 +941,7 @@ pub fn compute_verdict(
         report.at_risk.len(),
         phase_mismatches,
         report.phase_read_errors,
+        stale_ready,
         thresholds,
     )
 }
@@ -979,6 +1145,7 @@ fn compute_verdict_from_signals(
     at_risk: usize,
     _phase_mismatches: usize,
     phase_read_errors: usize,
+    stale_ready_drafts: usize,
     t: &VerdictThresholds,
 ) -> Verdict {
     // Empty workspace short-circuit (Round 6 audit MED): zero artifacts is
@@ -1003,6 +1170,7 @@ fn compute_verdict_from_signals(
         || duplicates > t.duplicates
         || at_risk > t.at_risk
         || phase_read_errors > t.phase_read_errors
+        || stale_ready_drafts > t.stale_ready_drafts
     {
         return Verdict::Unhealthy;
     }
@@ -1017,7 +1185,8 @@ fn compute_verdict_from_signals(
         || duplicates > 0
         || stale > 0
         || at_risk > 0
-        || phase_read_errors > 0;
+        || phase_read_errors > 0
+        || stale_ready_drafts > 0;
     if has_any_warning {
         Verdict::NeedsAttention
     } else {
@@ -2080,6 +2249,7 @@ mod tests {
             active_stubs: Vec::new(),
             gitignore_drift: Vec::new(),
             phase_read_errors: 0,
+            stale_drafts: Vec::new(),
             verdict: Verdict::Healthy,
             partial_verdict: Verdict::Healthy,
         }
@@ -3054,6 +3224,87 @@ mod tests {
             Verdict::Healthy,
             "zero phase_read_errors must NOT degrade a clean report: got {v:?}"
         );
+    }
+
+    // ── Issue #288 — stale_drafts fold into verdict ───────────────
+
+    fn stale_draft(id: &str, rec: StaleDraftRecommendation) -> StaleDraft {
+        StaleDraft {
+            id: id.to_string(),
+            kind: "evidence".to_string(),
+            age_hours: 48,
+            verdict_set: true,
+            has_links: matches!(rec, StaleDraftRecommendation::ReadyToActivate),
+            recommendation: rec,
+        }
+    }
+
+    /// Issue #288 regression — a single ready-to-activate stale draft
+    /// must trip the any-warning floor.
+    #[test]
+    fn stale_ready_draft_one_promotes_to_needs_attention() {
+        let mut report = empty_report(5);
+        report.stale_drafts.push(stale_draft(
+            "EVID-001",
+            StaleDraftRecommendation::ReadyToActivate,
+        ));
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::NeedsAttention,
+            "1 ready stale draft must trip floor: got {v:?}"
+        );
+    }
+
+    /// Issue #288 regression — above the configured threshold (default 5)
+    /// the verdict promotes to Unhealthy.
+    #[test]
+    fn stale_ready_drafts_above_threshold_promotes_to_unhealthy() {
+        let mut report = empty_report(20);
+        for i in 0..6 {
+            report.stale_drafts.push(stale_draft(
+                &format!("EVID-{i:03}"),
+                StaleDraftRecommendation::ReadyToActivate,
+            ));
+        }
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Unhealthy,
+            "6 ready stale drafts must exceed the default threshold of 5: got {v:?}"
+        );
+    }
+
+    /// Issue #288 regression — IncompleteOrOrphan entries are advisory
+    /// only. They surface in `stale_drafts` (for renderer attention) but
+    /// do NOT feed verdict computation, regardless of count. Per the
+    /// issue spec: "Health verdict downgrades to needs_attention if any
+    /// recommendation: ready_to_activate items exist."
+    #[test]
+    fn stale_incomplete_drafts_are_advisory_only_not_in_verdict() {
+        let mut report = empty_report(20);
+        for i in 0..10 {
+            report.stale_drafts.push(stale_draft(
+                &format!("EVID-{i:03}"),
+                StaleDraftRecommendation::IncompleteOrOrphan,
+            ));
+        }
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Healthy,
+            "10 incomplete-only stale drafts must not affect verdict: got {v:?}"
+        );
+        assert_eq!(report.stale_drafts.len(), 10);
+    }
+
+    /// Issue #288 regression — zero stale_drafts on a clean report must
+    /// not degrade the verdict.
+    #[test]
+    fn no_stale_drafts_keeps_healthy() {
+        let report = empty_report(5);
+        assert!(report.stale_drafts.is_empty());
+        assert_eq!(report.compute_verdict(), Verdict::Healthy);
     }
 
     /// S2 audit closure: timestamped backup files written by

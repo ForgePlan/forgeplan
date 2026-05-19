@@ -241,6 +241,12 @@ pub struct EvidenceDto {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LinkResponse {
     pub message: String,
+    /// Issue #288: id of the source artifact when it was silently activated
+    /// by the link call's `auto_activate_source_if_complete: true` flag.
+    /// `None` when auto-activation was not requested OR not applicable
+    /// (source wasn't a complete-evidence draft, R_eff stayed at 0, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_activated: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
