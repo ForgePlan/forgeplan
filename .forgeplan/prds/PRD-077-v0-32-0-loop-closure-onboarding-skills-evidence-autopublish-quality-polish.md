@@ -4,7 +4,7 @@ id: PRD-077
 kind: prd
 last_modified_at: 2026-05-13T22:33:10.027239+00:00
 last_modified_by: claude-code/2.1.139
-status: draft
+status: active
 title: 'v0.32.0 — Loop closure: onboarding + skills evidence autopublish + quality polish'
 ---
 
@@ -164,5 +164,7 @@ All FRs reversible by `git revert`. No on-disk artifact format changes. No Lance
 - User direction 2026-05-13: scope expansion to include all previously-deferred items
 - User direction 2026-05-13: "оставим config.yaml как есть и просто добавим secrets.yaml + в ignore" (file renamed to `secrets.env` during CR-C4 fix — body is shell syntax not YAML)
 - User direction 2026-05-13: "Нужно чтобы всё работало идеально — каждый пункт и тем более со скиллами чтобы было чётко и синхронизировано"
+
+
 
 
