@@ -593,6 +593,26 @@ enum Commands {
     },
     /// Show blind spots — decisions without evidence, orphan artifacts
     Blindspots,
+    /// Issue #289 — detect pipeline anomalies (stuck drafts, orphan links,
+    /// mis-typed based_on, etc.). Each entry carries severity + tier +
+    /// suggested_resolution so orchestrators can dispatch fixes.
+    Anomalies {
+        /// Filter by anomaly kind (snake_case: stuck_draft, orphan_link,
+        /// mistyped_based_on, missing_must_section, expired_evidence,
+        /// weakest_link_unresolvable, phase_mismatch, circular_dependency,
+        /// duplicate_artifact)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by severity (low, medium, high)
+        #[arg(long)]
+        severity: Option<String>,
+        /// Only return anomalies observed at or after this RFC 3339 timestamp
+        #[arg(long)]
+        since: Option<String>,
+        /// Output as JSON instead of human-readable table
+        #[arg(long)]
+        json: bool,
+    },
     /// Show decision journal — chronological timeline with R_eff scores
     Journal {
         /// Filter by kind (adr, note, problem, solution)
@@ -1265,6 +1285,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
+        Commands::Anomalies {
+            kind,
+            severity,
+            since,
+            json,
+        } => commands::anomalies::run(kind, severity, since, json).await,
         Commands::Journal { r#type, risk } => commands::journal::run(r#type.as_deref(), risk).await,
         Commands::Health {
             compact,

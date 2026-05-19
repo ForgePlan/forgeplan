@@ -1,6 +1,8 @@
 pub mod activate;
 pub mod activity;
 pub mod activity_stats;
+// Issue #289 — pipeline anomaly detector CLI surface.
+pub mod anomalies;
 pub mod blindspots;
 pub mod blocked;
 pub mod calibrate;

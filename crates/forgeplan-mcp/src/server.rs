@@ -761,6 +761,22 @@ struct UnlinkParams {
     relation: RelationKind,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AnomaliesParams {
+    /// Issue #289: filter by anomaly kind. Accepts the same snake_case
+    /// names emitted in the response (`stuck_draft`, `orphan_link`, …).
+    /// When `None`, all detected anomalies are returned.
+    #[serde(default)]
+    kind: Option<String>,
+    /// Filter by severity (`low` / `medium` / `high`). Exact match.
+    #[serde(default)]
+    severity: Option<String>,
+    /// ISO 8601 cutoff — only return anomalies observed at or after this
+    /// timestamp. Useful for diff-style polling.
+    #[serde(default)]
+    since: Option<String>,
+}
+
 fn default_relation() -> RelationKind {
     RelationKind::Informs
 }
@@ -3243,6 +3259,109 @@ impl ForgeplanServer {
         }
 
         Ok(json_result(&json_data))
+    }
+
+    #[tool(
+        description = "Issue #289 — detect pipeline anomalies (stuck drafts, orphan links, mis-typed based_on, missing MUST sections, expired evidence, cycles, duplicates, etc.). Returns structured list with severity + tier + suggested_resolution so orchestrators (`/forge-cycle`, `/forge-cleanup`) can dispatch auto/adi/user tiers without re-classifying.",
+        annotations(
+            title = "Detect Pipeline Anomalies",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_anomalies(
+        &self,
+        Parameters(p): Parameters<AnomaliesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Parse + validate filter inputs. Bad shapes fail loud so callers
+        // can fix their query rather than silently getting the wrong
+        // (broader) result set.
+        let kind_filter = match p.kind.as_deref() {
+            Some(s) => match serde_json::from_value::<forgeplan_core::anomalies::AnomalyKind>(
+                serde_json::Value::String(s.to_string()),
+            ) {
+                Ok(k) => Some(k),
+                Err(_) => {
+                    return Ok(err_hinted(
+                        &format!("Unknown anomaly kind: {s}"),
+                        "Valid kinds: stuck_draft, orphan_link, mistyped_based_on, \
+                         missing_must_section, expired_evidence, weakest_link_unresolvable, \
+                         phase_mismatch, circular_dependency, duplicate_artifact.",
+                    ));
+                }
+            },
+            None => None,
+        };
+        let severity_filter = match p.severity.as_deref() {
+            Some(s) => match serde_json::from_value::<forgeplan_core::anomalies::Severity>(
+                serde_json::Value::String(s.to_string()),
+            ) {
+                Ok(sv) => Some(sv),
+                Err(_) => {
+                    return Ok(err_hinted(
+                        &format!("Unknown severity: {s}"),
+                        "Valid severities: low, medium, high.",
+                    ));
+                }
+            },
+            None => None,
+        };
+        let since_filter = match p.since.as_deref() {
+            Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+                Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
+                Err(_) => {
+                    return Ok(err_hinted(
+                        &format!("`since` is not a valid RFC 3339 timestamp: {s}"),
+                        "Example: 2026-05-19T00:00:00Z",
+                    ));
+                }
+            },
+            None => None,
+        };
+
+        let filter = forgeplan_core::anomalies::AnomalyFilter {
+            severity: severity_filter,
+            since: since_filter,
+            kind: kind_filter,
+        };
+        let report = match forgeplan_core::anomalies::detect_anomalies(&store, &ws, &filter).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
+        };
+
+        let next_action = if report.total == 0 {
+            "No anomalies. Done.".to_string()
+        } else if report.by_tier.auto > 0 {
+            format!(
+                "{} anomaly(ies) detected. {} are auto-fixable; orchestrator can resolve them \
+                 without user prompt.",
+                report.total, report.by_tier.auto
+            )
+        } else if report.by_tier.user > 0 {
+            format!(
+                "{} anomaly(ies) detected — {} require user input. Run `forgeplan_get <id>` on \
+                 affected artifacts to review.",
+                report.total, report.by_tier.user
+            )
+        } else {
+            format!(
+                "{} anomaly(ies) detected. {} need ADI loop investigation.",
+                report.total, report.by_tier.adi
+            )
+        };
+
+        hinted_result(&report, next_action)
     }
 
     #[tool(
