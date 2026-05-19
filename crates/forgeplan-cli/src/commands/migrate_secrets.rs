@@ -34,7 +34,7 @@
 //!
 //! - 0 — success (nothing to do, or migration applied cleanly)
 //! - 1 — at least one error occurred (backup failed, write failed,
-//!       OR env-vs-file value conflict left unresolved)
+//!   OR env-vs-file value conflict left unresolved)
 //! - 2 — workspace not found
 //!
 //! ## Security

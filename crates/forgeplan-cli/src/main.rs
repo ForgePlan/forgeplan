@@ -216,6 +216,14 @@ enum Commands {
         /// Relationship type: informs, based_on, supersedes, contradicts, refines
         #[arg(long, default_value = "informs")]
         relation: String,
+        /// Issue #286: if an edge already exists between source and target with
+        /// a DIFFERENT relation, replace it (idempotent upsert). Without this
+        /// flag, an existing edge with a different relation surfaces as an
+        /// error and the call fails — matching the pre-issue-#286 behaviour.
+        /// Used to fix mis-typed `based_on` / `informs` choices without
+        /// destroying the artifact via `forgeplan delete`.
+        #[arg(long)]
+        replace: bool,
     },
     /// Remove a relation between two artifacts
     Unlink {
@@ -1120,7 +1128,8 @@ async fn main() -> anyhow::Result<()> {
             source,
             target,
             relation,
-        } => commands::link::run(&source, &target, &relation).await,
+            replace,
+        } => commands::link::run(&source, &target, &relation, replace).await,
         Commands::Unlink {
             source,
             target,

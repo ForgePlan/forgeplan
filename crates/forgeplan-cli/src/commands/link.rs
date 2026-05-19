@@ -3,7 +3,12 @@ use forgeplan_core::link;
 
 use crate::commands::common;
 
-pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Result<()> {
+pub async fn run(
+    source_id: &str,
+    target_id: &str,
+    relation: &str,
+    replace: bool,
+) -> anyhow::Result<()> {
     // Normalize relation
     let relation = link::normalize_relation(relation)?;
 
@@ -40,15 +45,23 @@ Fix: forgeplan list",
         );
     }
 
-    // PRD-073 FR-005: helper handles sync→add_relation→render for BOTH sides
-    // so target file's frontmatter stays in lockstep with LanceDB.
-    forgeplan_core::projection::add_link_with_projection(
-        &forgeplan_core::projection::MutationContext::new(&ws, &store),
-        source_id,
-        target_id,
-        &relation,
-    )
-    .await?;
+    // Issue #286: `--replace` selects the upsert helper, which collapses
+    // any pre-existing edge between (source, target) onto the requested
+    // relation. Without the flag we use the strict additive helper that
+    // rejects duplicates and parallel-different-relation edges.
+    let ctx = forgeplan_core::projection::MutationContext::new(&ws, &store);
+    let outcome = if replace {
+        Some(
+            forgeplan_core::projection::replace_link_with_projection(
+                &ctx, source_id, target_id, &relation,
+            )
+            .await?,
+        )
+    } else {
+        forgeplan_core::projection::add_link_with_projection(&ctx, source_id, target_id, &relation)
+            .await?;
+        None
+    };
 
     common::log_change_field(
         &store,
@@ -61,7 +74,26 @@ Fix: forgeplan list",
     )
     .await;
 
-    println!("Linked: {} --{}--> {}", source_id, relation, target_id);
+    // Surface the outcome verbatim when `--replace` was used so operators
+    // can see whether the call was a no-op, a swap, or a creation. Without
+    // the flag we keep the original one-liner for back-compat.
+    match outcome {
+        Some(forgeplan_core::projection::LinkUpsertOutcome::Replaced { old_relation }) => {
+            println!(
+                "Replaced: {} --{}--> {} (was: --{}-->)",
+                source_id, relation, target_id, old_relation
+            );
+        }
+        Some(forgeplan_core::projection::LinkUpsertOutcome::Unchanged) => {
+            println!(
+                "Unchanged: {} --{}--> {} already exists",
+                source_id, relation, target_id
+            );
+        }
+        Some(forgeplan_core::projection::LinkUpsertOutcome::Created) | None => {
+            println!("Linked: {} --{}--> {}", source_id, relation, target_id);
+        }
+    }
 
     // PRD-075 FR-001: sync recompute closes stale-cache window. Failure is
     // non-fatal (mutation succeeded) — the wrapper surfaces a Fix: marker so

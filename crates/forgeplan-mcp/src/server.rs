@@ -729,6 +729,26 @@ struct LinkParams {
     /// Relationship type (default: informs)
     #[serde(default = "default_relation")]
     relation: RelationKind,
+    /// Issue #286: idempotent upsert mode. When `true` and an edge between
+    /// `(source, target)` already exists with a DIFFERENT relation, the old
+    /// edge is deleted and a new one with `relation` is added in a single
+    /// call. Without this, the additive path errors on
+    /// "relation already exists" or returns a parallel-edge state that the
+    /// caller cannot fix without `forgeplan_unlink`. Defaults to `false` for
+    /// backward compatibility with pre-#286 callers.
+    #[serde(default)]
+    replace: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UnlinkParams {
+    /// Source artifact ID
+    source: String,
+    /// Target artifact ID
+    target: String,
+    /// Relationship type to remove (default: informs)
+    #[serde(default = "default_relation")]
+    relation: RelationKind,
 }
 
 fn default_relation() -> RelationKind {
@@ -1897,24 +1917,47 @@ impl ForgeplanServer {
         // sync_before/render_after are no-ops when the target is not local
         // (cross-workspace reference) so the previous warn-and-continue
         // behavior is preserved by the helper's natural laziness.
-        if let Err(e) = projection::add_link_with_projection(
-            &projection::MutationContext::new(&ws, &store),
-            &p.source,
-            &p.target,
-            &relation,
-        )
-        .await
-        {
-            let safe_src = sanitize_for_hint(&p.source);
-            let safe_tgt = sanitize_for_hint(&p.target);
-            return Ok(err_hinted(
-                &format!("{e}"),
-                format!(
-                    "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
-                     source != target. Self-links and dangling targets are rejected."
-                ),
-            ));
-        }
+        //
+        // Issue #286: `replace: true` selects the upsert helper, which
+        // collapses any pre-existing edge between `(source, target)` onto
+        // the requested relation. Without the flag we keep the strict
+        // additive helper that rejects duplicates and parallel-different-
+        // relation edges — matching the pre-#286 behaviour exactly.
+        let ctx = projection::MutationContext::new(&ws, &store);
+        let upsert_outcome = if p.replace {
+            match projection::replace_link_with_projection(&ctx, &p.source, &p.target, &relation)
+                .await
+            {
+                Ok(o) => Some(o),
+                Err(e) => {
+                    let safe_src = sanitize_for_hint(&p.source);
+                    let safe_tgt = sanitize_for_hint(&p.target);
+                    return Ok(err_hinted(
+                        &format!("{e}"),
+                        format!(
+                            "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
+                             source != target. Self-links and dangling targets are rejected."
+                        ),
+                    ));
+                }
+            }
+        } else {
+            if let Err(e) =
+                projection::add_link_with_projection(&ctx, &p.source, &p.target, &relation).await
+            {
+                let safe_src = sanitize_for_hint(&p.source);
+                let safe_tgt = sanitize_for_hint(&p.target);
+                return Ok(err_hinted(
+                    &format!("{e}"),
+                    format!(
+                        "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
+                         source != target. Self-links and dangling targets are rejected. Pass \
+                         `replace: true` to overwrite an existing parallel edge."
+                    ),
+                ));
+            }
+            None
+        };
 
         // PROB-057 / PRD-075 + Round 9 HIGH-1: MCP parity for sync recompute.
         // Failure is non-fatal (mutation succeeded); surface via tracing so
@@ -1955,11 +1998,121 @@ impl ForgeplanServer {
                 "Linked. Verify graph: `forgeplan_graph`.".to_string()
             }
         };
+        // Issue #286: differentiate replace outcomes so callers can see the
+        // pre-existing relation that was overwritten (audit trail).
+        let message = match upsert_outcome {
+            Some(projection::LinkUpsertOutcome::Replaced { old_relation }) => format!(
+                "Replaced: {} --{}--> {} (was: --{}-->)",
+                p.source, relation, p.target, old_relation
+            ),
+            Some(projection::LinkUpsertOutcome::Unchanged) => {
+                format!(
+                    "Unchanged: {} --{}--> {} already exists",
+                    p.source, relation, p.target
+                )
+            }
+            Some(projection::LinkUpsertOutcome::Created) | None => {
+                format!("Linked: {} --{}--> {}", p.source, relation, p.target)
+            }
+        };
+        hinted_result(&LinkResponse { message }, next_action)
+    }
+
+    #[tool(
+        description = "Remove a typed relation between two artifacts. Mirror of `forgeplan_link` for undoing or fixing mis-typed edges. Issue #286.",
+        annotations(
+            title = "Unlink Artifacts",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_unlink(
+        &self,
+        Parameters(p): Parameters<UnlinkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Same lock discipline as forgeplan_link.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        let relation = match link::normalize_relation(p.relation.as_str()) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("{e}"),
+                    "Valid relations: informs, based_on, supersedes, contradicts, refines. \
+                     Pick one and retry.",
+                ));
+            }
+        };
+
+        // Verify the edge actually exists before delete so we can return a
+        // useful error rather than a silent no-op (LanceDB's delete is
+        // idempotent — without this check the caller has no signal that the
+        // typo'd relation was never present).
+        let existing = match store.get_relations(&p.source).await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("read relations", e)),
+        };
+        let found = existing
+            .iter()
+            .any(|(t, r)| t.eq_ignore_ascii_case(&p.target) && r == &relation);
+        if !found {
+            let safe_src = sanitize_for_hint(&p.source);
+            let safe_tgt = sanitize_for_hint(&p.target);
+            return Ok(err_hinted(
+                &format!(
+                    "Relation '{}' from {} to {} not found",
+                    relation, p.source, p.target
+                ),
+                format!(
+                    "List existing edges from source: `forgeplan_get {safe_src}` (check the \
+                     `## Related` section). If the typo is on `target`, retry with the actual \
+                     target id `{safe_tgt}`."
+                ),
+            ));
+        }
+
+        if let Err(e) = projection::delete_link_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &p.source,
+            &p.target,
+            &relation,
+        )
+        .await
+        {
+            return Ok(safe_err_result("unlink", e));
+        }
+
+        // Mirror the link path: trigger source-side score recompute (the
+        // unlink might have removed the artifact's weakest-link parent and
+        // therefore changed R_eff).
+        if let Err(e) = forgeplan_core::scoring::sync_score_target(&store, &p.source).await {
+            tracing::warn!(
+                target = "scoring",
+                error = %e,
+                id = %p.source,
+                "auto-recompute failed after MCP forgeplan_unlink; run forgeplan_score_all"
+            );
+        }
+
         hinted_result(
             &LinkResponse {
-                message: format!("Linked: {} --{}--> {}", p.source, relation, p.target),
+                message: format!("Unlinked: {} --{}--> {}", p.source, relation, p.target),
             },
-            next_action,
+            "Unlinked. R_eff recomputed on source. Reconcile parents: `forgeplan_score_all`.",
         )
     }
 
