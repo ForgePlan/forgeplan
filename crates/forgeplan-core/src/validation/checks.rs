@@ -670,7 +670,7 @@ pub fn extract_affected_files(body: &str) -> Vec<String> {
         None => vec![],
         Some(text) => text
             .lines()
-            .filter_map(|l| extract_path_from_line(l))
+            .filter_map(extract_path_from_line)
             .filter(|p| looks_like_file_path(p))
             .collect(),
     }
@@ -1276,9 +1276,9 @@ links:
     }
 
     /// Issue #293 reproduction — markdown-table with backtick-quoted paths
-    /// + `(planned)` annotations. Previously returned malformed entries
-    /// (with backticks + annotations + trailing pipe content), causing
-    /// `forgeplan_drift` to silently miss changes.
+    /// and `(planned)` annotations. Previously returned malformed entries
+    /// (backticks plus annotations plus trailing pipe content),
+    /// causing `forgeplan_drift` to silently miss changes.
     #[test]
     fn extract_affected_files_markdown_table_with_backticks_and_annotations() {
         let body = "\

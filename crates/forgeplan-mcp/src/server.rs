@@ -9506,6 +9506,7 @@ mod claim_mcp_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Full cycle".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -9605,6 +9606,7 @@ mod claim_mcp_tests {
                 srv.forgeplan_new(Parameters(NewParams {
                     kind: ArtifactKindArg::Prd,
                     title: format!("Concurrent PRD {i}"),
+                    parent_id: None,
                 }))
                 .await
             }));
@@ -9725,6 +9727,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Auth System".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -9782,6 +9785,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Payment Gateway".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -9827,6 +9831,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Rfc,
                 title: "Identity Resolver".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -9874,6 +9879,7 @@ mod prob060_response_shape_tests {
                 .forgeplan_new(Parameters(NewParams {
                     kind: ArtifactKindArg::Prd,
                     title: title.to_string(),
+                    parent_id: None,
                 }))
                 .await
                 .unwrap();
@@ -9931,6 +9937,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Quantum Cache".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -10124,6 +10131,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Mcp Hint Pre Merge".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -10166,6 +10174,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Mcp Hint Post Merge".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -10204,6 +10213,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Mcp Update Hint Pre Merge".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
