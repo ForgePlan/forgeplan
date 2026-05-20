@@ -1507,3 +1507,183 @@ async fn t40_brownfield_inspectors_wire_shape_on_empty_workspace() {
         "coverage_business with missing DM id must surface an error envelope"
     );
 }
+
+/// T41 — Audit-r7 F1 (CRITICAL) closure: after `forgeplan_hypothesis_promote`,
+/// `forgeplan_get` must reflect BOTH the new `hypothesis_state` in body
+/// AND the derived `status` in the LanceDB row. Previously `apply_transition_to_body`
+/// wrote `status: active` into the body markdown only — the LanceDB column
+/// stayed stale, breaking health/anomalies/release_notes/get-hint consumers.
+#[tokio::test]
+async fn t41_hypothesis_promote_to_verified_syncs_lancedb_status() {
+    use forgeplan_core::db::store::NewArtifact;
+
+    let fx = McpFixture::new_with_seed(|store| async move {
+        // Seed a HYP at `strong-inferred` so we can take one step to verified.
+        let body = "---\n\
+id: HYP-001\n\
+kind: hypothesis\n\
+status: draft\n\
+hypothesis_state: strong-inferred\n\
+tier: intent\n\
+title: Auth tokens expire after 24h\n\
+---\n\n\
+## Hypothesis\nClaim under test.\n\n\
+## Lifecycle State\n**Current**: strong-inferred\n";
+        store
+            .create_artifact_for_test(&NewArtifact {
+                id: "HYP-001".into(),
+                kind: "hypothesis".into(),
+                status: "draft".into(),
+                title: "Auth tokens expire after 24h".into(),
+                body: body.into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .expect("seed hypothesis");
+        // Seed two real EVID artifacts so SEC-H1 (audit-r7) existence check passes.
+        for evid in ["EVID-001", "EVID-002"] {
+            store
+                .create_artifact_for_test(&NewArtifact {
+                    id: evid.into(),
+                    kind: "evidence".into(),
+                    status: "draft".into(),
+                    title: format!("{evid} body"),
+                    body: format!(
+                        "---\nid: {evid}\nkind: evidence\nstatus: draft\n---\n\n## Method\nstub\n"
+                    ),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                })
+                .await
+                .expect("seed evidence");
+        }
+    })
+    .await;
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_hypothesis_promote",
+            json!({
+                "hypothesis_id": "HYP-001",
+                "new_state": "verified",
+                "evidence_refs": ["EVID-001", "EVID-002"],
+                "rationale": "two independent audit pulls confirm",
+            }),
+        )
+        .await;
+    env.assert_ok();
+
+    // Now read back via forgeplan_get (which reads from LanceDB row).
+    let get_env = fx
+        .call_tool_json("forgeplan_get", json!({"id": "HYP-001"}))
+        .await;
+    let resp = get_env.assert_ok();
+    assert_eq!(
+        resp["status"], "active",
+        "F1: LanceDB status column must be synced to derived `active` after verified promote: {resp:?}"
+    );
+    let body = resp["body"].as_str().expect("body present");
+    assert!(
+        body.contains("hypothesis_state: verified"),
+        "body frontmatter must also reflect new state: {body}"
+    );
+    assert!(
+        body.contains("status: active"),
+        "body frontmatter status must match LanceDB column: {body}"
+    );
+}
+
+/// T42 — Audit-r7 SEC-H1 closure: promoting to `verified` with fake EVID
+/// references (that don't exist in the store) must be rejected, preventing
+/// the path where a hypothesis reaches `status: active` with R_eff=0 by
+/// supplying valid-shape but non-existent evidence IDs.
+#[tokio::test]
+async fn t42_hypothesis_promote_to_verified_rejects_fake_evidence() {
+    use forgeplan_core::db::store::NewArtifact;
+
+    let fx = McpFixture::new_with_seed(|store| async move {
+        let body = "---\n\
+id: HYP-001\n\
+kind: hypothesis\n\
+status: draft\n\
+hypothesis_state: strong-inferred\n\
+tier: intent\n\
+title: Test\n\
+---\n\n\
+## Hypothesis\nClaim.\n\n\
+## Lifecycle State\n**Current**: strong-inferred\n";
+        store
+            .create_artifact_for_test(&NewArtifact {
+                id: "HYP-001".into(),
+                kind: "hypothesis".into(),
+                status: "draft".into(),
+                title: "Test".into(),
+                body: body.into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .expect("seed");
+        // NOTE: no EVID artifacts seeded — fake IDs below must be rejected.
+    })
+    .await;
+
+    // Case 1: empty evidence_refs — must reject (SEC-H1 first guard).
+    let env = fx
+        .call_tool_json(
+            "forgeplan_hypothesis_promote",
+            json!({
+                "hypothesis_id": "HYP-001",
+                "new_state": "verified",
+                "evidence_refs": [],
+                "rationale": "no evidence",
+            }),
+        )
+        .await;
+    assert!(
+        env.is_error,
+        "verified with empty evidence_refs must be rejected: {env:?}"
+    );
+
+    // Case 2: shape-valid but non-existent EVID — must reject (SEC-H1 main check).
+    let env = fx
+        .call_tool_json(
+            "forgeplan_hypothesis_promote",
+            json!({
+                "hypothesis_id": "HYP-001",
+                "new_state": "verified",
+                "evidence_refs": ["EVID-fake-001", "EVID-fake-002"],
+                "rationale": "fake evidence",
+            }),
+        )
+        .await;
+    assert!(
+        env.is_error,
+        "verified with non-existent evidence_refs must be rejected: {env:?}"
+    );
+    assert!(
+        env.raw_text.contains("does not exist") || env.raw_text.contains("not found"),
+        "error message must explain the missing-evidence cause: {}",
+        env.raw_text
+    );
+
+    // Sanity: HYP-001 stays at status=draft (no partial mutation).
+    let get_env = fx
+        .call_tool_json("forgeplan_get", json!({"id": "HYP-001"}))
+        .await;
+    let resp = get_env.assert_ok();
+    assert_eq!(
+        resp["status"], "draft",
+        "rejected promote must NOT mutate status (atomicity): {resp:?}"
+    );
+}
