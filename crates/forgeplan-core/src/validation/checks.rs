@@ -670,24 +670,97 @@ pub fn extract_affected_files(body: &str) -> Vec<String> {
         None => vec![],
         Some(text) => text
             .lines()
-            .map(|l| {
-                l.trim()
-                    .trim_start_matches("- ")
-                    .trim_start_matches("* ")
-                    .trim_start_matches("| ")
-                    .trim()
-            })
-            .filter(|l| {
-                !l.is_empty()
-                    && (l.contains('/')
-                        || l.contains('*')
-                        || l.ends_with(".rs")
-                        || l.ends_with(".ts")
-                        || l.ends_with(".md"))
-            })
-            .map(|l| l.to_string())
+            .filter_map(|l| extract_path_from_line(l))
+            .filter(|p| looks_like_file_path(p))
             .collect(),
     }
+}
+
+/// Extract a path candidate from a single body line.
+///
+/// Issue #293: prior implementation handled only bullet-list / single-pipe
+/// forms and missed markdown-table rows with backtick-quoted paths
+/// (`` | `path/to/file.md` | description | ``). That caused
+/// `forgeplan_drift` to silently return `changed_files: []` for artifacts
+/// whose `## Affected Files` section was a markdown table — a classic
+/// false-negative because the path still contained `/` so the legacy
+/// length-only filter accepted the garbled string, but `git log` rejected
+/// it as a pattern (no such file).
+///
+/// New logic:
+/// 1. Strip leading bullet markers (`- `, `* `, `| `).
+/// 2. If line still contains `|` (markdown table row): take the FIRST
+///    non-empty pipe-delimited column as the path candidate. Header rows
+///    (`| File | Status |`) and separator rows (`|------|`) are filtered
+///    out by the downstream `looks_like_file_path` check.
+/// 3. Strip surrounding backticks (\` … \`).
+/// 4. Strip a trailing parenthetical annotation (` (planned)`, `(done)`,
+///    `(in progress)` etc.) — operators frequently use these to mark
+///    file status without polluting the path.
+/// 5. Trim whitespace.
+///
+/// Returns `None` if the line, after trimming, is empty or has nothing
+/// resembling a path.
+fn extract_path_from_line(line: &str) -> Option<String> {
+    let mut s = line
+        .trim()
+        .trim_start_matches("- ")
+        .trim_start_matches("* ")
+        .trim_start_matches("| ")
+        .trim()
+        .to_string();
+
+    // Markdown table row — keep only first non-empty column.
+    if s.contains('|') {
+        s = s
+            .split('|')
+            .map(str::trim)
+            .find(|col| !col.is_empty())
+            .unwrap_or("")
+            .to_string();
+    }
+
+    // Strip surrounding backticks (`path/to/file.md`).
+    s = s
+        .trim_start_matches('`')
+        .trim_end_matches('`')
+        .trim()
+        .to_string();
+
+    // Strip trailing parenthetical annotation: "path/to/file (planned)".
+    if let Some(open) = s.rfind(" (")
+        && s.ends_with(')')
+    {
+        s.truncate(open);
+        s = s.trim().to_string();
+    }
+
+    // Re-strip backticks in case the annotation was inside them:
+    // `` `path` (planned) `` → after annotation strip: `` `path` `` → strip ``.
+    s = s
+        .trim_start_matches('`')
+        .trim_end_matches('`')
+        .trim()
+        .to_string();
+
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Heuristic: does this string look like a file path (vs table header,
+/// separator, or unrelated body text)?
+fn looks_like_file_path(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Markdown table separator: `------`, `---|---`, etc.
+    if s.chars().all(|c| c == '-' || c == ':' || c == ' ') {
+        return false;
+    }
+    s.contains('/')
+        || s.contains('*')
+        || s.ends_with(".rs")
+        || s.ends_with(".ts")
+        || s.ends_with(".md")
 }
 
 /// BMAD Step 5: Subjective adjectives that need metrics.
@@ -1177,5 +1250,141 @@ links:
         let fm: Frontmatter = serde_yaml::from_str(yaml).unwrap();
         let targets = extract_frontmatter_link_targets(&fm);
         assert!(targets.is_empty());
+    }
+
+    // ─── Issue #293: extract_affected_files — markdown-table support ──────
+
+    /// Bullet-list form (legacy — must still work).
+    #[test]
+    fn extract_affected_files_bullet_list() {
+        let body = "\
+## Affected Files
+
+- src/main.rs
+- src/lib.rs
+- docs/README.md
+";
+        let files = extract_affected_files(body);
+        assert_eq!(
+            files,
+            vec![
+                "src/main.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "docs/README.md".to_string(),
+            ]
+        );
+    }
+
+    /// Issue #293 reproduction — markdown-table with backtick-quoted paths
+    /// + `(planned)` annotations. Previously returned malformed entries
+    /// (with backticks + annotations + trailing pipe content), causing
+    /// `forgeplan_drift` to silently miss changes.
+    #[test]
+    fn extract_affected_files_markdown_table_with_backticks_and_annotations() {
+        let body = "\
+## Affected Files
+
+| File | Status |
+|------|--------|
+| `plugins/fpl-skills/skills/autorun/SKILL.md` | (planned) |
+| `plugins/fpl-skills/.claude-plugin/plugin.json` | (planned) |
+| `.claude-plugin/marketplace.json` | (planned) |
+";
+        let files = extract_affected_files(body);
+        assert_eq!(
+            files,
+            vec![
+                "plugins/fpl-skills/skills/autorun/SKILL.md".to_string(),
+                "plugins/fpl-skills/.claude-plugin/plugin.json".to_string(),
+                ".claude-plugin/marketplace.json".to_string(),
+            ],
+            "issue #293: backticks stripped + trailing pipe column stripped"
+        );
+    }
+
+    /// Table separator rows MUST NOT be returned as paths.
+    #[test]
+    fn extract_affected_files_skips_table_separator_rows() {
+        let body = "\
+## Affected Files
+
+| File | Status |
+|------|--------|
+| `src/main.rs` | done |
+| -------- | -------- |
+";
+        let files = extract_affected_files(body);
+        assert_eq!(
+            files,
+            vec!["src/main.rs".to_string()],
+            "separator rows (`------`) must be filtered out"
+        );
+    }
+
+    /// Mixed format — bullet list AND table row in same section.
+    #[test]
+    fn extract_affected_files_mixed_bullet_and_table() {
+        let body = "\
+## Affected Files
+
+- src/legacy.rs
+| `src/new.rs` | (planned) |
+";
+        let files = extract_affected_files(body);
+        assert_eq!(
+            files,
+            vec!["src/legacy.rs".to_string(), "src/new.rs".to_string()]
+        );
+    }
+
+    /// Path WITHOUT backticks in a table row still parses correctly.
+    #[test]
+    fn extract_affected_files_table_without_backticks() {
+        let body = "\
+## Affected Files
+
+| File | Status |
+|------|--------|
+| src/raw.rs | done |
+";
+        let files = extract_affected_files(body);
+        assert_eq!(files, vec!["src/raw.rs".to_string()]);
+    }
+
+    /// Empty section returns empty vec.
+    #[test]
+    fn extract_affected_files_empty_section() {
+        let body = "## Affected Files\n\n";
+        let files = extract_affected_files(body);
+        assert!(files.is_empty());
+    }
+
+    /// Missing section returns empty vec.
+    #[test]
+    fn extract_affected_files_no_section() {
+        let body = "## Other Section\n\n- foo.rs\n";
+        let files = extract_affected_files(body);
+        assert!(files.is_empty());
+    }
+
+    /// Trailing `(done)` / `(deprecated)` / multi-word annotations.
+    #[test]
+    fn extract_affected_files_strips_various_annotations() {
+        let body = "\
+## Affected Files
+
+- src/a.rs (done)
+- src/b.rs (in progress)
+- src/c.rs (deprecated as of v2)
+";
+        let files = extract_affected_files(body);
+        assert_eq!(
+            files,
+            vec![
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/c.rs".to_string(),
+            ]
+        );
     }
 }
