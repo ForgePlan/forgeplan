@@ -648,6 +648,17 @@ struct ActivityStatsParams {
 struct RestoreParams {
     /// Artifact ID to recover from the most recent non-consumed receipt.
     id: String,
+    /// Issue #291: optional explicit override of the restored status.
+    /// Default behaviour reads `prior_status` from the receipt snapshot
+    /// (which captures the artifact's status at the moment of `_delete`
+    /// / `_deprecate` / `_supersede`). Pass `target_status: "active"` to
+    /// force a specific status — useful when the operator wants to
+    /// restore to a different state than was captured.
+    ///
+    /// Valid values: `"draft"`, `"active"`, `"deprecated"`.
+    /// Unknown values are rejected with a structured error.
+    #[serde(default)]
+    target_status: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -6456,7 +6467,15 @@ impl ForgeplanServer {
             }
         };
 
-        match forgeplan_core::undo::restore::apply_restore(&ws, &store, &receipt).await {
+        // Issue #291: forward optional target_status override.
+        match forgeplan_core::undo::restore::apply_restore_with_target(
+            &ws,
+            &store,
+            &receipt,
+            p.target_status.as_deref(),
+        )
+        .await
+        {
             Ok(report) => {
                 let safe_id = sanitize_for_hint(&report.artifact_id);
                 let op_str = match report.op {
@@ -6494,6 +6513,16 @@ impl ForgeplanServer {
                         report.relations_restored
                     )
                 };
+                // Issue #291: surface the restored status explicitly so the
+                // operator can verify which state the artifact was returned
+                // to. `restored_status_source` says whether the value came
+                // from the receipt's captured prior_status or from the
+                // explicit `target_status` override.
+                let restored_status_source = if p.target_status.is_some() {
+                    "explicit_override"
+                } else {
+                    "receipt_snapshot"
+                };
                 hinted_result(
                     &serde_json::json!({
                         "restored": report.artifact_id,
@@ -6501,6 +6530,8 @@ impl ForgeplanServer {
                         "relations_restored": report.relations_restored,
                         "relations_skipped": safe_skipped,
                         "projection_restored": report.projection_restored,
+                        "restored_status": report.restored_status,
+                        "restored_status_source": restored_status_source,
                         "warnings": safe_warnings,
                     }),
                     next_action,
