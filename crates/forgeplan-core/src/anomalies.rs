@@ -153,17 +153,21 @@ pub struct AnomalyFilter {
     /// Only return anomalies with this severity (or higher when stricter
     /// strictness is requested by the caller — currently exact match).
     pub severity: Option<Severity>,
-    /// Only return anomalies observed at or after this timestamp.
+    /// Only return anomalies first observed at or after this timestamp.
     ///
-    /// **v1 limitation (audit-r2)**: every anomaly produced by a single
-    /// `detect_anomalies` call shares the same `observed_at` value (set
-    /// to the call timestamp), so this filter is effectively "is the
-    /// current scan time at or after `since`?" — all-or-nothing. Real
-    /// diff-style polling requires persisting observed_at per-anomaly
-    /// across runs (a journal table). Tracked for v0.33+ — for now,
-    /// callers should use the filter only for scheduling guards
-    /// ("don't re-scan within X minutes"), NOT for incremental
-    /// "what's new" detection.
+    /// Diff-style polling supported via `.forgeplan/anomalies-journal.jsonl`:
+    /// each anomaly's `observed_at` is persisted across scans, so an
+    /// anomaly first detected in scan T1 keeps T1's timestamp in scan T2
+    /// (and is filtered out by `since = T2`). Newly-detected anomalies
+    /// receive the current scan's timestamp.
+    ///
+    /// Implementation: comparison is done on parsed `DateTime<Utc>`, not
+    /// raw RFC 3339 strings, so timezone-offset notations (`Z`, `+00:00`,
+    /// `+05:00`) compare semantically. Anomalies with unparseable
+    /// `observed_at` pass the filter (defensive) and emit a `tracing::warn!`.
+    ///
+    /// Missing or unreadable journal degrades gracefully — every anomaly
+    /// is treated as fresh that scan (matches pre-v0.33 behaviour).
     pub since: Option<DateTime<Utc>>,
     /// Limit to a single anomaly kind. Useful for targeted dispatches
     /// (e.g. orchestrator polls only `stuck_draft` because that's what
@@ -207,6 +211,12 @@ pub async fn detect_anomalies(
 ) -> anyhow::Result<AnomalyReport> {
     let now = Utc::now();
     let now_str = now.to_rfc3339();
+    // Audit-r2 closure: load the per-anomaly observed_at journal so
+    // pre-existing anomalies keep their original timestamp and the
+    // `since` filter yields proper diff semantics. New anomalies use
+    // `now_str`; missing or unreadable journal degrades gracefully
+    // (treat every anomaly as fresh — preserves pre-v0.33 behaviour).
+    let mut journal = load_anomaly_journal(workspace).await.unwrap_or_default();
     let mut anomalies: Vec<Anomaly> = Vec::new();
 
     // One-time data load — reused by every detector below.
@@ -538,11 +548,26 @@ pub async fn detect_anomalies(
 
     // ---------------------------------------------------------------
     // 7. weakest_link_unresolvable — R_eff=0 cascading through CL penalty.
-    // Cheap heuristic: artifact has r_eff_score == 0 AND status=active AND
-    // at least one outgoing based_on/informs edge. Full chain inspection
-    // would require scoring traversal; the heuristic flags candidates
-    // for ADI investigation rather than auto-fixing.
+    //
+    // Audit-r2 closure: replaced the heuristic ("active + r_eff=0 + has
+    // parent") with a real ancestor walk. The detector now finds the
+    // SPECIFIC artifact in the parent chain that is dragging R_eff to
+    // zero, plus the chain depth. Orchestrators that surface the
+    // resolution can target the actual culprit instead of probing the
+    // child.
+    //
+    // Algorithm: BFS over outgoing based_on/informs edges from each
+    // candidate. The first encountered artifact whose own `r_eff_score`
+    // is 0 (and which has no further dependency edges, OR is a leaf
+    // evidence-less artifact) is the weakest link. Cycle protection
+    // via a visited set. Depth cap = 16 — beyond that we conservatively
+    // surface the candidate without naming a specific weakest link.
     // ---------------------------------------------------------------
+    let r_eff_by_id: HashMap<&str, f64> = all_records
+        .iter()
+        .map(|r| (r.id.as_str(), r.r_eff_score))
+        .collect();
+    const WEAKEST_LINK_MAX_DEPTH: usize = 16;
     for r in &all_records {
         if !r.status.eq_ignore_ascii_case("active") {
             continue;
@@ -550,43 +575,138 @@ pub async fn detect_anomalies(
         if r.r_eff_score != 0.0 {
             continue;
         }
-        let has_parent = outgoing
+        let initial_parents: Vec<&str> = outgoing
             .get(r.id.as_str())
             .map(|edges| {
                 edges
                     .iter()
-                    .any(|(_, rel)| matches!(*rel, "based_on" | "informs"))
+                    .filter(|(_, rel)| matches!(*rel, "based_on" | "informs"))
+                    .map(|(t, _)| *t)
+                    .collect()
             })
-            .unwrap_or(false);
-        if !has_parent {
+            .unwrap_or_default();
+        if initial_parents.is_empty() {
             continue;
         }
+
+        // BFS upward to find the first ancestor whose r_eff=0 is itself
+        // the source (no further parents or all parents non-zero).
+        let mut visited: HashSet<&str> = HashSet::new();
+        visited.insert(r.id.as_str());
+        let mut frontier: Vec<(&str, usize)> =
+            initial_parents.iter().map(|p| (*p, 1usize)).collect();
+        let mut weakest_link: Option<&str> = None;
+        let mut chain_depth: usize = 0;
+        while let Some((node, depth)) = frontier.pop() {
+            if !visited.insert(node) {
+                continue;
+            }
+            if depth > WEAKEST_LINK_MAX_DEPTH {
+                continue;
+            }
+            // If this node's r_eff is 0, it's a candidate weakest link
+            // — but check parents to ensure it's not just transitively
+            // inheriting from a deeper artifact.
+            let node_r_eff = r_eff_by_id.get(node).copied().unwrap_or(0.0);
+            let parents: Vec<&str> = outgoing
+                .get(node)
+                .map(|edges| {
+                    edges
+                        .iter()
+                        .filter(|(_, rel)| matches!(*rel, "based_on" | "informs"))
+                        .map(|(t, _)| *t)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if node_r_eff == 0.0
+                && (parents.is_empty() || parents.iter().all(|p| visited.contains(p)))
+            {
+                // Genuine source — no further unexamined parents.
+                weakest_link = Some(node);
+                chain_depth = depth;
+                break;
+            }
+            // Push parents onto the frontier.
+            for p in parents {
+                if !visited.contains(p) {
+                    frontier.push((p, depth + 1));
+                }
+            }
+        }
+
+        let weakest_link_owned = weakest_link.map(str::to_string);
+        let suggested_action_target = weakest_link_owned.clone().unwrap_or_else(|| r.id.clone());
         anomalies.push(Anomaly {
             id: format!("anom-weakest-link-{}", r.id),
             kind: AnomalyKind::WeakestLinkUnresolvable,
             severity: Severity::Low,
             tier: Tier::Adi,
-            affected: vec![r.id.clone()],
+            affected: {
+                let mut v = vec![r.id.clone()];
+                if let Some(ref wl) = weakest_link_owned
+                    && wl != &r.id
+                {
+                    v.push(wl.clone());
+                }
+                v
+            },
             observed_at: now_str.clone(),
-            description: format!(
-                "{}: active with R_eff=0 — check parent chain for CL penalty cascade",
-                r.id
-            ),
+            description: match (&weakest_link_owned, chain_depth) {
+                (Some(wl), d) => format!(
+                    "{}: active with R_eff=0; weakest link in chain = {wl} (depth {d})",
+                    r.id
+                ),
+                (None, _) => format!(
+                    "{}: active with R_eff=0; ancestor walk could not identify source (cycle or depth cap)",
+                    r.id
+                ),
+            },
             evidence: serde_json::json!({
                 "r_eff": 0.0,
+                "weakest_link": weakest_link_owned,
+                "chain_depth": chain_depth,
             }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,
                 action: Some("forgeplan_score".to_string()),
-                target: Some(r.id.clone()),
-                rationale:
-                    "Inspect score factors; consider replace mis-typed based_on parent links"
+                target: Some(suggested_action_target),
+                rationale: match weakest_link_owned.as_deref() {
+                    Some(wl) if wl != r.id.as_str() => format!(
+                        "Inspect {wl} (the source of the R_eff=0 cascade); add evidence or replace mis-typed parent links"
+                    ),
+                    _ => "Inspect score factors; consider replace mis-typed based_on parent links"
                         .to_string(),
+                },
             }),
         });
     }
 
     // ---------------------------------------------------------------
+    // Journal post-pass: rewrite `observed_at` per-anomaly using the
+    // loaded journal so anomalies first seen in a prior scan keep that
+    // timestamp, while newly-detected anomalies get `now_str`. This is
+    // the foundation that makes `since` filter behave as documented
+    // (diff-style polling: "anomalies first observed at or after X").
+    for a in &mut anomalies {
+        if let Some(prior) = journal.get(&a.id) {
+            a.observed_at = prior.clone();
+        } else {
+            // New anomaly — record current observed_at in the journal
+            // so the next scan can recognise it.
+            journal.insert(a.id.clone(), a.observed_at.clone());
+        }
+    }
+    // Best-effort journal write — failures degrade `since` semantics
+    // back to pre-v0.33 behaviour (per-scan timestamp) but do not
+    // crash the scan. The journal is purely a heuristic store.
+    if let Err(e) = save_anomaly_journal(workspace, &journal).await {
+        tracing::warn!(
+            target: "forgeplan::anomalies",
+            error = %e,
+            "anomaly journal write failed — `since` filter will lose pre-existing-anomaly memory"
+        );
+    }
+
     // Apply filter
     // ---------------------------------------------------------------
     if let Some(s) = filter.severity {
@@ -596,8 +716,25 @@ pub async fn detect_anomalies(
         anomalies.retain(|a| a.kind == k);
     }
     if let Some(since) = filter.since {
-        let since_str = since.to_rfc3339();
-        anomalies.retain(|a| a.observed_at.as_str() >= since_str.as_str());
+        // Parse each anomaly's observed_at into DateTime for proper
+        // temporal comparison rather than lexicographic string compare.
+        // String compare is fragile across offset notations
+        // (Z vs +00:00 vs +01:00) — parsing normalises to UTC.
+        // Anomalies with unparseable observed_at fall through as
+        // "newer than any since" so they always pass the filter; the
+        // failure is loud (warn) so corruption is observable.
+        anomalies.retain(|a| match DateTime::parse_from_rfc3339(&a.observed_at) {
+            Ok(dt) => dt.with_timezone(&Utc) >= since,
+            Err(_) => {
+                tracing::warn!(
+                    target: "forgeplan::anomalies",
+                    anomaly_id = %a.id,
+                    observed_at = %a.observed_at,
+                    "unparseable observed_at in anomaly — passing filter for safety"
+                );
+                true
+            }
+        });
     }
 
     // Sort: high severity first, then by anomaly id (deterministic).
@@ -638,6 +775,78 @@ fn severity_order(s: Severity) -> u8 {
     }
 }
 
+/// Filename for the anomaly observed_at journal inside the workspace.
+///
+/// Format: JSONL — one record per line `{"id":"anom-…","observed_at":"…"}`.
+/// Append-only is overkill (we rewrite the file on every scan); the JSONL
+/// shape is chosen so an operator can `cat` or `grep` it without a parser.
+const ANOMALY_JOURNAL_NAME: &str = "anomalies-journal.jsonl";
+
+/// Per-anomaly observed_at persistence record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JournalEntry {
+    id: String,
+    observed_at: String,
+}
+
+/// Load the anomaly journal into a HashMap keyed by anomaly id.
+///
+/// Missing file → empty map (degrades the `since` filter back to
+/// per-scan semantics, matching pre-v0.33 behaviour).
+///
+/// Corrupt entries (unparseable JSONL line) are silently skipped — the
+/// journal is a heuristic store, not source of truth; better to lose
+/// one anomaly's history than abort the whole scan.
+async fn load_anomaly_journal(workspace: &Path) -> anyhow::Result<HashMap<String, String>> {
+    let path = workspace.join(ANOMALY_JOURNAL_NAME);
+    let contents = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut map = HashMap::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<JournalEntry>(trimmed) {
+            map.insert(entry.id, entry.observed_at);
+        }
+    }
+    Ok(map)
+}
+
+/// Persist the anomaly journal. Atomic via tempfile + rename to avoid
+/// torn-write on crash mid-scan. Best-effort: failure is reported up
+/// the chain but does not abort the scan itself.
+async fn save_anomaly_journal(
+    workspace: &Path,
+    journal: &HashMap<String, String>,
+) -> anyhow::Result<()> {
+    // Ensure parent dir exists (workspace is `.forgeplan/` which must
+    // already exist for the store to be open, but defensive create).
+    if let Err(e) = tokio::fs::create_dir_all(workspace).await
+        && e.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(e.into());
+    }
+    let path = workspace.join(ANOMALY_JOURNAL_NAME);
+    let tmp = workspace.join(format!(".{ANOMALY_JOURNAL_NAME}.tmp"));
+    let mut body = String::new();
+    for (id, observed_at) in journal {
+        let entry = JournalEntry {
+            id: id.clone(),
+            observed_at: observed_at.clone(),
+        };
+        body.push_str(&serde_json::to_string(&entry)?);
+        body.push('\n');
+    }
+    tokio::fs::write(&tmp, body.as_bytes()).await?;
+    tokio::fs::rename(&tmp, &path).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn empty_workspace_zero_anomalies() {
         let (_tmp, ws, store) = fresh_store().await;
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert_eq!(report.total, 0);
@@ -698,7 +907,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let orphans: Vec<_> = report
@@ -753,7 +962,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let mistyped: Vec<_> = report
@@ -796,7 +1005,7 @@ mod tests {
             .unwrap();
 
         // No-filter: should see at least the orphan_link.
-        let all = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let all = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -808,7 +1017,7 @@ mod tests {
         // Filter by StuckDraft: should be empty.
         let filtered = detect_anomalies(
             &store,
-            ws.parent().unwrap(),
+            &ws,
             &AnomalyFilter {
                 kind: Some(AnomalyKind::StuckDraft),
                 ..Default::default()
@@ -848,7 +1057,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let sum = report.by_severity.low + report.by_severity.medium + report.by_severity.high;
@@ -865,7 +1074,7 @@ mod tests {
         let future = Utc::now() + Duration::days(7);
         let report = detect_anomalies(
             &store,
-            ws.parent().unwrap(),
+            &ws,
             &AnomalyFilter {
                 since: Some(future),
                 ..Default::default()
@@ -942,7 +1151,7 @@ mod tests {
         // Bump r_eff_score to a positive value to satisfy the gate.
         store.update_r_eff_score("EVID-001", 1.0).await.unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let stuck: Vec<_> = report
@@ -990,7 +1199,7 @@ mod tests {
         store.update_r_eff_score("EVID-001", 1.0).await.unwrap();
         // created_at left at the default (now) — too fresh to be stuck.
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -1036,7 +1245,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let expired: Vec<_> = report
@@ -1080,7 +1289,7 @@ mod tests {
         store.create_artifact_for_test(&evid).await.unwrap();
         // No links — the detector requires parents to exist.
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -1126,7 +1335,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let cycles: Vec<_> = report
@@ -1170,7 +1379,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -1180,6 +1389,107 @@ mod tests {
                 .all(|a| a.kind != AnomalyKind::CircularDependency),
             "one-way based_on is legitimate; must not flag as cycle"
         );
+    }
+
+    /// Audit-r2 follow-up — the ancestor walk identifies the specific
+    /// weakest link in a chain. Setup: PRD-A informs PRD-B informs PRD-C
+    /// (all r_eff=0, all active). PRD-C is the leaf source of the
+    /// cascade; the anomaly on PRD-A must report `weakest_link = PRD-C`
+    /// with chain_depth = 2.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn weakest_link_walk_identifies_chain_leaf() {
+        let (_tmp, ws, store) = fresh_store().await;
+        for id in &["PRD-001", "PRD-002", "PRD-003"] {
+            store
+                .create_artifact_for_test(&new_artifact(id, "prd", "active", "## Problem\nbody\n"))
+                .await
+                .unwrap();
+        }
+        store
+            .add_relation_for_test("PRD-001", "PRD-002", "informs")
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-002", "PRD-003", "informs")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let weak: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::WeakestLinkUnresolvable)
+            .collect();
+        // Three artifacts qualify: PRD-001 (depth 2 to leaf PRD-003),
+        // PRD-002 (depth 1 to leaf PRD-003), and PRD-003 itself
+        // (self-leaf, depth 0). Pin the deepest case explicitly.
+        let prd001 = weak
+            .iter()
+            .find(|a| a.affected[0] == "PRD-001")
+            .expect("PRD-001 anomaly must be present");
+        let weakest = prd001.evidence["weakest_link"].as_str().unwrap();
+        let chain_depth = prd001.evidence["chain_depth"].as_u64().unwrap();
+        assert_eq!(
+            weakest, "PRD-003",
+            "PRD-003 is the leaf source of the cascade"
+        );
+        assert_eq!(chain_depth, 2, "two hops from PRD-001 to PRD-003");
+        // Suggested resolution target points at the weakest link, not
+        // the child — operators fix the source.
+        let suggestion = prd001.suggested_resolution.as_ref().unwrap();
+        assert_eq!(suggestion.target.as_deref(), Some("PRD-003"));
+        assert!(
+            suggestion.rationale.contains("PRD-003"),
+            "rationale must reference the actual weakest link: {}",
+            suggestion.rationale
+        );
+    }
+
+    /// Audit-r2 follow-up — for a self-leaf (no parents above, r_eff=0
+    /// from no incoming evidence), the walk surfaces the artifact
+    /// itself at chain_depth 0.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn weakest_link_walk_handles_self_leaf() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-002",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        // PRD-001 informs PRD-002 (no further parents). PRD-002 is the
+        // self-leaf.
+        store
+            .add_relation_for_test("PRD-001", "PRD-002", "informs")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let prd001 = report
+            .anomalies
+            .iter()
+            .find(|a| a.kind == AnomalyKind::WeakestLinkUnresolvable && a.affected[0] == "PRD-001")
+            .expect("PRD-001 weakest_link anomaly");
+        assert_eq!(prd001.evidence["weakest_link"].as_str(), Some("PRD-002"));
+        assert_eq!(prd001.evidence["chain_depth"].as_u64(), Some(1));
     }
 
     /// `weakest_link_unresolvable`: active artifact with r_eff_score=0 +
@@ -1215,7 +1525,7 @@ mod tests {
         // r_eff_score for both defaults to 0 (no evidence linked).
         // PRD-002 satisfies: active + r_eff=0 + has outgoing informs/based_on.
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let weak: Vec<_> = report
@@ -1231,7 +1541,12 @@ mod tests {
         );
         assert_eq!(weak[0].severity, Severity::Low);
         assert_eq!(weak[0].tier, Tier::Adi);
-        assert_eq!(weak[0].affected, vec!["PRD-002".to_string()]);
+        // Audit-r2 ancestor walk: affected[0] = candidate child, and
+        // if the walk identifies a separate weakest link in the chain
+        // affected[1] = that ancestor. Here PRD-001 is the leaf source
+        // (no outgoing edges), so the walk returns weakest_link = PRD-001.
+        assert_eq!(weak[0].affected[0], "PRD-002");
+        assert!(weak[0].affected.contains(&"PRD-001".to_string()));
     }
 
     /// Filter combination: kind + severity simultaneously narrow the
@@ -1275,7 +1590,7 @@ mod tests {
         // the mistyped_based_on anomaly, not the orphan_link (High).
         let filtered = detect_anomalies(
             &store,
-            ws.parent().unwrap(),
+            &ws,
             &AnomalyFilter {
                 severity: Some(Severity::Medium),
                 kind: Some(AnomalyKind::MistypedBasedOn),
@@ -1292,7 +1607,7 @@ mod tests {
         // (mistyped is Medium, not High).
         let zero = detect_anomalies(
             &store,
-            ws.parent().unwrap(),
+            &ws,
             &AnomalyFilter {
                 severity: Some(Severity::High),
                 kind: Some(AnomalyKind::MistypedBasedOn),
@@ -1368,7 +1683,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         // Total must equal the sum of per-severity counts AND of
@@ -1390,6 +1705,349 @@ mod tests {
         assert!(
             report.by_severity.low > 0,
             "expected at least one Low (weakest_link)"
+        );
+    }
+
+    /// `phase_mismatch`: active artifact with phase still in early-cycle
+    /// (Shape/Validate/Adi) must be detected via the health bridge.
+    /// Severity=Low, tier=Auto (phase_advance is the auto-fix).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn phase_mismatch_detected_for_active_artifact_in_early_phase() {
+        use crate::phase;
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        // Seed phase state at Validate (early-cycle).
+        phase::store::initialize_phase(&ws, "PRD-001", Some("seeded for test".into()))
+            .await
+            .unwrap();
+        phase::store::advance_phase(&ws, "PRD-001", phase::Phase::Validate, None)
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let mismatch: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::PhaseMismatch)
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "expected phase_mismatch on active+Validate"
+        );
+        assert_eq!(mismatch[0].severity, Severity::Low);
+        assert_eq!(mismatch[0].tier, Tier::Auto);
+        let suggestion = mismatch[0].suggested_resolution.as_ref().unwrap();
+        assert_eq!(
+            suggestion.action.as_deref(),
+            Some("forgeplan_phase_advance")
+        );
+    }
+
+    /// `phase_mismatch` does NOT fire when active artifact has advanced
+    /// past the early-cycle phases (Code/Evidence/Done).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn phase_mismatch_not_detected_for_late_phase() {
+        use crate::phase;
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        phase::store::initialize_phase(&ws, "PRD-001", None)
+            .await
+            .unwrap();
+        phase::store::advance_phase(&ws, "PRD-001", phase::Phase::Done, None)
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::PhaseMismatch),
+            "late-phase active artifact must not be flagged"
+        );
+    }
+
+    /// `duplicate_artifact`: two same-kind artifacts with near-identical
+    /// titles trigger health's `possible_duplicates` detection and
+    /// surface as DuplicateArtifact anomalies. Severity=Medium, tier=Adi
+    /// (operator decides which to supersede).
+    ///
+    /// Threshold is 0.7 Jaccard similarity on lowercased tokens — pick
+    /// titles whose token sets overlap by at least 70%.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn duplicate_artifact_detected_for_near_identical_titles() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Title token sets: 4-of-5 shared → Jaccard ≈ 4/6 = 0.67… need
+        // higher overlap. Use 5-of-5 shared + 1 unique each → 5/7 ≈ 0.71.
+        let mut a = new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n");
+        a.title = "Authentication subsystem refactor design plan today".to_string();
+        store.create_artifact_for_test(&a).await.unwrap();
+        let mut b = new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n");
+        b.title = "Authentication subsystem refactor design plan tomorrow".to_string();
+        store.create_artifact_for_test(&b).await.unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let dups: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::DuplicateArtifact)
+            .collect();
+        assert_eq!(
+            dups.len(),
+            1,
+            "near-identical titles must yield exactly one duplicate anomaly: {dups:?}"
+        );
+        assert_eq!(dups[0].severity, Severity::Medium);
+        assert_eq!(dups[0].tier, Tier::Adi);
+        assert!(dups[0].affected.contains(&"PRD-001".to_string()));
+        assert!(dups[0].affected.contains(&"PRD-002".to_string()));
+        let suggestion = dups[0].suggested_resolution.as_ref().unwrap();
+        assert_eq!(suggestion.action.as_deref(), Some("forgeplan_supersede"));
+    }
+
+    /// `duplicate_artifact` does NOT fire across DIFFERENT kinds even with
+    /// identical titles — `find_duplicate_pairs` only compares same-kind
+    /// records by design.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn duplicate_artifact_not_detected_across_kinds() {
+        let (_tmp, ws, store) = fresh_store().await;
+        let mut a = new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n");
+        a.title = "Authentication subsystem".to_string();
+        store.create_artifact_for_test(&a).await.unwrap();
+        let mut b = new_artifact("RFC-001", "rfc", "active", "## Problem\nbody\n");
+        b.title = "Authentication subsystem".to_string();
+        store.create_artifact_for_test(&b).await.unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::DuplicateArtifact),
+            "cross-kind near-identical titles are NOT duplicates by design"
+        );
+    }
+
+    /// `missing_must_section`: active artifact with stub-phrase markers
+    /// in its body surfaces as the MissingMustSection anomaly. Severity=High,
+    /// tier=User (operator must fill the body).
+    ///
+    /// Detector uses `find_active_stubs` → `check_stub_detailed`, which
+    /// looks for canonical PRD/RFC placeholder phrases. We seed with the
+    /// English universal marker to keep the test stable across locale
+    /// changes in `PHRASE_MARKERS`.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn missing_must_section_detected_for_active_with_stub_markers() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // check_stub_detailed requires count >= 3 markers. Stack three
+        // canonical English markers in the body so the detector fires.
+        let stub_body = "## Problem\n\
+                         What we are building and why\n\n\
+                         ## Users\n\
+                         How the problem affects users\n\n\
+                         ## Scope\n\
+                         What's in the MVP\n\n";
+        store
+            .create_artifact_for_test(&new_artifact("PRD-001", "prd", "active", stub_body))
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let stubs: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::MissingMustSection)
+            .collect();
+        assert_eq!(stubs.len(), 1, "active with stub markers must surface");
+        assert_eq!(stubs[0].severity, Severity::High);
+        assert_eq!(stubs[0].tier, Tier::User);
+        assert_eq!(stubs[0].affected, vec!["PRD-001".to_string()]);
+        // SEC-M1 closure: title must be the sanitized value, never raw
+        // user input.
+        let title = stubs[0].evidence["title"].as_str().unwrap();
+        assert!(
+            !title.contains('\u{202e}'),
+            "title must be sanitised (no bidi override): {title}"
+        );
+    }
+
+    /// `missing_must_section` does NOT fire on draft artifacts (only
+    /// active artifacts are checked — drafts are expected to have stubs).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn missing_must_section_not_detected_for_draft() {
+        let (_tmp, ws, store) = fresh_store().await;
+        let stub_body = "## Problem\nWhat we are building and why\n\nstill TBD.\n";
+        store
+            .create_artifact_for_test(&new_artifact("PRD-001", "prd", "draft", stub_body))
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::MissingMustSection),
+            "draft with stubs is expected, not flagged"
+        );
+    }
+
+    /// Audit-r2 follow-up — journal-backed `since` filter actually
+    /// excludes anomalies first observed before the cutoff. Previously
+    /// the filter shared `now_str` across all anomalies in one scan so
+    /// the gate was all-or-nothing; with the journal each anomaly keeps
+    /// its first-seen timestamp across scans.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn since_filter_excludes_pre_existing_anomaly_via_journal() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Seed orphan_link so the first scan produces one anomaly.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-001", "EVID-MISSING", "informs")
+            .await
+            .unwrap();
+
+        // Scan 1 — populates the journal with this anomaly's observed_at.
+        let scan1 = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            scan1.total >= 1,
+            "scan 1 must detect at least the orphan_link"
+        );
+
+        // Wait a moment so `now` in scan 2 is strictly later than
+        // observed_at recorded in scan 1.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let cutoff = Utc::now();
+
+        // Scan 2 with `since = cutoff`. The anomaly was first observed
+        // BEFORE cutoff (in scan 1), so the journal-preserved
+        // observed_at < cutoff → filtered out.
+        let scan2 = detect_anomalies(
+            &store,
+            &ws,
+            &AnomalyFilter {
+                since: Some(cutoff),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let orphans: Vec<_> = scan2
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::OrphanLink)
+            .collect();
+        assert_eq!(
+            orphans.len(),
+            0,
+            "pre-existing orphan_link must be excluded by since filter via journal: {orphans:?}"
+        );
+    }
+
+    /// Audit-r2 follow-up — newly-introduced anomalies pass the `since`
+    /// filter even when older ones don't.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn since_filter_admits_newly_introduced_anomaly() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Seed one orphan in scan 1 → journal records its observed_at.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-001", "EVID-MISSING-A", "informs")
+            .await
+            .unwrap();
+
+        let _scan1 = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let cutoff = Utc::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Add a SECOND orphan after the cutoff — this one must pass.
+        store
+            .add_relation_for_test("PRD-001", "EVID-MISSING-B", "informs")
+            .await
+            .unwrap();
+
+        let scan2 = detect_anomalies(
+            &store,
+            &ws,
+            &AnomalyFilter {
+                since: Some(cutoff),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let orphans: Vec<_> = scan2
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::OrphanLink)
+            .collect();
+        assert_eq!(
+            orphans.len(),
+            1,
+            "exactly the new orphan must pass the since filter: {orphans:?}"
+        );
+        assert!(
+            orphans[0].affected.contains(&"EVID-MISSING-B".to_string()),
+            "the new orphan (B) must be the one returned: {orphans:?}"
         );
     }
 
@@ -1423,7 +2081,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         // v1 limitation: 3-node cycle goes undetected. Documented; do

@@ -70,3 +70,10 @@ serial_test = "3"
 # filter (`forgeplan_core=trace`) would exclude those events; this
 # feature substitutes plain `trace` so any target passes through.
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
+# Property-based testing for invariants that pure unit tests can't easily
+# cover. Used by `projection::tests::replace_link_upsert_idempotent_*` to
+# fuzz the 7 input shapes (no prior edge, same relation, different
+# relation, …) across the upsert state machine. Audit-r2 closure: pure
+# unit coverage missed reverse-direction + alternate-relation cases until
+# explicitly added; proptest gives a shotgun guard against the next gap.
+proptest = "1"

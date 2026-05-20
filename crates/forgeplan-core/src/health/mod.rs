@@ -1275,6 +1275,18 @@ const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
         ".forgeplan/.secrets.env.tmp-*",
         "atomic-write intermediate from migrate-secrets — contains the new file body, treat as secret",
     ),
+    // Issue #289 audit-r2: anomaly observed_at journal — derived state,
+    // per-workspace, not source of truth (rebuildable by re-running
+    // `forgeplan anomalies`). Atomic-write tempfile shares the threat
+    // profile with other tmpfiles above.
+    (
+        ".forgeplan/anomalies-journal.jsonl",
+        "anomaly observed_at journal — derived from `forgeplan anomalies` runs, per-workspace",
+    ),
+    (
+        ".forgeplan/.anomalies-journal.jsonl.tmp",
+        "atomic-write intermediate from anomaly journal — short-lived, do not commit",
+    ),
 ];
 
 /// PROB-062: detect files currently tracked by git that match the

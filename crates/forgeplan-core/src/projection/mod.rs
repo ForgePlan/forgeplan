@@ -3828,3 +3828,176 @@ mod tests {
         );
     }
 }
+
+/// Property-based tests for `replace_link_with_projection` invariants.
+///
+/// Audit-r2 closure (#286): original unit tests covered three outcomes
+/// (Created / Unchanged / Replaced{based_on→informs}) + SEC HIGH-1
+/// ordering fix. Follow-up tests added reverse-direction + refines +
+/// supersedes. This module shotguns the remaining input space — every
+/// legal relation × every legal starting state × idempotency-on-second-
+/// call invariant.
+///
+/// **Invariants pinned**:
+/// 1. After successful replace, exactly ONE edge between `(source, target)`.
+/// 2. That edge has the requested `relation`.
+/// 3. Second call with same args produces `Unchanged`.
+/// 4. State-machine outcome (Created / Replaced / Unchanged) deterministic
+///    given starting state.
+#[cfg(test)]
+mod replace_link_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use tempfile::TempDir;
+
+    const RELATIONS: &[&str] = &[
+        "informs",
+        "based_on",
+        "supersedes",
+        "refines",
+        "contradicts",
+    ];
+
+    fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
+        crate::db::store::NewArtifact {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: "draft".to_string(),
+            title: format!("Test {id}"),
+            body: "body".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    async fn run_replace_scenario(
+        initial_relation: Option<&str>,
+        new_relation: &str,
+        source_id: &str,
+        target_id: &str,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(source_id, "prd"))
+            .await
+            .unwrap();
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(target_id, "prd"))
+            .await
+            .unwrap();
+
+        if let Some(rel) = initial_relation {
+            add_link_with_projection(
+                &MutationContext::new(&ws, &store),
+                source_id,
+                target_id,
+                rel,
+            )
+            .await
+            .unwrap();
+        }
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            source_id,
+            target_id,
+            new_relation,
+        )
+        .await
+        .unwrap();
+
+        // Invariant 4: deterministic outcome.
+        let outcome_ok = match (initial_relation, &outcome) {
+            (None, LinkUpsertOutcome::Created) => true,
+            (Some(old), LinkUpsertOutcome::Replaced { old_relation }) => {
+                old == old_relation.as_str() && old != new_relation
+            }
+            (Some(old), LinkUpsertOutcome::Unchanged) => old == new_relation,
+            _ => false,
+        };
+        assert!(
+            outcome_ok,
+            "outcome doesn't match starting state: initial={initial_relation:?} \
+             new={new_relation} got={outcome:?}"
+        );
+
+        // Invariant 1+2: exactly one edge with requested relation.
+        let rels = store.get_relations(source_id).await.unwrap();
+        let same_target: Vec<_> = rels
+            .iter()
+            .filter(|(t, _)| t.eq_ignore_ascii_case(target_id))
+            .collect();
+        assert_eq!(same_target.len(), 1, "exactly one edge: {same_target:?}");
+        assert_eq!(same_target[0].1, new_relation);
+
+        // Invariant 3: idempotency.
+        let outcome2 = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            source_id,
+            target_id,
+            new_relation,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome2, LinkUpsertOutcome::Unchanged);
+
+        let rels2 = store.get_relations(source_id).await.unwrap();
+        let same_target2: Vec<_> = rels2
+            .iter()
+            .filter(|(t, _)| t.eq_ignore_ascii_case(target_id))
+            .collect();
+        assert_eq!(
+            same_target2.len(),
+            1,
+            "idempotent replace must not add parallel edges"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 12,
+            max_shrink_iters: 8,
+            .. ProptestConfig::default()
+        })]
+
+        /// Fuzz: empty workspace → replace with any relation = Created.
+        #[test]
+        fn replace_from_empty_produces_created(
+            new_rel_idx in 0usize..RELATIONS.len(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(run_replace_scenario(
+                None,
+                RELATIONS[new_rel_idx],
+                "PRD-A001",
+                "PRD-B001",
+            ));
+        }
+
+        /// Fuzz: any initial relation × any new relation. Same → Unchanged,
+        /// different → Replaced{old}; in both cases ends with one edge.
+        #[test]
+        fn replace_swaps_relation_correctly(
+            initial_idx in 0usize..RELATIONS.len(),
+            new_idx in 0usize..RELATIONS.len(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(run_replace_scenario(
+                Some(RELATIONS[initial_idx]),
+                RELATIONS[new_idx],
+                "PRD-A002",
+                "PRD-B002",
+            ));
+        }
+    }
+}
