@@ -136,3 +136,4 @@ backward compat, naming consistency) и даёт authors checklist перед PR
 | issue #289 | external | based_on (pipeline anomalies original catalog) |
 | Epic #287 | external | informs (brownfield extension introduced 5 variants) |
 
+
