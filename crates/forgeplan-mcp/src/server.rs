@@ -777,6 +777,28 @@ struct AnomaliesParams {
     since: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HypothesisStatusParams {
+    /// Optional HYP- id to narrow the report to a single hypothesis.
+    /// When `None`, returns the workspace-wide state distribution.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CoverageBusinessParams {
+    /// Required DM- artifact id. The Composition section of that
+    /// Domain Model artifact provides the `expected` counts; this
+    /// tool counts what's actually present in the workspace.
+    domain_model_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ContradictionsParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct OrphansParams {}
+
 fn default_relation() -> RelationKind {
     RelationKind::Informs
 }
@@ -1031,6 +1053,22 @@ struct ImportParams {
     /// Overwrite existing artifacts (default: false)
     #[serde(default)]
     force: Option<bool>,
+}
+
+/// Issue #287 Phase F (W4): optional filter for the `forgeplan_graph`
+/// MCP tool. When `brownfield_only` is `true`, the rendered mermaid
+/// graph drops edges whose endpoints aren't both brownfield kinds
+/// (UC/GLOS/INV/SCEN/HYP/DM). Pipeline-only callers (no params, or
+/// `brownfield_only: false`) get the legacy full-graph rendering.
+///
+/// Default value is `false`; zero-arg callers (existing JSON-RPC
+/// clients that pass `{}`) stay valid via `#[serde(default)]`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct GraphParams {
+    /// Filter edges to brownfield kinds (UC / GLOS / INV / SCEN / HYP /
+    /// DM) only. Defaults to false (show all edges including pipeline).
+    #[serde(default)]
+    brownfield_only: Option<bool>,
 }
 
 /// Exposed for integration test harness in tests/fpf_search_handler.rs.
@@ -3433,6 +3471,216 @@ impl ForgeplanServer {
         hinted_result(&report, next_action)
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Issue #287 Phase C — read-only brownfield inspectors
+    // ─────────────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "Issue #287 Phase C — query hypothesis lifecycle state. Returns workspace-wide state distribution (verified / strong-inferred / inferred / refuted / parked) plus best-effort recent transitions (last 30 days, audit-line extraction from `## Lifecycle State` sections). Optional `id` filter narrows to a single HYP- artifact.",
+        annotations(
+            title = "Hypothesis Status",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_hypothesis_status(
+        &self,
+        Parameters(p): Parameters<HypothesisStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        let all_records = match store.list_records(None).await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("list_records", e)),
+        };
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let report = forgeplan_core::brownfield::hypothesis_status_report(
+            &all_records,
+            p.id.as_deref(),
+            &today,
+        );
+
+        let next_action = if report.total == 0 {
+            "No hypothesis artifacts in workspace. Done.".to_string()
+        } else {
+            format!(
+                "{} hypothesis(es) tracked. Promote next: `forgeplan_hypothesis_promote`.",
+                report.total
+            )
+        };
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
+        description = "Issue #287 Phase C — compute extract_score (0.0-1.0) for a Domain Model. Reads the DM's ## Composition section to derive expected counts of glossary / use_cases / invariants / scenarios / hypotheses; counts actuals across the workspace; returns weighted extract_score. Canonical fields (DDL/SDL/pseudo-code) default to 0/false until marketplace#79 Phase E lands.",
+        annotations(
+            title = "Coverage Business",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_coverage_business(
+        &self,
+        Parameters(p): Parameters<CoverageBusinessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        let dm_record = match store.get_record(&p.domain_model_id).await {
+            Ok(Some(r)) if r.kind.eq_ignore_ascii_case("domain_model") => r,
+            Ok(Some(other)) => {
+                return Ok(err_hinted(
+                    &format!(
+                        "{} is kind={} — coverage_business only operates on Domain Model artifacts",
+                        p.domain_model_id, other.kind
+                    ),
+                    "Pass a DM- artifact id (kind=domain_model).",
+                ));
+            }
+            Ok(None) => return Ok(artifact_not_found(&p.domain_model_id)),
+            Err(e) => return Ok(safe_err_result("get_record", e)),
+        };
+        let all_records = match store.list_records(None).await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("list_records", e)),
+        };
+        let relations = match store.get_all_relations().await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+        };
+        let report = forgeplan_core::brownfield::coverage_business_report(
+            &dm_record,
+            &all_records,
+            &relations,
+        );
+
+        let next_action = format!(
+            "extract_score = {:.2}. Improve coverage by adding artifacts referenced in {}'s Composition section.",
+            report.extract_score, p.domain_model_id
+        );
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
+        description = "Issue #287 Phase C — detect cross-artifact contradictions (v1: hypothesis_duplicate via Jaccard ≥ 0.6 on titles). Three other classes (invariant_conflict, glossary_divergence, scenario_vs_invariant) require LLM judgement and are deferred — buckets included in response with empty arrays + limitations list.",
+        annotations(
+            title = "Contradictions",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_contradictions(
+        &self,
+        Parameters(_p): Parameters<ContradictionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        let all_records = match store.list_records(None).await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("list_records", e)),
+        };
+        let report = forgeplan_core::brownfield::contradictions_v1_heuristic(&all_records);
+
+        let next_action = if report.contradictions.is_empty() {
+            "No contradictions detected. Done.".to_string()
+        } else {
+            format!(
+                "{} contradiction(s) detected. Review pairs: `forgeplan_get <left>`, `forgeplan_get <right>`.",
+                report.contradictions.len()
+            )
+        };
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
+        description = "Issue #287 Phase C — surface brownfield orphans: uncovered use cases (no scenario links), unverified invariants (no scenario links), orphan glossary terms (not referenced in any UC/INV body), un-triangulated hypotheses (< 2 evidence refs).",
+        annotations(
+            title = "Brownfield Orphans",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_orphans(
+        &self,
+        Parameters(_p): Parameters<OrphansParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        let all_records = match store.list_records(None).await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("list_records", e)),
+        };
+        let relations = match store.get_all_relations().await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+        };
+        let report = forgeplan_core::brownfield::orphans_report(&all_records, &relations);
+
+        let total = report.uncovered_use_cases.len()
+            + report.unverified_invariants.len()
+            + report.orphan_terms.len()
+            + report.untriangulated_hypotheses.len();
+        let next_action = if total == 0 {
+            "No brownfield orphans. Done.".to_string()
+        } else {
+            format!(
+                "{total} orphan(s) across 4 buckets. Fix by adding linking scenarios / referencing terms / triangulating hypotheses."
+            )
+        };
+        hinted_result(&report, next_action)
+    }
+
     #[tool(
         description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status.",
         annotations(
@@ -3652,7 +3900,7 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges.",
+        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges. Issue #287 Phase F: pass `brownfield_only: true` to filter to UC/GLOS/INV/SCEN/HYP/DM edges only.",
         annotations(
             title = "Dependency Graph",
             read_only_hint = true,
@@ -3661,7 +3909,10 @@ impl ForgeplanServer {
             open_world_hint = false,
         )
     )]
-    async fn forgeplan_graph(&self) -> Result<CallToolResult, McpError> {
+    async fn forgeplan_graph(
+        &self,
+        Parameters(p): Parameters<GraphParams>,
+    ) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -3689,8 +3940,48 @@ impl ForgeplanServer {
         }
 
         edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
+
+        // Issue #287 Phase F (W4): collect brownfield render data — per-HYP
+        // verification state and per-DM composition list. Pre-loaded so
+        // `render_mermaid_with_opts` stays a pure function.
+        let mut hypothesis_states: BTreeMap<String, forgeplan_core::hypothesis::HypothesisState> =
+            BTreeMap::new();
+        let mut dm_compositions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for record in &records {
+            match record.kind.as_str() {
+                "hypothesis" => {
+                    match forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body) {
+                        Ok((fm, _)) => {
+                            let state =
+                                forgeplan_core::hypothesis::current_state_from_frontmatter(&fm);
+                            hypothesis_states.insert(record.id.clone(), state);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                id = record.id.as_str(),
+                                error = %err,
+                                "graph: failed to parse hypothesis frontmatter; using default state"
+                            );
+                        }
+                    }
+                }
+                "domain_model" => {
+                    let composed = graph::composition_for_dm(&record.body);
+                    dm_compositions.insert(record.id.clone(), composed);
+                }
+                _ => {}
+            }
+        }
+
+        let brownfield_only = p.brownfield_only.unwrap_or(false);
+        let opts = graph::BrownfieldRenderOpts {
+            hypothesis_states,
+            dm_compositions,
+            brownfield_only,
+        };
+
         let edge_count = edges.len();
-        let mermaid = graph::render_mermaid(&edges);
+        let mermaid = graph::render_mermaid_with_opts(&edges, &opts);
 
         // PRD-071: single primary action per state.
         let next_action = if edge_count == 0 {

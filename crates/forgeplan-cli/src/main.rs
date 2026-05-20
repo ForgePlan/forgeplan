@@ -248,6 +248,12 @@ enum Commands {
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
+        /// Issue #287 Phase F: filter edges to brownfield kinds only
+        /// (UC / GLOS / INV / SCEN / HYP / DM). Pipeline edges
+        /// (PRD / RFC / ADR / EPIC / SPEC) are dropped from output.
+        /// Domain-model subgraph clusters are preserved.
+        #[arg(long)]
+        brownfield_only: bool,
     },
     /// Search artifacts (smart by default: keyword + semantic + boosters)
     Search {
@@ -1166,7 +1172,10 @@ async fn main() -> anyhow::Result<()> {
             target,
             relation,
         } => commands::link::run_unlink(&source, &target, &relation).await,
-        Commands::Graph { json } => commands::graph::run(json).await,
+        Commands::Graph {
+            json,
+            brownfield_only,
+        } => commands::graph::run(json, brownfield_only).await,
         Commands::Search {
             query,
             r#type,

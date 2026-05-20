@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod anomalies;
 pub mod artifact;
+pub mod brownfield;
 pub mod changelog;
 pub mod claim;
 pub mod config;

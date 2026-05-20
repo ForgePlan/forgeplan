@@ -1267,3 +1267,198 @@ async fn t38_forgeplan_interview_packet_ingest_returns_not_implemented_stub() {
         "stub message must name the plugin so agents know how to recover: {msg}"
     );
 }
+
+/// T39 — Issue #287 Phase F (W4): the `forgeplan_graph` MCP tool surfaces
+/// brownfield-aware rendering when the workspace contains brownfield
+/// artifacts. We seed:
+///
+///   * 1 PRD + 1 RFC linked via `informs` (pipeline edge).
+///   * 1 UC + 1 INV + 1 SCEN + 1 HYP + 1 DM as brownfield artifacts.
+///   * Edges: INV → SCEN (`covers`), HYP → UC (`triangulates`),
+///     GLOS → UC (`references`).
+///   * The HYP frontmatter carries `hypothesis_state: verified` so the
+///     verified palette class fires.
+///   * DM body's `## Composition` lists UC + INV + SCEN + HYP so the
+///     subgraph block fires.
+///
+/// Then we issue two calls:
+///   * `forgeplan_graph {}` — legacy default. Both pipeline + brownfield
+///     edges in the mermaid; verified-style class on HYP; subgraph for DM.
+///   * `forgeplan_graph {brownfield_only: true}` — pipeline edge filtered
+///     out; brownfield edges + subgraph preserved.
+#[tokio::test]
+async fn t39_forgeplan_graph_brownfield_rendering_smoke() {
+    let fx = McpFixture::new_with_seed(|store| async move {
+        // Brownfield seeds with explicit body shapes so the MCP-side
+        // parsing exercises both happy paths (HYP frontmatter, DM
+        // composition section).
+        let hyp_body = "---\n\
+id: HYP-001\n\
+slug: hyp-verified-claim\n\
+title: \"verified claim\"\n\
+kind: hypothesis\n\
+tier: intent\n\
+hypothesis_state: verified\n\
+status: draft\n\
+---\n\
+\n\
+# HYP-001: verified claim\n\
+\n\
+## Hypothesis\nVerified.\n\
+\n\
+## Lifecycle State\n**Current**: `verified`\n";
+        let dm_body = "---\n\
+id: DM-001\n\
+slug: dm-auth\n\
+title: \"auth domain\"\n\
+kind: domain_model\n\
+tier: factum\n\
+status: draft\n\
+---\n\
+\n\
+# DM-001: auth domain\n\
+\n\
+## Domain\n\
+auth bounded context.\n\
+\n\
+## Composition\n\
+- UC-001 — sign in capability\n\
+- INV-001 — session ttl rule\n\
+- SCEN-001 — happy login\n\
+- HYP-001 — auth claim\n\
+\n\
+## Source\nDiscover Agent.\n";
+        let uc_body = "---\nid: UC-001\nslug: uc-sign-in\ntitle: \"sign in\"\nkind: use_case\ntier: factum\nstatus: draft\n---\n\n# UC-001: sign in\n";
+        let inv_body = "---\nid: INV-001\nslug: inv-session-ttl\ntitle: \"session ttl\"\nkind: invariant\ntier: factum\nstatus: draft\n---\n\n# INV-001: session ttl\n";
+        let scen_body = "---\nid: SCEN-001\nslug: scen-happy-login\ntitle: \"happy login\"\nkind: scenario\ntier: factum\nstatus: draft\n---\n\n# SCEN-001: happy login\n";
+        let glos_body = "---\nid: GLOS-001\nslug: glos-session\ntitle: \"session\"\nkind: glossary\ntier: factum\nstatus: draft\n---\n\n# GLOS-001: session\n";
+
+        // Pipeline seeds: PRD + RFC with an `informs` relation. The
+        // relation is established via `store.add_relation` after both
+        // sides land in storage.
+        let prd_body = "---\nid: PRD-001\nslug: prd-auth\ntitle: \"auth prd\"\nkind: prd\nstatus: draft\n---\n\n# PRD-001: auth prd\n";
+        let rfc_body = "---\nid: RFC-001\nslug: rfc-auth\ntitle: \"auth rfc\"\nkind: rfc\nstatus: draft\n---\n\n# RFC-001: auth rfc\n";
+
+        for (id, kind, title, body) in [
+            ("UC-001", "use_case", "sign in", uc_body),
+            ("INV-001", "invariant", "session ttl", inv_body),
+            ("SCEN-001", "scenario", "happy login", scen_body),
+            ("HYP-001", "hypothesis", "verified claim", hyp_body),
+            ("GLOS-001", "glossary", "session", glos_body),
+            ("DM-001", "domain_model", "auth domain", dm_body),
+            ("PRD-001", "prd", "auth prd", prd_body),
+            ("RFC-001", "rfc", "auth rfc", rfc_body),
+        ] {
+            store
+                .create_artifact_for_test(&NewArtifact {
+                    id: id.into(),
+                    kind: kind.into(),
+                    status: "draft".into(),
+                    title: title.into(),
+                    body: body.into(),
+                    depth: "standard".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                })
+                .await
+                .unwrap_or_else(|e| panic!("seed {id} ({kind}): {e}"));
+        }
+
+        // Link relations into Lance. The graph builder uses
+        // `get_all_relations`, so explicit links must land via the
+        // store side rather than be encoded in body frontmatter alone.
+        for (from, to, relation) in [
+            ("INV-001", "SCEN-001", "covers"),
+            ("HYP-001", "UC-001", "triangulates"),
+            ("GLOS-001", "UC-001", "references"),
+            ("PRD-001", "RFC-001", "informs"),
+        ] {
+            store
+                .add_relation_for_test(from, to, relation)
+                .await
+                .unwrap_or_else(|e| panic!("link {from} -> {to} ({relation}): {e}"));
+        }
+    })
+    .await;
+
+    // Call 1: default (no brownfield filter). Pipeline + brownfield
+    // edges all present, with HYP-001 in the verified palette and a
+    // DM-001 subgraph block.
+    let env = fx.call_tool_json("forgeplan_graph", json!({})).await;
+    let resp = env.assert_ok();
+    let mermaid = resp["mermaid"].as_str().expect("mermaid string");
+
+    // Pipeline edge surfaces.
+    assert!(
+        mermaid.contains("PRD-001 -->|informs| RFC-001"),
+        "pipeline edge missing in default render: {mermaid}"
+    );
+    // Brownfield edges surface.
+    assert!(
+        mermaid.contains("INV-001 -->|covers| SCEN-001"),
+        "covers edge missing: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("HYP-001 -->|triangulates| UC-001"),
+        "triangulates edge missing: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("GLOS-001 -.->|references| UC-001"),
+        "references (dashed) edge missing: {mermaid}"
+    );
+    // DM cluster fires from the composition section, not from any edge.
+    assert!(
+        mermaid.contains("subgraph DM-001[\"DM-001\"]"),
+        "DM-001 subgraph missing: {mermaid}"
+    );
+    // HYP verified palette class.
+    assert!(
+        mermaid.contains("class HYP-001 hypothesisVerifiedStyle"),
+        "verified-state HYP class missing: {mermaid}"
+    );
+    // Both pipeline classDefs land.
+    assert!(mermaid.contains("classDef prdStyle"));
+    assert!(mermaid.contains("classDef rfcStyle"));
+
+    // Call 2: brownfield_only=true. Pipeline edges drop; brownfield
+    // edges + subgraph survive.
+    let env_bf = fx
+        .call_tool_json("forgeplan_graph", json!({"brownfield_only": true}))
+        .await;
+    let resp_bf = env_bf.assert_ok();
+    let mermaid_bf = resp_bf["mermaid"].as_str().expect("mermaid string (bf)");
+
+    assert!(
+        !mermaid_bf.contains("PRD-001"),
+        "PRD endpoint must be filtered under brownfield_only: {mermaid_bf}"
+    );
+    assert!(
+        !mermaid_bf.contains("RFC-001"),
+        "RFC endpoint must be filtered under brownfield_only: {mermaid_bf}"
+    );
+    assert!(
+        mermaid_bf.contains("INV-001 -->|covers| SCEN-001"),
+        "covers edge must survive brownfield filter: {mermaid_bf}"
+    );
+    assert!(
+        mermaid_bf.contains("HYP-001 -->|triangulates| UC-001"),
+        "triangulates edge must survive brownfield filter: {mermaid_bf}"
+    );
+    assert!(
+        mermaid_bf.contains("subgraph DM-001[\"DM-001\"]"),
+        "DM cluster must survive brownfield filter: {mermaid_bf}"
+    );
+    // Backwards-compat: brownfield_only:false equivalent to default — pin
+    // a small assertion to lock the contract.
+    let env_explicit_false = fx
+        .call_tool_json("forgeplan_graph", json!({"brownfield_only": false}))
+        .await;
+    let resp_eq = env_explicit_false.assert_ok();
+    let mermaid_eq = resp_eq["mermaid"].as_str().expect("mermaid string");
+    assert_eq!(
+        mermaid, mermaid_eq,
+        "`brownfield_only: false` must match default rendering byte-for-byte"
+    );
+}
