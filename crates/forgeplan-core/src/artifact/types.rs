@@ -2,7 +2,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 /// All artifact kinds supported by Forgeplan.
-/// 5 from Quint-code + 6 new for Forgeplan = 11 types.
+/// 5 from Quint-code + 6 Forgeplan + 6 brownfield (#287 Phase A) = 17 types.
 /// DecisionRecord merged into ADR (ADR at deep+ depth includes DDR fields).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +22,29 @@ pub enum ArtifactKind {
     /// Lightweight project memory — shared bookmarks, no lifecycle overhead.
     /// Stored in .forgeplan/memory/, indexed in LanceDB as kind=memory.
     Memory,
+    // ---- Issue #287 Phase A — brownfield extraction kinds -------------
+    /// User-facing capability extracted from a brownfield codebase.
+    /// Examples: "Authenticate user", "Refund payment". Holds acceptance
+    /// criteria, preconditions, and links to invariants + scenarios.
+    UseCase,
+    /// Domain term + canonical definition. Closes ubiquitous-language gaps
+    /// surfaced during extraction. Slug: `glos-<canonical-name>`.
+    Glossary,
+    /// Business rule that must always hold (data integrity, policy, etc.).
+    /// Distinct from scenarios — invariants are universal, scenarios are
+    /// example-specific. Links to use_cases and hypotheses.
+    Invariant,
+    /// Concrete example of a use case in action. Pairs with an invariant
+    /// to demonstrate the rule. Slug: `scen-<use_case>-<example>`.
+    Scenario,
+    /// A piece of inferred knowledge with explicit confidence. Lifecycle
+    /// state machine: parked → inferred → strong-inferred → verified;
+    /// or any → refuted. Refuted/verified are terminal.
+    Hypothesis,
+    /// Aggregate canonical artifact representing a domain — composed of
+    /// glossary + invariants + use_cases + scenarios. Produced by render
+    /// pipelines (DDL/SDL/pseudo-code).
+    DomainModel,
 }
 
 impl std::str::FromStr for ArtifactKind {
@@ -39,6 +62,13 @@ impl std::str::FromStr for ArtifactKind {
             "evidence" | "evidencepack" => Ok(Self::EvidencePack),
             "refresh" | "refreshreport" => Ok(Self::RefreshReport),
             "memory" => Ok(Self::Memory),
+            // Issue #287 Phase A — brownfield extraction kinds.
+            "use-case" | "use_case" | "usecase" => Ok(Self::UseCase),
+            "glossary" => Ok(Self::Glossary),
+            "invariant" => Ok(Self::Invariant),
+            "scenario" => Ok(Self::Scenario),
+            "hypothesis" => Ok(Self::Hypothesis),
+            "domain-model" | "domain_model" | "domainmodel" => Ok(Self::DomainModel),
             other => Err(crate::error::ForgeplanError::InvalidKind(other.to_string())),
         }
     }
@@ -70,6 +100,13 @@ impl ArtifactKind {
             Self::Rfc => "rfc-",
             Self::Adr => "adr-",
             Self::Memory => "mem-",
+            // Issue #287 brownfield kinds.
+            Self::UseCase => "uc-",
+            Self::Glossary => "glos-",
+            Self::Invariant => "inv-",
+            Self::Scenario => "scen-",
+            Self::Hypothesis => "hyp-",
+            Self::DomainModel => "dm-",
         }
     }
 
@@ -87,6 +124,12 @@ impl ArtifactKind {
             Self::Note => "notes",
             Self::RefreshReport => "refresh",
             Self::Memory => "memory",
+            Self::UseCase => "use_cases",
+            Self::Glossary => "glossary",
+            Self::Invariant => "invariants",
+            Self::Scenario => "scenarios",
+            Self::Hypothesis => "hypotheses",
+            Self::DomainModel => "domain_models",
         }
     }
 
@@ -104,7 +147,29 @@ impl ArtifactKind {
             Self::Note => "note",
             Self::RefreshReport => "refresh",
             Self::Memory => "memory",
+            Self::UseCase => "use_case",
+            Self::Glossary => "glossary",
+            Self::Invariant => "invariant",
+            Self::Scenario => "scenario",
+            Self::Hypothesis => "hypothesis",
+            Self::DomainModel => "domain_model",
         }
+    }
+
+    /// Issue #287 — returns `true` if this kind is part of the brownfield
+    /// extraction surface (Phase A artifact kinds). Brownfield kinds
+    /// participate in the Discover Agent v3.2 protocol and coverage
+    /// metrics but live outside the standard PRD→Spec→RFC→ADR pipeline.
+    pub fn is_brownfield(&self) -> bool {
+        matches!(
+            self,
+            Self::UseCase
+                | Self::Glossary
+                | Self::Invariant
+                | Self::Scenario
+                | Self::Hypothesis
+                | Self::DomainModel
+        )
     }
 
     /// Whether this kind is a memory (excluded from health/gaps/score/validation).
@@ -134,6 +199,13 @@ impl ArtifactKind {
             "note" => Some(Self::Note),
             "ref" => Some(Self::RefreshReport),
             "mem" => Some(Self::Memory),
+            // Issue #287 brownfield prefixes.
+            "uc" => Some(Self::UseCase),
+            "glos" => Some(Self::Glossary),
+            "inv" => Some(Self::Invariant),
+            "scen" => Some(Self::Scenario),
+            "hyp" => Some(Self::Hypothesis),
+            "dm" => Some(Self::DomainModel),
             _ => None,
         }
     }
@@ -192,6 +264,8 @@ pub const MAX_SLUG_LEN: usize = 80;
 /// requires updating both lists or this test fails.
 const VALID_KIND_PREFIXES: &[&str] = &[
     "prd", "rfc", "adr", "epic", "spec", "prob", "sol", "evid", "note", "ref", "mem",
+    // Issue #287 brownfield kinds.
+    "uc", "glos", "inv", "scen", "hyp", "dm",
 ];
 
 /// Same as [`VALID_KIND_PREFIXES`] but with the trailing dash, precomputed at
@@ -200,6 +274,8 @@ const VALID_KIND_PREFIXES: &[&str] = &[
 /// during reindex of 1000+ artifacts).
 const VALID_KIND_PREFIXES_WITH_DASH: &[&str] = &[
     "prd-", "rfc-", "adr-", "epic-", "spec-", "prob-", "sol-", "evid-", "note-", "ref-", "mem-",
+    // Issue #287 brownfield kinds.
+    "uc-", "glos-", "inv-", "scen-", "hyp-", "dm-",
 ];
 
 /// Reserved suffix prefixes (after kind prefix) that cannot appear in user slugs.
@@ -801,6 +877,13 @@ mod tests {
             ArtifactKind::Note,
             ArtifactKind::RefreshReport,
             ArtifactKind::Memory,
+            // Issue #287 brownfield kinds.
+            ArtifactKind::UseCase,
+            ArtifactKind::Glossary,
+            ArtifactKind::Invariant,
+            ArtifactKind::Scenario,
+            ArtifactKind::Hypothesis,
+            ArtifactKind::DomainModel,
         ];
 
         // Deterministic-pseudo-random titles using a simple linear congruential
@@ -890,6 +973,13 @@ mod tests {
             ArtifactKind::Note,
             ArtifactKind::RefreshReport,
             ArtifactKind::Memory,
+            // Issue #287 brownfield kinds.
+            ArtifactKind::UseCase,
+            ArtifactKind::Glossary,
+            ArtifactKind::Invariant,
+            ArtifactKind::Scenario,
+            ArtifactKind::Hypothesis,
+            ArtifactKind::DomainModel,
         ];
 
         let kind_prefixes: Vec<&str> = all_kinds

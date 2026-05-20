@@ -14,6 +14,17 @@ pub fn get_embedded_template(kind: &str) -> Option<&'static str> {
         "evidence" => Some(include_str!("../../../../templates/evidence/_TEMPLATE.md")),
         "note" => Some(include_str!("../../../../templates/note/_TEMPLATE.md")),
         "refresh" => Some(include_str!("../../../../templates/refresh/_TEMPLATE.md")),
+        // Issue #287 Phase A — brownfield extraction kinds.
+        "use_case" => Some(include_str!("../../../../templates/use_case/_TEMPLATE.md")),
+        "glossary" => Some(include_str!("../../../../templates/glossary/_TEMPLATE.md")),
+        "invariant" => Some(include_str!("../../../../templates/invariant/_TEMPLATE.md")),
+        "scenario" => Some(include_str!("../../../../templates/scenario/_TEMPLATE.md")),
+        "hypothesis" => Some(include_str!(
+            "../../../../templates/hypothesis/_TEMPLATE.md"
+        )),
+        "domain_model" => Some(include_str!(
+            "../../../../templates/domain_model/_TEMPLATE.md"
+        )),
         _ => None,
     }
 }
