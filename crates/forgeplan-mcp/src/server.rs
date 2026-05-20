@@ -1324,6 +1324,15 @@ impl ForgeplanServer {
         let mut auto_link_target: Option<String> = None;
         if let Some(ref raw_parent) = p.parent_id {
             let safe = sanitize_for_hint(raw_parent);
+            // Audit-dogfood SEC-4: Wave 9 SEC-H3 closed ~40 sites that
+            // leaked raw `{e}` (HOME paths, CARGO_TARGET_DIR, etc.) into
+            // MCP responses. Auto-link warnings re-introduce the same
+            // leak vector. Route every error display through
+            // `sanitize_error_chain` so this code preserves the SEC-H3
+            // posture instead of regressing it.
+            let safe_err = |e: anyhow::Error| -> String {
+                forgeplan_core::projection::sanitize_error_chain(&e)
+            };
             match store.resolve_id(raw_parent).await {
                 Ok(Some(canonical_parent)) => {
                     // Parent exists — write the link via the projection
@@ -1342,8 +1351,9 @@ impl ForgeplanServer {
                         }
                         Err(e) => {
                             auto_link_warnings.push(format!(
-                                "Auto-link {id} -> {safe} (informs) failed: {e}. \
-                                 Use `forgeplan_link` to retry."
+                                "Auto-link {id} -> {safe} (informs) failed: {}. \
+                                 Use `forgeplan_link` to retry.",
+                                safe_err(anyhow::anyhow!("{e}"))
                             ));
                         }
                     }
@@ -1355,7 +1365,10 @@ impl ForgeplanServer {
                     ));
                 }
                 Err(e) => {
-                    auto_link_warnings.push(format!("Auto-link skipped (resolve_id failed): {e}"));
+                    auto_link_warnings.push(format!(
+                        "Auto-link skipped (resolve_id failed): {}",
+                        safe_err(e)
+                    ));
                 }
             }
         }
@@ -1404,12 +1417,13 @@ impl ForgeplanServer {
         // here keeps the JSON identical for current callers while letting
         // the schema match `ArtifactSummaryDto` / `ArtifactRecordDto`.
         //
-        // Issue #295: surface auto-link result. NewArtifactResponse doesn't
-        // have `auto_linked` / `auto_link_warnings` fields — wrap the
-        // serialised DTO into a json Value and append them post-hoc so
-        // old consumers see the same shape; new consumers read the
-        // additional fields. Avoids a breaking DTO change.
-        let base = NewArtifactResponse {
+        // Issue #295 (audit-dogfood CODE-4 / ARCH-2 fix): `auto_linked` +
+        // `auto_link_warnings` are now proper DTO fields (with
+        // `skip_serializing_if`) — preserves JsonSchema contract for
+        // typed clients (TS codegen). Old consumers ignore unknown
+        // fields; new consumers read them. Replaces post-hoc Value
+        // mutation that broke schema codegen.
+        Ok(json_result(&NewArtifactResponse {
             id,
             kind: template_key.into(),
             title: p.title,
@@ -1422,29 +1436,9 @@ impl ForgeplanServer {
             id_canonical,
             id_display,
             hint: identity_hint,
-        };
-        if auto_link_target.is_some() || !auto_link_warnings.is_empty() {
-            let mut v = serde_json::to_value(&base).unwrap_or_default();
-            if let Some(obj) = v.as_object_mut() {
-                if let Some(linked) = auto_link_target {
-                    obj.insert("auto_linked".to_string(), serde_json::Value::String(linked));
-                }
-                if !auto_link_warnings.is_empty() {
-                    obj.insert(
-                        "auto_link_warnings".to_string(),
-                        serde_json::Value::Array(
-                            auto_link_warnings
-                                .into_iter()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    );
-                }
-            }
-            Ok(json_result(&v))
-        } else {
-            Ok(json_result(&base))
-        }
+            auto_linked: auto_link_target,
+            auto_link_warnings,
+        }))
     }
 
     #[tool(
@@ -5480,6 +5474,16 @@ impl ForgeplanServer {
             // new `session_status` is the unambiguous name.
             "status": session.status,
             "session_status": session.status,
+            // Audit-dogfood CODE-2 fix: parallel `_field_warnings` channel
+            // (same one used in _finding) so schema-aware clients see the
+            // deprecation consistently across all 3 discover_* tools.
+            "_field_warnings": [
+                {
+                    "field": "status",
+                    "severity": "deprecation_notice",
+                    "message": "`status` refers to SESSION state. Read `session_status` instead. `status` will be removed in a future major release."
+                }
+            ],
             "current_phase": session.current_phase,
             "protocol": protocol,
             "_next_action": format!(
@@ -5696,6 +5700,16 @@ impl ForgeplanServer {
             // finding artifacts — those are in `draft` until activated.
             "status": session.status,
             "session_status": session.status,
+            // Audit-dogfood CODE-2 fix: parallel `_field_warnings` channel
+            // (same one used in _start / _finding) for consistency across
+            // all 3 discover_* tools.
+            "_field_warnings": [
+                {
+                    "field": "status",
+                    "severity": "deprecation_notice",
+                    "message": "`status` refers to SESSION state. Read `session_status` instead. `status` will be removed in a future major release."
+                }
+            ],
             "total_findings": session.findings.len(),
             "phase_counts": phase_counts.iter().map(|(p, c)| (p.name(), c)).collect::<std::collections::HashMap<_, _>>(),
             "tier_counts": tier_counts,
@@ -6651,10 +6665,18 @@ impl ForgeplanServer {
                 // to. `restored_status_source` says whether the value came
                 // from the receipt's captured prior_status or from the
                 // explicit `target_status` override.
-                let restored_status_source = if p.target_status.is_some() {
-                    "explicit_override"
-                } else {
-                    "receipt_snapshot"
+                //
+                // Audit-dogfood CODE-1 HIGH fix: compare *values*, not
+                // presence. If operator passes `target_status` equal to
+                // what the snapshot already had, the source is still
+                // `receipt_snapshot` semantically (override matched the
+                // default — no override effect). Previously this reported
+                // "explicit_override" misleadingly even on no-op overrides.
+                let restored_status_source = match p.target_status.as_deref() {
+                    Some(t) if t.trim().to_lowercase() != report.restored_status => {
+                        "explicit_override"
+                    }
+                    _ => "receipt_snapshot",
                 };
                 hinted_result(
                     &serde_json::json!({

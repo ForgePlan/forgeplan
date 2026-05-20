@@ -171,6 +171,24 @@ pub struct NewArtifactResponse {
     /// Distinct from `_next_action`, which is the workflow chaining hint.
     #[serde(default)]
     pub hint: String,
+    /// Issue #295 (audit-dogfood CODE-4 / ARCH-2 fix): when
+    /// `forgeplan_new(kind=evidence, parent_id=...)` succeeds, this
+    /// field carries the canonical parent id that was auto-linked via
+    /// `informs`. None when no parent_id was supplied OR auto-link
+    /// failed (see `auto_link_warnings`).
+    ///
+    /// Previously surfaced as post-hoc `serde_json::Value` mutation,
+    /// which broke JsonSchema codegen for typed clients (TypeScript /
+    /// codegen-aware SDKs). Now a proper optional DTO field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_linked: Option<String>,
+    /// Issue #295: warnings about the auto-link step (parent missing,
+    /// resolve_id transient error, etc.). Empty when no parent_id
+    /// supplied or auto-link succeeded. Error chains routed through
+    /// `sanitize_error_chain` so HOME paths don't leak (audit-dogfood
+    /// SEC-4 fix preserving Wave 9 SEC-H3 posture).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_link_warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

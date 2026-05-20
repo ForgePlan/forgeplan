@@ -748,8 +748,22 @@ fn extract_path_from_line(line: &str) -> Option<String> {
 
 /// Heuristic: does this string look like a file path (vs table header,
 /// separator, or unrelated body text)?
+///
+/// Audit-dogfood SEC-3 hardening: also reject control characters / ANSI
+/// escape sequences. Without this, a malicious PRD body with table-cell
+/// content like `` `legit/file.rs\x1b[31mEVIL` `` would survive parser
+/// extraction (still contains `/`, ends with `.rs`) and land in MCP
+/// `DriftedFile.path` — terminal renderers display the ANSI overlay and
+/// the operator sees fabricated content (log spoofing / agent confusion).
 fn looks_like_file_path(s: &str) -> bool {
     if s.is_empty() {
+        return false;
+    }
+    // SEC-3: reject control chars (covers `\n`/`\r`/`\t`/`\x1b` and C1
+    // controls) plus Unicode line separators U+0085/2028/2029.
+    if s.chars()
+        .any(|c| c.is_control() || matches!(c, '\u{0085}' | '\u{2028}' | '\u{2029}'))
+    {
         return false;
     }
     // Markdown table separator: `------`, `---|---`, etc.

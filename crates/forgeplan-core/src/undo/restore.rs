@@ -66,22 +66,51 @@ pub async fn apply_restore_with_target(
 ) -> anyhow::Result<RestoreReport> {
     // Issue #291: validate override BEFORE any mutation so a bad value
     // doesn't half-apply a restore.
-    if let Some(t) = target_status {
-        let lower = t.to_lowercase();
-        if !matches!(lower.as_str(), "draft" | "active" | "deprecated") {
-            anyhow::bail!(
-                "Invalid target_status `{t}` — valid values: `draft`, `active`, `deprecated`."
-            );
-        }
+    //
+    // Audit-dogfood CODE-7 fix: trim whitespace before lowercase so
+    // `Some("  active  ")` doesn't fall through with an inscrutable
+    // "invalid `  Active  `" message.
+    let normalized_target: Option<String> = target_status.map(|t| t.trim().to_lowercase());
+    if let Some(ref lower) = normalized_target
+        && !matches!(lower.as_str(), "draft" | "active" | "deprecated")
+    {
+        anyhow::bail!(
+            "Invalid target_status `{}` — valid values: `draft`, `active`, `deprecated`.",
+            target_status.unwrap_or("")
+        );
+    }
+
+    // Audit-dogfood SEC-2: FSM transition validation. Restore goes
+    // through `update_artifact` which writes raw status — bypassing
+    // `transitions::validate_transition`. Without this gate the operator
+    // can drive ANY artifact to ANY of 3 target states regardless of
+    // its current state, no lifecycle bookkeeping. We refuse transitions
+    // that the canonical lifecycle would reject, EXCEPT when the
+    // artifact is no longer in the store (Delete-op restore) — in that
+    // case the row is being re-created from the snapshot, not
+    // transitioned.
+    if let Some(ref new_status) = normalized_target
+        && let Ok(Some(current)) = store.get_record(&receipt.snapshot.id).await
+        && let Err(e) =
+            super::super::lifecycle::transitions::validate_transition(&current.status, new_status)
+    {
+        anyhow::bail!(
+            "target_status override `{}` would violate lifecycle FSM \
+             from current status `{}`: {e}. Use the canonical lifecycle \
+             command (`forgeplan_activate` / `_deprecate` / `_supersede`) \
+             instead of overriding restore.",
+            new_status,
+            current.status
+        );
     }
 
     // Build an effective receipt with status overridden if requested.
     // The struct is cloned cheaply — strings only — so this doesn't
     // touch the persisted receipt on disk.
-    let effective_receipt = match target_status {
+    let effective_receipt = match normalized_target {
         Some(t) => {
             let mut r = receipt.clone();
-            r.snapshot.status = t.to_lowercase();
+            r.snapshot.status = t;
             r
         }
         None => receipt.clone(),
@@ -778,13 +807,58 @@ mod tests {
         assert_eq!(report.restored_status, "active");
     }
 
-    /// `apply_restore_with_target` explicit override wins over snapshot.
+    /// `apply_restore_with_target` explicit override wins over snapshot
+    /// when the override is FSM-valid from the current state.
+    ///
+    /// Audit-dogfood SEC-2: override now respects lifecycle FSM. This
+    /// test uses `draft → active` (a legal transition); the negative
+    /// case (forbidden transition) is pinned in
+    /// `restore_with_target_rejects_fsm_invalid_transition` below.
     #[tokio::test]
     async fn restore_with_target_override_applies_explicit_status() {
         let (_tmp, ws, store) = fresh_ws().await;
         store
             .create_artifact(&NewArtifact {
                 id: "PRD-291B".into(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: "T".into(),
+                body: "b".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+        // Receipt captured active (the prior_status before some earlier op);
+        // current row is draft (a valid `draft → active` transition).
+        let mut receipt = build_receipt("PRD-291B", DestructiveOp::Deprecate, "b");
+        receipt.snapshot.status = "draft".into();
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        // Override to `active` — FSM-valid from `draft`.
+        let report = apply_restore_with_target(&ws, &store, &receipt, Some("active"))
+            .await
+            .unwrap();
+        assert_eq!(report.restored_status, "active", "override wins");
+
+        let r = store.get_record("PRD-291B").await.unwrap().unwrap();
+        assert_eq!(r.status, "active", "store reflects override");
+    }
+
+    /// Audit-dogfood SEC-2: target_status override that violates the
+    /// lifecycle FSM is rejected before any mutation. Example: trying
+    /// to restore a `deprecated` artifact to `draft` — that's not a
+    /// legal forward transition. Operator must use the canonical
+    /// lifecycle commands.
+    #[tokio::test]
+    async fn restore_with_target_rejects_fsm_invalid_transition() {
+        let (_tmp, ws, store) = fresh_ws().await;
+        store
+            .create_artifact(&NewArtifact {
+                id: "PRD-291E".into(),
                 kind: "prd".into(),
                 status: "active".into(),
                 title: "T".into(),
@@ -798,21 +872,24 @@ mod tests {
             .await
             .unwrap();
         store
-            .update_artifact("PRD-291B", Some("deprecated"), None)
+            .update_artifact("PRD-291E", Some("deprecated"), None)
             .await
             .unwrap();
-        // Receipt captured active, but operator wants to restore to draft.
-        let mut receipt = build_receipt("PRD-291B", DestructiveOp::Deprecate, "b");
+        let mut receipt = build_receipt("PRD-291E", DestructiveOp::Deprecate, "b");
         receipt.snapshot.status = "active".into();
         write_receipt(&ws, &receipt).await.unwrap();
 
-        let report = apply_restore_with_target(&ws, &store, &receipt, Some("draft"))
+        // `deprecated → draft` is FSM-invalid — must be rejected.
+        let err = apply_restore_with_target(&ws, &store, &receipt, Some("draft"))
             .await
-            .unwrap();
-        assert_eq!(report.restored_status, "draft", "override wins");
-
-        let r = store.get_record("PRD-291B").await.unwrap().unwrap();
-        assert_eq!(r.status, "draft", "store reflects override");
+            .expect_err("FSM should reject deprecated->draft override");
+        assert!(
+            err.to_string().contains("FSM"),
+            "rejection must cite FSM: {err}"
+        );
+        // Store still deprecated — no partial mutation.
+        let r = store.get_record("PRD-291E").await.unwrap().unwrap();
+        assert_eq!(r.status, "deprecated", "no partial mutation on FSM reject");
     }
 
     /// Invalid target_status value is rejected BEFORE mutation.
