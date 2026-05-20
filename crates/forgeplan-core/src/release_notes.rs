@@ -303,14 +303,57 @@ pub fn format_json(notes: &ReleaseNotes) -> serde_json::Value {
     })
 }
 
+/// Issue #290: locate the nearest git repository for changelog generation.
+///
+/// Some workspaces split `.forgeplan/` and `.git/` into different
+/// directories (the marketplace pattern: `.forgeplan/` at parent,
+/// `.git/` in a child submodule-style repo). Without discovery,
+/// `git log` runs from the workspace root and reports
+/// "not a git repository".
+///
+/// Strategy:
+/// 1. If `start/.git` exists → use `start` (standard layout).
+/// 2. Walk **up** from `start` looking for the nearest ancestor with
+///    `.git/` (standard monorepo / subdirectory case).
+/// 3. Walk **down** one level into immediate subdirectories of `start`
+///    looking for `.git/` (split-repo case from issue #290).
+/// 4. Fall back to `start` (preserves legacy behaviour — caller still
+///    gets the original "not a git repository" error if no `.git` is
+///    found anywhere).
+///
+/// Returns the directory to use as `current_dir` for git invocations.
+pub fn find_git_root(start: &Path) -> std::path::PathBuf {
+    // 1 + 2. Walk up.
+    let mut current: Option<&Path> = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".git").exists() {
+            return dir.to_path_buf();
+        }
+        current = dir.parent();
+    }
+    // 3. Walk down one level — covers `.forgeplan/` sibling-of-git layout.
+    if let Ok(entries) = std::fs::read_dir(start) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join(".git").exists() {
+                return path;
+            }
+        }
+    }
+    // 4. Fallback (legacy behaviour).
+    start.to_path_buf()
+}
+
 /// Try `git describe --tags --abbrev=0` to find the latest tag. Returns
 /// `None` if there are no tags or git fails — the caller decides on a
 /// fallback (currently `HEAD~50` so something still gets emitted on a
 /// fresh repo with no tags).
 pub fn latest_tag(repo_root: &Path) -> Option<String> {
+    // Issue #290: resolve to nearest .git before invoking git.
+    let git_root = find_git_root(repo_root);
     let output = Command::new("git")
         .args(["describe", "--tags", "--abbrev=0"])
-        .current_dir(repo_root)
+        .current_dir(&git_root)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -355,9 +398,11 @@ pub fn walk_artifact_changes(repo_root: &Path, since: &str, until: &str) -> Resu
         args.push((*d).to_string());
     }
 
+    // Issue #290: resolve to nearest .git before invoking git.
+    let git_root = find_git_root(repo_root);
     let output = Command::new("git")
         .args(&args)
-        .current_dir(repo_root)
+        .current_dir(&git_root)
         .output()
         .with_context(|| "running `git log` — is git installed?")?;
 
@@ -819,5 +864,75 @@ mod tests {
         assert!(!t.contains("##"));
         assert!(!t.contains("###"));
         assert!(t.contains("Added:"));
+    }
+
+    // ─── Issue #290: find_git_root discovery ──────────────────────────────
+
+    use tempfile::TempDir;
+
+    /// Standard layout: `.git/` directly inside the start directory.
+    #[test]
+    fn find_git_root_standard_layout() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        assert_eq!(find_git_root(tmp.path()), tmp.path().to_path_buf());
+    }
+
+    /// Walk-up: `.git/` in a parent directory, start in a subdir.
+    #[test]
+    fn find_git_root_walks_up_to_parent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        assert_eq!(find_git_root(&sub), tmp.path().to_path_buf());
+    }
+
+    /// Issue #290 reproduction: `.git/` in a CHILD subdirectory, NOT in
+    /// any parent. Start dir is the workspace root containing `.forgeplan/`.
+    /// The discovery must walk DOWN one level to find the repo.
+    #[test]
+    fn find_git_root_walks_down_for_split_repo() {
+        let tmp = TempDir::new().unwrap();
+        // .forgeplan/ at root (no .git here)
+        std::fs::create_dir(tmp.path().join(".forgeplan")).unwrap();
+        // .git/ in child repo subdir
+        let repo = tmp.path().join("forgeplan-marketplace");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+
+        let resolved = find_git_root(tmp.path());
+        assert_eq!(
+            resolved, repo,
+            "issue #290: .git/ in child subdir must be discovered (not fallback to start)"
+        );
+    }
+
+    /// No git anywhere → falls back to start (legacy behaviour, caller
+    /// gets the same "not a git repository" error as before).
+    #[test]
+    fn find_git_root_fallback_when_no_git() {
+        let tmp = TempDir::new().unwrap();
+        let resolved = find_git_root(tmp.path());
+        // tmp.path() may walk up to a real .git/ on dev machines (cargo
+        // workspace root); assert resolved is either start OR an ancestor.
+        assert!(
+            resolved == tmp.path() || tmp.path().starts_with(&resolved),
+            "fallback or walked up to ancestor .git/: {resolved:?}"
+        );
+    }
+
+    /// Prefer walk-up over walk-down: if both ancestor AND child have
+    /// `.git/`, the ancestor (standard) wins because step 2 runs before
+    /// step 3.
+    #[test]
+    fn find_git_root_prefers_ancestor_over_child() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let child = tmp.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::create_dir(child.join(".git")).unwrap();
+        // Start = tmp.path() itself — should return tmp.path() (has .git).
+        assert_eq!(find_git_root(tmp.path()), tmp.path().to_path_buf());
     }
 }
