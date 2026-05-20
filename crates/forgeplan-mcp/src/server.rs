@@ -5378,7 +5378,11 @@ impl ForgeplanServer {
         Ok(json_result(&serde_json::json!({
             "session_id": session.id,
             "project_name": session.project_name,
+            // Issue #292: `status` ambiguity — refers to SESSION state,
+            // not artifact state. Old field kept for backward compat;
+            // new `session_status` is the unambiguous name.
             "status": session.status,
+            "session_status": session.status,
             "current_phase": session.current_phase,
             "protocol": protocol,
             "_next_action": format!(
@@ -5516,13 +5520,26 @@ impl ForgeplanServer {
             "phase": phase.name(),
             "tier": p.tier,
             "total_findings": session.findings.len(),
+            // Issue #292 closure — disambiguate `status`:
+            //   * `status` (legacy, deprecated): SESSION state. Kept for
+            //     backward compat — but readers should switch to the
+            //     two new fields below.
+            //   * `session_status`: explicitly the session's state
+            //     ("active" while recording, "completed" after _complete).
+            //   * `artifact_status`: the status of the artifact JUST
+            //     CREATED by this call. Always "draft" — operators must
+            //     `forgeplan_activate <artifact_id>` before relying on
+            //     it (or `forgeplan_deprecate` if it was a mis-finding).
+            // Operators were confusing the first field for the third.
             "status": session.status,
+            "session_status": session.status,
+            "artifact_status": "draft",
             // PRD-071: single primary action — finalize the session. If
             // more findings exist the agent simply re-calls _finding; the
             // hint reflects the canonical path forward.
             "_next_action": format!(
-                "Finding recorded. Complete session when phases done: \
-                 `forgeplan_discover_complete session_id=\"{}\"`.",
+                "Finding recorded (artifact in draft). Complete session when \
+                 phases done: `forgeplan_discover_complete session_id=\"{}\"`.",
                 session.id
             ),
         })))
@@ -5564,7 +5581,13 @@ impl ForgeplanServer {
         Ok(json_result(&serde_json::json!({
             "session_id": session.id,
             "project_name": session.project_name,
+            // Issue #292: `status` here refers to SESSION lifecycle
+            // (always "completed" at this point — _complete just set it).
+            // Backward-compat preserved; new `session_status` is the
+            // unambiguous name. NB: `artifacts_created` lists the
+            // finding artifacts — those are in `draft` until activated.
             "status": session.status,
+            "session_status": session.status,
             "total_findings": session.findings.len(),
             "phase_counts": phase_counts.iter().map(|(p, c)| (p.name(), c)).collect::<std::collections::HashMap<_, _>>(),
             "tier_counts": tier_counts,
@@ -5572,7 +5595,9 @@ impl ForgeplanServer {
             "completed_at": session.completed_at,
             // PRD-071: single primary action — health check is the
             // canonical post-discovery step.
-            "_next_action": "Validate the discovery output: `forgeplan_health`.",
+            "_next_action": "Validate the discovery output: `forgeplan_health`. \
+                            Finding artifacts created by this session are in `draft` — \
+                            run `forgeplan_activate <id>` on the ones to keep.",
         })))
     }
 
