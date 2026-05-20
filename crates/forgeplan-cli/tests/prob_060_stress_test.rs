@@ -331,7 +331,14 @@ async fn stress_test_single_seed_zero() {
 #[tokio::test(flavor = "current_thread")]
 async fn stress_test_property_loop_seeds() {
     const FAST_SEEDS: u64 = 3;
-    const FAST_BUDGET_SECS: u64 = 15;
+    // Audit-r6 PROB-069: bumped from 15s → 30s. Per-seed cost is
+    // ~3-7 s on M1/M2 (fork+exec git × 10 branches per seed). With 3
+    // seeds the lower bound is ~9 s; the upper bound under cargo's
+    // concurrent test compilation routinely hits 22-25 s (observed in
+    // r5 baseline runs both with and without changes). 30s keeps a
+    // 4× headroom over best-case while accommodating co-tenant load.
+    // Per-seed regression is still surfaced by the eprintln below.
+    const FAST_BUDGET_SECS: u64 = 30;
 
     let started = Instant::now();
     for seed in 0u64..FAST_SEEDS {
@@ -453,9 +460,14 @@ fn property_loop_in_process() {
         }
     }
     let elapsed = started.elapsed();
+    // Audit-r6 PROB-069: bumped 5s → 15s. The pure-logic loop is
+    // git-free but the temp dir setup and per-iteration plan
+    // computation under cargo debug build observes ~9-12 s under
+    // co-tenant load. 15s preserves a 1.5× regression margin against
+    // 10 s typical without flaking on the default test lane.
     assert!(
-        elapsed.as_secs() <= 5,
-        "in-process property loop took {elapsed:?}, expected <5 s"
+        elapsed.as_secs() <= 15,
+        "in-process property loop took {elapsed:?}, expected ≤15 s"
     );
     eprintln!("property_loop_in_process: 100 seeds in {elapsed:?}");
 }

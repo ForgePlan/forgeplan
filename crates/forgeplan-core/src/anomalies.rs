@@ -15,7 +15,7 @@
 //! Anomaly classification logic is pure (no I/O beyond the store reads
 //! `detect_anomalies` performs) — callers compose tier dispatch on top.
 //!
-//! v1 catalog (9 kinds):
+//! v1 catalog (9 kinds) + v2 brownfield extension (5 kinds, audit-r6):
 //! - `stuck_draft` — complete EVID linked but still draft >24h
 //! - `orphan_link` — relation target artifact does not exist
 //! - `mistyped_based_on` — EVID→PRD via `based_on` (should be `informs`)
@@ -25,6 +25,18 @@
 //! - `phase_mismatch` — status=active but phase still early-cycle
 //! - `circular_dependency` — graph cycle in artifact relations
 //! - `duplicate_artifact` — pair flagged by health's duplicate detector
+//!
+//! Brownfield extension (Epic #287, audit-r6 ARCH-H1 closure):
+//! - `hypothesis_duplicate` — two HYPs with Jaccard ≥ 0.6 on title tokens
+//! - `uncovered_use_case` — UC with no demonstrating scenario link
+//! - `unverified_invariant` — INV with no demonstrating scenario link
+//! - `orphan_glossary_term` — GLOS term not referenced in any UC/INV body
+//! - `untriangulated_hypothesis` — HYP with <2 evidence references
+//!
+//! The brownfield kinds are surfaced both via `forgeplan_anomalies` (unified
+//! catalog, severity/tier dispatch, audit log integration) AND via the legacy
+//! `forgeplan_contradictions` / `forgeplan_orphans` tools (backward-compat
+//! flat wire shape). The pure detectors live in `crate::brownfield`.
 
 use crate::artifact::sanitize::sanitize_for_hint;
 use crate::db::store::LanceStore;
@@ -113,6 +125,37 @@ pub enum AnomalyKind {
     /// Two artifacts with semantically equivalent titles + overlapping
     /// bodies. evidence fields: { other_id, similarity_score }
     DuplicateArtifact,
+
+    // ─── Audit-r6 ARCH-H1: brownfield extension (Epic #287) ────────────
+    /// Two hypothesis artifacts with title-token Jaccard ≥ 0.6 —
+    /// almost-certainly say the same thing.
+    /// evidence fields: { other_id, jaccard_score }
+    HypothesisDuplicate,
+
+    /// A `UseCase` artifact has no linked `Scenario` (via positive
+    /// coverage relations: informs/based_on/refines/demonstrates/covers).
+    /// Indicates the UC has no demonstrating example — risky to treat as
+    /// load-bearing.
+    /// evidence fields: { title }
+    UncoveredUseCase,
+
+    /// An `Invariant` artifact has no linked `Scenario` — same as
+    /// uncovered_use_case but for INV.
+    /// evidence fields: { title }
+    UnverifiedInvariant,
+
+    /// A `Glossary` term whose canonical-form text doesn't appear in any
+    /// UC or INV body. The term is defined but unused; either reference
+    /// it or drop it.
+    /// evidence fields: { term }
+    OrphanGlossaryTerm,
+
+    /// A `Hypothesis` artifact with fewer than 2 distinct evidence
+    /// references (counted from `EVID-` mentions in its body). Single-
+    /// source claims should be triangulated before being treated as
+    /// load-bearing.
+    /// evidence fields: { evidence_count }
+    UntriangulatedHypothesis,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -687,6 +730,24 @@ pub async fn detect_anomalies(
             }),
         });
     }
+
+    // ---------------------------------------------------------------
+    // Audit-r6 ARCH-H1: brownfield extension (5 kinds)
+    //
+    // These bridge into the same `anomalies` accumulator so they pick
+    // up severity/tier dispatch, journal-backed `since` filter, and the
+    // GC pass below. The detectors themselves live in `crate::brownfield`
+    // (pure functions, no I/O — the records snapshot is already loaded).
+    // ---------------------------------------------------------------
+    anomalies.extend(crate::brownfield::contradictions_as_anomalies(
+        &all_records,
+        &now_str,
+    ));
+    anomalies.extend(crate::brownfield::orphans_as_anomalies(
+        &all_records,
+        &all_relations,
+        &now_str,
+    ));
 
     // ---------------------------------------------------------------
     // Journal post-pass: rewrite `observed_at` per-anomaly using the

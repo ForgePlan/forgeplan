@@ -890,6 +890,169 @@ const _SCENARIO_SECTIONS: &[&str] = REQUIRED_SECTIONS_SCENARIO;
 const _HYPOTHESIS_SECTIONS: &[&str] = REQUIRED_SECTIONS_HYPOTHESIS;
 
 // ─────────────────────────────────────────────────────────────────────
+// Audit-r6 ARCH-H1 — bridge to canonical AnomalyKind catalog
+// ─────────────────────────────────────────────────────────────────────
+
+/// Convert a [`ContradictionsReport`] into the canonical
+/// [`crate::anomalies::Anomaly`] shape so the brownfield contradictions
+/// surface through `forgeplan_anomalies` alongside pipeline anomalies.
+///
+/// Audit-r6 ARCH-H1: the legacy `forgeplan_contradictions` MCP tool
+/// continues to emit the flat `ContradictionsReport` for backward-compat;
+/// this bridge feeds the same findings into the unified catalog so
+/// `/forge-cycle` self-healing has a single resolver.
+pub fn contradictions_as_anomalies(
+    records: &[ArtifactRecord],
+    observed_at: &str,
+) -> Vec<crate::anomalies::Anomaly> {
+    use crate::anomalies::{Anomaly, AnomalyKind, Severity, SuggestedResolution, Tier};
+
+    let report = contradictions_v1_heuristic(records);
+    let mut out: Vec<Anomaly> = Vec::with_capacity(report.contradictions.len());
+    for c in report.contradictions {
+        // Map the legacy severity string back to the typed enum.
+        let severity = match c.severity.as_str() {
+            "high" => Severity::High,
+            "medium" => Severity::Medium,
+            _ => Severity::Low,
+        };
+        out.push(Anomaly {
+            id: format!(
+                "anom-hyp-dup-{}-{}",
+                c.left_artifact.to_lowercase(),
+                c.right_artifact.to_lowercase()
+            ),
+            kind: AnomalyKind::HypothesisDuplicate,
+            severity,
+            // Title overlap requires operator judgement to either merge
+            // or sharpen wording — ADI loop, not auto-resolve.
+            tier: Tier::Adi,
+            affected: vec![c.left_artifact.clone(), c.right_artifact.clone()],
+            observed_at: observed_at.to_string(),
+            description: format!(
+                "Hypothesis duplicate (Jaccard ≥ 0.6): {} ↔ {}",
+                c.left_artifact, c.right_artifact
+            ),
+            evidence: serde_json::json!({
+                "other_id": c.right_artifact,
+                "kind_of_contradiction": c.kind_of_contradiction,
+            }),
+            suggested_resolution: Some(SuggestedResolution {
+                tier: Tier::Adi,
+                action: None,
+                target: Some(c.left_artifact.clone()),
+                rationale: c.suggested_resolution,
+            }),
+        });
+    }
+    out
+}
+
+/// Convert an [`OrphansReport`] into canonical
+/// [`crate::anomalies::Anomaly`] records (4 buckets → 4 kinds).
+/// See [`contradictions_as_anomalies`] for the bridging rationale.
+pub fn orphans_as_anomalies(
+    records: &[ArtifactRecord],
+    relations: &[(String, String, String)],
+    observed_at: &str,
+) -> Vec<crate::anomalies::Anomaly> {
+    use crate::anomalies::{Anomaly, AnomalyKind, Severity, SuggestedResolution, Tier};
+
+    let report = orphans_report(records, relations);
+    let mut out: Vec<Anomaly> = Vec::new();
+
+    for uc_id in &report.uncovered_use_cases {
+        out.push(Anomaly {
+            id: format!("anom-uc-uncovered-{}", uc_id.to_lowercase()),
+            kind: AnomalyKind::UncoveredUseCase,
+            severity: Severity::Medium,
+            // Link target needs operator choice (which SCEN demonstrates this UC) — ADI.
+            tier: Tier::Adi,
+            affected: vec![uc_id.clone()],
+            observed_at: observed_at.to_string(),
+            description: format!("UseCase {} has no demonstrating scenario link", uc_id),
+            evidence: serde_json::json!({ "id": uc_id }),
+            suggested_resolution: Some(SuggestedResolution {
+                tier: Tier::Adi,
+                action: Some("forgeplan_link".to_string()),
+                target: Some(uc_id.clone()),
+                rationale: "Add a SCEN- artifact and link it via `demonstrates` (or pick an existing SCEN).".to_string(),
+            }),
+        });
+    }
+    for inv_id in &report.unverified_invariants {
+        out.push(Anomaly {
+            id: format!("anom-inv-unverified-{}", inv_id.to_lowercase()),
+            kind: AnomalyKind::UnverifiedInvariant,
+            severity: Severity::Medium,
+            tier: Tier::Adi,
+            affected: vec![inv_id.clone()],
+            observed_at: observed_at.to_string(),
+            description: format!("Invariant {} has no demonstrating scenario link", inv_id),
+            evidence: serde_json::json!({ "id": inv_id }),
+            suggested_resolution: Some(SuggestedResolution {
+                tier: Tier::Adi,
+                action: Some("forgeplan_link".to_string()),
+                target: Some(inv_id.clone()),
+                rationale:
+                    "Add a SCEN- artifact that demonstrates the invariant; link via `demonstrates`."
+                        .to_string(),
+            }),
+        });
+    }
+    for term in &report.orphan_terms {
+        // Deterministic id from term text (lowercase + non-alnum → '-').
+        let slug = term
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect::<String>();
+        out.push(Anomaly {
+            id: format!("anom-glos-orphan-{}", slug),
+            kind: AnomalyKind::OrphanGlossaryTerm,
+            severity: Severity::Low,
+            // Either reference the term in UC/INV or drop the glossary
+            // entry — operator chooses which UC/INV would mention it.
+            tier: Tier::Adi,
+            affected: vec![],
+            observed_at: observed_at.to_string(),
+            description: format!("Glossary term '{term}' is not referenced in any UC/INV body"),
+            evidence: serde_json::json!({ "term": term }),
+            suggested_resolution: Some(SuggestedResolution {
+                tier: Tier::Adi,
+                action: None,
+                target: None,
+                rationale: format!(
+                    "Reference '{term}' in at least one UC or INV body, or drop the glossary entry."
+                ),
+            }),
+        });
+    }
+    for hyp_id in &report.untriangulated_hypotheses {
+        out.push(Anomaly {
+            id: format!("anom-hyp-untriangulated-{}", hyp_id.to_lowercase()),
+            kind: AnomalyKind::UntriangulatedHypothesis,
+            severity: Severity::Medium,
+            tier: Tier::Adi,
+            affected: vec![hyp_id.clone()],
+            observed_at: observed_at.to_string(),
+            description: format!(
+                "Hypothesis {} has fewer than 2 distinct evidence references",
+                hyp_id
+            ),
+            evidence: serde_json::json!({ "id": hyp_id }),
+            suggested_resolution: Some(SuggestedResolution {
+                tier: Tier::Adi,
+                action: Some("forgeplan_link".to_string()),
+                target: Some(hyp_id.clone()),
+                rationale: "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.".to_string(),
+            }),
+        });
+    }
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Tests (pure-logic; MCP wire-shape smoke tests live in integration_e2e)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1385,5 +1548,77 @@ mod tests {
             1,
             "30-day cutoff must be inclusive (date == today-30d is kept)"
         );
+    }
+
+    // ─── Audit-r6 ARCH-H1: AnomalyKind bridge ──────────────────────────
+
+    /// Bridge maps a [`Contradiction`] into a [`crate::anomalies::Anomaly`]
+    /// with `kind = HypothesisDuplicate`, severity preserved from the
+    /// legacy string field, deterministic id derived from both artifact
+    /// ids, and ADI tier (operator chooses merge vs sharpen).
+    #[test]
+    fn contradictions_bridge_to_canonical_anomaly_kind() {
+        use crate::anomalies::{AnomalyKind, Severity, Tier};
+
+        let records = vec![
+            hyp_record("HYP-001", "users authenticate via tokens", "inferred"),
+            hyp_record("HYP-002", "users authenticate via tokens", "inferred"),
+        ];
+        let anomalies = contradictions_as_anomalies(&records, "2026-05-20T12:00:00Z");
+        assert_eq!(anomalies.len(), 1);
+        let a = &anomalies[0];
+        assert_eq!(a.kind, AnomalyKind::HypothesisDuplicate);
+        // High Jaccard (same title) → severity=high.
+        assert_eq!(a.severity, Severity::High);
+        assert_eq!(a.tier, Tier::Adi);
+        // Affected vec carries both halves of the pair.
+        assert!(a.affected.contains(&"HYP-001".to_string()));
+        assert!(a.affected.contains(&"HYP-002".to_string()));
+        // Deterministic id — lowercase + both halves.
+        assert_eq!(a.id, "anom-hyp-dup-hyp-001-hyp-002");
+    }
+
+    /// Bridge maps each of the 4 orphans buckets to its canonical
+    /// AnomalyKind variant, preserving affected ids.
+    #[test]
+    fn orphans_bridge_to_canonical_anomaly_kinds() {
+        use crate::anomalies::AnomalyKind;
+
+        // Workspace: UC-001 with no SCEN link → uncovered_use_case
+        // INV-001 with no SCEN link → unverified_invariant
+        // GLOS-001 with term "Foo" not in any UC/INV body → orphan_glossary_term
+        // HYP-001 with one EVID ref only → untriangulated_hypothesis
+        let recs = vec![
+            simple_record(
+                "UC-001",
+                "use_case",
+                "Capability",
+                "---\nid: UC-001\n---\n\n## Problem\n\n## Actor\n",
+            ),
+            simple_record(
+                "INV-001",
+                "invariant",
+                "Rule",
+                "---\nid: INV-001\n---\n\n## Invariant\n",
+            ),
+            simple_record(
+                "GLOS-001",
+                "glossary",
+                "Foo",
+                "---\nid: GLOS-001\n---\n\n## Canonical Term\nFoo\n",
+            ),
+            simple_record(
+                "HYP-001",
+                "hypothesis",
+                "Claim",
+                "---\nid: HYP-001\n---\n\n## Evidence For\nEVID-001\n",
+            ),
+        ];
+        let anomalies = orphans_as_anomalies(&recs, &[], "2026-05-20T12:00:00Z");
+        let kinds: Vec<AnomalyKind> = anomalies.iter().map(|a| a.kind).collect();
+        assert!(kinds.contains(&AnomalyKind::UncoveredUseCase));
+        assert!(kinds.contains(&AnomalyKind::UnverifiedInvariant));
+        assert!(kinds.contains(&AnomalyKind::OrphanGlossaryTerm));
+        assert!(kinds.contains(&AnomalyKind::UntriangulatedHypothesis));
     }
 }

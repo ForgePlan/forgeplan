@@ -148,5 +148,11 @@ fn kind_label(k: AnomalyKind) -> &'static str {
         AnomalyKind::PhaseMismatch => "phase_mismatch",
         AnomalyKind::CircularDependency => "circular_dependency",
         AnomalyKind::DuplicateArtifact => "duplicate_artifact",
+        // Audit-r6 ARCH-H1: brownfield catalog (Epic #287).
+        AnomalyKind::HypothesisDuplicate => "hypothesis_duplicate",
+        AnomalyKind::UncoveredUseCase => "uncovered_use_case",
+        AnomalyKind::UnverifiedInvariant => "unverified_invariant",
+        AnomalyKind::OrphanGlossaryTerm => "orphan_glossary_term",
+        AnomalyKind::UntriangulatedHypothesis => "untriangulated_hypothesis",
     }
 }
