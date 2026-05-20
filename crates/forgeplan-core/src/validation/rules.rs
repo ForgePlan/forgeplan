@@ -1303,22 +1303,21 @@ pub fn tier_for_kind(kind: &ArtifactKind) -> &'static str {
     }
 }
 
-/// Extract the artifact's tier with kind-default fallback.
+/// Extract the artifact's tier.
 ///
-/// Reads `tier:` from frontmatter. Accepts `"factum"` / `"intent"`
-/// (case-insensitive). Falls back to [`tier_for_kind`] if missing or
-/// unrecognised — keeps validation deterministic without forcing
-/// every legacy/edge artifact to carry the field.
+/// Audit-r4 SEC-C1 closure: tier is determined exclusively by
+/// [`ArtifactKind`]. The frontmatter `tier:` field is informational only
+/// (template default for human readers) — it CANNOT override enforcement.
+/// Earlier revisions trusted the frontmatter, which let an operator flip
+/// a Hypothesis to `tier: factum` and silently skip the
+/// falsifiability-plan gate, or flip an Invariant to `tier: intent`
+/// and skip the `## Source` citation gate.
+///
+/// `fm` is kept in the signature for forward-compatibility (e.g. if a
+/// future tier dispatch needs additional metadata) but is unused today.
 fn extract_tier(fm: &Frontmatter, kind: &ArtifactKind) -> &'static str {
-    let raw = fm
-        .get("tier")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_lowercase());
-    match raw.as_deref() {
-        Some("factum") => "factum",
-        Some("intent") => "intent",
-        _ => tier_for_kind(kind),
-    }
+    let _ = fm; // intentionally ignored — tier is kind-derived (SEC-C1)
+    tier_for_kind(kind)
 }
 
 /// Tier-level rules for a brownfield artifact. Returned set depends on
@@ -2535,6 +2534,63 @@ mod tests_brownfield {
         assert!(
             must_finding(&result, "intent-must-have-verification-plan").is_some(),
             "Hypothesis without tier: should still default to intent and require verification plan"
+        );
+    }
+
+    // ─── 9b. SEC-C1 (audit-r4) — frontmatter tier override is ignored ──────
+
+    #[test]
+    fn sec_c1_hypothesis_with_factum_override_still_requires_verification_plan() {
+        // Audit-r4 SEC-C1: an operator MUST NOT be able to disable the
+        // intent-tier falsifiability gate by writing `tier: factum` in a
+        // Hypothesis frontmatter. The gate is kind-derived.
+        let fm = fm_with_kind_and_tier("hyp-secc1", "hypothesis", Some("factum"));
+
+        let body = "\
+## Hypothesis\nRefunds over $1000 require manager approval.\n\n\
+## Lifecycle State\n**Current**: inferred\n\n\
+## Source\nCode walk in commands/refund.rs.\n";
+        // No `## How To Verify` — should still trigger intent rule
+        // because Hypothesis is intent regardless of frontmatter override.
+
+        let result = validate(
+            "hyp-secc1",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            must_finding(&result, "intent-must-have-verification-plan").is_some(),
+            "tier: factum in frontmatter must NOT bypass intent-tier enforcement on Hypothesis"
+        );
+    }
+
+    #[test]
+    fn sec_c1_invariant_with_intent_override_still_requires_source() {
+        // Audit-r4 SEC-C1: same direction the other way — an operator
+        // MUST NOT be able to flip an Invariant to intent and skip the
+        // mandatory Source citation.
+        let fm = fm_with_kind_and_tier("inv-secc1", "invariant", Some("intent"));
+
+        let body = "\
+## Invariant\nUser email must be unique per organisation.\n\n\
+## Scope\nOrganisations table.\n\n\
+## Enforcement\nDatabase unique constraint.\n\n\
+## Violation Detection\nMigration test.\n";
+        // No `## Source` — should still trigger factum rule
+        // because Invariant is factum regardless of frontmatter override.
+
+        let result = validate(
+            "inv-secc1",
+            body,
+            &fm,
+            &ArtifactKind::Invariant,
+            &Mode::Tactical,
+        );
+        assert!(
+            must_finding(&result, "factum-must-have-source").is_some(),
+            "tier: intent in frontmatter must NOT bypass factum-tier enforcement on Invariant"
         );
     }
 

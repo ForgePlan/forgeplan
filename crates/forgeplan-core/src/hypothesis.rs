@@ -796,4 +796,43 @@ something.\n";
         );
         assert!(body.contains("- 2026-05-20: strong-inferred → verified"));
     }
+
+    /// Audit-r4 TEST-G6 closure: full Cartesian product of the 5-state
+    /// transition matrix (25 cells) pinned against a reference table.
+    /// Without this meta-test, adding a 6th state could pass the existing
+    /// per-cell tests while leaving new transitions unverified.
+    #[test]
+    fn transition_matrix_full_cartesian() {
+        use HypothesisState::*;
+        let states = [Parked, Inferred, StrongInferred, Verified, Refuted];
+
+        // Reference table: true iff transition_allowed(from, to) MUST be true.
+        // Encoded as a 5x5 grid; rows = from, cols = to.
+        // Order: Parked, Inferred, StrongInferred, Verified, Refuted.
+        // Rules (from module doc):
+        //   - same → same always allowed
+        //   - any → parked allowed
+        //   - any → refuted allowed
+        //   - forward chain: Parked → Inferred → StrongInferred → Verified
+        //   - everything else forbidden
+        let expected: [[bool; 5]; 5] = [
+            //  P    I    SI    V    R
+            [true, true, false, false, true],  // from Parked
+            [true, true, true, false, true],   // from Inferred
+            [true, false, true, true, true],   // from StrongInferred
+            [true, false, false, true, true],  // from Verified (terminal forward)
+            [true, false, false, false, true], // from Refuted (terminal forward)
+        ];
+
+        for (i, &from) in states.iter().enumerate() {
+            for (j, &to) in states.iter().enumerate() {
+                let actual = transition_allowed(from, to);
+                assert_eq!(
+                    actual, expected[i][j],
+                    "transition_allowed({:?}, {:?}) returned {} — reference says {}",
+                    from, to, actual, expected[i][j]
+                );
+            }
+        }
+    }
 }

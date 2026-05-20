@@ -1207,9 +1207,10 @@ struct InterviewPacketDraftParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InterviewPacketIngestParams {
     /// Filesystem path (relative to the workspace root) of the completed
-    /// interview transcript. Validated by the plugin; stub merely echoes.
+    /// interview transcript. Audit-r4 SEC-L1: stub pre-validates that the
+    /// path is workspace-relative and contains no `..` segments before
+    /// handing off to the marketplace plugin. The plugin owns the read.
     #[serde(default)]
-    #[allow(dead_code)]
     transcript_path: Option<String>,
 }
 
@@ -3513,11 +3514,13 @@ impl ForgeplanServer {
             &today,
         );
 
+        // Audit-r4 CODE-L1: PRD-071 hint protocol — emit `Done.` or
+        // `Next:` prefix marker so text-parser agents can anchor.
         let next_action = if report.total == 0 {
-            "No hypothesis artifacts in workspace. Done.".to_string()
+            "Done. — no hypothesis artifacts in workspace.".to_string()
         } else {
             format!(
-                "{} hypothesis(es) tracked. Promote next: `forgeplan_hypothesis_promote`.",
+                "Next: promote a hypothesis — `forgeplan_hypothesis_promote` ({} tracked).",
                 report.total
             )
         };
@@ -3551,15 +3554,21 @@ impl ForgeplanServer {
             Err(e) => return Ok(safe_err_result("workspace lock", e)),
         };
 
+        // Audit-r4 SEC-H1: sanitize_for_hint on every user-controlled string
+        // before splicing it into the response body / next_action. Prior
+        // revision left `p.domain_model_id` and `other.kind` raw — that's a
+        // prompt-injection vector via the hint protocol channel (CWE-117).
+        let safe_id = sanitize_for_hint(&p.domain_model_id);
         let dm_record = match store.get_record(&p.domain_model_id).await {
             Ok(Some(r)) if r.kind.eq_ignore_ascii_case("domain_model") => r,
             Ok(Some(other)) => {
+                let safe_kind = sanitize_for_hint(&other.kind);
                 return Ok(err_hinted(
                     &format!(
                         "{} is kind={} — coverage_business only operates on Domain Model artifacts",
-                        p.domain_model_id, other.kind
+                        safe_id, safe_kind
                     ),
-                    "Pass a DM- artifact id (kind=domain_model).",
+                    "Fix: pass a DM- artifact id (kind=domain_model).",
                 ));
             }
             Ok(None) => return Ok(artifact_not_found(&p.domain_model_id)),
@@ -3580,8 +3589,8 @@ impl ForgeplanServer {
         );
 
         let next_action = format!(
-            "extract_score = {:.2}. Improve coverage by adding artifacts referenced in {}'s Composition section.",
-            report.extract_score, p.domain_model_id
+            "Next: extract_score = {:.2}. Improve coverage by adding artifacts referenced in {}'s Composition section.",
+            report.extract_score, safe_id
         );
         hinted_result(&report, next_action)
     }
@@ -3619,11 +3628,12 @@ impl ForgeplanServer {
         };
         let report = forgeplan_core::brownfield::contradictions_v1_heuristic(&all_records);
 
+        // Audit-r4 CODE-L1: PRD-071 hint protocol marker.
         let next_action = if report.contradictions.is_empty() {
-            "No contradictions detected. Done.".to_string()
+            "Done. — no contradictions detected.".to_string()
         } else {
             format!(
-                "{} contradiction(s) detected. Review pairs: `forgeplan_get <left>`, `forgeplan_get <right>`.",
+                "Next: review {} contradiction(s) — `forgeplan_get <left>` then `forgeplan_get <right>`.",
                 report.contradictions.len()
             )
         };
@@ -3671,11 +3681,12 @@ impl ForgeplanServer {
             + report.unverified_invariants.len()
             + report.orphan_terms.len()
             + report.untriangulated_hypotheses.len();
+        // Audit-r4 CODE-L1: PRD-071 hint protocol marker.
         let next_action = if total == 0 {
-            "No brownfield orphans. Done.".to_string()
+            "Done. — no brownfield orphans.".to_string()
         } else {
             format!(
-                "{total} orphan(s) across 4 buckets. Fix by adding linking scenarios / referencing terms / triangulating hypotheses."
+                "Next: link {total} orphan(s) across 4 buckets — add scenarios, reference terms, or triangulate hypotheses."
             )
         };
         hinted_result(&report, next_action)
@@ -8242,6 +8253,55 @@ impl ForgeplanServer {
             ));
         }
 
+        // 5b. Audit-r4 CODE-L2: no-op transition (`X → X`) short-circuit.
+        // `transition_allowed` returns `true` for same→same to satisfy
+        // idempotent re-application contract, but writing a duplicate
+        // audit-line is misleading. Return "unchanged" envelope without
+        // mutating the body.
+        if old_state == new_state {
+            let safe_id = sanitize_for_hint(&canonical_id);
+            return hinted_result(
+                &serde_json::json!({
+                    "id": canonical_id,
+                    "old_state": old_state.as_str(),
+                    "new_state": new_state.as_str(),
+                    "unchanged": true,
+                    "cascade": Vec::<String>::new(),
+                }),
+                format!("Done. — `{safe_id}` already in `{}`.", new_state.as_str()),
+            );
+        }
+
+        // 5c. Audit-r4 SEC-H2: reject control chars in `rationale` and
+        // validate `evidence_refs` shape BEFORE writing into the
+        // markdown audit line. Without this gate, multi-line content
+        // forges fake `## Lifecycle State` entries that surface via
+        // `forgeplan_hypothesis_status` (log-injection CWE-117).
+        if p.rationale.contains('\n') || p.rationale.contains('\r') || p.rationale.contains('\t') {
+            return Ok(err_hinted(
+                "rationale contains control characters (\\n / \\r / \\t)",
+                "Fix: provide a single-line rationale without embedded newlines.",
+            ));
+        }
+        for r in &p.evidence_refs {
+            // Permit ID-like tokens only: leading alpha, then [A-Za-z0-9_-].
+            // This admits `EVID-001`, `evid-test-thing`, `PRD-074`; rejects
+            // anything containing whitespace, punctuation, or unicode that
+            // could break out of the audit-line format.
+            if r.is_empty()
+                || !r.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                || !r
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                let safe_ref = sanitize_for_hint(r);
+                return Ok(err_hinted(
+                    &format!("evidence_ref `{safe_ref}` is not a valid artifact id"),
+                    "Fix: pass artifact ids only (e.g. `EVID-001`, `evid-bench-2026`).",
+                ));
+            }
+        }
+
         // 6. Build the new body. Lifecycle line uses today's date in UTC
         //    so multi-agent promotes from different timezones still sort.
         let today = Utc::now().format("%Y-%m-%d").to_string();
@@ -8288,8 +8348,10 @@ impl ForgeplanServer {
 
         // 9. Response. Sanitize the hypothesis id splice into `_next_action`
         //    via `sanitize_for_hint` (same C-2 defence used by `forgeplan_update`).
+        // Audit-r4 CODE-L1: prefix with `Next:` per PRD-071 hint contract.
         let safe_id = sanitize_for_hint(&canonical_id);
-        let next_action = format!("Re-score downstream artifacts: `forgeplan_score {safe_id}`.");
+        let next_action =
+            format!("Next: re-score downstream artifacts — `forgeplan_score {safe_id}`.");
         hinted_result(
             &serde_json::json!({
                 "id": canonical_id,
@@ -8344,7 +8406,7 @@ impl ForgeplanServer {
                 "message": "Install forgeplan-brownfield-pack plugin to enable; \
                             or invoke via shell pipeline temporarily.",
             }),
-            "Install plugin: see marketplace issue #79 (`forgeplan-brownfield-pack`).",
+            "Fix: install plugin — see marketplace issue #79 (`forgeplan-brownfield-pack`).",
         )
     }
 
@@ -8363,7 +8425,7 @@ impl ForgeplanServer {
     )]
     async fn forgeplan_interview_packet_ingest(
         &self,
-        Parameters(_p): Parameters<InterviewPacketIngestParams>,
+        Parameters(p): Parameters<InterviewPacketIngestParams>,
     ) -> Result<CallToolResult, McpError> {
         let ws = match self.require_workspace().await {
             Ok(ws) => ws,
@@ -8374,6 +8436,25 @@ impl ForgeplanServer {
             Err(e) => return Ok(safe_err_result("workspace lock", e)),
         };
 
+        // Audit-r4 SEC-L1: defence-in-depth path-traversal pre-validation.
+        // The stub will hand off to marketplace plugin #79; codify the
+        // contract NOW so the plugin author inherits a sanitised path.
+        // Forbids absolute paths and any `..` parent-dir segments.
+        if let Some(ref raw) = p.transcript_path {
+            let path = std::path::Path::new(raw);
+            if path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                let safe = sanitize_for_hint(raw);
+                return Ok(err_hinted(
+                    &format!("transcript_path `{safe}` is not workspace-relative"),
+                    "Fix: pass a relative path without `..` segments (e.g. `interviews/2026-05-20.md`).",
+                ));
+            }
+        }
+
         hinted_result(
             &serde_json::json!({
                 "status": "not_implemented",
@@ -8381,7 +8462,7 @@ impl ForgeplanServer {
                 "message": "Install forgeplan-brownfield-pack plugin to enable; \
                             or invoke via shell pipeline temporarily.",
             }),
-            "Install plugin: see marketplace issue #79 (`forgeplan-brownfield-pack`).",
+            "Fix: install plugin — see marketplace issue #79 (`forgeplan-brownfield-pack`).",
         )
     }
 }

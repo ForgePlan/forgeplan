@@ -529,32 +529,29 @@ fn extract_brownfield_id_token(line: &str) -> Option<String> {
     None
 }
 
+/// Audit-r4 ARCH-H3: thin shim over the canonical
+/// [`crate::artifact::types::ArtifactKind::from_display_id`] that returns the
+/// graph-internal string token (matching the historical strings used by
+/// the colour palette and `is_brownfield_kind`). Single source of truth
+/// for prefix → kind mapping lives on `ArtifactKind` now, so future kinds
+/// won't drift between this helper and `from_slug_prefix`.
 fn kind_from_id(id: &str) -> &'static str {
-    let upper = id.to_uppercase();
-    if upper.starts_with("EPIC") {
-        "epic"
-    } else if upper.starts_with("PRD") {
-        "prd"
-    } else if upper.starts_with("RFC") {
-        "rfc"
-    } else if upper.starts_with("ADR") {
-        "adr"
-    } else if upper.starts_with("SPEC") {
-        "spec"
-    } else if upper.starts_with("UC-") {
-        "use_case"
-    } else if upper.starts_with("GLOS-") {
-        "glossary"
-    } else if upper.starts_with("INV-") {
-        "invariant"
-    } else if upper.starts_with("SCEN-") {
-        "scenario"
-    } else if upper.starts_with("HYP-") {
-        "hypothesis"
-    } else if upper.starts_with("DM-") {
-        "domain_model"
-    } else {
-        "other"
+    match crate::artifact::types::ArtifactKind::from_display_id(id) {
+        Some(crate::artifact::types::ArtifactKind::Epic) => "epic",
+        Some(crate::artifact::types::ArtifactKind::Prd) => "prd",
+        Some(crate::artifact::types::ArtifactKind::Rfc) => "rfc",
+        Some(crate::artifact::types::ArtifactKind::Adr) => "adr",
+        Some(crate::artifact::types::ArtifactKind::Spec) => "spec",
+        Some(crate::artifact::types::ArtifactKind::UseCase) => "use_case",
+        Some(crate::artifact::types::ArtifactKind::Glossary) => "glossary",
+        Some(crate::artifact::types::ArtifactKind::Invariant) => "invariant",
+        Some(crate::artifact::types::ArtifactKind::Scenario) => "scenario",
+        Some(crate::artifact::types::ArtifactKind::Hypothesis) => "hypothesis",
+        Some(crate::artifact::types::ArtifactKind::DomainModel) => "domain_model",
+        // Other kinds (Note, ProblemCard, SolutionPortfolio, EvidencePack,
+        // RefreshReport, Memory) don't have dedicated graph styling — collapse
+        // to "other" so the existing palette logic still applies.
+        _ => "other",
     }
 }
 

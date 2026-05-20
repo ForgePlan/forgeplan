@@ -177,6 +177,32 @@ impl ArtifactKind {
         matches!(self, Self::Memory)
     }
 
+    /// Map a display id (`PRD-074`, `UC-001`, `epic-discover`) back to
+    /// [`ArtifactKind`]. Audit-r4 ARCH-H3: single source of truth so
+    /// graph rendering, hint extraction, and id-resolution share one
+    /// prefix table. Delegates to [`Self::from_slug_prefix`] after
+    /// extracting the leading alphabetic run.
+    ///
+    /// Accepts both display-id form (`PRD-074`, case-insensitive) and
+    /// slug-id form (`prd-auth-system`). Returns `None` when the
+    /// leading alpha run isn't a known prefix.
+    pub fn from_display_id(id: &str) -> Option<Self> {
+        // Extract leading [A-Za-z]+ run, normalise to lowercase, lookup
+        // via the canonical slug table. Stops at the first non-alpha
+        // character (typically `-` for display ids, or end-of-string
+        // for legacy compact forms like `EPIC001`).
+        let prefix_end = id
+            .char_indices()
+            .find(|(_, c)| !c.is_ascii_alphabetic())
+            .map(|(i, _)| i)
+            .unwrap_or(id.len());
+        if prefix_end == 0 {
+            return None;
+        }
+        let prefix_lower = id[..prefix_end].to_ascii_lowercase();
+        Self::from_slug_prefix(&prefix_lower)
+    }
+
     /// Map a slug prefix (lowercase, no trailing dash) back to [`ArtifactKind`].
     ///
     /// PROB-060 / SPEC-005 Phase 1.5: `resolve_id` accepts slug-form input
@@ -853,6 +879,52 @@ mod tests {
                 "VALID_KIND_PREFIXES entry {prefix:?} has no from_slug_prefix mapping"
             );
         }
+    }
+
+    // Audit-r4 ARCH-H3: every prefix must also round-trip via
+    // from_display_id (display-id form), so graph rendering and other
+    // call sites share one prefix table with from_slug_prefix.
+    #[test]
+    fn from_display_id_covers_every_valid_kind_prefix() {
+        for prefix in VALID_KIND_PREFIXES {
+            // Synthesise a representative display id by upper-casing the
+            // slug prefix and appending a digit suffix. This is the canonical
+            // shape emitted by the CI bot on merge to dev.
+            let display = format!("{}-001", prefix.to_uppercase());
+            assert!(
+                ArtifactKind::from_display_id(&display).is_some(),
+                "VALID_KIND_PREFIXES entry {prefix:?} has no from_display_id mapping"
+            );
+            // Also accept the slug-id shape (lowercase prefix).
+            let slug = format!("{prefix}-some-title");
+            assert!(
+                ArtifactKind::from_display_id(&slug).is_some(),
+                "VALID_KIND_PREFIXES entry {prefix:?} has no slug-form from_display_id mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn from_display_id_rejects_unknown_prefix() {
+        assert!(ArtifactKind::from_display_id("XYZ-001").is_none());
+        assert!(ArtifactKind::from_display_id("").is_none());
+        assert!(ArtifactKind::from_display_id("123-001").is_none());
+    }
+
+    #[test]
+    fn from_display_id_accepts_brownfield_kinds() {
+        assert_eq!(
+            ArtifactKind::from_display_id("UC-001"),
+            Some(ArtifactKind::UseCase)
+        );
+        assert_eq!(
+            ArtifactKind::from_display_id("dm-billing"),
+            Some(ArtifactKind::DomainModel)
+        );
+        assert_eq!(
+            ArtifactKind::from_display_id("HYP-tokens-expire-24h"),
+            Some(ArtifactKind::Hypothesis)
+        );
     }
 
     // Phase 1.6 — slug roundtrip property test (audit code-analyzer L3).

@@ -481,9 +481,23 @@ fn extract_section(body: &str, heading: &str) -> String {
     lines[start..end].join("\n")
 }
 
+/// Audit-r4 CODE-L3: relation-kind whitelist for scenario coverage.
+///
+/// Only positive-coverage relations count toward "this use-case has a
+/// demonstrating scenario". Relations expressing disagreement
+/// (`supersedes`, `contradicts`) MUST NOT count — otherwise a refuted
+/// scenario inflates the coverage metric.
+fn relation_counts_for_coverage(rel: &str) -> bool {
+    matches!(
+        rel,
+        "informs" | "based_on" | "refines" | "demonstrates" | "covers"
+    )
+}
+
 /// Compute scenario coverage from the relation list. A use-case is
-/// "covered" if at least one SCEN- relates to it (either direction). The
-/// average is `sum(scenarios per uc) / use_case_count`.
+/// "covered" if at least one SCEN- relates to it via a positive
+/// coverage relation (either direction). The average is
+/// `sum(scenarios per uc) / use_case_count`.
 fn scenario_coverage(
     use_case_ids: &HashSet<String>,
     scenario_ids: &HashSet<String>,
@@ -493,7 +507,10 @@ fn scenario_coverage(
         return ScenarioCoverage::default();
     }
     let mut per_uc: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for (src, tgt, _rel) in relations {
+    for (src, tgt, rel) in relations {
+        if !relation_counts_for_coverage(rel) {
+            continue;
+        }
         // Edge UC ↔ SCEN in either direction counts.
         if use_case_ids.contains(src) && scenario_ids.contains(tgt) {
             per_uc.entry(src.as_str()).or_default().insert(tgt.as_str());
@@ -747,7 +764,12 @@ fn uc_has_scenario(
     scenarios: &HashSet<&str>,
     relations: &[(String, String, String)],
 ) -> bool {
-    for (src, tgt, _) in relations {
+    // Audit-r4 CODE-L3: only positive-coverage relations indicate
+    // a demonstrating link. `supersedes` / `contradicts` MUST NOT count.
+    for (src, tgt, rel) in relations {
+        if !relation_counts_for_coverage(rel) {
+            continue;
+        }
         if (src == uc_id && scenarios.contains(tgt.as_str()))
             || (tgt == uc_id && scenarios.contains(src.as_str()))
         {
@@ -762,7 +784,11 @@ fn inv_has_scenario(
     scenarios: &HashSet<&str>,
     relations: &[(String, String, String)],
 ) -> bool {
-    for (src, tgt, _) in relations {
+    // Audit-r4 CODE-L3: relation whitelist (see uc_has_scenario).
+    for (src, tgt, rel) in relations {
+        if !relation_counts_for_coverage(rel) {
+            continue;
+        }
         if (src == inv_id && scenarios.contains(tgt.as_str()))
             || (tgt == inv_id && scenarios.contains(src.as_str()))
         {

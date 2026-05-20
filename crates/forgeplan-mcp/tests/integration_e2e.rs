@@ -1462,3 +1462,48 @@ auth bounded context.\n\
         "`brownfield_only: false` must match default rendering byte-for-byte"
     );
 }
+
+/// T40 — Audit-r4 TEST-G1 closure: wire-shape coverage for the 4
+/// read-only brownfield inspectors. Previously they had only pure-Rust
+/// unit tests on inner functions; regression in `hinted_result` or
+/// `serde(rename)` would have passed the unit-test gate.
+///
+/// This pins:
+///   * empty workspace returns the expected envelope (not a 500),
+///   * `_next_action` is present and is a non-empty string,
+///   * the `_next_action` carries a PRD-071 marker prefix (`Done.`|`Next:`|`Fix:`),
+///   * `forgeplan_coverage_business` with a non-existent DM id returns
+///     a structured error (not a panic / not a silent success).
+#[tokio::test]
+async fn t40_brownfield_inspectors_wire_shape_on_empty_workspace() {
+    let fx = McpFixture::new().await;
+
+    for tool in [
+        "forgeplan_hypothesis_status",
+        "forgeplan_contradictions",
+        "forgeplan_orphans",
+    ] {
+        let env = fx.call_tool_json(tool, json!({})).await;
+        let resp = env.assert_ok();
+        let next = resp["_next_action"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tool} must return string `_next_action`"));
+        assert!(
+            next.starts_with("Done.") || next.starts_with("Next:") || next.starts_with("Fix:"),
+            "{tool} _next_action must carry a PRD-071 hint marker, got: {next}"
+        );
+    }
+
+    // forgeplan_coverage_business with a non-existent DM id — must
+    // surface an artifact-not-found-style error envelope.
+    let env = fx
+        .call_tool_json(
+            "forgeplan_coverage_business",
+            json!({"domain_model_id": "DM-NONEXISTENT-9999"}),
+        )
+        .await;
+    assert!(
+        env.is_error,
+        "coverage_business with missing DM id must surface an error envelope"
+    );
+}
