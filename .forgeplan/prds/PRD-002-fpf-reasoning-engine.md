@@ -5,12 +5,13 @@ kind: prd
 links:
 - target: EPIC-001
   relation: refines
-status: active
+- target: ADR-006
+  relation: supersedes
+status: superseded
 title: FPF Reasoning Engine
 ---
-
-
 
 ## Affected Files
 - crates/forgeplan-core/src/fpf/**
 - crates/forgeplan-cli/src/commands/reason.rs
+
