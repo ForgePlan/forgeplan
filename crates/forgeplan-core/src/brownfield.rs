@@ -557,15 +557,50 @@ pub struct ContradictionsReport {
 /// test can pin the same number.
 pub const HYPOTHESIS_DUPLICATE_JACCARD_THRESHOLD: f64 = 0.6;
 
+/// Audit-r5 SEC-M1: hard cap on the O(N²) Jaccard pass to prevent DoS
+/// via a workspace stuffed with hypothesis stubs. 1000² = 1M Jaccard
+/// ops is still fast (sub-second on commodity hardware) and well above
+/// any realistic workspace size — but pins the worst case.
+///
+/// When `records.iter().filter(hypothesis).count() > N²_CAP_INPUT`, we
+/// short-circuit with a `limitations` entry naming the cap so callers
+/// know the report is truncated.
+pub const CONTRADICTIONS_MAX_HYPOTHESES: usize = 1000;
+
 /// Detect duplicate hypotheses via Jaccard similarity on title tokens.
 ///
 /// v1 limitation: requires LLM judgement, deferred. See forgeplan#287
 /// Phase C limitations.
+///
+/// Audit-r5 SEC-M1: bounded by [`CONTRADICTIONS_MAX_HYPOTHESES`] to
+/// prevent O(N²) DoS. Caller-visible — the `limitations` array names
+/// the cap when triggered.
 pub fn contradictions_v1_heuristic(records: &[ArtifactRecord]) -> ContradictionsReport {
     let hyps: Vec<&ArtifactRecord> = records
         .iter()
         .filter(|r| r.kind.eq_ignore_ascii_case("hypothesis"))
         .collect();
+
+    // SEC-M1: hard cap. Short-circuit with limitation entry so the
+    // wire shape stays stable (empty contradictions + explicit cap
+    // notice) instead of returning a truncated arbitrary subset.
+    let mut limitations: Vec<String> = vec![
+        "invariant_conflict requires LLM judgement (v1 deferred)".to_string(),
+        "glossary_divergence requires LLM judgement (v1 deferred)".to_string(),
+        "scenario_vs_invariant requires LLM judgement (v1 deferred)".to_string(),
+    ];
+    if hyps.len() > CONTRADICTIONS_MAX_HYPOTHESES {
+        limitations.push(format!(
+            "hypothesis_count={} exceeds CONTRADICTIONS_MAX_HYPOTHESES={} — \
+             O(N²) pass skipped to prevent DoS. Narrow the workspace and re-run.",
+            hyps.len(),
+            CONTRADICTIONS_MAX_HYPOTHESES
+        ));
+        return ContradictionsReport {
+            contradictions: Vec::new(),
+            limitations,
+        };
+    }
 
     // Pre-tokenise each title so we don't re-do the work O(n^2) times.
     let tokenised: Vec<(String, HashSet<String>)> = hyps
@@ -597,12 +632,7 @@ pub fn contradictions_v1_heuristic(records: &[ArtifactRecord]) -> Contradictions
 
     ContradictionsReport {
         contradictions,
-        limitations: vec![
-            // v1 limitation: requires LLM judgement, deferred. See forgeplan#287 Phase C limitations.
-            "invariant_conflict requires LLM judgement (v1 deferred)".to_string(),
-            "glossary_divergence requires LLM judgement (v1 deferred)".to_string(),
-            "scenario_vs_invariant requires LLM judgement (v1 deferred)".to_string(),
-        ],
+        limitations,
     }
 }
 
@@ -1244,5 +1274,116 @@ mod tests {
         let a: HashSet<String> = ["x"].iter().map(|s| s.to_string()).collect();
         let b: HashSet<String> = ["y"].iter().map(|s| s.to_string()).collect();
         assert!((jaccard(&a, &b) - 0.0).abs() < 1e-9);
+    }
+
+    // ─── Audit-r5 TEST gaps ───────────────────────────────────────────
+
+    /// TEST-G7: single-record workspace must not crash the O(N²) pass
+    /// — the inner loop is empty (no j > i to compare against) and
+    /// the report must come back with zero contradictions.
+    #[test]
+    fn contradictions_single_hypothesis_returns_empty() {
+        let r = contradictions_v1_heuristic(&[hyp_record("HYP-001", "only one", "inferred")]);
+        assert!(r.contradictions.is_empty());
+        // The three v1-deferred limitations are always present.
+        assert_eq!(r.limitations.len(), 3);
+    }
+
+    /// TEST-G7 bis: two hypotheses with empty titles should not crash
+    /// — `tokenise_title("")` returns the empty set, `jaccard(∅, ∅)` is
+    /// defensively 0.0, so the pair never crosses the duplicate threshold.
+    #[test]
+    fn contradictions_two_empty_titles_no_panic() {
+        let r = contradictions_v1_heuristic(&[
+            hyp_record("HYP-001", "", "inferred"),
+            hyp_record("HYP-002", "", "inferred"),
+        ]);
+        assert!(r.contradictions.is_empty());
+    }
+
+    /// Audit-r5 SEC-M1 closure regression: when the hypothesis count
+    /// exceeds [`CONTRADICTIONS_MAX_HYPOTHESES`] the O(N²) pass MUST
+    /// short-circuit and surface the cap in `limitations`.
+    #[test]
+    fn contradictions_exceeds_cap_is_short_circuited() {
+        let records: Vec<ArtifactRecord> = (0..(CONTRADICTIONS_MAX_HYPOTHESES + 1))
+            .map(|i| hyp_record(&format!("HYP-{i:05}"), "claim x", "inferred"))
+            .collect();
+        let r = contradictions_v1_heuristic(&records);
+        assert!(r.contradictions.is_empty(), "cap must skip the O(N²) pass");
+        assert!(
+            r.limitations
+                .iter()
+                .any(|s| s.contains("CONTRADICTIONS_MAX_HYPOTHESES")),
+            "limitations must name the cap when triggered"
+        );
+    }
+
+    /// TEST-G8: self-link (UC-001 → UC-001) must NOT count as scenario
+    /// coverage — same artifact pointing at itself isn't a scenario.
+    #[test]
+    fn orphans_self_link_does_not_satisfy_coverage() {
+        let recs = vec![simple_record("UC-001", "use_case", "Cap", "")];
+        // Self-link with the "demonstrates" relation (whitelisted by L3 fix).
+        let rels = vec![(
+            "UC-001".to_string(),
+            "UC-001".to_string(),
+            "demonstrates".to_string(),
+        )];
+        let r = orphans_report(&recs, &rels);
+        assert!(
+            r.uncovered_use_cases.iter().any(|id| id == "UC-001"),
+            "self-link must NOT satisfy coverage; UC-001 stays uncovered"
+        );
+    }
+
+    /// TEST-G8 bis: relation pointing at a non-existent SCEN target is
+    /// not a valid scenario link — the UC still counts as uncovered.
+    #[test]
+    fn orphans_dangling_scenario_target_does_not_satisfy_coverage() {
+        let recs = vec![simple_record("UC-001", "use_case", "Cap", "")];
+        let rels = vec![(
+            "UC-001".to_string(),
+            "SCEN-NONEXISTENT".to_string(),
+            "demonstrates".to_string(),
+        )];
+        let r = orphans_report(&recs, &rels);
+        assert!(
+            r.uncovered_use_cases.iter().any(|id| id == "UC-001"),
+            "dangling SCEN target must NOT satisfy coverage"
+        );
+    }
+
+    /// TEST-G13: 30-day cutoff boundary for `recent_transitions`.
+    /// The cutoff is `today - 30d`. The function uses `< cutoff` to
+    /// reject, so a transition logged on exactly `today - 30d` is
+    /// INCLUDED. Pin the boundary so future refactors don't drift.
+    #[test]
+    fn recent_transitions_cutoff_boundary_is_inclusive() {
+        // Construct a hypothesis with a single audit-line at exactly
+        // 30 days before "today".
+        let today_naive = chrono::NaiveDate::from_ymd_opt(2026, 5, 20).unwrap();
+        let thirty_days_ago = today_naive - chrono::Duration::days(30);
+        let date_str = thirty_days_ago.format("%Y-%m-%d").to_string();
+        let body = format!(
+            "---\nid: HYP-007\nkind: hypothesis\nhypothesis_state: verified\n---\n\n\
+             ## Hypothesis\nA claim.\n\n\
+             ## Lifecycle State\n**Current**: `verified`\n\n\
+             - {date_str}: inferred → verified (refs: EVID-007; rationale: boundary test)\n"
+        );
+        let rec = ArtifactRecord {
+            id: "HYP-007".to_string(),
+            kind: "hypothesis".to_string(),
+            status: "active".to_string(),
+            title: "boundary".to_string(),
+            body,
+            ..Default::default()
+        };
+        let report = hypothesis_status_report(&[rec], None, "2026-05-20");
+        assert_eq!(
+            report.recent_transitions.len(),
+            1,
+            "30-day cutoff must be inclusive (date == today-30d is kept)"
+        );
     }
 }

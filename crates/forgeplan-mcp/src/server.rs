@@ -3498,14 +3498,20 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
-            Ok(g) => g,
-            Err(e) => return Ok(safe_err_result("workspace lock", e)),
-        };
-
-        let all_records = match store.list_records(None).await {
-            Ok(rs) => rs,
-            Err(e) => return Ok(safe_err_result("list_records", e)),
+        // Audit-r5 SEC-M2: acquire the lock only for the snapshot read,
+        // then drop it before the pure-Rust report builder runs. LanceDB
+        // list_records is already snapshot-consistent — holding the
+        // exclusive lock during the pure CPU pass would serialise other
+        // mutating tools needlessly.
+        let all_records = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            }
         };
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let report = forgeplan_core::brownfield::hypothesis_status_report(
@@ -3549,38 +3555,42 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
-            Ok(g) => g,
-            Err(e) => return Ok(safe_err_result("workspace lock", e)),
-        };
-
         // Audit-r4 SEC-H1: sanitize_for_hint on every user-controlled string
         // before splicing it into the response body / next_action. Prior
         // revision left `p.domain_model_id` and `other.kind` raw — that's a
         // prompt-injection vector via the hint protocol channel (CWE-117).
         let safe_id = sanitize_for_hint(&p.domain_model_id);
-        let dm_record = match store.get_record(&p.domain_model_id).await {
-            Ok(Some(r)) if r.kind.eq_ignore_ascii_case("domain_model") => r,
-            Ok(Some(other)) => {
-                let safe_kind = sanitize_for_hint(&other.kind);
-                return Ok(err_hinted(
-                    &format!(
-                        "{} is kind={} — coverage_business only operates on Domain Model artifacts",
-                        safe_id, safe_kind
-                    ),
-                    "Fix: pass a DM- artifact id (kind=domain_model).",
-                ));
-            }
-            Ok(None) => return Ok(artifact_not_found(&p.domain_model_id)),
-            Err(e) => return Ok(safe_err_result("get_record", e)),
-        };
-        let all_records = match store.list_records(None).await {
-            Ok(rs) => rs,
-            Err(e) => return Ok(safe_err_result("list_records", e)),
-        };
-        let relations = match store.get_all_relations().await {
-            Ok(rs) => rs,
-            Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+        // Audit-r5 SEC-M2: lock only for the snapshot read, drop before
+        // the pure-Rust report builder runs.
+        let (dm_record, all_records, relations) = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            let dm_record = match store.get_record(&p.domain_model_id).await {
+                Ok(Some(r)) if r.kind.eq_ignore_ascii_case("domain_model") => r,
+                Ok(Some(other)) => {
+                    let safe_kind = sanitize_for_hint(&other.kind);
+                    return Ok(err_hinted(
+                        &format!(
+                            "{} is kind={} — coverage_business only operates on Domain Model artifacts",
+                            safe_id, safe_kind
+                        ),
+                        "Fix: pass a DM- artifact id (kind=domain_model).",
+                    ));
+                }
+                Ok(None) => return Ok(artifact_not_found(&p.domain_model_id)),
+                Err(e) => return Ok(safe_err_result("get_record", e)),
+            };
+            let all_records = match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            };
+            let relations = match store.get_all_relations().await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+            };
+            (dm_record, all_records, relations)
         };
         let report = forgeplan_core::brownfield::coverage_business_report(
             &dm_record,
@@ -3617,14 +3627,17 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
-            Ok(g) => g,
-            Err(e) => return Ok(safe_err_result("workspace lock", e)),
-        };
-
-        let all_records = match store.list_records(None).await {
-            Ok(rs) => rs,
-            Err(e) => return Ok(safe_err_result("list_records", e)),
+        // Audit-r5 SEC-M2: lock only for the snapshot read; the
+        // O(N²) Jaccard pass (capped by SEC-M1) runs lock-free.
+        let all_records = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            }
         };
         let report = forgeplan_core::brownfield::contradictions_v1_heuristic(&all_records);
 
@@ -3662,18 +3675,21 @@ impl ForgeplanServer {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
         };
-        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
-            Ok(g) => g,
-            Err(e) => return Ok(safe_err_result("workspace lock", e)),
-        };
-
-        let all_records = match store.list_records(None).await {
-            Ok(rs) => rs,
-            Err(e) => return Ok(safe_err_result("list_records", e)),
-        };
-        let relations = match store.get_all_relations().await {
-            Ok(rs) => rs,
-            Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+        // Audit-r5 SEC-M2: lock only for the snapshot read.
+        let (all_records, relations) = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            let all_records = match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            };
+            let relations = match store.get_all_relations().await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+            };
+            (all_records, relations)
         };
         let report = forgeplan_core::brownfield::orphans_report(&all_records, &relations);
 

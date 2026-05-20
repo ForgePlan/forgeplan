@@ -1313,40 +1313,62 @@ pub fn tier_for_kind(kind: &ArtifactKind) -> &'static str {
 /// falsifiability-plan gate, or flip an Invariant to `tier: intent`
 /// and skip the `## Source` citation gate.
 ///
-/// `fm` is kept in the signature for forward-compatibility (e.g. if a
-/// future tier dispatch needs additional metadata) but is unused today.
+/// Audit-r5 ARCH-H2: with tier-dispatch moved to registration time,
+/// this helper is no longer called on the hot path — `tier_for_kind`
+/// is called directly in `tier_rules_for`. Kept as `#[allow(dead_code)]`
+/// for future forward-compat (e.g. if a tier-aware health/score path
+/// needs frontmatter context alongside kind).
+///
+/// `fm` is kept in the signature for forward-compatibility but unused.
+#[allow(dead_code)]
 fn extract_tier(fm: &Frontmatter, kind: &ArtifactKind) -> &'static str {
     let _ = fm; // intentionally ignored — tier is kind-derived (SEC-C1)
     tier_for_kind(kind)
 }
 
-/// Tier-level rules for a brownfield artifact. Returned set depends on
-/// the artifact's tier (resolved via [`extract_tier`] at check time, not
-/// dispatch time — frontmatter overrides default).
+/// Tier-level rules for a brownfield artifact. After audit-r4 SEC-C1
+/// closure, tier is kind-derived (the frontmatter `tier:` field is
+/// informational, never enforcement) — so we can resolve dispatch at
+/// registration time and ship only the one rule that applies.
 ///
-/// FPF: chose to register BOTH potential tier-rules and let the inner
-/// check inspect frontmatter, rather than splitting dispatch by tier.
-/// Reason — `rules_for()` doesn't currently receive frontmatter, and
-/// threading it would balloon the signature for every existing kind.
-/// The per-check `extract_tier` call is O(1) lookup in a BTreeMap.
+/// Audit-r5 ARCH-H2: previously this returned BOTH rules and each
+/// check fn re-parsed frontmatter to short-circuit on the wrong tier.
+/// That was an O(N) overhead per validation pass plus a misleading
+/// `rules_for()` API (the rule list at registration time didn't match
+/// the rules that actually fire). Now `rules_for()` and the resulting
+/// rule list are honest — every entry will trigger its check.
 fn tier_rules_for(kind: &ArtifactKind) -> Vec<RuleEntry> {
-    // Both rules registered; each check short-circuits to None when
-    // the artifact's effective tier is not its own.
-    let _ = kind; // suppress unused; kept for symmetry / future per-kind tier tweaks.
-    vec![
-        rule(
+    match tier_for_kind(kind) {
+        "factum" => vec![rule(
             "factum-must-have-source",
             Severity::Must,
             "Factum: '## Source' citation",
             check_factum_source,
-        ),
-        rule(
+        )],
+        "intent" => vec![rule(
             "intent-must-have-verification-plan",
             Severity::Must,
             "Intent: '## How To Verify' + Evidence For/Against",
             check_intent_verification_plan,
-        ),
-    ]
+        )],
+        // Defensive: future tier strings fall back to "register both"
+        // semantics — same as pre-r5 dispatch. Won't happen unless
+        // tier_for_kind grows.
+        _ => vec![
+            rule(
+                "factum-must-have-source",
+                Severity::Must,
+                "Factum: '## Source' citation",
+                check_factum_source,
+            ),
+            rule(
+                "intent-must-have-verification-plan",
+                Severity::Must,
+                "Intent: '## How To Verify' + Evidence For/Against",
+                check_intent_verification_plan,
+            ),
+        ],
+    }
 }
 
 /// Resolve the artifact's kind from frontmatter (`kind:` field) so a
@@ -1354,6 +1376,10 @@ fn tier_rules_for(kind: &ArtifactKind) -> Vec<RuleEntry> {
 /// when the kind is missing or unrecognised — that mirrors the
 /// conservative default and lets a malformed artifact still get the
 /// "must cite source" nag.
+///
+/// Audit-r5 ARCH-H2: no longer called on the hot path — tier dispatch
+/// moved to registration time. Retained for future tier-aware tools.
+#[allow(dead_code)]
 fn fm_kind_or_factum_default(fm: &Frontmatter) -> ArtifactKind {
     fm.get("kind")
         .and_then(|v| v.as_str())
@@ -1366,15 +1392,16 @@ fn fm_kind_or_factum_default(fm: &Frontmatter) -> ArtifactKind {
 
 /// Factum tier MUST cite its `## Source`.
 ///
-/// Fires only when the effective tier is `factum`. Empty / placeholder
-/// citations (< [`FACTUM_SOURCE_MIN_WORDS`] words) are flagged as if
-/// the section were missing — a one-word stub like "TBD" does not
-/// fulfil the contract.
+/// Audit-r5 ARCH-H2: tier dispatch resolved at registration time, so
+/// this check fn no longer needs to short-circuit on tier — if it's
+/// registered for a kind, that kind is factum. The `fm_kind_or_…`
+/// short-circuit and reparse are gone.
+///
+/// Empty / placeholder citations (< [`FACTUM_SOURCE_MIN_WORDS`] words)
+/// are flagged as if the section were missing — a one-word stub like
+/// "TBD" does not fulfil the contract.
 fn check_factum_source(body: &str, fm: &Frontmatter) -> Option<String> {
-    let kind = fm_kind_or_factum_default(fm);
-    if extract_tier(fm, &kind) != "factum" {
-        return None;
-    }
+    let _ = fm; // tier dispatch handled by registration; fm reserved for future use
     if !checks::section_exists(body, "Source") {
         return Some(
             "Factum artifact must have a '## Source' section citing the codebase or document \
@@ -1395,14 +1422,12 @@ fn check_factum_source(body: &str, fm: &Frontmatter) -> Option<String> {
 
 /// Intent tier MUST publish a falsifiability plan.
 ///
-/// Fires only when the effective tier is `intent`. All three sections
-/// must be present — a hypothesis without a verification plan is
-/// indistinguishable from a guess.
+/// Audit-r5 ARCH-H2: tier dispatch resolved at registration time, so
+/// this fn fires only for `Hypothesis` (the only intent-tier kind).
+/// All three sections must be present — a hypothesis without a
+/// verification plan is indistinguishable from a guess.
 fn check_intent_verification_plan(body: &str, fm: &Frontmatter) -> Option<String> {
-    let kind = fm_kind_or_factum_default(fm);
-    if extract_tier(fm, &kind) != "intent" {
-        return None;
-    }
+    let _ = fm; // tier dispatch handled by registration; fm reserved for future use
     let mut missing: Vec<&str> = Vec::new();
     if !checks::section_exists(body, "How To Verify") {
         missing.push("How To Verify");
@@ -2642,22 +2667,34 @@ mod tests_brownfield {
 
     // ─── 11. rules_for dispatch covers all brownfield kinds ────────────────
 
+    /// Audit-r5 ARCH-H2: `rules_for` now resolves tier dispatch at
+    /// registration time. For a factum-tier kind (UseCase), only the
+    /// factum rule is registered — the intent rule no longer ships in
+    /// the rule list. Mirrors the honest dispatch shape.
     #[test]
-    fn rules_for_use_case_includes_required_and_tier_rules() {
+    fn rules_for_use_case_includes_required_and_factum_tier_rule_only() {
         let rules = rules_for(&ArtifactKind::UseCase, &Mode::Tactical);
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"use-case-required-sections"));
         assert!(ids.contains(&"factum-must-have-source"));
-        assert!(ids.contains(&"intent-must-have-verification-plan"));
+        assert!(
+            !ids.contains(&"intent-must-have-verification-plan"),
+            "ARCH-H2: factum-tier kind must NOT register the intent rule"
+        );
     }
 
+    /// Audit-r5 ARCH-H2: Hypothesis is the only intent-tier kind, so
+    /// only the intent rule is registered. The factum rule is absent.
     #[test]
-    fn rules_for_hypothesis_includes_required_and_tier_rules() {
+    fn rules_for_hypothesis_includes_required_and_intent_tier_rule_only() {
         let rules = rules_for(&ArtifactKind::Hypothesis, &Mode::Tactical);
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"hypothesis-required-sections"));
-        assert!(ids.contains(&"factum-must-have-source"));
         assert!(ids.contains(&"intent-must-have-verification-plan"));
+        assert!(
+            !ids.contains(&"factum-must-have-source"),
+            "ARCH-H2: intent-tier kind must NOT register the factum rule"
+        );
     }
 
     #[test]

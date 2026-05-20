@@ -212,6 +212,30 @@ pub fn apply_transition_to_body(
         serde_yaml::Value::String(new_state.as_str().to_string()),
     );
 
+    // Audit-r5 ARCH-C1: derive `status` from `hypothesis_state` so the
+    // general lifecycle/scoring/health surfaces see a meaningful state.
+    // Previously a Hypothesis carried two independent state machines
+    // and `supports_lifecycle("hypothesis") == false` meant
+    // `forgeplan_activate` / `forgeplan_review` skipped the kind —
+    // leaving artifacts stuck on `status: draft` while their
+    // `hypothesis_state` advanced to `verified`. Mapping:
+    //   verified         → active   (load-bearing claim)
+    //   refuted          → deprecated (counter-evidence terminal)
+    //   parked           → draft    (held / not yet load-bearing)
+    //   inferred         → draft    (some signal, not yet sufficient)
+    //   strong-inferred  → draft    (intermediate, not yet sufficient)
+    let derived_status = match new_state {
+        HypothesisState::Verified => "active",
+        HypothesisState::Refuted => "deprecated",
+        HypothesisState::Parked | HypothesisState::Inferred | HypothesisState::StrongInferred => {
+            "draft"
+        }
+    };
+    fm.insert(
+        "status".to_string(),
+        serde_yaml::Value::String(derived_status.to_string()),
+    );
+
     // 2. Body mutation: append lifecycle audit line.
     let evid_part = if evidence_refs.is_empty() {
         "none".to_string()
@@ -833,6 +857,83 @@ something.\n";
                     from, to, actual, expected[i][j]
                 );
             }
+        }
+    }
+
+    // ─── Audit-r5 ARCH-C1: derived status field ────────────────────────────
+
+    /// Verified hypothesis must surface as `status: active` so the
+    /// general scoring/health/lifecycle pipeline sees a load-bearing
+    /// artifact. Previously the artifact stayed `status: draft`
+    /// forever because `forgeplan_activate` skipped Hypothesis.
+    #[test]
+    fn apply_transition_derives_status_active_on_verified() {
+        use crate::artifact::frontmatter::parse_frontmatter;
+        let new_body = apply_transition_to_body(
+            &sample_body(),
+            HypothesisState::Verified,
+            "2026-05-20",
+            HypothesisState::StrongInferred,
+            &["EVID-007".to_string()],
+            "sufficient confirmation",
+        )
+        .unwrap();
+        let (fm, _) = parse_frontmatter(&new_body).unwrap();
+        assert_eq!(
+            fm.get("status").and_then(|v| v.as_str()),
+            Some("active"),
+            "Verified hypothesis must derive status=active"
+        );
+    }
+
+    /// Refuted hypothesis must surface as `status: deprecated` so
+    /// downstream consumers don't treat the claim as load-bearing.
+    #[test]
+    fn apply_transition_derives_status_deprecated_on_refuted() {
+        use crate::artifact::frontmatter::parse_frontmatter;
+        let new_body = apply_transition_to_body(
+            &sample_body(),
+            HypothesisState::Refuted,
+            "2026-05-20",
+            HypothesisState::Inferred,
+            &["EVID-counter".to_string()],
+            "evidence against",
+        )
+        .unwrap();
+        let (fm, _) = parse_frontmatter(&new_body).unwrap();
+        assert_eq!(
+            fm.get("status").and_then(|v| v.as_str()),
+            Some("deprecated"),
+            "Refuted hypothesis must derive status=deprecated"
+        );
+    }
+
+    /// Intermediate states (parked / inferred / strong-inferred) all
+    /// derive `status: draft` so they don't appear as load-bearing
+    /// until verification lands.
+    #[test]
+    fn apply_transition_derives_status_draft_on_intermediate_states() {
+        use crate::artifact::frontmatter::parse_frontmatter;
+        for state in [
+            HypothesisState::Parked,
+            HypothesisState::Inferred,
+            HypothesisState::StrongInferred,
+        ] {
+            let new_body = apply_transition_to_body(
+                &sample_body(),
+                state,
+                "2026-05-20",
+                HypothesisState::Inferred,
+                &[],
+                "intermediate move",
+            )
+            .unwrap();
+            let (fm, _) = parse_frontmatter(&new_body).unwrap();
+            assert_eq!(
+                fm.get("status").and_then(|v| v.as_str()),
+                Some("draft"),
+                "{state:?} must derive status=draft"
+            );
         }
     }
 }
