@@ -158,18 +158,27 @@ for artifact_id in $artifact_ids; do
   # Primary path: structured query on graph JSON via jq (exact JSON-shape match,
   # avoids the greedy-grep bug Round-2 audit caught — `.*` could cross record
   # boundaries when relations are checked positionally).
+  #
+  # FIX (dogfood discovery 2026-05-21): the previous query looked for edges
+  # where `source == artifact_id` with `target_kind == evidence`. That's the
+  # WRONG direction — evidence pattern is `EVID-NNN --informs--> ARTIFACT`,
+  # so the EVID is the SOURCE, the artifact is the TARGET. The old query
+  # matched zero edges and blocked every PR. Corrected logic: find any edge
+  # where `target == artifact_id`, `source` starts with `EVID-`, relation
+  # in (informs, based_on).
   if command -v jq &>/dev/null; then
     graph_json=$("$forgeplan_bin" graph --json 2>/dev/null || echo "")
     if [[ -n "$graph_json" ]]; then
       # The graph schema may use `from`/`to` or `source`/`target`; try both.
-      # Match: any edge whose source == artifact_id, kind == evidence, relation in (informs, based_on).
+      # Match: any edge where TARGET == artifact_id, SOURCE is an EVID-*,
+      # relation in (informs, based_on). This pins the correct direction.
       match=$(echo "$graph_json" | jq -r --arg id "$artifact_id" '
         ([.edges[]?, .relations[]?] | map(select(. != null))) as $edges
         | $edges
         | map(select(
-            ((.source // .from) == $id) and
-            ((.relation // .kind) == "informs" or (.relation // .kind) == "based_on") and
-            ((.target_kind // .kind // "") | tostring | test("evidence"; "i"))
+            ((.target // .to) == $id) and
+            ((.source // .from) | tostring | startswith("EVID-")) and
+            ((.relation // .kind) == "informs" or (.relation // .kind) == "based_on")
           ))
         | length
       ' 2>/dev/null || echo 0)
