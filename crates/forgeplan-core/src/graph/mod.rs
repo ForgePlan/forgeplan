@@ -337,6 +337,18 @@ pub fn render_mermaid_with_opts(edges: &[Edge], opts: &BrownfieldRenderOpts) -> 
 
 /// Single-edge mermaid line. Returns the rendered text and optionally
 /// pushes a `linkStyle` override into `link_styles` keyed by `edge_idx`.
+/// Audit-r7 M3 defence-in-depth: escape mermaid label characters that
+/// could break out of the `|label|` syntax (or inject `classDef` /
+/// `click` / `linkStyle` directives via newlines). The VALID_RELATIONS
+/// allowlist (link/mod.rs) is the primary defence; this is the
+/// downstream sanitiser at the render boundary in case a future write
+/// path bypasses the allowlist (e.g. scan-import edge case).
+fn escape_mermaid_label(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '|' | '{' | '}' | '%' | '\\' | '\n' | '\r'))
+        .collect()
+}
+
 fn render_edge_line(
     edge: &Edge,
     hypothesis_states: &BTreeMap<String, HypothesisState>,
@@ -344,15 +356,18 @@ fn render_edge_line(
     link_styles: &mut Vec<(usize, String)>,
 ) -> String {
     // Step 1: pick arrow + label syntax.
+    // Audit-r7 M3: sanitise relation through `escape_mermaid_label`
+    // before splicing into the label position.
+    let safe_relation = escape_mermaid_label(&edge.relation);
     let line = match edge.relation.as_str() {
         // `references` (glossary → use_case/invariant) is rendered with a
         // dashed arrow to signal a soft conceptual link rather than a
         // structural dependency.
-        "references" => format!("    {} -.->|{}| {}", edge.from, edge.relation, edge.to),
+        "references" => format!("    {} -.->|{}| {}", edge.from, safe_relation, edge.to),
         // `belongs_to` keeps the legacy plain-arrow shortcut (no label).
         "" | "belongs_to" => format!("    {} --> {}", edge.from, edge.to),
         // Everything else: solid arrow with label.
-        _ => format!("    {} -->|{}| {}", edge.from, edge.relation, edge.to),
+        _ => format!("    {} -->|{}| {}", edge.from, safe_relation, edge.to),
     };
 
     // Step 2: edge style overrides via linkStyle directive.

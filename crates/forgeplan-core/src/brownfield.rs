@@ -909,6 +909,35 @@ pub fn contradictions_as_anomalies(
 
     let report = contradictions_v1_heuristic(records);
     let mut out: Vec<Anomaly> = Vec::with_capacity(report.contradictions.len());
+
+    // Audit-r7 F2 (HIGH): surface SEC-M1 cap into the canonical anomaly
+    // stream as a high-severity operational signal. The 3 v1-deferred
+    // limitations (invariant_conflict / glossary_divergence /
+    // scenario_vs_invariant) are NOT surfaced — they're constant
+    // background metadata, not actionable anomalies. Polluting the
+    // canonical count every scan would break orchestrator dedup.
+    for lim in &report.limitations {
+        if !lim.contains("CONTRADICTIONS_MAX_HYPOTHESES") {
+            continue;
+        }
+        out.push(Anomaly {
+            id: "anom-brownfield-detector-limit-cap-triggered".to_string(),
+            kind: AnomalyKind::HypothesisDuplicate,
+            severity: Severity::High,
+            tier: Tier::Adi,
+            affected: vec![],
+            observed_at: observed_at.to_string(),
+            description: format!("contradictions detector cap triggered: {lim}"),
+            evidence: serde_json::json!({ "limitation": lim }),
+            suggested_resolution: Some(SuggestedResolution {
+                tier: Tier::Adi,
+                action: None,
+                target: None,
+                rationale: "Narrow the workspace (deprecate stale hypotheses) or accept partial detection until plugin #79 lands.".to_string(),
+            }),
+        });
+    }
+
     for c in report.contradictions {
         // Map the legacy severity string back to the typed enum.
         let severity = match c.severity.as_str() {
@@ -933,9 +962,17 @@ pub fn contradictions_as_anomalies(
                 "Hypothesis duplicate (Jaccard ≥ 0.6): {} ↔ {}",
                 c.left_artifact, c.right_artifact
             ),
+            // Audit-r7 F3: include jaccard_score per AnomalyKind doc
+            // contract. The legacy ContradictionsReport hides Jaccard
+            // inside severity ("high" ≥ 0.85 else "medium"), but the
+            // canonical evidence shape promises an explicit number.
             evidence: serde_json::json!({
                 "other_id": c.right_artifact,
                 "kind_of_contradiction": c.kind_of_contradiction,
+                "jaccard_score": match c.severity.as_str() {
+                    "high" => 0.85,
+                    _ => 0.6,
+                },
             }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,
@@ -961,7 +998,14 @@ pub fn orphans_as_anomalies(
     let report = orphans_report(records, relations);
     let mut out: Vec<Anomaly> = Vec::new();
 
+    // Audit-r7 F3: lookup title from records for `title` evidence field
+    // per AnomalyKind doc contract.
+    let title_for = |id: &str| -> Option<String> {
+        records.iter().find(|r| r.id == id).map(|r| r.title.clone())
+    };
+
     for uc_id in &report.uncovered_use_cases {
+        let title = title_for(uc_id).unwrap_or_default();
         out.push(Anomaly {
             id: format!("anom-uc-uncovered-{}", uc_id.to_lowercase()),
             kind: AnomalyKind::UncoveredUseCase,
@@ -971,7 +1015,7 @@ pub fn orphans_as_anomalies(
             affected: vec![uc_id.clone()],
             observed_at: observed_at.to_string(),
             description: format!("UseCase {} has no demonstrating scenario link", uc_id),
-            evidence: serde_json::json!({ "id": uc_id }),
+            evidence: serde_json::json!({ "title": title, "id": uc_id }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,
                 action: Some("forgeplan_link".to_string()),
@@ -981,6 +1025,7 @@ pub fn orphans_as_anomalies(
         });
     }
     for inv_id in &report.unverified_invariants {
+        let title = title_for(inv_id).unwrap_or_default();
         out.push(Anomaly {
             id: format!("anom-inv-unverified-{}", inv_id.to_lowercase()),
             kind: AnomalyKind::UnverifiedInvariant,
@@ -989,7 +1034,7 @@ pub fn orphans_as_anomalies(
             affected: vec![inv_id.clone()],
             observed_at: observed_at.to_string(),
             description: format!("Invariant {} has no demonstrating scenario link", inv_id),
-            evidence: serde_json::json!({ "id": inv_id }),
+            evidence: serde_json::json!({ "title": title, "id": inv_id }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,
                 action: Some("forgeplan_link".to_string()),
@@ -1000,35 +1045,54 @@ pub fn orphans_as_anomalies(
             }),
         });
     }
-    for term in &report.orphan_terms {
-        // Deterministic id from term text (lowercase + non-alnum → '-').
-        let slug = term
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect::<String>();
+    // Audit-r7 F7: `orphan_terms` already contains GLOS- artifact IDs
+    // (not raw term text — see `orphans_report` impl). Use the artifact
+    // id as both anomaly id seed AND `affected[0]` so the contract
+    // `Anomaly.affected[0] is the primary affected artifact` holds.
+    // SEC-M2 audit also flagged Anomaly.description splices user text:
+    // sanitize the term before interpolation.
+    for glos_id in &report.orphan_terms {
+        // Look up the actual term text from the glossary artifact body
+        // for the human-readable description.
+        let term_raw = records
+            .iter()
+            .find(|r| r.id == *glos_id)
+            .map(|r| {
+                extract_section(&r.body, "## Canonical Term")
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let safe_term = crate::artifact::sanitize::sanitize_for_hint(&term_raw);
         out.push(Anomaly {
-            id: format!("anom-glos-orphan-{}", slug),
+            id: format!("anom-glos-orphan-{}", glos_id.to_lowercase()),
             kind: AnomalyKind::OrphanGlossaryTerm,
             severity: Severity::Low,
-            // Either reference the term in UC/INV or drop the glossary
-            // entry — operator chooses which UC/INV would mention it.
             tier: Tier::Adi,
-            affected: vec![],
+            affected: vec![glos_id.clone()],
             observed_at: observed_at.to_string(),
-            description: format!("Glossary term '{term}' is not referenced in any UC/INV body"),
-            evidence: serde_json::json!({ "term": term }),
+            description: format!(
+                "Glossary {} (term '{}') is not referenced in any UC/INV body",
+                glos_id, safe_term
+            ),
+            evidence: serde_json::json!({ "id": glos_id, "term": safe_term }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,
                 action: None,
-                target: None,
+                target: Some(glos_id.clone()),
                 rationale: format!(
-                    "Reference '{term}' in at least one UC or INV body, or drop the glossary entry."
+                    "Reference '{safe_term}' in at least one UC or INV body, or deprecate {glos_id}."
                 ),
             }),
         });
     }
     for hyp_id in &report.untriangulated_hypotheses {
+        // Count refs from body for the `evidence_count` per-doc contract.
+        let evidence_count = records
+            .iter()
+            .find(|r| r.id == *hyp_id)
+            .map(|r| count_evidence_refs(&r.body))
+            .unwrap_or(0);
         out.push(Anomaly {
             id: format!("anom-hyp-untriangulated-{}", hyp_id.to_lowercase()),
             kind: AnomalyKind::UntriangulatedHypothesis,
@@ -1037,10 +1101,10 @@ pub fn orphans_as_anomalies(
             affected: vec![hyp_id.clone()],
             observed_at: observed_at.to_string(),
             description: format!(
-                "Hypothesis {} has fewer than 2 distinct evidence references",
-                hyp_id
+                "Hypothesis {} has fewer than 2 distinct evidence references ({} found)",
+                hyp_id, evidence_count
             ),
-            evidence: serde_json::json!({ "id": hyp_id }),
+            evidence: serde_json::json!({ "id": hyp_id, "evidence_count": evidence_count }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,
                 action: Some("forgeplan_link".to_string()),

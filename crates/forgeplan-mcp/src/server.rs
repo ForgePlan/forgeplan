@@ -3418,11 +3418,15 @@ impl ForgeplanServer {
             ) {
                 Ok(k) => Some(k),
                 Err(_) => {
+                    // Audit-r7 F4: list ALL 14 kinds (9 pipeline + 5 brownfield).
                     return Ok(err_hinted(
                         &format!("Unknown anomaly kind: {s}"),
-                        "Valid kinds: stuck_draft, orphan_link, mistyped_based_on, \
+                        "Valid kinds (pipeline): stuck_draft, orphan_link, mistyped_based_on, \
                          missing_must_section, expired_evidence, weakest_link_unresolvable, \
-                         phase_mismatch, circular_dependency, duplicate_artifact.",
+                         phase_mismatch, circular_dependency, duplicate_artifact. \
+                         Valid kinds (brownfield, Epic #287): hypothesis_duplicate, \
+                         uncovered_use_case, unverified_invariant, orphan_glossary_term, \
+                         untriangulated_hypothesis.",
                     ));
                 }
             },
@@ -8288,15 +8292,25 @@ impl ForgeplanServer {
             );
         }
 
-        // 5c. Audit-r4 SEC-H2: reject control chars in `rationale` and
-        // validate `evidence_refs` shape BEFORE writing into the
-        // markdown audit line. Without this gate, multi-line content
-        // forges fake `## Lifecycle State` entries that surface via
-        // `forgeplan_hypothesis_status` (log-injection CWE-117).
-        if p.rationale.contains('\n') || p.rationale.contains('\r') || p.rationale.contains('\t') {
+        // 5c. Audit-r4 SEC-H2 (+ audit-r7 M1 extension): reject control
+        // chars AND Unicode line separators in `rationale` before
+        // writing into the markdown audit line. Without this gate,
+        // multi-line content forges fake `## Lifecycle State` entries
+        // that surface via `forgeplan_hypothesis_status` (CWE-117).
+        //
+        // Audit-r7 M1 closure: extend to U+0085 NEL, U+2028 LINE SEPARATOR,
+        // U+2029 PARAGRAPH SEPARATOR, and full Unicode control set.
+        // Rust `is_control()` covers C0 (`\n`/`\r`/`\t`/`\x0B`/`\x0C`/etc)
+        // and C1; the three Unicode line/paragraph separators are added
+        // explicitly because they aren't in C0/C1 but produce line
+        // breaks in downstream renderers (HTML, CommonMark, terminals).
+        if p.rationale
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{0085}' | '\u{2028}' | '\u{2029}'))
+        {
             return Ok(err_hinted(
-                "rationale contains control characters (\\n / \\r / \\t)",
-                "Fix: provide a single-line rationale without embedded newlines.",
+                "rationale contains control characters or Unicode line separators",
+                "Fix: provide a single-line rationale without embedded line breaks or control chars.",
             ));
         }
         for r in &p.evidence_refs {
@@ -8315,6 +8329,56 @@ impl ForgeplanServer {
                     &format!("evidence_ref `{safe_ref}` is not a valid artifact id"),
                     "Fix: pass artifact ids only (e.g. `EVID-001`, `evid-bench-2026`).",
                 ));
+            }
+        }
+
+        // 5d. Audit-r7 SEC-H1: when promoting to `verified` (which
+        // derives `status: active` per ARCH-C1), enforce the same
+        // gates the general lifecycle uses: every `evidence_refs`
+        // entry must resolve to a real artifact in the store. Without
+        // this, an attacker could create a stub HYP, supply fake EVID
+        // IDs (currently passing only ID-shape regex), and reach
+        // `status: active` with R_eff=0 — bypassing RED-LINE #7.
+        //
+        // Earlier states (parked / inferred / strong-inferred /
+        // refuted) derive `status: draft` or `status: deprecated` —
+        // neither activates the artifact, so existence-check is not
+        // required there.
+        if matches!(
+            new_state,
+            forgeplan_core::hypothesis::HypothesisState::Verified
+        ) {
+            if p.evidence_refs.is_empty() {
+                return Ok(err_hinted(
+                    "Cannot promote to verified with no evidence_refs",
+                    "Fix: supply at least one EVID- id that exists in the workspace (e.g. evidence_refs=[\"EVID-001\"]).",
+                ));
+            }
+            for r in &p.evidence_refs {
+                match store.resolve_id(r).await {
+                    Ok(Some(canonical_ref)) => {
+                        match store.get_record(&canonical_ref).await {
+                            Ok(Some(_)) => {} // OK — exists
+                            Ok(None) | Err(_) => {
+                                let safe_ref = sanitize_for_hint(r);
+                                return Ok(err_hinted(
+                                    &format!(
+                                        "evidence_ref `{safe_ref}` resolved but artifact not found"
+                                    ),
+                                    "Fix: ensure each evidence_ref names an existing artifact (run `forgeplan_list kind=evidence`).",
+                                ));
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        let safe_ref = sanitize_for_hint(r);
+                        return Ok(err_hinted(
+                            &format!("evidence_ref `{safe_ref}` does not exist in workspace"),
+                            "Fix: create the evidence first (`forgeplan_new kind=evidence ...`) before promoting to verified.",
+                        ));
+                    }
+                    Err(e) => return Ok(safe_err_result("resolve_id", e)),
+                }
             }
         }
 
@@ -8452,21 +8516,28 @@ impl ForgeplanServer {
             Err(e) => return Ok(safe_err_result("workspace lock", e)),
         };
 
-        // Audit-r4 SEC-L1: defence-in-depth path-traversal pre-validation.
-        // The stub will hand off to marketplace plugin #79; codify the
-        // contract NOW so the plugin author inherits a sanitised path.
-        // Forbids absolute paths and any `..` parent-dir segments.
+        // Audit-r4 SEC-L1 + audit-r7 L1: defence-in-depth path-traversal
+        // pre-validation. Forbids:
+        //   - absolute paths (POSIX `/etc/...`),
+        //   - `..` parent-dir segments,
+        //   - null bytes (`\0` — Rust Path tolerates, many filesystems do not),
+        //   - Windows drive prefixes (`C:\...` — `is_absolute` returns false
+        //     on POSIX, would slip through the legacy check).
         if let Some(ref raw) = p.transcript_path {
+            let bad_null = raw.contains('\0');
+            let bad_windows_drive = raw.len() >= 2
+                && raw.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && raw.chars().nth(1) == Some(':');
             let path = std::path::Path::new(raw);
-            if path.is_absolute()
-                || path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
+            let bad_absolute = path.is_absolute();
+            let bad_parent = path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+            if bad_null || bad_windows_drive || bad_absolute || bad_parent {
                 let safe = sanitize_for_hint(raw);
                 return Ok(err_hinted(
                     &format!("transcript_path `{safe}` is not workspace-relative"),
-                    "Fix: pass a relative path without `..` segments (e.g. `interviews/2026-05-20.md`).",
+                    "Fix: pass a relative path without `..` segments, null bytes, or drive prefixes (e.g. `interviews/2026-05-20.md`).",
                 ));
             }
         }

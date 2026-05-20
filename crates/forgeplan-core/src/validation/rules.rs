@@ -38,29 +38,38 @@ pub fn rules_for(kind: &ArtifactKind, depth: &Mode) -> Vec<RuleEntry> {
         //   2. tier-level rule (factum-must-have-source OR
         //      intent-must-have-verification-plan) applied via the
         //      `Frontmatter`'s `tier:` field with kind-default fallback.
+        // Audit-r7 ARCH-5: every brownfield kind also registers the
+        // tier-field consistency rule so operator-visible `tier:` field
+        // mismatches surface as Should-level findings.
         ArtifactKind::UseCase => {
             rules.extend(use_case_rules());
             rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
         }
         ArtifactKind::Glossary => {
             rules.extend(glossary_rules());
             rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
         }
         ArtifactKind::Invariant => {
             rules.extend(invariant_rules());
             rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
         }
         ArtifactKind::Scenario => {
             rules.extend(scenario_rules());
             rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
         }
         ArtifactKind::Hypothesis => {
             rules.extend(hypothesis_rules());
             rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
         }
         ArtifactKind::DomainModel => {
             rules.extend(domain_model_rules());
             rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
         }
         _ => {} // Quint-code types (Note, Problem, Solution, Evidence,
                 // Refresh, Memory): base rules only.
@@ -1303,27 +1312,44 @@ pub fn tier_for_kind(kind: &ArtifactKind) -> &'static str {
     }
 }
 
-/// Extract the artifact's tier.
+// Audit-r7 F5: `extract_tier` removed. After r4 SEC-C1 + r5 ARCH-H2
+// it had zero call sites and a deceptive signature (looked like it
+// read frontmatter when it was a thin alias for `tier_for_kind`).
+// A future tier-aware tool can re-introduce a properly named helper.
+
+/// Audit-r7 ARCH-5 closure: surface mismatched frontmatter `tier:`
+/// as a SHOULD-level finding so operators don't get a silent decoration.
+/// Validator enforcement is kind-derived (SEC-C1), but if the operator
+/// hand-edits `tier:` to something inconsistent with the kind default,
+/// surface a warning so the human-readable contract stays visible.
 ///
-/// Audit-r4 SEC-C1 closure: tier is determined exclusively by
-/// [`ArtifactKind`]. The frontmatter `tier:` field is informational only
-/// (template default for human readers) — it CANNOT override enforcement.
-/// Earlier revisions trusted the frontmatter, which let an operator flip
-/// a Hypothesis to `tier: factum` and silently skip the
-/// falsifiability-plan gate, or flip an Invariant to `tier: intent`
-/// and skip the `## Source` citation gate.
-///
-/// Audit-r5 ARCH-H2: with tier-dispatch moved to registration time,
-/// this helper is no longer called on the hot path — `tier_for_kind`
-/// is called directly in `tier_rules_for`. Kept as `#[allow(dead_code)]`
-/// for future forward-compat (e.g. if a tier-aware health/score path
-/// needs frontmatter context alongside kind).
-///
-/// `fm` is kept in the signature for forward-compatibility but unused.
-#[allow(dead_code)]
-fn extract_tier(fm: &Frontmatter, kind: &ArtifactKind) -> &'static str {
-    let _ = fm; // intentionally ignored — tier is kind-derived (SEC-C1)
-    tier_for_kind(kind)
+/// Missing `tier:` field → no check (templates carry the canonical
+/// default for new artifacts; legacy artifacts without the field are OK).
+fn check_tier_field_matches_kind(_body: &str, fm: &Frontmatter) -> Option<String> {
+    let raw_tier = fm
+        .get("tier")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase())?;
+    let kind_str = fm.get("kind").and_then(|v| v.as_str())?;
+    let kind: ArtifactKind = kind_str.parse().ok()?;
+    let expected = tier_for_kind(&kind);
+    if raw_tier != expected {
+        return Some(format!(
+            "frontmatter `tier: {raw_tier}` does not match kind-derived value `{expected}`. \
+             The validator enforces tier from `kind` only (audit-r4 SEC-C1) — this field is \
+             informational. Update `tier: {expected}` to match the kind, or remove the field."
+        ));
+    }
+    None
+}
+
+fn tier_field_consistency_rule() -> RuleEntry {
+    rule(
+        "tier-field-matches-kind",
+        Severity::Should,
+        "Frontmatter tier: field must match kind-derived value",
+        check_tier_field_matches_kind,
+    )
 }
 
 /// Tier-level rules for a brownfield artifact. After audit-r4 SEC-C1
@@ -1371,24 +1397,9 @@ fn tier_rules_for(kind: &ArtifactKind) -> Vec<RuleEntry> {
     }
 }
 
-/// Resolve the artifact's kind from frontmatter (`kind:` field) so a
-/// tier-rule can know which default to apply. Falls back to factum-mode
-/// when the kind is missing or unrecognised — that mirrors the
-/// conservative default and lets a malformed artifact still get the
-/// "must cite source" nag.
-///
-/// Audit-r5 ARCH-H2: no longer called on the hot path — tier dispatch
-/// moved to registration time. Retained for future tier-aware tools.
-#[allow(dead_code)]
-fn fm_kind_or_factum_default(fm: &Frontmatter) -> ArtifactKind {
-    fm.get("kind")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<ArtifactKind>().ok())
-        // UseCase is an arbitrary factum representative for the
-        // fallback path; the tier rule only branches on tier value,
-        // not the specific kind.
-        .unwrap_or(ArtifactKind::UseCase)
-}
+// Audit-r7 F5: `fm_kind_or_factum_default` removed alongside `extract_tier`.
+// No call sites after r5 ARCH-H2; future tier-aware helpers can be added
+// with cleaner signatures when actually needed.
 
 /// Factum tier MUST cite its `## Source`.
 ///
@@ -1513,16 +1524,74 @@ fn check_scenario_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
 }
 
 fn hypothesis_rules() -> Vec<RuleEntry> {
-    vec![rule(
-        "hypothesis-required-sections",
-        Severity::Must,
-        "Hypothesis required sections",
-        check_hypothesis_sections,
-    )]
+    vec![
+        rule(
+            "hypothesis-required-sections",
+            Severity::Must,
+            "Hypothesis required sections",
+            check_hypothesis_sections,
+        ),
+        // Audit-r7 ARCH-C1 follow-up: pin `hypothesis_state` ↔ `status`
+        // consistency. If an operator hand-edits `hypothesis_state:
+        // verified` in the frontmatter without going through
+        // `forgeplan_hypothesis_promote`, the `status:` field stays
+        // stale (draft) and the score / health pipelines see the
+        // wrong state. Surface the divergence as a SHOULD-level
+        // finding so it's visible but not blocking (existing
+        // workspaces with legacy hypotheses can validate while a
+        // migration backlog grows). The canonical fix is
+        // `forgeplan_hypothesis_promote` (which derives status).
+        rule(
+            "hypothesis-state-status-consistent",
+            Severity::Should,
+            "Hypothesis hypothesis_state must match derived status",
+            check_hypothesis_state_status_consistent,
+        ),
+    ]
 }
 
 fn check_hypothesis_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
     check_required_sections(body, REQUIRED_SECTIONS_HYPOTHESIS, "Hypothesis")
+}
+
+/// Audit-r7 ARCH-C1 follow-up: check that `status` derives from
+/// `hypothesis_state` per the same mapping used by
+/// [`crate::hypothesis::apply_transition_to_body`]:
+///
+/// | hypothesis_state           | derived status |
+/// |---------------------------|----------------|
+/// | verified                  | active         |
+/// | refuted                   | deprecated     |
+/// | parked / inferred / strong-inferred | draft  |
+///
+/// Missing `hypothesis_state` field → no check (legacy artifact).
+/// Missing or unparseable `status` → no check (covered by base rules).
+fn check_hypothesis_state_status_consistent(_body: &str, fm: &Frontmatter) -> Option<String> {
+    let raw_state = fm.get("hypothesis_state").and_then(|v| v.as_str())?;
+    let state = crate::hypothesis::HypothesisState::parse(raw_state)?;
+    let expected_status = match state {
+        crate::hypothesis::HypothesisState::Verified => "active",
+        crate::hypothesis::HypothesisState::Refuted => "deprecated",
+        crate::hypothesis::HypothesisState::Parked
+        | crate::hypothesis::HypothesisState::Inferred
+        | crate::hypothesis::HypothesisState::StrongInferred => "draft",
+    };
+    let actual_status = fm.get("status").and_then(|v| v.as_str())?;
+    if !actual_status.eq_ignore_ascii_case(expected_status) {
+        return Some(format!(
+            "hypothesis_state=`{}` requires status=`{}`, found status=`{}`. \
+             Fix: run `forgeplan_hypothesis_promote {} {}` to re-derive status, \
+             or update status manually to match.",
+            raw_state,
+            expected_status,
+            actual_status,
+            fm.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing-id>"),
+            raw_state
+        ));
+    }
+    None
 }
 
 fn domain_model_rules() -> Vec<RuleEntry> {
@@ -2716,5 +2785,126 @@ mod tests_brownfield {
                 "kind {kind:?} dispatch missing factum-must-have-source"
             );
         }
+    }
+
+    // ─── 12. Audit-r7 ARCH-C1 follow-up: state ↔ status consistency ───────
+
+    /// hypothesis_state=verified MUST imply status=active. Stale status
+    /// after a hand-edit surfaces as a SHOULD-level finding.
+    #[test]
+    fn hypothesis_state_verified_without_active_status_triggers_consistency_finding() {
+        let mut fm = fm_with_kind_and_tier("hyp-r7-1", "hypothesis", Some("intent"));
+        fm.insert(
+            "hypothesis_state".into(),
+            serde_yaml::Value::String("verified".into()),
+        );
+        // status: draft (stale — was draft, hypothesis_state was hand-edited to verified)
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nNone observed.\n\n\
+## Lifecycle State\n**Current**: verified\n";
+        let result = validate(
+            "hyp-r7-1",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        let finding = result
+            .findings
+            .iter()
+            .find(|f| f.rule_id == "hypothesis-state-status-consistent")
+            .expect("consistency rule must fire when status is stale");
+        assert!(finding.message.contains("status=`active`"));
+    }
+
+    /// hypothesis_state=refuted MUST imply status=deprecated.
+    #[test]
+    fn hypothesis_state_refuted_without_deprecated_status_triggers_consistency_finding() {
+        let mut fm = fm_with_kind_and_tier("hyp-r7-2", "hypothesis", Some("intent"));
+        fm.insert(
+            "hypothesis_state".into(),
+            serde_yaml::Value::String("refuted".into()),
+        );
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nEVID-002 contradicts.\n\n\
+## Lifecycle State\n**Current**: refuted\n";
+        let result = validate(
+            "hyp-r7-2",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "hypothesis-state-status-consistent"),
+            "refuted hypothesis with status=draft must trigger consistency rule"
+        );
+    }
+
+    /// Consistent state/status pair passes — no finding emitted.
+    #[test]
+    fn hypothesis_consistent_state_status_passes_check() {
+        let mut fm = fm_with_kind_and_tier("hyp-r7-3", "hypothesis", Some("intent"));
+        fm.insert(
+            "hypothesis_state".into(),
+            serde_yaml::Value::String("inferred".into()),
+        );
+        // status=draft matches inferred (default landing state)
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nNone.\n\n\
+## Lifecycle State\n**Current**: inferred\n";
+        let result = validate(
+            "hyp-r7-3",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "hypothesis-state-status-consistent"),
+            "consistent inferred/draft pair must NOT trigger consistency rule"
+        );
+    }
+
+    /// Legacy hypothesis without `hypothesis_state` field — rule is silent.
+    #[test]
+    fn hypothesis_without_state_field_skips_consistency_check() {
+        let fm = fm_with_kind_and_tier("hyp-r7-legacy", "hypothesis", Some("intent"));
+        // No hypothesis_state field at all (legacy pre-Phase-D artifact).
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nNone.\n\n\
+## Lifecycle State\n**Current**: legacy\n";
+        let result = validate(
+            "hyp-r7-legacy",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "hypothesis-state-status-consistent"),
+            "legacy hypothesis (no hypothesis_state) must NOT trigger consistency rule"
+        );
     }
 }

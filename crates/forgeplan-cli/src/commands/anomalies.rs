@@ -64,11 +64,16 @@ pub async fn run(
 
 fn parse_kind(s: &str) -> anyhow::Result<AnomalyKind> {
     serde_json::from_value::<AnomalyKind>(serde_json::Value::String(s.to_string())).map_err(|_| {
+        // Audit-r7 F4: must list ALL 14 kinds (9 pipeline + 5 brownfield
+        // from Epic #287). The error UX previously hid brownfield from
+        // the operator even though serde accepts them.
         anyhow::anyhow!(
             "Unknown anomaly kind: {s}\n\
-             Valid kinds: stuck_draft, orphan_link, mistyped_based_on, missing_must_section, \
-             expired_evidence, weakest_link_unresolvable, phase_mismatch, circular_dependency, \
-             duplicate_artifact"
+             Valid kinds (pipeline): stuck_draft, orphan_link, mistyped_based_on, \
+             missing_must_section, expired_evidence, weakest_link_unresolvable, \
+             phase_mismatch, circular_dependency, duplicate_artifact\n\
+             Valid kinds (brownfield, Epic #287): hypothesis_duplicate, uncovered_use_case, \
+             unverified_invariant, orphan_glossary_term, untriangulated_hypothesis"
         )
     })
 }

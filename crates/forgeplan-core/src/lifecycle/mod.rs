@@ -292,6 +292,24 @@ pub async fn activate(
 
     transitions::validate_transition(&record.status, "active")?;
 
+    // Audit-r7 ARCH-C1 follow-up: Hypothesis kind has its own state machine
+    // (`hypothesis_state` frontmatter field) that ALSO drives `status`
+    // derivation. Calling `forgeplan_activate` on a HYP would set
+    // `status=active` without touching `hypothesis_state`, breaking the
+    // `state ↔ status` invariant the `hypothesis-state-status-consistent`
+    // validation rule pins. Redirect the operator to the canonical promote
+    // path which derives `status` atomically.
+    if record.kind.eq_ignore_ascii_case("hypothesis") {
+        return Err(anyhow::anyhow!(
+            "Hypothesis artifacts (kind=hypothesis) are activated via \
+             `forgeplan_hypothesis_promote` (which advances hypothesis_state \
+             and derives status atomically). Direct `forgeplan_activate` on \
+             {artifact_id} would desynchronise the two fields. Use \
+             `forgeplan_hypothesis_promote hypothesis_id={artifact_id} new_state=verified` \
+             to activate (sets status=active) or `new_state=refuted` to deprecate."
+        ));
+    }
+
     // Lightweight kinds skip validation gate
     if !supports_lifecycle(&record.kind) {
         store
@@ -1162,5 +1180,41 @@ mod tests {
                 "filled body should not trigger stub gate, got: {msg}"
             );
         }
+    }
+
+    /// Audit-r7 ARCH-C1 follow-up: `forgeplan_activate` on a Hypothesis
+    /// MUST refuse and redirect the operator to `forgeplan_hypothesis_promote`.
+    /// Without this guard, calling activate on a HYP would set `status=active`
+    /// without touching `hypothesis_state`, desynchronising the two-field pair
+    /// that audit-r5 ARCH-C1 closure pinned.
+    #[tokio::test]
+    async fn activate_hypothesis_redirects_to_promote() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let art = NewArtifact {
+            id: "HYP-001".to_string(),
+            kind: "hypothesis".to_string(),
+            status: "draft".to_string(),
+            title: "Test hypothesis".to_string(),
+            body: "---\nid: HYP-001\nkind: hypothesis\nhypothesis_state: inferred\n\
+                   status: draft\ntier: intent\n---\n\n## Hypothesis\nA claim.\n\n\
+                   ## Lifecycle State\n**Current**: inferred\n"
+                .to_string(),
+            depth: "tactical".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        let result = activate(&store, "HYP-001", false).await;
+        let err = result.expect_err("activate on HYP must error out");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("forgeplan_hypothesis_promote"),
+            "error must redirect to canonical promote path, got: {msg}"
+        );
     }
 }

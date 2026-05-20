@@ -331,27 +331,50 @@ async fn stress_test_single_seed_zero() {
 #[tokio::test(flavor = "current_thread")]
 async fn stress_test_property_loop_seeds() {
     const FAST_SEEDS: u64 = 3;
-    // Audit-r6 PROB-069: bumped from 15s → 30s. Per-seed cost is
-    // ~3-7 s on M1/M2 (fork+exec git × 10 branches per seed). With 3
-    // seeds the lower bound is ~9 s; the upper bound under cargo's
-    // concurrent test compilation routinely hits 22-25 s (observed in
-    // r5 baseline runs both with and without changes). 30s keeps a
-    // 4× headroom over best-case while accommodating co-tenant load.
-    // Per-seed regression is still surfaced by the eprintln below.
+    // Audit-r7 ARCH-3 closure: split aggregate budget into per-seed
+    // assertion + total wall watchdog. Prior r6 fix relaxed only the
+    // total to 30s — that masked real per-seed regression in
+    // `merge_in_order_and_assign` because cargo concurrency
+    // fixed-overhead noise dominated the signal.
+    //
+    // Per-seed assertion catches regression: typical 3-7 s on M1/M2;
+    // 12 s budget gives ~2× headroom over worst observed before flake.
+    // Total wall stays a watchdog with extra headroom for co-tenant load.
+    const PER_SEED_MAX_SECS: u64 = 12;
     const FAST_BUDGET_SECS: u64 = 30;
 
     let started = Instant::now();
+    let mut per_seed: Vec<std::time::Duration> = Vec::with_capacity(FAST_SEEDS as usize);
     for seed in 0u64..FAST_SEEDS {
+        let s = Instant::now();
         run_for_seed(seed).await;
+        let dt = s.elapsed();
+        // Audit-r7 F6: eprintln INSIDE the loop so trend visible per
+        // seed when `cargo test -- --nocapture` is run, not only at
+        // aggregate. Mitigates r6 commit-message claim that "per-seed
+        // regression is surfaced by eprintln" — that was true only for
+        // total elapsed, not per-iteration cost.
+        eprintln!("prob_060_stress_test (fast): seed {seed} in {dt:?}");
+        assert!(
+            dt.as_secs() <= PER_SEED_MAX_SECS,
+            "seed {seed} took {dt:?}, per-seed budget is ≤{PER_SEED_MAX_SECS}s — \
+             this is the real regression detector; investigate \
+             `merge_in_order_and_assign` before bumping the budget"
+        );
+        per_seed.push(dt);
     }
     let elapsed = started.elapsed();
     assert!(
         elapsed.as_secs() <= FAST_BUDGET_SECS,
-        "fast stress test loop took {elapsed:?}, budget is ≤{FAST_BUDGET_SECS} s \
-         ({FAST_SEEDS} seeds) — if persistent, investigate per-seed perf in \
-         `merge_in_order_and_assign`, not the budget"
+        "fast stress test loop took {elapsed:?}, watchdog budget is ≤{FAST_BUDGET_SECS} s \
+         ({FAST_SEEDS} seeds) — if persistent under per-seed budget, investigate \
+         co-tenant load / test runner concurrency"
     );
-    eprintln!("prob_060_stress_test (fast): {FAST_SEEDS} git-backed seeds in {elapsed:?}");
+    eprintln!(
+        "prob_060_stress_test (fast): {FAST_SEEDS} git-backed seeds total {elapsed:?} \
+         (per-seed summary: {:?})",
+        per_seed
+    );
 }
 
 /// Full 12-seed property loop. **Opt-in** via `cargo test -- --ignored`.

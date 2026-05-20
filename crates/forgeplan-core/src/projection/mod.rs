@@ -956,14 +956,37 @@ pub async fn update_body_with_projection(
     };
     let links = store.get_relations(id).await.unwrap_or_default();
 
+    // Audit-r7 F1 (CRITICAL): parse the new body's frontmatter and sync
+    // the `status` column in LanceDB if it changed. Without this, callers
+    // who mutate body+status atomically (e.g. `apply_transition_to_body`
+    // for hypothesis lifecycle) would see the file frontmatter advance
+    // while consumers reading `record.status` from LanceDB still see the
+    // stale value — silently breaking health/anomalies/release_notes/
+    // forgeplan_get hints. ADR-003 demands LanceDB reflect the markdown
+    // source of truth; without this hook, body-only writes diverge.
+    //
+    // Title sync is intentionally NOT included here: title changes are
+    // structural (touch slug, file path, links) and need dedicated path
+    // through `update_title_with_projection`. Only `status` is in scope.
+    let derived_status = crate::artifact::frontmatter::parse_frontmatter(body)
+        .ok()
+        .and_then(|(fm, _)| {
+            fm.get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
     // 1. File first — write the user's body to the markdown projection. This
     //    establishes the source of truth before the derived index is touched.
+    //    Use the *new* status if the frontmatter carries one, so the rendered
+    //    file frontmatter matches the projection row.
+    let effective_status = derived_status.as_deref().unwrap_or(&record.status);
     render_projection_with_body(
         workspace,
         &record.id,
         &record.kind,
         &record.title,
-        &record.status,
+        effective_status,
         &record.depth,
         record.author.as_deref(),
         record.parent_epic.as_deref(),
@@ -975,6 +998,18 @@ pub async fn update_body_with_projection(
 
     // 2. DB second — sync the derived index. If this fails, reindex recovers.
     store.update_body(id, body).await?;
+
+    // 3. Status sync (audit-r7 F1): if the new frontmatter declares a
+    //    `status` that differs from the LanceDB row, propagate it.
+    //    update_artifact() handles `updated_at` bump.
+    if let Some(new_status) = derived_status.as_deref()
+        && new_status != record.status
+    {
+        store
+            .update_artifact(id, Some(new_status), None)
+            .await
+            .map_err(MutationError::from)?;
+    }
     Ok(())
 }
 
