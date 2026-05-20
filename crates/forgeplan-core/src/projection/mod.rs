@@ -2840,6 +2840,113 @@ mod tests {
         assert_eq!(rels[0].1, "informs");
     }
 
+    /// Audit-r2 coverage closure: reverse direction. The canonical #286
+    /// scenario is `based_on → informs`. The mirror case (`informs →
+    /// based_on`) should also work — useful when an evidence pack is
+    /// later promoted into a derivation chain.
+    #[tokio::test]
+    async fn replace_link_swaps_informs_to_based_on_reverse() {
+        let (_tmp, ws, store) = upsert_test_workspace("PRD-923", "PRD-924", "prd", "prd").await;
+
+        // Initial: PRD-923 informs PRD-924.
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-923",
+            "PRD-924",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-923",
+            "PRD-924",
+            "based_on",
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            LinkUpsertOutcome::Replaced { old_relation } => {
+                assert_eq!(old_relation, "informs");
+            }
+            other => panic!("expected Replaced {{ old_relation: informs }}, got {other:?}"),
+        }
+        let rels = store.get_relations("PRD-923").await.unwrap();
+        assert_eq!(
+            rels.len(),
+            1,
+            "exactly one edge after reverse swap: {rels:?}"
+        );
+        assert_eq!(rels[0].1, "based_on");
+    }
+
+    /// Audit-r2 coverage closure: replace with `refines` relation. All
+    /// existing tests hard-code based_on/informs; verifying refines works
+    /// catches dispatch bugs in normalize_relation or in match arms on
+    /// the new code path.
+    #[tokio::test]
+    async fn replace_link_swaps_to_refines_relation() {
+        let (_tmp, ws, store) = upsert_test_workspace("RFC-925", "ADR-925", "rfc", "adr").await;
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "RFC-925",
+            "ADR-925",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "RFC-925",
+            "ADR-925",
+            "refines",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(outcome, LinkUpsertOutcome::Replaced { ref old_relation } if old_relation == "informs"),
+            "expected Replaced{{informs}}, got {outcome:?}"
+        );
+        let rels = store.get_relations("RFC-925").await.unwrap();
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].1, "refines");
+    }
+
+    /// Audit-r2 coverage closure: replace with `supersedes` relation.
+    /// Same rationale as refines — exercises the full relation set.
+    #[tokio::test]
+    async fn replace_link_swaps_to_supersedes_relation() {
+        let (_tmp, ws, store) = upsert_test_workspace("PRD-926", "PRD-927", "prd", "prd").await;
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-926",
+            "PRD-927",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-926",
+            "PRD-927",
+            "supersedes",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(outcome, LinkUpsertOutcome::Replaced { .. }),
+            "supersedes replacement must succeed: {outcome:?}"
+        );
+    }
+
     /// A1.6 — add_links_batch validates all ids up front, no partial state.
     #[tokio::test]
     async fn add_links_batch_validates_up_front_and_no_partial_state() {

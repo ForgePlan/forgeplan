@@ -875,4 +875,566 @@ mod tests {
         .unwrap();
         assert_eq!(report.total, 0);
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Audit-r2 test-coverage closure — direct tests for the 6 detectors
+    // that previously only had indirect / bridge coverage. Catalog claim
+    // (v1 — 9 anomaly kinds) was only honoured by `orphan_link` and
+    // `mistyped_based_on` direct tests; the rest passed through the
+    // health module without an anomaly-level assertion.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Shared helper — build a NewArtifact with the boilerplate filled in.
+    /// Reduces noise across the 8 detector tests below.
+    fn new_artifact(id: &str, kind: &str, status: &str, body: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: status.to_string(),
+            title: format!("Test {id}"),
+            body: body.to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    /// `stuck_draft`: complete EVID + linked + status=draft + r_eff>0 + age>24h
+    /// must be detected with severity=Medium, tier=Auto, and a suggested
+    /// resolution of `forgeplan_activate <id>`.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn stuck_draft_detected_for_complete_aged_evid() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Seed PRD + complete EVID; link them; then mutate created_at on
+        // the EVID to be > 24h ago via the test helper.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-001",
+                "evidence",
+                "draft",
+                "verdict: supports\ncongruence_level: 3\nevidence_type: test\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
+        // Make the EVID look old enough to trigger stuck-draft (>24h).
+        // We backdate created_at to 48h ago via the dedicated test-helper.
+        let old = (Utc::now() - Duration::hours(48)).to_rfc3339();
+        store
+            .set_created_at_for_test("EVID-001", &old)
+            .await
+            .unwrap();
+        // Bump r_eff_score to a positive value to satisfy the gate.
+        store.update_r_eff_score("EVID-001", 1.0).await.unwrap();
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let stuck: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::StuckDraft)
+            .collect();
+        assert_eq!(stuck.len(), 1, "expected one stuck_draft anomaly");
+        assert_eq!(stuck[0].severity, Severity::Medium);
+        assert_eq!(stuck[0].tier, Tier::Auto);
+        let suggestion = stuck[0].suggested_resolution.as_ref().unwrap();
+        assert_eq!(suggestion.action.as_deref(), Some("forgeplan_activate"));
+        assert_eq!(suggestion.target.as_deref(), Some("EVID-001"));
+    }
+
+    /// `stuck_draft` does NOT fire on a fresh draft (created within 24h),
+    /// even if the body is complete and the EVID is linked. Negative case
+    /// for the age threshold.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn stuck_draft_not_detected_for_fresh_draft() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-001",
+                "evidence",
+                "draft",
+                "verdict: supports\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
+        store.update_r_eff_score("EVID-001", 1.0).await.unwrap();
+        // created_at left at the default (now) — too fresh to be stuck.
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::StuckDraft),
+            "fresh draft must not surface as stuck_draft: {:?}",
+            report.anomalies
+        );
+    }
+
+    /// `expired_evidence`: EVID with valid_until in the past + outgoing
+    /// informs/based_on link to an active artifact must be detected with
+    /// severity=Medium and tier=User. Parents list non-empty.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn expired_evidence_detected_when_linked() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        // Backdate valid_until to yesterday.
+        let yesterday = (Utc::now() - Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut evid = new_artifact(
+            "EVID-001",
+            "evidence",
+            "active",
+            "verdict: supports\ncongruence_level: 3\n",
+        );
+        evid.valid_until = Some(yesterday.clone());
+        store.create_artifact_for_test(&evid).await.unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let expired: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::ExpiredEvidence)
+            .collect();
+        assert_eq!(expired.len(), 1, "expected one expired_evidence anomaly");
+        assert_eq!(expired[0].severity, Severity::Medium);
+        assert_eq!(expired[0].tier, Tier::User);
+        assert!(
+            expired[0].affected.contains(&"EVID-001".to_string()),
+            "primary affected id must be the EVID: {:?}",
+            expired[0].affected
+        );
+        // The parents list (via evidence.parents) must include PRD-001.
+        let parents = expired[0].evidence["parents"].as_array().unwrap();
+        let parent_ids: Vec<&str> = parents.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            parent_ids.contains(&"PRD-001"),
+            "expired evidence must surface its linked parents: {parent_ids:?}"
+        );
+    }
+
+    /// `expired_evidence` does NOT fire when the EVID has no outgoing
+    /// links (orphan stale EVID — different concern).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn expired_evidence_not_detected_when_orphan() {
+        let (_tmp, ws, store) = fresh_store().await;
+        let yesterday = (Utc::now() - Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut evid = new_artifact(
+            "EVID-001",
+            "evidence",
+            "active",
+            "verdict: supports\ncongruence_level: 3\n",
+        );
+        evid.valid_until = Some(yesterday);
+        store.create_artifact_for_test(&evid).await.unwrap();
+        // No links — the detector requires parents to exist.
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::ExpiredEvidence),
+            "orphan expired EVID must not be flagged as expired_evidence"
+        );
+    }
+
+    /// `circular_dependency`: A based_on B + B based_on A must produce
+    /// exactly one anomaly (dedup by lexicographic ordering) with
+    /// severity=High and tier=User.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn circular_dependency_detected_2_node_cycle() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-002",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-001", "PRD-002", "based_on")
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-002", "PRD-001", "based_on")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let cycles: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::CircularDependency)
+            .collect();
+        assert_eq!(cycles.len(), 1, "dedup: one anomaly per cycle, not two");
+        assert_eq!(cycles[0].severity, Severity::High);
+        assert_eq!(cycles[0].tier, Tier::User);
+        assert!(cycles[0].affected.contains(&"PRD-001".to_string()));
+        assert!(cycles[0].affected.contains(&"PRD-002".to_string()));
+    }
+
+    /// `circular_dependency` does NOT fire on a one-direction `based_on`
+    /// edge (legitimate derivation chain).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn circular_dependency_not_detected_one_way_chain() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-002",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-002", "PRD-001", "based_on")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::CircularDependency),
+            "one-way based_on is legitimate; must not flag as cycle"
+        );
+    }
+
+    /// `weakest_link_unresolvable`: active artifact with r_eff_score=0 +
+    /// at least one outgoing informs/based_on edge. Severity=Low,
+    /// tier=Adi (the heuristic suggests ADI investigation, not user fix).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn weakest_link_unresolvable_detected() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-002",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        // Link them via informs — gives PRD-002 an outgoing edge.
+        store
+            .add_relation_for_test("PRD-002", "PRD-001", "informs")
+            .await
+            .unwrap();
+        // r_eff_score for both defaults to 0 (no evidence linked).
+        // PRD-002 satisfies: active + r_eff=0 + has outgoing informs/based_on.
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let weak: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::WeakestLinkUnresolvable)
+            .collect();
+        // PRD-002 has the outgoing edge; PRD-001 does not. Exactly one match.
+        assert_eq!(
+            weak.len(),
+            1,
+            "only PRD-002 has an outgoing informs edge: got {weak:?}"
+        );
+        assert_eq!(weak[0].severity, Severity::Low);
+        assert_eq!(weak[0].tier, Tier::Adi);
+        assert_eq!(weak[0].affected, vec!["PRD-002".to_string()]);
+    }
+
+    /// Filter combination: kind + severity simultaneously narrow the
+    /// result set. Verifies the filters apply independently rather than
+    /// short-circuiting on the first match.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn filter_combination_kind_and_severity_narrows() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Seed both a mistyped_based_on (Medium) and an orphan_link
+        // (High) so the unfiltered result has two distinct severities.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-001",
+                "evidence",
+                "active",
+                "verdict: supports\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "based_on")
+            .await
+            .unwrap();
+        // Orphan link to a non-existent target.
+        store
+            .add_relation_for_test("PRD-001", "RFC-MISSING", "informs")
+            .await
+            .unwrap();
+
+        // Filter to Medium severity AND mistyped kind — should return only
+        // the mistyped_based_on anomaly, not the orphan_link (High).
+        let filtered = detect_anomalies(
+            &store,
+            ws.parent().unwrap(),
+            &AnomalyFilter {
+                severity: Some(Severity::Medium),
+                kind: Some(AnomalyKind::MistypedBasedOn),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(filtered.total, 1, "combined filter must narrow to 1");
+        assert_eq!(filtered.anomalies[0].kind, AnomalyKind::MistypedBasedOn);
+        assert_eq!(filtered.anomalies[0].severity, Severity::Medium);
+
+        // Filter to High severity AND mistyped kind — must return 0
+        // (mistyped is Medium, not High).
+        let zero = detect_anomalies(
+            &store,
+            ws.parent().unwrap(),
+            &AnomalyFilter {
+                severity: Some(Severity::High),
+                kind: Some(AnomalyKind::MistypedBasedOn),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(zero.total, 0, "mismatched filter combination must return 0");
+    }
+
+    /// Severity counts agree with anomaly count when MULTIPLE detectors
+    /// fire simultaneously. The existing severity_counts_sum_to_total
+    /// test seeded only one detector; this version seeds three different
+    /// severity buckets to verify the invariant holds across distinct
+    /// detectors firing into the same report.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn multi_detector_severity_counts_sum_to_total() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Orphan link → High.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-001", "EVID-GONE", "informs")
+            .await
+            .unwrap();
+        // Mistyped based_on → Medium.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-001",
+                "evidence",
+                "active",
+                "verdict: supports\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-002",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-002", "based_on")
+            .await
+            .unwrap();
+        // weakest_link_unresolvable → Low (PRD-002 with r_eff=0 + has
+        // incoming based_on; the detector keys on the SOURCE having an
+        // outgoing edge, so we set up PRD-003 → PRD-002 informs to give
+        // PRD-003 an outgoing).
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-003",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-003", "PRD-002", "informs")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        // Total must equal the sum of per-severity counts AND of
+        // per-tier counts.
+        let sev_sum = report.by_severity.low + report.by_severity.medium + report.by_severity.high;
+        let tier_sum = report.by_tier.auto + report.by_tier.adi + report.by_tier.user;
+        assert_eq!(sev_sum, report.total, "severity counts sum invariant");
+        assert_eq!(tier_sum, report.total, "tier counts sum invariant");
+        // All three buckets non-empty: verifies that multiple detectors
+        // actually fired into distinct severity classes.
+        assert!(
+            report.by_severity.high > 0,
+            "expected at least one High (orphan_link)"
+        );
+        assert!(
+            report.by_severity.medium > 0,
+            "expected at least one Medium (mistyped_based_on)"
+        );
+        assert!(
+            report.by_severity.low > 0,
+            "expected at least one Low (weakest_link)"
+        );
+    }
+
+    /// Documents the known v1 limitation of CircularDependency: the
+    /// detector only sees direct 2-node cycles (A↔B). Three-node cycles
+    /// (A→B→C→A) are NOT flagged. This is intentional for v1 (cheap
+    /// detector); a proper DFS-based cycle detector is tracked for v0.33+.
+    /// This test pins the limitation so a future "fix" doesn't silently
+    /// change semantics without explicit decision.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn circular_dependency_does_not_detect_3_node_cycle_v1_limitation() {
+        let (_tmp, ws, store) = fresh_store().await;
+        for id in &["PRD-001", "PRD-002", "PRD-003"] {
+            store
+                .create_artifact_for_test(&new_artifact(id, "prd", "active", "## Problem\nbody\n"))
+                .await
+                .unwrap();
+        }
+        // A → B → C → A (3-node cycle).
+        store
+            .add_relation_for_test("PRD-001", "PRD-002", "based_on")
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-002", "PRD-003", "based_on")
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-003", "PRD-001", "based_on")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, ws.parent().unwrap(), &AnomalyFilter::default())
+            .await
+            .unwrap();
+        // v1 limitation: 3-node cycle goes undetected. Documented; do
+        // NOT remove the assertion without updating the detector.
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .all(|a| a.kind != AnomalyKind::CircularDependency),
+            "v1 detector intentionally misses 3-node cycles: {:?}",
+            report.anomalies
+        );
+    }
 }
