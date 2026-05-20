@@ -1026,3 +1026,244 @@ async fn t35_forgeplan_anomalies_invalid_kind_filter_errors_cleanly() {
         "error hint must enumerate valid kinds for the agent to retry: {body}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Issue #287 Phase D — Hypothesis state machine + interview packet stubs.
+// W3 brief pinned three integration contracts:
+//
+// 1. `forgeplan_hypothesis_promote` walks a fresh HYP- artifact one step
+//    forward (`inferred → strong-inferred`), mutates frontmatter,
+//    appends an audit line to `## Lifecycle State`, and returns a
+//    cascade list (empty for a fresh artifact with no incoming relations).
+// 2. `forgeplan_interview_packet_draft` returns `not_implemented` (stub).
+// 3. `forgeplan_interview_packet_ingest` returns `not_implemented` (stub).
+// ─────────────────────────────────────────────────────────────────────
+
+/// Build a HYP-* fixture body with `hypothesis_state: inferred`. The
+/// Phase A template sets the same state on create, but W2's MCP
+/// `forgeplan_new` extension (which would teach the existing
+/// `ArtifactKindArg` enum to accept `hypothesis`) is out of W3's scope.
+/// Seeding directly via `create_artifact_for_test` lets W3's integration
+/// test run independently of W2.
+fn hypothesis_body_with_state(id: &str, slug: &str, title: &str, state: &str) -> String {
+    format!(
+        "---\n\
+id: {id}\n\
+slug: {slug}\n\
+title: \"{title}\"\n\
+kind: hypothesis\n\
+tier: intent\n\
+hypothesis_state: {state}\n\
+status: draft\n\
+---\n\
+\n\
+# {id}: {title}\n\
+\n\
+## Hypothesis\n\
+A specific, falsifiable claim about how the system works.\n\
+\n\
+## Lifecycle State\n\
+**Current**: `{state}`\n\
+\n\
+## Evidence For\n\
+- (none yet)\n\
+\n\
+## Evidence Against\n\
+- (none yet)\n\
+\n\
+## How To Verify\n\
+Cross-check with an audit pull, against two independent sources.\n\
+\n\
+## Source\n\
+Extraction pass over the auth module observed the cap on session length.\n"
+    )
+}
+
+/// T36 — happy path: a fresh HYP- artifact promotes from `inferred`
+/// (template default) to `strong-inferred`. Both the frontmatter field
+/// and the body's `## Lifecycle State` section must reflect the change
+/// after a follow-up `forgeplan_get` round-trip.
+#[tokio::test]
+async fn t36_forgeplan_hypothesis_promote_walks_one_step_forward() {
+    // Seed: hand-craft a HYP-001 with `hypothesis_state: inferred` via the
+    // test-helpers path. We bypass `forgeplan_new` here because the MCP
+    // `ArtifactKindArg` enum hasn't yet been taught to accept `hypothesis`
+    // (that's W2's territory in this Phase D sprint). Seeding directly
+    // keeps W3 testable independent of W2's merge order.
+    let fx = McpFixture::new_with_seed(|store| async move {
+        let body = hypothesis_body_with_state(
+            "HYP-001",
+            "hyp-auth-tokens-expire-after-24h",
+            "Auth tokens expire after 24h",
+            "inferred",
+        );
+        store
+            .create_artifact_for_test(&NewArtifact {
+                id: "HYP-001".into(),
+                kind: "hypothesis".into(),
+                status: "draft".into(),
+                title: "Auth tokens expire after 24h".into(),
+                body,
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .expect("seed hypothesis artifact");
+    })
+    .await;
+
+    let hyp_id = "HYP-001".to_string();
+
+    // Promote: inferred → strong-inferred.
+    let env = fx
+        .call_tool_json(
+            "forgeplan_hypothesis_promote",
+            json!({
+                "hypothesis_id": hyp_id,
+                "new_state": "strong-inferred",
+                "evidence_refs": ["EVID-001", "EVID-002"],
+                "rationale": "two independent audit pulls confirm the cap",
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+
+    // Wire-shape contract.
+    assert_eq!(resp["id"], hyp_id);
+    assert_eq!(resp["old_state"], "inferred");
+    assert_eq!(resp["new_state"], "strong-inferred");
+    assert_eq!(
+        resp["rationale"], "two independent audit pulls confirm the cap",
+        "rationale echoed verbatim"
+    );
+    let evid = resp["evidence_refs"]
+        .as_array()
+        .expect("evidence_refs array");
+    assert_eq!(evid.len(), 2);
+    assert_eq!(evid[0], "EVID-001");
+    assert_eq!(evid[1], "EVID-002");
+    let cascade = resp["cascade"].as_array().expect("cascade array");
+    assert!(
+        cascade.is_empty(),
+        "fresh hypothesis has no incoming relations: {cascade:?}"
+    );
+    let next = resp["_next_action"].as_str().expect("_next_action present");
+    assert!(
+        next.contains("forgeplan_score"),
+        "next action chains to re-score downstream: {next}"
+    );
+
+    // File-first projection contract: re-read the artifact via the MCP
+    // surface and assert BOTH the frontmatter field AND the body audit
+    // line were persisted.
+    let get_env = fx
+        .call_tool_json("forgeplan_get", json!({"id": hyp_id}))
+        .await;
+    let get_resp = get_env.assert_ok();
+    let body = get_resp["body"].as_str().expect("body present");
+    assert!(
+        body.contains("hypothesis_state: strong-inferred"),
+        "frontmatter must reflect new state: {body}"
+    );
+    assert!(
+        body.contains("inferred → strong-inferred"),
+        "lifecycle audit line must include transition arrow: {body}"
+    );
+    assert!(
+        body.contains("two independent audit pulls confirm the cap"),
+        "rationale must land verbatim in the audit line: {body}"
+    );
+    assert!(
+        body.contains("EVID-001") && body.contains("EVID-002"),
+        "evidence refs must land in audit line: {body}"
+    );
+
+    // Sanity: same `forgeplan_hypothesis_promote` rejects an illegal
+    // forward skip from strong-inferred → parked-then-verified path.
+    // Pin one rejection here to keep the integration suite tight (the
+    // full transition matrix is covered in `hypothesis::tests`).
+    let illegal = fx
+        .call_tool_json(
+            "forgeplan_hypothesis_promote",
+            json!({
+                "hypothesis_id": hyp_id,
+                "new_state": "inferred",
+                "evidence_refs": [],
+                "rationale": "trying to downgrade",
+            }),
+        )
+        .await;
+    assert!(
+        illegal.is_error,
+        "strong-inferred → inferred must reject (reverse-forward forbidden): {:?}",
+        illegal.raw_text
+    );
+    assert!(
+        illegal.raw_text.contains("illegal hypothesis transition")
+            && illegal.raw_text.contains("Allowed next states"),
+        "rejection text must list allowed-next states: {}",
+        illegal.raw_text
+    );
+}
+
+/// T37 — interview-packet draft stub. The plugin from marketplace issue
+/// #79 will replace this with real packet authoring; until then the stub
+/// returns a structured `not_implemented` envelope that agents can detect.
+#[tokio::test]
+async fn t37_forgeplan_interview_packet_draft_returns_not_implemented_stub() {
+    let fx = McpFixture::new().await;
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_interview_packet_draft",
+            json!({
+                "domain": "auth",
+                "seed_ids": ["HYP-001"],
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+
+    assert_eq!(
+        resp["status"], "not_implemented",
+        "stub MUST surface not_implemented status verbatim: {resp}"
+    );
+    assert_eq!(
+        resp["marketplace_issue"], 79,
+        "stub MUST point at the marketplace issue tracking the real impl: {resp}"
+    );
+    let next = resp["_next_action"].as_str().expect("_next_action present");
+    assert!(
+        next.contains("forgeplan-brownfield-pack") || next.contains("#79"),
+        "stub's _next_action must point at install path: {next}"
+    );
+}
+
+/// T38 — interview-packet ingest stub. Same contract as T37.
+#[tokio::test]
+async fn t38_forgeplan_interview_packet_ingest_returns_not_implemented_stub() {
+    let fx = McpFixture::new().await;
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_interview_packet_ingest",
+            json!({
+                "transcript_path": "interviews/session-01.md",
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+
+    assert_eq!(resp["status"], "not_implemented");
+    assert_eq!(resp["marketplace_issue"], 79);
+    let msg = resp["message"]
+        .as_str()
+        .expect("stub message string present");
+    assert!(
+        msg.contains("forgeplan-brownfield-pack"),
+        "stub message must name the plugin so agents know how to recover: {msg}"
+    );
+}

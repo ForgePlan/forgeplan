@@ -1116,6 +1116,65 @@ struct DiscoverCompleteParams {
     session_id: String,
 }
 
+// ── Issue #287 Phase D — Hypothesis + Interview Packet params ────────
+
+/// Params for `forgeplan_hypothesis_promote` — moves a HYP- artifact along
+/// the verification state machine (parked → inferred → strong-inferred →
+/// verified | refuted). See `forgeplan_core::hypothesis` for the full
+/// transition matrix and rejection rules.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HypothesisPromoteParams {
+    /// Hypothesis artifact id or slug (`HYP-001` / `hyp-some-claim`). Must
+    /// resolve to an artifact whose `kind == "hypothesis"`.
+    hypothesis_id: String,
+    /// Target lifecycle state in kebab-case: `parked`, `inferred`,
+    /// `strong-inferred`, `verified`, or `refuted`.
+    new_state: String,
+    /// IDs of evidence artifacts (typically `EVID-NNN`) backing the
+    /// promotion. May be empty (e.g. parked-for-hold) but the rationale is
+    /// still mandatory.
+    #[serde(default)]
+    evidence_refs: Vec<String>,
+    /// Free-form one-line rationale for the audit trail in `## Lifecycle State`.
+    /// Stored verbatim in the body, sanitised for hint emission.
+    rationale: String,
+}
+
+/// Params for `forgeplan_interview_packet_draft` (stub — full implementation
+/// lives in the `forgeplan-brownfield-pack` plugin, marketplace issue #79).
+/// Wire shape is fixed up-front so agents that adopt the brownfield workflow
+/// don't need to re-learn the call when the plugin ships.
+///
+/// Fields carry `#[allow(dead_code)]` because the stub doesn't read them,
+/// but the wire-schema clients see (via `JsonSchema`) must include them —
+/// dropping the fields would break the contract the real plugin will honour.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct InterviewPacketDraftParams {
+    /// Target domain or feature area the interview packet should cover.
+    /// Used by the plugin to scope question generation.
+    #[serde(default)]
+    #[allow(dead_code)]
+    domain: Option<String>,
+    /// Optional list of existing artifact ids (HYP / UC / INV) that seed
+    /// the interview agenda. Empty means "discover from scratch".
+    #[serde(default)]
+    #[allow(dead_code)]
+    seed_ids: Vec<String>,
+}
+
+/// Params for `forgeplan_interview_packet_ingest` (stub — see
+/// `InterviewPacketDraftParams`). Accepts the path to a completed
+/// interview transcript, which the plugin parses into HYP / UC / INV
+/// proposals.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct InterviewPacketIngestParams {
+    /// Filesystem path (relative to the workspace root) of the completed
+    /// interview transcript. Validated by the plugin; stub merely echoes.
+    #[serde(default)]
+    #[allow(dead_code)]
+    transcript_path: Option<String>,
+}
+
 // ── Tool implementations ─────────────────────────────────────
 
 #[tool_router]
@@ -7775,6 +7834,263 @@ impl ForgeplanServer {
                 "installed": installed,
             }),
             next_action,
+        )
+    }
+
+    // ── Issue #287 Phase D — Hypothesis state machine + Interview packet stubs ──
+
+    #[tool(
+        description = "Promote a hypothesis along the verification state machine \
+                       (parked → inferred → strong-inferred → verified; or any → refuted; \
+                       or any → parked). Mutates the artifact body via file-first projection: \
+                       updates the `hypothesis_state:` frontmatter field and appends an audit \
+                       entry to the `## Lifecycle State` section. Returns a list of artifacts \
+                       that informs / based_on the hypothesis (cascade) — informational only, \
+                       not auto-bumped. Rejects illegal transitions with a structured error \
+                       enumerating the allowed next states.",
+        annotations(
+            title = "Promote Hypothesis Lifecycle State",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_hypothesis_promote(
+        &self,
+        Parameters(p): Parameters<HypothesisPromoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Serialise concurrent promotes — two agents writing to the same
+        // hypothesis would race on the `## Lifecycle State` append and could
+        // lose one audit line. Same discipline as `forgeplan_update`.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
+        // 1. Parse the requested target state up-front. Bad input dies before
+        //    we touch the store.
+        let new_state = match forgeplan_core::hypothesis::HypothesisState::parse(&p.new_state) {
+            Some(s) => s,
+            None => {
+                let safe = sanitize_for_hint(&p.new_state);
+                return Ok(err_hinted(
+                    &format!("unknown hypothesis state: `{safe}`"),
+                    "Valid states: parked, inferred, strong-inferred, verified, refuted.",
+                ));
+            }
+        };
+
+        // 2. Resolve id → canonical and load the record. We accept both slug
+        //    and display-id input shapes (resolver handles uppercase
+        //    normalisation, slug lookup, etc.).
+        let canonical_id = match store.resolve_id(&p.hypothesis_id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(artifact_not_found(&p.hypothesis_id)),
+            Err(e) => return Ok(safe_err_result("resolve_id", e)),
+        };
+        let record = match store.get_record(&canonical_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(artifact_not_found(&canonical_id)),
+            Err(e) => return Ok(safe_err_result("get_record", e)),
+        };
+
+        // 3. Kind gate — only Hypothesis artifacts are promotable.
+        if record.kind != "hypothesis" {
+            let safe_id = sanitize_for_hint(&canonical_id);
+            let safe_kind = sanitize_for_hint(&record.kind);
+            return Ok(err_hinted(
+                &format!("artifact `{safe_id}` is kind=`{safe_kind}`, expected `hypothesis`"),
+                "Use `forgeplan_get` to inspect, or `forgeplan_list kind=hypothesis` to find a valid target.",
+            ));
+        }
+
+        // 4. Read current state from frontmatter (defaults to Parked when
+        //    field missing — see `current_state_from_frontmatter` docs).
+        let (fm, _body_only) =
+            match forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body) {
+                Ok(pair) => pair,
+                Err(e) => return Ok(safe_err_result("parse_frontmatter", e)),
+            };
+        let old_state = forgeplan_core::hypothesis::current_state_from_frontmatter(&fm);
+
+        // 5. Transition gate — reject illegal moves with the allowed-next
+        //    list so the agent can self-correct.
+        if !forgeplan_core::hypothesis::transition_allowed(old_state, new_state) {
+            let allowed: Vec<&'static str> = old_state
+                .allowed_next()
+                .into_iter()
+                .map(|s| s.as_str())
+                .collect();
+            let safe_id = sanitize_for_hint(&canonical_id);
+            return Ok(err_hinted(
+                &format!(
+                    "illegal hypothesis transition for `{safe_id}`: `{}` → `{}`",
+                    old_state.as_str(),
+                    new_state.as_str(),
+                ),
+                format!(
+                    "Allowed next states from `{}`: {}.",
+                    old_state.as_str(),
+                    allowed.join(", "),
+                ),
+            ));
+        }
+
+        // 6. Build the new body. Lifecycle line uses today's date in UTC
+        //    so multi-agent promotes from different timezones still sort.
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let new_body = match forgeplan_core::hypothesis::apply_transition_to_body(
+            &record.body,
+            new_state,
+            &today,
+            old_state,
+            &p.evidence_refs,
+            &p.rationale,
+        ) {
+            Ok(b) => b,
+            Err(e) => return Ok(safe_err_result("apply_transition_to_body", e)),
+        };
+
+        // 7. File-first mutation via the canonical projection helper. Red-line
+        //    #8 — never poke `store.update_*` directly from server.rs.
+        let ctx = projection::MutationContext::new(&ws, &store);
+        if let Err(e) =
+            projection::update_body_with_projection(&ctx, &canonical_id, &new_body).await
+        {
+            return Ok(safe_err_result("update_body_with_projection", e));
+        }
+
+        // 8. Cascade enumeration — artifacts whose OUTGOING relations point at
+        //    this hypothesis via `informs` or `based_on`. We surface the list
+        //    so the agent can decide whether to re-score downstream artifacts;
+        //    we do NOT auto-bump them (informational only — explicit per brief).
+        let cascade: Vec<String> = match store.get_incoming_relations(&canonical_id).await {
+            Ok(rels) => rels
+                .into_iter()
+                .filter(|(_src, rel)| rel == "informs" || rel == "based_on")
+                .map(|(src, _rel)| src)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    artifact = %canonical_id,
+                    error = %e,
+                    "cascade enumeration failed (non-fatal); returning empty list"
+                );
+                Vec::new()
+            }
+        };
+
+        // 9. Response. Sanitize the hypothesis id splice into `_next_action`
+        //    via `sanitize_for_hint` (same C-2 defence used by `forgeplan_update`).
+        let safe_id = sanitize_for_hint(&canonical_id);
+        let next_action = format!("Re-score downstream artifacts: `forgeplan_score {safe_id}`.");
+        hinted_result(
+            &serde_json::json!({
+                "id": canonical_id,
+                "old_state": old_state.as_str(),
+                "new_state": new_state.as_str(),
+                "evidence_refs": p.evidence_refs,
+                "rationale": p.rationale,
+                "cascade": cascade,
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "experimental: draft an interview packet to validate brownfield hypotheses. \
+                       STUB — the full implementation ships with the `forgeplan-brownfield-pack` \
+                       plugin (marketplace issue #79). Without the plugin installed this tool \
+                       echoes a `not_implemented` envelope so agents can detect the gap and \
+                       surface the install hint.",
+        annotations(
+            title = "Draft Interview Packet (experimental, stub)",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_interview_packet_draft(
+        &self,
+        Parameters(_p): Parameters<InterviewPacketDraftParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Acquire the workspace lock even though the stub is read-only.
+        // Two reasons: (1) defensive future-proofing — when the real plugin
+        // hook lands, the contract already says writes are serialised;
+        // (2) require_workspace returns Err on a non-initialised workspace,
+        // which means agents calling the stub on a bare directory get the
+        // same "no workspace" message as every other tool, instead of a
+        // confusing "stub works fine".
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "status": "not_implemented",
+                "marketplace_issue": 79,
+                "message": "Install forgeplan-brownfield-pack plugin to enable; \
+                            or invoke via shell pipeline temporarily.",
+            }),
+            "Install plugin: see marketplace issue #79 (`forgeplan-brownfield-pack`).",
+        )
+    }
+
+    #[tool(
+        description = "experimental: ingest a completed interview transcript and propose HYP / UC / INV \
+                       artifacts. STUB — the full implementation ships with the `forgeplan-brownfield-pack` \
+                       plugin (marketplace issue #79). Stub returns a `not_implemented` envelope so agents \
+                       can detect the gap and surface the install hint.",
+        annotations(
+            title = "Ingest Interview Packet (experimental, stub)",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_interview_packet_ingest(
+        &self,
+        Parameters(_p): Parameters<InterviewPacketIngestParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "status": "not_implemented",
+                "marketplace_issue": 79,
+                "message": "Install forgeplan-brownfield-pack plugin to enable; \
+                            or invoke via shell pipeline temporarily.",
+            }),
+            "Install plugin: see marketplace issue #79 (`forgeplan-brownfield-pack`).",
         )
     }
 }

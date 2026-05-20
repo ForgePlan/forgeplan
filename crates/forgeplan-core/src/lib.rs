@@ -22,6 +22,7 @@ pub mod git;
 pub mod graph;
 pub mod health;
 pub mod hints;
+pub mod hypothesis;
 pub mod ingest;
 pub mod journal;
 pub mod lifecycle;
