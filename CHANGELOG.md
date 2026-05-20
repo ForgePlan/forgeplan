@@ -11,6 +11,67 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-05-20
+
+Sprint headline: **Epic #287 brownfield extraction surface + 6 dogfood-discovered issues, closed inline across 4 adversarial audit rounds (r4/r5/r6/r7) + audit-r-dogfood.**
+
+Two parallel sprints landed into one release:
+
+### A. Epic #287 — brownfield extraction surface
+
+6 new `ArtifactKind` variants (`use_case`, `glossary`, `invariant`, `scenario`, `hypothesis`, `domain_model`) with Factum/Intent two-tier validation, 7 new MCP tools (`forgeplan_hypothesis_status` / `_promote` / `_coverage_business` / `_contradictions` / `_orphans` / `_interview_packet_draft` / `_ingest`), brownfield graph rendering (`forgeplan_graph --brownfield-only`), and a Hypothesis lifecycle state machine (parked → inferred → strong-inferred → verified → refuted with terminal absorbing states).
+
+5 adversarial audit rounds — r4 (13 findings closed), r5 (8 deferred items closed inline), r6 (ARCH-H1 consolidation + PROB-069), r7 (full-branch review, 13 more findings), plus E2E coverage. **ADR-014** added for AnomalyKind catalog evolution policy.
+
+Phase E (`forgeplan_render_canonical` + `forgeplan_export_rag`) split into [`marketplace#79`](https://github.com/ForgePlan/marketplace/issues/79) — those tools live in plugin layer (wrap brownfield-pack skills C10/C12), not core.
+
+### B. 6 dogfood-discovered issues (#290..#295)
+
+Collected from real-world workspace usage in `marketplace` repo, filed upstream, fixed in this release:
+
+- **#290 `forgeplan_release_notes` split-repo discovery** — new `find_git_root` with 3-tier discovery (start → walk up bounded by `.forgeplan/` marker or 8 hops → walk down one level with symlink rejection and deterministic ordering). Fixes "not a git repository" failure when `.forgeplan/` and `.git/` are in different directories.
+- **#291 `forgeplan_restore` target_status override** — new `apply_restore_with_target` accepts explicit `target_status` (`draft`/`active`/`deprecated`). Lifecycle FSM validates the transition before mutation. Response surfaces `restored_status` + `restored_status_source` so operators see exactly which state was applied.
+- **#292 `forgeplan_discover_*` status field disambiguation** — added `session_status` (explicit session state) and `artifact_status` (always `draft` for newly-created findings) to all three discover tools. Legacy `status` field kept for backward compat (zero breakage on existing consumers). `_field_warnings` deprecation channel announces upcoming removal of legacy `status`.
+- **#293 `forgeplan_drift` markdown-table parser** — `extract_path_from_line` now handles backtick-quoted paths, pipe-delimited table cells, and `(planned)`/`(done)` annotations. Closes silent false-negative where drift detector returned `changed_files: []` for artifacts with table-formatted `## Affected Files`. Control chars / ANSI escapes also rejected (closes downstream-display injection vector).
+- **#294 `forgeplan_activate` error UX** — "No evidence linked" error now teaches the canonical 5-step fix order verbatim in the error message (`forgeplan_new evidence → update → link informs → activate EVID → activate parent`). Operators no longer reach for `--force` as a shortcut.
+- **#295 `forgeplan_new(kind=evidence, parent_id=...)` auto-link** — optional `parent_id` parameter creates the `informs` link in one call. Closes the 3-step boilerplate (new → update → link) observed in 100% of measured EVIDs across 12 sprints. Auto-link uses `add_link_with_projection` (file-first per ADR-003); response carries `auto_linked` + `auto_link_warnings` fields.
+
+### C. Audit-r-dogfood — 8 findings closed inline before release
+
+3 parallel adversarial agents (security/code-quality/architecture) reviewed the 6 dogfood fixes. 24 findings total (after dedup). Closed inline:
+
+- **SEC-1 HIGH** — `find_git_root` rejects symlinks via `symlink_metadata`, bounds walk-up by `.forgeplan/` marker, sorts walk-down candidates alphabetically. Closes: attacker plants `subdir/.git -> /other-user-repo/.git` → release_notes leaks their commits.
+- **CODE-1 HIGH** — `restored_status_source` compares actual values (after trim+lowercase) instead of just `target_status.is_some()`. Previously reported `explicit_override` even on no-op overrides.
+- **SEC-2 MED** — `target_status` FSM transition validation. Forbidden transitions (e.g. `deprecated → draft`) rejected before any mutation.
+- **SEC-3 MED** — control chars + Unicode line separators (`U+0085/2028/2029`) rejected in `extract_path_from_line` results. Closes ANSI-escape injection in MCP `DriftedFile.path`.
+- **SEC-4 MED** — `auto_link_warnings` route errors through `sanitize_error_chain`. Wave 9 SEC-H3 regression closed — raw `{e}` HOME paths no longer leak.
+- **CODE-2 MED** — `_field_warnings` deprecation channel added to `_start` and `_complete` (was only in `_finding`). All three discover tools now consistent.
+- **CODE-4 / ARCH-2 MED** — `NewArtifactResponse` gets proper `auto_linked` + `auto_link_warnings` DTO fields (`#[serde(skip_serializing_if)]`). Replaces post-hoc `serde_json::Value` mutation that broke JsonSchema codegen for TS clients.
+- **CODE-7 LOW** — `target_status` trimmed before validation so `Some("  active  ")` no longer falls through with inscrutable error.
+
+### D. New methodology documentation
+
+- **`docs/methodology/CROSS-REPO-WORKFLOW.ru.md`** — protocol for coordinating issues / fixes / feature requests across the multi-repo ForgePlan org (`forgeplan` core ↔ `marketplace` ↔ `forgeplan-hud` ↔ ...). Codifies the 5 typical failure modes when 1→5 repos org grows without conventions, label taxonomy proposal, session-start inbox sweep protocol for AI agents, 4-phase implementation roadmap.
+
+### Deferred to v0.33.0 (tracked as GitHub issues)
+
+- **[#296](https://github.com/ForgePlan/forgeplan/issues/296)** — Architectural debt cluster (ARCH-1/3/4/5/6/7): ADR for status deprecation, explicit `git_root` param, invert restore as shim, undo::restore projection exemption, methodology doc location, shared evidence_recipe helper.
+- **[#297](https://github.com/ForgePlan/forgeplan/issues/297)** — Security follow-ups (SEC-5/6): TOCTOU window in find_git_root, sanitize_for_hint on activate error path.
+- **[#298](https://github.com/ForgePlan/forgeplan/issues/298)** — Code quality edge cases (CODE-5/6/8/9/10/11): paths with `(parens)` in name, tab-indented bullets, walk_artifact_changes integration test, backticks-in-path edge.
+
+### Cross-repo follow-ups
+
+- **[marketplace#86](https://github.com/ForgePlan/marketplace/issues/86)** — docs update for `discover_finding` workaround references (now obsolete after #292 closure).
+- **[marketplace#79](https://github.com/ForgePlan/marketplace/issues/79)** — Phase E split: `forgeplan_render_canonical` + `forgeplan_export_rag` in `forgeplan-brownfield-pack` plugin.
+
+### Tests, pipeline, scope
+
+- **3034 tests PASS** on Epic #287 branch (`feat/issues-286-288-289`)
+- **2751 tests PASS** on dogfood branch (`fix/issues-290-295-dogfood-findings`)
+- cargo clippy clean on both, cargo fmt clean, scripts/smoke-test.sh PASS (14 kinds including 6 brownfield)
+- **5 audit rounds** total across both sprints
+- **ADR-014** new methodology artefact
+
 ## [0.31.0] - 2026-05-13
 
 Sprint headline: **Wave 9 polish + 5-agent adversarial audit closure.**
