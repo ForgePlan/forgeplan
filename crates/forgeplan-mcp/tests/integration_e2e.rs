@@ -1687,3 +1687,132 @@ title: Test\n\
         "rejected promote must NOT mutate status (atomicity): {resp:?}"
     );
 }
+
+// ── T14: Issue #295 — forgeplan_new evidence parent_id auto-link ──────
+
+/// Happy path: `forgeplan_new(kind=evidence, parent_id=<PRD>)` creates
+/// the evidence AND writes an `informs` link in one call. Response
+/// carries `auto_linked` with the canonical parent id.
+#[tokio::test]
+async fn t14_forgeplan_new_evidence_with_parent_id_auto_links() {
+    let fx = McpFixture::new().await;
+
+    // Seed a PRD to link against.
+    fx.call_tool_json(
+        "forgeplan_new",
+        json!({"kind": "prd", "title": "Parent PRD"}),
+    )
+    .await
+    .assert_ok();
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({
+                "kind": "evidence",
+                "title": "Auto-linked evidence",
+                "parent_id": "PRD-001",
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+    assert_eq!(resp["kind"], "evidence");
+    assert_eq!(
+        resp["auto_linked"], "PRD-001",
+        "response must surface the linked parent: {resp}"
+    );
+
+    // Verify graph: EVID-001 should have an outgoing `informs` link to PRD-001.
+    let graph_env = fx.call_tool_json("forgeplan_graph", json!({})).await;
+    let graph_resp = graph_env.assert_ok();
+    let mermaid = graph_resp["mermaid"].as_str().unwrap_or("");
+    assert!(
+        mermaid.contains("EVID-001") && mermaid.contains("PRD-001") && mermaid.contains("informs"),
+        "graph must include the auto-link edge: {mermaid}"
+    );
+}
+
+/// Slug-form parent_id also works (resolver accepts both display id and slug).
+#[tokio::test]
+async fn t14b_forgeplan_new_evidence_with_slug_parent_resolves() {
+    let fx = McpFixture::new().await;
+
+    fx.call_tool_json(
+        "forgeplan_new",
+        json!({"kind": "prd", "title": "Auth System"}),
+    )
+    .await
+    .assert_ok();
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({
+                "kind": "evidence",
+                "title": "evidence via slug",
+                "parent_id": "prd-auth-system",
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+    assert!(
+        resp["auto_linked"]
+            .as_str()
+            .unwrap_or("")
+            .contains("PRD-001"),
+        "slug parent_id must resolve to canonical id: {resp}"
+    );
+}
+
+/// Non-existent parent_id: artifact still created, warning surfaced,
+/// no `auto_linked` field. Caller can retry with `forgeplan_link`.
+#[tokio::test]
+async fn t14c_forgeplan_new_evidence_with_missing_parent_warns_but_creates() {
+    let fx = McpFixture::new().await;
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({
+                "kind": "evidence",
+                "title": "orphan evidence",
+                "parent_id": "PRD-NONEXISTENT-9999",
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+    assert_eq!(resp["kind"], "evidence", "artifact still created");
+    assert!(
+        resp["auto_linked"].is_null() || resp.get("auto_linked").is_none(),
+        "no auto_linked field when target missing: {resp}"
+    );
+    let warnings = resp["auto_link_warnings"]
+        .as_array()
+        .expect("auto_link_warnings array when target missing");
+    assert!(!warnings.is_empty(), "warning surfaced: {warnings:?}");
+}
+
+/// parent_id with non-evidence kind is rejected with a clear error.
+#[tokio::test]
+async fn t14d_forgeplan_new_parent_id_rejected_for_non_evidence_kind() {
+    let fx = McpFixture::new().await;
+
+    fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "Parent"}))
+        .await
+        .assert_ok();
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({
+                "kind": "rfc",
+                "title": "RFC trying parent_id",
+                "parent_id": "PRD-001",
+            }),
+        )
+        .await;
+    assert!(
+        env.is_error,
+        "parent_id with non-evidence kind must be rejected: {env:?}"
+    );
+}

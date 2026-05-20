@@ -679,6 +679,17 @@ struct ActivityStatsParams {
 struct RestoreParams {
     /// Artifact ID to recover from the most recent non-consumed receipt.
     id: String,
+    /// Issue #291: optional explicit override of the restored status.
+    /// Default behaviour reads `prior_status` from the receipt snapshot
+    /// (which captures the artifact's status at the moment of `_delete`
+    /// / `_deprecate` / `_supersede`). Pass `target_status: "active"` to
+    /// force a specific status — useful when the operator wants to
+    /// restore to a different state than was captured.
+    ///
+    /// Valid values: `"draft"`, `"active"`, `"deprecated"`.
+    /// Unknown values are rejected with a structured error.
+    #[serde(default)]
+    target_status: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -695,6 +706,17 @@ struct NewParams {
     kind: ArtifactKindArg,
     /// Artifact title
     title: String,
+    /// Issue #295: optional parent artifact ID for auto-link.
+    /// When supplied AND kind=evidence, an `informs` link is created
+    /// from the new EVID to the named parent in the same call.
+    /// Reduces the 3-step EVID flow (new → update → link) to 2 steps
+    /// (new+autolink → update).
+    /// Accepts display id (`PRD-074`) or slug (`prd-auth-system`).
+    /// For kinds other than `evidence` the parameter is rejected with
+    /// a structured error (other auto-link patterns are intentionally
+    /// out of scope for v1 — see issue #295).
+    #[serde(default)]
+    parent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1347,6 +1369,16 @@ impl ForgeplanServer {
 
         let template_key = artifact_kind.template_key();
 
+        // Issue #295: `parent_id` is opt-in shorthand for EVID flow only.
+        // Reject early if combined with a non-evidence kind so the caller
+        // gets clear semantics instead of silent ignoring.
+        if p.parent_id.is_some() && template_key != "evidence" {
+            return Ok(err_hinted(
+                &format!("parent_id is only valid for kind=evidence (got kind={template_key})"),
+                "Fix: omit parent_id, or use forgeplan_link after creation for other kinds.",
+            ));
+        }
+
         // Duplicate detection (FR-004 of PRD-043) — non-blocking warnings.
         // MCP is non-interactive, so the artifact is still created and warnings
         // are returned for the AI agent to react to.
@@ -1455,6 +1487,67 @@ impl ForgeplanServer {
         // only — a failure here is logged and does not break creation.
         maybe_init_phase(&ws, &id, "forgeplan_new").await;
 
+        // Issue #295: auto-link evidence → parent via `informs` when
+        // `parent_id` supplied. Closes the 3-step EVID flow (new →
+        // update → link) into 2 steps (new+autolink → update).
+        // Resolve via `store.resolve_id` so both display id (`PRD-074`)
+        // and slug (`prd-auth-system`) work. If the parent doesn't
+        // exist we DO NOT roll back the creation — the artifact is
+        // still useful, the link is the missing piece. Caller gets
+        // a structured warning surfaced in response `warnings`.
+        let mut auto_link_warnings: Vec<String> = Vec::new();
+        let mut auto_link_target: Option<String> = None;
+        if let Some(ref raw_parent) = p.parent_id {
+            let safe = sanitize_for_hint(raw_parent);
+            // Audit-dogfood SEC-4: Wave 9 SEC-H3 closed ~40 sites that
+            // leaked raw `{e}` (HOME paths, CARGO_TARGET_DIR, etc.) into
+            // MCP responses. Auto-link warnings re-introduce the same
+            // leak vector. Route every error display through
+            // `sanitize_error_chain` so this code preserves the SEC-H3
+            // posture instead of regressing it.
+            let safe_err = |e: anyhow::Error| -> String {
+                forgeplan_core::projection::sanitize_error_chain(&e)
+            };
+            match store.resolve_id(raw_parent).await {
+                Ok(Some(canonical_parent)) => {
+                    // Parent exists — write the link via the projection
+                    // helper so the markdown frontmatter `links:` array
+                    // stays in sync (file-first per ADR-003).
+                    match projection::add_link_with_projection(
+                        &projection::MutationContext::new(&ws, &store),
+                        &id,
+                        &canonical_parent,
+                        "informs",
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            auto_link_target = Some(canonical_parent);
+                        }
+                        Err(e) => {
+                            auto_link_warnings.push(format!(
+                                "Auto-link {id} -> {safe} (informs) failed: {}. \
+                                 Use `forgeplan_link` to retry.",
+                                safe_err(anyhow::anyhow!("{e}"))
+                            ));
+                        }
+                    }
+                }
+                Ok(None) => {
+                    auto_link_warnings.push(format!(
+                        "parent_id `{safe}` does not exist in workspace — \
+                         auto-link skipped. Artifact {id} created in draft."
+                    ));
+                }
+                Err(e) => {
+                    auto_link_warnings.push(format!(
+                        "Auto-link skipped (resolve_id failed): {}",
+                        safe_err(e)
+                    ));
+                }
+            }
+        }
+
         // PROB-060 Phase 2 Wave 1 — combine W1.A response shape (CD-2) +
         // W1.B slug-aware hint (CD-5).
         //
@@ -1498,6 +1591,13 @@ impl ForgeplanServer {
         // frontmatter and rendered the display id); wrapping in `Some(..)`
         // here keeps the JSON identical for current callers while letting
         // the schema match `ArtifactSummaryDto` / `ArtifactRecordDto`.
+        //
+        // Issue #295 (audit-dogfood CODE-4 / ARCH-2 fix): `auto_linked` +
+        // `auto_link_warnings` are now proper DTO fields (with
+        // `skip_serializing_if`) — preserves JsonSchema contract for
+        // typed clients (TS codegen). Old consumers ignore unknown
+        // fields; new consumers read them. Replaces post-hoc Value
+        // mutation that broke schema codegen.
         Ok(json_result(&NewArtifactResponse {
             id,
             kind: template_key.into(),
@@ -1511,6 +1611,8 @@ impl ForgeplanServer {
             id_canonical,
             id_display,
             hint: identity_hint,
+            auto_linked: auto_link_target,
+            auto_link_warnings,
         }))
     }
 
@@ -6148,7 +6250,21 @@ impl ForgeplanServer {
         Ok(json_result(&serde_json::json!({
             "session_id": session.id,
             "project_name": session.project_name,
+            // Issue #292: `status` ambiguity — refers to SESSION state,
+            // not artifact state. Old field kept for backward compat;
+            // new `session_status` is the unambiguous name.
             "status": session.status,
+            "session_status": session.status,
+            // Audit-dogfood CODE-2 fix: parallel `_field_warnings` channel
+            // (same one used in _finding) so schema-aware clients see the
+            // deprecation consistently across all 3 discover_* tools.
+            "_field_warnings": [
+                {
+                    "field": "status",
+                    "severity": "deprecation_notice",
+                    "message": "`status` refers to SESSION state. Read `session_status` instead. `status` will be removed in a future major release."
+                }
+            ],
             "current_phase": session.current_phase,
             "protocol": protocol,
             "_next_action": format!(
@@ -6286,13 +6402,37 @@ impl ForgeplanServer {
             "phase": phase.name(),
             "tier": p.tier,
             "total_findings": session.findings.len(),
+            // Issue #292 closure — disambiguate `status`:
+            //   * `status` (legacy, deprecated): SESSION state. Kept for
+            //     backward compat — but readers should switch to the
+            //     two new fields below.
+            //   * `session_status`: explicitly the session's state
+            //     ("active" while recording, "completed" after _complete).
+            //   * `artifact_status`: the status of the artifact JUST
+            //     CREATED by this call. Always "draft" — operators must
+            //     `forgeplan_activate <artifact_id>` before relying on
+            //     it (or `forgeplan_deprecate` if it was a mis-finding).
+            // Operators were confusing the first field for the third.
             "status": session.status,
+            "session_status": session.status,
+            "artifact_status": "draft",
+            // Option E (issue #292 follow-up audit): expose the semantic
+            // mismatch through a structured warning channel agents can
+            // parse. Old consumers ignore unknown fields, new consumers
+            // see the upcoming deprecation of `status` and migrate.
+            "_field_warnings": [
+                {
+                    "field": "status",
+                    "severity": "deprecation_notice",
+                    "message": "`status` refers to SESSION state. The created artifact is always in `draft`. Read `artifact_status` (this finding's artifact) and `session_status` (this session) instead. `status` will be removed in a future major release."
+                }
+            ],
             // PRD-071: single primary action — finalize the session. If
             // more findings exist the agent simply re-calls _finding; the
             // hint reflects the canonical path forward.
             "_next_action": format!(
-                "Finding recorded. Complete session when phases done: \
-                 `forgeplan_discover_complete session_id=\"{}\"`.",
+                "Finding recorded (artifact in draft). Complete session when \
+                 phases done: `forgeplan_discover_complete session_id=\"{}\"`.",
                 session.id
             ),
         })))
@@ -6334,7 +6474,23 @@ impl ForgeplanServer {
         Ok(json_result(&serde_json::json!({
             "session_id": session.id,
             "project_name": session.project_name,
+            // Issue #292: `status` here refers to SESSION lifecycle
+            // (always "completed" at this point — _complete just set it).
+            // Backward-compat preserved; new `session_status` is the
+            // unambiguous name. NB: `artifacts_created` lists the
+            // finding artifacts — those are in `draft` until activated.
             "status": session.status,
+            "session_status": session.status,
+            // Audit-dogfood CODE-2 fix: parallel `_field_warnings` channel
+            // (same one used in _start / _finding) for consistency across
+            // all 3 discover_* tools.
+            "_field_warnings": [
+                {
+                    "field": "status",
+                    "severity": "deprecation_notice",
+                    "message": "`status` refers to SESSION state. Read `session_status` instead. `status` will be removed in a future major release."
+                }
+            ],
             "total_findings": session.findings.len(),
             "phase_counts": phase_counts.iter().map(|(p, c)| (p.name(), c)).collect::<std::collections::HashMap<_, _>>(),
             "tier_counts": tier_counts,
@@ -6342,7 +6498,9 @@ impl ForgeplanServer {
             "completed_at": session.completed_at,
             // PRD-071: single primary action — health check is the
             // canonical post-discovery step.
-            "_next_action": "Validate the discovery output: `forgeplan_health`.",
+            "_next_action": "Validate the discovery output: `forgeplan_health`. \
+                            Finding artifacts created by this session are in `draft` — \
+                            run `forgeplan_activate <id>` on the ones to keep.",
         })))
     }
 
@@ -7265,7 +7423,15 @@ impl ForgeplanServer {
             }
         };
 
-        match forgeplan_core::undo::restore::apply_restore(&ws, &store, &receipt).await {
+        // Issue #291: forward optional target_status override.
+        match forgeplan_core::undo::restore::apply_restore_with_target(
+            &ws,
+            &store,
+            &receipt,
+            p.target_status.as_deref(),
+        )
+        .await
+        {
             Ok(report) => {
                 let safe_id = sanitize_for_hint(&report.artifact_id);
                 let op_str = match report.op {
@@ -7303,6 +7469,24 @@ impl ForgeplanServer {
                         report.relations_restored
                     )
                 };
+                // Issue #291: surface the restored status explicitly so the
+                // operator can verify which state the artifact was returned
+                // to. `restored_status_source` says whether the value came
+                // from the receipt's captured prior_status or from the
+                // explicit `target_status` override.
+                //
+                // Audit-dogfood CODE-1 HIGH fix: compare *values*, not
+                // presence. If operator passes `target_status` equal to
+                // what the snapshot already had, the source is still
+                // `receipt_snapshot` semantically (override matched the
+                // default — no override effect). Previously this reported
+                // "explicit_override" misleadingly even on no-op overrides.
+                let restored_status_source = match p.target_status.as_deref() {
+                    Some(t) if t.trim().to_lowercase() != report.restored_status => {
+                        "explicit_override"
+                    }
+                    _ => "receipt_snapshot",
+                };
                 hinted_result(
                     &serde_json::json!({
                         "restored": report.artifact_id,
@@ -7310,6 +7494,8 @@ impl ForgeplanServer {
                         "relations_restored": report.relations_restored,
                         "relations_skipped": safe_skipped,
                         "projection_restored": report.projection_restored,
+                        "restored_status": report.restored_status,
+                        "restored_status_source": restored_status_source,
                         "warnings": safe_warnings,
                     }),
                     next_action,
@@ -10641,6 +10827,7 @@ mod claim_mcp_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Full cycle".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -10741,6 +10928,7 @@ mod claim_mcp_tests {
                 srv.forgeplan_new(Parameters(NewParams {
                     kind: ArtifactKindArg::Prd,
                     title: format!("Concurrent PRD {i}"),
+                    parent_id: None,
                 }))
                 .await
             }));
@@ -10861,6 +11049,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Auth System".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -10918,6 +11107,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Payment Gateway".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -10963,6 +11153,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Rfc,
                 title: "Identity Resolver".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -11010,6 +11201,7 @@ mod prob060_response_shape_tests {
                 .forgeplan_new(Parameters(NewParams {
                     kind: ArtifactKindArg::Prd,
                     title: title.to_string(),
+                    parent_id: None,
                 }))
                 .await
                 .unwrap();
@@ -11067,6 +11259,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Quantum Cache".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -11260,6 +11453,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Mcp Hint Pre Merge".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -11302,6 +11496,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Mcp Hint Post Merge".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
@@ -11340,6 +11535,7 @@ mod prob060_response_shape_tests {
             .forgeplan_new(Parameters(NewParams {
                 kind: ArtifactKindArg::Prd,
                 title: "Mcp Update Hint Pre Merge".to_string(),
+                parent_id: None,
             }))
             .await
             .unwrap();
