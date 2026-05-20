@@ -26,6 +26,7 @@
 //! - `circular_dependency` — graph cycle in artifact relations
 //! - `duplicate_artifact` — pair flagged by health's duplicate detector
 
+use crate::artifact::sanitize::sanitize_for_hint;
 use crate::db::store::LanceStore;
 use crate::health::DEFAULT_STALE_DRAFT_HOURS;
 use crate::scoring::evidence::is_evidence_complete;
@@ -82,8 +83,16 @@ pub enum AnomalyKind {
     /// not for evidence→artifact "informs" relationships.
     /// evidence fields: { source, target, current_relation }
     MistypedBasedOn,
-    /// Active artifact lacks a required MUST section per its kind schema.
-    /// evidence fields: { missing_sections: [..] }
+    /// Active artifact contains stub markers (`TODO`, `TBD`, `placeholder`,
+    /// `XXX`) inside its body — indicates an artifact was activated before
+    /// its required MUST sections were actually filled.
+    ///
+    /// Wraps the `active_stubs` heuristic from `forgeplan_core::health`.
+    /// The kind name is preserved for backward compatibility with the v1
+    /// catalog (#289); the detector's actual surface is stub-marker
+    /// detection, not section-presence detection.
+    ///
+    /// evidence fields: { title, markers_found, message }
     MissingMustSection,
     /// EVID `valid_until` is in the past but the EVID still has at least
     /// one outgoing informs/based_on link to an active artifact.
@@ -145,7 +154,16 @@ pub struct AnomalyFilter {
     /// strictness is requested by the caller — currently exact match).
     pub severity: Option<Severity>,
     /// Only return anomalies observed at or after this timestamp.
-    /// Useful for diff-style "what's new since last run?" workflows.
+    ///
+    /// **v1 limitation (audit-r2)**: every anomaly produced by a single
+    /// `detect_anomalies` call shares the same `observed_at` value (set
+    /// to the call timestamp), so this filter is effectively "is the
+    /// current scan time at or after `since`?" — all-or-nothing. Real
+    /// diff-style polling requires persisting observed_at per-anomaly
+    /// across runs (a journal table). Tracked for v0.33+ — for now,
+    /// callers should use the filter only for scheduling guards
+    /// ("don't re-scan within X minutes"), NOT for incremental
+    /// "what's new" detection.
     pub since: Option<DateTime<Utc>>,
     /// Limit to a single anomaly kind. Useful for targeted dispatches
     /// (e.g. orchestrator polls only `stuck_draft` because that's what
@@ -489,6 +507,15 @@ pub async fn detect_anomalies(
     }
 
     for stub in &health_report.active_stubs {
+        // SEC-M1 closure (audit-r2): wrap user-controlled title through
+        // sanitize_for_hint before emitting into the response evidence
+        // payload. Wave 9 hardened the health JSON boundary; this site
+        // is downstream of that boundary and re-emits the raw struct
+        // field, re-opening CWE-117 / CWE-1007 prompt-injection vectors
+        // for any LLM agent consuming forgeplan_anomalies output.
+        // `markers_found` is a Vec<String> of validated marker tokens
+        // (TODO/TBD/...) — not user-controlled, kept verbatim.
+        // `message` is a static template string — also kept verbatim.
         anomalies.push(Anomaly {
             id: format!("anom-missing-must-{}", stub.id),
             kind: AnomalyKind::MissingMustSection,
@@ -501,7 +528,7 @@ pub async fn detect_anomalies(
                 stub.id
             ),
             evidence: serde_json::json!({
-                "title": stub.title,
+                "title": sanitize_for_hint(&stub.title),
                 "markers_found": stub.markers_found,
                 "message": stub.message,
             }),

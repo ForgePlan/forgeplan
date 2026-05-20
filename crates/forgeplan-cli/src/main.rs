@@ -224,6 +224,14 @@ enum Commands {
         /// destroying the artifact via `forgeplan delete`.
         #[arg(long)]
         replace: bool,
+        /// Issue #288 Part A: when the link source is a complete evidence
+        /// artifact (kind=evidence + status=draft + body has verdict +
+        /// congruence_level), silently activate it draft → active in the
+        /// same call. Mirrors `auto_activate_source_if_complete` on the
+        /// MCP `forgeplan_link` tool. No-op when the source doesn't meet
+        /// the criteria.
+        #[arg(long)]
+        auto_activate_complete: bool,
     },
     /// Remove a relation between two artifacts
     Unlink {
@@ -1149,7 +1157,10 @@ async fn main() -> anyhow::Result<()> {
             target,
             relation,
             replace,
-        } => commands::link::run(&source, &target, &relation, replace).await,
+            auto_activate_complete,
+        } => {
+            commands::link::run(&source, &target, &relation, replace, auto_activate_complete).await
+        }
         Commands::Unlink {
             source,
             target,

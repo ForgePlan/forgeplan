@@ -11,6 +11,41 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added
+
+- **Link upsert + `forgeplan_unlink` MCP tool** (issue #286) — `forgeplan_link`
+  gains optional `replace: bool` parameter. When true and an edge between
+  `(source, target)` already exists with a different relation, the old edge
+  is replaced atomically (add then delete). Used to fix mis-typed
+  `based_on` ↔ `informs` relations that previously cascaded a CL penalty
+  through R_eff with no MCP-safe recovery path (only `forgeplan_delete`
+  would work, destroying the artifact). New `forgeplan_unlink` tool +
+  `forgeplan link --replace` CLI flag. Tool count 73 → 74. The
+  `LinkResponse.auto_activated` field is new (see #288 below); consumers
+  using `#[serde(deny_unknown_fields)]` need to relax that.
+- **Pipeline hygiene primitives** (issue #288) — `forgeplan_link` gains
+  optional `auto_activate_source_if_complete: bool`. When true and the
+  source is `kind=evidence + status=draft + body has verdict +
+  congruence_level + R_eff>0 after the link`, it is silently promoted
+  `draft → active`. Response `LinkResponse.auto_activated: Option<String>`
+  carries the id when the transition fires. Failure is non-fatal —
+  the link itself already committed; tracing::warn fires and the response
+  hints at manual retry. `forgeplan_health` gains `stale_drafts:
+  Vec<StaleDraft>` (24h threshold default; `VerdictThresholds.stale_ready_drafts`
+  default 5 → Unhealthy). Hint chain enhanced — when the link source is
+  a complete-but-still-draft EVID, the response ends with
+  `Activate: forgeplan_activate <id>` so the next step is unambiguous.
+- **`forgeplan_anomalies` tool + v1 catalog** (issue #289) — new MCP tool +
+  CLI command surfaces pipeline anomalies with structured severity + tier
+  classification (auto / adi / user) so plugin-layer orchestrators
+  (`/forge-cycle`, `/forge-cleanup`) can dispatch resolutions without
+  re-classifying. v1 catalog: `stuck_draft`, `orphan_link`,
+  `mistyped_based_on`, `missing_must_section`, `expired_evidence`,
+  `weakest_link_unresolvable`, `phase_mismatch`, `circular_dependency`,
+  `duplicate_artifact`. Filters: `kind` / `severity` / `since`. Tool count
+  74 → 75. CLI: `forgeplan anomalies [--kind X] [--severity Y] [--since TS]
+  [--json]`.
+
 ### Breaking changes
 
 - **`forgeplan_core::dispatch::SerialEntry`** is now `#[non_exhaustive]`

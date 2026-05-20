@@ -1089,6 +1089,28 @@ pub fn health_report_to_json(
             })
         })
         .collect();
+    // Issue #288 Part B closure (audit-r2): expose stale_drafts in the
+    // canonical health JSON so MCP clients + CLI consumers see the data
+    // they need to decide whether to activate. Without this the verdict
+    // downgrades silently and operators have no actionable signal.
+    let stale_drafts: Vec<serde_json::Value> = report
+        .stale_drafts
+        .iter()
+        .map(|d| {
+            let recommendation = match d.recommendation {
+                StaleDraftRecommendation::ReadyToActivate => "ready_to_activate",
+                StaleDraftRecommendation::IncompleteOrOrphan => "incomplete_or_orphan",
+            };
+            serde_json::json!({
+                "id": d.id,
+                "kind": d.kind,
+                "age_hours": d.age_hours,
+                "verdict_set": d.verdict_set,
+                "has_links": d.has_links,
+                "recommendation": recommendation,
+            })
+        })
+        .collect();
 
     serde_json::json!({
         "total": report.total,
@@ -1111,6 +1133,11 @@ pub fn health_report_to_json(
         // LOG-003 FR-020: emit phase_read_errors count in health JSON.
         "phase_read_errors": report.phase_read_errors,
         "gitignore_drift": gitignore_drift,
+        // Issue #288 Part B (audit-r2): stale_drafts surfaced to MCP + CLI
+        // consumers. Each entry includes recommendation so callers can
+        // dispatch tier-by-tier (ready_to_activate → auto-fix, else user
+        // judgment).
+        "stale_drafts": stale_drafts,
     })
 }
 

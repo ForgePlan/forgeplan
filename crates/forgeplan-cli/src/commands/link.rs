@@ -8,6 +8,7 @@ pub async fn run(
     target_id: &str,
     relation: &str,
     replace: bool,
+    auto_activate_complete: bool,
 ) -> anyhow::Result<()> {
     // Normalize relation
     let relation = link::normalize_relation(relation)?;
@@ -99,6 +100,33 @@ Fix: forgeplan list",
     // non-fatal (mutation succeeded) — the wrapper surfaces a Fix: marker so
     // agents/operators see the score-all recovery path.
     common::sync_score_target_or_warn(&store, source_id).await;
+
+    // Issue #288 Part A — CLI parity for auto-activate. Same predicate as
+    // the MCP `forgeplan_link` tool. Failure is non-fatal: the link itself
+    // already committed; we warn and let the user retry forgeplan_activate
+    // manually.
+    if auto_activate_complete
+        && let Ok(Some(src_record)) = store.get_record(source_id).await
+        && src_record.kind.eq_ignore_ascii_case("evidence")
+        && src_record.status.eq_ignore_ascii_case("draft")
+        && forgeplan_core::scoring::evidence::is_evidence_complete(&src_record.body)
+    {
+        match forgeplan_core::lifecycle::activate(&store, source_id, false).await {
+            Ok(_) => {
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, source_id).await
+                {
+                    eprintln!("Warning: auto-activate post-render for {source_id} failed: {e}");
+                }
+                println!("Auto-activated: {source_id} (draft → active)");
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: auto-activate of {source_id} failed: {e}\nFix: forgeplan activate {source_id}"
+                );
+            }
+        }
+    }
 
     // PRD-075 FR-009: hint string lives in core (forgeplan_core::hints) so
     // mutator call sites cannot drift independently.

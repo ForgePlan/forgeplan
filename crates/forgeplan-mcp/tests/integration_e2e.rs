@@ -793,3 +793,236 @@ async fn fixture_workspace_is_initialized() {
         "config.yaml landed in fresh workspace"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Audit-r2 closure — MCP integration tests for issue closures #286 / #288 / #289.
+// The CLAUDE.md red-line #5 ("Verify means: unit tests + REAL E2E each
+// affected surface") was previously violated — the three new tools had
+// pure-Rust unit tests but no MCP-transport round-trip coverage.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Issue #286 — `forgeplan_link` with `replace: true` deletes the
+/// existing edge with a different relation and emits the "Replaced"
+/// message shape. End-to-end through the MCP transport, not just the
+/// projection helper that the existing unit tests cover.
+#[tokio::test]
+async fn t30_forgeplan_link_replace_swaps_mistyped_based_on() {
+    let fx = McpFixture::new().await;
+
+    fx.call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "EV"}))
+        .await
+        .assert_ok();
+    fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "P"}))
+        .await
+        .assert_ok();
+
+    // First link with the wrong relation.
+    fx.call_tool_json(
+        "forgeplan_link",
+        json!({"source": "EVID-001", "target": "PRD-001", "relation": "based_on"}),
+    )
+    .await
+    .assert_ok();
+
+    // Re-link with `replace: true` and the correct relation.
+    let env = fx
+        .call_tool_json(
+            "forgeplan_link",
+            json!({
+                "source": "EVID-001",
+                "target": "PRD-001",
+                "relation": "informs",
+                "replace": true,
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+    let msg = resp["message"].as_str().expect("message");
+    assert!(
+        msg.starts_with("Replaced:"),
+        "replace upsert must surface 'Replaced:' message: got {msg}"
+    );
+    assert!(
+        msg.contains("was: --based_on-->"),
+        "replace message must cite the previous relation for audit trail: {msg}"
+    );
+}
+
+/// Issue #286 — `forgeplan_unlink` removes the edge and a follow-up
+/// unlink fails (idempotent error path covers the existence check).
+#[tokio::test]
+async fn t31_forgeplan_unlink_round_trip() {
+    let fx = McpFixture::new().await;
+
+    fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "P"}))
+        .await
+        .assert_ok();
+    fx.call_tool_json("forgeplan_new", json!({"kind": "rfc", "title": "R"}))
+        .await
+        .assert_ok();
+    fx.call_tool_json(
+        "forgeplan_link",
+        json!({"source": "PRD-001", "target": "RFC-001", "relation": "informs"}),
+    )
+    .await
+    .assert_ok();
+
+    // Unlink succeeds.
+    let env = fx
+        .call_tool_json(
+            "forgeplan_unlink",
+            json!({"source": "PRD-001", "target": "RFC-001", "relation": "informs"}),
+        )
+        .await;
+    let resp = env.assert_ok();
+    let msg = resp["message"].as_str().expect("message");
+    assert!(
+        msg.starts_with("Unlinked:"),
+        "unlink success must produce 'Unlinked:' message: {msg}"
+    );
+
+    // Second unlink fails with a clear error (existence check fired).
+    let env2 = fx
+        .call_tool_json(
+            "forgeplan_unlink",
+            json!({"source": "PRD-001", "target": "RFC-001", "relation": "informs"}),
+        )
+        .await;
+    assert!(
+        env2.is_error,
+        "double-unlink must surface an error, not silent success"
+    );
+}
+
+/// Issue #288 — `auto_activate_source_if_complete: true` flips a
+/// complete-but-still-draft EVID to `active` in the same call as the link.
+#[tokio::test]
+async fn t32_forgeplan_link_auto_activates_complete_evid() {
+    let fx = McpFixture::new().await;
+
+    fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "P"}))
+        .await
+        .assert_ok();
+    fx.call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "E"}))
+        .await
+        .assert_ok();
+    // Make the evidence "complete" by setting structured fields in the body.
+    fx.call_tool_json(
+        "forgeplan_update",
+        json!({
+            "id": "EVID-001",
+            "body": "## Structured Fields\n\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n",
+        }),
+    )
+    .await
+    .assert_ok();
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_link",
+            json!({
+                "source": "EVID-001",
+                "target": "PRD-001",
+                "relation": "informs",
+                "auto_activate_source_if_complete": true,
+            }),
+        )
+        .await;
+    let resp = env.assert_ok();
+    let auto = &resp["auto_activated"];
+    assert!(
+        auto.as_str() == Some("EVID-001"),
+        "complete-draft EVID + auto_activate must report auto_activated: got {auto:?}"
+    );
+}
+
+/// Issue #288 — without the flag the same setup does NOT auto-activate;
+/// `auto_activated` is absent / null in the response.
+#[tokio::test]
+async fn t33_forgeplan_link_without_auto_activate_flag_keeps_draft() {
+    let fx = McpFixture::new().await;
+
+    fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "P"}))
+        .await
+        .assert_ok();
+    fx.call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "E"}))
+        .await
+        .assert_ok();
+    fx.call_tool_json(
+        "forgeplan_update",
+        json!({
+            "id": "EVID-001",
+            "body": "## Structured Fields\n\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n",
+        }),
+    )
+    .await
+    .assert_ok();
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_link",
+            json!({"source": "EVID-001", "target": "PRD-001", "relation": "informs"}),
+        )
+        .await;
+    let resp = env.assert_ok();
+    // Without the flag, `auto_activated` must be absent or null.
+    let auto = &resp["auto_activated"];
+    assert!(
+        auto.is_null(),
+        "without auto_activate flag the source stays draft: got auto_activated={auto:?}"
+    );
+}
+
+/// Issue #289 — `forgeplan_anomalies` returns a structured report on an
+/// empty workspace and the wire shape matches the `AnomalyReport`
+/// contract.
+#[tokio::test]
+async fn t34_forgeplan_anomalies_empty_workspace_shape() {
+    let fx = McpFixture::new().await;
+
+    let env = fx.call_tool_json("forgeplan_anomalies", json!({})).await;
+    let resp = env.assert_ok();
+
+    // The MCP wrapper merges `_next_action` into the payload; the
+    // underlying AnomalyReport carries `anomalies`, `total`, `by_severity`,
+    // `by_tier`. Pin every field's presence.
+    assert!(resp.get("anomalies").is_some(), "anomalies field missing");
+    assert!(resp.get("total").is_some(), "total field missing");
+    assert!(
+        resp.get("by_severity").is_some(),
+        "by_severity field missing"
+    );
+    assert!(resp.get("by_tier").is_some(), "by_tier field missing");
+    assert!(
+        resp.get("_next_action").is_some(),
+        "_next_action hint chain missing"
+    );
+
+    // Empty workspace → zero anomalies.
+    assert_eq!(
+        resp["total"].as_u64(),
+        Some(0),
+        "empty workspace must report total=0: got {}",
+        resp["total"]
+    );
+}
+
+/// Issue #289 — invalid `kind` filter returns a clean error with a
+/// guidance hint listing valid values, not a panic.
+#[tokio::test]
+async fn t35_forgeplan_anomalies_invalid_kind_filter_errors_cleanly() {
+    let fx = McpFixture::new().await;
+
+    let env = fx
+        .call_tool_json("forgeplan_anomalies", json!({"kind": "not_a_real_kind"}))
+        .await;
+    assert!(
+        env.is_error,
+        "unknown anomaly kind must surface an error, not silent empty result"
+    );
+    let body = &env.raw_text;
+    assert!(
+        body.contains("stuck_draft") || body.contains("orphan_link"),
+        "error hint must enumerate valid kinds for the agent to retry: {body}"
+    );
+}

@@ -1233,15 +1233,28 @@ pub async fn replace_link_with_projection(
         let _ = r;
         LinkUpsertOutcome::Unchanged
     } else if let Some((_, old_rel)) = existing_same_target.first() {
-        // Present with a different relation — replace. Delete old first
-        // so the resulting state contains exactly one edge for
-        // (source, target).
+        // Present with a different relation — replace.
+        //
+        // SEC HIGH-1 closure (audit-r2): add THEN delete, not the reverse.
+        // The two store operations are not transactional at the LanceDB
+        // layer; an `add_relation` failure after `delete_relation`
+        // succeeded would leave the source artifact silently edgeless to
+        // the target (CL penalty cascade through the rest of the graph,
+        // no recovery signal). Reversed ordering: if `add_relation`
+        // fails, the OLD edge survives intact and the caller gets a
+        // clean error to retry; if it succeeds and then `delete_relation`
+        // fails (rarer — delete is more reliable than add in LanceDB),
+        // both edges exist temporarily but the workspace is still
+        // navigable, and `forgeplan_anomalies` will flag the duplicate
+        // for cleanup. `add_relation` returns `Err` on duplicate-edge
+        // attempts (db/store.rs:706-713) but the existing edge here has
+        // a DIFFERENT relation, so the dedup check passes.
         store
-            .delete_relation(source, target, old_rel)
+            .add_relation(source, target, relation)
             .await
             .map_err(MutationError::from_store_err)?;
         store
-            .add_relation(source, target, relation)
+            .delete_relation(source, target, old_rel)
             .await
             .map_err(MutationError::from_store_err)?;
         LinkUpsertOutcome::Replaced {

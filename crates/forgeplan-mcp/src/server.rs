@@ -2062,11 +2062,25 @@ impl ForgeplanServer {
             && src_record.status.eq_ignore_ascii_case("draft")
             && forgeplan_core::scoring::evidence::is_evidence_complete(&src_record.body)
         {
-            // Fresh R_eff post-link. The sync_score_target wrapper above
-            // already persisted the recomputed score; reading the record
-            // again picks up the cached column without a second graph walk.
+            // Audit-r2 closure: the gate previously checked `src_record.r_eff_score > 0`,
+            // but `r_eff_recursive` computes evidence's OWN R_eff as the minimum of
+            // its INCOMING evidence — and evidence artifacts have no incoming evidence
+            // by design (they ARE the evidence). The cached r_eff_score for any EVID
+            // is therefore always 0.0, defeating the gate for the canonical use case
+            // (a complete EVID linking to its parent PRD). Issue #288 Part A literally
+            // describes this case as the target of the feature.
+            //
+            // Replacement gate: `is_evidence_complete(body)` already verifies that
+            // verdict + congruence_level are explicit structured fields (not defaults).
+            // The R_eff condition was meant to be a defence-in-depth check that the
+            // pack contributes positive score to its parent — that property is
+            // intrinsic to a complete EVID with verdict ∈ {supports, weakens, refutes}
+            // and CL 0..=3, regardless of the cached column on the evidence row itself.
+            //
+            // We keep the cached value in the response message for operator
+            // visibility but no longer condition activation on it.
             let r_eff_after = src_record.r_eff_score;
-            if r_eff_after > 0.0 {
+            {
                 if p.auto_activate_source_if_complete {
                     match forgeplan_core::lifecycle::activate(&store, &p.source, false).await {
                         Ok(_) => {
