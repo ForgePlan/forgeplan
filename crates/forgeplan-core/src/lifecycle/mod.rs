@@ -66,6 +66,37 @@ pub fn supports_lifecycle(kind: &str) -> bool {
     LIFECYCLE_KINDS.contains(&kind.to_lowercase().as_str())
 }
 
+/// Audit-r3 F1 closure — canonical "complete evidence ready to flip
+/// draft → active" predicate. Single source of truth shared by four
+/// previously-divergent sites:
+///
+/// 1. MCP `forgeplan_link` auto-activate gate (server.rs)
+/// 2. CLI `forgeplan link --auto-activate-complete` (commands/link.rs)
+/// 3. `health::stale_drafts` ReadyToActivate recommendation
+/// 4. `anomalies::stuck_draft` detector
+///
+/// **Predicate**: `kind=evidence ∧ status=draft ∧ is_evidence_complete(body)`.
+///
+/// **Why no `r_eff_score > 0` check**: Evidence artifacts have R_eff
+/// computed from INCOMING evidence (`r_eff_recursive` takes the MIN over
+/// what informs THIS artifact). An EVID has no incoming evidence by
+/// design — it IS the evidence. So `record.r_eff_score` for an EVID is
+/// always 0.0 under organic scoring. Including that check defeats the
+/// gate for the canonical case the feature exists for (a complete EVID
+/// linked to a parent PRD). Pre-audit-r3, three of the four sites had
+/// this dead-code check; this helper removes the inconsistency.
+///
+/// Callers needing the additional "is linked" property MUST check
+/// outgoing relations separately — `ready_to_activate` is intentionally
+/// scoped to body-completeness only, because the four call sites have
+/// different "linked" semantics (anomalies wants outgoing edges; auto-
+/// activate doesn't care since it runs AFTER the link itself).
+pub fn ready_to_activate(record: &crate::db::store::ArtifactRecord) -> bool {
+    record.kind.eq_ignore_ascii_case("evidence")
+        && record.status.eq_ignore_ascii_case("draft")
+        && crate::scoring::evidence::is_evidence_complete(&record.body)
+}
+
 /// Result of running activation gates against an artifact.
 ///
 /// Collected by [`collect_activation_gates`] so that [`review`] and [`activate`]

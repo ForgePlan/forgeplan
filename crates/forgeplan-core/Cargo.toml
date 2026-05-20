@@ -34,6 +34,11 @@ rand = "0.8"
 fs2.workspace = true
 schemars.workspace = true
 semver.workspace = true
+# Audit-r3 M4 closure — O_NOFOLLOW flag for the anomalies-journal
+# tempfile open so a pre-created symlink with workspace-write access
+# cannot redirect our write to a sibling target.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 tera.workspace = true
 walkdir.workspace = true
 globset.workspace = true

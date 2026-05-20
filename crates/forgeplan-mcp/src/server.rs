@@ -3298,6 +3298,19 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
+        // Audit-r3 M3 closure: the tool is read-only for the artifact
+        // store but READS+WRITES the anomalies journal at
+        // `.forgeplan/anomalies-journal.jsonl`. Two concurrent MCP
+        // calls would both load the same prior journal, detect
+        // anomalies, and last-writer-wins the save — losing journal
+        // memory for anomalies first observed by the losing writer.
+        // Acquire the workspace lock to serialise journal access with
+        // the same discipline as the write-side tools.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
         // Parse + validate filter inputs. Bad shapes fail loud so callers
         // can fix their query rather than silently getting the wrong
         // (broader) result set.
@@ -3354,26 +3367,9 @@ impl ForgeplanServer {
             Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
         };
 
-        let next_action = if report.total == 0 {
-            "No anomalies. Done.".to_string()
-        } else if report.by_tier.auto > 0 {
-            format!(
-                "{} anomaly(ies) detected. {} are auto-fixable; orchestrator can resolve them \
-                 without user prompt.",
-                report.total, report.by_tier.auto
-            )
-        } else if report.by_tier.user > 0 {
-            format!(
-                "{} anomaly(ies) detected — {} require user input. Run `forgeplan_get <id>` on \
-                 affected artifacts to review.",
-                report.total, report.by_tier.user
-            )
-        } else {
-            format!(
-                "{} anomaly(ies) detected. {} need ADI loop investigation.",
-                report.total, report.by_tier.adi
-            )
-        };
+        // Audit-r3 HIGH-1 / F3: shared next-action helper so MCP and CLI
+        // emit identical hint strings (PRD-071 parity).
+        let next_action = forgeplan_core::anomalies::next_action_for_report(&report);
 
         hinted_result(&report, next_action)
     }

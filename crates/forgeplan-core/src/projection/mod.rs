@@ -1161,7 +1161,9 @@ pub enum LinkUpsertOutcome {
     /// No edge between `(source, target)` existed; a new one was added.
     Created,
     /// An edge between `(source, target)` existed with a different
-    /// relation. The old edge was deleted and a new one added.
+    /// relation. Audit-r2 ordering: the new edge was added first, then
+    /// the old edge deleted. Partial-failure safety — if `add` fails,
+    /// the OLD edge survives intact and the caller retries cleanly.
     Replaced { old_relation: String },
     /// An edge between `(source, target)` already existed with the same
     /// relation. No-op.

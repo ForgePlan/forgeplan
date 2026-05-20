@@ -29,7 +29,8 @@
 use crate::artifact::sanitize::sanitize_for_hint;
 use crate::db::store::LanceStore;
 use crate::health::DEFAULT_STALE_DRAFT_HOURS;
-use crate::scoring::evidence::is_evidence_complete;
+// Note: `is_evidence_complete` is consumed via `lifecycle::ready_to_activate`
+// (audit-r3 F1 closure) — no direct import needed here.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -253,11 +254,15 @@ pub async fn detect_anomalies(
             continue;
         }
         let has_links = outgoing.contains_key(r.id.as_str());
-        let complete = is_evidence_complete(&r.body);
         let r_eff = r.r_eff_score;
-        // Stuck = complete + linked + R_eff > 0 (matches StaleDraft
-        // ReadyToActivate semantics for cross-module consistency).
-        if !(complete && has_links && r_eff > 0.0) {
+        // Audit-r3 F1: route through `lifecycle::ready_to_activate`
+        // (kind=evidence + status=draft + is_evidence_complete) + the
+        // anomaly-specific `has_links` augmentation. The previous
+        // `r_eff > 0` check was dead code for organically-scored EVIDs
+        // (R_eff is computed over INCOMING evidence; an EVID has none),
+        // making the entire stuck_draft detector silent for the
+        // canonical #289 use case.
+        if !(crate::lifecycle::ready_to_activate(r) && has_links) {
             continue;
         }
         anomalies.push(Anomaly {
@@ -523,9 +528,11 @@ pub async fn detect_anomalies(
         // is downstream of that boundary and re-emits the raw struct
         // field, re-opening CWE-117 / CWE-1007 prompt-injection vectors
         // for any LLM agent consuming forgeplan_anomalies output.
-        // `markers_found` is a Vec<String> of validated marker tokens
-        // (TODO/TBD/...) — not user-controlled, kept verbatim.
-        // `message` is a static template string — also kept verbatim.
+        // `markers_found` is a `usize` count of phrase-marker hits from
+        // a closed allowlist in `validation::rules::check_stub_detailed`
+        // — primitive integer, no string payload to sanitise.
+        // `message` is a static template string with only the count
+        // interpolated — also kept verbatim.
         anomalies.push(Anomaly {
             id: format!("anom-missing-must-{}", stub.id),
             kind: AnomalyKind::MissingMustSection,
@@ -556,7 +563,7 @@ pub async fn detect_anomalies(
     // resolution can target the actual culprit instead of probing the
     // child.
     //
-    // Algorithm: BFS over outgoing based_on/informs edges from each
+    // Algorithm: DFS (Vec::pop = LIFO) over outgoing based_on/informs edges from each
     // candidate. The first encountered artifact whose own `r_eff_score`
     // is 0 (and which has no further dependency edges, OR is a leaf
     // evidence-less artifact) is the weakest link. Cycle protection
@@ -589,7 +596,7 @@ pub async fn detect_anomalies(
             continue;
         }
 
-        // BFS upward to find the first ancestor whose r_eff=0 is itself
+        // DFS upward to find the first ancestor whose r_eff=0 is itself
         // the source (no further parents or all parents non-zero).
         let mut visited: HashSet<&str> = HashSet::new();
         visited.insert(r.id.as_str());
@@ -696,6 +703,12 @@ pub async fn detect_anomalies(
             journal.insert(a.id.clone(), a.observed_at.clone());
         }
     }
+    // Audit-r3 HIGH-4 / F2: GC pass — drop journal entries for anomalies
+    // that no longer appear in the current scan (resolved by the
+    // operator / superseded). Without this, the file grows unboundedly
+    // and carries deletion-resistant audit data nobody asked for.
+    let live_ids: HashSet<&str> = anomalies.iter().map(|a| a.id.as_str()).collect();
+    journal.retain(|id, _| live_ids.contains(id.as_str()));
     // Best-effort journal write — failures degrade `since` semantics
     // back to pre-v0.33 behaviour (per-scan timestamp) but do not
     // crash the scan. The journal is purely a heuristic store.
@@ -775,6 +788,38 @@ fn severity_order(s: Severity) -> u8 {
     }
 }
 
+/// Audit-r3 HIGH-1 / F3 closure — canonical next-action hint string for
+/// the anomaly report. Single source of truth shared by:
+/// 1. MCP `forgeplan_anomalies` tool (server.rs)
+/// 2. CLI `forgeplan anomalies` text mode
+/// 3. CLI `forgeplan anomalies --json` (`_next_action` field)
+///
+/// Without this, the CLI JSON output was missing `_next_action` while
+/// MCP injected it via `hinted_result` — agents consuming both surfaces
+/// saw different shapes. PRD-071 says one canonical hint per response.
+pub fn next_action_for_report(report: &AnomalyReport) -> String {
+    if report.total == 0 {
+        "No anomalies. Done.".to_string()
+    } else if report.by_tier.auto > 0 {
+        format!(
+            "{} anomaly(ies) detected. {} are auto-fixable; orchestrator can resolve them \
+             without user prompt.",
+            report.total, report.by_tier.auto
+        )
+    } else if report.by_tier.user > 0 {
+        format!(
+            "{} anomaly(ies) detected — {} require user input. Run `forgeplan_get <id>` on \
+             affected artifacts to review.",
+            report.total, report.by_tier.user
+        )
+    } else {
+        format!(
+            "{} anomaly(ies) detected. {} need ADI loop investigation.",
+            report.total, report.by_tier.adi
+        )
+    }
+}
+
 /// Filename for the anomaly observed_at journal inside the workspace.
 ///
 /// Format: JSONL — one record per line `{"id":"anom-…","observed_at":"…"}`.
@@ -824,17 +869,38 @@ async fn save_anomaly_journal(
     workspace: &Path,
     journal: &HashMap<String, String>,
 ) -> anyhow::Result<()> {
-    // Ensure parent dir exists (workspace is `.forgeplan/` which must
-    // already exist for the store to be open, but defensive create).
-    if let Err(e) = tokio::fs::create_dir_all(workspace).await
-        && e.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(e.into());
+    // Audit-r3 HIGH-4 / F2: bail if workspace doesn't exist rather than
+    // create_dir_all (which silently masks caller-side programming
+    // errors that pass a wrong path). `LanceStore::init` has already
+    // verified the workspace exists if we got this far.
+    let workspace_meta = match tokio::fs::metadata(workspace).await {
+        Ok(m) => m,
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "anomaly journal: workspace path missing ({}): {e}",
+                workspace.display()
+            ));
+        }
+    };
+    if !workspace_meta.is_dir() {
+        return Err(anyhow::anyhow!(
+            "anomaly journal: workspace path is not a directory: {}",
+            workspace.display()
+        ));
     }
+
     let path = workspace.join(ANOMALY_JOURNAL_NAME);
     let tmp = workspace.join(format!(".{ANOMALY_JOURNAL_NAME}.tmp"));
+
+    // Audit-r3 HIGH-4: deterministic line order. HashMap iteration is
+    // randomised per process; emitting in insertion order produces a
+    // file that changes content on every scan even when key/value pairs
+    // are unchanged. Sort by anomaly id so diffs reflect real changes.
+    let mut entries: Vec<(&String, &String)> = journal.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
     let mut body = String::new();
-    for (id, observed_at) in journal {
+    for (id, observed_at) in entries {
         let entry = JournalEntry {
             id: id.clone(),
             observed_at: observed_at.clone(),
@@ -842,7 +908,29 @@ async fn save_anomaly_journal(
         body.push_str(&serde_json::to_string(&entry)?);
         body.push('\n');
     }
-    tokio::fs::write(&tmp, body.as_bytes()).await?;
+
+    // Audit-r3 M4 (security): O_NOFOLLOW + create_new ensures we don't
+    // overwrite a symlink target if `.anomalies-journal.jsonl.tmp` was
+    // pre-created as a symlink by a malicious actor with workspace
+    // write access. `create_new(true)` fails if path exists (including
+    // as a symlink), so we remove any stale tmp first — atomic from
+    // the kernel's perspective since the rename below replaces it.
+    let _ = tokio::fs::remove_file(&tmp).await;
+    #[cfg(unix)]
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut opts = tokio::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        opts.custom_flags(libc::O_NOFOLLOW);
+        opts.mode(0o600);
+        let mut f = opts.open(&tmp).await?;
+        f.write_all(body.as_bytes()).await?;
+        f.sync_all().await?;
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::fs::write(&tmp, body.as_bytes()).await?;
+    }
     tokio::fs::rename(&tmp, &path).await?;
     Ok(())
 }
@@ -1148,8 +1236,10 @@ mod tests {
             .set_created_at_for_test("EVID-001", &old)
             .await
             .unwrap();
-        // Bump r_eff_score to a positive value to satisfy the gate.
-        store.update_r_eff_score("EVID-001", 1.0).await.unwrap();
+        // Audit-r3 F1: no longer need to manually bump r_eff_score —
+        // the gate was dead code; the canonical predicate
+        // (`lifecycle::ready_to_activate` + has_links) fires without
+        // synthetic scoring.
 
         let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await

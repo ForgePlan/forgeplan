@@ -43,7 +43,18 @@ pub async fn run(
     let report = anomalies::detect_anomalies(&store, &ws, &filter).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        // Audit-r3 HIGH-1 / F3: emit `_next_action` so CLI JSON matches
+        // the MCP wire shape (PRD-071 parity). Shared helper computes
+        // the canonical hint string for both surfaces.
+        let next_action = anomalies::next_action_for_report(&report);
+        let mut payload = serde_json::to_value(&report)?;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "_next_action".to_string(),
+                serde_json::Value::String(next_action),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 

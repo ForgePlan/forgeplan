@@ -64,6 +64,16 @@ fn anomalies_json_empty_workspace_shape() {
         Some(0),
         "empty workspace = empty anomalies array"
     );
+    // Audit-r3 HIGH-1 / F3 closure: CLI JSON now emits `_next_action`
+    // matching the MCP wire shape (PRD-071 parity). Empty workspace
+    // produces the "Done." sentinel string.
+    let next_action = parsed["_next_action"]
+        .as_str()
+        .expect("CLI JSON must include _next_action for MCP parity");
+    assert!(
+        next_action.contains("No anomalies") || next_action.contains("Done"),
+        "empty workspace _next_action must signal terminal state: got {next_action}"
+    );
 }
 
 /// Text-mode output on an empty workspace ends with the `Done.` hint

@@ -753,14 +753,13 @@ pub async fn health_report_with_phase(
             true
         };
         let has_links = outgoing_set.contains_key(record.id.as_str());
-        // ReadyToActivate semantics (per issue #288):
-        //   - kind=evidence + complete + has_links + R_eff>0
-        // Everything else falls into IncompleteOrOrphan (advisory only).
-        let recommendation = if record.kind.eq_ignore_ascii_case("evidence")
-            && crate::scoring::evidence::is_evidence_complete(&record.body)
-            && has_links
-            && record.r_eff_score > 0.0
-        {
+        // Audit-r3 F1: routes through `lifecycle::ready_to_activate`
+        // (kind=evidence + status=draft + is_evidence_complete) + the
+        // health-specific `has_links` augmentation. The previous
+        // `r_eff_score > 0` check was dead code for organically-scored
+        // EVIDs (R_eff is computed over INCOMING evidence; an EVID has
+        // none), defeating the gate for the canonical #288 use case.
+        let recommendation = if crate::lifecycle::ready_to_activate(record) && has_links {
             StaleDraftRecommendation::ReadyToActivate
         } else {
             StaleDraftRecommendation::IncompleteOrOrphan

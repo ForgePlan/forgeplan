@@ -2371,6 +2371,7 @@ dependencies = [
  "futures",
  "globset",
  "lancedb",
+ "libc",
  "petgraph",
  "proptest",
  "pulldown-cmark",

@@ -16,25 +16,33 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 - **Link upsert + `forgeplan_unlink` MCP tool** (issue #286) — `forgeplan_link`
   gains optional `replace: bool` parameter. When true and an edge between
   `(source, target)` already exists with a different relation, the old edge
-  is replaced atomically (add then delete). Used to fix mis-typed
+  is replaced (audit-r2 ordering: add new first, then delete old, so a
+  partial failure leaves the OLD edge intact). Used to fix mis-typed
   `based_on` ↔ `informs` relations that previously cascaded a CL penalty
   through R_eff with no MCP-safe recovery path (only `forgeplan_delete`
   would work, destroying the artifact). New `forgeplan_unlink` tool +
-  `forgeplan link --replace` CLI flag. Tool count 73 → 74. The
-  `LinkResponse.auto_activated` field is new (see #288 below); consumers
-  using `#[serde(deny_unknown_fields)]` need to relax that.
+  `forgeplan link --replace` CLI flag. The `LinkResponse.auto_activated`
+  field is new (see #288 below); consumers using
+  `#[serde(deny_unknown_fields)]` need to relax that.
 - **Pipeline hygiene primitives** (issue #288) — `forgeplan_link` gains
   optional `auto_activate_source_if_complete: bool`. When true and the
-  source is `kind=evidence + status=draft + body has verdict +
-  congruence_level + R_eff>0 after the link`, it is silently promoted
-  `draft → active`. Response `LinkResponse.auto_activated: Option<String>`
-  carries the id when the transition fires. Failure is non-fatal —
-  the link itself already committed; tracing::warn fires and the response
-  hints at manual retry. `forgeplan_health` gains `stale_drafts:
-  Vec<StaleDraft>` (24h threshold default; `VerdictThresholds.stale_ready_drafts`
-  default 5 → Unhealthy). Hint chain enhanced — when the link source is
-  a complete-but-still-draft EVID, the response ends with
-  `Activate: forgeplan_activate <id>` so the next step is unambiguous.
+  source matches the canonical "ready to activate" predicate
+  (`kind=evidence + status=draft + body has verdict + congruence_level`),
+  it is silently promoted `draft → active`. Audit-r2 dropped the
+  defunct `R_eff>0` check from the gate (evidence artifacts have no
+  incoming evidence by design, so cached R_eff is always 0 — the check
+  was dead code). Audit-r3 F1 unified this predicate as
+  `lifecycle::ready_to_activate`, shared by auto-activate, the
+  `stale_drafts.ReadyToActivate` health classification, and the
+  `stuck_draft` anomaly. Response `LinkResponse.auto_activated:
+  Option<String>` carries the id when the transition fires. Failure is
+  non-fatal — the link itself already committed; tracing::warn fires
+  and the response hints at manual retry. `forgeplan_health` gains
+  `stale_drafts: Vec<StaleDraft>` (24h threshold default;
+  `VerdictThresholds.stale_ready_drafts` default 5 → Unhealthy). Hint
+  chain enhanced — when the link source is a complete-but-still-draft
+  EVID, the response ends with `Activate: forgeplan_activate <id>` so
+  the next step is unambiguous.
 - **`forgeplan_anomalies` tool + v1 catalog** (issue #289) — new MCP tool +
   CLI command surfaces pipeline anomalies with structured severity + tier
   classification (auto / adi / user) so plugin-layer orchestrators
@@ -42,9 +50,16 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   re-classifying. v1 catalog: `stuck_draft`, `orphan_link`,
   `mistyped_based_on`, `missing_must_section`, `expired_evidence`,
   `weakest_link_unresolvable`, `phase_mismatch`, `circular_dependency`,
-  `duplicate_artifact`. Filters: `kind` / `severity` / `since`. Tool count
-  74 → 75. CLI: `forgeplan anomalies [--kind X] [--severity Y] [--since TS]
-  [--json]`.
+  `duplicate_artifact`. Filters: `kind` / `severity` / `since` (the
+  last backed by a per-anomaly observed_at journal at
+  `.forgeplan/anomalies-journal.jsonl`, audit-r2 lands true diff
+  semantics; audit-r3 adds GC of resolved-anomaly entries +
+  deterministic file ordering). CLI: `forgeplan anomalies [--kind X]
+  [--severity Y] [--since TS] [--json]`. CLI JSON output emits
+  `_next_action` matching the MCP wire shape (audit-r3 HIGH-1 closure
+  for PRD-071 parity).
+- **MCP tool count: 72 → 74**. `forgeplan_unlink` (#286) and
+  `forgeplan_anomalies` (#289) add two tools to the surface.
 
 ### Breaking changes
 
