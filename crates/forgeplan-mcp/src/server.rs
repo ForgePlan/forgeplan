@@ -675,6 +675,17 @@ struct NewParams {
     kind: ArtifactKindArg,
     /// Artifact title
     title: String,
+    /// Issue #295: optional parent artifact ID for auto-link.
+    /// When supplied AND kind=evidence, an `informs` link is created
+    /// from the new EVID to the named parent in the same call.
+    /// Reduces the 3-step EVID flow (new → update → link) to 2 steps
+    /// (new+autolink → update).
+    /// Accepts display id (`PRD-074`) or slug (`prd-auth-system`).
+    /// For kinds other than `evidence` the parameter is rejected with
+    /// a structured error (other auto-link patterns are intentionally
+    /// out of scope for v1 — see issue #295).
+    #[serde(default)]
+    parent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1183,6 +1194,16 @@ impl ForgeplanServer {
 
         let template_key = artifact_kind.template_key();
 
+        // Issue #295: `parent_id` is opt-in shorthand for EVID flow only.
+        // Reject early if combined with a non-evidence kind so the caller
+        // gets clear semantics instead of silent ignoring.
+        if p.parent_id.is_some() && template_key != "evidence" {
+            return Ok(err_hinted(
+                &format!("parent_id is only valid for kind=evidence (got kind={template_key})"),
+                "Fix: omit parent_id, or use forgeplan_link after creation for other kinds.",
+            ));
+        }
+
         // Duplicate detection (FR-004 of PRD-043) — non-blocking warnings.
         // MCP is non-interactive, so the artifact is still created and warnings
         // are returned for the AI agent to react to.
@@ -1291,6 +1312,54 @@ impl ForgeplanServer {
         // only — a failure here is logged and does not break creation.
         maybe_init_phase(&ws, &id, "forgeplan_new").await;
 
+        // Issue #295: auto-link evidence → parent via `informs` when
+        // `parent_id` supplied. Closes the 3-step EVID flow (new →
+        // update → link) into 2 steps (new+autolink → update).
+        // Resolve via `store.resolve_id` so both display id (`PRD-074`)
+        // and slug (`prd-auth-system`) work. If the parent doesn't
+        // exist we DO NOT roll back the creation — the artifact is
+        // still useful, the link is the missing piece. Caller gets
+        // a structured warning surfaced in response `warnings`.
+        let mut auto_link_warnings: Vec<String> = Vec::new();
+        let mut auto_link_target: Option<String> = None;
+        if let Some(ref raw_parent) = p.parent_id {
+            let safe = sanitize_for_hint(raw_parent);
+            match store.resolve_id(raw_parent).await {
+                Ok(Some(canonical_parent)) => {
+                    // Parent exists — write the link via the projection
+                    // helper so the markdown frontmatter `links:` array
+                    // stays in sync (file-first per ADR-003).
+                    match projection::add_link_with_projection(
+                        &projection::MutationContext::new(&ws, &store),
+                        &id,
+                        &canonical_parent,
+                        "informs",
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            auto_link_target = Some(canonical_parent);
+                        }
+                        Err(e) => {
+                            auto_link_warnings.push(format!(
+                                "Auto-link {id} -> {safe} (informs) failed: {e}. \
+                                 Use `forgeplan_link` to retry."
+                            ));
+                        }
+                    }
+                }
+                Ok(None) => {
+                    auto_link_warnings.push(format!(
+                        "parent_id `{safe}` does not exist in workspace — \
+                         auto-link skipped. Artifact {id} created in draft."
+                    ));
+                }
+                Err(e) => {
+                    auto_link_warnings.push(format!("Auto-link skipped (resolve_id failed): {e}"));
+                }
+            }
+        }
+
         // PROB-060 Phase 2 Wave 1 — combine W1.A response shape (CD-2) +
         // W1.B slug-aware hint (CD-5).
         //
@@ -1334,7 +1403,13 @@ impl ForgeplanServer {
         // frontmatter and rendered the display id); wrapping in `Some(..)`
         // here keeps the JSON identical for current callers while letting
         // the schema match `ArtifactSummaryDto` / `ArtifactRecordDto`.
-        Ok(json_result(&NewArtifactResponse {
+        //
+        // Issue #295: surface auto-link result. NewArtifactResponse doesn't
+        // have `auto_linked` / `auto_link_warnings` fields — wrap the
+        // serialised DTO into a json Value and append them post-hoc so
+        // old consumers see the same shape; new consumers read the
+        // additional fields. Avoids a breaking DTO change.
+        let base = NewArtifactResponse {
             id,
             kind: template_key.into(),
             title: p.title,
@@ -1347,7 +1422,29 @@ impl ForgeplanServer {
             id_canonical,
             id_display,
             hint: identity_hint,
-        }))
+        };
+        if auto_link_target.is_some() || !auto_link_warnings.is_empty() {
+            let mut v = serde_json::to_value(&base).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                if let Some(linked) = auto_link_target {
+                    obj.insert("auto_linked".to_string(), serde_json::Value::String(linked));
+                }
+                if !auto_link_warnings.is_empty() {
+                    obj.insert(
+                        "auto_link_warnings".to_string(),
+                        serde_json::Value::Array(
+                            auto_link_warnings
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
+                        ),
+                    );
+                }
+            }
+            Ok(json_result(&v))
+        } else {
+            Ok(json_result(&base))
+        }
     }
 
     #[tool(
