@@ -64,8 +64,9 @@ Three parallel sprints landed into one release:
   [--severity Y] [--since TS] [--json]`. CLI JSON output emits
   `_next_action` matching the MCP wire shape (audit-r3 HIGH-1 closure
   for PRD-071 parity).
-- **MCP tool count: 72 → 74**. `forgeplan_unlink` (#286) and
-  `forgeplan_anomalies` (#289) add two tools to the surface.
+- **MCP tool count: 72 → 74 (section A only)**. `forgeplan_unlink` (#286) and
+  `forgeplan_anomalies` (#289) add two tools at section A. Section B (Epic #287)
+  adds 7 more brownfield tools — **release total: 81 MCP tools**.
 
 #### A.1 Breaking changes (issues #286 / #288 / #289)
 
@@ -163,11 +164,21 @@ Collected from real-world workspace usage in `marketplace` repo, filed upstream,
 
 ### Tests, pipeline, scope
 
-- **3034 tests PASS** on Epic #287 branch (`feat/issues-286-288-289`)
-- **2751 tests PASS** on dogfood branch (`fix/issues-290-295-dogfood-findings`)
-- cargo clippy clean on both, cargo fmt clean, scripts/smoke-test.sh PASS (14 kinds including 6 brownfield)
-- **5 audit rounds** total across both sprints
-- **ADR-014** new methodology artefact
+- **3061 tests PASS** on release candidate `feat/issues-286-288-289` (was 3034 pre-merge on Epic branch + 27 inherited from dev v0.32.0 release prep via dogfood PR #299 / `fix/issues-290-295-dogfood-findings`).
+- cargo clippy clean, cargo fmt clean, scripts/smoke-test.sh PASS on release binary (14 kinds including 6 brownfield).
+- **5 audit rounds** + 1 final audit-r-release-candidate. Total findings closed inline: r4=13, r5=8, r6=2 (ARCH-H1 + PROB-069), r7=13, r-dogfood=8, r-release=4 → 48 closures, 0 net CRIT/HIGH deferred.
+- **ADR-014** new methodology artefact (`EVID-128 informs ADR-014`).
+- **PROB-069** flaky stress-test budget calibration closed (`EVID-129 informs PROB-069`).
+- **PROB-068** init/scan-import data-loss closure re-published as `EVID-130` (was silently shadowed by a duplicate `EVID-122` ID in markdown projection — audit-r-release F1-CODE fix preserves the evidence).
+
+### Security (RED-LINE #10 compliance)
+
+Open Dependabot alerts at release time, per RED-LINE #10 mandate:
+
+- **#33** — `devalue` HIGH severity (Svelte DoS via sparse array deserialization, ecosystem `npm`, lives in `website/package-lock.json`).
+  **Status: scheduled** — `website/` is a static docs portal, no runtime impact on the Rust core; `npm` bump deferred to the next docs-deps sprint.
+- **#3** — `lru` LOW severity (`IterMut` Stacked Borrows violation, ecosystem `rust`).
+  **Status: accepted-with-justification** — pre-existing finding documented in v0.28.0 / v0.29.0 / v0.30.0 changelogs as deferred; GHSA-rhfx-m35p-ff5j is Stacked-Borrows-only, no runtime exploit path, upstream fix not yet released.
 
 ## [0.31.0] - 2026-05-13
 

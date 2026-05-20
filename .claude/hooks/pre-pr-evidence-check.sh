@@ -193,7 +193,13 @@ for artifact_id in $artifact_ids; do
   if [[ "$has_evidence" -eq 0 ]]; then
     body=$("$forgeplan_bin" get "$artifact_id" 2>/dev/null || echo "")
     if [[ -n "$body" ]]; then
-      relations_section=$(echo "$body" | awk '/^## (Related|Links|Relations)/,/^## /' || true)
+      # Audit-r-release F4 (code-reviewer): the range syntax
+      # `/start/,/end/` matches inclusive on both endpoints — when the
+      # start pattern also matches the end pattern (both begin with
+      # `^## `), the range collapses to a single line. Use a flag-based
+      # awk script so we skip the start marker and terminate cleanly on
+      # the next heading.
+      relations_section=$(echo "$body" | awk '/^## (Related|Links|Relations)/{flag=1; next} /^## /{flag=0} flag' || true)
       if echo "$relations_section" | grep -qE '(EVID-[0-9]+|evidence|informs|based_on)'; then
         has_evidence=1
       fi
