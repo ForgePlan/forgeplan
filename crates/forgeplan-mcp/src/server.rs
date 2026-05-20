@@ -5631,6 +5631,17 @@ impl ForgeplanServer {
             "status": session.status,
             "session_status": session.status,
             "artifact_status": "draft",
+            // Option E (issue #292 follow-up audit): expose the semantic
+            // mismatch through a structured warning channel agents can
+            // parse. Old consumers ignore unknown fields, new consumers
+            // see the upcoming deprecation of `status` and migrate.
+            "_field_warnings": [
+                {
+                    "field": "status",
+                    "severity": "deprecation_notice",
+                    "message": "`status` refers to SESSION state. The created artifact is always in `draft`. Read `artifact_status` (this finding's artifact) and `session_status` (this session) instead. `status` will be removed in a future major release."
+                }
+            ],
             // PRD-071: single primary action — finalize the session. If
             // more findings exist the agent simply re-calls _finding; the
             // hint reflects the canonical path forward.
