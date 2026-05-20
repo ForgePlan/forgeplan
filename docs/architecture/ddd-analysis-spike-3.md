@@ -120,7 +120,7 @@
 - → Persistence: **Conformist** (consumes existing records without requiring upstream changes).
 
 ### 1.9 Interface Contexts (CLI / MCP)
-**Responsibility**: Two adapter surfaces onto the domain core — `clap`-based CLI binary and `rmcp`-based stdio MCP server exposing 74 tools.
+**Responsibility**: Two adapter surfaces onto the domain core — `clap`-based CLI binary and `rmcp`-based stdio MCP server exposing 81 tools.
 
 **Modules**:
 - `crates/forgeplan-cli/src/` (commands/, main.rs)

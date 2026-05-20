@@ -3,7 +3,7 @@ title: MCP Tools
 description: "Reference for all 63 Model Context Protocol tools exposed by `forgeplan serve`."
 ---
 
-Forgeplan ships with **74 MCP tools** that an AI agent can call over the Model Context Protocol (stdio transport).
+Forgeplan ships with **81 MCP tools** that an AI agent can call over the Model Context Protocol (stdio transport).
 
 Start the MCP server:
 
