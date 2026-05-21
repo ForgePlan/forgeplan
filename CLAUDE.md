@@ -86,16 +86,18 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
-- **v0.32.0** (2026-05-21) — Epic #287 brownfield extraction surface (6 new
-  ArtifactKinds: use_case/glossary/invariant/scenario/hypothesis/domain_model,
-  7 new MCP tools, hypothesis state machine, ADR-014 catalog evolution policy)
-  + 3 pre-Epic methodology issues (#286 forgeplan_unlink, #288 auto-activate
-  evidence + stale_drafts health surface, #289 forgeplan_anomalies + v1 catalog
-  of 9 anomaly kinds) + 6 dogfood findings (#290-#295) + post-merge hardening
-  (PROB-074 MCP stale lance handle: lazy refresh + retry budget + rate-limit
-  + lancedb downcast hint, fixed in PR #309; docs drift #306 81→73 MCP tools;
-  PROB-075 F-2/F-3/F-4 audit follow-ups). Dependabot triage: devalue HIGH
-  addressed (5.6.4→5.8.1), lru LOW accepted-with-justification.
+- **v0.32.1** (2026-05-21) — hotfix: Windows binary build (tera/walkdir/globset
+  moved out of cfg(unix)). v0.32.0 shipped on 2026-05-21 with Epic #287
+  brownfield extraction surface (6 new ArtifactKinds: use_case/glossary/
+  invariant/scenario/hypothesis/domain_model, 7 new MCP tools, hypothesis
+  state machine, ADR-014 catalog evolution policy) + 3 pre-Epic methodology
+  issues (#286 forgeplan_unlink, #288 auto-activate evidence + stale_drafts
+  health surface, #289 forgeplan_anomalies + v1 catalog of 9 anomaly kinds)
+  + 6 dogfood findings (#290-#295) + post-merge hardening (PROB-074 MCP
+  stale lance handle: lazy refresh + retry budget + rate-limit + lancedb
+  downcast hint; docs drift #306 81→73 MCP tools; PROB-075 F-2/F-3/F-4
+  audit follow-ups). Dependabot: devalue HIGH addressed (5.6.4→5.8.1),
+  lru LOW accepted-with-justification.
 - **76 CLI commands**, **73 MCP tools**, **3084 tests**, **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)

@@ -11,6 +11,19 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-05-21
+
+**Hotfix release.** v0.32.0 shipped with a Cargo.toml regression that prevented Windows binary publication via cargo-dist. macOS / Linux binaries also did not publish because cargo-dist exits the entire workflow when any target fails. No semantic / behaviour changes — purely a build-time dependency placement fix.
+
+### Fixed
+
+- **Windows build** — `tera` / `walkdir` / `globset` were accidentally placed inside the `[target.'cfg(unix)'.dependencies]` block (commit `a3b6ed3` audit-r3 closure on 2026-05-20 when adding `libc` for `O_NOFOLLOW`). The three crates are cross-platform and used unconditionally in `src/ingest/` and `src/projection/`. Moved back into the canonical `[dependencies]` block; only `libc = "0.2"` remains unix-gated. cargo-dist v0.32.0 Release workflow failed with 20 `error[E0432]/E0433]` "cannot find module or crate" errors on `x86_64-pc-windows-msvc`; v0.32.1 Release workflow re-triggers and publishes all four target binaries plus the homebrew-tap formula bump.
+
+### Internal
+
+- v0.32.0 GitHub release page has zero binary assets (visible blocker). v0.32.1 supersedes it for distribution; the v0.32.0 tag remains on `main` as the canonical commit but should not be referenced for installation. Users on Homebrew get the upgrade once cargo-dist updates `ForgePlan/homebrew-tap` Formula/forgeplan.rb (automated, no human intervention).
+- Catch-up doc updates from PR #317 (was on `dev` only): CLAUDE.md `Current status` refreshed to v0.32 banner; README dogfood table refreshed to current counts.
+
 ## [0.32.0] - 2026-05-20
 
 Sprint headline: **Epic #287 brownfield extraction surface + 3 pre-Epic issues (#286/#288/#289) + 6 dogfood-discovered issues, closed inline across multiple adversarial audit rounds.**
