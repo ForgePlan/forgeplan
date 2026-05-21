@@ -1,9 +1,9 @@
 ---
 title: Инструменты MCP
-description: "Справочник по всем 81 инструментам Model Context Protocol, предоставляемым `forgeplan serve`."
+description: "Справочник по всем 73 инструментам Model Context Protocol, предоставляемым `forgeplan serve`."
 ---
 
-Forgeplan поставляется с **81 инструментами MCP**, которые агент ИИ может вызывать через Model Context Protocol (транспорт stdio).
+Forgeplan поставляется с **73 инструментами MCP**, которые агент ИИ может вызывать через Model Context Protocol (транспорт stdio).
 
 Запустите сервер MCP:
 
