@@ -1,6 +1,8 @@
 pub mod activate;
 pub mod activity;
 pub mod activity_stats;
+// Issue #289 — pipeline anomaly detector CLI surface.
+pub mod anomalies;
 pub mod blindspots;
 pub mod blocked;
 pub mod calibrate;
@@ -43,6 +45,8 @@ pub mod migrate;
 pub mod ci_assign_id;
 // PROB-060 Phase 0b — EVID-C migration dry-run scanner (Worker 3).
 pub mod migrate_dry_run;
+// PRD-077 FR-023 Part B — import keys from process env into secrets.env.
+pub mod migrate_secrets;
 // PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge identity drift.
 pub mod new;
 pub mod order;

@@ -59,12 +59,21 @@ pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<O
     // Symlink guard on the target file — if the state file was replaced
     // by a symlink to `/etc/shadow`, refuse to read. Advisory parity
     // with write-side (audit Round 1 C-sec #2).
+    //
+    // **Wave 1.5 SEC-H3 (CWE-200 log leak)**: route `path.display()`
+    // through `sanitize_path_for_display` so tracing logs do not leak
+    // `/Users/<username>/proj/.forgeplan/state/PRD-001.yaml` into
+    // host-identifying log surfaces. The symlink-rejection log is a
+    // forensics signal — the absolute path is not load-bearing to an
+    // operator who already has the workspace, but the username
+    // suffix definitely leaks the host identity.
     if let Ok(meta) = tokio::fs::symlink_metadata(&path).await
         && meta.file_type().is_symlink()
     {
+        let safe_path = crate::projection::sanitize_path_for_display(&path);
         tracing::warn!(
             artifact = %artifact_id,
-            path = %path.display(),
+            path = %safe_path,
             "phase state file is a symlink — refusing to read, treating as unknown"
         );
         return Ok(None);
@@ -110,12 +119,23 @@ pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<O
             // it via initial_state(), silently wiping history. Quarantine
             // the corrupt file by renaming with a timestamp suffix so an
             // operator can recover / investigate.
+            //
+            // **Wave 1.5 SEC-H3 (CWE-200 log leak)**: route every
+            // `path.display()` through `sanitize_path_for_display` so
+            // tracing logs do not leak `/Users/<username>/...` host-
+            // identifying suffixes. `e` (serde_yaml::Error) carries the
+            // failing line/column from the corrupt YAML; it does not
+            // typically embed absolute paths but is bounded to a
+            // reasonable length here as defence-in-depth against a
+            // future change that adds path context via with_context.
             let ts = Utc::now().timestamp();
             let quarantine = path.with_extension(format!("yaml.corrupt.{ts}"));
+            let safe_path = crate::projection::sanitize_path_for_display(&path);
+            let safe_quarantine = crate::projection::sanitize_path_for_display(&quarantine);
             if let Err(e2) = tokio::fs::rename(&path, &quarantine).await {
                 tracing::warn!(
                     artifact = %artifact_id,
-                    path = %path.display(),
+                    path = %safe_path,
                     parse_error = %e,
                     rename_error = %e2,
                     "phase state corrupted AND quarantine failed — treating as unknown"
@@ -123,8 +143,8 @@ pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<O
             } else {
                 tracing::warn!(
                     artifact = %artifact_id,
-                    path = %path.display(),
-                    quarantine = %quarantine.display(),
+                    path = %safe_path,
+                    quarantine = %safe_quarantine,
                     error = %e,
                     "phase state corrupted — quarantined, treating as unknown"
                 );

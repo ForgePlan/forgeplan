@@ -130,6 +130,26 @@ pub async fn run(
         );
     }
 
+    // PRD-077 FR-010 + CR-H4: enrich serial entries with
+    // `blocked by dependencies: <PARENT>[, <PARENT>...]` when applicable.
+    // The bare structural-dep skip ran before `compute_dispatch_plan`, so
+    // those entries are already in `skipped_blocked` (and the `reasoning`
+    // log) — push them into the structured serial queue with a precise
+    // dependency-source reason so downstream agents can fix the root
+    // cause without re-running `forgeplan_blocked`.
+    //
+    // Helper extracted to `forgeplan_core::dispatch::build_blocker_reasons_from_slice`
+    // so CLI and MCP surfaces can't drift (CR-H4 closure mandate).
+    // Pre-CR-H4 bug: the inline HashMap collapsed multi-parent edges to
+    // a single arbitrary parent AND counted non-`depends_on`/`blocks`
+    // relations (e.g. `informs`) as structural blockers. Both fixed by
+    // the helper.
+    plan.serial_queue
+        .extend(forgeplan_core::dispatch::build_blocker_reasons_from_slice(
+            &relations,
+            &skipped_blocked,
+        ));
+
     // Hint: pick the first non-empty bucket's first artifact to show
     // exactly what the agent should claim next; if every bucket is empty
     // (no candidates), nudge toward listing draft artifacts to seed work.
@@ -195,8 +215,12 @@ pub async fn run(
             "Serial queue ({} item(s) — re-dispatch when an agent frees):",
             plan.serial_queue.len()
         );
-        for id in &plan.serial_queue {
-            println!("  {id}");
+        // PRD-077 FR-010: print the per-entry reason indented under the ID
+        // so agents see the cause of deferral inline — no need to cross-
+        // reference `reasoning[]`.
+        for entry in &plan.serial_queue {
+            println!("  {}", entry.id);
+            println!("    reason: {}", entry.reason);
         }
     }
 

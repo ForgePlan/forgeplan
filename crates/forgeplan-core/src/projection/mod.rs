@@ -72,6 +72,11 @@ pub use error::{MutationError, MutationResult};
 // module root so `forgeplan-mcp::server::safe_mcp_error` can reach it
 // without spelling out the `error::` submodule.
 pub use error::sanitize_error_chain;
+// Wave 1.5 SEC-H3 follow-up: re-export the path-display sanitiser as
+// well so tracing log sites (e.g. `phase::store::read_phase` symlink
+// rejection) can mask `path.display()` through the same HOME /
+// scratch-dir discipline (CWE-200).
+pub use error::sanitize_path_for_display;
 
 /// Compute the on-disk filename slug for a given artifact title.
 ///
@@ -951,14 +956,37 @@ pub async fn update_body_with_projection(
     };
     let links = store.get_relations(id).await.unwrap_or_default();
 
+    // Audit-r7 F1 (CRITICAL): parse the new body's frontmatter and sync
+    // the `status` column in LanceDB if it changed. Without this, callers
+    // who mutate body+status atomically (e.g. `apply_transition_to_body`
+    // for hypothesis lifecycle) would see the file frontmatter advance
+    // while consumers reading `record.status` from LanceDB still see the
+    // stale value — silently breaking health/anomalies/release_notes/
+    // forgeplan_get hints. ADR-003 demands LanceDB reflect the markdown
+    // source of truth; without this hook, body-only writes diverge.
+    //
+    // Title sync is intentionally NOT included here: title changes are
+    // structural (touch slug, file path, links) and need dedicated path
+    // through `update_title_with_projection`. Only `status` is in scope.
+    let derived_status = crate::artifact::frontmatter::parse_frontmatter(body)
+        .ok()
+        .and_then(|(fm, _)| {
+            fm.get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
     // 1. File first — write the user's body to the markdown projection. This
     //    establishes the source of truth before the derived index is touched.
+    //    Use the *new* status if the frontmatter carries one, so the rendered
+    //    file frontmatter matches the projection row.
+    let effective_status = derived_status.as_deref().unwrap_or(&record.status);
     render_projection_with_body(
         workspace,
         &record.id,
         &record.kind,
         &record.title,
-        &record.status,
+        effective_status,
         &record.depth,
         record.author.as_deref(),
         record.parent_epic.as_deref(),
@@ -970,6 +998,18 @@ pub async fn update_body_with_projection(
 
     // 2. DB second — sync the derived index. If this fails, reindex recovers.
     store.update_body(id, body).await?;
+
+    // 3. Status sync (audit-r7 F1): if the new frontmatter declares a
+    //    `status` that differs from the LanceDB row, propagate it.
+    //    update_artifact() handles `updated_at` bump.
+    if let Some(new_status) = derived_status.as_deref()
+        && new_status != record.status
+    {
+        store
+            .update_artifact(id, Some(new_status), None)
+            .await
+            .map_err(MutationError::from)?;
+    }
     Ok(())
 }
 
@@ -1143,6 +1183,136 @@ pub async fn delete_link_with_projection(
         tracing::warn!("delete_link: post-render target {target} failed (continuing): {e}");
     }
     Ok(())
+}
+
+/// Outcome of `replace_link_with_projection` — describes whether the call
+/// created a new edge, replaced an existing edge's relation, or made no
+/// change because the requested edge already existed.
+///
+/// Issue #286: callers (CLI / MCP) use this to render an accurate
+/// human-readable summary AND to populate the `_next_action` hint chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkUpsertOutcome {
+    /// No edge between `(source, target)` existed; a new one was added.
+    Created,
+    /// An edge between `(source, target)` existed with a different
+    /// relation. Audit-r2 ordering: the new edge was added first, then
+    /// the old edge deleted. Partial-failure safety — if `add` fails,
+    /// the OLD edge survives intact and the caller retries cleanly.
+    Replaced { old_relation: String },
+    /// An edge between `(source, target)` already existed with the same
+    /// relation. No-op.
+    Unchanged,
+}
+
+/// Idempotent link operation on the `(source, target)` pair.
+///
+/// Issue #286: `add_link_with_projection` rejects parallel duplicates
+/// AND parallel-but-different-relation edges, leaving callers with no
+/// MCP-safe way to FIX a mis-typed relation. Editing the markdown
+/// `links:` frontmatter does not persist (LanceDB is source of truth
+/// for relations). `forgeplan_delete` is destructive. `forgeplan_supersede`
+/// operates on artifacts, not edges.
+///
+/// Semantics: find any existing edge `(source, target, *)`. If found
+/// with the requested relation → return `Unchanged`. If found with a
+/// different relation → delete the old edge and add the new one →
+/// return `Replaced { old_relation }`. Otherwise add the edge and
+/// return `Created`.
+///
+/// Only the FIRST existing edge between `(source, target)` is considered
+/// when deciding the outcome. Forgeplan's graph model permits at most one
+/// edge per `(source, target, relation)` triple but does not prohibit
+/// multiple `(source, target, *)` rows with different relations — those
+/// only arise from explicit double-link calls. This helper does NOT
+/// collapse a pre-existing many-edge state; it only ensures that AFTER
+/// this call, the requested edge exists exactly once.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `source` or `target` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`]
+///   if source pre-sync, relation read, delete, or add fails. Target
+///   pre-sync and renders are best-effort, matching `add_link_with_projection`.
+pub async fn replace_link_with_projection(
+    ctx: &MutationContext<'_>,
+    source: &str,
+    target: &str,
+    relation: &str,
+) -> MutationResult<LinkUpsertOutcome> {
+    let MutationContext { workspace, store } = *ctx;
+    crate::db::store::validate_artifact_id(source)
+        .map_err(|_| MutationError::InvalidId(source.to_string()))?;
+    crate::db::store::validate_artifact_id(target)
+        .map_err(|_| MutationError::InvalidId(target.to_string()))?;
+    sync_before_mutation(workspace, store, source).await?;
+    if let Err(e) = sync_before_mutation(workspace, store, target).await {
+        tracing::warn!("replace_link: pre-sync target {target} failed (continuing): {e}");
+    }
+
+    // Read existing edges from `source`. We compare case-insensitively on
+    // the target id because Forgeplan stores ids in their canonical form
+    // (uppercase prefix for display ids, lowercase for slugs) but callers
+    // may pass either form.
+    let existing = store
+        .get_relations(source)
+        .await
+        .map_err(MutationError::from_store_err)?;
+
+    let existing_same_target: Vec<(String, String)> = existing
+        .into_iter()
+        .filter(|(t, _)| t.eq_ignore_ascii_case(target))
+        .collect();
+
+    let outcome = if let Some((_, r)) = existing_same_target.iter().find(|(_, r)| r == relation) {
+        // Already present with the same relation — no-op.
+        let _ = r;
+        LinkUpsertOutcome::Unchanged
+    } else if let Some((_, old_rel)) = existing_same_target.first() {
+        // Present with a different relation — replace.
+        //
+        // SEC HIGH-1 closure (audit-r2): add THEN delete, not the reverse.
+        // The two store operations are not transactional at the LanceDB
+        // layer; an `add_relation` failure after `delete_relation`
+        // succeeded would leave the source artifact silently edgeless to
+        // the target (CL penalty cascade through the rest of the graph,
+        // no recovery signal). Reversed ordering: if `add_relation`
+        // fails, the OLD edge survives intact and the caller gets a
+        // clean error to retry; if it succeeds and then `delete_relation`
+        // fails (rarer — delete is more reliable than add in LanceDB),
+        // both edges exist temporarily but the workspace is still
+        // navigable, and `forgeplan_anomalies` will flag the duplicate
+        // for cleanup. `add_relation` returns `Err` on duplicate-edge
+        // attempts (db/store.rs:706-713) but the existing edge here has
+        // a DIFFERENT relation, so the dedup check passes.
+        store
+            .add_relation(source, target, relation)
+            .await
+            .map_err(MutationError::from_store_err)?;
+        store
+            .delete_relation(source, target, old_rel)
+            .await
+            .map_err(MutationError::from_store_err)?;
+        LinkUpsertOutcome::Replaced {
+            old_relation: old_rel.clone(),
+        }
+    } else {
+        // No prior edge — plain add.
+        store
+            .add_relation(source, target, relation)
+            .await
+            .map_err(MutationError::from_store_err)?;
+        LinkUpsertOutcome::Created
+    };
+
+    if let Err(e) = render_after_mutation(workspace, store, source).await {
+        tracing::warn!("replace_link: post-render source {source} failed (continuing): {e}");
+    }
+    if let Err(e) = render_after_mutation(workspace, store, target).await {
+        tracing::warn!("replace_link: post-render target {target} failed (continuing): {e}");
+    }
+    Ok(outcome)
 }
 
 // =============================================================================
@@ -2584,6 +2754,236 @@ mod tests {
         assert!(rels.is_empty(), "edge must be gone");
     }
 
+    // ---------------------------------------------------------------------
+    // Issue #286 — `replace_link_with_projection` upsert semantics
+    // ---------------------------------------------------------------------
+
+    /// Create source + target artifacts in a fresh temp workspace. Shared
+    /// setup for the three upsert-outcome tests below.
+    async fn upsert_test_workspace(
+        src_id: &str,
+        tgt_id: &str,
+        src_kind: &str,
+        tgt_kind: &str,
+    ) -> (TempDir, std::path::PathBuf, crate::db::store::LanceStore) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(src_id, src_kind))
+            .await
+            .unwrap();
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(tgt_id, tgt_kind))
+            .await
+            .unwrap();
+        (tmp, ws, store)
+    }
+
+    /// On a fresh `(source, target)` pair `replace_link_with_projection`
+    /// produces `Created` and the edge appears in the store.
+    #[tokio::test]
+    async fn replace_link_returns_created_on_fresh_pair() {
+        let (_tmp, ws, store) =
+            upsert_test_workspace("EVID-920", "PRD-920", "evidence", "prd").await;
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "EVID-920",
+            "PRD-920",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, LinkUpsertOutcome::Created);
+        let rels = store.get_relations("EVID-920").await.unwrap();
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].1, "informs");
+    }
+
+    /// When the same `(source, target, relation)` already exists,
+    /// `replace_link_with_projection` returns `Unchanged` and the edge
+    /// count stays at one (no parallel duplicate).
+    #[tokio::test]
+    async fn replace_link_returns_unchanged_on_identical_relation() {
+        let (_tmp, ws, store) =
+            upsert_test_workspace("EVID-921", "PRD-921", "evidence", "prd").await;
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "EVID-921",
+            "PRD-921",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "EVID-921",
+            "PRD-921",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, LinkUpsertOutcome::Unchanged);
+        let rels = store.get_relations("EVID-921").await.unwrap();
+        assert_eq!(
+            rels.len(),
+            1,
+            "identical upsert must not create a parallel edge: {rels:?}"
+        );
+    }
+
+    /// CORE issue #286 scenario — pre-existing `based_on` edge that should
+    /// have been `informs`. The upsert helper deletes the old edge and
+    /// adds the new one, returns `Replaced { old_relation: "based_on" }`,
+    /// and the final state contains exactly one `informs` edge.
+    #[tokio::test]
+    async fn replace_link_swaps_mistyped_based_on_to_informs() {
+        let (_tmp, ws, store) =
+            upsert_test_workspace("EVID-922", "PRD-922", "evidence", "prd").await;
+
+        // Initial mistake: link with based_on.
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "EVID-922",
+            "PRD-922",
+            "based_on",
+        )
+        .await
+        .unwrap();
+
+        // Fix via upsert.
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "EVID-922",
+            "PRD-922",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            LinkUpsertOutcome::Replaced { old_relation } => {
+                assert_eq!(old_relation, "based_on");
+            }
+            other => panic!("expected Replaced {{ old_relation: based_on }}, got {other:?}"),
+        }
+        let rels = store.get_relations("EVID-922").await.unwrap();
+        assert_eq!(rels.len(), 1, "exactly one edge must remain: {rels:?}");
+        assert_eq!(rels[0].0, "PRD-922");
+        assert_eq!(rels[0].1, "informs");
+    }
+
+    /// Audit-r2 coverage closure: reverse direction. The canonical #286
+    /// scenario is `based_on → informs`. The mirror case (`informs →
+    /// based_on`) should also work — useful when an evidence pack is
+    /// later promoted into a derivation chain.
+    #[tokio::test]
+    async fn replace_link_swaps_informs_to_based_on_reverse() {
+        let (_tmp, ws, store) = upsert_test_workspace("PRD-923", "PRD-924", "prd", "prd").await;
+
+        // Initial: PRD-923 informs PRD-924.
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-923",
+            "PRD-924",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-923",
+            "PRD-924",
+            "based_on",
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            LinkUpsertOutcome::Replaced { old_relation } => {
+                assert_eq!(old_relation, "informs");
+            }
+            other => panic!("expected Replaced {{ old_relation: informs }}, got {other:?}"),
+        }
+        let rels = store.get_relations("PRD-923").await.unwrap();
+        assert_eq!(
+            rels.len(),
+            1,
+            "exactly one edge after reverse swap: {rels:?}"
+        );
+        assert_eq!(rels[0].1, "based_on");
+    }
+
+    /// Audit-r2 coverage closure: replace with `refines` relation. All
+    /// existing tests hard-code based_on/informs; verifying refines works
+    /// catches dispatch bugs in normalize_relation or in match arms on
+    /// the new code path.
+    #[tokio::test]
+    async fn replace_link_swaps_to_refines_relation() {
+        let (_tmp, ws, store) = upsert_test_workspace("RFC-925", "ADR-925", "rfc", "adr").await;
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "RFC-925",
+            "ADR-925",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "RFC-925",
+            "ADR-925",
+            "refines",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(outcome, LinkUpsertOutcome::Replaced { ref old_relation } if old_relation == "informs"),
+            "expected Replaced{{informs}}, got {outcome:?}"
+        );
+        let rels = store.get_relations("RFC-925").await.unwrap();
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].1, "refines");
+    }
+
+    /// Audit-r2 coverage closure: replace with `supersedes` relation.
+    /// Same rationale as refines — exercises the full relation set.
+    #[tokio::test]
+    async fn replace_link_swaps_to_supersedes_relation() {
+        let (_tmp, ws, store) = upsert_test_workspace("PRD-926", "PRD-927", "prd", "prd").await;
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-926",
+            "PRD-927",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-926",
+            "PRD-927",
+            "supersedes",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(outcome, LinkUpsertOutcome::Replaced { .. }),
+            "supersedes replacement must succeed: {outcome:?}"
+        );
+    }
+
     /// A1.6 — add_links_batch validates all ids up front, no partial state.
     #[tokio::test]
     async fn add_links_batch_validates_up_front_and_no_partial_state() {
@@ -3463,5 +3863,178 @@ mod tests {
             matches!(err, MutationError::InvalidId(ref s) if s.is_empty()),
             "expected MutationError::InvalidId, got: {err:?}"
         );
+    }
+}
+
+/// Property-based tests for `replace_link_with_projection` invariants.
+///
+/// Audit-r2 closure (#286): original unit tests covered three outcomes
+/// (Created / Unchanged / Replaced{based_on→informs}) + SEC HIGH-1
+/// ordering fix. Follow-up tests added reverse-direction + refines +
+/// supersedes. This module shotguns the remaining input space — every
+/// legal relation × every legal starting state × idempotency-on-second-
+/// call invariant.
+///
+/// **Invariants pinned**:
+/// 1. After successful replace, exactly ONE edge between `(source, target)`.
+/// 2. That edge has the requested `relation`.
+/// 3. Second call with same args produces `Unchanged`.
+/// 4. State-machine outcome (Created / Replaced / Unchanged) deterministic
+///    given starting state.
+#[cfg(test)]
+mod replace_link_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use tempfile::TempDir;
+
+    const RELATIONS: &[&str] = &[
+        "informs",
+        "based_on",
+        "supersedes",
+        "refines",
+        "contradicts",
+    ];
+
+    fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
+        crate::db::store::NewArtifact {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: "draft".to_string(),
+            title: format!("Test {id}"),
+            body: "body".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    async fn run_replace_scenario(
+        initial_relation: Option<&str>,
+        new_relation: &str,
+        source_id: &str,
+        target_id: &str,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(source_id, "prd"))
+            .await
+            .unwrap();
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(target_id, "prd"))
+            .await
+            .unwrap();
+
+        if let Some(rel) = initial_relation {
+            add_link_with_projection(
+                &MutationContext::new(&ws, &store),
+                source_id,
+                target_id,
+                rel,
+            )
+            .await
+            .unwrap();
+        }
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            source_id,
+            target_id,
+            new_relation,
+        )
+        .await
+        .unwrap();
+
+        // Invariant 4: deterministic outcome.
+        let outcome_ok = match (initial_relation, &outcome) {
+            (None, LinkUpsertOutcome::Created) => true,
+            (Some(old), LinkUpsertOutcome::Replaced { old_relation }) => {
+                old == old_relation.as_str() && old != new_relation
+            }
+            (Some(old), LinkUpsertOutcome::Unchanged) => old == new_relation,
+            _ => false,
+        };
+        assert!(
+            outcome_ok,
+            "outcome doesn't match starting state: initial={initial_relation:?} \
+             new={new_relation} got={outcome:?}"
+        );
+
+        // Invariant 1+2: exactly one edge with requested relation.
+        let rels = store.get_relations(source_id).await.unwrap();
+        let same_target: Vec<_> = rels
+            .iter()
+            .filter(|(t, _)| t.eq_ignore_ascii_case(target_id))
+            .collect();
+        assert_eq!(same_target.len(), 1, "exactly one edge: {same_target:?}");
+        assert_eq!(same_target[0].1, new_relation);
+
+        // Invariant 3: idempotency.
+        let outcome2 = replace_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            source_id,
+            target_id,
+            new_relation,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome2, LinkUpsertOutcome::Unchanged);
+
+        let rels2 = store.get_relations(source_id).await.unwrap();
+        let same_target2: Vec<_> = rels2
+            .iter()
+            .filter(|(t, _)| t.eq_ignore_ascii_case(target_id))
+            .collect();
+        assert_eq!(
+            same_target2.len(),
+            1,
+            "idempotent replace must not add parallel edges"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 12,
+            max_shrink_iters: 8,
+            .. ProptestConfig::default()
+        })]
+
+        /// Fuzz: empty workspace → replace with any relation = Created.
+        #[test]
+        fn replace_from_empty_produces_created(
+            new_rel_idx in 0usize..RELATIONS.len(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(run_replace_scenario(
+                None,
+                RELATIONS[new_rel_idx],
+                "PRD-A001",
+                "PRD-B001",
+            ));
+        }
+
+        /// Fuzz: any initial relation × any new relation. Same → Unchanged,
+        /// different → Replaced{old}; in both cases ends with one edge.
+        #[test]
+        fn replace_swaps_relation_correctly(
+            initial_idx in 0usize..RELATIONS.len(),
+            new_idx in 0usize..RELATIONS.len(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(run_replace_scenario(
+                Some(RELATIONS[initial_idx]),
+                RELATIONS[new_idx],
+                "PRD-A002",
+                "PRD-B002",
+            ));
+        }
     }
 }

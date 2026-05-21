@@ -155,6 +155,22 @@ pub const DEFAULT_UNHEALTHY_PHASE_MISMATCHES: usize = 5;
 /// small at-risk counts, just adds the critical promotion lane.
 pub const DEFAULT_UNHEALTHY_AT_RISK: usize = 10;
 
+/// L2 audit closure — phase state file read failures (corrupted YAML,
+/// symlink rejection, IO error) above this threshold promote verdict
+/// to `Unhealthy`. Below the threshold any non-zero count still trips
+/// the any-warning floor (`NeedsAttention`).
+///
+/// Default 3: a single transient corruption (operator manually edited a
+/// state file mid-write, FS hiccup) stays at NeedsAttention; widespread
+/// state corruption (4+ files unreadable) is a workspace-integrity
+/// problem that masks BLOCKED state and must surface loudly.
+pub const DEFAULT_UNHEALTHY_PHASE_READ_ERRORS: usize = 3;
+
+/// Issue #288 — default `Unhealthy` threshold for ready-to-activate
+/// stale drafts. 5 is generous enough for a "batch activate Monday
+/// morning" workflow, strict enough to catch genuine workflow drift.
+pub const DEFAULT_UNHEALTHY_STALE_READY_DRAFTS: usize = 5;
+
 /// Tunable promotion thresholds for [`compute_verdict`]. When the count
 /// of a given warning class **strictly exceeds** the threshold, the
 /// verdict is promoted to `Unhealthy`. Counts in `1..=threshold` keep
@@ -184,6 +200,18 @@ pub struct VerdictThresholds {
     /// (gradient signal, not gate-failing), while a workspace with 11+
     /// trust-decayed decisions clearly is in trouble.
     pub at_risk: usize,
+    /// L2 audit closure: number of phase state file read failures
+    /// strictly above which verdict promotes to `Unhealthy`. Any non-zero
+    /// count still trips the any-warning floor (`NeedsAttention`). See
+    /// [`DEFAULT_UNHEALTHY_PHASE_READ_ERRORS`].
+    pub phase_read_errors: usize,
+    /// Issue #288: number of `StaleDraft` entries with
+    /// `recommendation = ReadyToActivate` strictly above which the verdict
+    /// promotes to `Unhealthy`. Below the threshold, any non-zero count
+    /// still trips the any-warning floor (`NeedsAttention`). Default 5 —
+    /// 1-4 ready drafts is a common "I'll batch-activate next morning"
+    /// state; 5+ suggests workflow drift.
+    pub stale_ready_drafts: usize,
 }
 
 impl Default for VerdictThresholds {
@@ -195,6 +223,8 @@ impl Default for VerdictThresholds {
             duplicates: DEFAULT_UNHEALTHY_DUPLICATES,
             phase_mismatches: DEFAULT_UNHEALTHY_PHASE_MISMATCHES,
             at_risk: DEFAULT_UNHEALTHY_AT_RISK,
+            phase_read_errors: DEFAULT_UNHEALTHY_PHASE_READ_ERRORS,
+            stale_ready_drafts: DEFAULT_UNHEALTHY_STALE_READY_DRAFTS,
         }
     }
 }
@@ -296,6 +326,55 @@ impl Verdict {
     }
 }
 
+/// Issue #288: a draft artifact that has been sitting in `draft` status
+/// long enough to warrant attention. Surfaced by `health_report` so
+/// operators / agents can decide whether to activate (complete EVID,
+/// ready) or finish filling (still missing fields).
+///
+/// Reported per-artifact with an explicit `recommendation` so consumers
+/// can branch without re-computing the heuristic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleDraft {
+    /// Artifact id (display form: `EVID-127`, `PRD-077`, …).
+    pub id: String,
+    /// Artifact kind (`evidence`, `prd`, …).
+    pub kind: String,
+    /// Hours since `created_at` per the artifact record. The threshold
+    /// for "stale" lives in `DEFAULT_STALE_DRAFT_HOURS` so the heuristic
+    /// is configurable in one place.
+    pub age_hours: i64,
+    /// For evidence artifacts: `true` when the body contains a parseable
+    /// `verdict` field. For non-evidence: always `true` (the field is
+    /// evidence-specific; not having one is not a draft completeness
+    /// signal for PRDs / RFCs / etc.).
+    pub verdict_set: bool,
+    /// `true` when the artifact has at least one outgoing relation. A
+    /// drafted EVID with no link to a PRD is an orphan-in-the-making,
+    /// not a ready-to-activate one.
+    pub has_links: bool,
+    /// Recommended next action class. Consumers pick a tier based on
+    /// this — auto-fix, ADI loop, or escalate to user.
+    pub recommendation: StaleDraftRecommendation,
+}
+
+/// Issue #288: recommendation tier for a `StaleDraft`. The CLI / MCP
+/// renderer uses this to compose the actionable next step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleDraftRecommendation {
+    /// EVID is complete (verdict + CL set), has links, R_eff > 0,
+    /// status still draft → just activate.
+    ReadyToActivate,
+    /// Either incomplete (missing structured fields on EVID) OR has no
+    /// links (orphan in the making). Needs operator decision.
+    IncompleteOrOrphan,
+}
+
+/// Issue #288: default "stale" threshold for `StaleDraft` detection.
+/// 24 hours strikes a balance: longer than a typical in-session pause
+/// but short enough that the next morning's session sees yesterday's
+/// half-finished EVIDs.
+pub const DEFAULT_STALE_DRAFT_HOURS: i64 = 24;
+
 /// Full health report for a Forgeplan workspace.
 #[derive(Debug, Clone)]
 pub struct HealthReport {
@@ -319,6 +398,38 @@ pub struct HealthReport {
     /// rationale as PROB-063 phase mismatches: advisory by name,
     /// advisory in behaviour.
     pub gitignore_drift: Vec<GitignoreDrift>,
+    /// LOG-003 FR-020: count of artifacts where phase state file read
+    /// failed (corrupted YAML, IO error, symlink attack, etc.).
+    /// Zero is expected. Non-zero indicates workspace corruption risk —
+    /// artifact is silently dropped from phase-mismatch list.
+    ///
+    /// L2 audit closure (was: "advisory only; never folded into verdict
+    /// aggregator"): now folded into verdict via
+    /// [`VerdictThresholds::phase_read_errors`]. Any non-zero count trips
+    /// the [`Verdict::NeedsAttention`] floor; counts above the threshold
+    /// promote to [`Verdict::Unhealthy`]. Pre-fix, mass YAML corruption
+    /// could mask a BLOCKED state as HEALTHY because the phase-mismatch
+    /// count zeroed out when reads failed.
+    ///
+    /// Populated by `health_report_with_phase`; zero for legacy
+    /// `health_report` path.
+    pub phase_read_errors: usize,
+    /// Issue #288: artifacts that have been in `draft` status long enough
+    /// (default 24h, see [`DEFAULT_STALE_DRAFT_HOURS`]) to warrant a
+    /// status decision. Each entry carries a `recommendation` so the
+    /// renderer can compose a targeted next-action message instead of a
+    /// generic "you have drafts" warning.
+    ///
+    /// Population: only by `health_report_with_phase` (it has the path
+    /// context required to read `created_at` via the store). The legacy
+    /// `health_report` path leaves this empty.
+    ///
+    /// Folded into [`HealthReport::verdict`]: any entry with
+    /// `recommendation = ReadyToActivate` trips the any-warning floor
+    /// (`Verdict::NeedsAttention`). The threshold for promoting to
+    /// `Verdict::Unhealthy` lives in
+    /// [`VerdictThresholds::stale_ready_drafts`].
+    pub stale_drafts: Vec<StaleDraft>,
     /// **Best-known verdict for user-facing display.** Aggregates all
     /// warning classes Forgeplan currently understands. Equals
     /// [`HealthReport::partial_verdict`] when this report comes из
@@ -486,7 +597,8 @@ pub async fn health_report_with_phase(
         .map(|c| crate::phase::is_enabled(&c))
         .unwrap_or(true);
 
-    let phase_mismatches: Vec<PhaseMismatch> = if config_enabled {
+    let (phase_mismatches, phase_read_error_count): (Vec<PhaseMismatch>, usize) = if config_enabled
+    {
         // PROB-051 P-H2 closure: parallelise read_phase via
         // buffer_unordered. Concurrency cap of 16 chosen as a safe
         // default for typical workspace sizes (≤300 active artifacts);
@@ -503,40 +615,82 @@ pub async fn health_report_with_phase(
             .map(|r| (r.id.clone(), r.title.clone(), r.status.clone()))
             .collect();
         let workspace_owned = workspace.to_path_buf();
-        futures::stream::iter(active_records)
+        let results: Vec<(Option<PhaseMismatch>, bool)> = futures::stream::iter(active_records)
             .map(|(id, title, status)| {
                 let ws = workspace_owned.clone();
                 async move {
-                    let phase = crate::phase::store::read_phase(&ws, &id)
-                        .await
-                        .ok()
-                        .flatten();
-                    phase.and_then(|s| {
-                        let early =
-                            matches!(s.current_phase, Phase::Shape | Phase::Validate | Phase::Adi);
-                        early.then(|| PhaseMismatch {
-                            id,
-                            title,
-                            status,
-                            current_phase: s.current_phase.as_str().to_string(),
-                            advisory: "status=active but phase is early-cycle — \
-                                       Code/Evidence likely skipped"
-                                .to_string(),
-                        })
-                    })
+                    match crate::phase::store::read_phase(&ws, &id).await {
+                        Ok(Some(s)) => {
+                            let early = matches!(
+                                s.current_phase,
+                                Phase::Shape | Phase::Validate | Phase::Adi
+                            );
+                            (
+                                early.then(|| PhaseMismatch {
+                                    id,
+                                    title,
+                                    status,
+                                    current_phase: s.current_phase.as_str().to_string(),
+                                    advisory: "status=active but phase is early-cycle — \
+                                           Code/Evidence likely skipped"
+                                        .to_string(),
+                                }),
+                                false,
+                            )
+                        }
+                        Ok(None) => (None, false),
+                        Err(e) => {
+                            // LOG-003 FR-020: explicit logging on phase read error.
+                            // Artifact is silently dropped from phase-mismatch list,
+                            // potentially under-computing verdict. Logged here for
+                            // forensics + counted in HealthReport.
+                            //
+                            // **Wave 1.5 SEC-H3 (CWE-200 / log injection
+                            // defence-in-depth)**: route the anyhow chain
+                            // through `sanitize_error_chain` so HOME paths,
+                            // scratch dirs, and CARGO_TARGET_DIR are masked
+                            // before landing in tracing logs. Today
+                            // `read_phase` does not call `with_context(path)`,
+                            // but a future enrichment can without anyone
+                            // noticing — pre-emptive sanitisation makes the
+                            // log-leak class compile-time safe.
+                            //
+                            // `id` is also routed through `sanitize_for_hint`:
+                            // the value originated as a frontmatter slug and
+                            // ran through `validate_artifact_id` at every
+                            // mutation surface — defensive sanitisation is a
+                            // belt-and-suspenders measure against a future
+                            // bug-bypass.
+                            let safe_err = crate::projection::sanitize_error_chain(&e);
+                            let safe_id = crate::artifact::sanitize::sanitize_for_hint(&id);
+                            tracing::warn!(
+                                artifact = %safe_id,
+                                err = %safe_err,
+                                "phase state file read failed during health scan — \
+                                 artifact dropped from phase-mismatch list"
+                            );
+                            (None, true) // (no mismatch, error occurred)
+                        }
+                    }
                 }
             })
             .buffer_unordered(16)
-            .filter_map(|opt| async move { opt })
             .collect()
-            .await
+            .await;
+
+        let errors = results.iter().filter(|(_, is_error)| *is_error).count();
+        let mismatches = results.into_iter().filter_map(|(m, _)| m).collect();
+        (mismatches, errors)
     } else {
-        Vec::new()
+        (Vec::new(), 0)
     };
 
     // PROB-051 L-H3 closure: re-fold the verdict so CLI/MCP parity holds.
     report.verdict =
         report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
+
+    // LOG-003 FR-020: set phase_read_errors from the parallel read results.
+    report.phase_read_errors = phase_read_error_count;
 
     // PROB-062: populate gitignore drift here (not in
     // `health_report_inner`) because only this entry point knows the
@@ -552,6 +706,79 @@ pub async fn health_report_with_phase(
         _ => workspace,
     };
     report.gitignore_drift = detect_gitignore_drift(drift_root);
+
+    // Issue #288: stale-draft detection. Walk all draft artifacts; an
+    // artifact older than DEFAULT_STALE_DRAFT_HOURS in `draft` status
+    // becomes a `StaleDraft` entry with a recommendation tier.
+    //
+    // The walk is bounded by the `all` Vec already loaded above (one scan
+    // total — no extra I/O). Relations are indexed once via `outgoing`.
+    let outgoing_set: std::collections::HashMap<&str, bool> = {
+        let mut m = std::collections::HashMap::new();
+        for (src, _, _) in &all_relations {
+            m.insert(src.as_str(), true);
+        }
+        m
+    };
+    let now = chrono::Utc::now();
+    for record in &all {
+        if !record.status.eq_ignore_ascii_case("draft") {
+            continue;
+        }
+        // Parse created_at; on parse failure, skip this artifact (we'd
+        // rather miss one entry than crash the whole health scan).
+        let created = match chrono::DateTime::parse_from_rfc3339(&record.created_at) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => continue,
+        };
+        let age_hours = (now - created).num_hours();
+        if age_hours < DEFAULT_STALE_DRAFT_HOURS {
+            continue;
+        }
+        let verdict_set = if record.kind.eq_ignore_ascii_case("evidence") {
+            // For EVID, verdict_set is the explicit body field — even if
+            // CL is missing the operator at least picked a verdict shape.
+            crate::scoring::evidence::extract_field(&record.body, "verdict")
+                .as_deref()
+                .map(|s| {
+                    matches!(
+                        s.to_lowercase().as_str(),
+                        "supports" | "weakens" | "refutes"
+                    )
+                })
+                .unwrap_or(false)
+        } else {
+            // verdict is evidence-specific; default true for other kinds
+            // so the recommendation logic below treats them uniformly.
+            true
+        };
+        let has_links = outgoing_set.contains_key(record.id.as_str());
+        // Audit-r3 F1: routes through `lifecycle::ready_to_activate`
+        // (kind=evidence + status=draft + is_evidence_complete) + the
+        // health-specific `has_links` augmentation. The previous
+        // `r_eff_score > 0` check was dead code for organically-scored
+        // EVIDs (R_eff is computed over INCOMING evidence; an EVID has
+        // none), defeating the gate for the canonical #288 use case.
+        let recommendation = if crate::lifecycle::ready_to_activate(record) && has_links {
+            StaleDraftRecommendation::ReadyToActivate
+        } else {
+            StaleDraftRecommendation::IncompleteOrOrphan
+        };
+        report.stale_drafts.push(StaleDraft {
+            id: record.id.clone(),
+            kind: record.kind.clone(),
+            age_hours,
+            verdict_set,
+            has_links,
+            recommendation,
+        });
+    }
+
+    // Re-fold verdict now that gitignore_drift, phase_read_errors, AND
+    // stale_drafts are all populated. The internal `compute_verdict`
+    // helper takes the report and the phase_mismatches count.
+    report.verdict =
+        report.compute_verdict_with(&VerdictThresholds::default(), phase_mismatches.len());
 
     Ok((report, phase_mismatches))
 }
@@ -638,6 +865,8 @@ async fn health_report_from_records(
         stale_count,
         at_risk.len(),
         0, // phase_mismatches injected by upstream callers via compute_verdict_with()
+        0, // phase_read_errors zero in legacy path; with-phase populates the report field
+        0, // stale_ready_drafts zero in legacy path; with-phase populates the report field
         &VerdictThresholds::default(),
     );
 
@@ -664,6 +893,13 @@ async fn health_report_from_records(
         // empty here. `health_report_with_phase` populates it after
         // construction.
         gitignore_drift: Vec::new(),
+        // LOG-003 FR-020: phase read errors count. Zero for legacy path;
+        // populated by `health_report_with_phase` if any reads fail.
+        phase_read_errors: 0,
+        // Issue #288: stale-draft detection requires `created_at` reads
+        // from the store. The legacy `health_report` path skips it;
+        // `health_report_with_phase` populates it after construction.
+        stale_drafts: Vec::new(),
         verdict,
         partial_verdict: verdict,
     })
@@ -686,6 +922,14 @@ pub fn compute_verdict(
     thresholds: &VerdictThresholds,
     phase_mismatches: usize,
 ) -> Verdict {
+    // Issue #288: count only ReadyToActivate drafts for verdict folding.
+    // IncompleteOrOrphan items are advisory ("you have stuff to finish")
+    // and feed the floor, but never the Unhealthy threshold.
+    let stale_ready = report
+        .stale_drafts
+        .iter()
+        .filter(|d| d.recommendation == StaleDraftRecommendation::ReadyToActivate)
+        .count();
     compute_verdict_from_signals(
         report.total,
         report.orphans.len(),
@@ -695,6 +939,8 @@ pub fn compute_verdict(
         report.stale_count,
         report.at_risk.len(),
         phase_mismatches,
+        report.phase_read_errors,
+        stale_ready,
         thresholds,
     )
 }
@@ -842,6 +1088,28 @@ pub fn health_report_to_json(
             })
         })
         .collect();
+    // Issue #288 Part B closure (audit-r2): expose stale_drafts in the
+    // canonical health JSON so MCP clients + CLI consumers see the data
+    // they need to decide whether to activate. Without this the verdict
+    // downgrades silently and operators have no actionable signal.
+    let stale_drafts: Vec<serde_json::Value> = report
+        .stale_drafts
+        .iter()
+        .map(|d| {
+            let recommendation = match d.recommendation {
+                StaleDraftRecommendation::ReadyToActivate => "ready_to_activate",
+                StaleDraftRecommendation::IncompleteOrOrphan => "incomplete_or_orphan",
+            };
+            serde_json::json!({
+                "id": d.id,
+                "kind": d.kind,
+                "age_hours": d.age_hours,
+                "verdict_set": d.verdict_set,
+                "has_links": d.has_links,
+                "recommendation": recommendation,
+            })
+        })
+        .collect();
 
     serde_json::json!({
         "total": report.total,
@@ -861,7 +1129,14 @@ pub fn health_report_to_json(
         // under both names — legacy CLI alias + MCP-canonical key.
         "phase_mismatches": phase_mismatches_payload,
         "advisory_phase_mismatches": phase_mismatches_payload,
+        // LOG-003 FR-020: emit phase_read_errors count in health JSON.
+        "phase_read_errors": report.phase_read_errors,
         "gitignore_drift": gitignore_drift,
+        // Issue #288 Part B (audit-r2): stale_drafts surfaced to MCP + CLI
+        // consumers. Each entry includes recommendation so callers can
+        // dispatch tier-by-tier (ready_to_activate → auto-fix, else user
+        // judgment).
+        "stale_drafts": stale_drafts,
     })
 }
 
@@ -895,6 +1170,8 @@ fn compute_verdict_from_signals(
     stale: usize,
     at_risk: usize,
     _phase_mismatches: usize,
+    phase_read_errors: usize,
+    stale_ready_drafts: usize,
     t: &VerdictThresholds,
 ) -> Verdict {
     // Empty workspace short-circuit (Round 6 audit MED): zero artifacts is
@@ -907,22 +1184,35 @@ fn compute_verdict_from_signals(
     // PROB-063: phase_mismatches NOT included — advisory by design.
     // PROB-051 L-M1: `at_risk` joins critical promotion. Below the
     // threshold it still trips the any-warning floor (NeedsAttention).
+    // L2 audit closure: phase_read_errors above threshold IS unhealthy —
+    // mass YAML corruption silently drops artifacts from the mismatch
+    // list, masking BLOCKED state. Distinct from phase_mismatches
+    // (which is intentionally advisory because the artifact exists,
+    // just at the wrong phase); read errors mean the workspace state
+    // is unreadable.
     if orphans > t.orphans
         || blind_spots > t.blind_spots
         || active_stubs > t.active_stubs
         || duplicates > t.duplicates
         || at_risk > t.at_risk
+        || phase_read_errors > t.phase_read_errors
+        || stale_ready_drafts > t.stale_ready_drafts
     {
         return Verdict::Unhealthy;
     }
     // Non-zero anywhere → NeedsAttention.
     // PROB-063: phase_mismatches NOT included — advisory by design.
+    // L2 audit closure: any non-zero phase_read_errors trips the floor
+    // (a single corrupted YAML deserves operator attention even if
+    // below the Unhealthy threshold).
     let has_any_warning = orphans > 0
         || blind_spots > 0
         || active_stubs > 0
         || duplicates > 0
         || stale > 0
-        || at_risk > 0;
+        || at_risk > 0
+        || phase_read_errors > 0
+        || stale_ready_drafts > 0;
     if has_any_warning {
         Verdict::NeedsAttention
     } else {
@@ -964,6 +1254,38 @@ const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
     ),
     (".forgeplan/logs/", "local audit logs — per-machine"),
     (".forgeplan/locks/", "runtime mutexes — per-machine"),
+    (
+        ".forgeplan/secrets.env",
+        "local API-key template (PRD-077 / CR-C4) — MUST NEVER be committed; remove from git index immediately",
+    ),
+    // S2 audit closure: backup files written by `forgeplan migrate-secrets`
+    // (e.g. `secrets.env.bak-1715692800`) contain real key payloads but
+    // share none of the literal name with the canonical gitignore line
+    // above. Without the glob below, a `git add .` immediately after
+    // `migrate-secrets --apply` commits the backup with zero feedback.
+    (
+        ".forgeplan/secrets.env.bak-*",
+        "secrets backup written by migrate-secrets — contains real key values, MUST NEVER be committed",
+    ),
+    // Atomic-write intermediate from `migrate-secrets` — short-lived in
+    // normal flow, but a crash mid-write can leave it behind. Same threat
+    // profile as the backup above.
+    (
+        ".forgeplan/.secrets.env.tmp-*",
+        "atomic-write intermediate from migrate-secrets — contains the new file body, treat as secret",
+    ),
+    // Issue #289 audit-r2: anomaly observed_at journal — derived state,
+    // per-workspace, not source of truth (rebuildable by re-running
+    // `forgeplan anomalies`). Atomic-write tempfile shares the threat
+    // profile with other tmpfiles above.
+    (
+        ".forgeplan/anomalies-journal.jsonl",
+        "anomaly observed_at journal — derived from `forgeplan anomalies` runs, per-workspace",
+    ),
+    (
+        ".forgeplan/.anomalies-journal.jsonl.tmp",
+        "atomic-write intermediate from anomaly journal — short-lived, do not commit",
+    ),
 ];
 
 /// PROB-062: detect files currently tracked by git that match the
@@ -1018,10 +1340,16 @@ pub fn detect_gitignore_drift(workspace_root: &Path) -> Vec<GitignoreDrift> {
             continue;
         }
         for (prefix, reason) in GITIGNORE_DRIFT_PATTERNS {
-            // Match either an exact-file pattern (e.g. `session.yaml`)
-            // or any path under a directory prefix.
-            let is_dir_prefix = prefix.ends_with('/');
-            let matched = if is_dir_prefix {
+            // Three matcher shapes:
+            //   1. `dir/` → directory prefix, any path beneath
+            //   2. `file.bak-*` → suffix-glob, prefix-match on the literal
+            //      portion (S2 audit closure: catches timestamped backup
+            //      files and atomic-write tempfiles that share a literal
+            //      stem with the canonical gitignore entry)
+            //   3. exact literal — equal-string match
+            let matched = if let Some(literal) = prefix.strip_suffix('*') {
+                trimmed.starts_with(literal)
+            } else if prefix.ends_with('/') {
                 trimmed.starts_with(*prefix)
             } else {
                 trimmed == *prefix
@@ -1958,6 +2286,8 @@ mod tests {
             possible_duplicates: Vec::new(),
             active_stubs: Vec::new(),
             gitignore_drift: Vec::new(),
+            phase_read_errors: 0,
+            stale_drafts: Vec::new(),
             verdict: Verdict::Healthy,
             partial_verdict: Verdict::Healthy,
         }
@@ -2869,5 +3199,240 @@ mod tests {
             drifts.is_empty(),
             "PRD body should not be flagged as drift: {drifts:?}"
         );
+    }
+
+    /// LOG-003 FR-020 regression: HealthReport.phase_read_errors field
+    /// is correctly initialized to 0 in both the legacy `health_report`
+    /// path (no phase state files read) and is properly populated when
+    /// phase reads fail in `health_report_with_phase`.
+    #[test]
+    fn phase_read_errors_field_initialized() {
+        let report = empty_report(5);
+        assert_eq!(
+            report.phase_read_errors, 0,
+            "legacy health_report path must initialize phase_read_errors to 0"
+        );
+    }
+
+    /// L2 audit closure regression — a single phase_read_error must
+    /// promote a clean workspace from `Healthy` to `NeedsAttention`.
+    /// Before the fix, the field was advisory and a corrupted state
+    /// file silently zeroed the phase-mismatch count, masking BLOCKED.
+    #[test]
+    fn phase_read_errors_one_promotes_to_needs_attention() {
+        let mut report = empty_report(5);
+        report.phase_read_errors = 1;
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::NeedsAttention,
+            "single phase_read_error must trip the any-warning floor: got {v:?}"
+        );
+    }
+
+    /// L2 audit closure regression — mass YAML corruption (above the
+    /// default 3-error threshold) must promote to `Unhealthy`. A `dev`
+    /// pipeline that auto-promotes on `verdict == "healthy"` must NOT
+    /// silently pass when many phase state files are unreadable.
+    #[test]
+    fn phase_read_errors_above_threshold_promotes_to_unhealthy() {
+        let mut report = empty_report(20);
+        // Default threshold = 3; use 4 (strictly above) to confirm
+        // the > comparison, not >=.
+        report.phase_read_errors = 4;
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Unhealthy,
+            "4 phase_read_errors must promote past the default threshold: got {v:?}"
+        );
+    }
+
+    /// L2 audit closure regression — zero phase_read_errors on an
+    /// otherwise-clean workspace must remain `Healthy` (no false
+    /// positive from the new fold).
+    #[test]
+    fn phase_read_errors_zero_keeps_healthy() {
+        let report = empty_report(5);
+        // empty_report already produces phase_read_errors=0; confirm.
+        assert_eq!(report.phase_read_errors, 0);
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Healthy,
+            "zero phase_read_errors must NOT degrade a clean report: got {v:?}"
+        );
+    }
+
+    // ── Issue #288 — stale_drafts fold into verdict ───────────────
+
+    fn stale_draft(id: &str, rec: StaleDraftRecommendation) -> StaleDraft {
+        StaleDraft {
+            id: id.to_string(),
+            kind: "evidence".to_string(),
+            age_hours: 48,
+            verdict_set: true,
+            has_links: matches!(rec, StaleDraftRecommendation::ReadyToActivate),
+            recommendation: rec,
+        }
+    }
+
+    /// Issue #288 regression — a single ready-to-activate stale draft
+    /// must trip the any-warning floor.
+    #[test]
+    fn stale_ready_draft_one_promotes_to_needs_attention() {
+        let mut report = empty_report(5);
+        report.stale_drafts.push(stale_draft(
+            "EVID-001",
+            StaleDraftRecommendation::ReadyToActivate,
+        ));
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::NeedsAttention,
+            "1 ready stale draft must trip floor: got {v:?}"
+        );
+    }
+
+    /// Issue #288 regression — above the configured threshold (default 5)
+    /// the verdict promotes to Unhealthy.
+    #[test]
+    fn stale_ready_drafts_above_threshold_promotes_to_unhealthy() {
+        let mut report = empty_report(20);
+        for i in 0..6 {
+            report.stale_drafts.push(stale_draft(
+                &format!("EVID-{i:03}"),
+                StaleDraftRecommendation::ReadyToActivate,
+            ));
+        }
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Unhealthy,
+            "6 ready stale drafts must exceed the default threshold of 5: got {v:?}"
+        );
+    }
+
+    /// Issue #288 regression — IncompleteOrOrphan entries are advisory
+    /// only. They surface in `stale_drafts` (for renderer attention) but
+    /// do NOT feed verdict computation, regardless of count. Per the
+    /// issue spec: "Health verdict downgrades to needs_attention if any
+    /// recommendation: ready_to_activate items exist."
+    #[test]
+    fn stale_incomplete_drafts_are_advisory_only_not_in_verdict() {
+        let mut report = empty_report(20);
+        for i in 0..10 {
+            report.stale_drafts.push(stale_draft(
+                &format!("EVID-{i:03}"),
+                StaleDraftRecommendation::IncompleteOrOrphan,
+            ));
+        }
+        let v = report.compute_verdict();
+        assert_eq!(
+            v,
+            Verdict::Healthy,
+            "10 incomplete-only stale drafts must not affect verdict: got {v:?}"
+        );
+        assert_eq!(report.stale_drafts.len(), 10);
+    }
+
+    /// Issue #288 regression — zero stale_drafts on a clean report must
+    /// not degrade the verdict.
+    #[test]
+    fn no_stale_drafts_keeps_healthy() {
+        let report = empty_report(5);
+        assert!(report.stale_drafts.is_empty());
+        assert_eq!(report.compute_verdict(), Verdict::Healthy);
+    }
+
+    /// S2 audit closure: timestamped backup files written by
+    /// `forgeplan migrate-secrets` (`secrets.env.bak-<unix-ts>`) and the
+    /// atomic-write intermediates (`.secrets.env.tmp-<pid>`) must be
+    /// flagged as drift if they ever appear in `git ls-files`.
+    ///
+    /// Previously the matcher only supported exact-literal and
+    /// directory-prefix shapes, so the timestamped backups slipped
+    /// through silently. The suffix-glob shape (`*-` ending) added
+    /// to the matcher closes the gap.
+    #[test]
+    fn detect_gitignore_drift_flags_timestamped_secrets_backups() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q", "--initial-branch=main"])
+            .status();
+        // Required for some git versions to permit add without identity.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.email", "test@example.com"])
+            .status();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "user.name", "test"])
+            .status();
+
+        std::fs::create_dir_all(root.join(".forgeplan")).unwrap();
+        // Two timestamped backups + one atomic-write intermediate.
+        std::fs::write(
+            root.join(".forgeplan/secrets.env.bak-1700000000"),
+            "export GEMINI_API_KEY='leaked-1'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".forgeplan/secrets.env.bak-1700000050"),
+            "export OPENAI_API_KEY='leaked-2'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".forgeplan/.secrets.env.tmp-12345"),
+            "export ANTHROPIC_API_KEY='leaked-3'\n",
+        )
+        .unwrap();
+
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "-f", ".forgeplan"])
+            .status();
+
+        let drifts = detect_gitignore_drift(root);
+        let paths: Vec<&str> = drifts.iter().map(|d| d.path.as_str()).collect();
+
+        assert!(
+            paths.contains(&".forgeplan/secrets.env.bak-1700000000"),
+            "timestamped backup must be flagged: {drifts:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/secrets.env.bak-1700000050"),
+            "second timestamped backup must be flagged: {drifts:?}"
+        );
+        assert!(
+            paths.contains(&".forgeplan/.secrets.env.tmp-12345"),
+            "atomic-write tempfile must be flagged: {drifts:?}"
+        );
+        // All three carry secret-risk reasons (not generic "lance" or
+        // "session" reasons).
+        for d in &drifts {
+            if d.path.starts_with(".forgeplan/secrets") || d.path.starts_with(".forgeplan/.secrets")
+            {
+                assert!(
+                    d.reason.contains("MUST NEVER be committed")
+                        || d.reason.contains("treat as secret")
+                        || d.reason.contains("real key"),
+                    "secret-risk path must carry an alarming reason: {d:?}"
+                );
+            }
+        }
     }
 }

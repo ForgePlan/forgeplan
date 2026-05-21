@@ -34,6 +34,11 @@ rand = "0.8"
 fs2.workspace = true
 schemars.workspace = true
 semver.workspace = true
+# Audit-r3 M4 closure — O_NOFOLLOW flag for the anomalies-journal
+# tempfile open so a pre-created symlink with workspace-write access
+# cannot redirect our write to a sibling target.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 tera.workspace = true
 walkdir.workspace = true
 globset.workspace = true
@@ -49,3 +54,45 @@ test-helpers = []
 
 [dev-dependencies]
 tempfile = "3"
+# CR-H6 (audit closure): mark every test that mutates process-global
+# PATH / HOME with `#[serial_test::serial(env_path)]` or
+# `#[serial_test::serial(env_home)]` so they cannot run in parallel
+# inside this crate's test binary. The locks are in-process — cargo
+# runs each crate's tests as a separate binary, so the lock in this
+# crate does NOT protect against `forgeplan-cli` or `forgeplan-mcp`
+# tests running simultaneously. The pragmatic mitigation is to tag
+# every PATH/HOME mutator within each crate so intra-crate parallelism
+# is safe; cross-crate races are bounded by cargo's default behaviour
+# of running one test binary at a time per crate.
+serial_test = "3"
+# T5 audit closure — captures tracing events in unit tests so we can
+# assert that `warn_on_permissive_mode` actually emits its warning when
+# secrets.env permissions are too open. Without this, a future refactor
+# that silently drops the `tracing::warn!` call would not be caught.
+#
+# `no-env-filter` feature is REQUIRED because forgeplan emits with custom
+# targets (e.g. `target: "forgeplan::secrets"`). The default crate-name
+# filter (`forgeplan_core=trace`) would exclude those events; this
+# feature substitutes plain `trace` so any target passes through.
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
+# Property-based testing for invariants that pure unit tests can't easily
+# cover. Used by `projection::tests::replace_link_upsert_idempotent_*` to
+# fuzz the 7 input shapes (no prior edge, same relation, different
+# relation, …) across the upsert state machine. Audit-r2 closure: pure
+# unit coverage missed reverse-direction + alternate-relation cases until
+# explicitly added; proptest gives a shotgun guard against the next gap.
+proptest = "1"
+
+# PROB-074 fix: the lance_stale_refresh_test integration test calls
+# `create_artifact_for_test` / `add_relation_for_test` which are
+# `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`.
+# Integration tests under `tests/` compile as a *separate crate* — they do
+# NOT inherit the host crate's `#[cfg(test)]` gate.  Without this target
+# entry `cargo test --workspace` (CI baseline, no extra flags) would fail
+# with E0599 "no method named `create_artifact_for_test`".
+# `required-features` makes cargo skip-compile (and skip-run) the test
+# binary when test-helpers is not enabled, keeping the default build clean.
+[[test]]
+name = "lance_stale_refresh_test"
+path = "tests/lance_stale_refresh_test.rs"
+required-features = ["test-helpers"]

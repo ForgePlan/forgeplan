@@ -66,6 +66,37 @@ pub fn supports_lifecycle(kind: &str) -> bool {
     LIFECYCLE_KINDS.contains(&kind.to_lowercase().as_str())
 }
 
+/// Audit-r3 F1 closure — canonical "complete evidence ready to flip
+/// draft → active" predicate. Single source of truth shared by four
+/// previously-divergent sites:
+///
+/// 1. MCP `forgeplan_link` auto-activate gate (server.rs)
+/// 2. CLI `forgeplan link --auto-activate-complete` (commands/link.rs)
+/// 3. `health::stale_drafts` ReadyToActivate recommendation
+/// 4. `anomalies::stuck_draft` detector
+///
+/// **Predicate**: `kind=evidence ∧ status=draft ∧ is_evidence_complete(body)`.
+///
+/// **Why no `r_eff_score > 0` check**: Evidence artifacts have R_eff
+/// computed from INCOMING evidence (`r_eff_recursive` takes the MIN over
+/// what informs THIS artifact). An EVID has no incoming evidence by
+/// design — it IS the evidence. So `record.r_eff_score` for an EVID is
+/// always 0.0 under organic scoring. Including that check defeats the
+/// gate for the canonical case the feature exists for (a complete EVID
+/// linked to a parent PRD). Pre-audit-r3, three of the four sites had
+/// this dead-code check; this helper removes the inconsistency.
+///
+/// Callers needing the additional "is linked" property MUST check
+/// outgoing relations separately — `ready_to_activate` is intentionally
+/// scoped to body-completeness only, because the four call sites have
+/// different "linked" semantics (anomalies wants outgoing edges; auto-
+/// activate doesn't care since it runs AFTER the link itself).
+pub fn ready_to_activate(record: &crate::db::store::ArtifactRecord) -> bool {
+    record.kind.eq_ignore_ascii_case("evidence")
+        && record.status.eq_ignore_ascii_case("draft")
+        && crate::scoring::evidence::is_evidence_complete(&record.body)
+}
+
 /// Result of running activation gates against an artifact.
 ///
 /// Collected by [`collect_activation_gates`] so that [`review`] and [`activate`]
@@ -261,6 +292,24 @@ pub async fn activate(
 
     transitions::validate_transition(&record.status, "active")?;
 
+    // Audit-r7 ARCH-C1 follow-up: Hypothesis kind has its own state machine
+    // (`hypothesis_state` frontmatter field) that ALSO drives `status`
+    // derivation. Calling `forgeplan_activate` on a HYP would set
+    // `status=active` without touching `hypothesis_state`, breaking the
+    // `state ↔ status` invariant the `hypothesis-state-status-consistent`
+    // validation rule pins. Redirect the operator to the canonical promote
+    // path which derives `status` atomically.
+    if record.kind.eq_ignore_ascii_case("hypothesis") {
+        return Err(anyhow::anyhow!(
+            "Hypothesis artifacts (kind=hypothesis) are activated via \
+             `forgeplan_hypothesis_promote` (which advances hypothesis_state \
+             and derives status atomically). Direct `forgeplan_activate` on \
+             {artifact_id} would desynchronise the two fields. Use \
+             `forgeplan_hypothesis_promote hypothesis_id={artifact_id} new_state=verified` \
+             to activate (sets status=active) or `new_state=refuted` to deprecate."
+        ));
+    }
+
     // Lightweight kinds skip validation gate
     if !supports_lifecycle(&record.kind) {
         store
@@ -282,7 +331,28 @@ pub async fn activate(
         for e in &errs {
             msg.push_str(&format!("\n  - {e}"));
         }
-        msg.push_str("\n\nUse --force to override.");
+
+        // Issue #294: teach the canonical fix order in the error message
+        // itself so operators don't reach for --force as a shortcut. The
+        // "no evidence" case has a well-known 5-step recipe; surface it
+        // verbatim when that gate failed. Other gate failures still get
+        // the generic --force hint (they're per-artifact problems with
+        // no universal recipe — short body, stub markers, etc.).
+        let evidence_gate_failed = errs.iter().any(|e| e.contains("No evidence linked"));
+        if evidence_gate_failed {
+            msg.push_str(&format!(
+                "\n\nCanonical fix order (no evidence yet):\n  \
+                 1. forgeplan_new(kind=\"evidence\", title=\"<verification title>\")\n  \
+                 2. forgeplan_update(id=<EVID-ID>, body=\"<verdict + congruence_level + evidence_type>\")\n  \
+                 3. forgeplan_link(source=<EVID-ID>, target={artifact_id}, relation=\"informs\")\n  \
+                 4. forgeplan_activate(id=<EVID-ID>)\n  \
+                 5. forgeplan_activate(id={artifact_id})  # now succeeds\n\
+                 \n\
+                 Or use --force to bypass (not recommended — leaves R_eff=0)."
+            ));
+        } else {
+            msg.push_str("\n\nUse --force to override (not recommended).");
+        }
         anyhow::bail!("{msg}");
     }
 
@@ -994,6 +1064,117 @@ mod tests {
         );
     }
 
+    /// Issue #294: when activation fails due to "No evidence linked",
+    /// the error must teach the canonical 5-step fix order so operators
+    /// don't reach for --force as a shortcut.
+    #[tokio::test]
+    async fn activate_no_evidence_error_teaches_canonical_fix_order() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Body that passes length + stub gates but has no evidence linked.
+        let body = "## Problem\n\nLong enough body to pass the 100-char gate \
+                    so the only methodology failure is the missing evidence link. \
+                    This text needs more padding to clear the length threshold \
+                    for the activation gate check.\n\n## Goals\n\nClear.\n";
+        let prd = NewArtifact {
+            id: "PRD-294".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Issue 294 test PRD".to_string(),
+            body: body.to_string(),
+            depth: "standard".to_string(),
+            author: Some("test".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&prd).await.unwrap();
+
+        let result = activate(&store, "PRD-294", false).await;
+        let err = result
+            .expect_err("must fail — no evidence linked")
+            .to_string();
+
+        // The 5-step canonical fix recipe must appear verbatim in the message.
+        assert!(
+            err.contains("No evidence linked"),
+            "must cite gate cause: {err}"
+        );
+        assert!(
+            err.contains("Canonical fix order"),
+            "must teach fix order: {err}"
+        );
+        assert!(
+            err.contains("forgeplan_new(kind=\"evidence\"")
+                && err.contains("forgeplan_link")
+                && err.contains("informs")
+                && err.contains("forgeplan_activate"),
+            "must list the 5-step recipe: {err}"
+        );
+        assert!(
+            err.contains("--force") && err.contains("not recommended"),
+            "must still mention --force as last resort but discourage it: {err}"
+        );
+    }
+
+    /// Issue #294: non-evidence gate failures (e.g. body too short) do
+    /// NOT get the evidence-specific recipe — only the generic --force
+    /// hint. Realistic scenario: short body PRD WITH an evidence already
+    /// linked (so the only remaining gate failure is body length).
+    #[tokio::test]
+    async fn activate_short_body_error_does_not_show_evidence_recipe() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // Body short enough to fail the length gate.
+        let prd = NewArtifact {
+            id: "PRD-294B".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Short".to_string(),
+            body: "tiny".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&prd).await.unwrap();
+        // Link an EVID so the evidence gate passes — only body-length fails.
+        let evid = NewArtifact {
+            id: "EVID-294B".to_string(),
+            kind: "evidence".to_string(),
+            status: "active".to_string(),
+            title: "Evidence for 294B".to_string(),
+            body: "verdict: supports\ncongruence_level: 3\nevidence_type: measurement".to_string(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&evid).await.unwrap();
+        store
+            .add_relation_for_test("EVID-294B", "PRD-294B", "informs")
+            .await
+            .unwrap();
+
+        let err = activate(&store, "PRD-294B", false)
+            .await
+            .expect_err("must fail — body too short")
+            .to_string();
+        assert!(
+            !err.contains("No evidence linked"),
+            "evidence gate must pass — only length fails: {err}"
+        );
+        assert!(
+            !err.contains("Canonical fix order"),
+            "evidence-specific recipe must NOT appear for non-evidence failures: {err}"
+        );
+        assert!(err.contains("--force"), "generic hint still present: {err}");
+    }
+
     #[tokio::test]
     async fn reopen_active_works() {
         let tmp = TempDir::new().unwrap();
@@ -1131,5 +1312,41 @@ mod tests {
                 "filled body should not trigger stub gate, got: {msg}"
             );
         }
+    }
+
+    /// Audit-r7 ARCH-C1 follow-up: `forgeplan_activate` on a Hypothesis
+    /// MUST refuse and redirect the operator to `forgeplan_hypothesis_promote`.
+    /// Without this guard, calling activate on a HYP would set `status=active`
+    /// without touching `hypothesis_state`, desynchronising the two-field pair
+    /// that audit-r5 ARCH-C1 closure pinned.
+    #[tokio::test]
+    async fn activate_hypothesis_redirects_to_promote() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        let art = NewArtifact {
+            id: "HYP-001".to_string(),
+            kind: "hypothesis".to_string(),
+            status: "draft".to_string(),
+            title: "Test hypothesis".to_string(),
+            body: "---\nid: HYP-001\nkind: hypothesis\nhypothesis_state: inferred\n\
+                   status: draft\ntier: intent\n---\n\n## Hypothesis\nA claim.\n\n\
+                   ## Lifecycle State\n**Current**: inferred\n"
+                .to_string(),
+            depth: "tactical".to_string(),
+            author: Some("tester".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&art).await.unwrap();
+
+        let result = activate(&store, "HYP-001", false).await;
+        let err = result.expect_err("activate on HYP must error out");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("forgeplan_hypothesis_promote"),
+            "error must redirect to canonical promote path, got: {msg}"
+        );
     }
 }

@@ -94,7 +94,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   sanitisation across 40+ `McpError::internal_error` sites. ARCH-C1
   `health_report_to_json` helper extract — single source of truth for
   CLI/MCP wire shape. PROB-051 closed end-to-end (R_eff=0.80 grade B).
-- **76 CLI commands**, **72 MCP tools**, **2724 tests**, **0 warnings** on both feature configs
+- **76 CLI commands**, **73 MCP tools**, **3009 tests**, **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
@@ -339,8 +339,11 @@ Hooks в `.claude/hooks/` блокируют нарушения методоло
 | `pre-commit-fmt.sh` | коммит если `cargo fmt --check` dirty | git commit |
 | `commit-test-check.sh` | коммит если новая `pub fn` без теста | git commit |
 | `pr-todo-check.sh` | PR с незакрытыми P0 | pre-push |
+| `pre-pr-evidence-check.sh` | PR если артефакт без linked evidence | pre-gh-pr-create |
 
 **Hooks — safety net, НЕ замена дисциплины**. LLM должен помнить правила во время работы, а не полагаться что hook остановит.
+
+**Evidence enforcement**: каждый артефакт (PRD, RFC, ADR, EPIC, SPEC, PROB), упомянутый в PR, должен иметь связанное доказательство (`EVID` с `informs` или `based_on` связью). Обход: `FORGEPLAN_SKIP_EVIDENCE=1 gh pr create`, или branch patterns (`docs/*`, `chore/sync-*`). Подробно: [`docs/methodology/EVIDENCE-PROTOCOL.md`](docs/methodology/EVIDENCE-PROTOCOL.md) (EN) и [`docs/methodology/EVIDENCE-PROTOCOL.ru.md`](docs/methodology/EVIDENCE-PROTOCOL.ru.md) (RU).
 
 CI также содержит **drift detector** (`scripts/check-mcp-tool-count.sh`) — блокирует PR если число MCP-инструментов в docs расходится с кодом. Полный CI-гейт reference: [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md).
 
@@ -667,7 +670,7 @@ crates/
 │   ├── journal/ lifecycle/ link/ llm/ progress/ projection/
 │   ├── routing/ scoring/ search/ stale/ template/ validation/ workspace/
 ├── forgeplan-cli/     ← clap derive, 76 commands
-└── forgeplan-mcp/     ← rmcp stdio, 72 tools
+└── forgeplan-mcp/     ← rmcp stdio, 73 tools
 ```
 
 **Project structure**: `docs/README.md` — map of all documentation. Reference repositories in `sources/` (read-only).

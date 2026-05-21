@@ -129,6 +129,48 @@ pub const ARTIFACT_DIRS: &[&str] = &[
     "discovery",
 ];
 
+/// PRD-077 FR-002 / CR-C4: commented template appended to
+/// `.forgeplan/secrets.env` on init. Documents the **convention** (this
+/// file is local-only, never committed) and lists the env vars that
+/// `config.yaml::llm.api_key_env` references by default.
+///
+/// F5+L6 audit closure (was: "Forgeplan code MUST NOT read this file —
+/// it is purely a convenience surface"): as of PRD-077 FR-023 Part A
+/// (v0.32.0), forgeplan DOES read this file via
+/// [`crate::config::secrets::resolve_api_key`] when the corresponding
+/// canonical env var is unset in the process environment. Precedence:
+/// process env (non-empty, non-whitespace) → `secrets.env` value → None.
+/// The "MUST NOT" claim in the original docstring was correct when
+/// W1 wrote it during sprint Wave 1, but stale by the time W8 merged
+/// the loader. A contributor reading this comment to understand the
+/// invariant would have concluded — incorrectly — that they could
+/// refactor away the reader.
+///
+/// File extension is `.env` (dotenv/direnv convention) — not `.yaml`. The
+/// body is shell syntax (`export KEY="VALUE"`); a `.yaml` extension would
+/// be picked up by YAML linters and `serde_yaml::from_str`, both of which
+/// reject `export` lines (CR-C4 audit closure). The placeholder uses
+/// `<your-key-here>` rather than a literal `sk-...` prefix so secret
+/// scanners (TruffleHog / gitleaks) do not raise false positives on the
+/// template itself.
+/// Canonical body of `.forgeplan/secrets.env` written on `forgeplan init`
+/// and on `forgeplan init --force` (via `refresh_existing_workspace`).
+///
+/// Exposed as `pub` so the CLI's refresh path uses the same template
+/// instead of an inline duplicate (round-2 audit SEC-M-R2-4 closure).
+/// A drift between fresh-init and migration-refresh users would be a
+/// silent UX failure on a security-sensitive file.
+pub const SECRETS_TEMPLATE: &str = "\
+# secrets.env — local-only API keys. NEVER commit this file.
+# forgeplan reads keys from env vars whose NAMES are declared in config.yaml::llm.api_key_env.
+# This file is a convenience: a place to keep your real keys during local dev.
+# Copy any line below and uncomment it (and `source .forgeplan/secrets.env` or use direnv).
+#
+# export GEMINI_API_KEY=\"<your-key-here>\"
+# export OPENAI_API_KEY=\"<your-key-here>\"
+# export ANTHROPIC_API_KEY=\"<your-key-here>\"
+";
+
 /// Initialize a `.forgeplan/` workspace in the given directory.
 /// Returns the path to `.forgeplan/`.
 pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf> {
@@ -140,6 +182,22 @@ pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf
     for dir in ARTIFACT_DIRS {
         fs::create_dir_all(fp_dir.join(dir))?;
     }
+    // PRD-077 FR-001: write a `.gitkeep` placeholder into every artifact
+    // subdir so git tracks the directory even before the user creates
+    // any artifacts. Without this, empty subdirs vanish on `git add` and
+    // teammates fresh-cloning the repo see no skeleton — they then run
+    // `forgeplan init` themselves, generating local-only directories
+    // that desync from the committed state. The file is empty (zero
+    // bytes); git treats it as a normal tracked file. Idempotent: if a
+    // `.gitkeep` already exists in a subdir (re-init scenarios after
+    // partial rollback, or manual placement), we leave it untouched so
+    // we never clobber a user-customized placeholder.
+    for dir in ARTIFACT_DIRS {
+        let keep = fp_dir.join(dir).join(".gitkeep");
+        if !keep.exists() {
+            fs::write(&keep, b"")?;
+        }
+    }
     // Write config.yaml with commented estimate section
     let config = Config {
         project_name: project_name.into(),
@@ -149,6 +207,15 @@ pub fn init_workspace(root: &Path, project_name: &str) -> anyhow::Result<PathBuf
     // Append commented config templates for all optional sections
     yaml.push_str(CONFIG_TEMPLATES);
     fs::write(fp_dir.join("config.yaml"), yaml)?;
+    // PRD-077 FR-002 / CR-C4: create a template `secrets.env` next to
+    // config.yaml. This file is **template-only** (forgeplan does NOT
+    // read it) and is gitignored by the canonical managed block (PRD-077
+    // FR-003) so accidental commits are caught at health-check time
+    // (FR-006). Idempotent: skip if a user-edited file already exists.
+    let secrets_path = fp_dir.join("secrets.env");
+    if !secrets_path.exists() {
+        fs::write(&secrets_path, SECRETS_TEMPLATE)?;
+    }
     Ok(fp_dir)
 }
 

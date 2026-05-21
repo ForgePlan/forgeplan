@@ -1,12 +1,12 @@
 ---
 depth: tactical
-id: EVID-122
+id: EVID-130
 kind: evidence
 links:
 - target: PROB-068
   relation: informs
 status: active
-title: PROB-068 init/scan-import data-loss closure
+title: PROB-068 init/scan-import data-loss closure (re-publish — duplicate EVID-122 ID rescue)
 ---
 
 # EVID: PROB-068 init/scan-import data-loss closure
@@ -130,4 +130,7 @@ Pipeline gate:
 - PRD-058 (scan-import projection contract — extended)
 - PRD-073 (file-first invariant compile-enforcement — same family)
 - PROB-061 (reindex reset family — informs)
+
+
+
 

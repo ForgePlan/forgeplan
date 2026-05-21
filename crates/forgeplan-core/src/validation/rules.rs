@@ -31,7 +31,48 @@ pub fn rules_for(kind: &ArtifactKind, depth: &Mode) -> Vec<RuleEntry> {
         ArtifactKind::Spec => rules.extend(spec_rules(depth)),
         ArtifactKind::Rfc => rules.extend(rfc_rules(depth)),
         ArtifactKind::Adr => rules.extend(adr_rules(depth)),
-        _ => {} // Quint-code types: base rules only
+        // ── Issue #287 Phase B — brownfield extraction kinds ──────────────
+        // Each kind gets:
+        //   1. per-kind required-section block (stable rule_id
+        //      `<kind>-required-sections` so W2 coverage can surface it)
+        //   2. tier-level rule (factum-must-have-source OR
+        //      intent-must-have-verification-plan) applied via the
+        //      `Frontmatter`'s `tier:` field with kind-default fallback.
+        // Audit-r7 ARCH-5: every brownfield kind also registers the
+        // tier-field consistency rule so operator-visible `tier:` field
+        // mismatches surface as Should-level findings.
+        ArtifactKind::UseCase => {
+            rules.extend(use_case_rules());
+            rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
+        }
+        ArtifactKind::Glossary => {
+            rules.extend(glossary_rules());
+            rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
+        }
+        ArtifactKind::Invariant => {
+            rules.extend(invariant_rules());
+            rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
+        }
+        ArtifactKind::Scenario => {
+            rules.extend(scenario_rules());
+            rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
+        }
+        ArtifactKind::Hypothesis => {
+            rules.extend(hypothesis_rules());
+            rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
+        }
+        ArtifactKind::DomainModel => {
+            rules.extend(domain_model_rules());
+            rules.extend(tier_rules_for(kind));
+            rules.push(tier_field_consistency_rule());
+        }
+        _ => {} // Quint-code types (Note, Problem, Solution, Evidence,
+                // Refresh, Memory): base rules only.
     }
     rules
 }
@@ -1190,6 +1231,408 @@ fn check_adr_affected_files(body: &str, _fm: &Frontmatter) -> Option<String> {
     }
 }
 
+// ─── Issue #287 Phase B — Brownfield validation ─────────────────────────────
+//
+// Two-tier discipline:
+//   • Factum tier (UseCase, Glossary, Invariant, Scenario, DomainModel)
+//     MUST cite its `## Source` so the artifact remains traceable to
+//     the codebase it was extracted from. Stable rule_id:
+//     `factum-must-have-source`.
+//   • Intent tier (Hypothesis) MUST publish a falsifiability plan —
+//     `## How To Verify`, `## Evidence For`, `## Evidence Against` all
+//     present. Stable rule_id: `intent-must-have-verification-plan`.
+//
+// Per-kind required-section lists (public constants below) double as
+// W2's source of truth for "expected_sections" in coverage reporting.
+// Mutation of these lists is a breaking contract change — update W2 too.
+//
+// FPF: chose public `&'static [&'static str]` over a method on
+// `ArtifactKind` to keep the validation module the single owner of
+// section policy and avoid pulling `ArtifactKind` into a circular
+// dependency for downstream consumers that want the metadata without
+// importing the entire validation surface.
+
+/// Required `##` headings for a UseCase factum artifact.
+///
+/// W2 imports this to compute `expected_sections` totals in coverage.
+pub const REQUIRED_SECTIONS_USE_CASE: &[&str] = &[
+    "Problem",
+    "Actor",
+    "Main Flow",
+    "Acceptance Criteria",
+    "Source",
+];
+
+/// Required `##` headings for a Glossary factum artifact.
+pub const REQUIRED_SECTIONS_GLOSSARY: &[&str] = &["Canonical Term", "Definition", "Source"];
+
+/// Required `##` headings for an Invariant factum artifact.
+pub const REQUIRED_SECTIONS_INVARIANT: &[&str] =
+    &["Statement", "Scope", "Rationale", "Verification", "Source"];
+
+/// Required `##` headings for a Scenario factum artifact.
+pub const REQUIRED_SECTIONS_SCENARIO: &[&str] =
+    &["Given", "When", "Then", "Demonstrates", "Source"];
+
+/// Required `##` headings for a Hypothesis intent artifact.
+pub const REQUIRED_SECTIONS_HYPOTHESIS: &[&str] = &[
+    "Hypothesis",
+    "Lifecycle State",
+    "Evidence For",
+    "Evidence Against",
+    "How To Verify",
+    "Source",
+];
+
+/// Required `##` headings for a DomainModel factum artifact.
+pub const REQUIRED_SECTIONS_DOMAIN_MODEL: &[&str] = &["Domain", "Composition", "Source"];
+
+/// Minimum word count for a Factum's `## Source` section. Below this
+/// the citation is treated as a stub (cannot legitimately point at
+/// codebase / docs in <10 words).
+const FACTUM_SOURCE_MIN_WORDS: usize = 10;
+
+/// Default tier per artifact kind when frontmatter's `tier:` field is
+/// missing or unrecognised.
+///
+/// Phase A templates pre-set `tier: factum` for UseCase, Glossary,
+/// Invariant, Scenario, DomainModel and `tier: intent` for Hypothesis.
+/// This helper exists so downstream callers (W2 coverage) can infer
+/// the tier without re-parsing every template.
+///
+/// Returns `"factum"` for non-brownfield kinds — conservative default,
+/// downstream consumers should check `ArtifactKind::is_brownfield()`
+/// first if they care.
+pub fn tier_for_kind(kind: &ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Hypothesis => "intent",
+        // All other brownfield kinds + non-brownfield kinds default to
+        // factum (the more conservative "must cite source" interpretation).
+        _ => "factum",
+    }
+}
+
+// Audit-r7 F5: `extract_tier` removed. After r4 SEC-C1 + r5 ARCH-H2
+// it had zero call sites and a deceptive signature (looked like it
+// read frontmatter when it was a thin alias for `tier_for_kind`).
+// A future tier-aware tool can re-introduce a properly named helper.
+
+/// Audit-r7 ARCH-5 closure: surface mismatched frontmatter `tier:`
+/// as a SHOULD-level finding so operators don't get a silent decoration.
+/// Validator enforcement is kind-derived (SEC-C1), but if the operator
+/// hand-edits `tier:` to something inconsistent with the kind default,
+/// surface a warning so the human-readable contract stays visible.
+///
+/// Missing `tier:` field → no check (templates carry the canonical
+/// default for new artifacts; legacy artifacts without the field are OK).
+fn check_tier_field_matches_kind(_body: &str, fm: &Frontmatter) -> Option<String> {
+    let raw_tier = fm
+        .get("tier")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase())?;
+    let kind_str = fm.get("kind").and_then(|v| v.as_str())?;
+    let kind: ArtifactKind = kind_str.parse().ok()?;
+    let expected = tier_for_kind(&kind);
+    if raw_tier != expected {
+        return Some(format!(
+            "frontmatter `tier: {raw_tier}` does not match kind-derived value `{expected}`. \
+             The validator enforces tier from `kind` only (audit-r4 SEC-C1) — this field is \
+             informational. Update `tier: {expected}` to match the kind, or remove the field."
+        ));
+    }
+    None
+}
+
+fn tier_field_consistency_rule() -> RuleEntry {
+    rule(
+        "tier-field-matches-kind",
+        Severity::Should,
+        "Frontmatter tier: field must match kind-derived value",
+        check_tier_field_matches_kind,
+    )
+}
+
+/// Tier-level rules for a brownfield artifact. After audit-r4 SEC-C1
+/// closure, tier is kind-derived (the frontmatter `tier:` field is
+/// informational, never enforcement) — so we can resolve dispatch at
+/// registration time and ship only the one rule that applies.
+///
+/// Audit-r5 ARCH-H2: previously this returned BOTH rules and each
+/// check fn re-parsed frontmatter to short-circuit on the wrong tier.
+/// That was an O(N) overhead per validation pass plus a misleading
+/// `rules_for()` API (the rule list at registration time didn't match
+/// the rules that actually fire). Now `rules_for()` and the resulting
+/// rule list are honest — every entry will trigger its check.
+fn tier_rules_for(kind: &ArtifactKind) -> Vec<RuleEntry> {
+    match tier_for_kind(kind) {
+        "factum" => vec![rule(
+            "factum-must-have-source",
+            Severity::Must,
+            "Factum: '## Source' citation",
+            check_factum_source,
+        )],
+        "intent" => vec![rule(
+            "intent-must-have-verification-plan",
+            Severity::Must,
+            "Intent: '## How To Verify' + Evidence For/Against",
+            check_intent_verification_plan,
+        )],
+        // Defensive: future tier strings fall back to "register both"
+        // semantics — same as pre-r5 dispatch. Won't happen unless
+        // tier_for_kind grows.
+        _ => vec![
+            rule(
+                "factum-must-have-source",
+                Severity::Must,
+                "Factum: '## Source' citation",
+                check_factum_source,
+            ),
+            rule(
+                "intent-must-have-verification-plan",
+                Severity::Must,
+                "Intent: '## How To Verify' + Evidence For/Against",
+                check_intent_verification_plan,
+            ),
+        ],
+    }
+}
+
+// Audit-r7 F5: `fm_kind_or_factum_default` removed alongside `extract_tier`.
+// No call sites after r5 ARCH-H2; future tier-aware helpers can be added
+// with cleaner signatures when actually needed.
+
+/// Factum tier MUST cite its `## Source`.
+///
+/// Audit-r5 ARCH-H2: tier dispatch resolved at registration time, so
+/// this check fn no longer needs to short-circuit on tier — if it's
+/// registered for a kind, that kind is factum. The `fm_kind_or_…`
+/// short-circuit and reparse are gone.
+///
+/// Empty / placeholder citations (< [`FACTUM_SOURCE_MIN_WORDS`] words)
+/// are flagged as if the section were missing — a one-word stub like
+/// "TBD" does not fulfil the contract.
+fn check_factum_source(body: &str, fm: &Frontmatter) -> Option<String> {
+    let _ = fm; // tier dispatch handled by registration; fm reserved for future use
+    if !checks::section_exists(body, "Source") {
+        return Some(
+            "Factum artifact must have a '## Source' section citing the codebase or document \
+             where this fact was extracted from."
+                .into(),
+        );
+    }
+    let wc = checks::section_word_count(body, "Source");
+    if wc < FACTUM_SOURCE_MIN_WORDS {
+        return Some(format!(
+            "Factum '## Source' citation is too short ({} words, expected >= {}). \
+             Cite the codebase path, doc URL, or interview reference.",
+            wc, FACTUM_SOURCE_MIN_WORDS
+        ));
+    }
+    None
+}
+
+/// Intent tier MUST publish a falsifiability plan.
+///
+/// Audit-r5 ARCH-H2: tier dispatch resolved at registration time, so
+/// this fn fires only for `Hypothesis` (the only intent-tier kind).
+/// All three sections must be present — a hypothesis without a
+/// verification plan is indistinguishable from a guess.
+fn check_intent_verification_plan(body: &str, fm: &Frontmatter) -> Option<String> {
+    let _ = fm; // tier dispatch handled by registration; fm reserved for future use
+    let mut missing: Vec<&str> = Vec::new();
+    if !checks::section_exists(body, "How To Verify") {
+        missing.push("How To Verify");
+    }
+    if !checks::section_exists(body, "Evidence For") {
+        missing.push("Evidence For");
+    }
+    if !checks::section_exists(body, "Evidence Against") {
+        missing.push("Evidence Against");
+    }
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Intent (hypothesis) must publish a falsifiability plan. Missing: {}.",
+            missing
+                .iter()
+                .map(|s| format!("'## {s}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+// ─── Per-kind required-section rules ────────────────────────────────────────
+//
+// FPF: chose ONE rule_id per kind (e.g. `use-case-required-sections`) over
+// one-rule-per-section. Reason — for coverage reporting (W2) it's the
+// kind-level pass/fail that matters; granular rule_ids would multiply
+// without giving the reader more actionable info than the per-finding
+// message (which already lists exactly which headings are missing).
+
+fn use_case_rules() -> Vec<RuleEntry> {
+    vec![rule(
+        "use-case-required-sections",
+        Severity::Must,
+        "UseCase required sections",
+        check_use_case_sections,
+    )]
+}
+
+fn check_use_case_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
+    check_required_sections(body, REQUIRED_SECTIONS_USE_CASE, "UseCase")
+}
+
+fn glossary_rules() -> Vec<RuleEntry> {
+    vec![rule(
+        "glossary-required-sections",
+        Severity::Must,
+        "Glossary required sections",
+        check_glossary_sections,
+    )]
+}
+
+fn check_glossary_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
+    check_required_sections(body, REQUIRED_SECTIONS_GLOSSARY, "Glossary")
+}
+
+fn invariant_rules() -> Vec<RuleEntry> {
+    vec![rule(
+        "invariant-required-sections",
+        Severity::Must,
+        "Invariant required sections",
+        check_invariant_sections,
+    )]
+}
+
+fn check_invariant_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
+    check_required_sections(body, REQUIRED_SECTIONS_INVARIANT, "Invariant")
+}
+
+fn scenario_rules() -> Vec<RuleEntry> {
+    vec![rule(
+        "scenario-required-sections",
+        Severity::Must,
+        "Scenario required sections",
+        check_scenario_sections,
+    )]
+}
+
+fn check_scenario_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
+    check_required_sections(body, REQUIRED_SECTIONS_SCENARIO, "Scenario")
+}
+
+fn hypothesis_rules() -> Vec<RuleEntry> {
+    vec![
+        rule(
+            "hypothesis-required-sections",
+            Severity::Must,
+            "Hypothesis required sections",
+            check_hypothesis_sections,
+        ),
+        // Audit-r7 ARCH-C1 follow-up: pin `hypothesis_state` ↔ `status`
+        // consistency. If an operator hand-edits `hypothesis_state:
+        // verified` in the frontmatter without going through
+        // `forgeplan_hypothesis_promote`, the `status:` field stays
+        // stale (draft) and the score / health pipelines see the
+        // wrong state. Surface the divergence as a SHOULD-level
+        // finding so it's visible but not blocking (existing
+        // workspaces with legacy hypotheses can validate while a
+        // migration backlog grows). The canonical fix is
+        // `forgeplan_hypothesis_promote` (which derives status).
+        rule(
+            "hypothesis-state-status-consistent",
+            Severity::Should,
+            "Hypothesis hypothesis_state must match derived status",
+            check_hypothesis_state_status_consistent,
+        ),
+    ]
+}
+
+fn check_hypothesis_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
+    check_required_sections(body, REQUIRED_SECTIONS_HYPOTHESIS, "Hypothesis")
+}
+
+/// Audit-r7 ARCH-C1 follow-up: check that `status` derives from
+/// `hypothesis_state` per the same mapping used by
+/// [`crate::hypothesis::apply_transition_to_body`]:
+///
+/// | hypothesis_state           | derived status |
+/// |---------------------------|----------------|
+/// | verified                  | active         |
+/// | refuted                   | deprecated     |
+/// | parked / inferred / strong-inferred | draft  |
+///
+/// Missing `hypothesis_state` field → no check (legacy artifact).
+/// Missing or unparseable `status` → no check (covered by base rules).
+fn check_hypothesis_state_status_consistent(_body: &str, fm: &Frontmatter) -> Option<String> {
+    let raw_state = fm.get("hypothesis_state").and_then(|v| v.as_str())?;
+    let state = crate::hypothesis::HypothesisState::parse(raw_state)?;
+    let expected_status = match state {
+        crate::hypothesis::HypothesisState::Verified => "active",
+        crate::hypothesis::HypothesisState::Refuted => "deprecated",
+        crate::hypothesis::HypothesisState::Parked
+        | crate::hypothesis::HypothesisState::Inferred
+        | crate::hypothesis::HypothesisState::StrongInferred => "draft",
+    };
+    let actual_status = fm.get("status").and_then(|v| v.as_str())?;
+    if !actual_status.eq_ignore_ascii_case(expected_status) {
+        return Some(format!(
+            "hypothesis_state=`{}` requires status=`{}`, found status=`{}`. \
+             Fix: run `forgeplan_hypothesis_promote {} {}` to re-derive status, \
+             or update status manually to match.",
+            raw_state,
+            expected_status,
+            actual_status,
+            fm.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing-id>"),
+            raw_state
+        ));
+    }
+    None
+}
+
+fn domain_model_rules() -> Vec<RuleEntry> {
+    vec![rule(
+        "domain-model-required-sections",
+        Severity::Must,
+        "DomainModel required sections",
+        check_domain_model_sections,
+    )]
+}
+
+fn check_domain_model_sections(body: &str, _fm: &Frontmatter) -> Option<String> {
+    check_required_sections(body, REQUIRED_SECTIONS_DOMAIN_MODEL, "DomainModel")
+}
+
+/// Generic helper — reports all missing required sections at once so
+/// the author sees a single actionable finding instead of N nags.
+fn check_required_sections(
+    body: &str,
+    required: &[&'static str],
+    kind_label: &str,
+) -> Option<String> {
+    let missing: Vec<&'static str> = required
+        .iter()
+        .copied()
+        .filter(|heading| !checks::section_exists(body, heading))
+        .collect();
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{kind_label} is missing required section(s): {}.",
+            missing
+                .iter()
+                .map(|h| format!("'## {h}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1759,6 +2202,709 @@ How our solution is different
         assert!(
             check_stub(body, &fm).is_some(),
             "3 consecutive '...' sections + 2 phrases must trigger"
+        );
+    }
+}
+
+// ─── Issue #287 Phase B — brownfield validation tests ───────────────────────
+//
+// Two-tier discipline + per-kind required-sections.
+//
+// Coverage matrix (14 tests minimum):
+//   • 6 kinds × {positive, negative} = 12 required-section tests
+//   • 1 factum-tier-missing-source test (UseCase as representative)
+//   • 1 intent-tier-missing-verification-plan test (Hypothesis)
+//
+// Additional tests cover the `extract_tier` fallback, the `tier_for_kind`
+// helper, the `Source`-too-short edge case, and the `tier_rules_for`
+// dispatch arms (one per kind).
+#[cfg(test)]
+mod tests_brownfield {
+    use super::*;
+    use crate::validation::{Severity, validate};
+
+    fn fm_with_kind_and_tier(id: &str, kind: &str, tier: Option<&str>) -> Frontmatter {
+        let mut fm = Frontmatter::new();
+        fm.insert("id".into(), serde_yaml::Value::String(id.into()));
+        fm.insert("status".into(), serde_yaml::Value::String("draft".into()));
+        fm.insert("kind".into(), serde_yaml::Value::String(kind.into()));
+        if let Some(t) = tier {
+            fm.insert("tier".into(), serde_yaml::Value::String(t.into()));
+        }
+        fm
+    }
+
+    fn must_finding<'a>(
+        result: &'a crate::validation::ValidationResult,
+        rule_id: &str,
+    ) -> Option<&'a crate::validation::Finding> {
+        result
+            .findings
+            .iter()
+            .find(|f| f.rule_id == rule_id && f.severity == Severity::Must)
+    }
+
+    // ─── 1. tier_for_kind helper ────────────────────────────────────────────
+
+    #[test]
+    fn tier_for_kind_hypothesis_is_intent() {
+        assert_eq!(tier_for_kind(&ArtifactKind::Hypothesis), "intent");
+    }
+
+    #[test]
+    fn tier_for_kind_other_brownfield_kinds_are_factum() {
+        assert_eq!(tier_for_kind(&ArtifactKind::UseCase), "factum");
+        assert_eq!(tier_for_kind(&ArtifactKind::Glossary), "factum");
+        assert_eq!(tier_for_kind(&ArtifactKind::Invariant), "factum");
+        assert_eq!(tier_for_kind(&ArtifactKind::Scenario), "factum");
+        assert_eq!(tier_for_kind(&ArtifactKind::DomainModel), "factum");
+    }
+
+    // ─── 2. UseCase positive + negative ────────────────────────────────────
+
+    #[test]
+    fn use_case_complete_body_passes_required_sections() {
+        let fm = fm_with_kind_and_tier("uc-001", "use_case", Some("factum"));
+        let body = "\
+## Problem\nCustomer needs refund flow.\n\n\
+## Actor\nSupport agent.\n\n\
+## Main Flow\n1. Open ticket\n2. Issue refund\n\n\
+## Acceptance Criteria\n- [ ] Refund completes\n\n\
+## Source\nExtracted from `src/refund.rs:42` during 2026-05 audit pass.\n";
+
+        let result = validate("uc-001", body, &fm, &ArtifactKind::UseCase, &Mode::Tactical);
+        assert!(
+            must_finding(&result, "use-case-required-sections").is_none(),
+            "complete UseCase should have no required-sections finding: {:?}",
+            result
+                .findings
+                .iter()
+                .map(|f| &f.rule_id)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn use_case_missing_actor_fires_required_sections_finding() {
+        let fm = fm_with_kind_and_tier("uc-002", "use_case", Some("factum"));
+        // Drop the `## Actor` heading.
+        let body = "\
+## Problem\nCustomer needs refund flow.\n\n\
+## Main Flow\n1. Open ticket\n2. Issue refund\n\n\
+## Acceptance Criteria\n- [ ] Refund completes\n\n\
+## Source\nExtracted from `src/refund.rs:42` during 2026-05 audit pass.\n";
+
+        let result = validate("uc-002", body, &fm, &ArtifactKind::UseCase, &Mode::Tactical);
+        let finding = must_finding(&result, "use-case-required-sections")
+            .expect("missing Actor must produce use-case-required-sections finding");
+        assert!(finding.message.contains("'## Actor'"));
+    }
+
+    // ─── 3. Glossary positive + negative ───────────────────────────────────
+
+    #[test]
+    fn glossary_complete_body_passes_required_sections() {
+        let fm = fm_with_kind_and_tier("glos-001", "glossary", Some("factum"));
+        let body = "\
+## Canonical Term\nTenant\n\n\
+## Definition\nA single billing account.\n\n\
+## Source\nDiscovered in `src/auth/tenant.rs` and onboarding wiki.\n";
+
+        let result = validate(
+            "glos-001",
+            body,
+            &fm,
+            &ArtifactKind::Glossary,
+            &Mode::Tactical,
+        );
+        assert!(must_finding(&result, "glossary-required-sections").is_none());
+    }
+
+    #[test]
+    fn glossary_missing_definition_fires_required_sections_finding() {
+        let fm = fm_with_kind_and_tier("glos-002", "glossary", Some("factum"));
+        let body = "\
+## Canonical Term\nTenant\n\n\
+## Source\nDiscovered in `src/auth/tenant.rs` and onboarding wiki.\n";
+
+        let result = validate(
+            "glos-002",
+            body,
+            &fm,
+            &ArtifactKind::Glossary,
+            &Mode::Tactical,
+        );
+        let finding = must_finding(&result, "glossary-required-sections")
+            .expect("missing Definition must produce glossary-required-sections finding");
+        assert!(finding.message.contains("'## Definition'"));
+    }
+
+    // ─── 4. Invariant positive + negative ──────────────────────────────────
+
+    #[test]
+    fn invariant_complete_body_passes_required_sections() {
+        let fm = fm_with_kind_and_tier("inv-001", "invariant", Some("factum"));
+        let body = "\
+## Statement\nA refund cannot exceed the original payment.\n\n\
+## Scope\nPayments domain.\n\n\
+## Rationale\nPrevents double-spend.\n\n\
+## Verification\nUnit test in `tests/refund_bounds.rs`.\n\n\
+## Source\nExtracted from `src/payments/refund.rs` audit 2026-05.\n";
+
+        let result = validate(
+            "inv-001",
+            body,
+            &fm,
+            &ArtifactKind::Invariant,
+            &Mode::Tactical,
+        );
+        assert!(must_finding(&result, "invariant-required-sections").is_none());
+    }
+
+    #[test]
+    fn invariant_missing_rationale_fires_required_sections_finding() {
+        let fm = fm_with_kind_and_tier("inv-002", "invariant", Some("factum"));
+        let body = "\
+## Statement\nA refund cannot exceed the original payment.\n\n\
+## Scope\nPayments domain.\n\n\
+## Verification\nUnit test in `tests/refund_bounds.rs`.\n\n\
+## Source\nExtracted from `src/payments/refund.rs` audit 2026-05.\n";
+
+        let result = validate(
+            "inv-002",
+            body,
+            &fm,
+            &ArtifactKind::Invariant,
+            &Mode::Tactical,
+        );
+        let finding = must_finding(&result, "invariant-required-sections")
+            .expect("missing Rationale must produce invariant-required-sections finding");
+        assert!(finding.message.contains("'## Rationale'"));
+    }
+
+    // ─── 5. Scenario positive + negative ───────────────────────────────────
+
+    #[test]
+    fn scenario_complete_body_passes_required_sections() {
+        let fm = fm_with_kind_and_tier("scen-001", "scenario", Some("factum"));
+        let body = "\
+## Given\nA payment of $100.\n\n\
+## When\nAgent issues refund of $150.\n\n\
+## Then\nSystem rejects the refund with code REFUND_EXCEEDS_PAYMENT.\n\n\
+## Demonstrates\n- INV-001 (refund ceiling)\n\n\
+## Source\nExtracted from incident-2026-04-12 postmortem and `tests/refund_bounds.rs`.\n";
+
+        let result = validate(
+            "scen-001",
+            body,
+            &fm,
+            &ArtifactKind::Scenario,
+            &Mode::Tactical,
+        );
+        assert!(must_finding(&result, "scenario-required-sections").is_none());
+    }
+
+    #[test]
+    fn scenario_missing_then_fires_required_sections_finding() {
+        let fm = fm_with_kind_and_tier("scen-002", "scenario", Some("factum"));
+        let body = "\
+## Given\nA payment of $100.\n\n\
+## When\nAgent issues refund of $150.\n\n\
+## Demonstrates\n- INV-001 (refund ceiling)\n\n\
+## Source\nExtracted from incident-2026-04-12 postmortem and `tests/refund_bounds.rs`.\n";
+
+        let result = validate(
+            "scen-002",
+            body,
+            &fm,
+            &ArtifactKind::Scenario,
+            &Mode::Tactical,
+        );
+        let finding = must_finding(&result, "scenario-required-sections")
+            .expect("missing Then must produce scenario-required-sections finding");
+        assert!(finding.message.contains("'## Then'"));
+    }
+
+    // ─── 6. Hypothesis positive + negative ─────────────────────────────────
+
+    #[test]
+    fn hypothesis_complete_body_passes_required_sections() {
+        let fm = fm_with_kind_and_tier("hyp-001", "hypothesis", Some("intent"));
+        let body = "\
+## Hypothesis\nRefunds over $1000 require manager approval.\n\n\
+## Lifecycle State\n**Current**: inferred\n\n\
+## Evidence For\n- `src/refund_policy.rs:88` references `requires_approval` flag.\n\n\
+## Evidence Against\n- No unit test covers the path; could be dead code.\n\n\
+## How To Verify\nRun a $1500 refund in staging and observe approval queue.\n\n\
+## Source\nObserved during code walk on 2026-05-14.\n";
+
+        let result = validate(
+            "hyp-001",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(must_finding(&result, "hypothesis-required-sections").is_none());
+    }
+
+    #[test]
+    fn hypothesis_missing_lifecycle_state_fires_required_sections_finding() {
+        let fm = fm_with_kind_and_tier("hyp-002", "hypothesis", Some("intent"));
+        let body = "\
+## Hypothesis\nRefunds over $1000 require manager approval.\n\n\
+## Evidence For\n- `src/refund_policy.rs:88` references `requires_approval` flag.\n\n\
+## Evidence Against\n- No unit test covers the path; could be dead code.\n\n\
+## How To Verify\nRun a $1500 refund in staging and observe approval queue.\n\n\
+## Source\nObserved during code walk on 2026-05-14.\n";
+
+        let result = validate(
+            "hyp-002",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        let finding = must_finding(&result, "hypothesis-required-sections")
+            .expect("missing Lifecycle State must produce hypothesis-required-sections finding");
+        assert!(finding.message.contains("'## Lifecycle State'"));
+    }
+
+    // ─── 7. DomainModel positive + negative ────────────────────────────────
+
+    #[test]
+    fn domain_model_complete_body_passes_required_sections() {
+        let fm = fm_with_kind_and_tier("dm-001", "domain_model", Some("factum"));
+        let body = "\
+## Domain\nPayments subdomain.\n\n\
+## Composition\n- GLOS-001 (Tenant)\n- INV-001 (Refund ceiling)\n\n\
+## Source\nAggregated from Discover Agent v3.2 pass on 2026-05-14.\n";
+
+        let result = validate(
+            "dm-001",
+            body,
+            &fm,
+            &ArtifactKind::DomainModel,
+            &Mode::Tactical,
+        );
+        assert!(must_finding(&result, "domain-model-required-sections").is_none());
+    }
+
+    #[test]
+    fn domain_model_missing_composition_fires_required_sections_finding() {
+        let fm = fm_with_kind_and_tier("dm-002", "domain_model", Some("factum"));
+        let body = "\
+## Domain\nPayments subdomain.\n\n\
+## Source\nAggregated from Discover Agent v3.2 pass on 2026-05-14.\n";
+
+        let result = validate(
+            "dm-002",
+            body,
+            &fm,
+            &ArtifactKind::DomainModel,
+            &Mode::Tactical,
+        );
+        let finding = must_finding(&result, "domain-model-required-sections")
+            .expect("missing Composition must produce domain-model-required-sections finding");
+        assert!(finding.message.contains("'## Composition'"));
+    }
+
+    // ─── 8. Tier-level rules ───────────────────────────────────────────────
+
+    #[test]
+    fn factum_without_source_section_fires_factum_must_have_source() {
+        // UseCase body with all other required sections except Source.
+        let fm = fm_with_kind_and_tier("uc-003", "use_case", Some("factum"));
+        let body = "\
+## Problem\nCustomer needs refund flow.\n\n\
+## Actor\nSupport agent.\n\n\
+## Main Flow\n1. Open ticket\n2. Issue refund\n\n\
+## Acceptance Criteria\n- [ ] Refund completes\n";
+
+        let result = validate("uc-003", body, &fm, &ArtifactKind::UseCase, &Mode::Tactical);
+        // Both the per-kind required-sections rule and the tier rule
+        // should fire — Source is in BOTH lists by design (factum-tier
+        // = source citation; per-kind required-sections enumerates it
+        // explicitly).
+        let tier_finding = must_finding(&result, "factum-must-have-source")
+            .expect("factum without Source must trigger factum-must-have-source");
+        assert!(tier_finding.message.contains("Source"));
+    }
+
+    #[test]
+    fn factum_with_short_source_section_fires_factum_must_have_source() {
+        // `## Source\nTBD\n` — 1 word, below FACTUM_SOURCE_MIN_WORDS.
+        let fm = fm_with_kind_and_tier("uc-004", "use_case", Some("factum"));
+        let body = "\
+## Problem\nCustomer needs refund flow.\n\n\
+## Actor\nSupport agent.\n\n\
+## Main Flow\n1. Open ticket\n2. Issue refund\n\n\
+## Acceptance Criteria\n- [ ] Refund completes\n\n\
+## Source\nTBD\n";
+
+        let result = validate("uc-004", body, &fm, &ArtifactKind::UseCase, &Mode::Tactical);
+        let finding = must_finding(&result, "factum-must-have-source")
+            .expect("Source with <10 words must trigger factum-must-have-source");
+        assert!(
+            finding.message.contains("too short"),
+            "expected 'too short' in: {}",
+            finding.message
+        );
+    }
+
+    #[test]
+    fn intent_hypothesis_without_how_to_verify_fires_intent_rule() {
+        let fm = fm_with_kind_and_tier("hyp-003", "hypothesis", Some("intent"));
+        // Has Hypothesis + Evidence For + Evidence Against + Source, no `## How To Verify`.
+        let body = "\
+## Hypothesis\nRefunds over $1000 require manager approval.\n\n\
+## Lifecycle State\n**Current**: inferred\n\n\
+## Evidence For\n- `src/refund_policy.rs:88` references `requires_approval`.\n\n\
+## Evidence Against\n- No unit test covers the path.\n\n\
+## Source\nObserved during code walk on 2026-05-14.\n";
+
+        let result = validate(
+            "hyp-003",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        let finding = must_finding(&result, "intent-must-have-verification-plan")
+            .expect("missing How To Verify must trigger intent-must-have-verification-plan");
+        assert!(finding.message.contains("How To Verify"));
+    }
+
+    // ─── 9. Tier inference fallback ────────────────────────────────────────
+
+    #[test]
+    fn missing_tier_frontmatter_falls_back_to_kind_default_factum() {
+        // No `tier:` field — UseCase defaults to factum, so the factum
+        // rule must still apply and (correctly) fire when Source is empty.
+        let mut fm = Frontmatter::new();
+        fm.insert("id".into(), serde_yaml::Value::String("uc-005".into()));
+        fm.insert("status".into(), serde_yaml::Value::String("draft".into()));
+        fm.insert("kind".into(), serde_yaml::Value::String("use_case".into()));
+
+        let body = "\
+## Problem\nCustomer needs refund flow.\n\n\
+## Actor\nSupport agent.\n\n\
+## Main Flow\n1. Open ticket\n\n\
+## Acceptance Criteria\n- [ ] Refund completes\n";
+        // No `## Source` heading at all.
+
+        let result = validate("uc-005", body, &fm, &ArtifactKind::UseCase, &Mode::Tactical);
+        assert!(
+            must_finding(&result, "factum-must-have-source").is_some(),
+            "UseCase without tier: in fm should still default to factum and require Source"
+        );
+    }
+
+    #[test]
+    fn missing_tier_frontmatter_falls_back_to_kind_default_intent() {
+        // No `tier:` field on a Hypothesis — defaults to intent, so the
+        // intent verification plan rule must fire when the plan is missing.
+        let mut fm = Frontmatter::new();
+        fm.insert("id".into(), serde_yaml::Value::String("hyp-004".into()));
+        fm.insert("status".into(), serde_yaml::Value::String("draft".into()));
+        fm.insert(
+            "kind".into(),
+            serde_yaml::Value::String("hypothesis".into()),
+        );
+
+        let body = "\
+## Hypothesis\nRefunds over $1000 require manager approval.\n\n\
+## Lifecycle State\n**Current**: inferred\n\n\
+## Source\nObserved during code walk.\n";
+        // No `## How To Verify`, no `## Evidence For/Against`.
+
+        let result = validate(
+            "hyp-004",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            must_finding(&result, "intent-must-have-verification-plan").is_some(),
+            "Hypothesis without tier: should still default to intent and require verification plan"
+        );
+    }
+
+    // ─── 9b. SEC-C1 (audit-r4) — frontmatter tier override is ignored ──────
+
+    #[test]
+    fn sec_c1_hypothesis_with_factum_override_still_requires_verification_plan() {
+        // Audit-r4 SEC-C1: an operator MUST NOT be able to disable the
+        // intent-tier falsifiability gate by writing `tier: factum` in a
+        // Hypothesis frontmatter. The gate is kind-derived.
+        let fm = fm_with_kind_and_tier("hyp-secc1", "hypothesis", Some("factum"));
+
+        let body = "\
+## Hypothesis\nRefunds over $1000 require manager approval.\n\n\
+## Lifecycle State\n**Current**: inferred\n\n\
+## Source\nCode walk in commands/refund.rs.\n";
+        // No `## How To Verify` — should still trigger intent rule
+        // because Hypothesis is intent regardless of frontmatter override.
+
+        let result = validate(
+            "hyp-secc1",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            must_finding(&result, "intent-must-have-verification-plan").is_some(),
+            "tier: factum in frontmatter must NOT bypass intent-tier enforcement on Hypothesis"
+        );
+    }
+
+    #[test]
+    fn sec_c1_invariant_with_intent_override_still_requires_source() {
+        // Audit-r4 SEC-C1: same direction the other way — an operator
+        // MUST NOT be able to flip an Invariant to intent and skip the
+        // mandatory Source citation.
+        let fm = fm_with_kind_and_tier("inv-secc1", "invariant", Some("intent"));
+
+        let body = "\
+## Invariant\nUser email must be unique per organisation.\n\n\
+## Scope\nOrganisations table.\n\n\
+## Enforcement\nDatabase unique constraint.\n\n\
+## Violation Detection\nMigration test.\n";
+        // No `## Source` — should still trigger factum rule
+        // because Invariant is factum regardless of frontmatter override.
+
+        let result = validate(
+            "inv-secc1",
+            body,
+            &fm,
+            &ArtifactKind::Invariant,
+            &Mode::Tactical,
+        );
+        assert!(
+            must_finding(&result, "factum-must-have-source").is_some(),
+            "tier: intent in frontmatter must NOT bypass factum-tier enforcement on Invariant"
+        );
+    }
+
+    // ─── 10. Required-section constants size contract ──────────────────────
+
+    #[test]
+    fn required_sections_constants_match_spec_size() {
+        // W2 imports these. A future refactor that resizes any of them
+        // is a contract change — bump the expectation here to make the
+        // breakage visible and intentional.
+        assert_eq!(REQUIRED_SECTIONS_USE_CASE.len(), 5);
+        assert_eq!(REQUIRED_SECTIONS_GLOSSARY.len(), 3);
+        assert_eq!(REQUIRED_SECTIONS_INVARIANT.len(), 5);
+        assert_eq!(REQUIRED_SECTIONS_SCENARIO.len(), 5);
+        assert_eq!(REQUIRED_SECTIONS_HYPOTHESIS.len(), 6);
+        assert_eq!(REQUIRED_SECTIONS_DOMAIN_MODEL.len(), 3);
+    }
+
+    #[test]
+    fn factum_required_sections_all_include_source() {
+        // Source citation is the defining factum-tier requirement.
+        // Every factum kind's required-sections list MUST include it.
+        for (label, list) in [
+            ("UseCase", REQUIRED_SECTIONS_USE_CASE),
+            ("Glossary", REQUIRED_SECTIONS_GLOSSARY),
+            ("Invariant", REQUIRED_SECTIONS_INVARIANT),
+            ("Scenario", REQUIRED_SECTIONS_SCENARIO),
+            ("DomainModel", REQUIRED_SECTIONS_DOMAIN_MODEL),
+        ] {
+            assert!(
+                list.contains(&"Source"),
+                "factum kind {label}'s required-sections list omits 'Source'"
+            );
+        }
+    }
+
+    #[test]
+    fn hypothesis_required_sections_include_intent_plan() {
+        // The intent tier plan is verification-focused; the kind's
+        // required-sections must enumerate the plan headings too so a
+        // single finding can point at all of them.
+        for needed in ["How To Verify", "Evidence For", "Evidence Against"] {
+            assert!(
+                REQUIRED_SECTIONS_HYPOTHESIS.contains(&needed),
+                "Hypothesis required-sections missing intent-plan heading {needed:?}"
+            );
+        }
+    }
+
+    // ─── 11. rules_for dispatch covers all brownfield kinds ────────────────
+
+    /// Audit-r5 ARCH-H2: `rules_for` now resolves tier dispatch at
+    /// registration time. For a factum-tier kind (UseCase), only the
+    /// factum rule is registered — the intent rule no longer ships in
+    /// the rule list. Mirrors the honest dispatch shape.
+    #[test]
+    fn rules_for_use_case_includes_required_and_factum_tier_rule_only() {
+        let rules = rules_for(&ArtifactKind::UseCase, &Mode::Tactical);
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"use-case-required-sections"));
+        assert!(ids.contains(&"factum-must-have-source"));
+        assert!(
+            !ids.contains(&"intent-must-have-verification-plan"),
+            "ARCH-H2: factum-tier kind must NOT register the intent rule"
+        );
+    }
+
+    /// Audit-r5 ARCH-H2: Hypothesis is the only intent-tier kind, so
+    /// only the intent rule is registered. The factum rule is absent.
+    #[test]
+    fn rules_for_hypothesis_includes_required_and_intent_tier_rule_only() {
+        let rules = rules_for(&ArtifactKind::Hypothesis, &Mode::Tactical);
+        let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&"hypothesis-required-sections"));
+        assert!(ids.contains(&"intent-must-have-verification-plan"));
+        assert!(
+            !ids.contains(&"factum-must-have-source"),
+            "ARCH-H2: intent-tier kind must NOT register the factum rule"
+        );
+    }
+
+    #[test]
+    fn rules_for_glossary_invariant_scenario_domain_model_dispatch() {
+        for kind in [
+            ArtifactKind::Glossary,
+            ArtifactKind::Invariant,
+            ArtifactKind::Scenario,
+            ArtifactKind::DomainModel,
+        ] {
+            let rules = rules_for(&kind, &Mode::Tactical);
+            let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
+            assert!(
+                ids.iter().any(|id| id.ends_with("-required-sections")),
+                "kind {kind:?} dispatch missing required-sections rule"
+            );
+            assert!(
+                ids.contains(&"factum-must-have-source"),
+                "kind {kind:?} dispatch missing factum-must-have-source"
+            );
+        }
+    }
+
+    // ─── 12. Audit-r7 ARCH-C1 follow-up: state ↔ status consistency ───────
+
+    /// hypothesis_state=verified MUST imply status=active. Stale status
+    /// after a hand-edit surfaces as a SHOULD-level finding.
+    #[test]
+    fn hypothesis_state_verified_without_active_status_triggers_consistency_finding() {
+        let mut fm = fm_with_kind_and_tier("hyp-r7-1", "hypothesis", Some("intent"));
+        fm.insert(
+            "hypothesis_state".into(),
+            serde_yaml::Value::String("verified".into()),
+        );
+        // status: draft (stale — was draft, hypothesis_state was hand-edited to verified)
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nNone observed.\n\n\
+## Lifecycle State\n**Current**: verified\n";
+        let result = validate(
+            "hyp-r7-1",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        let finding = result
+            .findings
+            .iter()
+            .find(|f| f.rule_id == "hypothesis-state-status-consistent")
+            .expect("consistency rule must fire when status is stale");
+        assert!(finding.message.contains("status=`active`"));
+    }
+
+    /// hypothesis_state=refuted MUST imply status=deprecated.
+    #[test]
+    fn hypothesis_state_refuted_without_deprecated_status_triggers_consistency_finding() {
+        let mut fm = fm_with_kind_and_tier("hyp-r7-2", "hypothesis", Some("intent"));
+        fm.insert(
+            "hypothesis_state".into(),
+            serde_yaml::Value::String("refuted".into()),
+        );
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nEVID-002 contradicts.\n\n\
+## Lifecycle State\n**Current**: refuted\n";
+        let result = validate(
+            "hyp-r7-2",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "hypothesis-state-status-consistent"),
+            "refuted hypothesis with status=draft must trigger consistency rule"
+        );
+    }
+
+    /// Consistent state/status pair passes — no finding emitted.
+    #[test]
+    fn hypothesis_consistent_state_status_passes_check() {
+        let mut fm = fm_with_kind_and_tier("hyp-r7-3", "hypothesis", Some("intent"));
+        fm.insert(
+            "hypothesis_state".into(),
+            serde_yaml::Value::String("inferred".into()),
+        );
+        // status=draft matches inferred (default landing state)
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nNone.\n\n\
+## Lifecycle State\n**Current**: inferred\n";
+        let result = validate(
+            "hyp-r7-3",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "hypothesis-state-status-consistent"),
+            "consistent inferred/draft pair must NOT trigger consistency rule"
+        );
+    }
+
+    /// Legacy hypothesis without `hypothesis_state` field — rule is silent.
+    #[test]
+    fn hypothesis_without_state_field_skips_consistency_check() {
+        let fm = fm_with_kind_and_tier("hyp-r7-legacy", "hypothesis", Some("intent"));
+        // No hypothesis_state field at all (legacy pre-Phase-D artifact).
+        let body = "\
+## Hypothesis\nA claim.\n\n\
+## How To Verify\nMeasurement plan.\n\n\
+## Evidence For\nEVID-001.\n\n\
+## Evidence Against\nNone.\n\n\
+## Lifecycle State\n**Current**: legacy\n";
+        let result = validate(
+            "hyp-r7-legacy",
+            body,
+            &fm,
+            &ArtifactKind::Hypothesis,
+            &Mode::Tactical,
+        );
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "hypothesis-state-status-consistent"),
+            "legacy hypothesis (no hypothesis_state) must NOT trigger consistency rule"
         );
     }
 }

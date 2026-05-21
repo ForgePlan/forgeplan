@@ -303,14 +303,103 @@ pub fn format_json(notes: &ReleaseNotes) -> serde_json::Value {
     })
 }
 
+/// Issue #290: locate the nearest git repository for changelog generation.
+///
+/// Some workspaces split `.forgeplan/` and `.git/` into different
+/// directories (the marketplace pattern: `.forgeplan/` at parent,
+/// `.git/` in a child submodule-style repo). Without discovery,
+/// `git log` runs from the workspace root and reports
+/// "not a git repository".
+///
+/// Strategy (audit-r-dogfood SEC-1 hardening):
+/// 1. If `start/.git` exists → use `start` (standard layout).
+/// 2. Walk **up** from `start`, **bounded** by the nearest `.forgeplan/`
+///    ancestor (don't escape workspace) or 8 hops (whichever comes
+///    first) — prevents reaching `/Users/<other>/.git` on multi-user
+///    systems.
+/// 3. Walk **down** one level into immediate subdirectories of `start`
+///    looking for `.git/`. Symlinks are explicitly rejected via
+///    `symlink_metadata().is_dir()` (not the symlink-following
+///    `is_dir()`) so an attacker can't plant a symlink at e.g.
+///    `subdir/.git -> /private/var/.../other-user-repo/.git` to make
+///    `release_notes` emit other repos' commit messages.
+///    Deterministic order: entries sorted by path (issue #290 follow-up
+///    CODE-8 / SEC-1).
+/// 4. Fall back to `start` (preserves legacy behaviour — caller still
+///    gets the original "not a git repository" error if no `.git` is
+///    found anywhere).
+///
+/// Returns the directory to use as `current_dir` for git invocations.
+pub fn find_git_root(start: &Path) -> std::path::PathBuf {
+    /// Probe `dir/.git` rejecting symlinks (SEC-1 fix).
+    /// `dir/.git` is allowed to be a regular file (git worktree, submodule
+    /// pointer) — only symlinks are rejected because they're the vector
+    /// for attacker-redirected repo discovery.
+    fn has_real_dot_git(dir: &Path) -> bool {
+        let dot_git = dir.join(".git");
+        match std::fs::symlink_metadata(&dot_git) {
+            Ok(md) => !md.file_type().is_symlink(),
+            Err(_) => false,
+        }
+    }
+
+    // 1 + 2. Walk up, bounded.
+    //
+    // Boundary: stop walking when we either (a) find a `.forgeplan/`
+    // ancestor (that's the workspace edge, and the operator's repo
+    // should be inside it or co-located), or (b) traverse > MAX_HOPS
+    // (defensive against pathological deep nesting / fs loops).
+    const MAX_HOPS: usize = 8;
+    let mut current: Option<&Path> = Some(start);
+    let mut hops = 0;
+    while let Some(dir) = current {
+        if has_real_dot_git(dir) {
+            return dir.to_path_buf();
+        }
+        // Stop at the workspace boundary marker (`.forgeplan/`).
+        if dir.join(".forgeplan").exists() && dir != start {
+            break;
+        }
+        hops += 1;
+        if hops >= MAX_HOPS {
+            break;
+        }
+        current = dir.parent();
+    }
+    // 3. Walk down one level, symlink-safe, deterministic order.
+    if let Ok(entries) = std::fs::read_dir(start) {
+        let mut candidates: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                // Reject symlinks even on the directory itself.
+                let md = std::fs::symlink_metadata(&p).ok()?;
+                if md.file_type().is_dir() && has_real_dot_git(&p) {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        candidates.sort();
+        if let Some(p) = candidates.into_iter().next() {
+            return p;
+        }
+    }
+    // 4. Fallback (legacy behaviour).
+    start.to_path_buf()
+}
+
 /// Try `git describe --tags --abbrev=0` to find the latest tag. Returns
 /// `None` if there are no tags or git fails — the caller decides on a
 /// fallback (currently `HEAD~50` so something still gets emitted on a
 /// fresh repo with no tags).
 pub fn latest_tag(repo_root: &Path) -> Option<String> {
+    // Issue #290: resolve to nearest .git before invoking git.
+    let git_root = find_git_root(repo_root);
     let output = Command::new("git")
         .args(["describe", "--tags", "--abbrev=0"])
-        .current_dir(repo_root)
+        .current_dir(&git_root)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -355,9 +444,11 @@ pub fn walk_artifact_changes(repo_root: &Path, since: &str, until: &str) -> Resu
         args.push((*d).to_string());
     }
 
+    // Issue #290: resolve to nearest .git before invoking git.
+    let git_root = find_git_root(repo_root);
     let output = Command::new("git")
         .args(&args)
-        .current_dir(repo_root)
+        .current_dir(&git_root)
         .output()
         .with_context(|| "running `git log` — is git installed?")?;
 
@@ -819,5 +910,145 @@ mod tests {
         assert!(!t.contains("##"));
         assert!(!t.contains("###"));
         assert!(t.contains("Added:"));
+    }
+
+    // ─── Issue #290: find_git_root discovery ──────────────────────────────
+
+    use tempfile::TempDir;
+
+    /// Standard layout: `.git/` directly inside the start directory.
+    #[test]
+    fn find_git_root_standard_layout() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        assert_eq!(find_git_root(tmp.path()), tmp.path().to_path_buf());
+    }
+
+    /// Walk-up: `.git/` in a parent directory, start in a subdir.
+    #[test]
+    fn find_git_root_walks_up_to_parent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        assert_eq!(find_git_root(&sub), tmp.path().to_path_buf());
+    }
+
+    /// Issue #290 reproduction: `.git/` in a CHILD subdirectory, NOT in
+    /// any parent. Start dir is the workspace root containing `.forgeplan/`.
+    /// The discovery must walk DOWN one level to find the repo.
+    #[test]
+    fn find_git_root_walks_down_for_split_repo() {
+        let tmp = TempDir::new().unwrap();
+        // .forgeplan/ at root (no .git here)
+        std::fs::create_dir(tmp.path().join(".forgeplan")).unwrap();
+        // .git/ in child repo subdir
+        let repo = tmp.path().join("forgeplan-marketplace");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+
+        let resolved = find_git_root(tmp.path());
+        assert_eq!(
+            resolved, repo,
+            "issue #290: .git/ in child subdir must be discovered (not fallback to start)"
+        );
+    }
+
+    /// No git anywhere → falls back to start (legacy behaviour, caller
+    /// gets the same "not a git repository" error as before).
+    #[test]
+    fn find_git_root_fallback_when_no_git() {
+        let tmp = TempDir::new().unwrap();
+        let resolved = find_git_root(tmp.path());
+        // tmp.path() may walk up to a real .git/ on dev machines (cargo
+        // workspace root); assert resolved is either start OR an ancestor.
+        assert!(
+            resolved == tmp.path() || tmp.path().starts_with(&resolved),
+            "fallback or walked up to ancestor .git/: {resolved:?}"
+        );
+    }
+
+    /// Prefer walk-up over walk-down: if both ancestor AND child have
+    /// `.git/`, the ancestor (standard) wins because step 2 runs before
+    /// step 3.
+    #[test]
+    fn find_git_root_prefers_ancestor_over_child() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let child = tmp.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::create_dir(child.join(".git")).unwrap();
+        // Start = tmp.path() itself — should return tmp.path() (has .git).
+        assert_eq!(find_git_root(tmp.path()), tmp.path().to_path_buf());
+    }
+
+    /// Audit-r-dogfood SEC-1: walk-down MUST reject symlinks at the
+    /// `.git` entry. Without this, an attacker who can write a subdir
+    /// in the workspace can plant a symlinked `.git` pointing at another
+    /// user's repo, causing `forgeplan_release_notes` to emit commit
+    /// messages from that other repo.
+    #[cfg(unix)]
+    #[test]
+    fn find_git_root_rejects_symlinked_dot_git_in_subdir() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        // `.forgeplan/` at root marks workspace boundary so walk-up
+        // doesn't escape into the cargo workspace's `.git/`.
+        std::fs::create_dir(tmp.path().join(".forgeplan")).unwrap();
+        // Plant a real repo "somewhere else" — simulates another user's repo.
+        let other_repo = tmp.path().join("other-user-repo");
+        std::fs::create_dir(&other_repo).unwrap();
+        std::fs::create_dir(other_repo.join(".git")).unwrap();
+        // Attacker plants a child dir with a SYMLINKED `.git/` pointing
+        // at the other-user repo.
+        let child = tmp.path().join("evil-subdir");
+        std::fs::create_dir(&child).unwrap();
+        symlink(other_repo.join(".git"), child.join(".git")).unwrap();
+
+        let resolved = find_git_root(tmp.path());
+        assert_ne!(
+            resolved, child,
+            "SEC-1: symlinked .git must NOT be selected — got {resolved:?}"
+        );
+    }
+
+    /// Walk-up must stop at `.forgeplan/` boundary so it can't escape
+    /// the workspace and reach `/Users/<other>/.git` on multi-user host.
+    #[test]
+    fn find_git_root_walk_up_bounded_by_forgeplan_marker() {
+        let tmp = TempDir::new().unwrap();
+        // No .git at tmp, but .forgeplan/ here = workspace boundary.
+        std::fs::create_dir(tmp.path().join(".forgeplan")).unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        // Subdir has no .git either. find_git_root from sub must NOT
+        // walk past tmp.path() (which has .forgeplan) into cargo workspace's
+        // real .git on the dev machine.
+        let resolved = find_git_root(&sub);
+        // Should fall back to `start` (sub) since no .git found within bound.
+        // Critical: must NOT return some ancestor outside the workspace.
+        assert!(
+            resolved == sub || resolved == tmp.path(),
+            "walk-up must stay within workspace bound: got {resolved:?}"
+        );
+    }
+
+    /// Walk-down is deterministic when multiple subdirs have `.git/`
+    /// (issue #290 CODE-8 / SEC-1).
+    #[test]
+    fn find_git_root_walk_down_deterministic_order() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".forgeplan")).unwrap();
+        for name in ["zeta-repo", "alpha-repo", "middle-repo"] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::create_dir(dir.join(".git")).unwrap();
+        }
+        let resolved = find_git_root(tmp.path());
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some("alpha-repo"),
+            "alphabetic order: 'alpha' must win, not fs::read_dir() insertion order — got {resolved:?}"
+        );
     }
 }

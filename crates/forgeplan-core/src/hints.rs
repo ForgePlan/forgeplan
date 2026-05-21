@@ -375,6 +375,13 @@ fn kind_to_str(kind: &crate::artifact::types::ArtifactKind) -> &'static str {
         ArtifactKind::EvidencePack => "evidence",
         ArtifactKind::RefreshReport => "refresh",
         ArtifactKind::Memory => "memory",
+        // Issue #287 brownfield kinds.
+        ArtifactKind::UseCase => "use_case",
+        ArtifactKind::Glossary => "glossary",
+        ArtifactKind::Invariant => "invariant",
+        ArtifactKind::Scenario => "scenario",
+        ArtifactKind::Hypothesis => "hypothesis",
+        ArtifactKind::DomainModel => "domain_model",
     }
 }
 
