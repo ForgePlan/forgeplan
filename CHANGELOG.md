@@ -176,12 +176,29 @@ Collected from real-world workspace usage in `marketplace` repo, filed upstream,
 
 ### Security (RED-LINE #10 compliance)
 
-Open Dependabot alerts at release time, per RED-LINE #10 mandate:
+Dependabot alerts triage for v0.32.0, per RED-LINE #10 mandate:
 
-- **#33** — `devalue` HIGH severity (Svelte DoS via sparse array deserialization, ecosystem `npm`, lives in `website/package-lock.json`).
-  **Status: scheduled** — `website/` is a static docs portal, no runtime impact on the Rust core; `npm` bump deferred to the next docs-deps sprint.
-- **#3** — `lru` LOW severity (`IterMut` Stacked Borrows violation, ecosystem `rust`).
-  **Status: accepted-with-justification** — pre-existing finding documented in v0.28.0 / v0.29.0 / v0.30.0 changelogs as deferred; GHSA-rhfx-m35p-ff5j is Stacked-Borrows-only, no runtime exploit path, upstream fix not yet released.
+- **#33** — `devalue` HIGH severity (Svelte DoS via sparse array deserialization, GHSA-77vg-94rm-hx3p, ecosystem `npm`, `website/package-lock.json`).
+  **Status: addressed** — bumped 5.6.4 → 5.8.1 in commit `82d4634` (PR #302). Limited exposure: `website/` is a static Astro SSG; the Rust CLI/MCP binaries do not ship JS. Post-bump `npm audit` reports 0 vulnerabilities. The GitHub alert will auto-close after this release reaches `main`.
+- **#3** — `lru` LOW severity (`IterMut` Stacked Borrows violation, GHSA-rhfx-m35p-ff5j, ecosystem `rust`).
+  **Status: accepted-with-justification** — same as v0.28.0 / v0.29.0 / v0.30.0 / v0.31.0 changelogs. Transitive via `tantivy 0.24` → `lance 4.0` → `lancedb 0.27`; `cargo update -p lru` is a no-op because tantivy pins `lru = "^0.12"`. Direct upgrade to 0.16.3 requires bumping tantivy major, cascading into Lance/LanceDB upgrades — out of scope for v0.32.0 patch. Impact in our context is LOW: Stacked Borrows is a Miri-only analyser concern, not a runtime exploit; the vulnerable code path is internal to tantivy's caching layer, never reached by forgeplan user input; forgeplan is local-first CLI/MCP with no remote-trigger surface. Tracked for v0.33+ when LanceDB upgrade lands.
+
+### Hardening sprint (closes #305 + #306 + #308 — PR #309)
+
+Post-release-prep hardening sprint discovered + fixed 1 new bug + 1 docs drift + 3 audit follow-ups:
+
+- **PROB-074 / #305** — **MCP server stale lance handle after external reindex.** Long-running MCP daemon held LanceDB Dataset handles pinned to a manifest snapshot from server-start time; external `forgeplan reindex` rewrote the lance fragments, leaving the cached UUIDs pointing at deleted files. Discovered live during v0.32 surface validation: 5/6 MCP tools failed with `lance error: Not found: ...lance/data/<uuid>.lance`; `forgeplan_session` worked (file-only, no LanceDB), validating ADR-003 file-first invariant. Fix: hybrid `is_stale_manifest_error` (lancedb::Error downcast + string-match fallback) + `LanceStore::refresh()` via `Table::checkout_latest()` + `with_retry_on_stale` retry loop (N=3, 100/250ms backoff) + 250ms refresh-rate debounce + MCP `safe_mcp_error_anyhow` PRD-071-anchored `Wait:` hint emission on `MutationError::RetryExhausted`. 14 new tests.
+- **#306** — **Docs drift: MCP tool count 81 → 73.** `scripts/check-mcp-tool-count.sh` counted `async fn forgeplan_*` declarations, which include 8 inline `#[cfg(test)]` test functions sharing the prefix (e.g. `forgeplan_get_accepts_slug_or_display_id`). Authoritative count via the `#[tool(...)]` macro = 73. Script regex changed to `^[[:space:]]*#\[tool\(`. Sanity floor bumped from `< 10` to `< 30`. Updated 20+ doc locations across README, CLAUDE, docs/, website/.
+- **PROB-075 / #308** — **PROB-074 audit follow-ups F-2/F-3/F-4 closed inline.** F-2 retry budget + `MutationError::RetryExhausted` typed variant (non_exhaustive — non-breaking). F-3 rate-limit via `last_refresh_ms: AtomicI64` CAS-debounced at 250ms. F-4 `lancedb::Error` downcast first with string match as fallback (defense-in-depth — `lancedb` is a direct workspace dep, `lance-core` skipped per existing version-skew rationale). F-6 (manifest-version-skew test gap) deferred to v0.33.
+- **Adversarial 3-agent audit** (security-expert + code-reviewer + architect-reviewer) found 13 findings (1 CRIT + 4 HIGH + 4 MEDIUM + 4 LOW). All 5 blockers closed inline by second coder pass. Architect's "phantom hypothesis" concern (Concern #4 — "PROB-074 may not fire in production, LanceDB auto-recovers") **refuted by two independent signals**: (a) live in-session reproducer of PROB-074 while preparing to invoke ADI itself via MCP; (b) ADI cycle output recommended exactly the H1+H2 hybrid we shipped, confidence: High. Captured as EVID-132.
+
+### Internal — sprint hygiene
+
+- **CI workflow** `.github/workflows/forgeplan-health.yml` — replaced broken `mv .forgeplan .forgeplan-src && init && cp -r src/{kind}/ dst/` (trailing-slash flat-copy bug + Epic #287 brownfield kinds never added) with single `forgeplan reindex` call (`lance/` is gitignored per ADR-003, reindex rebuilds from `.forgeplan/<kind>/*.md`).
+- **PRD-002 stub** superseded by ADR-006 — old broken CI workflow hid the stub for 2 months. PRD-002 scope was absorbed by ADR-006 + RFC-001 + PRD-013/018/040/041/042 long ago.
+- **Test count**: 3084 / 0 failed (+17 over v0.31 baseline of 3067).
+- **Clippy**: 0 warnings on default + semantic-search feature configs.
+- **Drift detector**: 0 drift after sweep.
 
 ## [0.31.0] - 2026-05-13
 
