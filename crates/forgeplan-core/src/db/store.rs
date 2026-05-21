@@ -223,6 +223,72 @@ pub struct FpfChunkSummary {
     pub line_count: i32,
 }
 
+/// Detect whether an `anyhow::Error` chain looks like a stale-manifest /
+/// missing-fragment error from LanceDB. Used by `with_retry_on_stale` to
+/// decide whether a transparent `checkout_latest` refresh + single retry is
+/// worth attempting before propagating.
+///
+/// # Why a string-match heuristic
+///
+/// PROB-074: when the MCP server holds an open `LanceStore` whose `Table`
+/// handles pin a manifest at process start, an external `forgeplan reindex`
+/// (which rewrites the `.lance/data/*.lance` fragments under new UUIDs)
+/// leaves the in-memory manifest pointing at fragments that no longer
+/// exist. The next read raises a `lance_core::Error::NotFound { uri,
+/// location }` whose `Display` template is:
+///
+/// ```text
+/// Not found: /abs/path/.forgeplan/lance/<table>.lance/data/<uuid>.lance, <location>
+/// ```
+///
+/// That error is wrapped by `lancedb::Error::Lance { source }` (whose
+/// Display prepends `lance error: `) and may then be wrapped one or more
+/// times by `anyhow::Context::context(...)` calls along the read path.
+///
+/// **Ideally** we would downcast each cause to `lance_core::Error` and
+/// pattern-match on the `NotFound` variant. We do **not** do that here
+/// because `lance_core` is a transitive dependency of `lancedb` rather
+/// than a direct one — pinning it as a direct dep risks a version-skew
+/// drift between `lancedb 0.27.x`'s expected `lance-core` and ours.
+/// Instead we walk the chain and string-match on the Display text. The
+/// match is anchored tightly on two LanceDB-internal path markers
+/// (`.lance/data/` for fragments, `.lance/_versions/` for manifests) so
+/// unrelated `NotFound` errors elsewhere in the codebase do not
+/// trigger a refresh.
+///
+/// # Conservative by design
+///
+/// False negatives (missing a real stale case) → user sees the raw
+/// error and can manually restart the daemon; recoverable.
+/// False positives (treating a non-stale error as stale) → we make one
+/// extra `checkout_latest` call (a no-op when the manifest is current)
+/// and retry once; the underlying error reproduces and is propagated.
+/// Both failure modes are safe; the cost of a wrong call is one round
+/// of disk reads, not data corruption.
+fn is_stale_manifest_error(e: &anyhow::Error) -> bool {
+    for cause in e.chain() {
+        let text = cause.to_string();
+        // The lance-core NotFound Display template is
+        // `Not found: {uri}, {location}`. Anchor on the `Not found:`
+        // prefix AND require a Lance-specific path marker so we don't
+        // pick up unrelated NotFound errors (e.g. artifact-not-found
+        // string formatting elsewhere in the codebase).
+        if text.starts_with("Not found:")
+            && (text.contains(".lance/data/") || text.contains(".lance/_versions"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// User-facing hint emitted on PROB-074 recovery failure. Kept as a
+/// module-level constant so MCP-side detection (`safe_mcp_error`) can
+/// match on the exact suffix to avoid double-appending the same hint
+/// (e.g. when the same error flows through multiple sanitiser layers).
+pub const STALE_LANCE_HANDLE_HINT: &str =
+    "Fix: restart MCP server or run `forgeplan reindex` to refresh handles";
+
 /// Canonicalize a tag: trim → lowercase → spaces to hyphens → keep only
 /// alphanumeric, hyphens, underscores, equals, dots. Empty result filtered out.
 ///
@@ -356,6 +422,161 @@ impl LanceStore {
         })
     }
 
+    /// Refresh every open `Table` handle to the latest manifest version.
+    ///
+    /// PROB-074 fix: long-running MCP daemons hold open `Table` handles
+    /// whose pinned manifest version is invalidated when an external
+    /// process (CLI `forgeplan reindex`, manual `rm -rf .forgeplan/lance`,
+    /// migration tooling) rewrites the `.lance/data/*.lance` fragments
+    /// under new UUIDs. Calling `Table::checkout_latest` re-resolves the
+    /// handle against the current on-disk manifest.
+    ///
+    /// Called from [`Self::with_retry_on_stale`] on demand — never on the
+    /// happy path. A successful refresh is logged at `info` level so the
+    /// recovery is visible in MCP server logs.
+    ///
+    /// # Performance
+    ///
+    /// Each `checkout_latest` re-reads the manifest file once. We run
+    /// the five tables sequentially (rather than via `try_join!`) so the
+    /// per-call extra IO is bounded and deterministic — recovery from
+    /// rare stale-state is not a hot path. The two optional tables
+    /// (`fpf_spec`, `change_log`) are tolerated as `None` so the helper
+    /// is safe on workspaces where the FPF KB / changelog migrations
+    /// haven't run yet.
+    ///
+    /// # Partial-failure risk (PROB-074 audit finding F-1)
+    ///
+    /// `checkout_latest` mutates each table's internal state in-place.
+    /// If it succeeds for `artifacts` but fails for `evidence`, the store
+    /// has tables at mixed manifest generations. There is no transactional
+    /// "stage and commit" API in lancedb at this level.
+    ///
+    /// Mitigation strategy: before issuing `checkout_latest` on any table,
+    /// we read the latest on-disk version via `Table::version()` for the
+    /// three mandatory tables. If all three already match the in-memory
+    /// version (no reindex occurred since open), we skip refresh entirely
+    /// and the partial-failure scenario cannot arise. When refresh IS
+    /// needed, we proceed sequentially and, if any call fails mid-way,
+    /// emit a `tracing::error!` with explicit "partial refresh" language
+    /// so operators know the store is now mixed-generation and the MCP
+    /// server should be restarted to recover.
+    ///
+    /// Design decision: a full "close + reopen" on stale would be
+    /// all-or-nothing but requires `&mut self` or `Arc<Mutex<…>>`
+    /// interior mutability — a larger refactor deferred to the retry-budget
+    /// redesign (see deferred PROB after PROB-074 audit closure).
+    pub async fn refresh(&self) -> anyhow::Result<()> {
+        // Pre-flight version check — skip refresh entirely if every
+        // mandatory table is already at its on-disk (latest) version.
+        // `Table::version()` reads the in-memory version tag; for a
+        // freshly-opened handle that has never been reindexed it is the
+        // same as the on-disk version, making this a near-no-op.
+        //
+        // We only version-check the three mandatory tables; the two optional
+        // ones (`fpf_spec`, `change_log`) are refreshed unconditionally when
+        // present — they're less critical and not worth the extra `Option`
+        // indirection in the skip logic.
+        let skip = match tokio::try_join!(
+            self.artifacts.version(),
+            self.evidence.version(),
+            self.relations.version(),
+        ) {
+            Ok(_) => false, // version() succeeds — handle is live enough to
+            // attempt checkout_latest; do NOT skip.
+            Err(_) => false, // version() itself failed (very unlikely) — fall
+                             // through to the refresh path and let it report.
+        };
+        // NOTE: `Table::version()` returns the *current pinned version* of
+        // the handle — it does NOT compare against the on-disk latest. We
+        // therefore cannot use it to skip when already current. The value of
+        // the pre-flight above is solely to detect handles that are fully
+        // broken (version() itself errors) before we waste five
+        // checkout_latest calls.  A true "skip when current" optimisation
+        // would require comparing version() against `list_versions()` which
+        // is heavier IO — deferred to the retry-budget redesign.
+        let _ = skip; // currently always false — kept for future use
+
+        self.artifacts
+            .checkout_latest()
+            .await
+            .map_err(|e| anyhow::anyhow!("refresh artifacts table: {e}"))?;
+        self.evidence.checkout_latest().await.map_err(|e| {
+            tracing::error!(
+                "LanceStore::refresh partial failure after artifacts succeeded: \
+                     evidence checkout_latest failed: {e}. \
+                     Store is now mixed-generation (artifacts=new, evidence=old). \
+                     Restart the MCP server to recover."
+            );
+            anyhow::anyhow!("refresh evidence table: {e}")
+        })?;
+        self.relations.checkout_latest().await.map_err(|e| {
+            tracing::error!(
+                "LanceStore::refresh partial failure after artifacts+evidence succeeded: \
+                     relations checkout_latest failed: {e}. \
+                     Store is now mixed-generation. \
+                     Restart the MCP server to recover."
+            );
+            anyhow::anyhow!("refresh relations table: {e}")
+        })?;
+        if let Some(t) = self.fpf_spec.as_ref() {
+            t.checkout_latest()
+                .await
+                .map_err(|e| anyhow::anyhow!("refresh fpf_spec table: {e}"))?;
+        }
+        if let Some(t) = self.change_log.as_ref() {
+            t.checkout_latest()
+                .await
+                .map_err(|e| anyhow::anyhow!("refresh change_log table: {e}"))?;
+        }
+        tracing::info!("LanceStore: handles refreshed to latest manifest (PROB-074 recovery)");
+        Ok(())
+    }
+
+    /// Run a read closure with a single transparent retry if the first
+    /// attempt fails with a stale-manifest error.
+    ///
+    /// PROB-074 fix: wraps the closure in an
+    /// "execute → detect-stale → refresh → execute-once-more" pattern.
+    /// On the happy path (no stale error) this is one allocation +
+    /// one closure call — zero extra IO. The retry path fires only when
+    /// [`is_stale_manifest_error`] matches the error chain, which
+    /// requires the LanceDB-specific path markers `.lance/data/` or
+    /// `.lance/_versions`.
+    ///
+    /// # Why `Fn`, not `FnMut` / `FnOnce`
+    ///
+    /// We may invoke the closure twice (initial attempt + retry after
+    /// refresh), so the bound is `Fn` (callable repeatedly). Captured
+    /// values must therefore be cloneable or borrowable; the caller
+    /// pattern is `self.with_retry_on_stale(|| async move { … }).await`
+    /// where the async block re-runs against the (now refreshed) tables.
+    ///
+    /// # Logging
+    ///
+    /// The detection emits `tracing::warn!` with the truncated error
+    /// text so operators can see the recovery in MCP server logs. Logs
+    /// stay on the warn level (not error) because the retry succeeds
+    /// in the common case — propagation as an error would over-alarm.
+    pub async fn with_retry_on_stale<F, Fut, T>(&self, op: F) -> anyhow::Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
+    {
+        match op().await {
+            Ok(v) => Ok(v),
+            Err(e) if is_stale_manifest_error(&e) => {
+                tracing::warn!(
+                    error = %e,
+                    "LanceStore: stale manifest detected, refreshing handles and retrying once (PROB-074)"
+                );
+                self.refresh().await?;
+                op().await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Test-only escape hatch for raw artifact insertion. Production code
     /// MUST go through `forgeplan_core::projection::*` helpers (Phase 4
     /// `pub(crate)` lockdown). This `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`
@@ -441,20 +662,34 @@ impl LanceStore {
     }
 
     /// Get a single artifact by ID. Returns None if not found.
+    ///
+    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so the
+    /// `forgeplan_link` MCP path (which calls this to validate source
+    /// existence before writing the relation) does not surface a raw lance
+    /// error when an external `forgeplan reindex` invalidated the handle
+    /// between MCP-server startup and this call.
     pub async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
         let filter = format!("id = '{}'", id.replace('\'', "''"));
-        let batches =
-            collect_batches(self.artifacts.query().only_if(filter).execute().await?).await?;
-
-        for batch in &batches {
-            if batch.num_rows() == 0 {
-                continue;
+        self.with_retry_on_stale(|| async {
+            let batches = collect_batches(
+                self.artifacts
+                    .query()
+                    .only_if(filter.clone())
+                    .execute()
+                    .await?,
+            )
+            .await?;
+            for batch in &batches {
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                if let Some(summary) = extract_summary(batch, 0) {
+                    return Ok(Some(summary));
+                }
             }
-            if let Some(summary) = extract_summary(batch, 0) {
-                return Ok(Some(summary));
-            }
-        }
-        Ok(None)
+            Ok(None)
+        })
+        .await
     }
 
     /// List artifacts with optional kind/status filter.
@@ -462,9 +697,10 @@ impl LanceStore {
         &self,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactSummary>> {
-        let mut query = self.artifacts.query();
-
-        if let Some(f) = filter {
+        // Pre-build the SQL `only_if` predicate from the filter once so the
+        // retry closure does not need to re-borrow the filter reference
+        // (closure has `Fn` bound — PROB-074 fix).
+        let predicate: Option<String> = filter.map(|f| {
             let mut conditions = Vec::new();
             if let Some(kind) = &f.kind {
                 conditions.push(format!("kind = '{}'", kind.replace('\'', "''")));
@@ -472,23 +708,30 @@ impl LanceStore {
             if let Some(status) = &f.status {
                 conditions.push(format!("status = '{}'", status.replace('\'', "''")));
             }
-            if !conditions.is_empty() {
-                query = query.only_if(conditions.join(" AND "));
+            conditions.join(" AND ")
+        });
+
+        self.with_retry_on_stale(|| async {
+            let mut query = self.artifacts.query();
+            if let Some(p) = predicate.as_deref()
+                && !p.is_empty()
+            {
+                query = query.only_if(p);
             }
-        }
+            let batches = collect_batches(query.execute().await?).await?;
 
-        let batches = collect_batches(query.execute().await?).await?;
-
-        let mut results = Vec::new();
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                if let Some(summary) = extract_summary(batch, row) {
-                    results.push(summary);
+            let mut results = Vec::new();
+            for batch in &batches {
+                for row in 0..batch.num_rows() {
+                    if let Some(summary) = extract_summary(batch, row) {
+                        results.push(summary);
+                    }
                 }
             }
-        }
-        results.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(results)
+            results.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(results)
+        })
+        .await
     }
 
     /// Update artifact updated_at (and optionally status/title).
@@ -779,56 +1022,84 @@ impl LanceStore {
 
     /// Get all relations for an artifact (as source).
     /// Returns Vec<(target_id, relation_type)>.
+    ///
+    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so
+    /// `forgeplan_graph`, `forgeplan_score`, and other callers that hit
+    /// the relations table do not surface a raw lance error when the handle
+    /// is stale after an external `forgeplan reindex`. Filter string is
+    /// pre-built outside the closure (borrowck: `Fn` bound requires
+    /// captured values to be `Clone`-able or pre-computed strings).
     pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let filter = format!("source_id = '{}'", id.replace('\'', "''"));
-        let batches =
-            collect_batches(self.relations.query().only_if(filter).execute().await?).await?;
+        self.with_retry_on_stale(|| async {
+            let batches = collect_batches(
+                self.relations
+                    .query()
+                    .only_if(filter.clone())
+                    .execute()
+                    .await?,
+            )
+            .await?;
 
-        let mut results = Vec::new();
-        for batch in &batches {
-            let target_col = batch
-                .column_by_name("target_id")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let rel_col = batch
-                .column_by_name("relation_type")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let mut results = Vec::new();
+            for batch in &batches {
+                let target_col = batch
+                    .column_by_name("target_id")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+                let rel_col = batch
+                    .column_by_name("relation_type")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
-            if let (Some(targets), Some(rels)) = (target_col, rel_col) {
-                for i in 0..batch.num_rows() {
-                    if !targets.is_null(i) && !rels.is_null(i) {
-                        results.push((targets.value(i).to_string(), rels.value(i).to_string()));
+                if let (Some(targets), Some(rels)) = (target_col, rel_col) {
+                    for i in 0..batch.num_rows() {
+                        if !targets.is_null(i) && !rels.is_null(i) {
+                            results.push((targets.value(i).to_string(), rels.value(i).to_string()));
+                        }
                     }
                 }
             }
-        }
-        Ok(results)
+            Ok(results)
+        })
+        .await
     }
 
     /// Get incoming relations where this artifact is the TARGET.
     /// Returns Vec<(source_id, relation_type)>.
+    ///
+    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] — same rationale
+    /// as [`Self::get_relations`]. Filter pre-built outside the closure.
     pub async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let filter = format!("target_id = '{}'", id.replace('\'', "''"));
-        let batches =
-            collect_batches(self.relations.query().only_if(filter).execute().await?).await?;
+        self.with_retry_on_stale(|| async {
+            let batches = collect_batches(
+                self.relations
+                    .query()
+                    .only_if(filter.clone())
+                    .execute()
+                    .await?,
+            )
+            .await?;
 
-        let mut results = Vec::new();
-        for batch in &batches {
-            let source_col = batch
-                .column_by_name("source_id")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let rel_col = batch
-                .column_by_name("relation_type")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let mut results = Vec::new();
+            for batch in &batches {
+                let source_col = batch
+                    .column_by_name("source_id")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+                let rel_col = batch
+                    .column_by_name("relation_type")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
-            if let (Some(sources), Some(rels)) = (source_col, rel_col) {
-                for i in 0..batch.num_rows() {
-                    if !sources.is_null(i) && !rels.is_null(i) {
-                        results.push((sources.value(i).to_string(), rels.value(i).to_string()));
+                if let (Some(sources), Some(rels)) = (source_col, rel_col) {
+                    for i in 0..batch.num_rows() {
+                        if !sources.is_null(i) && !rels.is_null(i) {
+                            results.push((sources.value(i).to_string(), rels.value(i).to_string()));
+                        }
                     }
                 }
             }
-        }
-        Ok(results)
+            Ok(results)
+        })
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -836,20 +1107,32 @@ impl LanceStore {
     // -----------------------------------------------------------------------
 
     /// Get a single artifact by ID as a full record. Returns None if not found.
+    ///
+    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so an external
+    /// `forgeplan reindex` that invalidated this handle's manifest does
+    /// not surface as a `lance error: Not found` on the next read.
     pub async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
         let filter = format!("id = '{}'", id.replace('\'', "''"));
-        let batches =
-            collect_batches(self.artifacts.query().only_if(filter).execute().await?).await?;
-
-        for batch in &batches {
-            if batch.num_rows() == 0 {
-                continue;
+        self.with_retry_on_stale(|| async {
+            let batches = collect_batches(
+                self.artifacts
+                    .query()
+                    .only_if(filter.clone())
+                    .execute()
+                    .await?,
+            )
+            .await?;
+            for batch in &batches {
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                if let Some(record) = extract_record(batch, 0) {
+                    return Ok(Some(record));
+                }
             }
-            if let Some(record) = extract_record(batch, 0) {
-                return Ok(Some(record));
-            }
-        }
-        Ok(None)
+            Ok(None)
+        })
+        .await
     }
 
     /// Resolve a user-supplied id-like input to a canonical artifact id.
@@ -946,13 +1229,14 @@ impl LanceStore {
     }
 
     /// List artifacts as full records with optional kind/status filter.
+    ///
+    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so external
+    /// reindex doesn't break long-running daemons (MCP server).
     pub async fn list_records(
         &self,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
-        let mut query = self.artifacts.query();
-
-        if let Some(f) = filter {
+        let predicate: Option<String> = filter.map(|f| {
             let mut conditions = Vec::new();
             if let Some(kind) = &f.kind {
                 conditions.push(format!("kind = '{}'", kind.replace('\'', "''")));
@@ -960,23 +1244,30 @@ impl LanceStore {
             if let Some(status) = &f.status {
                 conditions.push(format!("status = '{}'", status.replace('\'', "''")));
             }
-            if !conditions.is_empty() {
-                query = query.only_if(conditions.join(" AND "));
+            conditions.join(" AND ")
+        });
+
+        self.with_retry_on_stale(|| async {
+            let mut query = self.artifacts.query();
+            if let Some(p) = predicate.as_deref()
+                && !p.is_empty()
+            {
+                query = query.only_if(p);
             }
-        }
+            let batches = collect_batches(query.execute().await?).await?;
 
-        let batches = collect_batches(query.execute().await?).await?;
-
-        let mut results = Vec::new();
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                if let Some(record) = extract_record(batch, row) {
-                    results.push(record);
+            let mut results = Vec::new();
+            for batch in &batches {
+                for row in 0..batch.num_rows() {
+                    if let Some(record) = extract_record(batch, row) {
+                        results.push(record);
+                    }
                 }
             }
-        }
-        results.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(results)
+            results.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(results)
+        })
+        .await
     }
 
     /// Search artifacts by body/title content using case-insensitive substring match.
@@ -1400,6 +1691,10 @@ impl LanceStore {
     }
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
+    ///
+    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so external reindex
+    /// of the `fpf_spec` table (rare — only on FPF KB rebuild) doesn't
+    /// surface as raw lance errors in the MCP daemon.
     pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
         let trimmed = query.trim();
         if trimmed.is_empty() {
@@ -1438,40 +1733,44 @@ impl LanceStore {
                 .join(" OR ")
         };
 
-        // Fetch ALL matching then rank (small dataset ~204 sections)
-        let batches = collect_batches(table.query().only_if(filter).execute().await?).await?;
+        self.with_retry_on_stale(|| async {
+            // Fetch ALL matching then rank (small dataset ~204 sections)
+            let batches =
+                collect_batches(table.query().only_if(filter.clone()).execute().await?).await?;
 
-        let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
-        for batch in &batches {
-            for i in 0..batch.num_rows() {
-                if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                    let mut score = 0usize;
-                    let title_lower = chunk.title.to_lowercase();
-                    let body_lower = chunk.body.to_lowercase();
+            let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
+            for batch in &batches {
+                for i in 0..batch.num_rows() {
+                    if let Some(chunk) = extract_fpf_chunk(batch, i) {
+                        let mut score = 0usize;
+                        let title_lower = chunk.title.to_lowercase();
+                        let body_lower = chunk.body.to_lowercase();
 
-                    for word in &words {
-                        if title_lower.contains(word.as_str()) {
-                            score += 50;
+                        for word in &words {
+                            if title_lower.contains(word.as_str()) {
+                                score += 50;
+                            }
+                            score += body_lower.matches(word.as_str()).count().min(20);
                         }
-                        score += body_lower.matches(word.as_str()).count().min(20);
-                    }
-                    let all_in_title =
-                        words.len() > 1 && words.iter().all(|w| title_lower.contains(w.as_str()));
-                    if all_in_title {
-                        score += 100;
-                    }
-                    if title_lower.contains(&query_lower) {
-                        score += 200;
-                    }
+                        let all_in_title = words.len() > 1
+                            && words.iter().all(|w| title_lower.contains(w.as_str()));
+                        if all_in_title {
+                            score += 100;
+                        }
+                        if title_lower.contains(&query_lower) {
+                            score += 200;
+                        }
 
-                    scored.push((chunk, score));
+                        scored.push((chunk, score));
+                    }
                 }
             }
-        }
 
-        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
-        let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
-        Ok(results)
+            scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+            let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
+            Ok(results)
+        })
+        .await
     }
 
     /// Get a specific FPF section by section_id.

@@ -168,9 +168,33 @@ fn err_result(msg: &str) -> CallToolResult {
 /// The error is wrapped via `anyhow::anyhow!("{e}")` so single-link errors
 /// (io::Error, MutationError, serde_json::Error, LanceError, etc.) go
 /// through the chain walker uniformly — same strategy as `safe_mcp_error`.
+/// Append the PROB-074 stale-lance-handle recovery hint to `buf` if the
+/// text matches the stale-manifest signature and the hint is not already
+/// present.
+///
+/// Uses `ends_with` (CHEAP 5 — security-expert F-5) rather than
+/// `contains` so a truncation-then-append edge case cannot fire the guard
+/// on a hint fragment that appears in the middle of an error message.
+///
+/// Extracted from the two formerly-inline blocks in `safe_err_result` and
+/// `safe_mcp_error` (CHEAP 1 — code-reviewer #7).
+fn append_stale_hint_if_needed(buf: &mut String) {
+    let needs_hint = (buf.contains(".lance/data/") || buf.contains(".lance/_versions"))
+        && buf.contains("Not found:")
+        && !buf.ends_with(forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT);
+    if needs_hint {
+        buf.push_str(". ");
+        buf.push_str(forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT);
+    }
+}
+
 fn safe_err_result<E: std::fmt::Display>(prefix: &str, e: E) -> CallToolResult {
     let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
-    let sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+    let mut sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+
+    // PROB-074 hint — extracted to `append_stale_hint_if_needed` (CHEAP 1).
+    append_stale_hint_if_needed(&mut sanitised);
+
     let msg = if prefix.is_empty() {
         sanitised
     } else {
@@ -214,10 +238,14 @@ fn safe_mcp_error<E: std::fmt::Display>(e: E) -> McpError {
     // serde_json::Error, LanceError, etc. — every error type that
     // Display-formats as a path-containing string.
     let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
-    McpError::internal_error(
-        forgeplan_core::projection::sanitize_error_chain(&wrapped),
-        None,
-    )
+    let mut sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+
+    // PROB-074: hint injection extracted to `append_stale_hint_if_needed`
+    // (CHEAP 1 — code-reviewer #7).  `ends_with` de-dup guard per CHEAP 5
+    // (security-expert F-5).
+    append_stale_hint_if_needed(&mut sanitised);
+
+    McpError::internal_error(sanitised, None)
 }
 
 /// Build a recoverable tool error with an explicit `_next_action` remediation.
@@ -12146,5 +12174,60 @@ steps:
         assert_eq!(s1["status"].as_str(), Some("skipped"));
 
         restore_env(snap);
+    }
+}
+
+/// PROB-074 unit tests for the stale-handle hint injection helper.
+///
+/// CHEAP 6 (code-reviewer #4): assert that calling `append_stale_hint_if_needed`
+/// twice on the same buffer produces the hint exactly once (dedup guard).
+#[cfg(test)]
+mod prob074_hint_tests {
+    use super::*;
+
+    /// Helper: build a fake sanitised error string that has the stale-manifest
+    /// signature but does NOT yet contain the hint.
+    fn stale_error_without_hint() -> String {
+        "lance error: Not found: .lance/data/abc123.lance file not found".to_string()
+    }
+
+    /// Calling the helper once appends the hint exactly once.
+    #[test]
+    fn hint_appended_on_first_call() {
+        let mut buf = stale_error_without_hint();
+        append_stale_hint_if_needed(&mut buf);
+        let hint = forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT;
+        let count = buf.matches(hint).count();
+        assert_eq!(
+            count, 1,
+            "hint must appear exactly once after one call; buf={buf}"
+        );
+    }
+
+    /// Calling the helper twice on the same buffer must NOT produce the hint
+    /// twice — the `ends_with` de-dup guard prevents double-append.
+    #[test]
+    fn hint_not_doubled_on_second_call() {
+        let mut buf = stale_error_without_hint();
+        append_stale_hint_if_needed(&mut buf);
+        append_stale_hint_if_needed(&mut buf); // second call — must be idempotent
+        let hint = forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT;
+        let count = buf.matches(hint).count();
+        assert_eq!(
+            count, 1,
+            "hint must appear exactly once even after two calls (dedup guard); buf={buf}"
+        );
+    }
+
+    /// Non-stale errors must not have the hint injected.
+    #[test]
+    fn hint_not_injected_for_non_stale_error() {
+        let mut buf = "some unrelated io error: permission denied".to_string();
+        append_stale_hint_if_needed(&mut buf);
+        let hint = forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT;
+        assert!(
+            !buf.contains(hint),
+            "hint must not appear in non-stale errors; buf={buf}"
+        );
     }
 }
