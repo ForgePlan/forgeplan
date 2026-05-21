@@ -164,6 +164,51 @@ pub enum MutationError {
     /// call sites that bypass the sanitiser.
     #[error("LanceStore mutation failed (fatal): {}", sanitize_error_chain(_0))]
     StoreFatal(#[source] anyhow::Error),
+
+    /// All retry attempts on a stale-manifest error were exhausted.
+    ///
+    /// PROB-075 F-2 (closes #308 F-2): `LanceStore::with_retry_on_stale`
+    /// runs up to `N` bounded attempts on a `lance_core::Error::NotFound`
+    /// shaped error (external `forgeplan reindex` rewrote fragments under
+    /// new UUIDs while this handle pinned the old manifest). When every
+    /// attempt fails, the original retry returned the raw last error which
+    /// dropped the agent off the recovery path. This variant surfaces the
+    /// terminal state as a typed error so the MCP layer can emit a
+    /// structured `Wait:` hint via the PRD-071 protocol and tell the agent
+    /// to back off-and-retry the entire MCP call after `Wait:` resolves
+    /// (the MCP server itself has by then refreshed the in-memory handles).
+    ///
+    /// `attempts` is the total number of `op()` invocations the retry loop
+    /// made before giving up (the initial call + N-1 retries) — useful for
+    /// log triage. `last_error` carries the final `anyhow::Error` produced
+    /// by the last invocation, source-chained through `#[source]` so any
+    /// `Display::fmt` walker (including `sanitize_error_chain` itself)
+    /// reaches it. The Display template embeds the PRD-071 `Wait:` hint
+    /// inline so consumers that surface MutationError verbatim
+    /// (`safe_mcp_error` / `safe_err_result` in `forgeplan-mcp`) get the
+    /// recovery hint without a parallel downcast site.
+    ///
+    /// `is_recoverable() == false` — the retry budget is exhausted; the
+    /// caller MUST surface the error rather than re-enter the same loop.
+    ///
+    /// # Security
+    ///
+    /// `last_error` is rendered through `sanitize_error_chain` in the
+    /// Display template (same discipline as `StoreTransient` / `StoreFatal`).
+    /// The wrapped error chain commonly contains absolute lance fragment
+    /// paths (HOME-rooted workspace + `.lance/data/<uuid>.lance`); the
+    /// sanitiser masks HOME / CARGO_TARGET_DIR / scratch dirs before the
+    /// rendered string lands in MCP JSON / Claude Desktop logs.
+    #[error(
+        "retry budget exhausted after {attempts} stale-manifest refreshes. \
+         Wait: 2s and retry (MCP handle will refresh) — {}",
+        sanitize_error_chain(last_error)
+    )]
+    RetryExhausted {
+        attempts: usize,
+        #[source]
+        last_error: anyhow::Error,
+    },
 }
 
 /// Convenience alias mirroring `anyhow::Result` for helpers.
@@ -221,6 +266,12 @@ impl MutationError {
             // Store-side: split per PROB-049 H-1.
             MutationError::StoreTransient(_) => true,
             MutationError::StoreFatal(_) => false,
+            // PROB-075 F-2: retry loop already gave up on this code path —
+            // the caller must surface the error rather than re-enter the
+            // same loop. The `Wait:` hint baked into Display tells the
+            // agent to back off and retry the entire MCP call after the
+            // server's in-memory handles have had a chance to recover.
+            MutationError::RetryExhausted { .. } => false,
         }
     }
 
@@ -786,6 +837,79 @@ mod tests {
     fn invalid_id_is_not_recoverable() {
         let e = MutationError::InvalidId("bad".to_string());
         assert!(!e.is_recoverable());
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // PROB-075 F-2: RetryExhausted typed variant for stale-manifest
+    // retry budget exhaustion. The variant is constructed by
+    // `LanceStore::with_retry_on_stale` (in `forgeplan-core::db::store`)
+    // after the bounded-retry loop has fired its full budget and the
+    // underlying stale-manifest error has not gone away.
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn retry_exhausted_is_not_recoverable() {
+        let e = MutationError::RetryExhausted {
+            attempts: 3,
+            last_error: anyhow::anyhow!(
+                "Not found: /Users/x/.forgeplan/lance/artifacts.lance/data/abc.lance"
+            ),
+        };
+        assert!(
+            !e.is_recoverable(),
+            "RetryExhausted must not be recoverable — caller must surface"
+        );
+    }
+
+    #[test]
+    fn retry_exhausted_display_contains_attempts_and_wait_hint() {
+        let e = MutationError::RetryExhausted {
+            attempts: 3,
+            last_error: anyhow::anyhow!(
+                "Not found: /tmp/foo/.forgeplan/lance/x.lance/data/y.lance"
+            ),
+        };
+        let rendered = format!("{e}");
+        assert!(
+            rendered.contains("retry budget exhausted after 3 stale-manifest refreshes"),
+            "Display must include attempt count + reason: {rendered}"
+        );
+        // PRD-071 protocol — `Wait:` hint baked inline so MCP layer
+        // does not need a parallel downcast site for hint emission.
+        assert!(
+            rendered.contains("Wait:"),
+            "Display must contain PRD-071 Wait: hint: {rendered}"
+        );
+        // Sanitiser should mask /tmp/...
+        assert!(
+            !rendered.contains("/tmp/foo"),
+            "raw /tmp path must not leak into Display: {rendered}"
+        );
+        assert!(
+            rendered.contains("<tmpdir>"),
+            "expected <tmpdir> mask in Display: {rendered}"
+        );
+    }
+
+    #[test]
+    fn retry_exhausted_preserves_source_for_downcast() {
+        // Programmatic consumers must be able to downcast through anyhow
+        // to recover the typed variant. Confirms the chain is wired so
+        // MCP / CLI code can pattern-match on `RetryExhausted` to choose
+        // a `Wait:` hint over the default error path.
+        let me = MutationError::RetryExhausted {
+            attempts: 3,
+            last_error: anyhow::anyhow!("Not found: data/uuid.lance"),
+        };
+        let wrapped: anyhow::Error = me.into();
+        let downcast = wrapped.downcast_ref::<MutationError>();
+        assert!(
+            matches!(
+                downcast,
+                Some(MutationError::RetryExhausted { attempts: 3, .. })
+            ),
+            "anyhow chain must preserve MutationError::RetryExhausted for programmatic match"
+        );
     }
 
     #[test]
