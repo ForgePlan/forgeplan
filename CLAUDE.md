@@ -86,16 +86,18 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
-- **v0.31.0** (2026-05-13) — Wave 9 polish: 19-finding adversarial audit
-  closure. SEC-C1+C2 input gate (`validate_title` lifted to core, gated at all
-  4 mutation paths — CLI new/update + MCP new/update). SEC-H1 output gate
-  (`sanitize_for_hint` on 8 CLI command print sites, completes LOG-001 from
-  v0.30). SEC-H2 HOME sanitiser bare-string masking. SEC-H3 MCP error chain
-  sanitisation across 40+ `McpError::internal_error` sites. ARCH-C1
-  `health_report_to_json` helper extract — single source of truth for
-  CLI/MCP wire shape. PROB-051 closed end-to-end (R_eff=0.80 grade B).
-- **76 CLI commands**, **73 MCP tools**, **3009 tests**, **0 warnings** on both feature configs
-- **EPIC-001/002/003 ✅**. Phase 5 (Desktop Tauri) — backlog
+- **v0.32.0** (2026-05-21) — Epic #287 brownfield extraction surface (6 new
+  ArtifactKinds: use_case/glossary/invariant/scenario/hypothesis/domain_model,
+  7 new MCP tools, hypothesis state machine, ADR-014 catalog evolution policy)
+  + 3 pre-Epic methodology issues (#286 forgeplan_unlink, #288 auto-activate
+  evidence + stale_drafts health surface, #289 forgeplan_anomalies + v1 catalog
+  of 9 anomaly kinds) + 6 dogfood findings (#290-#295) + post-merge hardening
+  (PROB-074 MCP stale lance handle: lazy refresh + retry budget + rate-limit
+  + lancedb downcast hint, fixed in PR #309; docs drift #306 81→73 MCP tools;
+  PROB-075 F-2/F-3/F-4 audit follow-ups). Dependabot triage: devalue HIGH
+  addressed (5.6.4→5.8.1), lru LOW accepted-with-justification.
+- **76 CLI commands**, **73 MCP tools**, **3084 tests**, **0 warnings** on both feature configs
+- **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
 Details: `TODO.md` (priorities), `CHANGELOG.md` (history), `docs/ROADMAP.md` (gap analysis).
