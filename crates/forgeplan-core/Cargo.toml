@@ -30,7 +30,7 @@ fastembed = { version = "5", optional = true }
 bm25 = { version = "2.3.2", features = ["language_detection"] }
 sha2 = "0.10"
 tracing = "0.1"
-rand = "0.8"
+rand = "0.9"
 fs2.workspace = true
 schemars.workspace = true
 semver.workspace = true
