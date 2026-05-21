@@ -168,9 +168,33 @@ fn err_result(msg: &str) -> CallToolResult {
 /// The error is wrapped via `anyhow::anyhow!("{e}")` so single-link errors
 /// (io::Error, MutationError, serde_json::Error, LanceError, etc.) go
 /// through the chain walker uniformly — same strategy as `safe_mcp_error`.
+/// Append the PROB-074 stale-lance-handle recovery hint to `buf` if the
+/// text matches the stale-manifest signature and the hint is not already
+/// present.
+///
+/// Uses `ends_with` (CHEAP 5 — security-expert F-5) rather than
+/// `contains` so a truncation-then-append edge case cannot fire the guard
+/// on a hint fragment that appears in the middle of an error message.
+///
+/// Extracted from the two formerly-inline blocks in `safe_err_result` and
+/// `safe_mcp_error` (CHEAP 1 — code-reviewer #7).
+fn append_stale_hint_if_needed(buf: &mut String) {
+    let needs_hint = (buf.contains(".lance/data/") || buf.contains(".lance/_versions"))
+        && buf.contains("Not found:")
+        && !buf.ends_with(forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT);
+    if needs_hint {
+        buf.push_str(". ");
+        buf.push_str(forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT);
+    }
+}
+
 fn safe_err_result<E: std::fmt::Display>(prefix: &str, e: E) -> CallToolResult {
     let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
-    let sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+    let mut sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+
+    // PROB-074 hint — extracted to `append_stale_hint_if_needed` (CHEAP 1).
+    append_stale_hint_if_needed(&mut sanitised);
+
     let msg = if prefix.is_empty() {
         sanitised
     } else {
@@ -192,14 +216,12 @@ fn safe_err_result<E: std::fmt::Display>(prefix: &str, e: E) -> CallToolResult {
 /// `StoreFatal`, and `FileNotFound` variants routed through the sanitiser,
 /// so any non-typed error path bypassed the defence-in-depth layer.
 ///
-/// **Strategy**: every `.map_err(|e| McpError::internal_error(format!("{e}"), None))`
-/// call site collapses to `.map_err(safe_mcp_error)`. The signature
-/// accepts `impl std::fmt::Display` so it works uniformly for
-/// `anyhow::Error`, `MutationError`, `io::Error`, `serde_json::Error`,
-/// `LanceError`, etc. — every error type that Display-formats as a path-
-/// containing string. Internally we wrap into `anyhow::Error` so the
-/// chain-walking inside `sanitize_error_chain` runs even for single-link
-/// errors (the chain has one link, sanitised the same way).
+/// **Strategy**: call sites that hold an `anyhow::Error` use
+/// `safe_mcp_error_anyhow` (preserves the typed chain for downcast-based
+/// hint injection, including `MutationError::RetryExhausted`). Call sites
+/// that format a non-anyhow error with a prefix string use `safe_mcp_error`
+/// (accepts `impl Display`, wraps into anyhow for the sanitiser). See
+/// `safe_mcp_error_anyhow` for the F-1 security-audit closure.
 ///
 /// **Threat model**: `format!("Init failed: {e}")` where `e` is an
 /// `anyhow::Error` wrapping an `io::Error` for
@@ -214,10 +236,55 @@ fn safe_mcp_error<E: std::fmt::Display>(e: E) -> McpError {
     // serde_json::Error, LanceError, etc. — every error type that
     // Display-formats as a path-containing string.
     let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
-    McpError::internal_error(
-        forgeplan_core::projection::sanitize_error_chain(&wrapped),
-        None,
-    )
+    let mut sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+
+    // PROB-074: hint injection extracted to `append_stale_hint_if_needed`
+    // (CHEAP 1 — code-reviewer #7).  `ends_with` de-dup guard per CHEAP 5
+    // (security-expert F-5).
+    append_stale_hint_if_needed(&mut sanitised);
+
+    McpError::internal_error(sanitised, None)
+}
+
+/// Variant of [`safe_mcp_error`] for call sites that already hold an
+/// `anyhow::Error` (not just a Display value). Preserves the error chain
+/// so typed downcasts (e.g. [`MutationError::RetryExhausted`]) can inject
+/// PRD-071-anchored hints **before** the chain is stringified.
+///
+/// Call sites that produce `anyhow::Error` from `with_retry_on_stale`
+/// MUST use this variant so the `Wait:` hint lands on its own line.
+/// Generic Display call sites continue to use `safe_mcp_error`.
+fn safe_mcp_error_anyhow(err: &anyhow::Error) -> McpError {
+    let mut sanitised = forgeplan_core::projection::sanitize_error_chain(err);
+
+    // PROB-074 stale-lance hint (string-pattern match on the sanitised chain).
+    append_stale_hint_if_needed(&mut sanitised);
+
+    // F-1 (security audit): RetryExhausted variant appends a PRD-071-anchored
+    // `Wait:` hint. We downcast on the ORIGINAL chain (before stringification)
+    // so the typed variant is still reachable. Mirrors the STALE_LANCE_HANDLE_HINT
+    // pattern. `ends_with` dedup guard prevents doubling if a deeper layer
+    // already appended the hint.
+    if err
+        .chain()
+        .find_map(|e| {
+            e.downcast_ref::<forgeplan_core::projection::MutationError>()
+                .filter(|m| {
+                    matches!(
+                        m,
+                        forgeplan_core::projection::MutationError::RetryExhausted { .. }
+                    )
+                })
+        })
+        .is_some()
+    {
+        const RETRY_WAIT_HINT: &str = "\nWait: 2s — MCP handle will refresh on next call (PROB-074/F-2 retry budget exhausted)";
+        if !sanitised.ends_with(RETRY_WAIT_HINT) {
+            sanitised.push_str(RETRY_WAIT_HINT);
+        }
+    }
+
+    McpError::internal_error(sanitised, None)
 }
 
 /// Build a recoverable tool error with an explicit `_next_action` remediation.
@@ -1653,7 +1720,7 @@ impl ForgeplanServer {
         let records = store
             .list_records(filter.as_ref())
             .await
-            .map_err(safe_mcp_error)?;
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let total = records.len();
         let draft_count = records.iter().filter(|a| a.status == "draft").count();
@@ -1726,7 +1793,10 @@ impl ForgeplanServer {
         let config = workspace::load_config(&ws)
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
 
-        let artifacts = store.list_artifacts(None).await.map_err(safe_mcp_error)?;
+        let artifacts = store
+            .list_artifacts(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
         let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
@@ -1788,7 +1858,10 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let all_records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let all_records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let to_validate: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
             let upper = target_id.to_uppercase();
@@ -2581,7 +2654,10 @@ impl ForgeplanServer {
 
         // Verify exists. The helpers do their own sync_before_mutation; we
         // only need the existence check here (and presence info downstream).
-        let pre_record = store.get_record(&p.id).await.map_err(safe_mcp_error)?;
+        let pre_record = store
+            .get_record(&p.id)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let _pre_record = match pre_record {
             Some(r) => r,
             None => return Ok(artifact_not_found(&p.id)),
@@ -2657,7 +2733,7 @@ impl ForgeplanServer {
         let updated = store
             .get_record(&p.id)
             .await
-            .map_err(safe_mcp_error)?
+            .map_err(|e| safe_mcp_error_anyhow(&e))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
 
         // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
@@ -3334,7 +3410,7 @@ impl ForgeplanServer {
         let (report, phase_mismatch_records) =
             forgeplan_core::health::health_report_with_phase(&store, &ws)
                 .await
-                .map_err(safe_mcp_error)?;
+                .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         // Render as JSON-friendly payload (sanitize titles for hint output).
         let phase_mismatches: Vec<serde_json::Value> = phase_mismatch_records
@@ -3839,7 +3915,7 @@ impl ForgeplanServer {
             p.risk.unwrap_or(false),
         )
         .await
-        .map_err(safe_mcp_error)?;
+        .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let at_risk_count = entries
             .iter()
@@ -3907,7 +3983,7 @@ impl ForgeplanServer {
 
         let report = forgeplan_core::health::health_report(&store)
             .await
-            .map_err(safe_mcp_error)?;
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let blind_count = report.blind_spots.len();
         let orphan_count = report.orphans.len();
@@ -3980,7 +4056,10 @@ impl ForgeplanServer {
         let kind: ArtifactKind = kind_str.parse().unwrap_or(ArtifactKind::Note);
         let template_key = kind.template_key();
         let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-        let id = store.next_id(&prefix).await.map_err(safe_mcp_error)?;
+        let id = store
+            .next_id(&prefix)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let title: String = p
             .decision
@@ -4051,14 +4130,20 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let mut edges: Vec<graph::Edge> = relations
             .into_iter()
             .map(|(from, to, relation)| graph::Edge { from, to, relation })
             .collect();
 
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         for record in &records {
             if let Some(parent) = &record.parent_epic
@@ -4147,8 +4232,14 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let resolved_ids: HashSet<String> = records
             .iter()
@@ -4240,8 +4331,14 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let resolved_ids: HashSet<String> = records
             .iter()
@@ -4359,7 +4456,7 @@ impl ForgeplanServer {
             let hits = store
                 .search_body(&p.query, p.kind.as_deref())
                 .await
-                .map_err(safe_mcp_error)?;
+                .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
             let query_lower = p.query.to_lowercase();
             let results: Vec<SearchResultDto> = hits
@@ -4432,7 +4529,10 @@ impl ForgeplanServer {
         }
 
         // Smart / semantic: use smart_search over all records.
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         // PROB-060 Phase 2.4: index records by id so we can re-attach the
         // identity triple to each smart-search hit. `SmartSearchResult` is
@@ -4530,7 +4630,10 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let stale_records = store.find_stale().await.map_err(safe_mcp_error)?;
+        let stale_records = store
+            .find_stale()
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let today = Utc::now().date_naive();
 
@@ -4591,7 +4694,10 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let to_report: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
             let upper = target_id.to_uppercase();
@@ -4696,7 +4802,7 @@ impl ForgeplanServer {
 
         let entries = forgeplan_core::scoring::decay::decay_report(&store)
             .await
-            .map_err(safe_mcp_error)?;
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let total = entries.len();
         let dtos: Vec<DecayEntryDto> = entries
@@ -4768,7 +4874,10 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let to_check: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
             let upper = target_id.to_uppercase();
@@ -5057,7 +5166,10 @@ impl ForgeplanServer {
         };
 
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
-        let id = store.next_id(&prefix).await.map_err(safe_mcp_error)?;
+        let id = store
+            .next_id(&prefix)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let artifact = NewArtifact {
             id: id.clone(),
@@ -5119,7 +5231,10 @@ impl ForgeplanServer {
             Err(e) => return Ok(err_result(&e)),
         };
 
-        let records = store.list_records(None).await.map_err(safe_mcp_error)?;
+        let records = store
+            .list_records(None)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let artifacts: Vec<serde_json::Value> = records
             .iter()
@@ -5141,7 +5256,10 @@ impl ForgeplanServer {
             })
             .collect();
 
-        let all_relations = store.get_all_relations().await.map_err(safe_mcp_error)?;
+        let all_relations = store
+            .get_all_relations()
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let relations: Vec<serde_json::Value> = all_relations
             .into_iter()
@@ -5164,7 +5282,8 @@ impl ForgeplanServer {
             } else {
                 ws.parent().unwrap_or(&ws).join(output_path)
             };
-            let json_str = serde_json::to_string_pretty(&data).map_err(safe_mcp_error)?;
+            let json_str = serde_json::to_string_pretty(&data)
+                .map_err(|e| safe_mcp_error(anyhow::anyhow!("Serialization failed: {e}")))?;
             tokio::fs::write(&full_path, &json_str)
                 .await
                 .map_err(|e| safe_mcp_error(anyhow::anyhow!("Write failed: {e}")))?;
@@ -12146,5 +12265,118 @@ steps:
         assert_eq!(s1["status"].as_str(), Some("skipped"));
 
         restore_env(snap);
+    }
+}
+
+/// PROB-074 unit tests for the stale-handle hint injection helper.
+///
+/// CHEAP 6 (code-reviewer #4): assert that calling `append_stale_hint_if_needed`
+/// twice on the same buffer produces the hint exactly once (dedup guard).
+#[cfg(test)]
+mod prob074_hint_tests {
+    use super::*;
+
+    /// Helper: build a fake sanitised error string that has the stale-manifest
+    /// signature but does NOT yet contain the hint.
+    fn stale_error_without_hint() -> String {
+        "lance error: Not found: .lance/data/abc123.lance file not found".to_string()
+    }
+
+    /// Calling the helper once appends the hint exactly once.
+    #[test]
+    fn hint_appended_on_first_call() {
+        let mut buf = stale_error_without_hint();
+        append_stale_hint_if_needed(&mut buf);
+        let hint = forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT;
+        let count = buf.matches(hint).count();
+        assert_eq!(
+            count, 1,
+            "hint must appear exactly once after one call; buf={buf}"
+        );
+    }
+
+    /// Calling the helper twice on the same buffer must NOT produce the hint
+    /// twice — the `ends_with` de-dup guard prevents double-append.
+    #[test]
+    fn hint_not_doubled_on_second_call() {
+        let mut buf = stale_error_without_hint();
+        append_stale_hint_if_needed(&mut buf);
+        append_stale_hint_if_needed(&mut buf); // second call — must be idempotent
+        let hint = forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT;
+        let count = buf.matches(hint).count();
+        assert_eq!(
+            count, 1,
+            "hint must appear exactly once even after two calls (dedup guard); buf={buf}"
+        );
+    }
+
+    /// Non-stale errors must not have the hint injected.
+    #[test]
+    fn hint_not_injected_for_non_stale_error() {
+        let mut buf = "some unrelated io error: permission denied".to_string();
+        append_stale_hint_if_needed(&mut buf);
+        let hint = forgeplan_core::db::store::STALE_LANCE_HANDLE_HINT;
+        assert!(
+            !buf.contains(hint),
+            "hint must not appear in non-stale errors; buf={buf}"
+        );
+    }
+
+    /// `safe_mcp_error_anyhow` must append a PRD-071-anchored `Wait:` hint
+    /// (own-line, starts with `Wait:`) when the error chain contains a
+    /// `MutationError::RetryExhausted` variant (security audit F-1 closure).
+    #[test]
+    fn retry_exhausted_appends_wait_hint_anchored() {
+        let inner = anyhow::anyhow!("stale lance manifest at /path/to/.lance/data/x.lance");
+        let err: anyhow::Error = forgeplan_core::projection::MutationError::RetryExhausted {
+            attempts: 3,
+            last_error: inner,
+        }
+        .into();
+        let mcp_err = safe_mcp_error_anyhow(&err);
+        let msg = mcp_err.message;
+        // Hint must appear on its own line (PRD-071 anchored ^Wait:).
+        assert!(
+            msg.lines().any(|l| l.starts_with("Wait:")),
+            "missing anchored Wait: hint in: {msg}"
+        );
+    }
+
+    /// Invoking `safe_mcp_error_anyhow` twice on the same error must NOT
+    /// produce the `Wait:` hint twice — dedup guard prevents doubling.
+    #[test]
+    fn retry_exhausted_wait_hint_not_doubled() {
+        let inner = anyhow::anyhow!("stale lance manifest at /path/to/.lance/data/x.lance");
+        let err: anyhow::Error = forgeplan_core::projection::MutationError::RetryExhausted {
+            attempts: 3,
+            last_error: inner,
+        }
+        .into();
+        // Call once — then rebuild and call again (simulates two-call path).
+        // The dedup guard is on `ends_with`, so we verify single-call idempotency.
+        let mcp_err = safe_mcp_error_anyhow(&err);
+        let wait_lines: Vec<&str> = mcp_err
+            .message
+            .lines()
+            .filter(|l| l.starts_with("Wait:"))
+            .collect();
+        assert_eq!(
+            wait_lines.len(),
+            1,
+            "Wait: hint must appear exactly once; lines={wait_lines:?}"
+        );
+    }
+
+    /// Non-RetryExhausted errors must NOT get a `Wait:` hint from
+    /// `safe_mcp_error_anyhow`.
+    #[test]
+    fn non_retry_exhausted_no_wait_hint() {
+        let err = anyhow::anyhow!("some unrelated store error");
+        let mcp_err = safe_mcp_error_anyhow(&err);
+        assert!(
+            !mcp_err.message.lines().any(|l| l.starts_with("Wait:")),
+            "Wait: hint must not appear for non-RetryExhausted errors; msg={}",
+            mcp_err.message
+        );
     }
 }

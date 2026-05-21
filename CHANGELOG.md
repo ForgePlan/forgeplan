@@ -64,9 +64,12 @@ Three parallel sprints landed into one release:
   [--severity Y] [--since TS] [--json]`. CLI JSON output emits
   `_next_action` matching the MCP wire shape (audit-r3 HIGH-1 closure
   for PRD-071 parity).
-- **MCP tool count: 72 → 74 (section A only)**. `forgeplan_unlink` (#286) and
-  `forgeplan_anomalies` (#289) add two tools at section A. Section B (Epic #287)
-  adds 7 more brownfield tools — **release total: 81 MCP tools**.
+- **MCP tool count: 73 tools total in v0.32.0** (authoritative count via `#[tool(...)]`
+  macro; drift detector fix in commit a3e52c4 — prior narrative cited wrong baseline).
+  v0.31.x had 64. This release adds `forgeplan_unlink` (#286) and `forgeplan_anomalies`
+  (#289) at section A (+2), plus 7 brownfield tools in section B (#287 Epic):
+  `forgeplan_hypothesis_status`, `_promote`, `_coverage_business`, `_contradictions`,
+  `_orphans`, `_interview_packet_draft`, `_ingest`. Net delta: +9 over v0.31.x (64 → 73).
 
 #### A.1 Breaking changes (issues #286 / #288 / #289)
 

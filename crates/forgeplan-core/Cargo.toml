@@ -82,3 +82,17 @@ tracing-test = { version = "0.2", features = ["no-env-filter"] }
 # unit coverage missed reverse-direction + alternate-relation cases until
 # explicitly added; proptest gives a shotgun guard against the next gap.
 proptest = "1"
+
+# PROB-074 fix: the lance_stale_refresh_test integration test calls
+# `create_artifact_for_test` / `add_relation_for_test` which are
+# `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`.
+# Integration tests under `tests/` compile as a *separate crate* — they do
+# NOT inherit the host crate's `#[cfg(test)]` gate.  Without this target
+# entry `cargo test --workspace` (CI baseline, no extra flags) would fail
+# with E0599 "no method named `create_artifact_for_test`".
+# `required-features` makes cargo skip-compile (and skip-run) the test
+# binary when test-helpers is not enabled, keeping the default build clean.
+[[test]]
+name = "lance_stale_refresh_test"
+path = "tests/lance_stale_refresh_test.rs"
+required-features = ["test-helpers"]
