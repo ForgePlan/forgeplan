@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 forgeplan-core = { path = "../forgeplan-core", version = "0.32.0" }
-rmcp = { version = "1.2", features = ["server", "transport-io"] }
+rmcp = { version = "1.7", features = ["server", "transport-io"] }
 schemars = "0.8"
 serde.workspace = true
 serde_json.workspace = true
@@ -41,7 +41,7 @@ serde_yaml.workspace = true
 # call_tool) over `tokio::io::duplex`. The runtime crate keeps only the
 # server feature; this dev-only addition gives `()` the `Service<RoleClient>`
 # impl needed by `ServiceExt::serve(transport)`.
-rmcp = { version = "1.2", features = ["server", "transport-io", "client"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "client"] }
 # CR-H6 (audit closure): tag every test that mutates HOME (or PATH) with
 # `#[serial_test::serial(env_home)]` so they cannot run in parallel within
 # this test binary. NB: serial_test locks are in-process — they do NOT
