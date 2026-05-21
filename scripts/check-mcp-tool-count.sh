@@ -42,13 +42,18 @@ for arg in "$@"; do
     esac
 done
 
-# Source-of-truth count: each `async fn forgeplan_*(` function decorated
-# with `#[tool(...)]` macro is one MCP tool. The macro spans multiple
-# lines so we anchor on the function declaration itself.
-ACTUAL=$(grep -cE 'async fn forgeplan_' "$SERVER_RS" 2>/dev/null || echo 0)
+# Source-of-truth count: each `#[tool(...)]` macro attribute registers one
+# MCP tool with the rmcp runtime. We anchor on the macro itself rather than
+# the function declaration, because inline `#[cfg(test)]` test functions
+# share the `forgeplan_` prefix (e.g. `forgeplan_get_accepts_slug_or_display_id`)
+# but are NOT decorated с `#[tool(...)]` — counting `async fn forgeplan_*`
+# inflated the count by the number of inline tests (issue #306). The
+# `^[[:space:]]*` anchor ignores any indentation but still requires the
+# attribute to start its own line.
+ACTUAL=$(grep -cE '^[[:space:]]*#\[tool\(' "$SERVER_RS" 2>/dev/null || echo 0)
 
-if [[ "$ACTUAL" -lt 10 ]]; then
-    echo "FAIL: cannot find MCP tools в $SERVER_RS (found $ACTUAL — expected ≥10)" >&2
+if [[ "$ACTUAL" -lt 30 ]]; then
+    echo "FAIL: cannot find MCP tools в $SERVER_RS (found $ACTUAL — expected ≥30)" >&2
     echo "      Has rmcp tool macro contract changed? Update this script." >&2
     exit 2
 fi
