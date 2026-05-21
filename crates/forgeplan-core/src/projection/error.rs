@@ -184,12 +184,18 @@ pub enum MutationError {
     /// by the last invocation, source-chained through `#[source]` so any
     /// `Display::fmt` walker (including `sanitize_error_chain` itself)
     /// reaches it. The Display template embeds the PRD-071 `Wait:` hint
-    /// inline so consumers that surface MutationError verbatim
-    /// (`safe_mcp_error` / `safe_err_result` in `forgeplan-mcp`) get the
-    /// recovery hint without a parallel downcast site.
-    ///
     /// `is_recoverable() == false` — the retry budget is exhausted; the
     /// caller MUST surface the error rather than re-enter the same loop.
+    ///
+    /// # PRD-071 hint protocol
+    ///
+    /// The MCP layer's `safe_mcp_error` appends a properly-anchored
+    /// `Wait:` hint (line-prefix, matching `^Wait:`) when this variant is
+    /// detected via downcast on the incoming `anyhow::Error`. See the
+    /// `STALE_LANCE_HANDLE_HINT` pattern in `forgeplan-mcp/src/server.rs`
+    /// for the parallel implementation. The hint is NOT embedded in this
+    /// Display string — mid-sentence `Wait:` text is invisible to
+    /// PRD-071 line-anchored parsers.
     ///
     /// # Security
     ///
@@ -200,8 +206,7 @@ pub enum MutationError {
     /// sanitiser masks HOME / CARGO_TARGET_DIR / scratch dirs before the
     /// rendered string lands in MCP JSON / Claude Desktop logs.
     #[error(
-        "retry budget exhausted after {attempts} stale-manifest refreshes. \
-         Wait: 2s and retry (MCP handle will refresh) — {}",
+        "retry budget exhausted after {attempts} stale-manifest refreshes — {}",
         sanitize_error_chain(last_error)
     )]
     RetryExhausted {

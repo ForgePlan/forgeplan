@@ -343,9 +343,9 @@ pub const STALE_LANCE_HANDLE_HINT: &str =
 ///
 /// Bounded budget closes the audit finding F-2 (retry loop ran exactly
 /// once with no backoff, so two stale events back-to-back propagated the
-/// raw second error to the agent). With three attempts and 100/250/500ms
+/// raw second error to the agent). With three attempts and 100/250ms
 /// backoff (see [`RETRY_BACKOFF_MS`]) the worst-case latency cap is
-/// ~850ms — enough to ride out the typical `forgeplan reindex` window
+/// ~350ms — enough to ride out the typical `forgeplan reindex` window
 /// without blocking the MCP tool call indefinitely.
 const RETRY_ATTEMPTS: usize = 3;
 
@@ -358,9 +358,13 @@ const RETRY_ATTEMPTS: usize = 3;
 ///
 /// Schedule rationale: 100ms covers the common case of an in-flight
 /// reindex finishing a manifest rewrite; 250ms covers slower disks /
-/// macOS fsync latency; 500ms is the final tail buffer before giving up.
-/// Total worst-case wait = 850ms (capped by `RETRY_ATTEMPTS = 3`).
-const RETRY_BACKOFF_MS: &[u64] = &[100, 250, 500];
+/// macOS fsync latency. Total worst-case wait = 350ms (attempt 0: no sleep;
+/// attempt 1: 100ms; attempt 2: 250ms; capped by `RETRY_ATTEMPTS = 3`).
+const RETRY_BACKOFF_MS: &[u64] = &[100, 250];
+/// Compile-time assertion: array length MUST equal `RETRY_ATTEMPTS - 1`.
+/// Changing `RETRY_ATTEMPTS` without updating `RETRY_BACKOFF_MS` is a
+/// compile error rather than a runtime out-of-bounds index.
+const _: () = assert!(RETRY_BACKOFF_MS.len() == RETRY_ATTEMPTS - 1);
 
 /// Minimum gap (ms) between consecutive `refresh()` calls in the retry
 /// loop, per PROB-075 F-3.
@@ -732,7 +736,7 @@ impl LanceStore {
     /// # Retry budget (PROB-075 F-2)
     ///
     /// Total attempts: [`RETRY_ATTEMPTS`] (initial + N-1 retries). Backoff
-    /// schedule between retries: [`RETRY_BACKOFF_MS`] (default 100/250/500ms).
+    /// schedule between retries: [`RETRY_BACKOFF_MS`] (default 100/250ms).
     /// When every attempt fails with a stale error, the loop emits
     /// [`MutationError::RetryExhausted`] (boxed through `anyhow::Error`) so
     /// MCP can downcast and surface a PRD-071 `Wait:` hint to the agent.
@@ -791,12 +795,11 @@ impl LanceStore {
             if attempt > 0 {
                 // SAFETY: attempt is in 1..RETRY_ATTEMPTS, so attempt-1 is
                 // in 0..RETRY_ATTEMPTS-1, which matches the length of
-                // RETRY_BACKOFF_MS (= RETRY_ATTEMPTS - 1). const-asserted
-                // by RETRY_BACKOFF_MS docstring; if a future contributor
-                // changes RETRY_ATTEMPTS without updating RETRY_BACKOFF_MS
-                // the build still compiles but a runtime panic would
-                // surface here — we use saturating index (last element)
-                // to keep the loop bounded even under that drift.
+                // RETRY_BACKOFF_MS (= RETRY_ATTEMPTS - 1). This invariant is
+                // compile-time asserted by `const _: () = assert!(...)` after
+                // the RETRY_BACKOFF_MS declaration, so mismatching the two
+                // constants is a build error. The saturating index below is
+                // defence-in-depth for any future `unsafe`-bypass path.
                 let backoff_idx = (attempt - 1).min(RETRY_BACKOFF_MS.len() - 1);
                 let backoff_ms = RETRY_BACKOFF_MS[backoff_idx];
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
@@ -2481,9 +2484,7 @@ mod tests {
         let err: anyhow::Error = anyhow::Error::new(lance_db_err);
 
         // Contract 1: typed downcast works against the anyhow chain.
-        let typed = err
-            .chain()
-            .find_map(|c| c.downcast_ref::<lancedb::Error>());
+        let typed = err.chain().find_map(|c| c.downcast_ref::<lancedb::Error>());
         assert!(
             typed.is_some(),
             "typed downcast to lancedb::Error must succeed against anyhow chain (F-4 prerequisite)"

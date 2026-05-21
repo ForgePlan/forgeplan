@@ -66,7 +66,7 @@ Three parallel sprints landed into one release:
   for PRD-071 parity).
 - **MCP tool count: 72 → 74 (section A only)**. `forgeplan_unlink` (#286) and
   `forgeplan_anomalies` (#289) add two tools at section A. Section B (Epic #287)
-  adds 7 more brownfield tools — **release total: 81 MCP tools**.
+  adds 7 more brownfield tools — **release total: 73 MCP tools**.
 
 #### A.1 Breaking changes (issues #286 / #288 / #289)
 
