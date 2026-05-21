@@ -213,7 +213,7 @@ forgeplan review PRD-001
 forgeplan serve  # запустить MCP server (stdio transport)
 ```
 
-72 MCP tools — все команды выше доступны через MCP protocol.
+81 MCP tools — все команды выше доступны через MCP protocol.
 
 ---
 
@@ -530,7 +530,7 @@ npx skills add ForgePlan/forgeplan --skill forge
 6. forgeplan_activate   → draft → active
 ```
 
-72 MCP tools всего. 6 core покрывают 90% workflow.
+81 MCP tools всего. 6 core покрывают 90% workflow.
 
 ---
 

@@ -386,6 +386,34 @@ impl LanceStore {
         self.delete_artifact(id).await
     }
 
+    /// Test-only escape hatch — backdate the `created_at` column for an
+    /// artifact so age-threshold detectors (e.g. anomalies::StuckDraft
+    /// which fires at >24h) can be exercised without sleeping in tests.
+    /// Audit-r2: closes the test-coverage gap for time-gated anomaly
+    /// detectors.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    pub async fn set_created_at_for_test(
+        &self,
+        id: &str,
+        created_at_rfc3339: &str,
+    ) -> anyhow::Result<()> {
+        // Verify the artifact exists before the silent LanceDB update.
+        if self.get_record(id).await?.is_none() {
+            anyhow::bail!("Cannot set created_at: artifact '{}' not found", id);
+        }
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column(
+                "created_at",
+                format!("'{}'", created_at_rfc3339.replace('\'', "''")),
+            )
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Insert a new artifact, returning its ID.
     pub(crate) async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         // Validate ID format — prevent path traversal and SQL injection

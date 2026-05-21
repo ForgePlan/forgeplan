@@ -216,6 +216,22 @@ enum Commands {
         /// Relationship type: informs, based_on, supersedes, contradicts, refines
         #[arg(long, default_value = "informs")]
         relation: String,
+        /// Issue #286: if an edge already exists between source and target with
+        /// a DIFFERENT relation, replace it (idempotent upsert). Without this
+        /// flag, an existing edge with a different relation surfaces as an
+        /// error and the call fails — matching the pre-issue-#286 behaviour.
+        /// Used to fix mis-typed `based_on` / `informs` choices without
+        /// destroying the artifact via `forgeplan delete`.
+        #[arg(long)]
+        replace: bool,
+        /// Issue #288 Part A: when the link source is a complete evidence
+        /// artifact (kind=evidence + status=draft + body has verdict +
+        /// congruence_level), silently activate it draft → active in the
+        /// same call. Mirrors `auto_activate_source_if_complete` on the
+        /// MCP `forgeplan_link` tool. No-op when the source doesn't meet
+        /// the criteria.
+        #[arg(long)]
+        auto_activate_complete: bool,
     },
     /// Remove a relation between two artifacts
     Unlink {
@@ -232,6 +248,12 @@ enum Commands {
         /// Output as JSON for machine consumption
         #[arg(long)]
         json: bool,
+        /// Issue #287 Phase F: filter edges to brownfield kinds only
+        /// (UC / GLOS / INV / SCEN / HYP / DM). Pipeline edges
+        /// (PRD / RFC / ADR / EPIC / SPEC) are dropped from output.
+        /// Domain-model subgraph clusters are preserved.
+        #[arg(long)]
+        brownfield_only: bool,
     },
     /// Search artifacts (smart by default: keyword + semantic + boosters)
     Search {
@@ -348,6 +370,24 @@ enum Commands {
         description: String,
     },
     /// Analyze an artifact using FPF ADI reasoning cycle (Abduction→Deduction→Induction)
+    ///
+    /// REQUIRES LLM: This is the ONLY forgeplan command that calls an external LLM
+    /// to generate structured 3-hypothesis ADI output. The provider is configured
+    /// in `.forgeplan/config.yaml::llm` (default: gemini / models/gemini-2.5-flash).
+    ///
+    /// API KEY: A real API key MUST be set in the environment variable named by
+    /// `llm.api_key_env` (default `GEMINI_API_KEY`). For local development the
+    /// recommended pattern is to source `.forgeplan/secrets.env` (gitignored,
+    /// dotenv/direnv convention) which exports the key. Example:
+    ///
+    ///     # .forgeplan/secrets.env (gitignored, sourced by your shell rc)
+    ///     export GEMINI_API_KEY=<your-key-here>
+    ///
+    /// Without the key the command exits with `Error: API key not found...` and
+    /// emits a `Fix:` hint pointing at the setup-skill workflow. Every other
+    /// forgeplan command (list, search, validate, score, dispatch, ...) is
+    /// pure-Rust and does NOT require an LLM.
+    #[command(long_about)]
     Reason {
         /// Artifact ID to analyze
         id: String,
@@ -567,6 +607,26 @@ enum Commands {
     },
     /// Show blind spots — decisions without evidence, orphan artifacts
     Blindspots,
+    /// Issue #289 — detect pipeline anomalies (stuck drafts, orphan links,
+    /// mis-typed based_on, etc.). Each entry carries severity + tier +
+    /// suggested_resolution so orchestrators can dispatch fixes.
+    Anomalies {
+        /// Filter by anomaly kind (snake_case: stuck_draft, orphan_link,
+        /// mistyped_based_on, missing_must_section, expired_evidence,
+        /// weakest_link_unresolvable, phase_mismatch, circular_dependency,
+        /// duplicate_artifact)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by severity (low, medium, high)
+        #[arg(long)]
+        severity: Option<String>,
+        /// Only return anomalies observed at or after this RFC 3339 timestamp
+        #[arg(long)]
+        since: Option<String>,
+        /// Output as JSON instead of human-readable table
+        #[arg(long)]
+        json: bool,
+    },
     /// Show decision journal — chronological timeline with R_eff scores
     Journal {
         /// Filter by kind (adr, note, problem, solution)
@@ -722,6 +782,13 @@ enum Commands {
     /// Hybrid resolution: default = fail-and-list (exit 1 on collisions);
     /// `--auto-suffix` adds `suggested_resolution` per collision in JSON.
     MigrateDryRun(commands::migrate_dry_run::MigrateDryRunArgs),
+    /// PRD-077 FR-023 Part B — import known API-key env vars
+    /// (GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) from the
+    /// process environment into `.forgeplan/secrets.env` so keys live
+    /// project-local instead of in your shell rc. Default is dry-run;
+    /// pass `--apply` to write.
+    #[command(name = "migrate-secrets")]
+    MigrateSecretsCommand(commands::migrate_secrets::MigrateSecretsArgs),
     /// PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge
     /// identity drift. Scans `.forgeplan/<kind>/*.md`, detects four
     /// drift categories (filename mismatch, missing `predicted_number`,
@@ -1095,13 +1162,20 @@ async fn main() -> anyhow::Result<()> {
             source,
             target,
             relation,
-        } => commands::link::run(&source, &target, &relation).await,
+            replace,
+            auto_activate_complete,
+        } => {
+            commands::link::run(&source, &target, &relation, replace, auto_activate_complete).await
+        }
         Commands::Unlink {
             source,
             target,
             relation,
         } => commands::link::run_unlink(&source, &target, &relation).await,
-        Commands::Graph { json } => commands::graph::run(json).await,
+        Commands::Graph {
+            json,
+            brownfield_only,
+        } => commands::graph::run(json, brownfield_only).await,
         Commands::Search {
             query,
             r#type,
@@ -1231,6 +1305,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
         Commands::Blindspots => commands::blindspots::run().await,
+        Commands::Anomalies {
+            kind,
+            severity,
+            since,
+            json,
+        } => commands::anomalies::run(kind, severity, since, json).await,
         Commands::Journal { r#type, risk } => commands::journal::run(r#type.as_deref(), risk).await,
         Commands::Health {
             compact,
@@ -1332,6 +1412,16 @@ async fn main() -> anyhow::Result<()> {
             // "scan error (2)". Returning anyhow::Result<()> alone collapses
             // 1/2 to a generic 1.
             let code = commands::migrate_dry_run::run(args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Commands::MigrateSecretsCommand(args) => {
+            // PRD-077 FR-023 Part B — same exit-code propagation as
+            // migrate-dry-run: 0 success, 1 partial failure, 2 workspace
+            // not found.
+            let code = commands::migrate_secrets::run(args).await?;
             if code != 0 {
                 std::process::exit(code);
             }

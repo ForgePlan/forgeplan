@@ -4,7 +4,10 @@
 # Mandate from CLAUDE.md "Smoke test (every sprint)" + Forge Mode discipline.
 # Runs comprehensive user workflows on ephemeral temp workspace:
 #   1. forgeplan init -y
-#   2. forgeplan new <kind> for PRD, RFC, ADR, Epic, Spec, Problem, Evidence, Note
+#   2. forgeplan new <kind> for 14 kinds:
+#        - 8 pipeline: PRD, RFC, ADR, Epic, Spec, Problem, Evidence, Note
+#        - 6 brownfield (Epic #287): UseCase, Glossary, Invariant,
+#          Scenario, Hypothesis, DomainModel
 #   3. forgeplan validate / score / search
 #   4. forgeplan blocked / order
 #   5. forgeplan health (verify clean state)
@@ -150,10 +153,23 @@ PROB_ID=$(create_artifact "problem" "Smoke test Problem")
 EVID_ID=$(create_artifact "evidence" "Smoke test Evidence")
 NOTE_ID=$(create_artifact "note" "Smoke test Note")
 
-# Collect into array for summary
-ARTIFACT_IDS=("$PRD_ID" "$RFC_ID" "$ADR_ID" "$EPIC_ID" "$SPEC_ID" "$PROB_ID" "$EVID_ID" "$NOTE_ID")
+# Audit-r4 TEST-G4 closure: 6 brownfield kinds from Epic #287.
+# These cover the new ArtifactKind variants + template rendering paths.
+UC_ID=$(create_artifact "use_case" "Smoke test UseCase")
+GLOS_ID=$(create_artifact "glossary" "Smoke test Glossary term")
+INV_ID=$(create_artifact "invariant" "Smoke test Invariant")
+SCEN_ID=$(create_artifact "scenario" "Smoke test Scenario")
+HYP_ID=$(create_artifact "hypothesis" "Smoke test Hypothesis")
+DM_ID=$(create_artifact "domain_model" "Smoke test DomainModel")
 
-log_step "Created 8 artifacts: ${#ARTIFACT_IDS[@]} kinds"
+# Collect into array for summary
+ARTIFACT_IDS=(
+    "$PRD_ID" "$RFC_ID" "$ADR_ID" "$EPIC_ID" "$SPEC_ID"
+    "$PROB_ID" "$EVID_ID" "$NOTE_ID"
+    "$UC_ID" "$GLOS_ID" "$INV_ID" "$SCEN_ID" "$HYP_ID" "$DM_ID"
+)
+
+log_step "Created 14 artifacts: ${#ARTIFACT_IDS[@]} kinds (8 pipeline + 6 brownfield)"
 
 # ============================================================================
 # T4: Validate artifacts
@@ -378,7 +394,7 @@ done
 echo ""
 echo "Operations tested:"
 echo "  ✓ forgeplan init"
-echo "  ✓ forgeplan new (8 kinds)"
+echo "  ✓ forgeplan new (14 kinds: 8 pipeline + 6 brownfield)"
 echo "  ✓ forgeplan validate"
 echo "  ✓ forgeplan score"
 echo "  ✓ forgeplan blocked"

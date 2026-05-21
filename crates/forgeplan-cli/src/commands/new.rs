@@ -236,10 +236,33 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     if let Some(r) = rationale {
         println!("\n  {}", r);
     }
-    let hints_vec = vec![
-        Hint::suggestion(format!("Validate {} after filling MUST sections", id))
-            .with_action(format!("forgeplan validate {}", id)),
-    ];
+    // PRD-077 FR-009: route the `Next:` primary action by depth.
+    //
+    // - Standard depth (prd / rfc / adr / epic / spec) is the artifact
+    //   class that benefits from ADI reasoning before code: a user who
+    //   creates a PRD with `forgeplan new prd "…"` should be nudged
+    //   straight to `forgeplan reason <id>` so they generate 3+ hypotheses
+    //   BEFORE shaping the body. Validate then runs as part of the normal
+    //   Shape → Validate → Code chain (the `reason` hint output itself
+    //   emits the validate hint).
+    // - Tactical depth (note / evidence / problem / solution / refresh)
+    //   keeps the historical `validate` hint — these artifacts are
+    //   leaf-level and have nothing to reason about (no options, no
+    //   trade-offs).
+    let hints_vec = if depth == "standard" {
+        vec![
+            Hint::suggestion(format!(
+                "Generate 3+ hypotheses for {} before shaping the body",
+                id
+            ))
+            .with_action(format!("forgeplan reason {}", id)),
+        ]
+    } else {
+        vec![
+            Hint::suggestion(format!("Validate {} after filling MUST sections", id))
+                .with_action(format!("forgeplan validate {}", id)),
+        ]
+    };
     print!("{}", hints::render_next_action_line(&hints_vec));
 
     // Session: advance to Shaping for decision artifacts only.

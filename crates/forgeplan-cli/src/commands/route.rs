@@ -262,5 +262,12 @@ fn kind_display(kind: &forgeplan_core::artifact::types::ArtifactKind) -> &'stati
         ArtifactKind::EvidencePack => "Evidence",
         ArtifactKind::RefreshReport => "Refresh",
         ArtifactKind::Memory => "Memory",
+        // Issue #287 brownfield kinds.
+        ArtifactKind::UseCase => "Use Case",
+        ArtifactKind::Glossary => "Glossary",
+        ArtifactKind::Invariant => "Invariant",
+        ArtifactKind::Scenario => "Scenario",
+        ArtifactKind::Hypothesis => "Hypothesis",
+        ArtifactKind::DomainModel => "Domain Model",
     }
 }

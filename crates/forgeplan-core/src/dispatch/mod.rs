@@ -25,7 +25,7 @@
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Default Jaccard threshold at-or-above which two artifacts are
 /// considered conflicting. 0.3 = "touch a third of the same files" —
@@ -117,14 +117,199 @@ impl ArtifactCandidate {
     }
 }
 
+/// One artifact deferred to the serial queue, with a structured explanation
+/// of why the dispatcher couldn't place it in a parallel bucket.
+///
+/// PRD-077 FR-010 — agents on the receiving end of `forgeplan dispatch`
+/// previously saw bare IDs (`PRD-042`) and had no way to distinguish "missing
+/// frontmatter" from "blocked by dependency" from "file overlap". Carrying
+/// the reason inline avoids forcing them to parse the `reasoning[]` audit
+/// log to figure out causality.
+///
+/// CR-H3: marked `#[non_exhaustive]` so adding a third field in a future
+/// release is a non-breaking change for downstream Rust callers (they can
+/// no longer pattern-match-destructure or struct-literal-construct without
+/// going through `SerialEntry::new`). JSON wire format is unaffected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub struct SerialEntry {
+    pub id: String,
+    /// Machine- and human-readable reason. Stable phrases the CLI/MCP
+    /// callers can substring-match:
+    ///   - `missing affected_files frontmatter`
+    ///   - `file overlap >=<threshold> with bucket <N>`
+    ///   - `blocked by dependencies: <PARENT_ID>[, <PARENT_ID>...]`
+    ///     (was `blocked by dependency on <PARENT_ID>` pre-CR-H4 — that
+    ///     phrasing lied on multi-parent graphs because a `HashMap`
+    ///     keyed by source kept only the last-seen target. The new
+    ///     phrasing lists every structural parent: `based_on`,
+    ///     `refines`, `supersedes`, `contradicts` per
+    ///     [`graph::topological::is_structural_relation`].)
+    ///   - `blocked by dependencies: unresolved` — fallback when the
+    ///     blocked artifact has no resolvable structural parent in the
+    ///     relation list (rare; surfaces orphaned blocked entries).
+    ///   - `epic boundary mismatch`
+    ///   - `no agent with matching skill`
+    ///   - `already claimed by another agent`
+    pub reason: String,
+}
+
+impl SerialEntry {
+    /// Public constructor — required since `#[non_exhaustive]` blocks
+    /// struct-literal construction across crate boundaries (CR-H3).
+    pub fn new(id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SerialEntry {
+    /// Human-friendly one-liner: `<id> (<reason>)`. CR-H3 — gives CLI
+    /// callers a uniform render path that survives future field
+    /// additions without source edits.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.id, self.reason)
+    }
+}
+
+/// CR-H4 — extracted helper. Given a relation list (typically from
+/// `LanceStore::get_all_relations`) and the set of artifacts that the
+/// dispatcher marked blocked, return a `SerialEntry` for each blocked id
+/// with a `blocked by dependencies: <PARENT>[, <PARENT>...]` reason
+/// listing **every** unresolved parent (sorted, deduplicated).
+///
+/// Pre-CR-H4 behaviour (the bug):
+///
+/// ```text
+/// let blocker_lookup: HashMap<&str, &str> = relations
+///     .iter()
+///     .map(|(src, tgt, _rel)| (src.as_str(), tgt.as_str()))
+///     .collect();
+/// ```
+///
+/// Two contract bugs in one expression:
+///
+/// 1. **`_rel` was dropped** — any edge counted as a blocker, including
+///    `informs` and other informational cross-references that have
+///    nothing to do with dependency order. Result: artifacts got marked
+///    "blocked" by edges that should have been pure cross-references.
+///
+/// 2. **`HashMap::from_iter` keeps only the last-seen value on key
+///    collision** — when an artifact had multiple parents (`A
+///    based_on B`, `A based_on C`), the lookup reported one arbitrary
+///    parent. Agent fixing the blocker would activate `B`, rerun
+///    dispatch, get told "still blocked on B" (now reported as `C`),
+///    and have no idea what they missed.
+///
+/// Post-fix:
+///
+/// - Filter relations through
+///   [`graph::topological::is_structural_relation`] — the canonical
+///   list of dependency-gating relation types (`based_on`, `refines`,
+///   `supersedes`, `contradicts`). Sharing this predicate with
+///   [`kahn_sort`] guarantees the dispatcher's "what counts as a
+///   blocker?" answer is consistent across the two code paths
+///   (blocked-set computation and reason rendering). Pre-fix code
+///   accepted `depends_on` / `blocks` which are NOT in our typed link
+///   vocabulary at all — those filters would silently drop every
+///   real-world relation and report "unresolved" forever.
+/// - Accumulate **all** parents per blocked id into a `BTreeSet`,
+///   sort + dedupe for free, deterministic output (so agents can grep
+///   the reason and so plan equality holds across reruns).
+/// - Render `blocked by dependencies: PRD-001, PRD-002, RFC-003` —
+///   plural, comma-separated, every actionable parent listed.
+///
+/// Returns `Vec<SerialEntry>` (one per blocked id) in the same order as
+/// `blocked_ids`. Caller is responsible for splicing these into the
+/// dispatch plan's serial queue.
+pub fn build_blocker_reasons<I, R>(relations: R, blocked_ids: &[String]) -> Vec<SerialEntry>
+where
+    I: AsRef<str>,
+    R: IntoIterator<Item = (I, I, I)>,
+{
+    // Build src → sorted/dedup parents map. BTreeMap (BTreeSet) gives
+    // us deterministic ordering for free; the cost is O(log N) inserts
+    // on the per-source set which is negligible at our scale.
+    let mut parents_by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (src, tgt, rel) in relations {
+        // CR-H4 fix #1: filter on relation type via the canonical
+        // structural-relation predicate. Sharing with `kahn_sort`
+        // keeps "what blocks dispatch?" and "what blocks the topo
+        // sort?" answers identical.
+        if !crate::graph::topological::is_structural_relation(rel.as_ref()) {
+            continue;
+        }
+        parents_by_source
+            .entry(src.as_ref().to_string())
+            .or_default()
+            // CR-H4 fix #2: collect EVERY parent, not just the last
+            // seen one. BTreeSet handles dedup automatically.
+            .insert(tgt.as_ref().to_string());
+    }
+
+    blocked_ids
+        .iter()
+        .map(|id| {
+            let reason = match parents_by_source.get(id) {
+                Some(parents) if !parents.is_empty() => {
+                    let joined = parents.iter().cloned().collect::<Vec<_>>().join(", ");
+                    format!("blocked by dependencies: {joined}")
+                }
+                _ => "blocked by dependencies: unresolved".to_string(),
+            };
+            SerialEntry::new(id.clone(), reason)
+        })
+        .collect()
+}
+
+/// CR-H4 variant for callers whose `relations` is borrowed as a slice.
+/// Same contract as [`build_blocker_reasons`] but accepts the canonical
+/// `&[(String, String, String)]` shape returned by
+/// `LanceStore::get_all_relations`.
+pub fn build_blocker_reasons_from_slice(
+    relations: &[(String, String, String)],
+    blocked_ids: &[String],
+) -> Vec<SerialEntry> {
+    // Same logic as the iterator-based version, but avoids forcing the
+    // CLI/MCP call sites to clone or reformat their relation lists.
+    let mut parents_by_source: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (src, tgt, rel) in relations {
+        if !crate::graph::topological::is_structural_relation(rel) {
+            continue;
+        }
+        parents_by_source
+            .entry(src.as_str())
+            .or_default()
+            .insert(tgt.as_str());
+    }
+
+    blocked_ids
+        .iter()
+        .map(|id| {
+            let reason = match parents_by_source.get(id.as_str()) {
+                Some(parents) if !parents.is_empty() => {
+                    let joined = parents.iter().copied().collect::<Vec<_>>().join(", ");
+                    format!("blocked by dependencies: {joined}")
+                }
+                _ => "blocked by dependencies: unresolved".to_string(),
+            };
+            SerialEntry::new(id.clone(), reason)
+        })
+        .collect()
+}
+
 /// A plan returned to the orchestrator. `buckets[i]` is the ordered list
 /// of artifact IDs agent `i` should work on (typically one, sometimes two
 /// when they're truly disjoint). `serial_queue` holds everything that
-/// couldn't be parallelized safely and should be processed one-at-a-time.
+/// couldn't be parallelized safely and should be processed one-at-a-time,
+/// each entry carrying a structured `reason` per PRD-077 FR-010.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchPlan {
     pub buckets: Vec<Vec<String>>,
-    pub serial_queue: Vec<String>,
+    pub serial_queue: Vec<SerialEntry>,
     pub reasoning: Vec<String>,
     /// RFC3339 timestamp — orchestrator can detect stale plans and
     /// re-dispatch when the workspace state changes (R-6).
@@ -217,7 +402,10 @@ pub fn compute_dispatch_plan(
     // unbounded caller input would otherwise allocate proportional Vec.
     let agent_count = agent_count.clamp(1, MAX_AGENTS);
     let mut buckets: Vec<Vec<ArtifactCandidate>> = vec![Vec::new(); agent_count];
-    let mut serial_queue_full: Vec<ArtifactCandidate> = Vec::new();
+    // PRD-077 FR-010: serial entries carry (id, structured reason). The
+    // reason value is stable enough that downstream CLI/MCP can render
+    // it verbatim and tests can substring-match on the canonical phrases.
+    let mut serial_entries: Vec<SerialEntry> = Vec::new();
 
     // R3 audit L-2 (rust-pro): normalize claimed IDs to uppercase so a
     // lowercase-imported artifact ID still matches the claim key (claims
@@ -245,7 +433,10 @@ pub fn compute_dispatch_plan(
                  deferred for safety)",
                 cand.id
             ));
-            serial_queue_full.push(cand.clone());
+            serial_entries.push(SerialEntry::new(
+                cand.id.clone(),
+                "missing affected_files frontmatter",
+            ));
             continue;
         }
 
@@ -256,15 +447,25 @@ pub fn compute_dispatch_plan(
         let mut order: Vec<usize> = (0..buckets.len()).collect();
         order.sort_by_key(|&i| (buckets[i].len(), i));
 
+        // PRD-077 FR-010: track WHY each bucket rejected — keep the most
+        // specific reason for the serial entry (file overlap > skill
+        // mismatch > "no bucket fit"). Order of preference: overlap with
+        // an actually-placed artifact is most actionable.
+        let mut skill_blocks = 0usize;
+        let mut conflict_with: Option<usize> = None;
         for i in order {
             let skills = agent_skills.get(i).map(Vec::as_slice).unwrap_or(&[]);
             if !skill_match(skills, cand.domain.as_deref()) {
+                skill_blocks += 1;
                 continue;
             }
             let any_conflict = buckets[i]
                 .iter()
                 .any(|existing| conflicts(existing, cand, overlap_threshold));
             if any_conflict {
+                if conflict_with.is_none() {
+                    conflict_with = Some(i);
+                }
                 continue;
             }
             reasoning.push(format!(
@@ -281,12 +482,18 @@ pub fn compute_dispatch_plan(
             continue 'outer;
         }
 
-        // No bucket fit — defer to serial.
-        reasoning.push(format!(
-            "{}: serialized (conflicts with every bucket or no matching skill)",
-            cand.id
-        ));
-        serial_queue_full.push(cand.clone());
+        // No bucket fit — defer to serial. Pick the most informative reason.
+        let reason = if let Some(b) = conflict_with {
+            format!("file overlap >={overlap_threshold:.2} with bucket {b}")
+        } else if skill_blocks > 0 {
+            "no agent with matching skill".to_string()
+        } else {
+            // Fallback when neither overlap nor skill applied — e.g. all
+            // buckets full of conflicts but loop ran out before counting.
+            "conflicts with every bucket".to_string()
+        };
+        reasoning.push(format!("{}: serialized ({reason})", cand.id));
+        serial_entries.push(SerialEntry::new(cand.id.clone(), reason));
     }
 
     DispatchPlan {
@@ -294,7 +501,7 @@ pub fn compute_dispatch_plan(
             .into_iter()
             .map(|b| b.into_iter().map(|c| c.id).collect())
             .collect(),
-        serial_queue: serial_queue_full.into_iter().map(|c| c.id).collect(),
+        serial_queue: serial_entries,
         reasoning,
         generated_at: Utc::now().to_rfc3339(),
         agent_count,
@@ -398,7 +605,13 @@ mod tests {
             DEFAULT_OVERLAP_THRESHOLD,
         );
         assert_eq!(plan1.buckets[0], vec!["PRD-A"]);
-        assert_eq!(plan1.serial_queue, vec!["PRD-B"]);
+        assert_eq!(plan1.serial_queue.len(), 1);
+        assert_eq!(plan1.serial_queue[0].id, "PRD-B");
+        assert!(
+            plan1.serial_queue[0].reason.contains("file overlap"),
+            "PRD-077 FR-010: serial reason must classify overlap (got: {})",
+            plan1.serial_queue[0].reason
+        );
         assert!(
             plan1
                 .reasoning
@@ -420,7 +633,12 @@ mod tests {
             DEFAULT_OVERLAP_THRESHOLD,
         );
         assert!(plan.buckets[0].is_empty());
-        assert_eq!(plan.serial_queue, vec!["PRD-NO-FILES"]);
+        assert_eq!(plan.serial_queue.len(), 1);
+        assert_eq!(plan.serial_queue[0].id, "PRD-NO-FILES");
+        assert_eq!(
+            plan.serial_queue[0].reason, "missing affected_files frontmatter",
+            "PRD-077 FR-010: empty affected_files must produce canonical reason"
+        );
         assert!(
             plan.reasoning
                 .iter()
@@ -478,7 +696,12 @@ mod tests {
             DEFAULT_OVERLAP_THRESHOLD,
         );
         assert!(plan.buckets[0].is_empty());
-        assert_eq!(plan.serial_queue, vec!["PRD-UI"]);
+        assert_eq!(plan.serial_queue.len(), 1);
+        assert_eq!(plan.serial_queue[0].id, "PRD-UI");
+        assert_eq!(
+            plan.serial_queue[0].reason, "no agent with matching skill",
+            "PRD-077 FR-010: skill mismatch must produce canonical reason"
+        );
     }
 
     #[test]
@@ -596,7 +819,8 @@ mod tests {
         let plan = compute_dispatch_plan(&[a, b], 1, &[], &HashSet::new(), 1.0 / 3.0);
         // Only first fits; second must serialize because overlap >= threshold.
         assert_eq!(plan.buckets[0], vec!["PRD-A"]);
-        assert_eq!(plan.serial_queue, vec!["PRD-B"]);
+        assert_eq!(plan.serial_queue.len(), 1);
+        assert_eq!(plan.serial_queue[0].id, "PRD-B");
     }
 
     #[test]
@@ -629,5 +853,230 @@ mod tests {
     fn generated_at_is_rfc3339() {
         let plan = compute_dispatch_plan(&[], 2, &[], &HashSet::new(), DEFAULT_OVERLAP_THRESHOLD);
         assert!(chrono::DateTime::parse_from_rfc3339(&plan.generated_at).is_ok());
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // CR-H3 — SerialEntry Display + non_exhaustive contract
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn serial_entry_display_format_is_id_then_reason_in_parens() {
+        // Stable format: `<id> (<reason>)`. CLI callers may render
+        // serial entries via `{e}` without writing custom format code.
+        let e = SerialEntry::new("PRD-042", "file overlap >=0.30 with bucket 0");
+        assert_eq!(
+            format!("{e}"),
+            "PRD-042 (file overlap >=0.30 with bucket 0)"
+        );
+    }
+
+    #[test]
+    fn serial_entry_new_accepts_string_and_str() {
+        // Just a type-system sanity check that `new` takes
+        // `impl Into<String>` for both ergonomic call sites.
+        let from_str = SerialEntry::new("a", "b");
+        let from_string = SerialEntry::new(String::from("a"), String::from("b"));
+        assert_eq!(from_str, from_string);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // CR-H4 — build_blocker_reasons{_from_slice} multi-parent + relation filter
+    // ────────────────────────────────────────────────────────────────────
+
+    // CR-H4 test fixtures use `based_on` and `refines` — those are
+    // the actual structural relation types in our typed link
+    // vocabulary, see `crate::graph::topological::STRUCTURAL_RELATIONS`.
+    // An earlier draft of this test suite used `depends_on` / `blocks`
+    // which do NOT exist in the vocabulary — the test would have
+    // passed against a buggy helper that filtered for `depends_on`
+    // while the real CLI/MCP path filters for `based_on`. The fix
+    // shares `is_structural_relation` between the helper and
+    // `kahn_sort`, so the two surfaces can no longer drift.
+    #[test]
+    fn build_blocker_reasons_single_parent_renders_singular_form() {
+        // Backward-compat readability: when there's exactly one parent
+        // the message is `blocked by dependencies: PRD-001` (still the
+        // plural noun, but only one id listed — no special-case branch
+        // for "dependency" vs "dependencies" since the test fixtures
+        // and downstream agents only need to grep "blocked by dep").
+        let relations = vec![(
+            "PRD-002".to_string(),
+            "PRD-001".to_string(),
+            "based_on".to_string(),
+        )];
+        let blocked = vec!["PRD-002".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "PRD-002");
+        assert_eq!(entries[0].reason, "blocked by dependencies: PRD-001");
+    }
+
+    #[test]
+    fn build_blocker_reasons_multi_parent_lists_all_parents_sorted() {
+        // CR-H4 core fix: with multiple parents, every one must be
+        // listed (sorted for determinism). Pre-fix, HashMap::from_iter
+        // collapsed to one arbitrary parent — agent saw "blocked on B"
+        // and missed A and C entirely.
+        let relations = vec![
+            (
+                "PRD-010".to_string(),
+                "PRD-001".to_string(),
+                "based_on".to_string(),
+            ),
+            (
+                "PRD-010".to_string(),
+                "PRD-002".to_string(),
+                "based_on".to_string(),
+            ),
+            (
+                "PRD-010".to_string(),
+                "RFC-003".to_string(),
+                "refines".to_string(),
+            ),
+        ];
+        let blocked = vec!["PRD-010".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(
+            entries[0].reason, "blocked by dependencies: PRD-001, PRD-002, RFC-003",
+            "CR-H4: every parent must be listed alphabetically"
+        );
+    }
+
+    #[test]
+    fn build_blocker_reasons_filters_non_structural_relation_types() {
+        // CR-H4 core fix: only structural relations (based_on, refines,
+        // supersedes, contradicts) gate parallelism. Pre-fix, `_rel`
+        // was discarded — `informs` counted as a blocker, producing
+        // false "blocked by" entries for purely informational
+        // cross-references.
+        let relations = vec![(
+            "PRD-100".to_string(),
+            "PRD-077".to_string(),
+            "informs".to_string(), // informational, NOT a blocker
+        )];
+        let blocked = vec!["PRD-100".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(
+            entries[0].reason, "blocked by dependencies: unresolved",
+            "CR-H4: `informs` is informational; must NOT count as blocker"
+        );
+    }
+
+    #[test]
+    fn build_blocker_reasons_accepts_all_structural_variants() {
+        // All four members of `STRUCTURAL_RELATIONS` must be honoured:
+        // `based_on`, `refines`, `supersedes`, `contradicts`. Sharing
+        // `is_structural_relation` with `kahn_sort` keeps this list
+        // synchronized — if a future change adds a fifth structural
+        // type, both surfaces pick it up at once.
+        let relations = vec![
+            (
+                "PRD-A".to_string(),
+                "PRD-B".to_string(),
+                "based_on".to_string(),
+            ),
+            (
+                "PRD-A".to_string(),
+                "PRD-C".to_string(),
+                "refines".to_string(),
+            ),
+            (
+                "PRD-A".to_string(),
+                "PRD-D".to_string(),
+                "supersedes".to_string(),
+            ),
+            (
+                "PRD-A".to_string(),
+                "PRD-E".to_string(),
+                "contradicts".to_string(),
+            ),
+        ];
+        let blocked = vec!["PRD-A".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(
+            entries[0].reason, "blocked by dependencies: PRD-B, PRD-C, PRD-D, PRD-E",
+            "CR-H4: all 4 structural relation types must produce blockers"
+        );
+    }
+
+    #[test]
+    fn build_blocker_reasons_deduplicates_repeated_parents() {
+        // Defensive: if the relations list happens to have duplicates
+        // (e.g. an export merge or a re-import roundtrip), they MUST
+        // dedupe in the rendered reason.
+        let relations = vec![
+            (
+                "PRD-X".to_string(),
+                "PRD-1".to_string(),
+                "based_on".to_string(),
+            ),
+            (
+                "PRD-X".to_string(),
+                "PRD-1".to_string(),
+                "based_on".to_string(),
+            ),
+        ];
+        let blocked = vec!["PRD-X".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(entries[0].reason, "blocked by dependencies: PRD-1");
+    }
+
+    #[test]
+    fn build_blocker_reasons_unresolved_when_no_matching_parent() {
+        // No relation at all touches the blocked id → fallback "unresolved".
+        // Pre-CR-H4 this was `blocked by dependency on unresolved`;
+        // the new phrasing is `blocked by dependencies: unresolved`
+        // for consistency with the multi-parent path.
+        let relations: Vec<(String, String, String)> = vec![];
+        let blocked = vec!["PRD-LONELY".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(entries[0].reason, "blocked by dependencies: unresolved");
+    }
+
+    #[test]
+    fn build_blocker_reasons_iterator_form_equivalent_to_slice_form() {
+        // Both surfaces of the helper must produce identical output —
+        // they exist so call sites can pass `&[...]` (canonical) or any
+        // owned iterator (e.g. `into_iter()` of an owned Vec).
+        let owned = vec![
+            (
+                String::from("PRD-2"),
+                String::from("PRD-1"),
+                String::from("based_on"),
+            ),
+            (
+                String::from("PRD-2"),
+                String::from("PRD-3"),
+                String::from("informs"),
+            ),
+        ];
+        let blocked = vec!["PRD-2".to_string()];
+        let via_iter: Vec<SerialEntry> = build_blocker_reasons(owned.clone(), &blocked);
+        let via_slice = build_blocker_reasons_from_slice(&owned, &blocked);
+        assert_eq!(via_iter, via_slice);
+    }
+
+    #[test]
+    fn build_blocker_reasons_preserves_blocked_ids_order() {
+        // The blocked_ids slice is the caller's preferred render order
+        // (typically topological / priority). The helper must NOT
+        // re-sort — sorting only applies to parents within a single
+        // reason string.
+        let relations = vec![
+            (
+                "PRD-A".to_string(),
+                "PRD-Z".to_string(),
+                "based_on".to_string(),
+            ),
+            (
+                "PRD-B".to_string(),
+                "PRD-Y".to_string(),
+                "based_on".to_string(),
+            ),
+        ];
+        let blocked = vec!["PRD-B".to_string(), "PRD-A".to_string()];
+        let entries = build_blocker_reasons_from_slice(&relations, &blocked);
+        assert_eq!(entries[0].id, "PRD-B"); // caller-supplied order
+        assert_eq!(entries[1].id, "PRD-A");
     }
 }

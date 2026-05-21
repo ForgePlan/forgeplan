@@ -13,11 +13,109 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [0.32.0] - 2026-05-20
 
-Sprint headline: **Epic #287 brownfield extraction surface + 6 dogfood-discovered issues, closed inline across 4 adversarial audit rounds (r4/r5/r6/r7) + audit-r-dogfood.**
+Sprint headline: **Epic #287 brownfield extraction surface + 3 pre-Epic issues (#286/#288/#289) + 6 dogfood-discovered issues, closed inline across multiple adversarial audit rounds.**
 
-Two parallel sprints landed into one release:
+Three parallel sprints landed into one release:
 
-### A. Epic #287 — brownfield extraction surface
+### A. Issues #286 / #288 / #289 — pre-Epic methodology hardening
+
+- **Link upsert + `forgeplan_unlink` MCP tool** (issue #286) — `forgeplan_link`
+  gains optional `replace: bool` parameter. When true and an edge between
+  `(source, target)` already exists with a different relation, the old edge
+  is replaced (audit-r2 ordering: add new first, then delete old, so a
+  partial failure leaves the OLD edge intact). Used to fix mis-typed
+  `based_on` ↔ `informs` relations that previously cascaded a CL penalty
+  through R_eff with no MCP-safe recovery path (only `forgeplan_delete`
+  would work, destroying the artifact). New `forgeplan_unlink` tool +
+  `forgeplan link --replace` CLI flag. The `LinkResponse.auto_activated`
+  field is new (see #288 below); consumers using
+  `#[serde(deny_unknown_fields)]` need to relax that.
+- **Pipeline hygiene primitives** (issue #288) — `forgeplan_link` gains
+  optional `auto_activate_source_if_complete: bool`. When true and the
+  source matches the canonical "ready to activate" predicate
+  (`kind=evidence + status=draft + body has verdict + congruence_level`),
+  it is silently promoted `draft → active`. Audit-r2 dropped the
+  defunct `R_eff>0` check from the gate (evidence artifacts have no
+  incoming evidence by design, so cached R_eff is always 0 — the check
+  was dead code). Audit-r3 F1 unified this predicate as
+  `lifecycle::ready_to_activate`, shared by auto-activate, the
+  `stale_drafts.ReadyToActivate` health classification, and the
+  `stuck_draft` anomaly. Response `LinkResponse.auto_activated:
+  Option<String>` carries the id when the transition fires. Failure is
+  non-fatal — the link itself already committed; tracing::warn fires
+  and the response hints at manual retry. `forgeplan_health` gains
+  `stale_drafts: Vec<StaleDraft>` (24h threshold default;
+  `VerdictThresholds.stale_ready_drafts` default 5 → Unhealthy). Hint
+  chain enhanced — when the link source is a complete-but-still-draft
+  EVID, the response ends with `Activate: forgeplan_activate <id>` so
+  the next step is unambiguous.
+- **`forgeplan_anomalies` tool + v1 catalog** (issue #289) — new MCP tool +
+  CLI command surfaces pipeline anomalies with structured severity + tier
+  classification (auto / adi / user) so plugin-layer orchestrators
+  (`/forge-cycle`, `/forge-cleanup`) can dispatch resolutions without
+  re-classifying. v1 catalog: `stuck_draft`, `orphan_link`,
+  `mistyped_based_on`, `missing_must_section`, `expired_evidence`,
+  `weakest_link_unresolvable`, `phase_mismatch`, `circular_dependency`,
+  `duplicate_artifact`. Filters: `kind` / `severity` / `since` (the
+  last backed by a per-anomaly observed_at journal at
+  `.forgeplan/anomalies-journal.jsonl`, audit-r2 lands true diff
+  semantics; audit-r3 adds GC of resolved-anomaly entries +
+  deterministic file ordering). CLI: `forgeplan anomalies [--kind X]
+  [--severity Y] [--since TS] [--json]`. CLI JSON output emits
+  `_next_action` matching the MCP wire shape (audit-r3 HIGH-1 closure
+  for PRD-071 parity).
+- **MCP tool count: 72 → 74 (section A only)**. `forgeplan_unlink` (#286) and
+  `forgeplan_anomalies` (#289) add two tools at section A. Section B (Epic #287)
+  adds 7 more brownfield tools — **release total: 81 MCP tools**.
+
+#### A.1 Breaking changes (issues #286 / #288 / #289)
+
+- **`forgeplan_core::dispatch::SerialEntry`** is now `#[non_exhaustive]`
+  (CR-H3). Downstream Rust callers can no longer use struct-literal
+  construction or exhaustive pattern-matching across crate boundaries —
+  use `SerialEntry::new(id, reason)` instead. The JSON wire format is
+  unchanged (serde keeps the same shape). Added `Display` impl rendering
+  `<id> (<reason>)` for uniform CLI output.
+- **`forgeplan_mcp::types::DispatchSerialEntry`** mirrors the same
+  `#[non_exhaustive]` + `Display` + `new` contract (CR-H3). Added
+  `From<forgeplan_core::dispatch::SerialEntry>` so server.rs can flatten
+  the core type into the MCP DTO without manual destructuring.
+- **Dispatch serial-queue reason phrasing** changed (CR-H4): `blocked by
+  dependency on <PARENT>` → `blocked by dependencies: <PARENT>[,
+  <PARENT>...]`. The new phrasing is plural even with one parent and
+  lists every unresolved parent (sorted). Substring-matchers should
+  switch from `"blocked by dependency"` to `"blocked by dependencies"`.
+
+#### A.2 Fixed (issues #286 / #288 / #289)
+
+- **CR-C4: `secrets.yaml` → `secrets.env`** — the template shipped by
+  `forgeplan init` was named `.yaml` but contained shell `export` syntax,
+  failing YAML lint and `serde_yaml::from_str`. Renamed to `.env`
+  (dotenv/direnv convention) across all 7 code surfaces + 2 doc
+  surfaces. Existing workspaces migrate via `forgeplan init --force`.
+  Also removes the literal `sk-...` placeholder from the template — that
+  prefix was raising TruffleHog/gitleaks false-positives on every CI run.
+- **SEC-H1: backfill on existing workspaces** — `forgeplan init --force`
+  now writes `.gitkeep` placeholders into every empty artifact subdir
+  and creates the `secrets.env` template if missing. Idempotent — never
+  clobbers a user-edited template containing real keys. Closes the
+  migration gap for workspaces created before PRD-077 FR-001 / FR-002.
+- **CR-H4: dispatch multi-parent blocker reason** — `forgeplan dispatch`
+  and `forgeplan_dispatch` MCP tool previously reported a single
+  arbitrary parent for blocked artifacts (`HashMap` collapsed
+  multi-parent edges to last-seen target) AND counted `informs` as a
+  structural blocker (the relation type was dropped in the lookup
+  build). Both fixed by extracting `build_blocker_reasons_from_slice`
+  to `forgeplan_core::dispatch` — CLI and MCP now share one
+  implementation. The helper uses
+  `graph::topological::is_structural_relation` (the same predicate
+  `kahn_sort` uses), so the canonical structural-relation list
+  (`based_on`, `refines`, `supersedes`, `contradicts`) drives both
+  "what blocks the topo sort?" and "what blocks dispatch?" — they can
+  no longer drift. Multiple parents are listed alphabetically:
+  `blocked by dependencies: PRD-001, PRD-002, RFC-003`.
+
+### B. Epic #287 — brownfield extraction surface
 
 6 new `ArtifactKind` variants (`use_case`, `glossary`, `invariant`, `scenario`, `hypothesis`, `domain_model`) with Factum/Intent two-tier validation, 7 new MCP tools (`forgeplan_hypothesis_status` / `_promote` / `_coverage_business` / `_contradictions` / `_orphans` / `_interview_packet_draft` / `_ingest`), brownfield graph rendering (`forgeplan_graph --brownfield-only`), and a Hypothesis lifecycle state machine (parked → inferred → strong-inferred → verified → refuted with terminal absorbing states).
 
@@ -25,7 +123,7 @@ Two parallel sprints landed into one release:
 
 Phase E (`forgeplan_render_canonical` + `forgeplan_export_rag`) split into [`marketplace#79`](https://github.com/ForgePlan/marketplace/issues/79) — those tools live in plugin layer (wrap brownfield-pack skills C10/C12), not core.
 
-### B. 6 dogfood-discovered issues (#290..#295)
+### C. 6 dogfood-discovered issues (#290..#295)
 
 Collected from real-world workspace usage in `marketplace` repo, filed upstream, fixed in this release:
 
@@ -36,7 +134,7 @@ Collected from real-world workspace usage in `marketplace` repo, filed upstream,
 - **#294 `forgeplan_activate` error UX** — "No evidence linked" error now teaches the canonical 5-step fix order verbatim in the error message (`forgeplan_new evidence → update → link informs → activate EVID → activate parent`). Operators no longer reach for `--force` as a shortcut.
 - **#295 `forgeplan_new(kind=evidence, parent_id=...)` auto-link** — optional `parent_id` parameter creates the `informs` link in one call. Closes the 3-step boilerplate (new → update → link) observed in 100% of measured EVIDs across 12 sprints. Auto-link uses `add_link_with_projection` (file-first per ADR-003); response carries `auto_linked` + `auto_link_warnings` fields.
 
-### C. Audit-r-dogfood — 8 findings closed inline before release
+### D. Audit-r-dogfood — 8 findings closed inline before release
 
 3 parallel adversarial agents (security/code-quality/architecture) reviewed the 6 dogfood fixes. 24 findings total (after dedup). Closed inline:
 
@@ -49,7 +147,7 @@ Collected from real-world workspace usage in `marketplace` repo, filed upstream,
 - **CODE-4 / ARCH-2 MED** — `NewArtifactResponse` gets proper `auto_linked` + `auto_link_warnings` DTO fields (`#[serde(skip_serializing_if)]`). Replaces post-hoc `serde_json::Value` mutation that broke JsonSchema codegen for TS clients.
 - **CODE-7 LOW** — `target_status` trimmed before validation so `Some("  active  ")` no longer falls through with inscrutable error.
 
-### D. New methodology documentation
+### E. New methodology documentation
 
 - **`docs/methodology/CROSS-REPO-WORKFLOW.ru.md`** — protocol for coordinating issues / fixes / feature requests across the multi-repo ForgePlan org (`forgeplan` core ↔ `marketplace` ↔ `forgeplan-hud` ↔ ...). Codifies the 5 typical failure modes when 1→5 repos org grows without conventions, label taxonomy proposal, session-start inbox sweep protocol for AI agents, 4-phase implementation roadmap.
 
@@ -66,11 +164,21 @@ Collected from real-world workspace usage in `marketplace` repo, filed upstream,
 
 ### Tests, pipeline, scope
 
-- **3034 tests PASS** on Epic #287 branch (`feat/issues-286-288-289`)
-- **2751 tests PASS** on dogfood branch (`fix/issues-290-295-dogfood-findings`)
-- cargo clippy clean on both, cargo fmt clean, scripts/smoke-test.sh PASS (14 kinds including 6 brownfield)
-- **5 audit rounds** total across both sprints
-- **ADR-014** new methodology artefact
+- **3061 tests PASS** on release candidate `feat/issues-286-288-289` (was 3034 pre-merge on Epic branch + 27 inherited from dev v0.32.0 release prep via dogfood PR #299 / `fix/issues-290-295-dogfood-findings`).
+- cargo clippy clean, cargo fmt clean, scripts/smoke-test.sh PASS on release binary (14 kinds including 6 brownfield).
+- **5 audit rounds** + 1 final audit-r-release-candidate. Total findings closed inline: r4=13, r5=8, r6=2 (ARCH-H1 + PROB-069), r7=13, r-dogfood=8, r-release=4 → 48 closures, 0 net CRIT/HIGH deferred.
+- **ADR-014** new methodology artefact (`EVID-128 informs ADR-014`).
+- **PROB-069** flaky stress-test budget calibration closed (`EVID-129 informs PROB-069`).
+- **PROB-068** init/scan-import data-loss closure re-published as `EVID-130` (was silently shadowed by a duplicate `EVID-122` ID in markdown projection — audit-r-release F1-CODE fix preserves the evidence).
+
+### Security (RED-LINE #10 compliance)
+
+Open Dependabot alerts at release time, per RED-LINE #10 mandate:
+
+- **#33** — `devalue` HIGH severity (Svelte DoS via sparse array deserialization, ecosystem `npm`, lives in `website/package-lock.json`).
+  **Status: scheduled** — `website/` is a static docs portal, no runtime impact on the Rust core; `npm` bump deferred to the next docs-deps sprint.
+- **#3** — `lru` LOW severity (`IterMut` Stacked Borrows violation, ecosystem `rust`).
+  **Status: accepted-with-justification** — pre-existing finding documented in v0.28.0 / v0.29.0 / v0.30.0 changelogs as deferred; GHSA-rhfx-m35p-ff5j is Stacked-Borrows-only, no runtime exploit path, upstream fix not yet released.
 
 ## [0.31.0] - 2026-05-13
 

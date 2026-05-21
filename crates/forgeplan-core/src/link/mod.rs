@@ -86,6 +86,14 @@ pub fn list_links(fm: &Frontmatter) -> Vec<(String, String)> {
 }
 
 /// Valid link relation types.
+///
+/// Audit-r7 M3 (HIGH): added brownfield relations (Epic #287) to the
+/// allowlist. Previously `forgeplan_link` enforced this list but
+/// `scan-import` / direct file edit / graph render assumed file-sourced
+/// `relation:` strings were trustworthy — opening a mermaid-injection
+/// vector when a hand-edited link's relation contained `|`, `{`, `}`,
+/// `\n`, etc. With brownfield relations now in the allowlist, the
+/// uniform read-path validation closes that gap.
 pub const VALID_RELATIONS: &[&str] = &[
     "informs",
     "based_on",
@@ -93,6 +101,12 @@ pub const VALID_RELATIONS: &[&str] = &[
     "contradicts",
     "refines",
     "supports",
+    // Audit-r7 M3: Epic #287 brownfield relations.
+    "demonstrates",
+    "covers",
+    "triangulates",
+    "references",
+    "belongs_to",
 ];
 
 /// Parse relation string, accepting both snake_case and kebab-case.

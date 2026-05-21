@@ -148,6 +148,37 @@ fn err_result(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.to_string())])
 }
 
+/// Sister to `safe_mcp_error` for the `err_result` / `CallToolResult::error`
+/// family — wraps an error through the projection-layer chain sanitiser
+/// before rendering into the user-facing text payload.
+///
+/// **Wave 4 S5 audit closure**: the SEC-H3 sweep (which became
+/// `safe_mcp_error`) collapsed all `McpError::internal_error(format!("{e}"))`
+/// sites onto the sanitiser, but the parallel `safe_err_result("", e)`
+/// family (which returns `CallToolResult::error` instead of `McpError`)
+/// was missed. ~40+ such sites remain in `server.rs`; each one leaks
+/// `$HOME`, scratch tempdirs, and OS error strings into the MCP transcript.
+/// This helper closes that gap with the same semantics:
+///
+///   safe_err_result("workspace lock", e)
+///     → CallToolResult::error with text "workspace lock: <sanitised>"
+///   safe_err_result("", e)
+///     → CallToolResult::error with text "<sanitised>" (no prefix)
+///
+/// The error is wrapped via `anyhow::anyhow!("{e}")` so single-link errors
+/// (io::Error, MutationError, serde_json::Error, LanceError, etc.) go
+/// through the chain walker uniformly — same strategy as `safe_mcp_error`.
+fn safe_err_result<E: std::fmt::Display>(prefix: &str, e: E) -> CallToolResult {
+    let wrapped: anyhow::Error = anyhow::anyhow!("{e}");
+    let sanitised = forgeplan_core::projection::sanitize_error_chain(&wrapped);
+    let msg = if prefix.is_empty() {
+        sanitised
+    } else {
+        format!("{prefix}: {sanitised}")
+    };
+    CallToolResult::error(vec![Content::text(msg)])
+}
+
 /// Wrap an `anyhow::Error` into an `McpError::internal_error` whose Display
 /// payload has been routed through the projection-layer error-chain
 /// sanitiser (`forgeplan_core::projection::sanitize_error_chain`).
@@ -720,7 +751,75 @@ struct LinkParams {
     /// Relationship type (default: informs)
     #[serde(default = "default_relation")]
     relation: RelationKind,
+    /// Issue #286: idempotent upsert mode. When `true` and an edge between
+    /// `(source, target)` already exists with a DIFFERENT relation, the old
+    /// edge is deleted and a new one with `relation` is added in a single
+    /// call. Without this, the additive path errors on
+    /// "relation already exists" or returns a parallel-edge state that the
+    /// caller cannot fix without `forgeplan_unlink`. Defaults to `false` for
+    /// backward compatibility with pre-#286 callers.
+    #[serde(default)]
+    replace: bool,
+    /// Issue #288: optional auto-activate of the source artifact when this
+    /// link completes the evidence pack. When `true` AND the source is an
+    /// evidence artifact in draft status AND its body declares both
+    /// `verdict` and `congruence_level` structured fields AND R_eff > 0
+    /// after the link lands, the source is silently activated
+    /// (draft → active) in the same call. The response carries
+    /// `auto_activated` so the caller knows the transition happened.
+    /// Defaults to `false` so pre-#288 callers see no behaviour change.
+    #[serde(default)]
+    auto_activate_source_if_complete: bool,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UnlinkParams {
+    /// Source artifact ID
+    source: String,
+    /// Target artifact ID
+    target: String,
+    /// Relationship type to remove (default: informs)
+    #[serde(default = "default_relation")]
+    relation: RelationKind,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AnomaliesParams {
+    /// Issue #289: filter by anomaly kind. Accepts the same snake_case
+    /// names emitted in the response (`stuck_draft`, `orphan_link`, …).
+    /// When `None`, all detected anomalies are returned.
+    #[serde(default)]
+    kind: Option<String>,
+    /// Filter by severity (`low` / `medium` / `high`). Exact match.
+    #[serde(default)]
+    severity: Option<String>,
+    /// ISO 8601 cutoff — only return anomalies observed at or after this
+    /// timestamp. Useful for diff-style polling.
+    #[serde(default)]
+    since: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HypothesisStatusParams {
+    /// Optional HYP- id to narrow the report to a single hypothesis.
+    /// When `None`, returns the workspace-wide state distribution.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CoverageBusinessParams {
+    /// Required DM- artifact id. The Composition section of that
+    /// Domain Model artifact provides the `expected` counts; this
+    /// tool counts what's actually present in the workspace.
+    domain_model_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ContradictionsParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct OrphansParams {}
 
 fn default_relation() -> RelationKind {
     RelationKind::Informs
@@ -978,6 +1077,22 @@ struct ImportParams {
     force: Option<bool>,
 }
 
+/// Issue #287 Phase F (W4): optional filter for the `forgeplan_graph`
+/// MCP tool. When `brownfield_only` is `true`, the rendered mermaid
+/// graph drops edges whose endpoints aren't both brownfield kinds
+/// (UC/GLOS/INV/SCEN/HYP/DM). Pipeline-only callers (no params, or
+/// `brownfield_only: false`) get the legacy full-graph rendering.
+///
+/// Default value is `false`; zero-arg callers (existing JSON-RPC
+/// clients that pass `{}`) stay valid via `#[serde(default)]`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct GraphParams {
+    /// Filter edges to brownfield kinds (UC / GLOS / INV / SCEN / HYP /
+    /// DM) only. Defaults to false (show all edges including pipeline).
+    #[serde(default)]
+    brownfield_only: Option<bool>,
+}
+
 /// Exposed for integration test harness in tests/fpf_search_handler.rs.
 /// Fields remain pub(crate) — only the struct itself is visible externally.
 /// `#[doc(hidden)]` because this is unstable test infrastructure, not a
@@ -1059,6 +1174,66 @@ struct DiscoverFindingParams {
 struct DiscoverCompleteParams {
     /// Session ID to complete
     session_id: String,
+}
+
+// ── Issue #287 Phase D — Hypothesis + Interview Packet params ────────
+
+/// Params for `forgeplan_hypothesis_promote` — moves a HYP- artifact along
+/// the verification state machine (parked → inferred → strong-inferred →
+/// verified | refuted). See `forgeplan_core::hypothesis` for the full
+/// transition matrix and rejection rules.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HypothesisPromoteParams {
+    /// Hypothesis artifact id or slug (`HYP-001` / `hyp-some-claim`). Must
+    /// resolve to an artifact whose `kind == "hypothesis"`.
+    hypothesis_id: String,
+    /// Target lifecycle state in kebab-case: `parked`, `inferred`,
+    /// `strong-inferred`, `verified`, or `refuted`.
+    new_state: String,
+    /// IDs of evidence artifacts (typically `EVID-NNN`) backing the
+    /// promotion. May be empty (e.g. parked-for-hold) but the rationale is
+    /// still mandatory.
+    #[serde(default)]
+    evidence_refs: Vec<String>,
+    /// Free-form one-line rationale for the audit trail in `## Lifecycle State`.
+    /// Stored verbatim in the body, sanitised for hint emission.
+    rationale: String,
+}
+
+/// Params for `forgeplan_interview_packet_draft` (stub — full implementation
+/// lives in the `forgeplan-brownfield-pack` plugin, marketplace issue #79).
+/// Wire shape is fixed up-front so agents that adopt the brownfield workflow
+/// don't need to re-learn the call when the plugin ships.
+///
+/// Fields carry `#[allow(dead_code)]` because the stub doesn't read them,
+/// but the wire-schema clients see (via `JsonSchema`) must include them —
+/// dropping the fields would break the contract the real plugin will honour.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct InterviewPacketDraftParams {
+    /// Target domain or feature area the interview packet should cover.
+    /// Used by the plugin to scope question generation.
+    #[serde(default)]
+    #[allow(dead_code)]
+    domain: Option<String>,
+    /// Optional list of existing artifact ids (HYP / UC / INV) that seed
+    /// the interview agenda. Empty means "discover from scratch".
+    #[serde(default)]
+    #[allow(dead_code)]
+    seed_ids: Vec<String>,
+}
+
+/// Params for `forgeplan_interview_packet_ingest` (stub — see
+/// `InterviewPacketDraftParams`). Accepts the path to a completed
+/// interview transcript, which the plugin parses into HYP / UC / INV
+/// proposals.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct InterviewPacketIngestParams {
+    /// Filesystem path (relative to the workspace root) of the completed
+    /// interview transcript. Audit-r4 SEC-L1: stub pre-validates that the
+    /// path is workspace-relative and contains no `..` segments before
+    /// handing off to the marketplace plugin. The plugin owns the read.
+    #[serde(default)]
+    transcript_path: Option<String>,
 }
 
 // ── Tool implementations ─────────────────────────────────────
@@ -1189,7 +1364,7 @@ impl ForgeplanServer {
 
         let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let template_key = artifact_kind.template_key();
@@ -1719,7 +1894,7 @@ impl ForgeplanServer {
         let _lock_guard = match ws_opt.as_ref() {
             Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
                 Ok(g) => Some(g),
-                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
             },
             None => None,
         };
@@ -1727,7 +1902,7 @@ impl ForgeplanServer {
         let target = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let outgoing = store.get_relations(&p.id).await.unwrap_or_else(|e| {
@@ -1938,7 +2113,7 @@ impl ForgeplanServer {
         // mutators against the shared LanceDB.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
             Ok(g) => g,
-            Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
         };
 
         let relation = match link::normalize_relation(p.relation.as_str()) {
@@ -1968,24 +2143,47 @@ impl ForgeplanServer {
         // sync_before/render_after are no-ops when the target is not local
         // (cross-workspace reference) so the previous warn-and-continue
         // behavior is preserved by the helper's natural laziness.
-        if let Err(e) = projection::add_link_with_projection(
-            &projection::MutationContext::new(&ws, &store),
-            &p.source,
-            &p.target,
-            &relation,
-        )
-        .await
-        {
-            let safe_src = sanitize_for_hint(&p.source);
-            let safe_tgt = sanitize_for_hint(&p.target);
-            return Ok(err_hinted(
-                &format!("{e}"),
-                format!(
-                    "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
-                     source != target. Self-links and dangling targets are rejected."
-                ),
-            ));
-        }
+        //
+        // Issue #286: `replace: true` selects the upsert helper, which
+        // collapses any pre-existing edge between `(source, target)` onto
+        // the requested relation. Without the flag we keep the strict
+        // additive helper that rejects duplicates and parallel-different-
+        // relation edges — matching the pre-#286 behaviour exactly.
+        let ctx = projection::MutationContext::new(&ws, &store);
+        let upsert_outcome = if p.replace {
+            match projection::replace_link_with_projection(&ctx, &p.source, &p.target, &relation)
+                .await
+            {
+                Ok(o) => Some(o),
+                Err(e) => {
+                    let safe_src = sanitize_for_hint(&p.source);
+                    let safe_tgt = sanitize_for_hint(&p.target);
+                    return Ok(err_hinted(
+                        &format!("{e}"),
+                        format!(
+                            "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
+                             source != target. Self-links and dangling targets are rejected."
+                        ),
+                    ));
+                }
+            }
+        } else {
+            if let Err(e) =
+                projection::add_link_with_projection(&ctx, &p.source, &p.target, &relation).await
+            {
+                let safe_src = sanitize_for_hint(&p.source);
+                let safe_tgt = sanitize_for_hint(&p.target);
+                return Ok(err_hinted(
+                    &format!("{e}"),
+                    format!(
+                        "Check both `{safe_src}` and `{safe_tgt}` exist (`forgeplan_get <id>`) and \
+                         source != target. Self-links and dangling targets are rejected. Pass \
+                         `replace: true` to overwrite an existing parallel edge."
+                    ),
+                ));
+            }
+            None
+        };
 
         // PROB-057 / PRD-075 + Round 9 HIGH-1: MCP parity for sync recompute.
         // Failure is non-fatal (mutation succeeded); surface via tracing so
@@ -2026,11 +2224,211 @@ impl ForgeplanServer {
                 "Linked. Verify graph: `forgeplan_graph`.".to_string()
             }
         };
+        // Issue #286: differentiate replace outcomes so callers can see the
+        // pre-existing relation that was overwritten (audit trail).
+        let message = match upsert_outcome {
+            Some(projection::LinkUpsertOutcome::Replaced { old_relation }) => format!(
+                "Replaced: {} --{}--> {} (was: --{}-->)",
+                p.source, relation, p.target, old_relation
+            ),
+            Some(projection::LinkUpsertOutcome::Unchanged) => {
+                format!(
+                    "Unchanged: {} --{}--> {} already exists",
+                    p.source, relation, p.target
+                )
+            }
+            Some(projection::LinkUpsertOutcome::Created) | None => {
+                format!("Linked: {} --{}--> {}", p.source, relation, p.target)
+            }
+        };
+
+        // Issue #288 part A: optional auto-activate of the source artifact
+        // when this link completes the evidence pack. Profile B (reviewer)
+        // agents are physically denied `forgeplan_activate` — without this,
+        // every link from a complete EVID requires a separate orchestrator
+        // call to flip draft → active, and that step is routinely forgotten
+        // during commit/PR context switches (the marketplace observation
+        // that triggered the issue).
+        //
+        // Issue #288 part C: enhanced _next_action when the source is a
+        // complete-but-still-draft EVID — suggests activation in the hint
+        // chain so callers without the auto-activate flag still see the
+        // next step.
+        let mut auto_activated: Option<String> = None;
+        let mut completion_hint: Option<String> = None;
+        let safe_src = sanitize_for_hint(&p.source);
+        if let Ok(Some(src_record)) = store.get_record(&p.source).await
+            && src_record.kind.eq_ignore_ascii_case("evidence")
+            && src_record.status.eq_ignore_ascii_case("draft")
+            && forgeplan_core::scoring::evidence::is_evidence_complete(&src_record.body)
+        {
+            // Audit-r2 closure: the gate previously checked `src_record.r_eff_score > 0`,
+            // but `r_eff_recursive` computes evidence's OWN R_eff as the minimum of
+            // its INCOMING evidence — and evidence artifacts have no incoming evidence
+            // by design (they ARE the evidence). The cached r_eff_score for any EVID
+            // is therefore always 0.0, defeating the gate for the canonical use case
+            // (a complete EVID linking to its parent PRD). Issue #288 Part A literally
+            // describes this case as the target of the feature.
+            //
+            // Replacement gate: `is_evidence_complete(body)` already verifies that
+            // verdict + congruence_level are explicit structured fields (not defaults).
+            // The R_eff condition was meant to be a defence-in-depth check that the
+            // pack contributes positive score to its parent — that property is
+            // intrinsic to a complete EVID with verdict ∈ {supports, weakens, refutes}
+            // and CL 0..=3, regardless of the cached column on the evidence row itself.
+            //
+            // We keep the cached value in the response message for operator
+            // visibility but no longer condition activation on it.
+            let r_eff_after = src_record.r_eff_score;
+            {
+                if p.auto_activate_source_if_complete {
+                    match forgeplan_core::lifecycle::activate(&store, &p.source, false).await {
+                        Ok(_) => {
+                            // Re-render after activation so the file's
+                            // status: reflects active (same discipline as
+                            // forgeplan_activate tool above).
+                            if let Err(e) =
+                                projection::render_after_mutation(&ws, &store, &p.source).await
+                            {
+                                tracing::warn!(
+                                    "auto-activate post-render for {} failed: {e}",
+                                    p.source
+                                );
+                            }
+                            auto_activated = Some(p.source.clone());
+                            completion_hint = Some(format!(
+                                "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence). \
+                                 Source auto-activated draft → active. Reconcile parents: \
+                                 `forgeplan_score_all`."
+                            ));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "auto-activate of {} failed: {e} (link succeeded; user can retry forgeplan_activate manually)",
+                                p.source
+                            );
+                            completion_hint = Some(format!(
+                                "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence). \
+                                 Auto-activate failed; activate manually: \
+                                 `forgeplan_activate {safe_src}`."
+                            ));
+                        }
+                    }
+                } else {
+                    completion_hint = Some(format!(
+                        "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence, draft). \
+                         Activate: `forgeplan_activate {safe_src}`."
+                    ));
+                }
+            }
+        }
+
+        let final_next_action = completion_hint.unwrap_or(next_action);
         hinted_result(
             &LinkResponse {
-                message: format!("Linked: {} --{}--> {}", p.source, relation, p.target),
+                message,
+                auto_activated,
             },
-            next_action,
+            final_next_action,
+        )
+    }
+
+    #[tool(
+        description = "Remove a typed relation between two artifacts. Mirror of `forgeplan_link` for undoing or fixing mis-typed edges. Issue #286.",
+        annotations(
+            title = "Unlink Artifacts",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_unlink(
+        &self,
+        Parameters(p): Parameters<UnlinkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Same lock discipline as forgeplan_link.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        let relation = match link::normalize_relation(p.relation.as_str()) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("{e}"),
+                    "Valid relations: informs, based_on, supersedes, contradicts, refines. \
+                     Pick one and retry.",
+                ));
+            }
+        };
+
+        // Verify the edge actually exists before delete so we can return a
+        // useful error rather than a silent no-op (LanceDB's delete is
+        // idempotent — without this check the caller has no signal that the
+        // typo'd relation was never present).
+        let existing = match store.get_relations(&p.source).await {
+            Ok(rs) => rs,
+            Err(e) => return Ok(safe_err_result("read relations", e)),
+        };
+        let found = existing
+            .iter()
+            .any(|(t, r)| t.eq_ignore_ascii_case(&p.target) && r == &relation);
+        if !found {
+            let safe_src = sanitize_for_hint(&p.source);
+            let safe_tgt = sanitize_for_hint(&p.target);
+            return Ok(err_hinted(
+                &format!(
+                    "Relation '{}' from {} to {} not found",
+                    relation, p.source, p.target
+                ),
+                format!(
+                    "List existing edges from source: `forgeplan_get {safe_src}` (check the \
+                     `## Related` section). If the typo is on `target`, retry with the actual \
+                     target id `{safe_tgt}`."
+                ),
+            ));
+        }
+
+        if let Err(e) = projection::delete_link_with_projection(
+            &projection::MutationContext::new(&ws, &store),
+            &p.source,
+            &p.target,
+            &relation,
+        )
+        .await
+        {
+            return Ok(safe_err_result("unlink", e));
+        }
+
+        // Mirror the link path: trigger source-side score recompute (the
+        // unlink might have removed the artifact's weakest-link parent and
+        // therefore changed R_eff).
+        if let Err(e) = forgeplan_core::scoring::sync_score_target(&store, &p.source).await {
+            tracing::warn!(
+                target = "scoring",
+                error = %e,
+                id = %p.source,
+                "auto-recompute failed after MCP forgeplan_unlink; run forgeplan_score_all"
+            );
+        }
+
+        hinted_result(
+            &LinkResponse {
+                message: format!("Unlinked: {} --{}--> {}", p.source, relation, p.target),
+                auto_activated: None,
+            },
+            "Unlinked. R_eff recomputed on source. Reconcile parents: `forgeplan_score_all`.",
         )
     }
 
@@ -2072,7 +2470,7 @@ impl ForgeplanServer {
         let canonical = match store.resolve_id(&p.id).await {
             Ok(Some(c)) => c,
             Ok(None) => p.id.clone(),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         match store.get_record(&canonical).await {
             Ok(Some(r)) => {
@@ -2140,7 +2538,7 @@ impl ForgeplanServer {
                 hinted_result(&ArtifactRecordDto::from(r), next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
-            Err(e) => Ok(err_result(&format!("{e}"))),
+            Err(e) => Ok(safe_err_result("", e)),
         }
     }
 
@@ -2327,7 +2725,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         // PRD-055 soft-delete: write receipt + move projection to trash
@@ -2542,7 +2940,7 @@ impl ForgeplanServer {
         let _lock_guard = match ws_opt.as_ref() {
             Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
                 Ok(g) => Some(g),
-                Err(e) => return Ok(err_result(&format!("workspace lock: {e}"))),
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
             },
             None => None,
         };
@@ -2552,9 +2950,7 @@ impl ForgeplanServer {
             && let Err(e) =
                 forgeplan_core::projection::sync_before_mutation(ws, &store, &p.id).await
         {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync failed: {e}"
-            )));
+            return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
@@ -2684,7 +3080,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
@@ -2708,9 +3104,7 @@ impl ForgeplanServer {
 
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
         if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync failed: {e}"
-            )));
+            return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
         match forgeplan_core::lifecycle::supersede(&store, &p.id, &p.by).await {
@@ -2821,7 +3215,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         let receipt_id = match forgeplan_core::undo::soft_delete_capture(
             &ws,
@@ -2846,9 +3240,7 @@ impl ForgeplanServer {
         // ADR-003 / PROB-048 file-first: flush user file edits → store before
         // lifecycle transition so they aren't lost.
         if let Err(e) = forgeplan_core::projection::sync_before_mutation(&ws, &store, &p.id).await {
-            return Ok(err_result(&format!(
-                "pre-mutation file→store sync failed: {e}"
-            )));
+            return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
         match forgeplan_core::lifecycle::deprecate(&store, &p.id, &p.reason).await {
@@ -3084,6 +3476,345 @@ impl ForgeplanServer {
     }
 
     #[tool(
+        description = "Issue #289 — detect pipeline anomalies (stuck drafts, orphan links, mis-typed based_on, missing MUST sections, expired evidence, cycles, duplicates, etc.). Returns structured list with severity + tier + suggested_resolution so orchestrators (`/forge-cycle`, `/forge-cleanup`) can dispatch auto/adi/user tiers without re-classifying.",
+        annotations(
+            title = "Detect Pipeline Anomalies",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_anomalies(
+        &self,
+        Parameters(p): Parameters<AnomaliesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Audit-r3 M3 closure: the tool is read-only for the artifact
+        // store but READS+WRITES the anomalies journal at
+        // `.forgeplan/anomalies-journal.jsonl`. Two concurrent MCP
+        // calls would both load the same prior journal, detect
+        // anomalies, and last-writer-wins the save — losing journal
+        // memory for anomalies first observed by the losing writer.
+        // Acquire the workspace lock to serialise journal access with
+        // the same discipline as the write-side tools.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        // Parse + validate filter inputs. Bad shapes fail loud so callers
+        // can fix their query rather than silently getting the wrong
+        // (broader) result set.
+        let kind_filter = match p.kind.as_deref() {
+            Some(s) => match serde_json::from_value::<forgeplan_core::anomalies::AnomalyKind>(
+                serde_json::Value::String(s.to_string()),
+            ) {
+                Ok(k) => Some(k),
+                Err(_) => {
+                    // Audit-r7 F4: list ALL 14 kinds (9 pipeline + 5 brownfield).
+                    return Ok(err_hinted(
+                        &format!("Unknown anomaly kind: {s}"),
+                        "Valid kinds (pipeline): stuck_draft, orphan_link, mistyped_based_on, \
+                         missing_must_section, expired_evidence, weakest_link_unresolvable, \
+                         phase_mismatch, circular_dependency, duplicate_artifact. \
+                         Valid kinds (brownfield, Epic #287): hypothesis_duplicate, \
+                         uncovered_use_case, unverified_invariant, orphan_glossary_term, \
+                         untriangulated_hypothesis.",
+                    ));
+                }
+            },
+            None => None,
+        };
+        let severity_filter = match p.severity.as_deref() {
+            Some(s) => match serde_json::from_value::<forgeplan_core::anomalies::Severity>(
+                serde_json::Value::String(s.to_string()),
+            ) {
+                Ok(sv) => Some(sv),
+                Err(_) => {
+                    return Ok(err_hinted(
+                        &format!("Unknown severity: {s}"),
+                        "Valid severities: low, medium, high.",
+                    ));
+                }
+            },
+            None => None,
+        };
+        let since_filter = match p.since.as_deref() {
+            Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+                Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
+                Err(_) => {
+                    return Ok(err_hinted(
+                        &format!("`since` is not a valid RFC 3339 timestamp: {s}"),
+                        "Example: 2026-05-19T00:00:00Z",
+                    ));
+                }
+            },
+            None => None,
+        };
+
+        let filter = forgeplan_core::anomalies::AnomalyFilter {
+            severity: severity_filter,
+            since: since_filter,
+            kind: kind_filter,
+        };
+        let report = match forgeplan_core::anomalies::detect_anomalies(&store, &ws, &filter).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
+        };
+
+        // Audit-r3 HIGH-1 / F3: shared next-action helper so MCP and CLI
+        // emit identical hint strings (PRD-071 parity).
+        let next_action = forgeplan_core::anomalies::next_action_for_report(&report);
+
+        hinted_result(&report, next_action)
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Issue #287 Phase C — read-only brownfield inspectors
+    // ─────────────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "Issue #287 Phase C — query hypothesis lifecycle state. Returns workspace-wide state distribution (verified / strong-inferred / inferred / refuted / parked) plus best-effort recent transitions (last 30 days, audit-line extraction from `## Lifecycle State` sections). Optional `id` filter narrows to a single HYP- artifact.",
+        annotations(
+            title = "Hypothesis Status",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_hypothesis_status(
+        &self,
+        Parameters(p): Parameters<HypothesisStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        // Audit-r5 SEC-M2: acquire the lock only for the snapshot read,
+        // then drop it before the pure-Rust report builder runs. LanceDB
+        // list_records is already snapshot-consistent — holding the
+        // exclusive lock during the pure CPU pass would serialise other
+        // mutating tools needlessly.
+        let all_records = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            }
+        };
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let report = forgeplan_core::brownfield::hypothesis_status_report(
+            &all_records,
+            p.id.as_deref(),
+            &today,
+        );
+
+        // Audit-r4 CODE-L1: PRD-071 hint protocol — emit `Done.` or
+        // `Next:` prefix marker so text-parser agents can anchor.
+        let next_action = if report.total == 0 {
+            "Done. — no hypothesis artifacts in workspace.".to_string()
+        } else {
+            format!(
+                "Next: promote a hypothesis — `forgeplan_hypothesis_promote` ({} tracked).",
+                report.total
+            )
+        };
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
+        description = "Issue #287 Phase C — compute extract_score (0.0-1.0) for a Domain Model. Reads the DM's ## Composition section to derive expected counts of glossary / use_cases / invariants / scenarios / hypotheses; counts actuals across the workspace; returns weighted extract_score. Canonical fields (DDL/SDL/pseudo-code) default to 0/false until marketplace#79 Phase E lands.",
+        annotations(
+            title = "Coverage Business",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_coverage_business(
+        &self,
+        Parameters(p): Parameters<CoverageBusinessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        // Audit-r4 SEC-H1: sanitize_for_hint on every user-controlled string
+        // before splicing it into the response body / next_action. Prior
+        // revision left `p.domain_model_id` and `other.kind` raw — that's a
+        // prompt-injection vector via the hint protocol channel (CWE-117).
+        let safe_id = sanitize_for_hint(&p.domain_model_id);
+        // Audit-r5 SEC-M2: lock only for the snapshot read, drop before
+        // the pure-Rust report builder runs.
+        let (dm_record, all_records, relations) = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            let dm_record = match store.get_record(&p.domain_model_id).await {
+                Ok(Some(r)) if r.kind.eq_ignore_ascii_case("domain_model") => r,
+                Ok(Some(other)) => {
+                    let safe_kind = sanitize_for_hint(&other.kind);
+                    return Ok(err_hinted(
+                        &format!(
+                            "{} is kind={} — coverage_business only operates on Domain Model artifacts",
+                            safe_id, safe_kind
+                        ),
+                        "Fix: pass a DM- artifact id (kind=domain_model).",
+                    ));
+                }
+                Ok(None) => return Ok(artifact_not_found(&p.domain_model_id)),
+                Err(e) => return Ok(safe_err_result("get_record", e)),
+            };
+            let all_records = match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            };
+            let relations = match store.get_all_relations().await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+            };
+            (dm_record, all_records, relations)
+        };
+        let report = forgeplan_core::brownfield::coverage_business_report(
+            &dm_record,
+            &all_records,
+            &relations,
+        );
+
+        let next_action = format!(
+            "Next: extract_score = {:.2}. Improve coverage by adding artifacts referenced in {}'s Composition section.",
+            report.extract_score, safe_id
+        );
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
+        description = "Issue #287 Phase C — detect cross-artifact contradictions (v1: hypothesis_duplicate via Jaccard ≥ 0.6 on titles). Three other classes (invariant_conflict, glossary_divergence, scenario_vs_invariant) require LLM judgement and are deferred — buckets included in response with empty arrays + limitations list.",
+        annotations(
+            title = "Contradictions",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_contradictions(
+        &self,
+        Parameters(_p): Parameters<ContradictionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        // Audit-r5 SEC-M2: lock only for the snapshot read; the
+        // O(N²) Jaccard pass (capped by SEC-M1) runs lock-free.
+        let all_records = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            }
+        };
+        let report = forgeplan_core::brownfield::contradictions_v1_heuristic(&all_records);
+
+        // Audit-r4 CODE-L1: PRD-071 hint protocol marker.
+        let next_action = if report.contradictions.is_empty() {
+            "Done. — no contradictions detected.".to_string()
+        } else {
+            format!(
+                "Next: review {} contradiction(s) — `forgeplan_get <left>` then `forgeplan_get <right>`.",
+                report.contradictions.len()
+            )
+        };
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
+        description = "Issue #287 Phase C — surface brownfield orphans: uncovered use cases (no scenario links), unverified invariants (no scenario links), orphan glossary terms (not referenced in any UC/INV body), un-triangulated hypotheses (< 2 evidence refs).",
+        annotations(
+            title = "Brownfield Orphans",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_orphans(
+        &self,
+        Parameters(_p): Parameters<OrphansParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(w) => w,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        // Audit-r5 SEC-M2: lock only for the snapshot read.
+        let (all_records, relations) = {
+            let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+                Ok(g) => g,
+                Err(e) => return Ok(safe_err_result("workspace lock", e)),
+            };
+            let all_records = match store.list_records(None).await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("list_records", e)),
+            };
+            let relations = match store.get_all_relations().await {
+                Ok(rs) => rs,
+                Err(e) => return Ok(safe_err_result("get_all_relations", e)),
+            };
+            (all_records, relations)
+        };
+        let report = forgeplan_core::brownfield::orphans_report(&all_records, &relations);
+
+        let total = report.uncovered_use_cases.len()
+            + report.unverified_invariants.len()
+            + report.orphan_terms.len()
+            + report.untriangulated_hypotheses.len();
+        // Audit-r4 CODE-L1: PRD-071 hint protocol marker.
+        let next_action = if total == 0 {
+            "Done. — no brownfield orphans.".to_string()
+        } else {
+            format!(
+                "Next: link {total} orphan(s) across 4 buckets — add scenarios, reference terms, or triangulate hypotheses."
+            )
+        };
+        hinted_result(&report, next_action)
+    }
+
+    #[tool(
         description = "Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status.",
         annotations(
             title = "Decision Journal",
@@ -3302,7 +4033,7 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges.",
+        description = "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges. Issue #287 Phase F: pass `brownfield_only: true` to filter to UC/GLOS/INV/SCEN/HYP/DM edges only.",
         annotations(
             title = "Dependency Graph",
             read_only_hint = true,
@@ -3311,7 +4042,10 @@ impl ForgeplanServer {
             open_world_hint = false,
         )
     )]
-    async fn forgeplan_graph(&self) -> Result<CallToolResult, McpError> {
+    async fn forgeplan_graph(
+        &self,
+        Parameters(p): Parameters<GraphParams>,
+    ) -> Result<CallToolResult, McpError> {
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -3339,8 +4073,48 @@ impl ForgeplanServer {
         }
 
         edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
+
+        // Issue #287 Phase F (W4): collect brownfield render data — per-HYP
+        // verification state and per-DM composition list. Pre-loaded so
+        // `render_mermaid_with_opts` stays a pure function.
+        let mut hypothesis_states: BTreeMap<String, forgeplan_core::hypothesis::HypothesisState> =
+            BTreeMap::new();
+        let mut dm_compositions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for record in &records {
+            match record.kind.as_str() {
+                "hypothesis" => {
+                    match forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body) {
+                        Ok((fm, _)) => {
+                            let state =
+                                forgeplan_core::hypothesis::current_state_from_frontmatter(&fm);
+                            hypothesis_states.insert(record.id.clone(), state);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                id = record.id.as_str(),
+                                error = %err,
+                                "graph: failed to parse hypothesis frontmatter; using default state"
+                            );
+                        }
+                    }
+                }
+                "domain_model" => {
+                    let composed = graph::composition_for_dm(&record.body);
+                    dm_compositions.insert(record.id.clone(), composed);
+                }
+                _ => {}
+            }
+        }
+
+        let brownfield_only = p.brownfield_only.unwrap_or(false);
+        let opts = graph::BrownfieldRenderOpts {
+            hypothesis_states,
+            dm_compositions,
+            brownfield_only,
+        };
+
         let edge_count = edges.len();
-        let mermaid = graph::render_mermaid(&edges);
+        let mermaid = graph::render_mermaid_with_opts(&edges, &opts);
 
         // PRD-071: single primary action per state.
         let next_action = if edge_count == 0 {
@@ -4097,7 +4871,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let config = workspace::load_config(&ws)
@@ -4182,7 +4956,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let config = workspace::load_config(&ws)
@@ -4252,7 +5026,7 @@ impl ForgeplanServer {
 
         let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
-            Err(e) => return Ok(err_result(&format!("{e}"))),
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let config = workspace::load_config(&ws)
@@ -4463,8 +5237,15 @@ impl ForgeplanServer {
         let data: serde_json::Value = match serde_json::from_str(&p.data) {
             Ok(v) => v,
             Err(e) => {
+                // S5 audit closure: sanitise the underlying error chain
+                // before interpolating it into the hint-bearing payload.
+                // The hint string (Hint: …) is static and contains no
+                // sensitive surface — it appends safely after the
+                // sanitised error.
+                let sanitised =
+                    forgeplan_core::projection::sanitize_error_chain(&anyhow::anyhow!("{e}"));
                 return Ok(err_result(&format!(
-                    "Invalid JSON in import data: {e}\n\nHint: supply a JSON string produced by \
+                    "Invalid JSON in import data: {sanitised}\n\nHint: supply a JSON string produced by \
                  `forgeplan export` — structure: {{\"artifacts\": [...], \"relations\": [...]}}."
                 )));
             }
@@ -4529,7 +5310,7 @@ impl ForgeplanServer {
             )
             .await
             {
-                return Ok(err_result(&format!("Failed to import {}: {}", id, e)));
+                return Ok(safe_err_result(&format!("Failed to import {id}"), e));
             }
             imported += 1;
         }
@@ -5042,7 +5823,7 @@ impl ForgeplanServer {
 
         let mut val = match serde_json::to_value(&result) {
             Ok(v) => v,
-            Err(e) => return Ok(err_result(&format!("serialize failed: {e}"))),
+            Err(e) => return Ok(safe_err_result("serialize failed", e)),
         };
         if let Some(obj) = val.as_object_mut() {
             obj.insert("summary".to_string(), serde_json::Value::String(summary));
@@ -5187,7 +5968,7 @@ impl ForgeplanServer {
         let record = match store.get_record(&p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(err_result(&format!("Failed to retrieve artifact: {e}"))),
+            Err(e) => return Ok(safe_err_result("Failed to retrieve artifact", e)),
         };
 
         // Schema enum GradeKind already guarantees valid value — no runtime check needed.
@@ -5305,7 +6086,7 @@ impl ForgeplanServer {
         // Build JSON response with optional grade hint
         let mut result_json = match serde_json::to_value(&result) {
             Ok(v) => v,
-            Err(e) => return Ok(err_result(&format!("Serialization error: {e}"))),
+            Err(e) => return Ok(safe_err_result("Serialization error", e)),
         };
 
         // Resolve highlighted grade: explicit grade > my_grade (auto-domain) > none
@@ -5463,7 +6244,7 @@ impl ForgeplanServer {
         let protocol = forgeplan_core::discover::Protocol::default();
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(err_result(&format!("Failed to save session: {e}")));
+            return Ok(safe_err_result("Failed to save session", e));
         }
 
         Ok(json_result(&serde_json::json!({
@@ -5539,18 +6320,18 @@ impl ForgeplanServer {
         // Load session
         let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
             Ok(s) => s,
-            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+            Err(e) => return Ok(safe_err_result("Session not found", e)),
         };
 
         // Create artifact from finding
         let artifact_kind: ArtifactKind = match p.kind.parse() {
             Ok(k) => k,
-            Err(e) => return Ok(err_result(&format!("Invalid kind: {e}"))),
+            Err(e) => return Ok(safe_err_result("Invalid kind", e)),
         };
         let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
         let id = match store.next_id(&prefix).await {
             Ok(id) => id,
-            Err(e) => return Ok(err_result(&format!("ID generation failed: {e}"))),
+            Err(e) => return Ok(safe_err_result("ID generation failed", e)),
         };
 
         // Build tags: source=tier{N} + phase={phase_name} + optionally legacy-doc for tier 3
@@ -5594,7 +6375,7 @@ impl ForgeplanServer {
         )
         .await
         {
-            return Ok(err_result(&format!("Failed to create artifact: {e}")));
+            return Ok(safe_err_result("Failed to create artifact", e));
         }
 
         // Update session
@@ -5612,7 +6393,7 @@ impl ForgeplanServer {
         session.current_phase = phase;
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(err_result(&format!("Failed to update session: {e}")));
+            return Ok(safe_err_result("Failed to update session", e));
         }
 
         Ok(json_result(&serde_json::json!({
@@ -5678,13 +6459,13 @@ impl ForgeplanServer {
 
         let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
             Ok(s) => s,
-            Err(e) => return Ok(err_result(&format!("Session not found: {e}"))),
+            Err(e) => return Ok(safe_err_result("Session not found", e)),
         };
 
         session.complete();
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(err_result(&format!("Failed to save session: {e}")));
+            return Ok(safe_err_result("Failed to save session", e));
         }
 
         let phase_counts = session.phase_counts();
@@ -6128,7 +6909,7 @@ impl ForgeplanServer {
                     "Try claiming a different artifact: `forgeplan_dispatch agents=3`.",
                 ))
             }
-            Err(e) => Ok(err_result(&format!("claim failed: {e}"))),
+            Err(e) => Ok(safe_err_result("claim failed", e)),
         }
     }
 
@@ -6201,7 +6982,7 @@ impl ForgeplanServer {
                     "Use `force: true` (orchestrator override) if the holder has crashed.",
                 ))
             }
-            Err(e) => Ok(err_result(&format!("release failed: {e}"))),
+            Err(e) => Ok(safe_err_result("release failed", e)),
         }
     }
 
@@ -6251,7 +7032,7 @@ impl ForgeplanServer {
         .await
         {
             Ok(n) => n,
-            Err(e) => return Ok(err_result(&format!("release-notes failed: {e}"))),
+            Err(e) => return Ok(safe_err_result("release-notes failed", e)),
         };
 
         let value = forgeplan_core::release_notes::format_json(&notes);
@@ -6326,7 +7107,7 @@ impl ForgeplanServer {
                 };
                 hinted_result(&dto, hint)
             }
-            Err(e) => Ok(err_result(&format!("list_active failed: {e}"))),
+            Err(e) => Ok(safe_err_result("list_active failed", e)),
         }
     }
 
@@ -6505,9 +7286,37 @@ impl ForgeplanServer {
             );
         }
 
+        // PRD-077 FR-010 + CR-H4: surface blocked-by-dependency artifacts
+        // in the serial queue with a structured reason naming **every**
+        // unresolved parent. Without this they were invisible from the
+        // agent's perspective — only present in `reasoning[]`, not
+        // actionable.
+        //
+        // Helper lives in `forgeplan_core::dispatch::build_blocker_reasons_from_slice`
+        // so CLI and MCP surfaces share one implementation. Pre-CR-H4
+        // bug: the inline HashMap collapsed multi-parent edges to a
+        // single arbitrary parent AND counted non-`depends_on`/`blocks`
+        // relations (e.g. `informs`) as structural blockers. Both fixed
+        // by the helper.
+        plan.serial_queue
+            .extend(forgeplan_core::dispatch::build_blocker_reasons_from_slice(
+                &relations,
+                &skipped_blocked,
+            ));
+
+        // CR-H3 — `DispatchSerialEntry` is `#[non_exhaustive]` so we go
+        // through the `From<SerialEntry>` impl rather than a
+        // struct-literal mapping. Centralising the conversion in `types`
+        // keeps the wire shape under a single contract surface.
+        let serial_queue_dto: Vec<DispatchSerialEntry> = plan
+            .serial_queue
+            .into_iter()
+            .map(DispatchSerialEntry::from)
+            .collect();
+
         let dto = DispatchResponse {
             buckets: plan.buckets,
-            serial_queue: plan.serial_queue,
+            serial_queue: serial_queue_dto,
             reasoning: plan.reasoning,
             generated_at: plan.generated_at,
             agent_count: plan.agent_count,
@@ -7535,6 +8344,400 @@ impl ForgeplanServer {
             next_action,
         )
     }
+
+    // ── Issue #287 Phase D — Hypothesis state machine + Interview packet stubs ──
+
+    #[tool(
+        description = "Promote a hypothesis along the verification state machine \
+                       (parked → inferred → strong-inferred → verified; or any → refuted; \
+                       or any → parked). Mutates the artifact body via file-first projection: \
+                       updates the `hypothesis_state:` frontmatter field and appends an audit \
+                       entry to the `## Lifecycle State` section. Returns a list of artifacts \
+                       that informs / based_on the hypothesis (cascade) — informational only, \
+                       not auto-bumped. Rejects illegal transitions with a structured error \
+                       enumerating the allowed next states.",
+        annotations(
+            title = "Promote Hypothesis Lifecycle State",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_hypothesis_promote(
+        &self,
+        Parameters(p): Parameters<HypothesisPromoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let store = match self.require_store().await {
+            Ok(s) => s,
+            Err(e) => return Ok(err_result(&e)),
+        };
+
+        // Serialise concurrent promotes — two agents writing to the same
+        // hypothesis would race on the `## Lifecycle State` append and could
+        // lose one audit line. Same discipline as `forgeplan_update`.
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => {
+                return Ok(err_hinted(
+                    &format!("could not acquire workspace lock: {e}"),
+                    "Retry — another sub-agent holds the lock.",
+                ));
+            }
+        };
+
+        // 1. Parse the requested target state up-front. Bad input dies before
+        //    we touch the store.
+        let new_state = match forgeplan_core::hypothesis::HypothesisState::parse(&p.new_state) {
+            Some(s) => s,
+            None => {
+                let safe = sanitize_for_hint(&p.new_state);
+                return Ok(err_hinted(
+                    &format!("unknown hypothesis state: `{safe}`"),
+                    "Valid states: parked, inferred, strong-inferred, verified, refuted.",
+                ));
+            }
+        };
+
+        // 2. Resolve id → canonical and load the record. We accept both slug
+        //    and display-id input shapes (resolver handles uppercase
+        //    normalisation, slug lookup, etc.).
+        let canonical_id = match store.resolve_id(&p.hypothesis_id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(artifact_not_found(&p.hypothesis_id)),
+            Err(e) => return Ok(safe_err_result("resolve_id", e)),
+        };
+        let record = match store.get_record(&canonical_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(artifact_not_found(&canonical_id)),
+            Err(e) => return Ok(safe_err_result("get_record", e)),
+        };
+
+        // 3. Kind gate — only Hypothesis artifacts are promotable.
+        if record.kind != "hypothesis" {
+            let safe_id = sanitize_for_hint(&canonical_id);
+            let safe_kind = sanitize_for_hint(&record.kind);
+            return Ok(err_hinted(
+                &format!("artifact `{safe_id}` is kind=`{safe_kind}`, expected `hypothesis`"),
+                "Use `forgeplan_get` to inspect, or `forgeplan_list kind=hypothesis` to find a valid target.",
+            ));
+        }
+
+        // 4. Read current state from frontmatter (defaults to Parked when
+        //    field missing — see `current_state_from_frontmatter` docs).
+        let (fm, _body_only) =
+            match forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body) {
+                Ok(pair) => pair,
+                Err(e) => return Ok(safe_err_result("parse_frontmatter", e)),
+            };
+        let old_state = forgeplan_core::hypothesis::current_state_from_frontmatter(&fm);
+
+        // 5. Transition gate — reject illegal moves with the allowed-next
+        //    list so the agent can self-correct.
+        if !forgeplan_core::hypothesis::transition_allowed(old_state, new_state) {
+            let allowed: Vec<&'static str> = old_state
+                .allowed_next()
+                .into_iter()
+                .map(|s| s.as_str())
+                .collect();
+            let safe_id = sanitize_for_hint(&canonical_id);
+            return Ok(err_hinted(
+                &format!(
+                    "illegal hypothesis transition for `{safe_id}`: `{}` → `{}`",
+                    old_state.as_str(),
+                    new_state.as_str(),
+                ),
+                format!(
+                    "Allowed next states from `{}`: {}.",
+                    old_state.as_str(),
+                    allowed.join(", "),
+                ),
+            ));
+        }
+
+        // 5b. Audit-r4 CODE-L2: no-op transition (`X → X`) short-circuit.
+        // `transition_allowed` returns `true` for same→same to satisfy
+        // idempotent re-application contract, but writing a duplicate
+        // audit-line is misleading. Return "unchanged" envelope without
+        // mutating the body.
+        if old_state == new_state {
+            let safe_id = sanitize_for_hint(&canonical_id);
+            return hinted_result(
+                &serde_json::json!({
+                    "id": canonical_id,
+                    "old_state": old_state.as_str(),
+                    "new_state": new_state.as_str(),
+                    "unchanged": true,
+                    "cascade": Vec::<String>::new(),
+                }),
+                format!("Done. — `{safe_id}` already in `{}`.", new_state.as_str()),
+            );
+        }
+
+        // 5c. Audit-r4 SEC-H2 (+ audit-r7 M1 extension): reject control
+        // chars AND Unicode line separators in `rationale` before
+        // writing into the markdown audit line. Without this gate,
+        // multi-line content forges fake `## Lifecycle State` entries
+        // that surface via `forgeplan_hypothesis_status` (CWE-117).
+        //
+        // Audit-r7 M1 closure: extend to U+0085 NEL, U+2028 LINE SEPARATOR,
+        // U+2029 PARAGRAPH SEPARATOR, and full Unicode control set.
+        // Rust `is_control()` covers C0 (`\n`/`\r`/`\t`/`\x0B`/`\x0C`/etc)
+        // and C1; the three Unicode line/paragraph separators are added
+        // explicitly because they aren't in C0/C1 but produce line
+        // breaks in downstream renderers (HTML, CommonMark, terminals).
+        if p.rationale
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{0085}' | '\u{2028}' | '\u{2029}'))
+        {
+            return Ok(err_hinted(
+                "rationale contains control characters or Unicode line separators",
+                "Fix: provide a single-line rationale without embedded line breaks or control chars.",
+            ));
+        }
+        for r in &p.evidence_refs {
+            // Permit ID-like tokens only: leading alpha, then [A-Za-z0-9_-].
+            // This admits `EVID-001`, `evid-test-thing`, `PRD-074`; rejects
+            // anything containing whitespace, punctuation, or unicode that
+            // could break out of the audit-line format.
+            if r.is_empty()
+                || !r.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                || !r
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                let safe_ref = sanitize_for_hint(r);
+                return Ok(err_hinted(
+                    &format!("evidence_ref `{safe_ref}` is not a valid artifact id"),
+                    "Fix: pass artifact ids only (e.g. `EVID-001`, `evid-bench-2026`).",
+                ));
+            }
+        }
+
+        // 5d. Audit-r7 SEC-H1: when promoting to `verified` (which
+        // derives `status: active` per ARCH-C1), enforce the same
+        // gates the general lifecycle uses: every `evidence_refs`
+        // entry must resolve to a real artifact in the store. Without
+        // this, an attacker could create a stub HYP, supply fake EVID
+        // IDs (currently passing only ID-shape regex), and reach
+        // `status: active` with R_eff=0 — bypassing RED-LINE #7.
+        //
+        // Earlier states (parked / inferred / strong-inferred /
+        // refuted) derive `status: draft` or `status: deprecated` —
+        // neither activates the artifact, so existence-check is not
+        // required there.
+        if matches!(
+            new_state,
+            forgeplan_core::hypothesis::HypothesisState::Verified
+        ) {
+            if p.evidence_refs.is_empty() {
+                return Ok(err_hinted(
+                    "Cannot promote to verified with no evidence_refs",
+                    "Fix: supply at least one EVID- id that exists in the workspace (e.g. evidence_refs=[\"EVID-001\"]).",
+                ));
+            }
+            for r in &p.evidence_refs {
+                match store.resolve_id(r).await {
+                    Ok(Some(canonical_ref)) => {
+                        match store.get_record(&canonical_ref).await {
+                            Ok(Some(_)) => {} // OK — exists
+                            Ok(None) | Err(_) => {
+                                let safe_ref = sanitize_for_hint(r);
+                                return Ok(err_hinted(
+                                    &format!(
+                                        "evidence_ref `{safe_ref}` resolved but artifact not found"
+                                    ),
+                                    "Fix: ensure each evidence_ref names an existing artifact (run `forgeplan_list kind=evidence`).",
+                                ));
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        let safe_ref = sanitize_for_hint(r);
+                        return Ok(err_hinted(
+                            &format!("evidence_ref `{safe_ref}` does not exist in workspace"),
+                            "Fix: create the evidence first (`forgeplan_new kind=evidence ...`) before promoting to verified.",
+                        ));
+                    }
+                    Err(e) => return Ok(safe_err_result("resolve_id", e)),
+                }
+            }
+        }
+
+        // 6. Build the new body. Lifecycle line uses today's date in UTC
+        //    so multi-agent promotes from different timezones still sort.
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let new_body = match forgeplan_core::hypothesis::apply_transition_to_body(
+            &record.body,
+            new_state,
+            &today,
+            old_state,
+            &p.evidence_refs,
+            &p.rationale,
+        ) {
+            Ok(b) => b,
+            Err(e) => return Ok(safe_err_result("apply_transition_to_body", e)),
+        };
+
+        // 7. File-first mutation via the canonical projection helper. Red-line
+        //    #8 — never poke `store.update_*` directly from server.rs.
+        let ctx = projection::MutationContext::new(&ws, &store);
+        if let Err(e) =
+            projection::update_body_with_projection(&ctx, &canonical_id, &new_body).await
+        {
+            return Ok(safe_err_result("update_body_with_projection", e));
+        }
+
+        // 8. Cascade enumeration — artifacts whose OUTGOING relations point at
+        //    this hypothesis via `informs` or `based_on`. We surface the list
+        //    so the agent can decide whether to re-score downstream artifacts;
+        //    we do NOT auto-bump them (informational only — explicit per brief).
+        let cascade: Vec<String> = match store.get_incoming_relations(&canonical_id).await {
+            Ok(rels) => rels
+                .into_iter()
+                .filter(|(_src, rel)| rel == "informs" || rel == "based_on")
+                .map(|(src, _rel)| src)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    artifact = %canonical_id,
+                    error = %e,
+                    "cascade enumeration failed (non-fatal); returning empty list"
+                );
+                Vec::new()
+            }
+        };
+
+        // 9. Response. Sanitize the hypothesis id splice into `_next_action`
+        //    via `sanitize_for_hint` (same C-2 defence used by `forgeplan_update`).
+        // Audit-r4 CODE-L1: prefix with `Next:` per PRD-071 hint contract.
+        let safe_id = sanitize_for_hint(&canonical_id);
+        let next_action =
+            format!("Next: re-score downstream artifacts — `forgeplan_score {safe_id}`.");
+        hinted_result(
+            &serde_json::json!({
+                "id": canonical_id,
+                "old_state": old_state.as_str(),
+                "new_state": new_state.as_str(),
+                "evidence_refs": p.evidence_refs,
+                "rationale": p.rationale,
+                "cascade": cascade,
+            }),
+            next_action,
+        )
+    }
+
+    #[tool(
+        description = "experimental: draft an interview packet to validate brownfield hypotheses. \
+                       STUB — the full implementation ships with the `forgeplan-brownfield-pack` \
+                       plugin (marketplace issue #79). Without the plugin installed this tool \
+                       echoes a `not_implemented` envelope so agents can detect the gap and \
+                       surface the install hint.",
+        annotations(
+            title = "Draft Interview Packet (experimental, stub)",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_interview_packet_draft(
+        &self,
+        Parameters(_p): Parameters<InterviewPacketDraftParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Acquire the workspace lock even though the stub is read-only.
+        // Two reasons: (1) defensive future-proofing — when the real plugin
+        // hook lands, the contract already says writes are serialised;
+        // (2) require_workspace returns Err on a non-initialised workspace,
+        // which means agents calling the stub on a bare directory get the
+        // same "no workspace" message as every other tool, instead of a
+        // confusing "stub works fine".
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "status": "not_implemented",
+                "marketplace_issue": 79,
+                "message": "Install forgeplan-brownfield-pack plugin to enable; \
+                            or invoke via shell pipeline temporarily.",
+            }),
+            "Fix: install plugin — see marketplace issue #79 (`forgeplan-brownfield-pack`).",
+        )
+    }
+
+    #[tool(
+        description = "experimental: ingest a completed interview transcript and propose HYP / UC / INV \
+                       artifacts. STUB — the full implementation ships with the `forgeplan-brownfield-pack` \
+                       plugin (marketplace issue #79). Stub returns a `not_implemented` envelope so agents \
+                       can detect the gap and surface the install hint.",
+        annotations(
+            title = "Ingest Interview Packet (experimental, stub)",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_interview_packet_ingest(
+        &self,
+        Parameters(p): Parameters<InterviewPacketIngestParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ws = match self.require_workspace().await {
+            Ok(ws) => ws,
+            Err(e) => return Ok(err_result(&e)),
+        };
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+
+        // Audit-r4 SEC-L1 + audit-r7 L1: defence-in-depth path-traversal
+        // pre-validation. Forbids:
+        //   - absolute paths (POSIX `/etc/...`),
+        //   - `..` parent-dir segments,
+        //   - null bytes (`\0` — Rust Path tolerates, many filesystems do not),
+        //   - Windows drive prefixes (`C:\...` — `is_absolute` returns false
+        //     on POSIX, would slip through the legacy check).
+        if let Some(ref raw) = p.transcript_path {
+            let bad_null = raw.contains('\0');
+            let bad_windows_drive = raw.len() >= 2
+                && raw.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && raw.chars().nth(1) == Some(':');
+            let path = std::path::Path::new(raw);
+            let bad_absolute = path.is_absolute();
+            let bad_parent = path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+            if bad_null || bad_windows_drive || bad_absolute || bad_parent {
+                let safe = sanitize_for_hint(raw);
+                return Ok(err_hinted(
+                    &format!("transcript_path `{safe}` is not workspace-relative"),
+                    "Fix: pass a relative path without `..` segments, null bytes, or drive prefixes (e.g. `interviews/2026-05-20.md`).",
+                ));
+            }
+        }
+
+        hinted_result(
+            &serde_json::json!({
+                "status": "not_implemented",
+                "marketplace_issue": 79,
+                "message": "Install forgeplan-brownfield-pack plugin to enable; \
+                            or invoke via shell pipeline temporarily.",
+            }),
+            "Fix: install plugin — see marketplace issue #79 (`forgeplan-brownfield-pack`).",
+        )
+    }
 }
 
 // ── Phase 5 helpers (PRD-065/066/067) ────────────────────────
@@ -8224,12 +9427,14 @@ mod safe_mcp_error_tests {
         }
     }
 
+    // CR-H6 (audit closure): HOME mutator — locked under `env_home`
+    // key. Promotes the prior "in practice the parallel risk is small"
+    // comment to a hard contract: no other HOME-mutating test in this
+    // test binary can interleave. The `HomeGuard` Drop still restores
+    // HOME on panic for safety.
     #[test]
+    #[serial_test::serial(env_home)]
     fn sanitises_home_path_in_error_chain() {
-        // Note: this test mutates HOME, so it must run serially with
-        // other HOME-sensitive tests. In practice the rest of the suite
-        // uses `home_env()` once per format() call and the parallel risk
-        // is small — the guard restores on drop either way.
         let _home_guard = HomeGuard::override_home("/Users/alice");
         let err = anyhow::anyhow!("EACCES on /Users/alice/foo/secret.txt");
         let mcp = safe_mcp_error(err);
@@ -8273,6 +9478,88 @@ mod safe_mcp_error_tests {
             "private var folders prefix must be masked: {msg}"
         );
         assert!(msg.contains("<tmpdir>"), "expected mask: {msg}");
+    }
+}
+
+/// Wave 4 S5 audit closure — `safe_err_result` sister to `safe_mcp_error`
+/// for the `CallToolResult::error` family. Same sanitiser, same chain
+/// walker; this test pins the wiring so a regression that drops the
+/// sanitiser call fails before reaching production.
+#[cfg(test)]
+mod safe_err_result_tests {
+    use super::safe_err_result;
+
+    struct HomeGuard {
+        original: Option<String>,
+    }
+    impl HomeGuard {
+        fn override_home(new: &str) -> Self {
+            let original = std::env::var("HOME").ok();
+            unsafe { std::env::set_var("HOME", new) }
+            Self { original }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.original.as_deref() {
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
+    /// Extract the text payload from a `CallToolResult` so we can grep it
+    /// for masked vs raw paths. Returns concatenated text of all content
+    /// blocks; the helper currently uses one but the test is robust to
+    /// future multi-block payloads.
+    fn payload_of(r: &rmcp::model::CallToolResult) -> String {
+        r.content
+            .iter()
+            .filter_map(|c| match &c.raw {
+                rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    #[serial_test::serial(env_home)]
+    fn sanitises_home_path_with_prefix() {
+        let _home_guard = HomeGuard::override_home("/Users/alice");
+        let err = anyhow::anyhow!("EACCES on /Users/alice/proj/.forgeplan/locks/workspace.lock");
+        let result = safe_err_result("workspace lock", err);
+        let msg = payload_of(&result);
+        assert!(
+            !msg.contains("/Users/alice/"),
+            "raw HOME prefix must be masked: {msg}"
+        );
+        assert!(
+            msg.starts_with("workspace lock: "),
+            "prefix must be preserved verbatim: {msg}"
+        );
+        assert!(
+            msg.contains("<HOME>/proj/.forgeplan/locks/workspace.lock"),
+            "masked HOME prefix expected: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_prefix_omits_separator() {
+        // `safe_err_result("", e)` should produce just the sanitised
+        // payload without a leading `: ` separator.
+        let err = anyhow::anyhow!("io error at /tmp/foo/bar.lock");
+        let result = safe_err_result("", err);
+        let msg = payload_of(&result);
+        assert!(
+            !msg.starts_with(": "),
+            "empty prefix must not produce ': ' prefix: {msg}"
+        );
+        assert!(
+            !msg.contains("/tmp/foo"),
+            "raw /tmp prefix must be masked: {msg}"
+        );
+        assert!(msg.contains("<tmpdir>/foo"), "expected mask: {msg}");
     }
 }
 
@@ -9449,11 +10736,12 @@ mod claim_mcp_tests {
         let body = response_json(&r);
 
         let all_ids = extract_ids_flat(&body["buckets"]);
+        // PRD-077 FR-010: serial_queue is now `[{id, reason}, ...]`.
         let serial: Vec<String> = body["serial_queue"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| v.as_str().unwrap().to_string())
+            .map(|v| v["id"].as_str().unwrap().to_string())
             .collect();
         let visible: std::collections::HashSet<&String> =
             all_ids.iter().chain(serial.iter()).collect();
@@ -9596,11 +10884,12 @@ mod claim_mcp_tests {
         // section (extracted via Inc 2 fallback) or be empty — either way
         // it must reappear somewhere once released.
         let in_buckets = extract_ids_flat(&final_body["buckets"]).contains(&created_id);
+        // PRD-077 FR-010: serial_queue entries are now `{id, reason}` objects.
         let in_serial = final_body["serial_queue"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v.as_str() == Some(created_id.as_str()));
+            .any(|v| v["id"].as_str() == Some(created_id.as_str()));
         assert!(
             in_buckets || in_serial,
             "released artifact {created_id} must reappear in plan"
@@ -10374,6 +11663,18 @@ mod phase5_tests {
     /// `HOME` env var (cargo runs tests in parallel by default within a
     /// crate). Uses `tokio::sync::Mutex` so the guard can be held across
     /// `.await` points (clippy::await_holding_lock).
+    ///
+    /// CR-H6 (audit closure) equivalence: this mutex serves the same
+    /// purpose as `#[serial_test::serial(env_home)]` but with async
+    /// semantics. Tests in this module use `let _g = test_lock().await`
+    /// as the first line; the lock is process-wide just like a
+    /// `serial_test` lock keyed by `env_home`. Both mechanisms are
+    /// in-process — cargo runs each crate's tests as a separate binary,
+    /// so neither protects against `forgeplan-cli` or `forgeplan-core`
+    /// tests running concurrently. Cross-crate races are bounded by
+    /// cargo's default of running one test binary at a time per crate.
+    /// Documented here as a contract so a future audit doesn't ask
+    /// "why isn't this tagged with the macro?".
     async fn test_lock() -> tokio::sync::MutexGuard<'static, ()> {
         use std::sync::OnceLock;
         use tokio::sync::Mutex;

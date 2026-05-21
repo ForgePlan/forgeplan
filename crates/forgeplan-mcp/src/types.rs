@@ -259,6 +259,12 @@ pub struct EvidenceDto {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LinkResponse {
     pub message: String,
+    /// Issue #288: id of the source artifact when it was silently activated
+    /// by the link call's `auto_activate_source_if_complete: true` flag.
+    /// `None` when auto-activation was not requested OR not applicable
+    /// (source wasn't a complete-evidence draft, R_eff stayed at 0, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_activated: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -379,10 +385,59 @@ pub struct DispatchParams {
     pub overlap_threshold: Option<f64>,
 }
 
+/// PRD-077 FR-010 — each serial-queue entry now carries a structured
+/// `reason` so agents can route to the correct remediation (add
+/// `affected_files`, wait for blocker, lower threshold, …) without having
+/// to scan the `reasoning[]` audit log.
+///
+/// CR-H3: marked `#[non_exhaustive]` so adding a third field in a future
+/// release is a non-breaking change for downstream Rust callers (clients
+/// linking against the MCP types crate can no longer struct-literal
+/// construct or destructure-match without going through the constructor
+/// below). The JSON wire format is unaffected — schemars + serde keep
+/// the same shape.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub struct DispatchSerialEntry {
+    pub id: String,
+    pub reason: String,
+}
+
+impl DispatchSerialEntry {
+    /// Public constructor — required since `#[non_exhaustive]` blocks
+    /// struct-literal construction across crate boundaries (CR-H3).
+    pub fn new(id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for DispatchSerialEntry {
+    /// Human-friendly one-liner: `<id> (<reason>)` — matches
+    /// `forgeplan_core::dispatch::SerialEntry::Display` so the two
+    /// surfaces render identically (CR-H3).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.id, self.reason)
+    }
+}
+
+impl From<forgeplan_core::dispatch::SerialEntry> for DispatchSerialEntry {
+    /// Direct conversion from the core type to the MCP wire type. Used
+    /// by server.rs to flatten the core dispatch plan into the
+    /// MCP-shaped DTO. CR-H3 — explicit `From` impl lets callers
+    /// `entry.into()` cleanly without per-call destructuring.
+    fn from(entry: forgeplan_core::dispatch::SerialEntry) -> Self {
+        Self::new(entry.id, entry.reason)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DispatchResponse {
     pub buckets: Vec<Vec<String>>,
-    pub serial_queue: Vec<String>,
+    pub serial_queue: Vec<DispatchSerialEntry>,
     pub reasoning: Vec<String>,
     pub generated_at: String,
     pub agent_count: usize,

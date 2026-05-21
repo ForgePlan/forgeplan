@@ -30,6 +30,17 @@ fn parse_fail_on(fail_on: &str) -> std::collections::HashMap<String, usize> {
 /// alone — consistent with PROB-063: advisory ≠ critical) are NOT counted
 /// as failures.
 ///
+/// **FR-021 / DOC-003**: duplicates (`possible_duplicates`) and stale
+/// evidence (`stale_count`) are deliberately **not** counted here as direct
+/// critical signals. They feed the verdict promotion gates inside
+/// `compute_verdict_from_signals` and trigger `Some(1)` indirectly when
+/// they push the verdict to `NeedsAttention` or `Unhealthy`. This is
+/// intentional: a single duplicate pair should not block CI, but
+/// crossing the duplicate threshold (`VerdictThresholds.duplicates`)
+/// should — same reasoning for staleness. Operators reading this function
+/// in isolation might expect a direct `report.possible_duplicates > 0`
+/// branch; the absence is by design.
+///
 /// Pure function on the report so unit tests can pin the contract without
 /// invoking the CLI shell.
 fn strict_exit_code(report: &health::HealthReport) -> Option<i32> {
@@ -345,6 +356,25 @@ pub async fn run(
                 style(sanitize_for_hint(&d.reason)).dim()
             );
         }
+    }
+
+    // LOG-003 FR-020: surface phase state file read errors. Non-zero
+    // indicates workspace corruption risk — artifacts failed to read
+    // and were silently dropped from phase-mismatch list, leaving verdict
+    // potentially under-computed. This is advisory-level (like phase
+    // mismatches and gitignore drift) but requires operator attention
+    // to diagnose corruption.
+    if report.phase_read_errors > 0 {
+        println!();
+        println!(
+            "  {} Phase state errors ({}):",
+            style("⚠").red().bold(),
+            report.phase_read_errors
+        );
+        println!(
+            "    {} state files unreadable — workspace may be corrupted (see logs)",
+            report.phase_read_errors
+        );
     }
 
     // Active stubs (direct-edit bypasses of activate gate)

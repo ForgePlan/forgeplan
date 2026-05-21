@@ -3,7 +3,13 @@ use forgeplan_core::link;
 
 use crate::commands::common;
 
-pub async fn run(source_id: &str, target_id: &str, relation: &str) -> anyhow::Result<()> {
+pub async fn run(
+    source_id: &str,
+    target_id: &str,
+    relation: &str,
+    replace: bool,
+    auto_activate_complete: bool,
+) -> anyhow::Result<()> {
     // Normalize relation
     let relation = link::normalize_relation(relation)?;
 
@@ -40,15 +46,23 @@ Fix: forgeplan list",
         );
     }
 
-    // PRD-073 FR-005: helper handles sync→add_relation→render for BOTH sides
-    // so target file's frontmatter stays in lockstep with LanceDB.
-    forgeplan_core::projection::add_link_with_projection(
-        &forgeplan_core::projection::MutationContext::new(&ws, &store),
-        source_id,
-        target_id,
-        &relation,
-    )
-    .await?;
+    // Issue #286: `--replace` selects the upsert helper, which collapses
+    // any pre-existing edge between (source, target) onto the requested
+    // relation. Without the flag we use the strict additive helper that
+    // rejects duplicates and parallel-different-relation edges.
+    let ctx = forgeplan_core::projection::MutationContext::new(&ws, &store);
+    let outcome = if replace {
+        Some(
+            forgeplan_core::projection::replace_link_with_projection(
+                &ctx, source_id, target_id, &relation,
+            )
+            .await?,
+        )
+    } else {
+        forgeplan_core::projection::add_link_with_projection(&ctx, source_id, target_id, &relation)
+            .await?;
+        None
+    };
 
     common::log_change_field(
         &store,
@@ -61,12 +75,58 @@ Fix: forgeplan list",
     )
     .await;
 
-    println!("Linked: {} --{}--> {}", source_id, relation, target_id);
+    // Surface the outcome verbatim when `--replace` was used so operators
+    // can see whether the call was a no-op, a swap, or a creation. Without
+    // the flag we keep the original one-liner for back-compat.
+    match outcome {
+        Some(forgeplan_core::projection::LinkUpsertOutcome::Replaced { old_relation }) => {
+            println!(
+                "Replaced: {} --{}--> {} (was: --{}-->)",
+                source_id, relation, target_id, old_relation
+            );
+        }
+        Some(forgeplan_core::projection::LinkUpsertOutcome::Unchanged) => {
+            println!(
+                "Unchanged: {} --{}--> {} already exists",
+                source_id, relation, target_id
+            );
+        }
+        Some(forgeplan_core::projection::LinkUpsertOutcome::Created) | None => {
+            println!("Linked: {} --{}--> {}", source_id, relation, target_id);
+        }
+    }
 
     // PRD-075 FR-001: sync recompute closes stale-cache window. Failure is
     // non-fatal (mutation succeeded) — the wrapper surfaces a Fix: marker so
     // agents/operators see the score-all recovery path.
     common::sync_score_target_or_warn(&store, source_id).await;
+
+    // Issue #288 Part A — CLI parity for auto-activate. Same predicate as
+    // the MCP `forgeplan_link` tool. Failure is non-fatal: the link itself
+    // already committed; we warn and let the user retry forgeplan_activate
+    // manually.
+    if auto_activate_complete
+        && let Ok(Some(src_record)) = store.get_record(source_id).await
+        && src_record.kind.eq_ignore_ascii_case("evidence")
+        && src_record.status.eq_ignore_ascii_case("draft")
+        && forgeplan_core::scoring::evidence::is_evidence_complete(&src_record.body)
+    {
+        match forgeplan_core::lifecycle::activate(&store, source_id, false).await {
+            Ok(_) => {
+                if let Err(e) =
+                    forgeplan_core::projection::render_after_mutation(&ws, &store, source_id).await
+                {
+                    eprintln!("Warning: auto-activate post-render for {source_id} failed: {e}");
+                }
+                println!("Auto-activated: {source_id} (draft → active)");
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: auto-activate of {source_id} failed: {e}\nFix: forgeplan activate {source_id}"
+                );
+            }
+        }
+    }
 
     // PRD-075 FR-009: hint string lives in core (forgeplan_core::hints) so
     // mutator call sites cannot drift independently.

@@ -197,6 +197,36 @@ pub fn body_has_unclosed_html_comment(body: &str) -> bool {
     in_comment
 }
 
+/// Issue #288: structured completeness predicate for evidence artifacts.
+///
+/// Returns `true` only when the body explicitly declares BOTH `verdict` and
+/// `congruence_level` as proper structured fields (not defaults, not table
+/// rows, not commented-out). Used by the auto-activate flow and the
+/// `_next_action` hint chain to decide whether a fresh EVID is ready to
+/// promote draft → active without further operator intervention.
+///
+/// Distinct from `parse_evidence_from_record` which falls back to safe
+/// defaults (Supports / CL3) when fields are absent. That parser produces
+/// a usable `EvidenceItem` for R_eff scoring even on a barely-filled body;
+/// this predicate is stricter because auto-activation is a state-machine
+/// transition and silent defaults are not a sound basis for it.
+///
+/// Verdict must parse as `Supports | Weakens | Refutes` (any case).
+/// CL must parse as 0..=3.
+pub fn is_evidence_complete(body: &str) -> bool {
+    let verdict_ok = extract_field(body, "verdict")
+        .as_deref()
+        .map(str::to_lowercase)
+        .is_some_and(|s| matches!(s.as_str(), "supports" | "weakens" | "refutes"));
+    if !verdict_ok {
+        return false;
+    }
+    extract_field(body, "congruence_level")
+        .as_deref()
+        .and_then(|s| s.parse::<u8>().ok())
+        .is_some_and(|n| n <= 3)
+}
+
 pub fn extract_field(body: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     let mut in_multiline_comment = false;
@@ -541,5 +571,57 @@ congruence_level: 3
         assert_eq!(item.congruence_level, 3, "Should be CL3, not CL0");
         assert!(matches!(item.verdict, Verdict::Supports));
         assert!(matches!(item.evidence_type, EvidenceType::Test));
+    }
+
+    // ---- Issue #288 — is_evidence_complete predicate ----------------
+
+    #[test]
+    fn is_complete_true_for_verdict_plus_cl() {
+        let body = "verdict: supports\ncongruence_level: 3\n";
+        assert!(is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_false_when_verdict_missing() {
+        let body = "congruence_level: 3\n";
+        assert!(!is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_false_when_cl_missing() {
+        let body = "verdict: supports\n";
+        assert!(!is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_false_when_cl_not_parseable() {
+        let body = "verdict: supports\ncongruence_level: high\n";
+        assert!(!is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_false_when_cl_out_of_range() {
+        let body = "verdict: supports\ncongruence_level: 7\n";
+        assert!(!is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_false_when_verdict_unknown() {
+        let body = "verdict: maybe\ncongruence_level: 3\n";
+        assert!(!is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_true_case_insensitive_on_verdict() {
+        let body = "verdict: SUPPORTS\ncongruence_level: 3\n";
+        assert!(is_evidence_complete(body));
+    }
+
+    #[test]
+    fn is_complete_accepts_all_three_verdicts() {
+        for v in ["supports", "weakens", "refutes"] {
+            let body = format!("verdict: {v}\ncongruence_level: 2\n");
+            assert!(is_evidence_complete(&body), "{v} should count as complete");
+        }
     }
 }
