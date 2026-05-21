@@ -34,14 +34,20 @@ rand = "0.9"
 fs2.workspace = true
 schemars.workspace = true
 semver.workspace = true
-# Audit-r3 M4 closure — O_NOFOLLOW flag for the anomalies-journal
-# tempfile open so a pre-created symlink with workspace-write access
-# cannot redirect our write to a sibling target.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 tera.workspace = true
 walkdir.workspace = true
 globset.workspace = true
+
+# Audit-r3 M4 closure — O_NOFOLLOW flag for the anomalies-journal
+# tempfile open so a pre-created symlink with workspace-write access
+# cannot redirect our write to a sibling target.
+# v0.32.1 hotfix: ONLY libc is unix-gated. Previously (commit a3b6ed3)
+# `tera` / `walkdir` / `globset` were accidentally placed inside this
+# block, breaking Windows compilation (cargo-dist v0.32.0 Release
+# workflow exited with 20 E0432/E0433 errors). They are cross-platform
+# crates used unconditionally in `src/ingest/` and `src/projection/`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = []
