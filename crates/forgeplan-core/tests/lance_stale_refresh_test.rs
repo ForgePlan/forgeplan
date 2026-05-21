@@ -334,17 +334,20 @@ async fn retry_budget_exhausts_after_n_attempts_returns_typed_error() {
         "exhausted retry budget must surface MutationError::RetryExhausted, got: {err:#}"
     );
 
-    // Display should contain the PRD-071 Wait: hint (Option A — hint is
-    // inline in the `#[error(...)]` template). Renders through the
-    // anyhow chain so the wrapped MutationError's Display fires.
+    // Audit F-1 closure (2026-05-21): the `Wait:` hint was moved out of
+    // Display and into the MCP layer's `safe_mcp_error_anyhow` to satisfy
+    // PRD-071's line-anchored hint contract. Display now only contains
+    // the retry-exhausted phrase; the MCP-side test
+    // `prob074_hint_tests::retry_exhausted_appends_wait_hint_anchored`
+    // covers the `Wait:` emission contract.
     let rendered = format!("{err:#}");
     assert!(
         rendered.contains("retry budget exhausted"),
         "Display must contain retry-exhausted phrase: {rendered}"
     );
     assert!(
-        rendered.contains("Wait:"),
-        "Display must include PRD-071 Wait: hint inline: {rendered}"
+        !rendered.contains("Wait:"),
+        "Display MUST NOT contain mid-sentence Wait: — hint belongs to MCP layer: {rendered}"
     );
 }
 

@@ -867,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_exhausted_display_contains_attempts_and_wait_hint() {
+    fn retry_exhausted_display_contains_attempts_no_inline_wait_hint() {
         let e = MutationError::RetryExhausted {
             attempts: 3,
             last_error: anyhow::anyhow!(
@@ -879,11 +879,18 @@ mod tests {
             rendered.contains("retry budget exhausted after 3 stale-manifest refreshes"),
             "Display must include attempt count + reason: {rendered}"
         );
-        // PRD-071 protocol — `Wait:` hint baked inline so MCP layer
-        // does not need a parallel downcast site for hint emission.
+        // Audit F-1 closure (2026-05-21): the `Wait:` hint is NOT baked
+        // into Display anymore. PRD-071 protocol requires hints to be
+        // line-anchored (^Wait:) and `MutationError`'s Display is
+        // consumed in many contexts (logs, error chains) where a
+        // mid-sentence "Wait:" substring would not match the protocol
+        // parser. Hint emission moved to MCP layer's `safe_mcp_error_anyhow`
+        // which downcasts to `RetryExhausted` and appends a properly
+        // anchored hint. See `prob074_hint_tests::retry_exhausted_appends_wait_hint_anchored`
+        // in forgeplan-mcp/src/server.rs for the MCP-side contract.
         assert!(
-            rendered.contains("Wait:"),
-            "Display must contain PRD-071 Wait: hint: {rendered}"
+            !rendered.contains("Wait:"),
+            "Display MUST NOT contain mid-sentence `Wait:` — hint belongs to MCP layer: {rendered}"
         );
         // Sanitiser should mask /tmp/...
         assert!(
