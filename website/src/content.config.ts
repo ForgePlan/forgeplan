@@ -1,8 +1,48 @@
-import { defineCollection } from 'astro:content';
+import { defineCollection, z } from 'astro:content';
 import { docsLoader, i18nLoader } from '@astrojs/starlight/loaders';
 import { docsSchema, i18nSchema } from '@astrojs/starlight/schema';
+import { glob } from 'astro/loaders';
+
+const blog = defineCollection({
+	loader: glob({
+		pattern: '**/*.{md,mdx}',
+		base: './src/content/blog',
+		// generateId override is REQUIRED to prevent slug-collision when EN and RU posts
+		// share the same `slug` field in frontmatter (e.g. both have slug: "welcome").
+		//
+		// Default Astro behavior: when frontmatter contains `slug`, it becomes the entry ID
+		// — causing en/welcome.mdx and ru/welcome.mdx to collide at id="welcome".
+		//
+		// Fix: use file path as ID. Six call-sites depend on the format `{lang}/{slug}`:
+		//   - src/pages/blog/index.astro        (regex .replace(/^en\//, ''))
+		//   - src/pages/blog/[...slug].astro    (regex .replace(/^en\//, ''))
+		//   - src/pages/blog/rss.xml.ts         (regex .replace(/^en\//, ''))
+		//   - src/pages/ru/blog/index.astro     (regex .replace(/^ru\//, ''))
+		//   - src/pages/ru/blog/[...slug].astro (regex .replace(/^ru\//, ''))
+		//   - src/pages/ru/blog/rss.xml.ts      (regex .replace(/^ru\//, ''))
+		// If this format changes (e.g. to support categories like en/methodology/post),
+		// ALL six call-sites must be updated in lockstep.
+		generateId: ({ entry }) => entry.replace(/\.(md|mdx)$/, ''),
+	}),
+	schema: z.object({
+		title: z.string(),
+		description: z.string(),
+		slug: z.string(),
+		lang: z.enum(['en', 'ru']),
+		publishedAt: z.coerce.date(),
+		updatedAt: z.coerce.date().optional(),
+		kind: z.enum(['explainer', 'case-study', 'teaching', 'release-notes', 'deep-dive']),
+		topic: z.enum(['r-eff', 'adi', 'fpf', 'mcp', 'methodology', 'release']),
+		artifacts: z.array(z.string()).optional(),
+		cover: z.string().optional(),
+		draft: z.boolean().default(false),
+		readingTime: z.number().optional(),
+		translations: z.record(z.string(), z.string()).optional(),
+	}),
+});
 
 export const collections = {
 	docs: defineCollection({ loader: docsLoader(), schema: docsSchema() }),
 	i18n: defineCollection({ loader: i18nLoader(), schema: i18nSchema() }),
+	blog,
 };

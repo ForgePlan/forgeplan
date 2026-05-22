@@ -11,7 +11,9 @@
     "astro": "astro"
   },
   "dependencies": {
+    "@astrojs/mdx": "^5.0.6",
     "@astrojs/react": "^5.0.2",
+    "@astrojs/rss": "^4.0.18",
     "@astrojs/starlight": "^0.38.2",
     "@fontsource/geist-mono": "^5.2.7",
     "@fontsource/space-grotesk": "^5.2.10",

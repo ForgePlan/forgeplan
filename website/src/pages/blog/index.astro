@@ -1,0 +1,34 @@
+---
+import { getCollection } from 'astro:content';
+import Landing from '../../layouts/Landing.astro';
+import '../../styles/blog-theme.css';
+
+const posts = (await getCollection('blog', ({ data }) => data.lang === 'en' && !data.draft))
+  .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf());
+---
+<Landing title="Blog — Forgeplan" description="Long-form writing about R_eff, ADI, FPF, and the Forgeplan methodology.">
+  <article class="blog-index">
+    <main id="main-content" class="blog-index-main">
+      <p class="blog-index-eyebrow">BLOG</p>
+      <h1 class="blog-index-heading">Writing</h1>
+      <p class="blog-index-subtitle">Long-form notes on R_eff, ADI reasoning, FPF, MCP, and the methodology behind Forgeplan.</p>
+
+      <ul class="blog-index-list">
+        {posts.map(post => (
+          <li class="blog-index-card">
+            <a href={`/blog/${post.id.replace(/^en\//, '').replace(/\.(md|mdx)$/, '')}`}>
+              <p class="blog-index-meta">{post.data.kind} · {post.data.topic}</p>
+              <h2 class="blog-index-card-title">{post.data.title}</h2>
+              <p class="blog-index-card-desc">{post.data.description}</p>
+              <p class="blog-index-date">{post.data.publishedAt.toISOString().slice(0, 10)}</p>
+            </a>
+          </li>
+        ))}
+      </ul>
+
+      <p class="blog-index-rss">
+        RSS: <a href="/blog/rss.xml">/blog/rss.xml</a>
+      </p>
+    </main>
+  </article>
+</Landing>

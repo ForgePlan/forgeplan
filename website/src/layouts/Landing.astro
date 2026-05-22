@@ -4,16 +4,18 @@ import '../styles/global.css';
 interface Props {
   title?: string;
   description?: string;
+  lang?: 'en' | 'ru';
 }
 
 const {
   title = 'Forgeplan — From Raw Idea to Proven Decision',
-  description = 'Universal Rust platform for structured project artifacts with quality scoring, evidence tracking, and semantic search.'
+  description = 'Universal Rust platform for structured project artifacts with quality scoring, evidence tracking, and semantic search.',
+  lang = 'en',
 } = Astro.props;
 ---
 
 <!doctype html>
-<html lang="en" class="dark">
+<html lang={lang} class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
