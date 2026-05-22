@@ -43,6 +43,7 @@ use anyhow::Context;
 use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
 use crate::projection::{self, MutationContext};
+use crate::workspace::git::git_common_dir;
 use crate::workspace::lock::{DEFAULT_LOCK_TIMEOUT, WorkspaceLock};
 
 /// Maximum number of retries when collision detected post-write.
@@ -65,7 +66,7 @@ const ID_ALLOC_LOCK_TIMEOUT: Duration = DEFAULT_LOCK_TIMEOUT;
 /// `.git`. Placing the lock there guarantees all `forgeplan_new`
 /// invocations in any worktree of the same repo see the same file.
 fn id_alloc_lock_path(workspace: &Path, kind: &ArtifactKind) -> PathBuf {
-    if let Some(common_dir) = git_common_dir(workspace) {
+    if let Some(common_dir) = git_common_dir_from_workspace(workspace) {
         let dir = common_dir.join("forgeplan");
         // best-effort: created lazily by `acquire_workspace_lock_with_timeout`
         // via `create_dir_all` on the parent before open.
@@ -80,37 +81,21 @@ fn id_alloc_lock_path(workspace: &Path, kind: &ArtifactKind) -> PathBuf {
     ))
 }
 
-/// Run `git rev-parse --git-common-dir` and return its path, or None
-/// if not inside a git repository. Synchronous (one-shot subprocess
-/// during command setup — kept blocking to avoid pulling in
-/// `tokio::process` for a single-shot call). The output is small enough
-/// that the call completes in microseconds in practice.
-fn git_common_dir(workspace: &Path) -> Option<PathBuf> {
+/// Thin wrapper: resolve `git-common-dir` from a *workspace* path (i.e.
+/// `<repo>/.forgeplan`). The underlying implementation lives in
+/// [`crate::workspace::git::git_common_dir`] and operates on an arbitrary
+/// `cwd`; here we derive that `cwd` from the workspace path as the id-alloc
+/// convention has always required.
+///
+/// Factored out to `workspace::git` so the multi-worktree detector
+/// ([`crate::workspace::init::detect_multi_worktree`]) can share the same
+/// subprocess logic without duplicating it (PRD-078 Phase 2 / W2).
+fn git_common_dir_from_workspace(workspace: &Path) -> Option<PathBuf> {
     // Workspace is `<repo>/.forgeplan` — git ops should be rooted at
     // its parent (the actual working tree). Fall back to workspace
     // itself if it has no parent (shouldn't happen for valid workspaces).
     let cwd = workspace.parent().unwrap_or(workspace);
-    let out = std::process::Command::new("git")
-        .args([
-            "-C",
-            &cwd.to_string_lossy(),
-            "rev-parse",
-            "--git-common-dir",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if raw.is_empty() {
-        return None;
-    }
-    let p = PathBuf::from(&raw);
-    // `git rev-parse --git-common-dir` returns a relative path when
-    // invoked inside a worktree; canonicalize against `cwd`.
-    let abs = if p.is_absolute() { p } else { cwd.join(p) };
-    Some(abs)
+    git_common_dir(cwd)
 }
 
 /// Acquire the cross-worktree id-allocation lock for `kind`. The lock
@@ -548,5 +533,46 @@ mod tests {
         .await
         .expect("PRD lock acquisition must not block on EVID lock")
         .unwrap();
+    }
+
+    /// Regression: factoring `git_common_dir` out of id_alloc.rs into
+    /// `workspace::git` must not change the lock path semantics.
+    ///
+    /// The test verifies that `id_alloc_lock_path` still returns a path that:
+    /// 1. Is non-empty (has a meaningful parent + filename).
+    /// 2. Contains the kind prefix in the filename (per-kind granularity).
+    /// 3. Has the same structural properties before and after the refactor
+    ///    (indirectly: we call the function twice with the same inputs and
+    ///    assert idempotence).
+    ///
+    /// This is a lightweight guard; the behavioural invariant (same absolute
+    /// path for same workspace + kind) is the regression property.
+    #[tokio::test]
+    async fn id_alloc_lock_path_is_stable_after_refactor() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        // Call twice — must be identical (deterministic, no side-effects).
+        let path_a = id_alloc_lock_path(&ws, &ArtifactKind::EvidencePack);
+        let path_b = id_alloc_lock_path(&ws, &ArtifactKind::EvidencePack);
+        assert_eq!(
+            path_a,
+            path_b,
+            "id_alloc_lock_path must be deterministic: {} vs {}",
+            path_a.display(),
+            path_b.display()
+        );
+        // filename must reference the kind prefix
+        let name = path_a.file_name().unwrap().to_string_lossy().to_lowercase();
+        assert!(
+            name.contains("evid"),
+            "lock filename must include kind prefix 'evid', got {}",
+            path_a.display()
+        );
+        // Parent must exist or be create-able (i.e. must have a parent).
+        assert!(
+            path_a.parent().is_some(),
+            "lock path must have a parent directory: {}",
+            path_a.display()
+        );
     }
 }
