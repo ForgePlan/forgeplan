@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import mdx from '@astrojs/mdx';
 import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
@@ -7,7 +8,16 @@ import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
 
 export default defineConfig({
   site: 'https://forgeplan.dev',
-  integrations: [starlight({
+  integrations: [
+    // ORDER: starlight() MUST come before mdx().
+    // Starlight bundles astro-expressive-code (ECE) as a sub-integration.
+    // ECE throws a hard error at astro:config:setup if it detects mdx() already
+    // registered before it: "please move astroExpressiveCode() before mdx()".
+    // RFC-011 §Astro config extension specifies mdx()-before-starlight per
+    // generic Astro docs; however, the Starlight+ECE constraint overrides it.
+    // Tested empirically: [mdx(), starlight(), react()] → ERROR from ECE.
+    // See RFC-011 amendment proposal in EVID-136 coder findings for correction.
+    starlight({
     plugins: [starlightClientMermaid()],
     title: {
       en: 'Forgeplan',
@@ -84,7 +94,10 @@ export default defineConfig({
         slug: 'docs/changelog',
       },
     ],
-  }), react()],
+  }),
+    mdx(),
+    react(),
+  ],
   vite: {
     plugins: [tailwindcss()],
   },

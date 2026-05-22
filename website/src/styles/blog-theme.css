@@ -1,0 +1,392 @@
+/* Blog theme — scoped tokens under .blog-post
+ * All tokens ported from ForgePlanMarketing/teaching-assets/trust-calculus.html
+ * Font stack: Space Grotesk (sans) + Geist Mono (mono) — existing site fonts, NOT Inter/JetBrains.
+ * Imported only in BlogPost.astro — never globally.
+ */
+
+.blog-post {
+  /* --- Background palette --- */
+  --bg:        #050505;
+  --bg-1:      #0b0b0b;
+  --bg-2:      #141414;
+  --bg-3:      #1a1a1a;
+
+  /* --- Text palette --- */
+  --text:      #f5f5f5;
+  --text-1:    #e5e5e5;
+  --text-2:    #a3a3a3;
+  --text-3:    #737373;
+  --text-4:    #525252;
+
+  /* --- Dividers --- */
+  --line:      rgba(255, 255, 255, 0.06);
+  --line-2:    rgba(255, 255, 255, 0.14);
+
+  /* --- Accent (brand orange) --- */
+  --accent:      #ff5a1f;
+  --accent-soft: #ff8a5b;
+  --accent-bg:   rgba(255, 90, 31, 0.18);
+
+  /* --- Semantic status colors --- */
+  --ok:   #22c55e;
+  --err:  #ef4444;
+  --warn: #f59e0b;
+
+  /* --- F / G / R axis data-viz colors --- */
+  --f-color: #ff5a1f;  /* F · Formality — brand orange */
+  --g-color: #22c55e;  /* G · Granularity — brand green */
+  --r-color: #60a5fa;  /* R · Reliability — sky blue */
+
+  /* --- Hypothesis confidence colors --- */
+  --h1-color: #ef4444;
+  --h2-color: #a3a3a3;
+  --h3-color: #22c55e;
+
+  /* --- Font stacks (existing site fonts, NOT Inter/JetBrains) --- */
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* --- Base layout --- */
+  background: var(--bg);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+  background-size: 24px 24px;
+  font-family: var(--font-sans);
+  color: var(--text-1);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* --- Typography --- */
+.blog-post .eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 14px;
+}
+
+.blog-post h1 {
+  font-size: clamp(40px, 5.4vw, 64px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0 0 18px;
+}
+
+.blog-post h2 {
+  font-size: 28px;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  font-weight: 500;
+  color: var(--text);
+  margin: 64px 0 14px;
+}
+
+.blog-post h3 {
+  font-size: 15px;
+  line-height: 1.3;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0;
+}
+
+.blog-post p {
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 760px;
+  margin: 0 0 14px;
+}
+
+.blog-post p.lead {
+  font-size: 17px;
+  color: var(--text-1);
+  line-height: 1.55;
+}
+
+/* --- Inline code --- */
+.blog-post code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent-soft);
+  background: var(--accent-bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+/* --- Code blocks --- */
+.blog-post pre {
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 24px 0;
+}
+
+.blog-post pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+/* --- Artifact cards (ForgePlan pattern) --- */
+.blog-post .card {
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 18px 20px 16px;
+  position: relative;
+}
+
+.blog-post .card .tag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 10px;
+}
+
+.blog-post .card .tag-row .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
+  display: inline-block;
+}
+
+.blog-post .card .meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* --- F / G / R axis cards --- */
+.blog-post .axes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 24px 0 32px;
+}
+
+.blog-post .axis-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 18px 20px;
+}
+
+.blog-post .axis-card .axis-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+
+.blog-post .axis-card.f .axis-tag,
+.blog-post .axis-card.f .axis-letter { color: var(--f-color); }
+.blog-post .axis-card.g .axis-tag,
+.blog-post .axis-card.g .axis-letter { color: var(--g-color); }
+.blog-post .axis-card.r .axis-tag,
+.blog-post .axis-card.r .axis-letter { color: var(--r-color); }
+
+.blog-post .axis-card .axis-letter {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+/* --- Inline axis color helpers --- */
+.blog-post .ax-f { color: var(--f-color); font-weight: 500; }
+.blog-post .ax-g { color: var(--g-color); font-weight: 500; }
+.blog-post .ax-r { color: var(--r-color); font-weight: 500; }
+
+/* --- Scenario / hypothesis cards --- */
+.blog-post .scenario {
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 22px 24px;
+}
+
+.blog-post .scenario .hypotheses {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.blog-post .hypo {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 14px 16px 16px;
+}
+
+/* --- Winner card --- */
+.blog-post .winner-card {
+  background: var(--bg-1);
+  border: 1px solid var(--ok);
+  border-radius: 6px;
+  padding: 22px 24px;
+  margin: 24px 0;
+}
+
+/* --- Dotted background overlay utility (for nested sections) --- */
+.blog-post .dotted {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+  background-size: 24px 24px;
+}
+
+/* --- Body reset for blog pages --- */
+.blog-post body,
+body:has(.blog-post) {
+  margin: 0;
+  padding: 0;
+}
+
+/* ============================================================
+ * .blog-index — token scope for blog index pages (EN + RU).
+ * These pages use the Landing layout (outside .blog-post scope),
+ * so they get their own matching scope rather than inheriting.
+ * Import: blog-index pages import blog-theme.css directly.
+ * ============================================================ */
+.blog-index {
+  /* Inherit the same palette as .blog-post */
+  --bg:        #050505;
+  --bg-1:      #0b0b0b;
+  --bg-2:      #141414;
+  --bg-3:      #1a1a1a;
+  --text:      #f5f5f5;
+  --text-1:    #e5e5e5;
+  --text-2:    #a3a3a3;
+  --text-3:    #737373;
+  --text-4:    #525252;
+  --line:      rgba(255, 255, 255, 0.06);
+  --line-2:    rgba(255, 255, 255, 0.14);
+  --accent:    #ff5a1f;
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Index layout wrapper */
+.blog-index-main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 64px 32px 96px;
+}
+
+/* Eyebrow label (BLOG / БЛОГ) */
+.blog-index-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 14px;
+}
+
+/* Page heading */
+.blog-index-heading {
+  font-size: clamp(40px, 5.4vw, 64px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0 0 18px;
+}
+
+/* Subtitle paragraph */
+.blog-index-subtitle {
+  font-size: 17px;
+  color: var(--text-1);
+  line-height: 1.55;
+  max-width: 720px;
+}
+
+/* Post list */
+.blog-index-list {
+  list-style: none;
+  padding: 0;
+  margin: 48px 0 0;
+  display: grid;
+  gap: 16px;
+}
+
+/* Individual post card */
+.blog-index-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 20px 22px;
+}
+
+.blog-index-card a {
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+/* Card kind·topic meta line */
+.blog-index-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 0 0 8px;
+}
+
+/* Card title */
+.blog-index-card-title {
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+/* Card description */
+.blog-index-card-desc {
+  font-size: 14.5px;
+  color: var(--text-2);
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* Card date */
+.blog-index-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 12px 0 0;
+}
+
+/* RSS footer */
+.blog-index-rss {
+  margin-top: 48px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.blog-index-rss a {
+  color: var(--accent);
+}
