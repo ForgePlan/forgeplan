@@ -307,6 +307,13 @@ pub struct ReleaseParams {
     /// Force-release regardless of holder (orchestrator escape hatch).
     #[serde(default)]
     pub force: bool,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -739,6 +746,13 @@ pub struct PlaybookRunParams {
     /// `[playbook] allow_shell = true` in `.forgeplan/config.yaml`.
     #[serde(default)]
     pub allow_shell: bool,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// Params for `forgeplan_ingest`.
