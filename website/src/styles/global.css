@@ -73,20 +73,27 @@ html {
 .header-full .header-logo { width: 28px; height: 28px; }
 .header-full .header-brand { font-size: 18px; }
 .header-full .header-brand-cell { padding: 0 20px; }
-.header-full .header-nav { grid-template-columns: repeat(5, 110px) 140px 105px; }
+.header-full .header-nav { grid-template-columns: repeat(5, 110px) 140px 60px 105px; }
 .header-full .nav-cell { font-size: 15px; }
 
 /* Compact state (scrolled past hero) */
 .header-compact { padding: 0; }
+.header-compact { border-bottom: 1px solid var(--forge-line); }
 .header-compact .header-inner {
   height: 36px;
-  grid-template-columns: auto auto 36px;
-  border-left: none; border-right: none; border-top: none;
+  grid-template-columns: 1fr auto 36px;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  border-bottom: none;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 32px;
 }
 .header-compact .header-logo { width: 16px; height: 16px; }
 .header-compact .header-brand { font-size: 13px; }
 .header-compact .header-brand-cell { padding: 0 12px; }
-.header-compact .header-nav { grid-template-columns: repeat(5, 74px) 94px 76px; }
+.header-compact .header-nav { grid-template-columns: repeat(5, 74px) 94px 44px 76px; }
 .header-compact .nav-cell { font-size: 12px; }
 
 /* Nav cell hover — wipe fill with inverted text */
@@ -103,9 +110,9 @@ html {
 .nav-cell::before {
   content: '';
   position: absolute;
-  inset: 0;
+  inset: 0 -2px 0 -2px; /* extend 2px beyond cell to avoid sub-pixel sliver */
   background: var(--forge-fg);
-  transform: translateX(-100%);
+  transform: translateX(-101%);
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: -1; /* fill behind text */
 }

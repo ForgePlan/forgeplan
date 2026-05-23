@@ -28,6 +28,21 @@
   --sl-text-4xl: 2.5rem;
 
   --sl-border-radius: 0;
+
+  /* Forge palette tokens (mirror of global.css :root) — used by DocsHeader
+     on /docs pages. Declared here because global.css can't be imported on
+     docs (its Tailwind preflight breaks Starlight layout — see
+     StarlightHeaderWrapper.astro). */
+  --forge-bg: #0D0D0D;
+  --forge-fg: #E8E8E8;
+  --forge-surface: #161616;
+  --forge-line: #3A3A3A;
+  --forge-dim: #949494;
+  --color-forge-ember: #FF6B35;
+  --color-forge-green: #28C840;
+  --font-body: 'Space Grotesk', system-ui, sans-serif;
+  --font-heading: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
 }
 
 /* === LIGHT MODE === */
@@ -43,6 +58,35 @@
   --sl-color-gray-5: #E8E8E4;
   --sl-color-gray-6: #F0F0EC;
   --sl-color-black: #F5F5F0;
+
+  /* Forge palette — light variant */
+  --forge-bg: #F5F5F0;
+  --forge-fg: #1A1A1A;
+  --forge-surface: #FFFFFF;
+  --forge-line: #D4D4D0;
+  --forge-dim: #6B6B6B;
+}
+
+/* === Right TOC sidebar: stop border-inline-start from bleeding behind header ===
+   Starlight gives .right-sidebar `border-inline-start: 1px solid hairline` spanning
+   full height (top:0 → 100vh). Since .right-sidebar paints after our header in DOM
+   order, that 1px line is visible across the header bar between content area and TOC
+   (looks like a black stripe between certain nav cells). Replace with a pseudo-line
+   that starts BELOW the header (top: --sl-nav-height). */
+@media (min-width: 72rem) {
+  .right-sidebar {
+    border-inline-start: none !important;
+  }
+  .right-sidebar::before {
+    content: '';
+    position: absolute;
+    inset-block-start: var(--sl-nav-height);
+    inset-block-end: 0;
+    inset-inline-start: 0;
+    width: 1px;
+    background: var(--sl-color-hairline);
+    pointer-events: none;
+  }
 }
 
 /* === Search bar — wider to match content area === */

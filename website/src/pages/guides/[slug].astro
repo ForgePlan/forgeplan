@@ -66,7 +66,7 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
     <script src={src} is:inline></script>
   ))}
 
-  <!-- Top compact bar: full breadcrumb (Forgeplan / Guides / Lesson) + lang switch -->
+  <!-- Top compact bar: full breadcrumb (Forgeplan / Guides / Lesson) — lang switch lives in Header nav -->
   <nav class="guide-topbar" aria-label="Breadcrumb">
     <ol class="guide-crumbs">
       <li><a href="/">Forgeplan</a></li>
@@ -75,7 +75,6 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
       <li class="guide-crumb-sep" aria-hidden="true">/</li>
       <li class="guide-crumb-current" aria-current="page">{guide.title_en}</li>
     </ol>
-    <a href={altRu} class="guide-topbar-lang">RU →</a>
   </nav>
 
   <!-- Lesson content IS the page (no wrapping h1/summary — lesson has its own). -->

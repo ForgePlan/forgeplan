@@ -41,9 +41,12 @@ export default defineConfig({
     ],
     customCss: ['./src/styles/forge-theme.css'],
     components: {
-      // Replace Starlight's default top header with our site Header.astro
-      // so /docs/* shows the same nav (Docs · Blog · Guides · GitHub · CLI · MCP · Install)
-      // with active route highlight, instead of Starlight's branded variant.
+      // Unified Header on /docs via DocsHeader (inline content; no nested <header>).
+      // Prior attempt rendered our standalone <header position:fixed> here,
+      // which Starlight wrapped inside its own <header.header> → invalid HTML
+      // + broke grid (article 19px, sidebar 0). DocsHeader renders ONLY the
+      // brand+nav+toggle row → Starlight's outer <header> remains the single
+      // header element on the page.
       Header: './src/components/StarlightHeaderWrapper.astro',
     },
     sidebar: [

@@ -73,7 +73,6 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
       <li class="guide-crumb-sep" aria-hidden="true">/</li>
       <li class="guide-crumb-current" aria-current="page">{guide.title_ru}</li>
     </ol>
-    <a href={altEn} class="guide-topbar-lang">EN →</a>
   </nav>
 
   <article id="main-content" class="guide-embedded" set:html={embed.bodyHtml}></article>

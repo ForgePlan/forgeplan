@@ -1,12 +1,20 @@
 ---
 // Starlight Header override — replaces Starlight's default top bar
-// with our site Header.astro for unified site-wide navigation on /docs/*.
+// with our DocsHeader on /docs/* for unified site-wide navigation.
 // Loaded via astro.config.mjs `starlight.components.Header`.
 //
-// Starlight passes layout props but we just render our standalone Header.
-// Starlight's mobile sidebar trigger lives in MobileTableOfContents/Sidebar —
-// users can still toggle docs sidebar via that component (Starlight default).
-import Header from './Header.astro';
-import '../styles/global.css';
+// IMPORTANT: DO NOT import '../styles/global.css' here. global.css contains
+// `@import "tailwindcss"` whose preflight `* { padding: 0 }` is UNLAYERED
+// and overrides Starlight's `@layer starlight.core` rule
+// `.main-frame { padding-inline-start: var(--sl-content-inline-start) }`,
+// which collapses the docs layout (sidebar overlaps content).
+// Forge palette tokens used by DocsHeader live in forge-theme.css (loaded
+// as Starlight customCss), keeping /docs free of Tailwind preflight.
+//
+// DocsHeader also renders INLINE content (no outer <header>, no
+// position:fixed) — Starlight already provides the outer <header.header>
+// wrapper. Nesting <header> here collapses /docs layout differently
+// (article 19px).
+import DocsHeader from './DocsHeader.astro';
 ---
-<Header />
+<DocsHeader />
