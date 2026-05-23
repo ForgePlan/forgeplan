@@ -17,7 +17,7 @@ const isMcpActive    = isActive('/docs/mcp', '/ru/docs/mcp');
 const isRu = path === '/ru' || path === '/ru/' || path.startsWith('/ru/');
 const altPath = isRu
   ? (path.replace(/^\/ru/, '') || '/')
-  : (path === '/' ? '/ru/' : '/ru' + path);
+  : (path === '/' ? '/ru/blog' : '/ru' + path);
 const altLabel = isRu ? 'EN' : 'RU';
 const altLangName = isRu ? 'English' : 'Russian';
 ---
