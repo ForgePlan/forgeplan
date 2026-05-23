@@ -20,31 +20,38 @@ function scopeCss(css: string): string {
   let buf = '';
   const stack: StackEntry[] = [];
 
-  function flushSelectors(selectorText: string): string {
+  function flushSelectors(selectorText: string): { selector: string; drop: boolean } {
     const t = selectorText.trim();
-    if (!t) return '';
+    if (!t) return { selector: '', drop: false };
     if (t.startsWith('@')) {
       const kindMatch = t.match(/^@(\w[\w-]*)/);
       const kind = kindMatch ? kindMatch[1] : 'unknown';
       stack.push({ kind, depth: depth + 1 });
-      return t;
+      return { selector: t, drop: false };
     }
     const top = stack[stack.length - 1];
     if (top && (top.kind === 'keyframes' || top.kind === 'font-face' || top.kind === 'page' || top.kind === 'counter-style' || top.kind === 'property')) {
       stack.push({ kind: 'inner-noprefix', depth: depth + 1 });
-      return t;
+      return { selector: t, drop: false };
+    }
+    // Drop :root blocks entirely — site tokens come from our :root in global.css.
+    // Lesson-specific values are remapped via .guide-embedded aliasing in blog-theme.css.
+    if (t === ':root' || /^:root\s*,/.test(t) || /,\s*:root\s*$/.test(t) || t === 'html' || t === 'body' || /^(html|body)\s*,\s*(html|body)$/.test(t)) {
+      stack.push({ kind: 'rule', depth: depth + 1, drop: true } as StackEntry);
+      return { selector: t, drop: true };
     }
     stack.push({ kind: 'rule', depth: depth + 1 });
-    return t.split(',').map(s => {
+    const prefixed = t.split(',').map(s => {
       const sel = s.trim();
       if (!sel) return sel;
-      if (sel === ':root') return SCOPE_CLASS;
-      if (/^(html|body)(\s*,\s*(html|body))?$/.test(sel)) return SCOPE_CLASS;
       if (sel === '*') return `${SCOPE_CLASS} *`;
       if (sel.startsWith(SCOPE_CLASS + ' ') || sel === SCOPE_CLASS) return sel;
       return `${SCOPE_CLASS} ${sel}`;
     }).filter(Boolean).join(', ');
+    return { selector: prefixed, drop: false };
   }
+
+  let dropDepth = -1;  // depth at which we're inside a dropped block; -1 = not dropping
 
   while (i < n) {
     const ch = css[i];
@@ -69,23 +76,29 @@ function scopeCss(css: string): string {
     }
 
     if (ch === '{') {
-      out.push(flushSelectors(buf) + ' {');
+      const result = flushSelectors(buf);
       buf = '';
       depth++;
+      if (result.drop && dropDepth === -1) {
+        dropDepth = depth;
+      } else if (dropDepth === -1) {
+        out.push(result.selector + ' {');
+      }
       i++;
       continue;
     }
     if (ch === '}') {
-      if (buf.trim()) out.push(buf.trim());
+      if (dropDepth === -1 && buf.trim()) out.push(buf.trim());
       buf = '';
-      out.push('}');
+      if (dropDepth === -1) out.push('}');
       while (stack.length > 0 && stack[stack.length - 1].depth > depth) stack.pop();
+      if (dropDepth === depth) dropDepth = -1;
       depth--;
       i++;
       continue;
     }
     if (ch === ';' && depth > 0) {
-      out.push(buf.trim() + ';');
+      if (dropDepth === -1) out.push(buf.trim() + ';');
       buf = '';
       i++;
       continue;
@@ -114,7 +127,10 @@ export function extractEmbed(filepath: string): EmbedResult {
   const title = titleMatch ? titleMatch[1].trim() : '';
 
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  const bodyHtml = bodyMatch ? bodyMatch[1] : '';
+  let bodyHtml = bodyMatch ? bodyMatch[1] : '';
+  // Strip lesson's own footer block ('trust-calculus · explainer · v1 → forgeplan · forgeplan.dev')
+  // so site BlogFooter is the only footer on the page.
+  bodyHtml = bodyHtml.replace(/<div\s+class=["']footer["'][^>]*>[\s\S]*?<\/div>/gi, '');
 
   const styleBlocks = Array.from(html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)).map(m => m[1]);
   const rawCss = styleBlocks.join('\n');

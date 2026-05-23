@@ -60,61 +60,44 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
   <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
   <SiteJsonLd lang="en" />
 
-  <!-- Scoped lesson styles, prefixed by build-time scopeCss() to .guide-embedded -->
   <style is:global set:html={embed.scopedCss}></style>
 
-  <!-- External CDN scripts from the original lesson (Plotly / Chart.js) -->
   {embed.externalScripts.map(src => (
     <script src={src} is:inline></script>
   ))}
 
-  <article class="guide-page">
-    <main id="main-content" class="guide-main">
-      <nav class="guide-breadcrumb" aria-label="Breadcrumb">
-        <a href="/guides">← All guides</a>
-      </nav>
+  <!-- Top compact bar: just breadcrumb + lang switch -->
+  <nav class="guide-topbar" aria-label="Guide navigation">
+    <a href="/guides" class="guide-topbar-back">← All guides</a>
+    <a href={altRu} class="guide-topbar-lang">RU →</a>
+  </nav>
 
-      <header class="guide-header">
-        <p class="guide-eyebrow">
-          <span class={`guides-card-pill guides-pill-${guide.pill}`}>{guide.pill}</span>
-          <span>#{String(guide.order).padStart(2, '0')} · {guide.tag_en}</span>
-        </p>
-        <h1>{guide.title_en}</h1>
-        <p class="guide-summary">{guide.desc_en}</p>
-        <p class="guide-lang-note">
-          <a href={altRu}>Читать на русском →</a>
-          <span class="guide-lang-note-sep">·</span>
-          <span>Lesson content currently in Russian — English translation in progress</span>
-        </p>
-      </header>
+  <!-- Lesson content IS the page (no wrapping h1/summary — lesson has its own). -->
+  <article id="main-content" class="guide-embedded" set:html={embed.bodyHtml}></article>
 
-      <!-- Embedded lesson body, scoped under .guide-embedded so its styles only apply here -->
-      <div class="guide-embedded" set:html={embed.bodyHtml}></div>
+  {embed.inlineScripts.map(src => (
+    <script is:inline set:html={src}></script>
+  ))}
 
-      <!-- Inline scripts from the original lesson — preserve order, run after body in DOM -->
-      {embed.inlineScripts.map(src => (
-        <script is:inline set:html={src}></script>
-      ))}
+  <!-- Bottom prev/next within reading order -->
+  <nav class="guide-prevnext" aria-label="Reading order navigation">
+    <div class="guide-prevnext-cell">
+      {prev ? (
+        <a href={`/guides/${prev.slug}`}>
+          <span class="guide-prevnext-dir">← Previous</span>
+          <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_en}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">— Start of series</span>}
+    </div>
+    <div class="guide-prevnext-cell guide-prevnext-next">
+      {next ? (
+        <a href={`/guides/${next.slug}`}>
+          <span class="guide-prevnext-dir">Next →</span>
+          <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_en}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">End of series —</span>}
+    </div>
+  </nav>
 
-      <nav class="guide-prevnext" aria-label="Reading order navigation">
-        <div class="guide-prevnext-cell">
-          {prev ? (
-            <a href={`/guides/${prev.slug}`}>
-              <span class="guide-prevnext-dir">← Previous</span>
-              <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_en}</span>
-            </a>
-          ) : <span class="guide-prevnext-empty">— Start of series</span>}
-        </div>
-        <div class="guide-prevnext-cell guide-prevnext-next">
-          {next ? (
-            <a href={`/guides/${next.slug}`}>
-              <span class="guide-prevnext-dir">Next →</span>
-              <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_en}</span>
-            </a>
-          ) : <span class="guide-prevnext-empty">End of series —</span>}
-        </div>
-      </nav>
-    </main>
-  </article>
   <BlogFooter lang="en" />
 </Landing>

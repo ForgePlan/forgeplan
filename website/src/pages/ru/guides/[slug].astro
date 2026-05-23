@@ -65,49 +65,35 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
     <script src={src} is:inline></script>
   ))}
 
-  <article class="guide-page">
-    <main id="main-content" class="guide-main">
-      <nav class="guide-breadcrumb" aria-label="Хлебные крошки">
-        <a href="/ru/guides">← Все гайды</a>
-      </nav>
+  <nav class="guide-topbar" aria-label="Навигация урока">
+    <a href="/ru/guides" class="guide-topbar-back">← Все гайды</a>
+    <a href={altEn} class="guide-topbar-lang">EN →</a>
+  </nav>
 
-      <header class="guide-header">
-        <p class="guide-eyebrow">
-          <span class={`guides-card-pill guides-pill-${guide.pill}`}>{guide.pill}</span>
-          <span>#{String(guide.order).padStart(2, '0')} · {guide.tag_ru}</span>
-        </p>
-        <h1>{guide.title_ru}</h1>
-        <p class="guide-summary">{guide.desc_ru}</p>
-        <p class="guide-lang-note">
-          <a href={altEn}>Read in English →</a>
-        </p>
-      </header>
+  <article id="main-content" class="guide-embedded" set:html={embed.bodyHtml}></article>
 
-      <div class="guide-embedded" set:html={embed.bodyHtml}></div>
+  {embed.inlineScripts.map(src => (
+    <script is:inline set:html={src}></script>
+  ))}
 
-      {embed.inlineScripts.map(src => (
-        <script is:inline set:html={src}></script>
-      ))}
+  <nav class="guide-prevnext" aria-label="Навигация по порядку чтения">
+    <div class="guide-prevnext-cell">
+      {prev ? (
+        <a href={`/ru/guides/${prev.slug}`}>
+          <span class="guide-prevnext-dir">← Назад</span>
+          <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_ru}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">— Начало серии</span>}
+    </div>
+    <div class="guide-prevnext-cell guide-prevnext-next">
+      {next ? (
+        <a href={`/ru/guides/${next.slug}`}>
+          <span class="guide-prevnext-dir">Вперёд →</span>
+          <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_ru}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">Конец серии —</span>}
+    </div>
+  </nav>
 
-      <nav class="guide-prevnext" aria-label="Навигация по порядку чтения">
-        <div class="guide-prevnext-cell">
-          {prev ? (
-            <a href={`/ru/guides/${prev.slug}`}>
-              <span class="guide-prevnext-dir">← Назад</span>
-              <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_ru}</span>
-            </a>
-          ) : <span class="guide-prevnext-empty">— Начало серии</span>}
-        </div>
-        <div class="guide-prevnext-cell guide-prevnext-next">
-          {next ? (
-            <a href={`/ru/guides/${next.slug}`}>
-              <span class="guide-prevnext-dir">Вперёд →</span>
-              <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_ru}</span>
-            </a>
-          ) : <span class="guide-prevnext-empty">Конец серии —</span>}
-        </div>
-      </nav>
-    </main>
-  </article>
   <BlogFooter lang="ru" />
 </Landing>
