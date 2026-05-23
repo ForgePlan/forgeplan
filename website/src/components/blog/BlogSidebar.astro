@@ -1,0 +1,185 @@
+---
+import { getCollection } from 'astro:content';
+
+interface Props {
+  lang: 'en' | 'ru';
+}
+const { lang } = Astro.props;
+
+const posts = (await getCollection('blog', ({ data }) =>
+  data.lang === lang && !data.draft
+)).sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf());
+
+// Latest 5
+const latest = posts.slice(0, 5);
+
+// Topics with counts
+const topicCounts = new Map<string, number>();
+for (const p of posts) {
+  topicCounts.set(p.data.topic, (topicCounts.get(p.data.topic) ?? 0) + 1);
+}
+const topicsSorted = [...topicCounts.entries()].sort((a, b) => b[1] - a[1]);
+
+// Archive by year-month
+const archiveCounts = new Map<string, number>();
+for (const p of posts) {
+  const ym = p.data.publishedAt.toISOString().slice(0, 7); // "2026-05"
+  archiveCounts.set(ym, (archiveCounts.get(ym) ?? 0) + 1);
+}
+const archive = [...archiveCounts.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+
+// Series with counts
+const seriesCounts = new Map<string, number>();
+for (const p of posts) {
+  if (p.data.series) {
+    seriesCounts.set(p.data.series, (seriesCounts.get(p.data.series) ?? 0) + 1);
+  }
+}
+const series = [...seriesCounts.entries()].sort((a, b) => b[1] - a[1]);
+
+const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
+const stripLang = (id: string) =>
+  id.replace(new RegExp(`^${lang}/`), '').replace(/\.(md|mdx)$/, '');
+
+const t = lang === 'ru'
+  ? {
+      about: 'Об авторе',
+      latest: 'Свежие посты',
+      topics: 'Темы',
+      archive: 'Архив',
+      series: 'Серии',
+      subscribe: 'Подписка',
+      rss: 'RSS лента',
+      view: 'Открыть →',
+      noPosts: 'Пока нет постов',
+      bio: 'Indie hacker. Forgeplan создатель. Пишу про методологию, AI-агентов и Rust.',
+    }
+  : {
+      about: 'About',
+      latest: 'Latest posts',
+      topics: 'Topics',
+      archive: 'Archive',
+      series: 'Series',
+      subscribe: 'Subscribe',
+      rss: 'RSS feed',
+      view: 'Open →',
+      noPosts: 'No posts yet',
+      bio: 'Indie hacker. Creator of Forgeplan. Writing about methodology, AI agents, and Rust.',
+    };
+
+const monthName = (ym: string): string => {
+  const [y, m] = ym.split('-');
+  if (lang === 'ru') {
+    const months = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+    return `${months[parseInt(m, 10) - 1]} ${y}`;
+  }
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[parseInt(m, 10) - 1]} ${y}`;
+};
+
+const rssUrl = lang === 'ru' ? '/ru/blog/rss.xml' : '/blog/rss.xml';
+---
+<aside class="blog-sidebar" aria-label={lang === 'ru' ? 'Боковая панель' : 'Sidebar'}>
+
+  <!-- About author -->
+  <section class="blog-sidebar-widget">
+    <h3 class="blog-sidebar-title">{t.about}</h3>
+    <p class="blog-sidebar-author-name">Eli Rum</p>
+    <p class="blog-sidebar-author-bio">{t.bio}</p>
+    <a href="https://elirum.me" rel="external noopener" target="_blank" class="blog-sidebar-author-link">elirum.me →</a>
+  </section>
+
+  <!-- Latest posts -->
+  <section class="blog-sidebar-widget">
+    <h3 class="blog-sidebar-title">{t.latest}</h3>
+    {latest.length > 0 ? (
+      <ul class="blog-sidebar-list">
+        {latest.map(post => (
+          <li>
+            <a href={`${langPrefix}/${stripLang(post.id)}`}>
+              <span class="blog-sidebar-post-title">{post.data.title}</span>
+              <span class="blog-sidebar-post-date">{post.data.publishedAt.toISOString().slice(0, 10)}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    ) : <p class="blog-sidebar-empty">{t.noPosts}</p>}
+  </section>
+
+  <!-- Topics with counts -->
+  {topicsSorted.length > 0 && (
+    <section class="blog-sidebar-widget">
+      <h3 class="blog-sidebar-title">{t.topics}</h3>
+      <ul class="blog-sidebar-tags">
+        {topicsSorted.map(([topic, count]) => (
+          <li>
+            <button class={`blog-sidebar-tag blog-sidebar-tag-${topic}`} data-topic={topic} type="button">
+              <span>{topic}</span>
+              <span class="blog-sidebar-count">{count}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )}
+
+  <!-- Series -->
+  {series.length > 0 && (
+    <section class="blog-sidebar-widget">
+      <h3 class="blog-sidebar-title">{t.series}</h3>
+      <ul class="blog-sidebar-list">
+        {series.map(([name, count]) => (
+          <li>
+            <a href={`${langPrefix}/series/${name}`}>
+              <span class="blog-sidebar-post-title">{name}</span>
+              <span class="blog-sidebar-post-date">{count}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )}
+
+  <!-- Archive by month -->
+  {archive.length > 0 && (
+    <section class="blog-sidebar-widget">
+      <h3 class="blog-sidebar-title">{t.archive}</h3>
+      <ul class="blog-sidebar-archive">
+        {archive.map(([ym, count]) => (
+          <li>
+            <span class="blog-sidebar-archive-month">{monthName(ym)}</span>
+            <span class="blog-sidebar-archive-count">{count}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )}
+
+  <!-- Subscribe -->
+  <section class="blog-sidebar-widget">
+    <h3 class="blog-sidebar-title">{t.subscribe}</h3>
+    <a href={rssUrl} class="blog-sidebar-rss">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path d="M4 11a9 9 0 0 1 9 9"/>
+        <path d="M4 4a16 16 0 0 1 16 16"/>
+        <circle cx="5" cy="19" r="1"/>
+      </svg>
+      <span>{t.rss}</span>
+    </a>
+  </section>
+
+</aside>
+
+<script>
+  // Topics widget hook into existing TopicFilter
+  document.querySelectorAll<HTMLElement>('.blog-sidebar-tag[data-topic]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const topic = btn.dataset.topic;
+      const filterPill = document.querySelector<HTMLElement>(`.blog-topic-pill[data-topic="${topic}"]`);
+      if (filterPill) {
+        filterPill.click();
+        filterPill.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  });
+</script>
