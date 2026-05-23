@@ -114,6 +114,21 @@ html {
 .nav-cell:hover,
 .nav-cell:focus-visible { color: var(--forge-bg); } /* inverted: fg text → bg text */
 .nav-cell:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
+/* Active route highlight — accent underline + tinted bg */
+.nav-cell.active {
+  color: var(--color-forge-ember);
+  font-weight: 500;
+}
+.nav-cell.active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  width: 24px;
+  height: 2px;
+  background: var(--color-forge-ember);
+}
 
 /* Logo/toggle hover — ember → fg color (white in dark, dark in light) */
 #theme-toggle { transition: transform 0.3s; border: none; }

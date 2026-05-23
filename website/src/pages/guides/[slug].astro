@@ -66,9 +66,15 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
     <script src={src} is:inline></script>
   ))}
 
-  <!-- Top compact bar: just breadcrumb + lang switch -->
-  <nav class="guide-topbar" aria-label="Guide navigation">
-    <a href="/guides" class="guide-topbar-back">← All guides</a>
+  <!-- Top compact bar: full breadcrumb (Forgeplan / Guides / Lesson) + lang switch -->
+  <nav class="guide-topbar" aria-label="Breadcrumb">
+    <ol class="guide-crumbs">
+      <li><a href="/">Forgeplan</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li><a href="/guides">Guides</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li class="guide-crumb-current" aria-current="page">{guide.title_en}</li>
+    </ol>
     <a href={altRu} class="guide-topbar-lang">RU →</a>
   </nav>
 

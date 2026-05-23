@@ -65,8 +65,14 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
     <script src={src} is:inline></script>
   ))}
 
-  <nav class="guide-topbar" aria-label="Навигация урока">
-    <a href="/ru/guides" class="guide-topbar-back">← Все гайды</a>
+  <nav class="guide-topbar" aria-label="Хлебные крошки">
+    <ol class="guide-crumbs">
+      <li><a href="/ru">Forgeplan</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li><a href="/ru/guides">Гайды</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li class="guide-crumb-current" aria-current="page">{guide.title_ru}</li>
+    </ol>
     <a href={altEn} class="guide-topbar-lang">EN →</a>
   </nav>
 

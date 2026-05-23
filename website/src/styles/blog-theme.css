@@ -1894,3 +1894,54 @@ html.dark .guide-embedded .evidence-table td {
 html.light .guide-embedded code {
   color: #b03a10 !important;
 }
+
+/* === PR-2A-followup: full breadcrumb in guide topbar === */
+.guide-topbar ol.guide-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  align-items: center;
+}
+.guide-topbar ol.guide-crumbs li { display: flex; align-items: center; }
+.guide-topbar ol.guide-crumbs a {
+  color: var(--text-3, var(--forge-fg));
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+.guide-topbar ol.guide-crumbs a:hover { color: var(--accent, var(--forge-ember)); }
+.guide-topbar .guide-crumb-sep { color: var(--text-4, var(--forge-line)); }
+.guide-topbar .guide-crumb-current {
+  color: var(--text-1, var(--forge-fg));
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+
+/* === PR-2A-followup: breadcrumb clearance + reduce gap to embedded === */
+/* Header is position:fixed at top:0 height ~88px. .guide-topbar is the
+   first child after Header → without margin-top it slides UNDER Header. */
+.guide-topbar {
+  margin-top: 96px !important;   /* clear fixed Header (88) + 8 buffer */
+  padding: 8px 32px 8px !important;
+}
+
+/* Embedded article: breadcrumb above already gives context, no need for
+   another 120/88px gap. 16px is enough breathing room before lesson title. */
+article.guide-embedded {
+  padding-top: 16px !important;
+}
+
+/* prev/next nav after embedded — keep moderate gap above */
+.guide-prevnext { margin-top: 40px; }

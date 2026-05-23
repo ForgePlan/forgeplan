@@ -40,6 +40,12 @@ export default defineConfig({
       { icon: 'github', label: 'GitHub', href: 'https://github.com/ForgePlan/forgeplan' },
     ],
     customCss: ['./src/styles/forge-theme.css'],
+    components: {
+      // Replace Starlight's default top header with our site Header.astro
+      // so /docs/* shows the same nav (Docs · Blog · Guides · GitHub · CLI · MCP · Install)
+      // with active route highlight, instead of Starlight's branded variant.
+      Header: './src/components/StarlightHeaderWrapper.astro',
+    },
     sidebar: [
       {
         label: 'Getting Started',
