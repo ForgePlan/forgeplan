@@ -1,0 +1,107 @@
+---
+import Landing from '../../../layouts/Landing.astro';
+import Header from '../../../components/Header.astro';
+import BlogFooter from '../../../components/blog/BlogFooter.astro';
+import SiteJsonLd from '../../../components/SiteJsonLd.astro';
+import { guides, getGuide } from '../../../data/guides.ts';
+import '../../../styles/blog-theme.css';
+
+export async function getStaticPaths() {
+  return guides.map(g => ({ params: { slug: g.slug } }));
+}
+
+const { slug } = Astro.params;
+const guide = getGuide(slug as string);
+if (!guide) throw new Error(`Guide not found: ${slug}`);
+
+const site = Astro.site ?? new URL('https://forgeplan.dev');
+const canonical = new URL(Astro.url.pathname, site).href;
+const altEn = new URL(`/guides/${slug}`, site).href;
+
+const ld = {
+  '@context': 'https://schema.org',
+  '@type': 'LearningResource',
+  name: guide.title_ru,
+  description: guide.desc_ru,
+  url: canonical,
+  inLanguage: 'ru',
+  isPartOf: { '@type': 'WebSite', name: 'Forgeplan', url: site.href },
+  learningResourceType: guide.pill === 'interactive' ? 'Interactive Resource' : 'Lesson',
+  educationalLevel: 'Intermediate',
+};
+const breadcrumbs = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Forgeplan', item: site.href },
+    { '@type': 'ListItem', position: 2, name: 'Гайды', item: new URL('/ru/guides/', site).href },
+    { '@type': 'ListItem', position: 3, name: guide.title_ru, item: canonical },
+  ],
+};
+const safeJson = (o: unknown) => JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+
+const ordered = [...guides].sort((a, b) => a.order - b.order);
+const idx = ordered.findIndex(g => g.slug === slug);
+const prev = idx > 0 ? ordered[idx - 1] : null;
+const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+---
+<Landing title={`${guide.title_ru} — Forgeplan Гайды`} description={guide.desc_ru} lang="ru">
+  <Header />
+  <link slot="head" rel="canonical" href={canonical} />
+  <link slot="head" rel="alternate" hreflang="ru" href={canonical} />
+  <link slot="head" rel="alternate" hreflang="en" href={altEn} />
+  <link slot="head" rel="alternate" hreflang="x-default" href={altEn} />
+  <script slot="head" type="application/ld+json" set:html={safeJson(ld)} />
+  <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
+  <SiteJsonLd lang="ru" />
+
+  <article class="guide-page">
+    <main id="main-content" class="guide-main">
+      <nav class="guide-breadcrumb" aria-label="Хлебные крошки">
+        <a href="/ru/guides">← Все гайды</a>
+      </nav>
+
+      <header class="guide-header">
+        <p class="guide-eyebrow">
+          <span class={`guides-card-pill guides-pill-${guide.pill}`}>{guide.pill}</span>
+          <span>#{String(guide.order).padStart(2, '0')} · {guide.tag_ru}</span>
+        </p>
+        <h1>{guide.title_ru}</h1>
+        <p class="guide-summary">{guide.desc_ru}</p>
+        <p class="guide-lang-note">
+          <a href={altEn}>Read in English →</a>
+        </p>
+      </header>
+
+      <div class="guide-frame-wrap">
+        <iframe
+          src={`/guides-raw/${slug}.html`}
+          title={guide.title_ru}
+          class="guide-frame"
+          loading="lazy"
+          sandbox="allow-scripts allow-same-origin allow-popups"
+        />
+      </div>
+
+      <nav class="guide-prevnext" aria-label="Навигация по порядку чтения">
+        <div class="guide-prevnext-cell">
+          {prev ? (
+            <a href={`/ru/guides/${prev.slug}`}>
+              <span class="guide-prevnext-dir">← Назад</span>
+              <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_ru}</span>
+            </a>
+          ) : <span class="guide-prevnext-empty">— Начало серии</span>}
+        </div>
+        <div class="guide-prevnext-cell guide-prevnext-next">
+          {next ? (
+            <a href={`/ru/guides/${next.slug}`}>
+              <span class="guide-prevnext-dir">Вперёд →</span>
+              <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_ru}</span>
+            </a>
+          ) : <span class="guide-prevnext-empty">Конец серии —</span>}
+        </div>
+      </nav>
+    </main>
+  </article>
+  <BlogFooter lang="ru" />
+</Landing>

@@ -36,6 +36,21 @@ The MCP server exposes the same operations to any agent via stdio.
 - [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): from `forgeplan init` to first activated PRD in 5 minutes
 - [Configuration](https://forgeplan.dev/docs/getting-started/configuration): config.yaml + LLM provider setup
 
+## Guides — interactive lessons
+
+- [Guides index (EN)](https://forgeplan.dev/guides): catalog of 10 interactive lessons
+- [Guides index (RU)](https://forgeplan.dev/ru/guides): русская версия (mirror)
+- [Decision Cycle](https://forgeplan.dev/guides/decision-cycle): ADI + DDR + Trust Calculus
+- [Trust Calculus 3D](https://forgeplan.dev/guides/trust-calculus): F/G/R in 3D interactive scene
+- [BMAD Cycle](https://forgeplan.dev/guides/bmad-cycle): 4 phases + 13-step PRD + adversarial review
+- [Spec Cycle](https://forgeplan.dev/guides/spec-cycle): delta-spec, R_eff = min(scores)
+- [Forgeplan Cycle](https://forgeplan.dev/guides/forgeplan-cycle): the tool itself — POS for methodologies
+- [DAG Explorer](https://forgeplan.dev/guides/dag-explorer): 3D artifact graph (interactive)
+- [Depth Calibrator](https://forgeplan.dev/guides/depth-calibrator): real-time routing calculator (interactive)
+- [Lifecycle Cycle](https://forgeplan.dev/guides/lifecycle-cycle): draft → active → terminal states
+- [Agent Protocol Cycle](https://forgeplan.dev/guides/agent-protocol-cycle): Hint Contract 5 markers
+- [Multi-agent Cycle](https://forgeplan.dev/guides/multi-agent-cycle): dispatch / claim / release
+
 ## Blog
 
 - [Blog index (EN)](https://forgeplan.dev/blog): long-form writing on R_eff, ADI, FPF, MCP, methodology

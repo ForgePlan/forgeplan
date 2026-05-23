@@ -1,0 +1,75 @@
+---
+import Landing from '../../layouts/Landing.astro';
+import Header from '../../components/Header.astro';
+import BlogFooter from '../../components/blog/BlogFooter.astro';
+import { guides } from '../../data/guides.ts';
+import '../../styles/blog-theme.css';
+
+const orderedGuides = [...guides].sort((a, b) => a.order - b.order);
+const interactiveCount = guides.filter(g => g.pill === 'interactive').length;
+const theoryCount = guides.filter(g => g.pill === 'theory').length;
+---
+<Landing
+  title="Guides — Forgeplan"
+  description="Interactive lessons on Forgeplan methodology — ADI, R_eff, BMAD, multi-agent dispatch. Theory + 3D visualizations."
+>
+  <Header />
+  <article class="guides-index">
+    <main id="main-content" class="guides-main">
+      <p class="guides-eyebrow">GUIDES · INTERACTIVE LESSONS</p>
+      <h1 class="guides-heading">Methodology in motion</h1>
+      <p class="guides-lead">
+        Ten standalone interactive lessons that explain Forgeplan methodology
+        from the inside out: how decisions are scored, why R_eff equals min()
+        not average, how a PRD becomes a Spec becomes a shipped feature, and
+        how multiple AI agents stay out of each other's way.
+      </p>
+
+      <div class="guides-stats">
+        <div class="guides-stat"><strong>{guides.length}</strong> lessons</div>
+        <div class="guides-stat"><strong>{theoryCount}</strong> theory</div>
+        <div class="guides-stat"><strong>{interactiveCount}</strong> interactive</div>
+        <div class="guides-stat"><strong>~120 min</strong> total reading</div>
+      </div>
+
+      <h2 class="guides-section-title">Reading order</h2>
+      <p class="guides-section-desc">
+        Built linearly — each lesson references concepts from the previous.
+        Companion interactive pages (3D charts, calculators) follow their
+        theory pairs.
+      </p>
+
+      <ol class="guides-order">
+        {orderedGuides.map(g => (
+          <li>
+            <a href={`/guides/${g.slug}`} class={`guides-card guides-cat-${g.category}`}>
+              <div class="guides-card-num">{String(g.order).padStart(2, '0')}</div>
+              <div class="guides-card-body">
+                <div class="guides-card-meta">
+                  <span class="guides-card-tag">{g.tag_en}</span>
+                  <span class={`guides-card-pill guides-pill-${g.pill}`}>{g.pill}</span>
+                </div>
+                <div class="guides-card-title">{g.title_en}</div>
+                <div class="guides-card-desc">{g.desc_en}</div>
+              </div>
+              <span class="guides-card-arrow">→</span>
+            </a>
+          </li>
+        ))}
+      </ol>
+
+      <h2 class="guides-section-title">External documentation</h2>
+      <p class="guides-section-desc">
+        Beyond these lessons: full Forgeplan reference.
+      </p>
+      <a class="guides-ext-link" href="/docs/methodology/overview">
+        <div class="guides-ext-body">
+          <span class="guides-ext-tag">forgeplan.dev · official docs</span>
+          <span class="guides-ext-title">Methodology Overview · 10 Rules · CLI Reference · MCP Reference · Marketplace</span>
+        </div>
+        <span class="guides-ext-arrow">→</span>
+      </a>
+    </main>
+  </article>
+  <BlogFooter lang="en" />
+</Landing>

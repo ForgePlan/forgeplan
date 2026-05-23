@@ -1,0 +1,76 @@
+---
+import Landing from '../../../layouts/Landing.astro';
+import Header from '../../../components/Header.astro';
+import BlogFooter from '../../../components/blog/BlogFooter.astro';
+import { guides } from '../../../data/guides.ts';
+import '../../../styles/blog-theme.css';
+
+const orderedGuides = [...guides].sort((a, b) => a.order - b.order);
+const interactiveCount = guides.filter(g => g.pill === 'interactive').length;
+const theoryCount = guides.filter(g => g.pill === 'theory').length;
+---
+<Landing
+  title="Гайды — Forgeplan"
+  description="Интерактивные разборы методологии Forgeplan — ADI, R_eff, BMAD, multi-agent. Теория + 3D визуализации."
+  lang="ru"
+>
+  <Header />
+  <article class="guides-index">
+    <main id="main-content" class="guides-main">
+      <p class="guides-eyebrow">ГАЙДЫ · ИНТЕРАКТИВНЫЕ РАЗБОРЫ</p>
+      <h1 class="guides-heading">Методология в движении</h1>
+      <p class="guides-lead">
+        Десять самодостаточных интерактивных уроков, объясняющих методологию
+        Forgeplan изнутри: как оцениваются решения, почему R_eff = min() а не
+        среднее, как PRD превращается в Spec и в выкаченную фичу, и как
+        несколько AI-агентов не мешают друг другу в одном репо.
+      </p>
+
+      <div class="guides-stats">
+        <div class="guides-stat"><strong>{guides.length}</strong> уроков</div>
+        <div class="guides-stat"><strong>{theoryCount}</strong> теории</div>
+        <div class="guides-stat"><strong>{interactiveCount}</strong> интерактив</div>
+        <div class="guides-stat"><strong>~120 мин</strong> чтения</div>
+      </div>
+
+      <h2 class="guides-section-title">Порядок чтения</h2>
+      <p class="guides-section-desc">
+        Построено линейно — каждый урок опирается на концепты предыдущего.
+        Интерактивные приложения (3D-графики, калькуляторы) идут за теоретическими
+        парами.
+      </p>
+
+      <ol class="guides-order">
+        {orderedGuides.map(g => (
+          <li>
+            <a href={`/ru/guides/${g.slug}`} class={`guides-card guides-cat-${g.category}`}>
+              <div class="guides-card-num">{String(g.order).padStart(2, '0')}</div>
+              <div class="guides-card-body">
+                <div class="guides-card-meta">
+                  <span class="guides-card-tag">{g.tag_ru}</span>
+                  <span class={`guides-card-pill guides-pill-${g.pill}`}>{g.pill}</span>
+                </div>
+                <div class="guides-card-title">{g.title_ru}</div>
+                <div class="guides-card-desc">{g.desc_ru}</div>
+              </div>
+              <span class="guides-card-arrow">→</span>
+            </a>
+          </li>
+        ))}
+      </ol>
+
+      <h2 class="guides-section-title">Полная документация</h2>
+      <p class="guides-section-desc">
+        За пределами этих уроков: справочник Forgeplan.
+      </p>
+      <a class="guides-ext-link" href="/ru/docs/methodology/overview">
+        <div class="guides-ext-body">
+          <span class="guides-ext-tag">forgeplan.dev · официальные docs</span>
+          <span class="guides-ext-title">Methodology Overview · 10 правил · CLI Reference · MCP Reference · Marketplace</span>
+        </div>
+        <span class="guides-ext-arrow">→</span>
+      </a>
+    </main>
+  </article>
+  <BlogFooter lang="ru" />
+</Landing>

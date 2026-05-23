@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Цикл одного решения · ADI · DDR · Trust Calculus — ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --f-color: #ff5a1f;
+    --g-color: #22c55e;
+    --r-color: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
+  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  b.k { color: var(--text); font-weight: 500; }
+  .ax-f { color: var(--f-color); font-weight: 500; }
+  .ax-g { color: var(--g-color); font-weight: 500; }
+  .ax-r { color: var(--r-color); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept block */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  /* Definition list */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; counter-reset: deflist; }
+  .deflist li { position: relative; padding: 10px 0 10px 36px; border-top: 1px solid var(--line); font-size: 14.5px; color: var(--text-2); line-height: 1.55; }
+  .deflist li:last-child { border-bottom: 1px solid var(--line); }
+  .deflist li::before { counter-increment: deflist; content: "0" counter(deflist); position: absolute; left: 0; top: 13px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .deflist li b { color: var(--text); font-weight: 500; }
+  .deflist li .term { color: var(--accent); font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.02em; }
+
+  /* Key insight callout */
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Example callout (Vault scenario, etc) */
+  .example-box { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 20px; margin: 16px 0 0; }
+  .example-box .ex-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .example-box p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.6; max-width: 760px; }
+  .example-box p + p { margin-top: 10px; }
+
+  /* ADI two-path visualization */
+  .adi-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .path-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 18px 20px; }
+  .path-col.bad  { border-top: 2px solid var(--err); }
+  .path-col.good { border-top: 2px solid var(--ok); }
+  .path-col .path-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .path-col.bad  .path-tag { color: var(--err); }
+  .path-col.good .path-tag { color: var(--ok); }
+  .path-col .path-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 14px; line-height: 1.35; }
+  .path-step { background: var(--bg-1); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; font-size: 13px; color: var(--text-1); margin-top: 6px; line-height: 1.4; }
+  .path-step.first { margin-top: 0; }
+  .path-step .hyp-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); display: block; margin-bottom: 2px; }
+  .path-step .pred { color: var(--text-2); font-size: 12px; margin-top: 3px; }
+  .path-step .verdict { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 6px; display: inline-block; }
+  .path-step .verdict.refuted { color: var(--err); }
+  .path-step .verdict.confirmed { color: var(--ok); }
+  .path-arrow { text-align: center; color: var(--text-3); font-family: var(--font-mono); font-size: 14px; line-height: 1; margin: 4px 0 0; }
+  .path-col .path-summary { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .path-col.bad  .path-summary { color: var(--err); }
+  .path-col.good .path-summary { color: var(--ok); }
+
+  /* DDR card mockup */
+  .ddr-mockup { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .ddr-mockup .ddr-head { background: var(--bg-3); padding: 14px 20px; border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .ddr-mockup .ddr-head .ddr-id { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; color: var(--text); }
+  .ddr-mockup .ddr-head .ddr-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ok); padding: 2px 8px; background: rgba(34, 197, 94, 0.12); border-radius: 3px; }
+  .ddr-sec { padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  .ddr-sec:last-child { border-bottom: none; }
+  .ddr-sec .sec-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .ddr-sec .sec-body { font-size: 13.5px; color: var(--text-1); line-height: 1.5; max-width: 820px; }
+  .ddr-sec.decay { background: rgba(255, 90, 31, 0.06); position: relative; }
+  .ddr-sec.decay::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+  .ddr-sec.decay .sec-tag { color: var(--accent); }
+  .ddr-sec.decay .sec-extra { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-top: 6px; }
+
+  /* Trust Calculus mini comparison */
+  .trust-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .ev-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px 18px; }
+  .ev-card .ev-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .ev-card .ev-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 12px; line-height: 1.3; }
+  .axis-bar { display: grid; grid-template-columns: 22px 1fr 36px; gap: 10px; align-items: center; margin: 6px 0; font-family: var(--font-mono); font-size: 12px; }
+  .axis-bar .lbl { font-weight: 500; }
+  .axis-bar.f .lbl  { color: var(--f-color); }
+  .axis-bar.g .lbl  { color: var(--g-color); }
+  .axis-bar.r .lbl  { color: var(--r-color); }
+  .axis-bar .track { background: var(--bg-1); height: 8px; border-radius: 4px; overflow: hidden; }
+  .axis-bar .fill { height: 100%; border-radius: 4px; transition: width .4s ease; }
+  .axis-bar.f .fill { background: var(--f-color); }
+  .axis-bar.g .fill { background: var(--g-color); }
+  .axis-bar.r .fill { background: var(--r-color); }
+  .axis-bar .val { text-align: right; color: var(--text-1); }
+  .ev-card .ev-meta { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .ev-card .ev-meta .wlnk-val { color: var(--err); font-weight: 500; }
+
+  /* Worked example timeline */
+  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px 24px; margin: 22px 0 0; }
+  .worked-step { display: grid; grid-template-columns: 70px 1fr; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .worked-step:first-of-type { border-top: none; padding-top: 4px; }
+  .worked-step .step-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+  .worked-step .step-content h4 { margin: 0 0 6px; font-size: 15px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .worked-step .step-content p { margin: 0; font-size: 13.5px; color: var(--text-2); line-height: 1.55; }
+
+  /* Inline deep-link (compact pointer внутри концепта) */
+  .deep-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 14px 18px; margin: 18px 0 0; text-decoration: none; transition: border-color .2s, background .2s; }
+  .deep-link:hover { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
+  .deep-link .dl-text { display: flex; flex-direction: column; gap: 2px; }
+  .deep-link .dl-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+  .deep-link .dl-title { font-family: var(--font-sans); font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .deep-link .dl-arrow { font-family: var(--font-mono); font-size: 18px; color: var(--accent); letter-spacing: -0.05em; }
+
+  /* Next step pointer card */
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 22px 0 0; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 26px; bottom: 18px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step h3 { font-size: 18px; }
+  .next-step p { margin: 6px 0 12px; font-size: 14.5px; color: var(--text-2); max-width: 760px; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  /* Teaching / reader walkthrough */
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  /* Footer */
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; }
+    .pipe-arrow { display: none; }
+    .adi-paths, .trust-compare { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; }
+    .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- ============ HERO ============ -->
+  <p class="eyebrow">Цикл одного решения · теория</p>
+  <h1>ADI · DDR · Trust Calculus</h1>
+  <p class="lead">
+    Три концепции, которые превращают «мы тогда обсуждали» в воспроизводимый процесс.
+    <b class="k">ADI</b> учит выписывать минимум три версии перед фиксом, <b class="k">DDR</b>
+    фиксирует решение и условия пересмотра, <b class="k">Trust Calculus</b> оценивает силу
+    каждого доказательства. Дальше они складываются в один цикл — этот разбор его и показывает.
+  </p>
+
+  <!-- ============ MINI-PIPELINE PREVIEW ============ -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · ADI</div>
+      <div class="step-title">Три гипотезы</div>
+      <div class="step-desc">Abduction → Deduction → Induction</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · DDR</div>
+      <div class="step-title">Мотивировочная часть</div>
+      <div class="step-desc">6 секций, включая Evidence Decay</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Trust Calculus</div>
+      <div class="step-title">Сила evidence</div>
+      <div class="step-desc"><span class="ax-f">F</span> · <span class="ax-g">G</span> · <span class="ax-r">R</span> по шкале 0–9</div>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 01 · ADI ============ -->
+  <h2>01 · ADI-цикл — как работает следователь</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 01 · аналогия следователя</div>
+    <h3 class="concept-h">Хороший следователь не фиксируется на первой версии</h3>
+    <p class="analogy">
+      Представьте следователя на месте преступления. Плохой следователь фиксируется на первой
+      версии («это сосед, у них был конфликт») и всё оставшееся расследование ищет
+      подтверждения. Хороший следователь работает иначе: сначала выдвигает три-четыре версии,
+      для каждой формулирует «если это правда, то в таком-то месте должны быть такие-то следы»,
+      а потом идёт проверять. Если следы не сходятся — версия выбывает. Остаётся та, которая
+      выдержала все проверки.
+    </p>
+    <p class="analogy">
+      ADI-цикл — это ровно такой же способ мышления, только про архитектурные решения.
+    </p>
+
+    <ul class="deflist">
+      <li>
+        <span class="term">Abduction</span> · генерация гипотез. <b>Минимум три.</b> Не одну, не две — три.
+        Порог именно такой, потому что две гипотезы почти всегда превращаются в ложную дихотомию
+        («либо Redis, либо Postgres»), а третья гипотеза часто ломает эту дихотомию и оказывается
+        самой интересной («in-process LRU без сети вообще»).
+      </li>
+      <li>
+        <span class="term">Deduction</span> · логический вывод. Для каждой гипотезы формулируем «если она верна,
+        то должно <b>наблюдаться</b> вот это». Если ни одно следствие нельзя проверить — это не гипотеза,
+        а красивая фраза.
+      </li>
+      <li>
+        <span class="term">Induction</span> · проверка фактами. Бенчмарк, тест, ссылка на документацию, разговор
+        с командой, замер. Каждое evidence подтверждает или опровергает конкретное предсказание
+        из дедукции. Не «вот статья», а «вот статья, и она опровергает гипотезу 2».
+      </li>
+    </ul>
+
+    <div class="example-box">
+      <div class="ex-tag">Живой пример · Vault hybrid search</div>
+      <p>
+        В Knowledge Vault сейчас hybrid search на <code>sqlite-vec</code>. Допустим, через 3 месяца
+        появится требование «искать по 50k заметок с p99 &lt; 100 ms». Без ADI вы или агент уйдёте
+        чинить первое, что пришло в голову — например, «добавим Qdrant». Полчаса работы, и
+        оказывается, что bottleneck был не в кэше, а в том, как делается reranking.
+      </p>
+      <p>
+        С ADI вы сначала выписываете три гипотезы: (1) <code>sqlite-vec</code> не справляется при 50k,
+        (2) reranking на стороне Node занимает 80% времени, (3) RRF с k=60 даёт слишком большое
+        окно. Для каждой формулируете проверяемое следствие. Идёте смотреть <code>EXPLAIN ANALYZE</code>
+        и трейсы. Пять минут — гипотеза 2 подтверждается. Агент не улетает на 30 минут чинить не то.
+      </p>
+    </div>
+
+    <!-- ADI two-path visualization -->
+    <div class="adi-paths">
+      <div class="path-col bad">
+        <div class="path-tag">Один следователь · одна версия</div>
+        <div class="path-title">Плохой следователь — фиксируется на первой версии</div>
+        <div class="path-step first">
+          <span class="hyp-tag">Версия (единственная)</span>
+          <code>sqlite-vec</code> не справляется
+        </div>
+        <div class="path-arrow">↓</div>
+        <div class="path-step">
+          <span class="hyp-tag">Действие</span>
+          Идти добавлять Qdrant
+        </div>
+        <div class="path-arrow">↓</div>
+        <div class="path-step">
+          <span class="hyp-tag">Через 30 минут</span>
+          Замер показывает: bottleneck был в reranking
+          <div><span class="verdict refuted">✗ исправлено не то</span></div>
+        </div>
+        <div class="path-summary">30 мин случайного фикса</div>
+      </div>
+
+      <div class="path-col good">
+        <div class="path-tag">Один следователь · три версии</div>
+        <div class="path-title">Хороший следователь — три гипотезы перед действием</div>
+        <div class="path-step first">
+          <span class="hyp-tag">H1 · индекс</span>
+          <code>sqlite-vec</code> не справляется при 50k
+          <div class="pred">Прогноз: <code>EXPLAIN ANALYZE</code> &gt; 50 ms</div>
+          <div><span class="verdict refuted">✗ опровергнута</span></div>
+        </div>
+        <div class="path-step">
+          <span class="hyp-tag">H2 · reranking</span>
+          Reranking на Node занимает 80% времени
+          <div class="pred">Прогноз: trace покажет &gt; 60% в rerank</div>
+          <div><span class="verdict confirmed">✓ подтверждена</span></div>
+        </div>
+        <div class="path-step">
+          <span class="hyp-tag">H3 · окно</span>
+          RRF k=60 даёт слишком большое окно
+          <div class="pred">Прогноз: k=20 → −25% latency</div>
+          <div><span class="verdict confirmed">✓ подтверждена частично</span></div>
+        </div>
+        <div class="path-summary">5 мин диагностики · видно, куда копать</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Ключевое отличие</div>
+      <p>
+        ADI не замедляет работу. Вы тратите 10 минут на диагностику вместо 30 минут на случайный
+        фикс. Это не про замедление — это про то, чтобы не бежать в неправильную сторону.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 02 · DDR ============ -->
+  <h2>02 · DDR — судебное решение для архитектурных выборов</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 02 · аналогия суда</div>
+    <h3 class="concept-h">Мотивировочная часть для технического решения</h3>
+    <p class="analogy">
+      Итак, вы прогнали ADI, выбрали решение. Дальше возникает вопрос: что с этим делать, чтобы
+      через три месяца коллега (или вы сами) могли понять, почему было сделано именно так?
+    </p>
+    <p class="analogy">
+      Аналогия — судебное решение. Судья не просто говорит «виновен» или «невиновен». Он пишет
+      мотивировочную часть: какие доказательства рассмотрены, какие отвергнуты и почему, на каком
+      основании сделан вывод. Через год, если появятся новые обстоятельства, дело можно
+      пересмотреть — и у следующего судьи есть полная картина, а не «так решили тогда».
+    </p>
+    <p class="analogy">
+      <b class="k">DDR (Decision-Driven Record)</b> — это мотивировочная часть к вашему техническому
+      решению. Markdown-файл в репо, в <code>docs/decisions/DDR-NNN-&lt;slug&gt;.md</code>,
+      с шестью обязательными секциями:
+    </p>
+
+    <!-- DDR card mockup -->
+    <div class="ddr-mockup">
+      <div class="ddr-head">
+        <span class="ddr-id">DDR-042 · Уменьшение candidateLimit в поиске</span>
+        <span class="ddr-status">active</span>
+      </div>
+
+      <div class="ddr-sec">
+        <div class="sec-tag">01 · Контекст</div>
+        <div class="sec-body">Какая ситуация, какие ограничения, какие требования. Один-два абзаца.</div>
+      </div>
+      <div class="ddr-sec">
+        <div class="sec-tag">02 · Рассмотренные гипотезы</div>
+        <div class="sec-body">Минимум три — это выход из <i>Abduction</i>.</div>
+      </div>
+      <div class="ddr-sec">
+        <div class="sec-tag">03 · Предсказания и evidence</div>
+        <div class="sec-body">«Если X, то Y; вот замер / ссылка». Это <i>Deduction + Induction</i> вместе.</div>
+      </div>
+      <div class="ddr-sec">
+        <div class="sec-tag">04 · Принятое решение</div>
+        <div class="sec-body">Одно предложение.</div>
+      </div>
+      <div class="ddr-sec">
+        <div class="sec-tag">05 · Отвергнутые альтернативы</div>
+        <div class="sec-body">Каждая с конкретной причиной отказа. Не «не подошло», а «не подошло, потому что требует отдельного DevOps-ресурса, а у нас один».</div>
+      </div>
+      <div class="ddr-sec decay">
+        <div class="sec-tag">06 · Условия пересмотра</div>
+        <div class="sec-body">При каком событии, метрике или дате это решение надо открыть заново. Например: «пересмотреть, если заметок &gt; 100k, или если p99 опустится ниже 50 ms, или через 6 месяцев».</div>
+        <div class="sec-extra">⚡ Evidence Decay</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Шестой пункт — самая важная часть</div>
+      <p>
+        Без условий пересмотра DDR превращается в памятник: решение принято, закоммичено и забыто.
+        Через год RPS вырос в 10 раз, но «у нас же есть DDR про кэш», и никто в него не смотрит.
+        С условиями пересмотра DDR становится живым — у него есть срок годности.
+      </p>
+    </div>
+
+    <p style="margin-top: 22px;">
+      Это и называется <b class="k">Evidence Decay</b>: любое evidence устаревает. Бенчмарк 2023 года
+      про Redis 6.x не валиден для Redis 7.4. Цифры для вашего Vault на 50 заметках не валидны на
+      50 000. Хороший DDR это признаёт заранее.
+    </p>
+
+    <div class="insight">
+      <div class="insight-tag">Про длину</div>
+      <p>
+        DDR должен быть коротким — 200–400 слов, одна страница. Если получается 2000 слов, вы уже
+        не вернётесь к этому документу через месяц, и смысл пропадает. Это не ADR, не RFC, не
+        технический документ для review. Это заметка будущему себе.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 03 · TRUST CALCULUS ============ -->
+  <h2>03 · Trust Calculus — инспекция качества evidence</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 03 · аналогия инспектора</div>
+    <h3 class="concept-h">Каждое утверждение оценивается по трём независимым осям</h3>
+    <p class="analogy">
+      Теперь у вас есть DDR. Как понять, что evidence в нём достаточно сильное, чтобы на нём
+      основывать решение?
+    </p>
+    <p class="analogy">
+      Аналогия — инспекция сборки в строительстве. Инспектор не ставит «хорошо» или «плохо». Он
+      оценивает по конкретным осям: соответствие спецификации, качество материалов, допуски сборки.
+      Каждая ось независима, у каждой свой балл, и общая оценка — это не среднее, а способность
+      отличить объект, который можно сдавать, от объекта, на который нельзя ставить крышу.
+    </p>
+    <p class="analogy">
+      <b class="k">Trust Calculus</b> — то же самое для ваших утверждений. Каждое утверждение, на которое
+      опирается решение, оценивается по трём независимым осям, каждая по шкале 0–9:
+    </p>
+
+    <ul class="deflist">
+      <li>
+        <span class="term"><span class="ax-f">F</span> · Formality</span> — насколько строго сформулировано.
+        <b>0</b>: «мне кажется». <b>5</b>: явное утверждение с условиями («при нагрузке X метрика Y»).
+        <b>9</b>: формальная спецификация или доказательство.
+      </li>
+      <li>
+        <span class="term"><span class="ax-g">G</span> · Granularity</span> — насколько конкретно.
+        <b>0</b>: «это медленно». <b>5</b>: «быстрее на 15%».
+        <b>9</b>: «p99 = 47 ms на 10k RPS, payload 1 KB, setup описан».
+      </li>
+      <li>
+        <span class="term"><span class="ax-r">R</span> · Reliability</span> — откуда источник.
+        <b>0</b>: анекдот из Slack. <b>5</b>: несколько независимых источников.
+        <b>9</b>: peer-reviewed paper или ваш продакшен-бенчмарк.
+      </li>
+    </ul>
+
+    <p style="margin-top: 18px;">
+      Оси <b class="k">независимы</b>. Красивый маркетинговый whitepaper от вендора может быть
+      <span class="ax-f">F</span>7 <span class="ax-g">G</span>8 <span class="ax-r">R</span>2 — формально,
+      подробно, но источник продаёт вам свой продукт. Скриншот из Slack от коллеги с
+      reproducible benchmark может быть <span class="ax-f">F</span>2 <span class="ax-g">G</span>8
+      <span class="ax-r">R</span>7 — без оформления, но цифры реальные и воспроизводимые.
+    </p>
+
+    <!-- Trust Calculus mini comparison -->
+    <div class="trust-compare">
+      <div class="ev-card">
+        <div class="ev-tag">Evidence A · вендорский источник</div>
+        <div class="ev-title">Маркетинговый whitepaper</div>
+        <div class="axis-bar f"><span class="lbl">F</span><div class="track"><div class="fill" style="width: 77%"></div></div><span class="val">7</span></div>
+        <div class="axis-bar g"><span class="lbl">G</span><div class="track"><div class="fill" style="width: 88%"></div></div><span class="val">8</span></div>
+        <div class="axis-bar r"><span class="lbl">R</span><div class="track"><div class="fill" style="width: 22%"></div></div><span class="val">2</span></div>
+        <div class="ev-meta"><span>Average · 5.7</span><span>WLNK · <span class="wlnk-val">2</span></span></div>
+      </div>
+      <div class="ev-card">
+        <div class="ev-tag">Evidence B · внутренний источник</div>
+        <div class="ev-title">Скриншот Slack + reproducible benchmark</div>
+        <div class="axis-bar f"><span class="lbl">F</span><div class="track"><div class="fill" style="width: 22%"></div></div><span class="val">2</span></div>
+        <div class="axis-bar g"><span class="lbl">G</span><div class="track"><div class="fill" style="width: 88%"></div></div><span class="val">8</span></div>
+        <div class="axis-bar r"><span class="lbl">R</span><div class="track"><div class="fill" style="width: 77%"></div></div><span class="val">7</span></div>
+        <div class="ev-meta"><span>Average · 5.7</span><span>WLNK · <span class="wlnk-val">2</span></span></div>
+      </div>
+    </div>
+
+    <p style="margin-top: 16px; font-size: 14px; color: var(--text-3);">
+      Среднее у обоих одинаковое — 5.7. Но слабая ось разная: у A провалена <span class="ax-r">R</span>
+      (источник продаёт), у B — <span class="ax-f">F</span> (формулировка нестрогая). Trust Calculus
+      показывает не «насколько в среднем хорошо», а <b class="k">какая именно ось проваливается</b>.
+    </p>
+
+    <a class="deep-link" href="trust-calculus.html">
+      <div class="dl-text">
+        <span class="dl-tag">3D-разбор · подробный сценарий</span>
+        <span class="dl-title">Trust Calculus в <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span>-пространстве — 7 evidence на сцене ADI про <code>/search</code> latency, плоскость порога F+G+R=12, выбор гипотезы по WLNK</span>
+      </div>
+      <span class="dl-arrow">→</span>
+    </a>
+
+    <div class="insight">
+      <div class="insight-tag">Правило большого пальца для DDR</div>
+      <p>
+        Если решение опирается на утверждения с суммой <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span>
+        меньше 12 — это слабое решение, и перед тем как коммитить, стоит собрать ещё evidence.
+        Не обязательно всё поднимать до 9/9/9 — это дорого и обычно не нужно. Цель не в
+        перфекционизме, а в честности с собой. Если вы видите у себя 2/2/2 («коллега сказал») — вы
+        знаете, что рискуете, и это осознанное решение, а не самообман.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ WORKED EXAMPLE ============ -->
+  <h2>Цикл на одном примере · Vault hybrid search</h2>
+  <p>Как все три концепции складываются в один проход — от первой версии до записанного DDR с условиями пересмотра.</p>
+  <div class="worked">
+    <div class="worked-step">
+      <div class="step-num">01 · ADI</div>
+      <div class="step-content">
+        <h4>Три гипотезы, прежде чем что-то трогать</h4>
+        <p>H1: <code>sqlite-vec</code> не справляется при 50k. H2: reranking на Node занимает 80% времени. H3: RRF с k=60 даёт слишком большое окно. Для каждой — проверяемое следствие.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">02 · Evidence</div>
+      <div class="step-content">
+        <h4>Сбор фактов и оценка по <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span></h4>
+        <p><code>EXPLAIN ANALYZE</code> опровергает H1 (индекс отвечает за 18–24 ms). Trace на staging подтверждает H2: 71% времени в rerank. Внутренний бенчмарк уменьшения k показывает −22% latency — это <span class="ax-f">F</span>7 <span class="ax-g">G</span>9 <span class="ax-r">R</span>7, WLNK = 7.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">03 · DDR</div>
+      <div class="step-content">
+        <h4>Мотивировочная часть · 6 секций, 280 слов</h4>
+        <p>Решение: переписать reranking в Rust-extension. Альтернативы (Qdrant, k=20) отвергнуты с конкретными причинами. Условия пересмотра: пересмотреть, если заметок &gt; 100k, или если p99 поднимется выше 80 ms, или через 6 месяцев.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">04 · Decay</div>
+      <div class="step-content">
+        <h4>Через 6 месяцев решение само возвращается</h4>
+        <p>Когда наступает срок или метрика — DDR открывается, evidence проверяется заново. Может оказаться, что цифры устарели (новый <code>sqlite-vec</code> релиз, рост базы до 200k). Тогда — снова ADI с тремя гипотезами. Цикл замыкается.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ NEXT STEP · LINK TO 3D ============ -->
+  <h2>Следующий шаг · разбор Trust Calculus в 3D</h2>
+  <div class="next-step">
+    <div class="ns-head">
+      <span class="ns-badge">3D-разбор</span>
+      <h3>Trust Calculus в <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span>-пространстве</h3>
+    </div>
+    <p>
+      Когда теория понятна, открывайте практический разбор: семь evidence на сцене ADI про
+      <code>/search</code> latency, плоскость порога <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span>=12,
+      hover-карточки на точках, выбор гипотезы по WLNK с разбором, почему «среднее обманывает».
+      Сцену можно крутить мышью — каждая ось окрашена, каждое evidence привязано к своей гипотезе.
+    </p>
+    <a class="ns-link" href="trust-calculus.html">→ Открыть 3D-разбор</a>
+  </div>
+
+  <!-- ============ READER WALKTHROUGH ============ -->
+  <h2>Как читать этот разбор</h2>
+  <div class="teaching">
+    <ol>
+      <li><b>Сверху вниз, без скип-сечения.</b> Каждая концепция строится на предыдущей: ADI даёт три гипотезы, Trust Calculus оценивает их evidence, DDR фиксирует выбор и условия пересмотра. Если перепрыгнуть, теряется связка цикла.</li>
+      <li><b>В каждой концепции — сначала аналогия, потом определение.</b> Сначала следователь / суд / инспектор, потом термины. Аналогия — это сцена, на которой остальное запоминается.</li>
+      <li><b>Сравните две тропы ADI.</b> Левая колонка — одна версия и 30 минут случайного фикса. Правая — три версии и 5 минут диагностики. Это и есть «бежать в неправильную сторону против бежать в нужную».</li>
+      <li><b>На карточке DDR посмотрите на 6-ю секцию.</b> Она подсвечена оранжевым с пометкой <i>Evidence Decay</i> — это маркер, отличающий живой DDR от памятника.</li>
+      <li><b>На баром Trust Calculus сравните слабые оси.</b> У вендорского whitepaper провалена <span class="ax-r">R</span>, у внутреннего бенчмарка — <span class="ax-f">F</span>. Average одинаковый, но слабость — разной природы.</li>
+      <li><b>Worked example связывает всё вместе.</b> Vault scenario проходит сквозь ADI → Evidence → DDR → Decay в четырёх шагах. Это шаблон, который можно перенести на ваше решение.</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <span>decision-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
+  </div>
+
+</main>
+
+<script>
+  // Эта страница теории не использует тяжёлых viz-библиотек —
+  // все аналогии собраны в HTML/CSS. Скрипт оставлен как hook,
+  // если потребуется анимация баров на скролле.
+</script>
+</body>
+</html>

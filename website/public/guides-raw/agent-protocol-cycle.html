@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Цикл агент-протокола · Hint Contract · 5 маркеров — ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Marker semantics */
+    --m-next: #22c55e;  /* primary / go */
+    --m-or:   #60a5fa;  /* fallback / consider */
+    --m-wait: #f59e0b;  /* hold / retry */
+    --m-done: #a3a3a3;  /* terminal / neutral */
+    --m-fix:  #ef4444;  /* error remediation */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
+  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  .m-next { color: var(--m-next); font-family: var(--font-mono); font-weight: 500; }
+  .m-or   { color: var(--m-or);   font-family: var(--font-mono); font-weight: 500; }
+  .m-wait { color: var(--m-wait); font-family: var(--font-mono); font-weight: 500; }
+  .m-done { color: var(--m-done); font-family: var(--font-mono); font-weight: 500; }
+  .m-fix  { color: var(--m-fix);  font-family: var(--font-mono); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Code block */
+  .code-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 20px; margin: 16px 0 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
+  .code-block .cb-tag { display: block; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; font-weight: 500; font-family: var(--font-mono); }
+  .code-block .cb-prompt { color: var(--accent-soft); }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-ok { color: var(--ok); }
+
+  /* Tax comparison: before/after */
+  .tax-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .tax-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px 18px; }
+  .tax-col.bad  { border-top: 2px solid var(--err); }
+  .tax-col.good { border-top: 2px solid var(--ok); }
+  .tax-col .tax-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .tax-col.bad  .tax-tag { color: var(--err); }
+  .tax-col.good .tax-tag { color: var(--ok); }
+  .tax-col .tax-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 12px; line-height: 1.35; }
+  .tax-list { margin: 0; padding-left: 18px; color: var(--text-1); font-size: 13.5px; line-height: 1.7; }
+  .tax-list li { margin: 4px 0; }
+  .tax-foot { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .tax-col.bad  .tax-foot { color: var(--err); }
+  .tax-col.good .tax-foot { color: var(--ok); }
+
+  /* 5 rules cards */
+  .rules-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 22px 0 0; }
+  .rule-card { background: var(--bg-2); border: 1px solid var(--line-2); border-top: 2px solid var(--accent); border-radius: 6px; padding: 14px 14px 16px; }
+  .rule-card .r-num { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; color: var(--text-3); margin-bottom: 4px; }
+  .rule-card .r-name { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 500; margin-bottom: 8px; letter-spacing: 0.04em; }
+  .rule-card .r-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+
+  /* 5 markers reference card */
+  .markers-table { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; margin: 22px 0 0; }
+  .mt-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); }
+  .mt-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); }
+  .mt-row { display: grid; grid-template-columns: 110px 1fr 180px; gap: 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+  .mt-row:last-child { border-bottom: none; }
+  .mt-marker { font-family: var(--font-mono); font-size: 13px; font-weight: 500; padding: 4px 10px; border-radius: 3px; text-align: center; letter-spacing: 0.02em; }
+  .mt-marker.next { background: rgba(34, 197, 94, 0.14);  color: #86efac; }
+  .mt-marker.or   { background: rgba(96, 165, 250, 0.14); color: #93c5fd; }
+  .mt-marker.wait { background: rgba(245, 158, 11, 0.14); color: #fcd34d; }
+  .mt-marker.done { background: rgba(163, 163, 163, 0.18); color: var(--text-1); }
+  .mt-marker.fix  { background: rgba(239, 68, 68, 0.14);  color: #fca5a5; }
+  .mt-when { font-size: 13.5px; color: var(--text-1); line-height: 1.5; }
+  .mt-action { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.04em; }
+
+  /* Good vs Bad hints */
+  .gvb { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .gvb-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px 18px; }
+  .gvb-col.good { border-top: 2px solid var(--ok); }
+  .gvb-col.bad  { border-top: 2px solid var(--err); }
+  .gvb-col .gvb-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .gvb-col.good .gvb-tag { color: var(--ok); }
+  .gvb-col.bad  .gvb-tag { color: var(--err); }
+  .gvb-snip { background: var(--bg-1); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-1); margin-top: 8px; line-height: 1.5; }
+  .gvb-snip + .gvb-snip { margin-top: 8px; }
+  .gvb-snip .why { color: var(--text-3); font-size: 11px; margin-top: 4px; display: block; }
+
+  /* Workflow patterns */
+  .pattern { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px 24px; margin: 18px 0 0; }
+  .pattern .p-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .pattern .p-title { font-size: 17px; color: var(--text); font-weight: 500; margin-bottom: 14px; line-height: 1.3; }
+  .pattern .p-flow { background: var(--bg-3); border: 1px solid var(--line); border-radius: 4px; padding: 14px 18px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7; color: var(--text-1); }
+  .pattern .p-flow .fp-cmd { color: var(--accent-soft); }
+  .pattern .p-flow .fp-step { color: var(--text-2); display: block; margin-left: 20px; }
+  .pattern .p-flow .fp-err  { color: var(--err); display: block; margin-left: 20px; }
+
+  /* Quick reference card */
+  .refcard { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .refcard-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .refcard-head .rc-ver { color: var(--accent); }
+  .refcard-body { padding: 18px 20px; font-family: var(--font-mono); font-size: 13px; line-height: 1.8; color: var(--text-1); }
+  .refcard-body .rc-line { display: grid; grid-template-columns: 90px 1fr; gap: 14px; align-items: baseline; }
+  .refcard-body .rc-marker { color: var(--text); font-weight: 500; }
+  .refcard-foot { padding: 12px 20px; border-top: 1px solid var(--line-2); background: var(--bg-3); font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.1em; }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; } .pipe-arrow { display: none; }
+    .tax-split, .gvb, .cross-links { grid-template-columns: 1fr; }
+    .rules-grid { grid-template-columns: 1fr 1fr; }
+    .mt-row { grid-template-columns: 1fr; gap: 8px; }
+    .refcard-body .rc-line { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; } .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- HERO -->
+  <p class="eyebrow">Цикл взаимодействия с агентом · теория</p>
+  <h1>Hint Contract · 5 маркеров</h1>
+  <p class="lead">
+    Когда CLI или MCP-инструмент возвращает результат — что агенту делать дальше? Без явного
+    маркера он перечитывает CLAUDE.md, гадает, иногда галлюцинирует и зацикливается. Каждое
+    угадывание — это токены и риск ошибки. <b class="k">Hint Contract</b> убирает двусмысленность:
+    каждый ответ Forgeplan несёт детерминированный next-action в одной из пяти форм.
+  </p>
+
+  <!-- MINI-PIPELINE -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · 5-rule Contract</div>
+      <div class="step-title">Гарантии формата</div>
+      <div class="step-desc">Presence · Actionability · Determinism · Conditionality · Consistency</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · 5 маркеров</div>
+      <div class="step-title">Язык next-action</div>
+      <div class="step-desc"><span class="m-next">Next</span> · <span class="m-or">Or</span> · <span class="m-wait">Wait</span> · <span class="m-done">Done</span> · <span class="m-fix">Fix</span></div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Reading Protocol</div>
+      <div class="step-title">Что делать агенту</div>
+      <div class="step-desc">execute · fallback · retry · stop · remediate</div>
+    </div>
+  </div>
+
+  <!-- CONCEPT 01 · AGENT TAX -->
+  <h2>01 · Почему этот контракт вообще нужен</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 01 · аналогия светофоров на дороге</div>
+    <h3 class="concept-h">Без явного next-action агент платит «налог на угадывание»</h3>
+    <p class="analogy">
+      Представьте дорогу без светофоров и знаков. Каждый перекрёсток — водитель угадывает: кто
+      едет первым? Поворот разрешён? Нужно ли остановиться? Каждая догадка — это секунды
+      задержки и риск столкновения. Светофоры убирают неопределённость: цвет — действие.
+    </p>
+    <p class="analogy">
+      Forgeplan — это методологический движок. Каждая команда / MCP-вызов — один шаг длинного
+      процесса (Shape → Validate → Code → Evidence → Activate). Когда после ответа агенту не
+      сказано, что делать дальше, он:
+    </p>
+
+    <div class="tax-split">
+      <div class="tax-col bad">
+        <div class="tax-tag">Налог · до контракта</div>
+        <div class="tax-title">Что делает агент без явного next-action</div>
+        <ul class="tax-list">
+          <li>Перечитывает CLAUDE.md, чтобы переоткрыть методологию</li>
+          <li>Угадывает следующий шаг, иногда галлюцинирует команду</li>
+          <li>Зацикливается на одной и той же фазе</li>
+          <li>Подставляет placeholder вроде <code>EVID-NNN</code> в реальную команду</li>
+          <li>Видит три равноправных опции — paradox of choice</li>
+        </ul>
+        <div class="tax-foot">токены · риск ошибки · потеря коннект-контекста</div>
+      </div>
+      <div class="tax-col good">
+        <div class="tax-tag">Решение · 5-rule contract</div>
+        <div class="tax-title">Что делает агент с явным маркером</div>
+        <ul class="tax-list">
+          <li>Читает <code>Next:</code> и выполняет команду как написано</li>
+          <li>На <code>Wait:</code> ставит retry с условием</li>
+          <li>На <code>Done.</code> переходит к следующей задаче, не зацикливается</li>
+          <li>На <code>Fix:</code> запускает remediation немедленно</li>
+          <li>На <code>Or:</code> использует fallback только если primary блокирует</li>
+        </ul>
+        <div class="tax-foot">детерминизм · без перечитывания · без галлюцинаций</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Это не «ещё одно правило» · это интерфейсный контракт</div>
+      <p>
+        Hint Contract — это <b class="k">обещание формата</b>: любой output Forgeplan
+        (CLI text / CLI JSON / MCP success / MCP error) гарантированно содержит либо
+        next-action, либо явный terminal-сигнал. Никаких «silent gaps». Этого достаточно,
+        чтобы Claude Code / Cursor / Windsurf и любой кастомный orchestrator читали output
+        одинаково, без переоткрытия методологии каждый раз.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 02 · 5-RULE CONTRACT -->
+  <h2>02 · Пять правил контракта</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 02 · пять гарантий формата</div>
+    <h3 class="concept-h">Каждый output Forgeplan — независимо от поверхности — удовлетворяет этим правилам</h3>
+    <p class="analogy">
+      Каждое правило закрывает один конкретный класс ошибок, который возникал до v0.25.0 — когда
+      инструмент возвращал результат, а агент не знал, что с ним делать.
+    </p>
+
+    <div class="rules-grid">
+      <div class="rule-card">
+        <div class="r-num">01</div>
+        <div class="r-name">PRESENCE</div>
+        <div class="r-desc">Каждый ответ — либо next-action, либо явный terminal. <b class="k">Никаких</b> silent gaps.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">02</div>
+        <div class="r-name">ACTIONABILITY</div>
+        <div class="r-desc">Next-action — полная команда с реальными ID. Не фрагмент, не placeholder.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">03</div>
+        <div class="r-name">DETERMINISM</div>
+        <div class="r-desc">Один input state → одна hint-строка. Никакого randomness.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">04</div>
+        <div class="r-name">CONDITIONALITY</div>
+        <div class="r-desc">Hints только когда actionable. Terminal — <code>Done.</code>, не фейк «all done!».</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">05</div>
+        <div class="r-name">CONSISTENCY</div>
+        <div class="r-desc">Text и JSON — одинаковый смысл. CLI зеркалит MCP-семантику.</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Где читать hint в зависимости от surface</div>
+      <p>
+        CLI text · последние строки stdout (<code>Next:</code>, <code>Fix:</code>, <code>Wait:</code>, <code>Done.</code>). ·
+        CLI JSON · top-level поле <code>_next_action</code>. ·
+        MCP · top-level <code>_next_action</code> в response. ·
+        Спец-случай: <code>list --json</code> и <code>tree --json</code> сохраняют bare-array
+        (backward compat для <code>jq</code>) — hint уходит в stderr.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 03 · 5 MARKERS -->
+  <h2>03 · Пять маркеров · язык next-action</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 03 · 5 маркеров с фиксированной семантикой</div>
+    <h3 class="concept-h">Каждый маркер — однозначное действие для агента</h3>
+    <p class="analogy">
+      Маркеры не пересекаются по смыслу. Если в одном ответе есть <code>Next:</code> и
+      <code>Or:</code> — это primary action и fallback. Если есть <code>Error:</code> и
+      <code>Fix:</code> — это ошибка и команда восстановления. <code>Done.</code> никогда не
+      идёт вместе с другими маркерами — это терминальный сигнал.
+    </p>
+
+    <div class="markers-table">
+      <div class="mt-head"><span class="mt-tag">5 hint markers · v0.25.0+</span></div>
+      <div class="mt-row">
+        <div class="mt-marker next">Next:</div>
+        <div class="mt-when">Primary action — рекомендованный следующий шаг. Полная команда с реальными ID.</div>
+        <div class="mt-action">execute as-is</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker or">Or:</div>
+        <div class="mt-when">Альтернатива, когда primary блокирует (например, claim удерживается другим агентом).</div>
+        <div class="mt-action">fallback only</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker wait">Wait:</div>
+        <div class="mt-when">Async / TTL state. Условие, после которого повторить запрос.</div>
+        <div class="mt-action">retry after condition</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker done">Done.</div>
+        <div class="mt-when">Workflow завершён. Не loop, не «всё хорошо!» — буквально точка.</div>
+        <div class="mt-action">move on</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker fix">Fix:</div>
+        <div class="mt-when">Error remediation. Парная команда с <code>Error:</code>. Запустить немедленно.</div>
+        <div class="mt-action">run immediately</div>
+      </div>
+    </div>
+
+    <!-- Good vs Bad hints -->
+    <h3 style="margin: 28px 0 0; font-size: 16px;">Good vs Bad hints</h3>
+    <div class="gvb">
+      <div class="gvb-col good">
+        <div class="gvb-tag">✓ Good · v0.25.0+</div>
+        <div class="gvb-snip">
+<span class="m-next">Next:</span> forgeplan score PRD-001
+<span class="why">specific, full command, real ID, rationale включён</span>
+        </div>
+        <div class="gvb-snip">
+<span class="m-next">Next:</span> forgeplan dispatch --agents 3
+<span class="m-or">Or:</span> forgeplan claim PRD-054 --agent worker-2 --ttl-minutes 30
+<span class="why">primary action + один explicit fallback</span>
+        </div>
+        <div class="gvb-snip">
+<span class="m-fix">Error:</span> Direct status change to 'active' is not allowed.
+<span class="m-fix">Fix:</span> forgeplan activate PRD-001
+<span class="why">ошибка + executable remediation</span>
+        </div>
+      </div>
+      <div class="gvb-col bad">
+        <div class="gvb-tag">✗ Bad · pre-v0.25.0 паттерны</div>
+        <div class="gvb-snip">
+suggested next: adi
+<span class="why">bare word без команды · агент гадает</span>
+        </div>
+        <div class="gvb-snip">
+Try a longer window: --since-hours 720
+<span class="why">фрагмент, не полная команда</span>
+        </div>
+        <div class="gvb-snip">
+Either work on a different artifact, wait for TTL expiry,
+or ask the orchestrator to force-release.
+<span class="why">три опции, ни одна не primary · paradox of choice</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Drift prevention</div>
+      <p>
+        Контракт enforced двумя механизмами: integration test
+        <code>crates/forgeplan-cli/tests/hint_contract.rs</code> — десятки тестов, фейлится CI,
+        если команда не несёт маркер. Audit script <code>scripts/audit-hints.sh</code> —
+        coverage 100% всех команд. Это не «договорённость», это проверка на pre-commit.
+      </p>
+    </div>
+  </div>
+
+  <!-- WORKFLOW PATTERNS -->
+  <h2>Три workflow-паттерна · как контракт работает в реальности</h2>
+
+  <div class="pattern">
+    <div class="p-tag">Паттерн A</div>
+    <div class="p-title">Shape → Validate → Activate</div>
+    <p>Типовой happy path. Каждый шаг возвращает <code>Next:</code> с конкретной командой следующего шага. Агент идёт по цепочке без переоткрытия методологии.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan_route("add OAuth login")</span>
+  → <span class="m-next">Next:</span> forgeplan new prd "OAuth login support"
+
+<span class="fp-cmd">forgeplan_new(kind: "prd", title: "OAuth login support")</span>
+  → <span class="m-next">Next:</span> forgeplan validate PRD-042
+
+<span class="fp-cmd">forgeplan_validate("PRD-042")</span>
+  → <span class="m-next">Next:</span> forgeplan activate PRD-042   <span class="fp-step">(если PASS)</span>
+  → <span class="m-fix">Fix:</span> forgeplan validate PRD-042    <span class="fp-step">(если errors)</span>
+
+<span class="fp-cmd">forgeplan_activate("PRD-042")</span>
+  → <span class="m-done">Done.</span></div>
+  </div>
+
+  <div class="pattern">
+    <div class="p-tag">Паттерн B</div>
+    <div class="p-title">Recovery from error</div>
+    <p>Команда вернула ошибку — но не «вот текст ошибки, разбирайся», а <code>Error:</code> + <code>Fix:</code> с готовой командой восстановления.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan_activate("PRD-042")</span>
+  → <span class="m-fix">Error:</span> No evidence linked
+  → <span class="m-fix">Fix:</span> forgeplan validate PRD-042
+
+<span class="fp-cmd">forgeplan_validate("PRD-042")</span>
+  → Result: PASS
+  → <span class="m-next">Next:</span> forgeplan score PRD-042</div>
+  </div>
+
+  <div class="pattern">
+    <div class="p-tag">Паттерн C</div>
+    <div class="p-title">Multi-agent dispatch с claim-конфликтом</div>
+    <p>Несколько агентов работают параллельно. Если claim занят другим — <code>Or:</code> предлагает alternative, не блокирует worker.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan_dispatch(--agents 3)</span>
+  → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl 30
+  → <span class="m-or">Or:</span>   forgeplan list --status draft
+
+<span class="fp-cmd">forgeplan_claim("PRD-054")</span>
+  → <span class="m-fix">Error:</span> Already held by worker-2
+  → <span class="m-or">Or:</span> forgeplan release PRD-054 --force</div>
+  </div>
+
+  <!-- QUICK REFERENCE CARD -->
+  <h2>Quick reference card</h2>
+  <p>Распечатать и держать рядом. Если в output Forgeplan нет маркера и состояние не terminal — это bug, а не «нужно подумать».</p>
+  <div class="refcard">
+    <div class="refcard-head">
+      <span>FORGEPLAN HINT CONTRACT</span>
+      <span class="rc-ver">v0.25.0+</span>
+    </div>
+    <div class="refcard-body">
+      <div class="rc-line"><span class="m-next rc-marker">Next:</span><span>&lt;command&gt; · execute as-is</span></div>
+      <div class="rc-line"><span class="m-or rc-marker">Or:</span><span>&lt;command&gt; · fallback if primary blocks</span></div>
+      <div class="rc-line"><span class="m-wait rc-marker">Wait:</span><span>&lt;condition&gt; · retry after condition</span></div>
+      <div class="rc-line"><span class="m-done rc-marker">Done.</span><span>workflow complete · move on</span></div>
+      <div class="rc-line"><span class="m-fix rc-marker">Fix:</span><span>&lt;command&gt; · error remediation (with Error:)</span></div>
+    </div>
+    <div class="refcard-foot">
+      Read from: stdout (text) · <code>_next_action</code> (JSON / MCP) · Special: <code>list/tree --json</code> → hint on stderr
+    </div>
+  </div>
+
+  <!-- CROSS-LINKS -->
+  <h2>Связанные разборы</h2>
+  <div class="cross-links">
+    <div class="next-step">
+      <div class="ns-head">
+        <span class="ns-badge">Цикл проекта</span>
+        <h3>Forgeplan as operational layer</h3>
+      </div>
+      <p>Hint Contract — это «нервная система» Forgeplan. Чтобы понять, что именно отправляет hint'ы, посмотрите весь operational layer: CLI + MCP + .forgeplan/.</p>
+      <a class="ns-link" href="forgeplan-cycle.html">→ открыть</a>
+    </div>
+    <div class="next-step">
+      <div class="ns-head">
+        <span class="ns-badge">Цикл фичи</span>
+        <h3>BMAD · 13-step PRD · AR</h3>
+      </div>
+      <p>Pattern A (Shape → Validate → Activate) — это, по сути, BMAD-pipeline через CLI. PRD создаётся, валидируется, активируется — каждый шаг с явным маркером.</p>
+      <a class="ns-link" href="bmad-cycle.html">→ открыть</a>
+    </div>
+  </div>
+
+  <!-- READER WALKTHROUGH -->
+  <h2>Как читать этот разбор</h2>
+  <div class="teaching">
+    <ol>
+      <li><b>Аналогия светофоров — буквальная.</b> Маркер = цвет. Без него водитель / агент тратит время на угадывание на каждом перекрёстке. С ним — действие очевидно.</li>
+      <li><b>Левая колонка «налога» — реальные паттерны до v0.25.0.</b> Перечитывание CLAUDE.md, paradox of choice, placeholder вместо ID. Правая колонка — то же самое после контракта.</li>
+      <li><b>5 правил — это инвариант формата, а не «пожелание стиля».</b> Если выходит ответ без хотя бы одного из маркеров или без явного <code>Done.</code> — это контракт-нарушение, бракованный output.</li>
+      <li><b>Таблица 5 маркеров — это словарь.</b> Каждый цвет соответствует одной семантике. <span class="m-next">зелёный go</span>, <span class="m-or">голубой consider</span>, <span class="m-wait">янтарный hold</span>, <span class="m-done">серый stop</span>, <span class="m-fix">красный remediate</span>.</li>
+      <li><b>Good vs Bad hints — реальные пример из docs.</b> Слева — что встречается в v0.25.0+. Справа — паттерны, которые в CI блокируются тестом <code>hint_contract.rs</code>.</li>
+      <li><b>Три паттерна workflow — это шаблоны.</b> Подставьте свою задачу: создание PRD → validation → activate (A), любая команда возвращает Error (B), несколько worker'ов на shared workspace (C). Все три ложатся на 5 маркеров без додумывания.</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <span>agent-protocol-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev/docs/methodology/agent-protocol</span>
+  </div>
+
+</main>
+</body>
+</html>
