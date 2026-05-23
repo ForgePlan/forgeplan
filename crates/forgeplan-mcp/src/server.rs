@@ -328,9 +328,44 @@ impl ForgeplanServer {
         }
 
         // workspace_path not set — cold start / no init yet.  Try cwd.
+        //
+        // ── Multi-worktree detection gate (ADR-015 Option E / PRD-078 FR-004) ─
+        //
+        // At this point param (Step 1) and env (Step 2) were both absent, and
+        // the server has no pre-set `workspace_path` (cold start — no prior
+        // `forgeplan_init` call).  Falling back to cwd in a linked worktree
+        // silently picks the wrong `.forgeplan/`; the gate surfaces this case
+        // as a structured -32602 error so agents can retry with an explicit
+        // `workspace` parameter (PRD-078 AC-3 / PROB-072).
+        //
+        // The gate is two synchronous `git rev-parse` calls (~microseconds).
+        // When detection returns `false` (plain repo, no git, non-git dir, or
+        // any subprocess error) we fall through unchanged — backward compat
+        // preserved for all single-worktree users (AC-2).
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::invalid_params(format!("could not determine current directory: {e}"), None)
         })?;
+        if workspace::detect_multi_worktree(&cwd) {
+            // Build a human-readable / agent-parseable suggestion: the
+            // show-toplevel of the current worktree is the most likely
+            // workspace root the caller intended.  Falls back to cwd when
+            // `git show-toplevel` is unavailable (non-git or missing git).
+            let suggested = workspace::suggest_workspace_path(&cwd);
+            return Err(McpError::invalid_params(
+                format!(
+                    "multi-worktree environment detected; the `workspace` parameter is \
+                     required. Suggested: workspace=\"{s}\". Or set \
+                     FORGEPLAN_WORKSPACE=\"{s}\".",
+                    s = suggested.display()
+                ),
+                Some(serde_json::json!({
+                    "code": "multi_worktree_workspace_required",
+                    "resolved_via": "none",
+                    "detection": "git-common-dir-ne-show-toplevel",
+                    "suggested_workspace": suggested.display().to_string(),
+                })),
+            ));
+        }
         match workspace::find_workspace(&cwd) {
             Some(ws_dir) => {
                 let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
