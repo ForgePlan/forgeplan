@@ -1,9 +1,11 @@
 ---
+import path from 'node:path';
 import Landing from '../../../layouts/Landing.astro';
 import Header from '../../../components/Header.astro';
 import BlogFooter from '../../../components/blog/BlogFooter.astro';
 import SiteJsonLd from '../../../components/SiteJsonLd.astro';
 import { guides, getGuide } from '../../../data/guides.ts';
+import { extractEmbed } from '../../../lib/embed-html';
 import '../../../styles/blog-theme.css';
 
 export async function getStaticPaths() {
@@ -13,6 +15,9 @@ export async function getStaticPaths() {
 const { slug } = Astro.params;
 const guide = getGuide(slug as string);
 if (!guide) throw new Error(`Guide not found: ${slug}`);
+
+const filepath = path.resolve(`public/guides-raw/${slug}.html`);
+const embed = extractEmbed(filepath);
 
 const site = Astro.site ?? new URL('https://forgeplan.dev');
 const canonical = new URL(Astro.url.pathname, site).href;
@@ -55,6 +60,11 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
   <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
   <SiteJsonLd lang="ru" />
 
+  <style is:global set:html={embed.scopedCss}></style>
+  {embed.externalScripts.map(src => (
+    <script src={src} is:inline></script>
+  ))}
+
   <article class="guide-page">
     <main id="main-content" class="guide-main">
       <nav class="guide-breadcrumb" aria-label="Хлебные крошки">
@@ -73,15 +83,11 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
         </p>
       </header>
 
-      <div class="guide-frame-wrap">
-        <iframe
-          src={`/guides-raw/${slug}.html`}
-          title={guide.title_ru}
-          class="guide-frame"
-          loading="lazy"
-          sandbox="allow-scripts allow-same-origin allow-popups"
-        />
-      </div>
+      <div class="guide-embedded" set:html={embed.bodyHtml}></div>
+
+      {embed.inlineScripts.map(src => (
+        <script is:inline set:html={src}></script>
+      ))}
 
       <nav class="guide-prevnext" aria-label="Навигация по порядку чтения">
         <div class="guide-prevnext-cell">

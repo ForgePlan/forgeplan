@@ -1,9 +1,11 @@
 ---
+import path from 'node:path';
 import Landing from '../../layouts/Landing.astro';
 import Header from '../../components/Header.astro';
 import BlogFooter from '../../components/blog/BlogFooter.astro';
 import SiteJsonLd from '../../components/SiteJsonLd.astro';
 import { guides, getGuide } from '../../data/guides.ts';
+import { extractEmbed } from '../../lib/embed-html';
 import '../../styles/blog-theme.css';
 
 export async function getStaticPaths() {
@@ -13,6 +15,9 @@ export async function getStaticPaths() {
 const { slug } = Astro.params;
 const guide = getGuide(slug as string);
 if (!guide) throw new Error(`Guide not found: ${slug}`);
+
+const filepath = path.resolve(`public/guides-raw/${slug}.html`);
+const embed = extractEmbed(filepath);
 
 const site = Astro.site ?? new URL('https://forgeplan.dev');
 const canonical = new URL(Astro.url.pathname, site).href;
@@ -28,7 +33,6 @@ const ld = {
   isPartOf: { '@type': 'WebSite', name: 'Forgeplan', url: site.href },
   learningResourceType: guide.pill === 'interactive' ? 'Interactive Resource' : 'Lesson',
   educationalLevel: 'Intermediate',
-  audience: { '@type': 'Audience', audienceType: 'Software developers, AI engineers' },
 };
 const breadcrumbs = {
   '@context': 'https://schema.org',
@@ -41,7 +45,6 @@ const breadcrumbs = {
 };
 const safeJson = (o: unknown) => JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
 
-// Prev/next in reading order
 const ordered = [...guides].sort((a, b) => a.order - b.order);
 const idx = ordered.findIndex(g => g.slug === slug);
 const prev = idx > 0 ? ordered[idx - 1] : null;
@@ -56,6 +59,14 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
   <script slot="head" type="application/ld+json" set:html={safeJson(ld)} />
   <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
   <SiteJsonLd lang="en" />
+
+  <!-- Scoped lesson styles, prefixed by build-time scopeCss() to .guide-embedded -->
+  <style is:global set:html={embed.scopedCss}></style>
+
+  <!-- External CDN scripts from the original lesson (Plotly / Chart.js) -->
+  {embed.externalScripts.map(src => (
+    <script src={src} is:inline></script>
+  ))}
 
   <article class="guide-page">
     <main id="main-content" class="guide-main">
@@ -73,19 +84,17 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
         <p class="guide-lang-note">
           <a href={altRu}>Читать на русском →</a>
           <span class="guide-lang-note-sep">·</span>
-          <span>Lesson content is in Russian (translation in progress)</span>
+          <span>Lesson content currently in Russian — English translation in progress</span>
         </p>
       </header>
 
-      <div class="guide-frame-wrap">
-        <iframe
-          src={`/guides-raw/${slug}.html`}
-          title={guide.title_en}
-          class="guide-frame"
-          loading="lazy"
-          sandbox="allow-scripts allow-same-origin allow-popups"
-        />
-      </div>
+      <!-- Embedded lesson body, scoped under .guide-embedded so its styles only apply here -->
+      <div class="guide-embedded" set:html={embed.bodyHtml}></div>
+
+      <!-- Inline scripts from the original lesson — preserve order, run after body in DOM -->
+      {embed.inlineScripts.map(src => (
+        <script is:inline set:html={src}></script>
+      ))}
 
       <nav class="guide-prevnext" aria-label="Reading order navigation">
         <div class="guide-prevnext-cell">
