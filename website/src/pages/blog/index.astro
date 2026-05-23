@@ -1,6 +1,7 @@
 ---
 import { getCollection } from 'astro:content';
 import Landing from '../../layouts/Landing.astro';
+import Header from '../../components/Header.astro';
 import TopicChip from '../../components/blog/TopicChip.astro';
 import '../../styles/blog-theme.css';
 
@@ -8,6 +9,7 @@ const posts = (await getCollection('blog', ({ data }) => data.lang === 'en' && !
   .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf());
 ---
 <Landing title="Blog — Forgeplan" description="Long-form writing about R_eff, ADI, FPF, and the Forgeplan methodology.">
+  <Header />
   <article class="blog-index">
     <main id="main-content" class="blog-index-main">
       <p class="blog-index-eyebrow">BLOG</p>

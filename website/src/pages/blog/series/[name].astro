@@ -1,6 +1,7 @@
 ---
 import { getCollection } from 'astro:content';
 import Landing from '../../../layouts/Landing.astro';
+import Header from '../../../components/Header.astro';
 import '../../../styles/blog-theme.css';
 
 export async function getStaticPaths() {
@@ -22,6 +23,7 @@ const description = firstWithDesc?.data.seriesDescription ?? `Posts in series: $
 const stripLang = (id: string) => id.replace(/^en\//, '').replace(/\.(md|mdx)$/, '');
 ---
 <Landing title={`${name} — Forgeplan Blog`} description={description}>
+  <Header />
   <main class="blog-index">
     <article class="blog-index-main">
       <p class="blog-index-eyebrow">SERIES</p>
