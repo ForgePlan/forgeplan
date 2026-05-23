@@ -1,5 +1,6 @@
 ---
 // Grid header — brand left, nav/burger center, logo/toggle right
+import InstallMenu from './InstallMenu.astro';
 const path = Astro.url.pathname;
 const isActive = (...prefixes: string[]) =>
   prefixes.some(p => path === p || path.startsWith(p));
@@ -51,7 +52,9 @@ const altLangName = isRu ? 'English' : 'Russian';
         </svg>
       </a>
       <a href={altPath} class="nav-cell border-r border-forge-line" aria-label={`Switch to ${altLangName}`}>{altLabel}</a>
-      <a href="#install" class="nav-cell text-forge-ember font-medium">Install</a>
+      <div class="nav-cell nav-cell-install border-r border-forge-line">
+        <InstallMenu />
+      </div>
     </nav>
 
     <!-- Logo hex = theme toggle (right) -->

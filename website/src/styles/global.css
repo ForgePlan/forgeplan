@@ -213,3 +213,12 @@ html {
 .nav-cell-icon svg { width: 16px; height: 16px; transition: transform 0.2s; }
 .nav-cell-icon:hover svg { transform: scale(1.1); }
 .header-compact .nav-cell-icon svg { width: 14px; height: 14px; }
+
+/* Install cell — host for InstallMenu popup. Cannot use overflow:hidden
+   here (would clip the popup). Also disables the hover-wipe (.nav-cell::before)
+   for this cell — the popup trigger has its own ember styling. */
+.nav-cell-install {
+  overflow: visible;
+  padding: 0;
+}
+.nav-cell-install::before { display: none; }

@@ -4,6 +4,7 @@
 // (Starlight's outer header is already sticky/positioned).
 // Mirrors Header.astro nav structure for visual consistency across the site.
 import Search from '@astrojs/starlight/components/Search.astro';
+import InstallMenu from './InstallMenu.astro';
 const path = Astro.url.pathname;
 const isActive = (...prefixes: string[]) =>
   prefixes.some(p => path === p || path.startsWith(p));
@@ -40,7 +41,9 @@ const altLangName = isRu ? 'English' : 'Russian';
       </svg>
     </a>
     <a href={altPath} class="docs-nav-cell" aria-label={`Switch to ${altLangName}`}>{altLabel}</a>
-    <a href="/#install" class="docs-nav-cell docs-nav-install">Install</a>
+    <div class="docs-nav-cell docs-nav-cell-install">
+      <InstallMenu />
+    </div>
   </nav>
 
   <button id="theme-toggle" class="docs-theme-toggle" aria-label="Toggle dark/light theme">
@@ -186,6 +189,15 @@ const altLangName = isRu ? 'English' : 'Russian';
   .docs-nav-cell-icon svg { transition: transform 0.2s; }
   .docs-nav-cell-icon:hover svg { transform: scale(1.1); }
   .docs-header-compact .docs-nav-cell-icon svg { width: 14px; height: 14px; }
+
+  /* Install cell hosts InstallMenu popup — must not clip (overflow visible).
+     Also gets visible right separator before the theme toggle. */
+  .docs-nav-cell-install {
+    overflow: visible;
+    padding: 0;
+    border-right: 1px solid var(--forge-line);
+  }
+  .docs-nav-cell-install::before { display: none; }
 
   /* --- Search (Starlight <Search /> component) — wide bar between brand and nav.
      Override Starlight default styles so its button looks like our forge search bar.
