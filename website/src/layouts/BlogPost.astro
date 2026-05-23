@@ -4,7 +4,7 @@ import Hero from '../components/blog/Hero.astro';
 import TOC from '../components/blog/TOC.astro';
 import SeriesNav from '../components/blog/SeriesNav.astro';
 import SeoMeta from '../components/blog/SeoMeta.astro';
-import AuthorBlock from '../components/blog/AuthorBlock.astro';
+import RelatedPosts from '../components/blog/RelatedPosts.astro';
 import BlogFooter from '../components/blog/BlogFooter.astro';
 import SiteJsonLd from '../components/SiteJsonLd.astro';
 // global.css MUST come first — Header.astro uses Tailwind utilities
@@ -105,14 +105,9 @@ const oppositeUrl = oppositeSlug
       <div class="blog-layout">
         <main class="blog-content">
           <p class="blog-description">{description}</p>
-          <div class="blog-meta">
-            <time datetime={publishedAt.toISOString()}>{publishedAt.toISOString().slice(0, 10)}</time>
-            {updatedAt && <span>upd {updatedAt.toISOString().slice(0, 10)}</span>}
-            {readingTime && <span>{readingTime} min read</span>}
-          </div>
           <slot />
           {series && currentId && <SeriesNav currentId={currentId} currentSeries={series} lang={lang} />}
-          <AuthorBlock lang={lang} />
+          <RelatedPosts slug={slug} lang={lang} topic={topic} series={series} />
           {oppositeUrl && (
             <footer class="blog-lang-switch">
               <a href={oppositeUrl}>
@@ -121,7 +116,16 @@ const oppositeUrl = oppositeSlug
             </footer>
           )}
         </main>
-        <TOC headings={headings} lang={lang} />
+        <TOC
+          headings={headings}
+          lang={lang}
+          publishedAt={publishedAt}
+          updatedAt={updatedAt}
+          readingTime={readingTime}
+          topic={topic}
+          title={title}
+          slug={slug}
+        />
       </div>
     </article>
     <BlogFooter lang={lang} />

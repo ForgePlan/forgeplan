@@ -1,0 +1,67 @@
+---
+// RelatedPosts — 3 cards below article body.
+// Ranking: same topic > same series > most recent published date.
+// Excludes current post and drafts.
+import { getCollection } from 'astro:content';
+
+interface Props {
+  slug: string;
+  lang: 'en' | 'ru';
+  topic?: string;
+  series?: string;
+}
+const { slug, lang, topic, series } = Astro.props;
+
+const all = await getCollection('blog', ({ data }) => data.lang === lang && !data.draft);
+
+const stripLang = (id: string) =>
+  id.replace(new RegExp(`^${lang}/`), '').replace(/\.(md|mdx)$/, '');
+
+// Score posts: same series=3 > same topic=2 > recent=1 (always >0)
+type Post = (typeof all)[number];
+const scored = all
+  .filter(p => stripLang(p.id) !== slug)
+  .map(p => {
+    let score = 1;
+    if (series && p.data.series === series) score = 3;
+    else if (topic && p.data.topic === topic) score = 2;
+    return { post: p, score };
+  })
+  .sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return b.post.data.publishedAt.valueOf() - a.post.data.publishedAt.valueOf();
+  })
+  .slice(0, 3)
+  .map(s => s.post);
+
+if (scored.length === 0) {
+  // No other posts yet — render nothing (early return via empty fragment)
+}
+
+const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
+const t = lang === 'ru'
+  ? { heading: 'Читайте дальше', readMore: 'Открыть →' }
+  : { heading: 'Read next', readMore: 'Open →' };
+---
+{scored.length > 0 && (
+  <section class="blog-related" aria-label={t.heading}>
+    <h2 class="blog-related-heading">{t.heading}</h2>
+    <ul class="blog-related-grid">
+      {scored.map(post => (
+        <li class="blog-related-card">
+          <a href={`${langPrefix}/${stripLang(post.id)}`} class="blog-related-link">
+            <span class={`blog-related-topic blog-topic-${post.data.topic}`}>{post.data.topic}</span>
+            <h3 class="blog-related-title">{post.data.title}</h3>
+            <p class="blog-related-desc">{post.data.description}</p>
+            <span class="blog-related-meta">
+              <time datetime={post.data.publishedAt.toISOString()}>
+                {post.data.publishedAt.toISOString().slice(0, 10)}
+              </time>
+              {post.data.readingTime && <span>{post.data.readingTime} {lang === 'ru' ? 'мин' : 'min'}</span>}
+            </span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  </section>
+)}
