@@ -57,6 +57,12 @@ html {
    Header — Full / Compact states
    ======================================== */
 
+/* Scope transitions to properties that should animate during shrink/grow.
+   Explicitly EXCLUDE border-* — transitioning border-width through 0..1px
+   produces a "fat double border" flicker because inner border (full state)
+   and outer border (compact state) overlap for the ~0.4s window. Both
+   borders draw simultaneously during the transition before one collapses
+   to zero. Solution: jump border state instantly, animate everything else. */
 #site-header,
 .header-inner,
 .header-logo,
@@ -64,7 +70,11 @@ html {
 .header-brand-cell,
 .nav-cell,
 .header-right {
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition-property: padding, height, grid-template-columns, max-width,
+                       width, margin, background-color, color, font-size,
+                       letter-spacing, transform;
+  transition-duration: 0.4s;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Full state (hero visible) */
