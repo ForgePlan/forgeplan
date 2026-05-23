@@ -78,8 +78,14 @@ html {
 .header-full .nav-cell { font-size: 15px; }
 
 /* Compact state (scrolled past hero) */
-.header-compact { padding: 0; }
-.header-compact { border-bottom: 1px solid var(--forge-line); }
+.header-compact {
+  padding: 0;
+  border-bottom: 1px solid var(--forge-line);
+  /* Fill the full viewport width with header bg — inner is centered at
+     1280px max-width, so without an outer bg the sides outside that band
+     show the page bg through (most visible in light theme). */
+  background: var(--forge-bg);
+}
 .header-compact .header-inner {
   height: 36px;
   grid-template-columns: 1fr auto 36px;
