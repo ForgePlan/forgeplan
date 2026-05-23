@@ -16,7 +16,7 @@ What's specific to Forgeplan:
 - **Markdown is source of truth, LanceDB is a derived index** (ADR-003, compile-enforced after a 32-violation cleanup that ended with `pub(crate)` lockdown).
 - **Trust = weakest link.** `R_eff = min(evidence_scores)`, never the average. CL penalty (0.0/0.1/0.4/0.9) makes "I read it on a blog" structurally weaker than "we measured it ourselves." Activation gate blocks `forgeplan activate` if `R_eff = 0`.
 - **Hint protocol contract** (PRD-071): every CLI/MCP response emits exactly one terminal next-action hint (`Next:` / `Or:` / `Fix:` / `Wait:` / `Done.`), so an agent never invents its own ordering.
-- **63 MCP tools** for Claude Code, Cursor, Aider. BGE-M3 1024d local search.
+- **73 MCP tools** for Claude Code, Cursor, Aider. BGE-M3 1024d local search.
 
 Stack: Rust 3-crate workspace, LanceDB embedded, fastembed, rmcp. Single ~41 MB stripped binary. 1995 tests.
 
