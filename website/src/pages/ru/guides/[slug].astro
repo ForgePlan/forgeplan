@@ -5,7 +5,7 @@ import Header from '../../../components/Header.astro';
 import BlogFooter from '../../../components/blog/BlogFooter.astro';
 import SiteJsonLd from '../../../components/SiteJsonLd.astro';
 import { guides, getGuide } from '../../../data/guides.ts';
-import { extractEmbed } from '../../../lib/embed-html';
+import { extractEmbed } from '../../../lib/embed-html.js';
 import '../../../styles/blog-theme.css';
 
 export async function getStaticPaths() {
