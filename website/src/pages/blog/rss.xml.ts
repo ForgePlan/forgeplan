@@ -6,7 +6,7 @@ export async function GET(context: APIContext) {
   const posts = await getCollection('blog', ({ data }) => data.lang === 'en' && !data.draft);
   return rss({
     title: 'Forgeplan Blog',
-    description: 'Long-form writing about R_eff, ADI, FPF, and the Forgeplan methodology.',
+    description: 'Long-form essays on engineering decisions — how to structure them, score evidence, and stop forgetting why they were made.',
     site: context.site ?? 'https://forgeplan.dev',
     items: posts
       .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf())

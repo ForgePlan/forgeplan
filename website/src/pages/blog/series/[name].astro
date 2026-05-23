@@ -21,6 +21,12 @@ const posts = (await getCollection('blog', ({ data }) =>
 
 const firstWithDesc = posts.find(p => p.data.seriesDescription);
 const description = firstWithDesc?.data.seriesDescription ?? `Posts in series: ${name}`;
+// Human-readable series title: first chunk of seriesDescription before " · ",
+// fall back to the slug. "decision-cycle" → "The single-decision cycle".
+const humanTitle = description.includes(' · ')
+  ? description.split(' · ')[0]
+  : name;
+const postsLabel = posts.length === 1 ? '1 post' : `${posts.length} posts`;
 const stripLang = (id: string) => id.replace(/^en\//, '').replace(/\.(md|mdx)$/, '');
 ---
 <Landing title={`${name} — Forgeplan Blog`} description={description}>
@@ -28,10 +34,10 @@ const stripLang = (id: string) => id.replace(/^en\//, '').replace(/\.(md|mdx)$/,
   <article class="blog-index">
     <div class="blog-index-layout blog-index-layout--solo">
       <main id="main-content" class="blog-index-main">
-        <p class="blog-index-eyebrow">SERIES</p>
-        <h1 class="blog-index-heading">{name}</h1>
+        <p class="blog-index-eyebrow">SERIES · {name}</p>
+        <h1 class="blog-index-heading">{humanTitle}</h1>
         <p class="blog-index-subtitle">{description}</p>
-        <p class="blog-index-meta"><span class="blog-index-date">{posts.length} posts</span></p>
+        <p class="blog-index-meta"><span class="blog-index-date">{postsLabel}</span></p>
 
         <ul class="blog-index-list">
           {posts.map(post => (
