@@ -36,7 +36,15 @@ The MCP server exposes the same operations to any agent via stdio.
 - [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): from `forgeplan init` to first activated PRD in 5 minutes
 - [Configuration](https://forgeplan.dev/docs/getting-started/configuration): config.yaml + LLM provider setup
 
+## Blog
+
+- [Blog index (EN)](https://forgeplan.dev/blog): long-form writing on R_eff, ADI, FPF, MCP, methodology
+- [Blog index (RU)](https://forgeplan.dev/ru/blog): русская версия (mirror)
+- [Blog RSS (EN)](https://forgeplan.dev/blog/rss.xml)
+- [Blog RSS (RU)](https://forgeplan.dev/ru/blog/rss.xml)
+
 ## Optional
 
 - [Changelog](https://forgeplan.dev/docs/changelog): release history with theme summaries
 - [GitHub Repo](https://github.com/ForgePlan/forgeplan): source, issues, releases
+- [Author — Eli Rum](https://elirum.me): personal page
