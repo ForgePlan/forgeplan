@@ -73,7 +73,8 @@ html {
 .header-full .header-logo { width: 28px; height: 28px; }
 .header-full .header-brand { font-size: 18px; }
 .header-full .header-brand-cell { padding: 0 20px; }
-.header-full .header-nav { grid-template-columns: repeat(5, 110px) 140px 60px 105px; }
+/* 5 text cells (Docs/Blog/Guides/CLI/MCP) · GitHub icon · RU · Install */
+.header-full .header-nav { grid-template-columns: repeat(4, 110px) 140px 48px 60px 105px; }
 .header-full .nav-cell { font-size: 15px; }
 
 /* Compact state (scrolled past hero) */
@@ -93,7 +94,7 @@ html {
 .header-compact .header-logo { width: 16px; height: 16px; }
 .header-compact .header-brand { font-size: 13px; }
 .header-compact .header-brand-cell { padding: 0 12px; }
-.header-compact .header-nav { grid-template-columns: repeat(5, 74px) 94px 44px 76px; }
+.header-compact .header-nav { grid-template-columns: repeat(4, 74px) 94px 36px 44px 76px; }
 .header-compact .nav-cell { font-size: 12px; }
 
 /* Nav cell hover — wipe fill with inverted text */
@@ -191,3 +192,8 @@ html {
   outline: 2px solid var(--forge-fg);
   outline-offset: 2px;
 }
+
+/* === Icon-only nav cells (e.g. GitHub) === */
+.nav-cell-icon svg { width: 16px; height: 16px; transition: transform 0.2s; }
+.nav-cell-icon:hover svg { transform: scale(1.1); }
+.header-compact .nav-cell-icon svg { width: 14px; height: 14px; }
