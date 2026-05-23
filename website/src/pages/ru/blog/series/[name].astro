@@ -25,30 +25,32 @@ const stripLang = (id: string) => id.replace(/^ru\//, '').replace(/\.(md|mdx)$/,
 ---
 <Landing title={`${name} — Forgeplan Блог`} description={description} lang="ru">
   <Header />
-  <main class="blog-index">
-    <article class="blog-index-main">
-      <p class="blog-index-eyebrow">СЕРИЯ</p>
-      <h1 class="blog-index-heading">{name}</h1>
-      <p class="blog-index-subtitle">{description}</p>
-      <p class="blog-index-meta"><span class="blog-index-date">{posts.length} постов</span></p>
+  <article class="blog-index">
+    <div class="blog-index-layout blog-index-layout--solo">
+      <main id="main-content" class="blog-index-main">
+        <p class="blog-index-eyebrow">СЕРИЯ</p>
+        <h1 class="blog-index-heading">{name}</h1>
+        <p class="blog-index-subtitle">{description}</p>
+        <p class="blog-index-meta"><span class="blog-index-date">{posts.length} постов</span></p>
 
-      <ul class="blog-index-list">
-        {posts.map(post => (
-          <li class="blog-index-card">
-            <a href={`/ru/blog/${stripLang(post.id)}`}>
-              <p class="blog-index-card-meta">
-                <span class="series-order">#{post.data.seriesOrder ?? '?'}</span>
-                <span> · {post.data.kind} · {post.data.topic}</span>
-              </p>
-              <h2 class="blog-index-card-title">{post.data.title}</h2>
-              <p class="blog-index-card-desc">{post.data.description}</p>
-            </a>
-          </li>
-        ))}
-      </ul>
+        <ul class="blog-index-list">
+          {posts.map(post => (
+            <li class="blog-index-card">
+              <a href={`/ru/blog/${stripLang(post.id)}`}>
+                <p class="blog-index-card-meta">
+                  <span class="series-order">#{post.data.seriesOrder ?? '?'}</span>
+                  <span> · {post.data.kind} · {post.data.topic}</span>
+                </p>
+                <h2 class="blog-index-card-title">{post.data.title}</h2>
+                <p class="blog-index-card-desc">{post.data.description}</p>
+              </a>
+            </li>
+          ))}
+        </ul>
 
-      <p class="blog-index-rss"><a href="/ru/blog">← Все записи</a></p>
-    </article>
-  </main>
+        <p class="blog-index-rss"><a href="/ru/blog">← Все записи</a></p>
+      </main>
+    </div>
+  </article>
   <BlogFooter lang="ru" />
 </Landing>

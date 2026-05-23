@@ -2184,3 +2184,16 @@ article.guide-embedded {
   margin-top: auto;
   padding-top: 4px;
 }
+
+/* === Series/category index pages: single-column layout (no sidebar) ===
+   Used by /blog/series/<name> and /ru/blog/series/<name>. Same 1280px
+   container + 32px padding as blog index, but forces 1fr single column
+   so the right-side 280px sidebar track doesn't render empty. */
+.blog-index .blog-index-layout--solo {
+  grid-template-columns: 1fr;
+}
+@media (min-width: 1024px) {
+  .blog-index .blog-index-layout--solo {
+    grid-template-columns: 1fr;
+  }
+}
