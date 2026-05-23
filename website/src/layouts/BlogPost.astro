@@ -6,6 +6,7 @@ import SeriesNav from '../components/blog/SeriesNav.astro';
 import SeoMeta from '../components/blog/SeoMeta.astro';
 import AuthorBlock from '../components/blog/AuthorBlock.astro';
 import BlogFooter from '../components/blog/BlogFooter.astro';
+import SiteJsonLd from '../components/SiteJsonLd.astro';
 import '../styles/blog-theme.css';
 // Self-hosted fonts via @fontsource — replaces Google Fonts CDN <link> tags (FIX-2).
 // package.json declares @fontsource/space-grotesk and @fontsource/geist-mono.
@@ -75,6 +76,7 @@ const oppositeUrl = oppositeSlug
       translations={translations}
       slug={slug}
     />
+    <SiteJsonLd lang={lang} />
   </head>
   <body>
     <Header />

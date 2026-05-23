@@ -1,0 +1,104 @@
+---
+// Site-level structured data — gives Google sitelinks signal.
+// Renders Organization + WebSite (with SearchAction) + SiteNavigationElement
+// as JSON-LD. Place in <head> of homepage AND key landing pages (blog index)
+// for maximum sitelinks discoverability.
+//
+// References:
+//   https://developers.google.com/search/docs/appearance/sitelinks
+//   https://schema.org/Organization
+//   https://schema.org/WebSite
+//   https://schema.org/SiteNavigationElement
+//
+// Note: Google sitelinks are not guaranteed — Google's algorithm decides
+// based on site authority, internal linking, and click-through patterns.
+// This component provides the maximum signal we can.
+
+interface Props {
+  lang?: 'en' | 'ru';
+}
+const { lang = 'en' } = Astro.props;
+const site = Astro.site ?? new URL('https://forgeplan.dev');
+
+const url = (path: string) => new URL(path, site).href;
+const ru = lang === 'ru';
+
+const organization = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  '@id': url('#organization'),
+  name: 'Forgeplan',
+  url: site.href,
+  logo: url('/og-default.png'),
+  description: ru
+    ? 'Универсальная Rust-платформа для структурированных артефактов проекта с quality scoring, evidence tracking и semantic search.'
+    : 'Universal Rust platform for structured project artifacts with quality scoring, evidence tracking, and semantic search.',
+  sameAs: [
+    'https://github.com/ForgePlan/forgeplan',
+    'https://elirum.me',
+  ],
+  founder: {
+    '@type': 'Person',
+    name: 'Eli Rum',
+    url: 'https://elirum.me',
+  },
+};
+
+const website = {
+  '@context': 'https://schema.org',
+  '@type': 'WebSite',
+  '@id': url('#website'),
+  url: site.href,
+  name: 'Forgeplan',
+  publisher: { '@id': url('#organization') },
+  inLanguage: lang === 'ru' ? 'ru-RU' : 'en-US',
+  potentialAction: {
+    '@type': 'SearchAction',
+    target: {
+      '@type': 'EntryPoint',
+      urlTemplate: url('/docs/?q={search_term_string}'),
+    },
+    'query-input': 'required name=search_term_string',
+  },
+};
+
+// SiteNavigationElement: list of primary navigation links Google can show as sitelinks
+const navItems = ru
+  ? [
+      { name: 'Документация', url: '/ru/docs/getting-started/installation' },
+      { name: 'Блог', url: '/ru/blog' },
+      { name: 'GitHub', url: 'https://github.com/ForgePlan/forgeplan' },
+      { name: 'CLI Reference', url: '/ru/docs/cli/health' },
+      { name: 'MCP Reference', url: '/ru/docs/mcp/' },
+      { name: 'Методология', url: '/ru/docs/methodology/overview' },
+      { name: 'Changelog', url: '/ru/docs/changelog/' },
+      { name: 'Установка', url: '/#install' },
+    ]
+  : [
+      { name: 'Documentation', url: '/docs/getting-started/installation' },
+      { name: 'Blog', url: '/blog' },
+      { name: 'GitHub', url: 'https://github.com/ForgePlan/forgeplan' },
+      { name: 'CLI Reference', url: '/docs/cli/health' },
+      { name: 'MCP Reference', url: '/docs/mcp/' },
+      { name: 'Methodology Guide', url: '/docs/methodology/overview' },
+      { name: 'Changelog', url: '/docs/changelog/' },
+      { name: 'Install', url: '/#install' },
+    ];
+
+const siteNavigation = navItems.map((item, idx) => ({
+  '@context': 'https://schema.org',
+  '@type': 'SiteNavigationElement',
+  position: idx + 1,
+  name: item.name,
+  url: item.url.startsWith('http') ? item.url : url(item.url),
+}));
+
+const safeJson = (obj: unknown) =>
+  JSON.stringify(obj)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+---
+<script type="application/ld+json" set:html={safeJson(organization)} />
+<script type="application/ld+json" set:html={safeJson(website)} />
+<script type="application/ld+json" set:html={safeJson(siteNavigation)} />

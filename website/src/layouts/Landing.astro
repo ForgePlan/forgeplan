@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import SiteJsonLd from '../components/SiteJsonLd.astro';
 
 interface Props {
   title?: string;
@@ -35,6 +36,7 @@ const {
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
     <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <title>{title}</title>
+    <SiteJsonLd lang={lang} />
   </head>
   <body class="bg-forge-bg text-forge-fg font-body antialiased">
     <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:bg-forge-ember focus:text-forge-bg focus:px-4 focus:py-2 focus:text-sm">
