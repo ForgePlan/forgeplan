@@ -73,7 +73,7 @@ html {
 .header-full .header-logo { width: 28px; height: 28px; }
 .header-full .header-brand { font-size: 18px; }
 .header-full .header-brand-cell { padding: 0 20px; }
-.header-full .header-nav { grid-template-columns: repeat(4, 120px) 150px 110px; }
+.header-full .header-nav { grid-template-columns: repeat(5, 110px) 140px 105px; }
 .header-full .nav-cell { font-size: 15px; }
 
 /* Compact state (scrolled past hero) */
@@ -86,7 +86,7 @@ html {
 .header-compact .header-logo { width: 16px; height: 16px; }
 .header-compact .header-brand { font-size: 13px; }
 .header-compact .header-brand-cell { padding: 0 12px; }
-.header-compact .header-nav { grid-template-columns: repeat(4, 80px) 100px 80px; }
+.header-compact .header-nav { grid-template-columns: repeat(5, 74px) 94px 76px; }
 .header-compact .nav-cell { font-size: 12px; }
 
 /* Nav cell hover — wipe fill with inverted text */
