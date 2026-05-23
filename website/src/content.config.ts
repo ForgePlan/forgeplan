@@ -37,7 +37,13 @@ const blog = defineCollection({
 		kind: z.enum(['explainer', 'case-study', 'teaching', 'release-notes', 'deep-dive']),
 		topic: z.enum(['r-eff', 'adi', 'fpf', 'mcp', 'methodology', 'release']),
 		artifacts: z.array(z.string()).optional(),
-		cover: z.string().optional(),
+		// Cover image must be a local path under /public — prevents `javascript:`,
+		// `data:`, or `//evil.tld/track` schemes from sneaking into `<img src>` or
+		// `og:image`. If we ever ingest externally-submitted posts, this guard
+		// becomes load-bearing.
+		cover: z.string().regex(/^\/[\w\-/.]+\.(png|jpg|jpeg|webp|svg)$/, {
+			message: 'cover must be a local /path/to/file.{png|jpg|jpeg|webp|svg}',
+		}).optional(),
 		draft: z.boolean().default(false),
 		readingTime: z.number().optional(),
 		translations: z.record(z.string(), z.string()).optional(),

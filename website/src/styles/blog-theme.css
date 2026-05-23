@@ -643,49 +643,9 @@ body:has(.blog-post) {
   text-decoration: none;
 }
 
-/* TOC */
-.blog-post .blog-toc {
-  display: none;
-}
-@media (min-width: 1024px) {
-  .blog-post .blog-toc {
-    display: block;
-    position: sticky;
-    top: 80px;
-    max-height: calc(100vh - 100px);
-    overflow-y: auto;
-    align-self: start;
-  }
-}
-.blog-post .blog-toc-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  margin: 0 0 14px;
-}
-.blog-post .blog-toc nav ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  border-left: 1px solid var(--line);
-}
-.blog-post .blog-toc nav li {
-  padding: 4px 0 4px 14px;
-}
-.blog-post .blog-toc-h3 {
-  padding-left: 28px !important;
-}
-.blog-post .blog-toc nav a {
-  color: var(--text-2);
-  text-decoration: none;
-  font-size: 13.5px;
-  line-height: 1.4;
-}
-.blog-post .blog-toc nav a:hover {
-  color: var(--accent);
-}
+/* TOC styles moved to .blog-aside-toc (see below in the sticky aside section) —
+   the old .blog-post .blog-toc / .blog-toc-eyebrow / .blog-toc-mobile rules
+   from PR-1 are deleted; TOC.astro now renders into the unified aside. */
 
 /* SeriesNav */
 .blog-post .blog-series-nav {
@@ -896,46 +856,9 @@ body:has(.blog-post) {
 .blog-post .blog-callout-tip    .blog-callout-icon { color: var(--g-color); }
 .blog-post .blog-callout-danger .blog-callout-icon { color: var(--err); }
 
-/* === PR-2A FIX-7: TOC mobile <details> fallback === */
-.blog-post .blog-toc-mobile {
-  display: block;
-  margin: 24px 0;
-  border: 1px solid var(--line-2);
-  border-radius: 6px;
-  padding: 14px 18px;
-}
-.blog-post .blog-toc-mobile summary {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  cursor: pointer;
-}
-.blog-post .blog-toc-mobile nav {
-  margin-top: 12px;
-}
-.blog-post .blog-toc-mobile nav ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  border-left: 1px solid var(--line);
-}
-.blog-post .blog-toc-mobile nav li {
-  padding: 4px 0 4px 14px;
-}
-.blog-post .blog-toc-mobile nav a {
-  color: var(--text-2);
-  text-decoration: none;
-  font-size: 13.5px;
-  line-height: 1.4;
-}
-.blog-post .blog-toc-mobile nav a:hover {
-  color: var(--accent);
-}
-@media (min-width: 1024px) {
-  .blog-post .blog-toc-mobile { display: none; }
-}
+/* (was: .blog-toc-mobile <details> fallback — deleted with TOC refactor.
+   Sticky aside now stacks under content on mobile via grid 1fr fallback in
+   .blog-post .blog-layout, so no separate mobile-only TOC widget needed.) */
 
 /* === PR-2A-followup: modern blog UX === */
 

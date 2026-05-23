@@ -29,14 +29,14 @@ const scored = all
   })
   .sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
+    // Same-series candidates: respect series reading order (1, 2, 3, ...).
+    if (a.score === 3 && b.score === 3) {
+      return (a.post.data.seriesOrder ?? 999) - (b.post.data.seriesOrder ?? 999);
+    }
     return b.post.data.publishedAt.valueOf() - a.post.data.publishedAt.valueOf();
   })
   .slice(0, 3)
   .map(s => s.post);
-
-if (scored.length === 0) {
-  // No other posts yet — render nothing (early return via empty fragment)
-}
 
 const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
 const t = lang === 'ru'

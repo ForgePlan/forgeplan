@@ -38,7 +38,7 @@ The MCP server exposes the same operations to any agent via stdio.
 
 ## Guides — interactive lessons
 
-- [Guides index (EN)](https://forgeplan.dev/guides): catalog of 10 interactive lessons
+- [Guides index (EN)](https://forgeplan.dev/guides): catalog of 12 interactive lessons
 - [Guides index (RU)](https://forgeplan.dev/ru/guides): русская версия (mirror)
 - [Decision Cycle](https://forgeplan.dev/guides/decision-cycle): ADI + DDR + Trust Calculus
 - [Trust Calculus 3D](https://forgeplan.dev/guides/trust-calculus): F/G/R in 3D interactive scene

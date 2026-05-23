@@ -103,7 +103,7 @@ const oppositeUrl = oppositeSlug
     <article class="blog-post">
       <Hero cover={cover} topic={topic} kind={kind} title={title} />
       <div class="blog-layout">
-        <main class="blog-content">
+        <main id="main-content" class="blog-content">
           <p class="blog-description">{description}</p>
           <slot />
           {series && currentId && <SeriesNav currentId={currentId} currentSeries={series} lang={lang} />}
