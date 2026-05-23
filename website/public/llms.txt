@@ -53,10 +53,17 @@ The MCP server exposes the same operations to any agent via stdio.
 
 ## Blog
 
-- [Blog index (EN)](https://forgeplan.dev/blog): long-form writing on R_eff, ADI, FPF, MCP, methodology
+- [Blog index (EN)](https://forgeplan.dev/blog): long-form essays on engineering decisions — how to structure them, score evidence, and stop forgetting why they were made
 - [Blog index (RU)](https://forgeplan.dev/ru/blog): русская версия (mirror)
 - [Blog RSS (EN)](https://forgeplan.dev/blog/rss.xml)
 - [Blog RSS (RU)](https://forgeplan.dev/ru/blog/rss.xml)
+- [Decision graveyard](https://forgeplan.dev/blog/decision-graveyard): why six months later nobody remembers why you picked one auth flow over another
+- [Git for decisions](https://forgeplan.dev/blog/git-for-decisions): a CLI that teaches engineers what good decisions look like
+- [Markdown as source of truth](https://forgeplan.dev/blog/markdown-source-of-truth): LanceDB as derived index, why files own the truth
+- [R_eff: trust = weakest link](https://forgeplan.dev/blog/r-eff-weakest-link): the math behind weakest-link evidence scoring
+- [Forgeplan as agent harness](https://forgeplan.dev/blog/forgeplan-as-agent-harness): decision framework that doubled as harness
+- [Harness engineering for AI agents](https://forgeplan.dev/blog/harness-engineering-for-ai-agents): why your prompt is the smallest part of the system
+- [Forgeplan Rust + LanceDB](https://forgeplan.dev/blog/forgeplan-rust-lancedb): tech stack deep-dive
 
 ## Optional
 
