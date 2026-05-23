@@ -2,6 +2,7 @@
 import { getCollection } from 'astro:content';
 import Landing from '../../../layouts/Landing.astro';
 import Header from '../../../components/Header.astro';
+import BlogFooter from '../../../components/blog/BlogFooter.astro';
 import '../../../styles/blog-theme.css';
 
 export async function getStaticPaths() {
@@ -49,4 +50,5 @@ const stripLang = (id: string) => id.replace(/^en\//, '').replace(/\.(md|mdx)$/,
       <p class="blog-index-rss"><a href="/blog">← All posts</a></p>
     </article>
   </main>
+  <BlogFooter lang="en" />
 </Landing>

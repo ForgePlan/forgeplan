@@ -5,6 +5,7 @@ import TOC from '../components/blog/TOC.astro';
 import SeriesNav from '../components/blog/SeriesNav.astro';
 import SeoMeta from '../components/blog/SeoMeta.astro';
 import AuthorBlock from '../components/blog/AuthorBlock.astro';
+import BlogFooter from '../components/blog/BlogFooter.astro';
 import '../styles/blog-theme.css';
 // Self-hosted fonts via @fontsource — replaces Google Fonts CDN <link> tags (FIX-2).
 // package.json declares @fontsource/space-grotesk and @fontsource/geist-mono.
@@ -101,5 +102,6 @@ const oppositeUrl = oppositeSlug
         <TOC headings={headings} lang={lang} />
       </div>
     </article>
+    <BlogFooter lang={lang} />
   </body>
 </html>

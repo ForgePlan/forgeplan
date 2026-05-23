@@ -3,10 +3,20 @@ import { getCollection } from 'astro:content';
 import Landing from '../../layouts/Landing.astro';
 import Header from '../../components/Header.astro';
 import TopicChip from '../../components/blog/TopicChip.astro';
+import TopicFilter from '../../components/blog/TopicFilter.astro';
+import SeriesBanner from '../../components/blog/SeriesBanner.astro';
+import BlogFooter from '../../components/blog/BlogFooter.astro';
 import '../../styles/blog-theme.css';
 
 const posts = (await getCollection('blog', ({ data }) => data.lang === 'en' && !data.draft))
   .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf());
+
+const topicsSet = new Set(posts.map(p => p.data.topic));
+const topics = [...topicsSet].sort();
+
+const NOW = Date.now();
+const FOURTEEN_DAYS = 14 * 24 * 60 * 60 * 1000;
+const isNew = (d: Date) => NOW - d.valueOf() < FOURTEEN_DAYS;
 ---
 <Landing title="Blog — Forgeplan" description="Long-form writing about R_eff, ADI, FPF, and the Forgeplan methodology.">
   <Header />
@@ -16,15 +26,22 @@ const posts = (await getCollection('blog', ({ data }) => data.lang === 'en' && !
       <h1 class="blog-index-heading">Writing</h1>
       <p class="blog-index-subtitle">Long-form notes on R_eff, ADI reasoning, FPF, MCP, and the methodology behind Forgeplan.</p>
 
+      {topics.length > 1 && <TopicFilter topics={topics} lang="en" />}
+
+      <SeriesBanner lang="en" />
+
       <ul class="blog-index-list">
         {posts.map(post => (
-          <li class="blog-index-card">
+          <li class="blog-index-card" data-topic={post.data.topic}>
             <a href={`/blog/${post.id.replace(/^en\//, '').replace(/\.(md|mdx)$/, '')}`}>
               <div class={`blog-index-card-thumb blog-index-card-thumb-${post.data.topic}`}>
                 {post.data.cover ? (
                   <img src={post.data.cover} alt={post.data.title} />
                 ) : (
                   <span class="blog-index-card-thumb-fallback">{post.data.topic}</span>
+                )}
+                {isNew(post.data.publishedAt) && (
+                  <span class="blog-index-card-badge">NEW</span>
                 )}
               </div>
               <div class="blog-index-card-body">
@@ -41,9 +58,7 @@ const posts = (await getCollection('blog', ({ data }) => data.lang === 'en' && !
         ))}
       </ul>
 
-      <p class="blog-index-rss">
-        RSS: <a href="/blog/rss.xml">/blog/rss.xml</a>
-      </p>
     </main>
   </article>
+  <BlogFooter lang="en" />
 </Landing>
