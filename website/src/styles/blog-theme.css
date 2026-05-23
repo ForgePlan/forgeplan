@@ -1856,3 +1856,13 @@ article.guide-embedded {
   padding: 32px 32px 64px !important;
   box-sizing: border-box !important;
 }
+
+/* Lesson text blocks: lesson originally caps p at 760px, p.lead at 820px.
+   Override to use full container width так чтобы header content of the
+   lesson (eyebrow + h1 + lead) tянутся на всю ширину блока контейнера
+   (1216 = 1280 - 2*32 padding). Body paragraphs follow same rule for
+   visual rhythm with full-width sections (.scenario, .axes, .pipeline). */
+.guide-embedded p,
+.guide-embedded p.lead {
+  max-width: none !important;
+}
