@@ -133,21 +133,44 @@ const isMcpActive    = isActive('/docs/mcp', '/ru/docs/mcp');
   });
 
   // === Header shrink ===
+  // Two-track trigger:
+  //   1. IntersectionObserver on #hero (landing page) — for hero-aware shrink
+  //   2. Scroll-based fallback (all other pages /blog, /guides, /docs) — shrink past 64px
+  // Also publishes --header-h CSS var so sticky elements (breadcrumb) park
+  // under the current header height instead of a hard-coded 88px.
   const header = document.getElementById('site-header');
   if (header) {
     let compact = false;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        const shouldBeCompact = !entry.isIntersecting;
-        if (shouldBeCompact !== compact) {
-          compact = shouldBeCompact;
-          header.classList.toggle('header-full', !compact);
-          header.classList.toggle('header-compact', compact);
-        }
-      },
-      { threshold: 0, rootMargin: '-88px 0px 0px 0px' }
-    );
+    function applyState(shouldBeCompact) {
+      if (shouldBeCompact === compact) return;
+      compact = shouldBeCompact;
+      header.classList.toggle('header-full', !compact);
+      header.classList.toggle('header-compact', compact);
+      document.documentElement.style.setProperty('--header-h', compact ? '36px' : '88px');
+    }
+    // Set initial var
+    document.documentElement.style.setProperty('--header-h', '88px');
+
     const hero = document.getElementById('hero');
-    if (hero) observer.observe(hero);
+    if (hero) {
+      const observer = new IntersectionObserver(
+        ([entry]) => applyState(!entry.isIntersecting),
+        { threshold: 0, rootMargin: '-88px 0px 0px 0px' }
+      );
+      observer.observe(hero);
+    } else {
+      // Scroll-based shrink for pages without #hero (blog, guides, docs)
+      let ticking = false;
+      function checkScroll() {
+        applyState(window.scrollY > 64);
+        ticking = false;
+      }
+      window.addEventListener('scroll', () => {
+        if (!ticking) {
+          requestAnimationFrame(checkScroll);
+          ticking = true;
+        }
+      }, { passive: true });
+    }
   }
 </script>
