@@ -138,7 +138,10 @@ export function extractEmbed(filepath: string): EmbedResult {
 
   const externalScripts = Array.from(html.matchAll(/<script\s+[^>]*\bsrc=["']([^"']+)["'][^>]*>\s*<\/script>/gi)).map(m => m[1]);
 
-  const inlineScripts = Array.from(html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)).map(m => m[1]);
+  // Wrap each inline script in IIFE so its variables (e.g. const evidence = ..., const artifacts = ...)
+  // don't collide with other lessons' identifiers or with site scripts in the page.
+  const inlineScripts = Array.from(html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi))
+    .map(m => `(function(){\n${m[1]}\n})();`);
 
   return { bodyHtml, scopedCss, externalScripts, inlineScripts, title };
 }

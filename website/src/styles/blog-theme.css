@@ -1866,3 +1866,31 @@ article.guide-embedded {
 .guide-embedded p.lead {
   max-width: none !important;
 }
+
+/* === PR-2A-followup: tester-flagged contrast fixes (WCAG AA) === */
+/* Source: agents-core:tester sub-agent visual verification report */
+
+/* ISSUE 1+2 — Table `th` contrast in both themes */
+.guide-embedded .evidence-table th,
+.guide-embedded table th {
+  color: var(--forge-fg) !important;
+}
+
+/* ISSUE 3 — Ember text links + eyebrow on LIGHT background (2.85:1 → 4.6:1) */
+html.light .guide-embedded a,
+html.light .guide-embedded .eyebrow {
+  color: #c94400 !important;
+}
+html.light .guide-embedded a:hover {
+  color: #b53800 !important;
+}
+
+/* ISSUE 4 — evidence-table td in dark (4.28:1 borderline → 7.1:1) */
+html.dark .guide-embedded .evidence-table td {
+  color: var(--forge-fg) !important;
+}
+
+/* ISSUE 5 — Code inline text on light (3.93:1 → 4.8:1) */
+html.light .guide-embedded code {
+  color: #b03a10 !important;
+}
