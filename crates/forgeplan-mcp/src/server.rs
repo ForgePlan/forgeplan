@@ -56,8 +56,6 @@ pub(crate) enum ResolutionSource {
 
 impl ResolutionSource {
     /// Return the wire-format string used in `resolved_via` response fields (NFR-004).
-    // Phase 3 (W3) uses this in response payloads; suppress dead-code lint in Phase 1.
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Param => "param",
@@ -76,11 +74,119 @@ pub(crate) struct ResolvedWorkspace {
     pub workspace_dir: PathBuf,
     /// Which step of the chain produced `workspace_dir`.
     /// Phase 3 (W3) serialises this into success response payloads (NFR-004).
-    // Allow unused-read lint in Phase 1 — W3 reads this field in Phase 3.
-    #[allow(dead_code)]
     pub resolved_via: ResolutionSource,
     /// Cached `LanceStore` handle for `workspace_dir`.
     pub store: Arc<LanceStore>,
+}
+
+// ── WorkspaceTrace (PRD-078 Phase 3 / FR-007 / NFR-004) ─────
+
+/// Serialisable trace of which workspace was resolved for a mutating tool
+/// call, and which resolution-chain step was used. Injected into every
+/// mutating tool's success response so agents can verify routing without
+/// a second round-trip (FR-007: `resolved_workspace` + NFR-004:
+/// `resolved_via` in every tool response).
+///
+/// Phase 3 (W3) wires this type into all handlers that previously had a
+/// `// TODO(PRD-078 W3): attach workspace trace` comment.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct WorkspaceTrace {
+    /// Absolute path of the `.forgeplan/` directory that was used for this
+    /// call. Always a resolved absolute path — never a tilde-expanded or
+    /// relative form.
+    pub resolved_workspace: String,
+    /// Which resolution-chain step produced `resolved_workspace`.
+    /// One of `"param"`, `"env"`, or `"cwd"`.
+    pub resolved_via: String,
+}
+
+impl WorkspaceTrace {
+    /// Construct from a `ResolvedWorkspace` produced by
+    /// `ForgeplanServer::resolve_workspace`. This is the canonical factory —
+    /// all handler sites go through this rather than constructing the struct
+    /// directly.
+    pub(crate) fn from_resolved(r: &ResolvedWorkspace) -> Self {
+        Self {
+            resolved_workspace: r.workspace_dir.display().to_string(),
+            resolved_via: r.resolved_via.as_str().to_string(),
+        }
+    }
+}
+
+/// Merge workspace-trace fields into a JSON object response.
+///
+/// Takes a `serde_json::Value` (must be `Value::Object`) and inserts
+/// `resolved_workspace` and `resolved_via` as top-level fields in place.
+/// If `v` is not an Object (shouldn't happen for our DTOs), it is wrapped
+/// so the trace fields are still present.
+///
+/// This is the primary attachment point replacing each
+/// `// TODO(PRD-078 W3): attach workspace trace` marker.
+fn with_workspace_trace(mut v: serde_json::Value, trace: &WorkspaceTrace) -> serde_json::Value {
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "resolved_workspace".to_string(),
+            serde_json::Value::String(trace.resolved_workspace.clone()),
+        );
+        obj.insert(
+            "resolved_via".to_string(),
+            serde_json::Value::String(trace.resolved_via.clone()),
+        );
+        v
+    } else {
+        serde_json::json!({
+            "data": v,
+            "resolved_workspace": trace.resolved_workspace,
+            "resolved_via": trace.resolved_via,
+        })
+    }
+}
+
+#[cfg(test)]
+mod workspace_trace_unit_tests {
+    use super::*;
+
+    fn param_trace() -> WorkspaceTrace {
+        WorkspaceTrace {
+            resolved_workspace: "/tmp/repo/.forgeplan".to_string(),
+            resolved_via: "param".to_string(),
+        }
+    }
+
+    #[test]
+    fn workspace_trace_serializes_to_expected_json_shape() {
+        let trace = param_trace();
+        let v = serde_json::to_value(&trace).unwrap();
+        assert_eq!(v["resolved_workspace"], "/tmp/repo/.forgeplan");
+        assert_eq!(v["resolved_via"], "param");
+    }
+
+    #[test]
+    fn with_workspace_trace_inserts_fields_into_object() {
+        let trace = param_trace();
+        let original = serde_json::json!({ "id": "PRD-001", "status": "draft" });
+        let merged = with_workspace_trace(original, &trace);
+        assert_eq!(merged["id"], "PRD-001");
+        assert_eq!(merged["resolved_workspace"], "/tmp/repo/.forgeplan");
+        assert_eq!(merged["resolved_via"], "param");
+    }
+
+    #[test]
+    fn with_workspace_trace_wraps_non_object() {
+        let trace = param_trace();
+        let scalar = serde_json::json!("just a string");
+        let merged = with_workspace_trace(scalar, &trace);
+        // Non-object gets wrapped.
+        assert!(merged.get("data").is_some());
+        assert_eq!(merged["resolved_workspace"], "/tmp/repo/.forgeplan");
+    }
+
+    #[test]
+    fn resolution_source_as_str_returns_correct_wire_values() {
+        assert_eq!(ResolutionSource::Param.as_str(), "param");
+        assert_eq!(ResolutionSource::Env.as_str(), "env");
+        assert_eq!(ResolutionSource::Cwd.as_str(), "cwd");
+    }
 }
 
 // ── Server struct ────────────────────────────────────────────
@@ -1078,6 +1184,13 @@ struct RestoreParams {
     /// Unknown values are rejected with a structured error.
     #[serde(default)]
     target_status: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1183,6 +1296,13 @@ struct UnlinkParams {
     /// Relationship type to remove (default: informs)
     #[serde(default = "default_relation")]
     relation: RelationKind,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1259,6 +1379,13 @@ struct UpdateParams {
 struct DeleteParams {
     /// Artifact ID to delete
     id: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1295,6 +1422,13 @@ struct ActivateParams {
     /// Force activation even if validation has MUST errors
     #[serde(default)]
     force: bool,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1303,6 +1437,13 @@ struct SupersedeParams {
     id: String,
     /// Replacement artifact ID
     by: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1311,6 +1452,13 @@ struct DeprecateParams {
     id: String,
     /// Reason for deprecation
     reason: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 /// JSON-Schema enum mirroring `forgeplan_core::phase::Phase`.
@@ -1360,6 +1508,13 @@ struct PhaseAdvanceParams {
     /// Optional reason / justification (recorded in history)
     #[serde(default)]
     reason: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1379,6 +1534,13 @@ struct CaptureParams {
     /// Additional context (optional)
     #[serde(default)]
     context: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1406,6 +1568,13 @@ struct GenerateParams {
     kind: ArtifactKindArg,
     /// Natural language description of what to generate
     description: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1484,6 +1653,13 @@ struct ImportParams {
     /// Overwrite existing artifacts (default: false)
     #[serde(default)]
     force: Option<bool>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 /// Issue #287 Phase F (W4): optional filter for the `forgeplan_graph`
@@ -1558,6 +1734,13 @@ struct FpfCheckParams {
 struct DiscoverStartParams {
     /// Project name for the discovery session
     project_name: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1577,12 +1760,26 @@ struct DiscoverFindingParams {
     /// Source file paths that informed this finding
     #[serde(default)]
     source_files: Vec<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct DiscoverCompleteParams {
     /// Session ID to complete
     session_id: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 // ── Issue #287 Phase D — Hypothesis + Interview Packet params ────────
@@ -1607,6 +1804,13 @@ struct HypothesisPromoteParams {
     /// Free-form one-line rationale for the audit trail in `## Lifecycle State`.
     /// Stored verbatim in the body, sanitised for hint emission.
     rationale: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 /// Params for `forgeplan_interview_packet_draft` (stub — full implementation
@@ -1643,6 +1847,13 @@ struct InterviewPacketIngestParams {
     /// handing off to the marketplace plugin. The plugin owns the read.
     #[serde(default)]
     transcript_path: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 // ── Tool implementations ─────────────────────────────────────
@@ -1723,6 +1934,8 @@ impl ForgeplanServer {
         Parameters(p): Parameters<NewParams>,
     ) -> Result<CallToolResult, McpError> {
         let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        // PRD-078 Phase 3: capture trace before moving fields out of `resolved`.
+        let trace = WorkspaceTrace::from_resolved(&resolved);
         let ws = resolved.workspace_dir;
         let store = resolved.store;
 
@@ -2002,8 +2215,12 @@ impl ForgeplanServer {
         // typed clients (TS codegen). Old consumers ignore unknown
         // fields; new consumers read them. Replaces post-hoc Value
         // mutation that broke schema codegen.
-        // TODO(PRD-078 W3): attach workspace trace
-        Ok(json_result(&NewArtifactResponse {
+        //
+        // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject `resolved_workspace`
+        // and `resolved_via` into the success payload so the calling agent
+        // can verify routing without a second round-trip. `trace` was
+        // captured at the start of this handler, before `resolved` was moved.
+        let base_response = serde_json::to_value(&NewArtifactResponse {
             id,
             kind: template_key.into(),
             title: p.title,
@@ -2018,7 +2235,9 @@ impl ForgeplanServer {
             hint: identity_hint,
             auto_linked: auto_link_target,
             auto_link_warnings,
-        }))
+        })
+        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
+        Ok(json_result(&with_workspace_trace(base_response, &trace)))
     }
 
     #[tool(
@@ -2511,6 +2730,8 @@ impl ForgeplanServer {
         Parameters(p): Parameters<LinkParams>,
     ) -> Result<CallToolResult, McpError> {
         let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        // PRD-078 Phase 3: capture trace before moving fields out of `resolved`.
+        let trace = WorkspaceTrace::from_resolved(&resolved);
         let ws = resolved.workspace_dir;
         let store = resolved.store;
 
@@ -2730,14 +2951,19 @@ impl ForgeplanServer {
         }
 
         let final_next_action = completion_hint.unwrap_or(next_action);
-        // TODO(PRD-078 W3): attach workspace trace
-        hinted_result(
-            &LinkResponse {
-                message,
-                auto_activated,
-            },
-            final_next_action,
-        )
+        // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+        let mut base = serde_json::to_value(&LinkResponse {
+            message,
+            auto_activated,
+        })
+        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
+        if let Some(obj) = base.as_object_mut() {
+            obj.insert(
+                "_next_action".to_string(),
+                serde_json::Value::String(final_next_action),
+            );
+        }
+        Ok(json_result(&with_workspace_trace(base, &trace)))
     }
 
     #[tool(
@@ -2754,14 +2980,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<UnlinkParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // Same lock discipline as forgeplan_link.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
@@ -2830,13 +3052,21 @@ impl ForgeplanServer {
             );
         }
 
-        hinted_result(
-            &LinkResponse {
-                message: format!("Unlinked: {} --{}--> {}", p.source, relation, p.target),
-                auto_activated: None,
-            },
-            "Unlinked. R_eff recomputed on source. Reconcile parents: `forgeplan_score_all`.",
-        )
+        // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+        let mut base = serde_json::to_value(&LinkResponse {
+            message: format!("Unlinked: {} --{}--> {}", p.source, relation, p.target),
+            auto_activated: None,
+        })
+        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
+        if let Some(obj) = base.as_object_mut() {
+            obj.insert(
+                "_next_action".to_string(),
+                serde_json::Value::String(
+                    "Unlinked. R_eff recomputed on source. Reconcile parents: `forgeplan_score_all`.".to_string()
+                ),
+            );
+        }
+        Ok(json_result(&with_workspace_trace(base, &trace)))
     }
 
     #[tool(
@@ -2964,6 +3194,8 @@ impl ForgeplanServer {
         Parameters(p): Parameters<UpdateParams>,
     ) -> Result<CallToolResult, McpError> {
         let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        // PRD-078 Phase 3: capture trace before moving fields out of `resolved`.
+        let trace = WorkspaceTrace::from_resolved(&resolved);
         let ws = resolved.workspace_dir;
         let store = resolved.store;
 
@@ -3082,16 +3314,15 @@ impl ForgeplanServer {
             "active" => format!("Updated active artifact. Re-score: `forgeplan_score {safe_id}`."),
             other => format!("Updated ({other}). Inspect lifecycle: `forgeplan_review {safe_id}`."),
         };
-        // TODO(PRD-078 W3): attach workspace trace
-        hinted_result(
-            &serde_json::json!({
-                "id": p.id,
-                "message": "Updated successfully",
-                "status": updated.status,
-                "title": updated.title,
-            }),
-            next_action,
-        )
+        // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+        let base = serde_json::json!({
+            "id": p.id,
+            "message": "Updated successfully",
+            "status": updated.status,
+            "title": updated.title,
+            "_next_action": next_action,
+        });
+        Ok(json_result(&with_workspace_trace(base, &trace)))
     }
 
     #[tool(
@@ -3108,14 +3339,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DeleteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // PRD-057 FR-007 — serialize write critical section.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
@@ -3174,21 +3401,21 @@ impl ForgeplanServer {
         let ref_form =
             forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
         let safe_id = sanitize_for_hint(&ref_form);
-        hinted_result(
-            &serde_json::json!({
-                "id": p.id,
-                "title": record.title,
-                "message": "Soft-deleted — recoverable via forgeplan_undo_last",
-                "receipt_id": receipt_id,
-            }),
-            format!(
+        // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+        let base = serde_json::json!({
+            "id": p.id,
+            "title": record.title,
+            "message": "Soft-deleted — recoverable via forgeplan_undo_last",
+            "receipt_id": receipt_id,
+            "_next_action": format!(
                 "Soft-deleted `{safe_id}`. Reversible within 30 days via \
                  `forgeplan_undo_last` or `forgeplan_restore {safe_id}`. Projection and \
                  metadata live in `.forgeplan/trash/`. Prefer \
                  `forgeplan_supersede` or `forgeplan_deprecate` for non-terminal \
                  lifecycle transitions."
             ),
-        )
+        });
+        Ok(json_result(&with_workspace_trace(base, &trace)))
     }
 
     #[tool(
@@ -3335,20 +3562,17 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ActivateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let ws_opt = self.require_workspace().await.ok();
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
+        let ws_opt: Option<std::path::PathBuf> = Some(ws.clone());
 
         // Round 9 audit HIGH-1: MCP parity — acquire workspace lock to
         // serialize against CLI mutators (link/activate/score/score-all).
-        let _lock_guard = match ws_opt.as_ref() {
-            Some(ws) => match forgeplan_core::workspace::acquire_workspace_lock(ws).await {
-                Ok(g) => Some(g),
-                Err(e) => return Ok(safe_err_result("workspace lock", e)),
-            },
-            None => None,
+        let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
+            Ok(g) => g,
+            Err(e) => return Ok(safe_err_result("workspace lock", e)),
         };
 
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync.
@@ -3432,15 +3656,15 @@ impl ForgeplanServer {
                     "R_eff recomputed on activation. Reconcile parents: `forgeplan_score_all`."
                         .to_string()
                 };
-                hinted_result(
-                    &serde_json::json!({
-                        "artifact_id": p.id,
-                        "forced": result.forced,
-                        "must_errors": result.must_errors,
-                        "message": msg,
-                    }),
-                    next_action,
-                )
+                // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+                let base = serde_json::json!({
+                    "artifact_id": p.id,
+                    "forced": result.forced,
+                    "must_errors": result.must_errors,
+                    "message": msg,
+                    "_next_action": next_action,
+                });
+                Ok(json_result(&with_workspace_trace(base, &trace)))
             }
             Err(e) => Ok(err_result(&e.to_string())),
         }
@@ -3460,14 +3684,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<SupersedeParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // PRD-057 FR-007 — serialize write critical section.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
@@ -3557,16 +3777,16 @@ impl ForgeplanServer {
                         }
                     }
                 };
-                hinted_result(
-                    &serde_json::json!({
-                        "superseded": p.id,
-                        "replacement": p.by,
-                        "dependents_affected": result.dependents,
-                        "warnings": result.warnings,
-                        "receipt_id": receipt_id,
-                    }),
-                    next_action,
-                )
+                // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+                let base = serde_json::json!({
+                    "superseded": p.id,
+                    "replacement": p.by,
+                    "dependents_affected": result.dependents,
+                    "warnings": result.warnings,
+                    "receipt_id": receipt_id,
+                    "_next_action": next_action,
+                });
+                Ok(json_result(&with_workspace_trace(base, &trace)))
             }
             Err(e) => {
                 let safe_from = sanitize_for_hint(&p.id);
@@ -3597,14 +3817,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DeprecateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // PRD-057 FR-007 — serialize write critical section.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
@@ -3688,15 +3904,15 @@ impl ForgeplanServer {
                         None => format!("Deprecated. {} dependent(s).", dependents.len()),
                     }
                 };
-                hinted_result(
-                    &serde_json::json!({
-                        "deprecated": p.id,
-                        "reason": p.reason,
-                        "dependents_affected": dependents,
-                        "receipt_id": receipt_id,
-                    }),
-                    next_action,
-                )
+                // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+                let base = serde_json::json!({
+                    "deprecated": p.id,
+                    "reason": p.reason,
+                    "dependents_affected": dependents,
+                    "receipt_id": receipt_id,
+                    "_next_action": next_action,
+                });
+                Ok(json_result(&with_workspace_trace(base, &trace)))
             }
             Err(e) => Ok(err_hinted(
                 &e.to_string(),
@@ -4359,14 +4575,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<CaptureParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         let config = workspace::load_config(&ws)
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
@@ -5454,14 +5666,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<GenerateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         let artifact_kind: ArtifactKind = match p.kind.as_str().parse() {
             Ok(k) => k,
@@ -5660,10 +5868,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ImportParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
         // Audit H3 follow-up: serialize import behind workspace lock so a
         // concurrent CLI mutation cannot interleave with the bundle replay.
         // Each artifact in the bundle is now a file-first operation via
@@ -5677,10 +5885,6 @@ impl ForgeplanServer {
                     "Retry — another sub-agent holds the lock.",
                 ));
             }
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
         };
 
         let data: serde_json::Value = match serde_json::from_str(&p.data) {
@@ -6684,10 +6888,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DiscoverStartParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let _ = resolved.store; // unused in this handler
 
         let session = forgeplan_core::discover::DiscoverSession::new(&p.project_name);
         let protocol = forgeplan_core::discover::Protocol::default();
@@ -6737,14 +6941,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DiscoverFindingParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // Parse phase
         let phase = match p.phase.to_lowercase().as_str() {
@@ -6901,10 +7101,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DiscoverCompleteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let _ = resolved.store; // unused in this handler
 
         let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
             Ok(s) => s,
@@ -7201,10 +7401,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<PhaseAdvanceParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let _ = resolved.store; // unused in this handler
 
         // Round 2 audit M-sec #2: boundary-layer reason cap. Rejects
         // the request outright before serde_json / sanitize_for_hint
@@ -7279,10 +7479,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ClaimParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let _ = resolved.store; // unused in this handler
 
         // Serialize against concurrent claim/release so two sub-agents
         // cannot simultaneously take the same artifact (PRD-057 Round 1
@@ -7581,14 +7781,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // R3 audit HIGH (security) + MED: clamp unbounded user input
         // BEFORE allocating — agents & per-agent skill lists otherwise
@@ -7813,14 +8009,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<RestoreParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // Lazy TTL purge (ADR #5) so aging receipts don't pile up.
         let ws_clone = ws.clone();
@@ -8817,14 +9009,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<HypothesisPromoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // Serialise concurrent promotes — two agents writing to the same
         // hypothesis would race on the `## Lifecycle State` append and could
@@ -9142,10 +9330,10 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<InterviewPacketIngestParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
+        let _trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = resolved.workspace_dir;
+        let _ = resolved.store; // unused in this handler
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
             Ok(g) => g,
             Err(e) => return Ok(safe_err_result("workspace lock", e)),
