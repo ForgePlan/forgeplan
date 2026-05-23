@@ -1,0 +1,50 @@
+---
+import { getCollection } from 'astro:content';
+
+interface Props {
+  currentId: string;      // post.id e.g. "en/welcome"
+  currentSeries: string;
+  lang: 'en' | 'ru';
+}
+const { currentId, currentSeries, lang } = Astro.props;
+
+const labels = {
+  en: { prev: '← Previous', next: 'Next →', start: '— Start of series', end: 'End of series —' },
+  ru: { prev: '← Назад', next: 'Вперёд →', start: '— Начало серии', end: 'Конец серии —' },
+};
+const t = labels[lang];
+
+const posts = (await getCollection('blog', ({ data }) =>
+  data.lang === lang && data.series === currentSeries && !data.draft
+)).sort((a, b) => (a.data.seriesOrder ?? 0) - (b.data.seriesOrder ?? 0));
+
+const idx = posts.findIndex(p => p.id === currentId);
+const prev = idx > 0 ? posts[idx - 1] : null;
+const next = idx >= 0 && idx < posts.length - 1 ? posts[idx + 1] : null;
+
+const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
+const stripLang = (id: string) => id.replace(new RegExp(`^${lang}/`), '');
+---
+{(prev || next) && (
+  <nav class="blog-series-nav" aria-label="Series navigation">
+    <div class="blog-series-nav-tag">{currentSeries}</div>
+    <div class="blog-series-nav-row">
+      <div class="blog-series-nav-prev">
+        {prev ? (
+          <a href={`${langPrefix}/${stripLang(prev.id)}`}>
+            <span class="blog-series-nav-direction">{t.prev}</span>
+            <span class="blog-series-nav-title">{prev.data.title}</span>
+          </a>
+        ) : <span class="blog-series-nav-placeholder">{t.start}</span>}
+      </div>
+      <div class="blog-series-nav-next">
+        {next ? (
+          <a href={`${langPrefix}/${stripLang(next.id)}`}>
+            <span class="blog-series-nav-direction">{t.next}</span>
+            <span class="blog-series-nav-title">{next.data.title}</span>
+          </a>
+        ) : <span class="blog-series-nav-placeholder">{t.end}</span>}
+      </div>
+    </div>
+  </nav>
+)}

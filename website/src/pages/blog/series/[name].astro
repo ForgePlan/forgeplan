@@ -1,0 +1,50 @@
+---
+import { getCollection } from 'astro:content';
+import Landing from '../../../layouts/Landing.astro';
+import '../../../styles/blog-theme.css';
+
+export async function getStaticPaths() {
+  const allPosts = await getCollection('blog', ({ data }) => data.lang === 'en' && !data.draft && data.series);
+  const seriesNames = [...new Set(allPosts.map(p => p.data.series!))];
+  return seriesNames.map(name => ({
+    params: { name },
+    props: { name },
+  }));
+}
+
+const { name } = Astro.props;
+const posts = (await getCollection('blog', ({ data }) =>
+  data.lang === 'en' && !data.draft && data.series === name
+)).sort((a, b) => (a.data.seriesOrder ?? 0) - (b.data.seriesOrder ?? 0));
+
+const firstWithDesc = posts.find(p => p.data.seriesDescription);
+const description = firstWithDesc?.data.seriesDescription ?? `Posts in series: ${name}`;
+const stripLang = (id: string) => id.replace(/^en\//, '').replace(/\.(md|mdx)$/, '');
+---
+<Landing title={`${name} — Forgeplan Blog`} description={description}>
+  <main class="blog-index">
+    <article class="blog-index-main">
+      <p class="blog-index-eyebrow">SERIES</p>
+      <h1 class="blog-index-heading">{name}</h1>
+      <p class="blog-index-subtitle">{description}</p>
+      <p class="blog-index-meta"><span class="blog-index-date">{posts.length} posts</span></p>
+
+      <ul class="blog-index-list">
+        {posts.map(post => (
+          <li class="blog-index-card">
+            <a href={`/blog/${stripLang(post.id)}`}>
+              <p class="blog-index-card-meta">
+                <span class="series-order">#{post.data.seriesOrder ?? '?'}</span>
+                <span> · {post.data.kind} · {post.data.topic}</span>
+              </p>
+              <h2 class="blog-index-card-title">{post.data.title}</h2>
+              <p class="blog-index-card-desc">{post.data.description}</p>
+            </a>
+          </li>
+        ))}
+      </ul>
+
+      <p class="blog-index-rss"><a href="/blog">← All posts</a></p>
+    </article>
+  </main>
+</Landing>

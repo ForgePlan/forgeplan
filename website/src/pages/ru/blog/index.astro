@@ -1,6 +1,7 @@
 ---
 import { getCollection } from 'astro:content';
 import Landing from '../../../layouts/Landing.astro';
+import TopicChip from '../../../components/blog/TopicChip.astro';
 import '../../../styles/blog-theme.css';
 
 const posts = (await getCollection('blog', ({ data }) => data.lang === 'ru' && !data.draft))
@@ -17,10 +18,22 @@ const posts = (await getCollection('blog', ({ data }) => data.lang === 'ru' && !
         {posts.map(post => (
           <li class="blog-index-card">
             <a href={`/ru/blog/${post.id.replace(/^ru\//, '').replace(/\.(md|mdx)$/, '')}`}>
-              <p class="blog-index-meta">{post.data.kind} · {post.data.topic}</p>
-              <h2 class="blog-index-card-title">{post.data.title}</h2>
-              <p class="blog-index-card-desc">{post.data.description}</p>
-              <p class="blog-index-date">{post.data.publishedAt.toISOString().slice(0, 10)}</p>
+              <div class={`blog-index-card-thumb blog-index-card-thumb-${post.data.topic}`}>
+                {post.data.cover ? (
+                  <img src={post.data.cover} alt={post.data.title} />
+                ) : (
+                  <span class="blog-index-card-thumb-fallback">{post.data.topic}</span>
+                )}
+              </div>
+              <div class="blog-index-card-body">
+                <p class="blog-index-card-meta">
+                  <TopicChip topic={post.data.topic} />
+                  <span> · {post.data.kind}</span>
+                </p>
+                <h2 class="blog-index-card-title">{post.data.title}</h2>
+                <p class="blog-index-card-desc">{post.data.description}</p>
+                <p class="blog-index-card-date">{post.data.publishedAt.toISOString().slice(0, 10)}</p>
+              </div>
             </a>
           </li>
         ))}

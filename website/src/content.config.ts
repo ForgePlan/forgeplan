@@ -14,14 +14,17 @@ const blog = defineCollection({
 		// — causing en/welcome.mdx and ru/welcome.mdx to collide at id="welcome".
 		//
 		// Fix: use file path as ID. Six call-sites depend on the format `{lang}/{slug}`:
-		//   - src/pages/blog/index.astro        (regex .replace(/^en\//, ''))
-		//   - src/pages/blog/[...slug].astro    (regex .replace(/^en\//, ''))
-		//   - src/pages/blog/rss.xml.ts         (regex .replace(/^en\//, ''))
-		//   - src/pages/ru/blog/index.astro     (regex .replace(/^ru\//, ''))
-		//   - src/pages/ru/blog/[...slug].astro (regex .replace(/^ru\//, ''))
-		//   - src/pages/ru/blog/rss.xml.ts      (regex .replace(/^ru\//, ''))
+		//   - src/pages/blog/index.astro                   (regex .replace(/^en\//, ''))
+		//   - src/pages/blog/[...slug].astro               (regex .replace(/^en\//, ''))
+		//   - src/pages/blog/rss.xml.ts                    (regex .replace(/^en\//, ''))
+		//   - src/pages/ru/blog/index.astro                (regex .replace(/^ru\//, ''))
+		//   - src/pages/ru/blog/[...slug].astro            (regex .replace(/^ru\//, ''))
+		//   - src/pages/ru/blog/rss.xml.ts                 (regex .replace(/^ru\//, ''))
+		//   - src/components/blog/SeriesNav.astro          (NEW PR-2A — uses stripLang)
+		//   - src/pages/blog/series/[name].astro           (NEW PR-2A — uses stripLang)
+		//   - src/pages/ru/blog/series/[name].astro        (NEW PR-2A — uses stripLang)
 		// If this format changes (e.g. to support categories like en/methodology/post),
-		// ALL six call-sites must be updated in lockstep.
+		// ALL nine call-sites must be updated in lockstep.
 		generateId: ({ entry }) => entry.replace(/\.(md|mdx)$/, ''),
 	}),
 	schema: z.object({

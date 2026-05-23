@@ -1,5 +1,10 @@
 ---
 import Header from '../components/Header.astro';
+import Hero from '../components/blog/Hero.astro';
+import TOC from '../components/blog/TOC.astro';
+import SeriesNav from '../components/blog/SeriesNav.astro';
+import SeoMeta from '../components/blog/SeoMeta.astro';
+import AuthorBlock from '../components/blog/AuthorBlock.astro';
 import '../styles/blog-theme.css';
 // Self-hosted fonts via @fontsource — replaces Google Fonts CDN <link> tags (FIX-2).
 // package.json declares @fontsource/space-grotesk and @fontsource/geist-mono.
@@ -22,9 +27,30 @@ interface Props {
   topic: string;
   readingTime?: number;
   translations?: Record<string, string>;
+  cover?: string;
+  series?: string;
+  currentId?: string;
+  headings?: { depth: number; slug: string; text: string }[];
+  slug: string;
 }
 
-const { title, description, publishedAt, updatedAt, lang, kind, topic, readingTime, translations } = Astro.props;
+const {
+  title,
+  description,
+  publishedAt,
+  updatedAt,
+  lang,
+  kind,
+  topic,
+  readingTime,
+  translations,
+  cover,
+  series,
+  currentId,
+  headings = [],
+  slug,
+} = Astro.props;
+
 const oppositeLang = lang === 'en' ? 'ru' : 'en';
 const oppositeSlug = translations?.[oppositeLang];
 const oppositeUrl = oppositeSlug
@@ -38,28 +64,42 @@ const oppositeUrl = oppositeSlug
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
     <title>{title} — Forgeplan Blog</title>
+    <SeoMeta
+      title={title}
+      description={description}
+      lang={lang}
+      cover={cover}
+      publishedAt={publishedAt}
+      updatedAt={updatedAt}
+      translations={translations}
+      slug={slug}
+    />
   </head>
   <body>
     <Header />
     <article class="blog-post">
-      <main style="max-width: 880px; margin: 0 auto; padding: 64px 32px 96px;">
-        <p class="eyebrow">{kind} · {topic}</p>
-        <h1>{title}</h1>
-        <p style="font-size: 17px; color: var(--text-1); margin: 14px 0 24px;">{description}</p>
-        <div class="meta" style="display: flex; gap: 18px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 32px;">
-          <time datetime={publishedAt.toISOString()}>{publishedAt.toISOString().slice(0, 10)}</time>
-          {updatedAt && <span>upd {updatedAt.toISOString().slice(0, 10)}</span>}
-          {readingTime && <span>{readingTime} min read</span>}
-        </div>
-        <slot />
-        {oppositeUrl && (
-          <footer style="margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line);">
-            <a href={oppositeUrl} style="font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); text-decoration: none;">
-              {oppositeLang === 'ru' ? 'Читать на русском →' : 'Read in English →'}
-            </a>
-          </footer>
-        )}
-      </main>
+      <Hero cover={cover} topic={topic} kind={kind} title={title} />
+      <div class="blog-layout">
+        <main class="blog-content">
+          <p class="blog-description">{description}</p>
+          <div class="blog-meta">
+            <time datetime={publishedAt.toISOString()}>{publishedAt.toISOString().slice(0, 10)}</time>
+            {updatedAt && <span>upd {updatedAt.toISOString().slice(0, 10)}</span>}
+            {readingTime && <span>{readingTime} min read</span>}
+          </div>
+          <slot />
+          {series && currentId && <SeriesNav currentId={currentId} currentSeries={series} lang={lang} />}
+          <AuthorBlock lang={lang} />
+          {oppositeUrl && (
+            <footer class="blog-lang-switch">
+              <a href={oppositeUrl}>
+                {oppositeLang === 'ru' ? 'Читать на русском →' : 'Read in English →'}
+              </a>
+            </footer>
+          )}
+        </main>
+        <TOC headings={headings} lang={lang} />
+      </div>
     </article>
   </body>
 </html>

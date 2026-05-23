@@ -5,6 +5,7 @@ import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
 import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
+import { remarkReadingTime } from './src/lib/reading-time.mjs';
 
 export default defineConfig({
   site: 'https://forgeplan.dev',
@@ -98,6 +99,9 @@ export default defineConfig({
     mdx(),
     react(),
   ],
+  markdown: {
+    remarkPlugins: [remarkReadingTime],
+  },
   vite: {
     plugins: [tailwindcss()],
   },

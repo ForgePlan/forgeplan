@@ -1,0 +1,40 @@
+---
+interface Props {
+  headings: { depth: number; slug: string; text: string }[];
+  lang?: 'en' | 'ru';
+}
+const { headings, lang = 'en' } = Astro.props;
+const tocHeadings = headings.filter(h => h.depth >= 2 && h.depth <= 3);
+const label = lang === 'ru' ? 'На этой странице' : 'On this page';
+const ariaLabel = lang === 'ru' ? 'Содержание' : 'Table of contents';
+---
+{tocHeadings.length > 0 && (
+  <>
+    {/* Desktop: sticky aside */}
+    <aside class="blog-toc" aria-label={ariaLabel}>
+      <p class="blog-toc-eyebrow">{label}</p>
+      <nav>
+        <ul>
+          {tocHeadings.map(h => (
+            <li class={`blog-toc-h${h.depth}`}>
+              <a href={`#${h.slug}`}>{h.text}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </aside>
+    {/* Mobile: collapsible details */}
+    <details class="blog-toc-mobile">
+      <summary>{label}</summary>
+      <nav aria-label={ariaLabel}>
+        <ul>
+          {tocHeadings.map(h => (
+            <li class={`blog-toc-h${h.depth}`}>
+              <a href={`#${h.slug}`}>{h.text}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </details>
+  </>
+)}
