@@ -7,6 +7,9 @@ import SeoMeta from '../components/blog/SeoMeta.astro';
 import AuthorBlock from '../components/blog/AuthorBlock.astro';
 import BlogFooter from '../components/blog/BlogFooter.astro';
 import SiteJsonLd from '../components/SiteJsonLd.astro';
+// global.css MUST come first — Header.astro uses Tailwind utilities
+// (hidden, lg:grid, bg-forge-bg, etc.) defined here.
+import '../styles/global.css';
 import '../styles/blog-theme.css';
 // Self-hosted fonts via @fontsource — replaces Google Fonts CDN <link> tags (FIX-2).
 // package.json declares @fontsource/space-grotesk and @fontsource/geist-mono.
