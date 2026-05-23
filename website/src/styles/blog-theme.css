@@ -1209,3 +1209,81 @@ body:has(.blog-post) {
   margin: 0;
   font-style: italic;
 }
+
+/* === PR-2A-followup: spacing/padding refinements + sticky verify === */
+
+/* Increase top padding to give Header + eyebrow more breathing room
+   (88px clears header, +32px visual buffer = 120px) */
+.blog-post,
+.blog-index {
+  padding-top: 120px;
+}
+
+/* Bottom padding before footer */
+.blog-index .blog-index-main,
+.blog-post .blog-content {
+  padding-bottom: 64px;
+}
+
+/* Sidebar sticky — make sure layout is grid-aware
+   parent must allow children different heights; main can scroll, sidebar stays */
+@media (min-width: 1024px) {
+  .blog-index .blog-index-layout {
+    /* increase gap between content and sidebar for readability */
+    gap: 64px;
+    align-items: start;
+  }
+  .blog-sidebar {
+    top: 120px;  /* match new padding-top so sidebar sits below header consistently */
+  }
+}
+
+/* Mobile: sidebar gets its own visual separation */
+@media (max-width: 1023px) {
+  .blog-sidebar {
+    padding-top: 32px;
+    border-top: 1px solid var(--line-2);
+    margin-top: 32px;
+  }
+}
+
+/* Hero gets a touch more breathing space from the meta line below */
+.blog-post .blog-hero-css {
+  margin-bottom: 56px;
+}
+.blog-post .blog-hero-image {
+  margin-bottom: 56px;
+}
+
+/* Pagination scaffold — visible when posts.length > pageSize (currently 1, hidden) */
+.blog-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 48px 0 0;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.blog-pagination-link {
+  color: var(--text-2);
+  text-decoration: none;
+  padding: 8px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+.blog-pagination-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.blog-pagination-link.disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+.blog-pagination-info {
+  color: var(--text-3);
+}
