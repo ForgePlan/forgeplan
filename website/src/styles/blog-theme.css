@@ -1324,3 +1324,26 @@ body:has(.blog-post) {
     min-height: calc(100vh + 800px);
   }
 }
+
+/* === PR-2A-followup: width alignment — sidebar right edge = footer right edge === */
+/*
+ * Issue: layout has padding 0 32px inside max-width 1280 → content edges at
+ * 256..1472 on 1728px viewport. Footer-inner max-width 1280 без internal
+ * padding → edges at 224..1504. Diff 32px per side → user wants align.
+ *
+ * Fix: move footer side-padding с .blog-footer (parent) на .blog-footer-inner
+ * (child) — same box model как у .blog-index-layout.
+ */
+.blog-footer {
+  padding: 56px 0 48px;
+}
+.blog-footer-inner {
+  padding: 0 32px;
+}
+
+/* === PR-2A-followup: main fill column (override leftover margin: 0 auto from PR-1) === */
+.blog-index .blog-index-main {
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+}
