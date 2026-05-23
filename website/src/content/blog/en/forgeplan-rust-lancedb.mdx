@@ -1,0 +1,25 @@
+---
+title: "Forgeplan: agent harness for AI coding agents (Rust + LanceDB)"
+description: "Forgeplan is a local-first Rust CLI + MCP server that constrains where an AI coding agent can write, what state it must read, what evidence it must produce, and what gates it must pass. Markdown source of truth, compile-enforced invariant, weakest-link trust scoring, hint protocol contract."
+slug: forgeplan-rust-lancedb
+lang: en
+publishedAt: 2026-05-23
+kind: deep-dive
+topic: methodology
+draft: false
+---
+
+Forgeplan is a local-first Rust CLI + MCP server that I now describe as an **agent harness**: a structured environment that constrains where an AI coding agent can write, what state it has to read, what evidence it has to produce, and what gates it has to pass before declaring success. The "harness engineering" framing is from walkinglabs ([walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/)) — twelve short lectures that legitimised vocabulary I'd been using badly for six months.
+
+What's specific to Forgeplan:
+
+- **Markdown is source of truth, LanceDB is a derived index** (ADR-003, compile-enforced after a 32-violation cleanup that ended with `pub(crate)` lockdown).
+- **Trust = weakest link.** `R_eff = min(evidence_scores)`, never the average. CL penalty (0.0/0.1/0.4/0.9) makes "I read it on a blog" structurally weaker than "we measured it ourselves." Activation gate blocks `forgeplan activate` if `R_eff = 0`.
+- **Hint protocol contract** (PRD-071): every CLI/MCP response emits exactly one terminal next-action hint (`Next:` / `Or:` / `Fix:` / `Wait:` / `Done.`), so an agent never invents its own ordering.
+- **63 MCP tools** for Claude Code, Cursor, Aider. BGE-M3 1024d local search.
+
+Stack: Rust 3-crate workspace, LanceDB embedded, fastembed, rmcp. Single ~41 MB stripped binary. 1995 tests.
+
+What's missing: per-session runtime task trace (H1); a "Sprint Contract" artifact between Note and PRD (H2); WIP=1 hard limit on agent claims (H9). All on the public roadmap.
+
+Repo: [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan). Install: `brew install ForgePlan/tap/forgeplan`.
