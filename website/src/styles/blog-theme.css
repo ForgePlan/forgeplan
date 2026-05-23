@@ -1287,3 +1287,40 @@ body:has(.blog-post) {
 .blog-pagination-info {
   color: var(--text-3);
 }
+
+/* === PR-2A-followup: sticky sidebar BUG FIX === */
+/* Bug: при 1 посте layout-grid высота = sidebar высота → sticky не может
+   "залипнуть" в верхней части viewport, т.к. parent-grid bottom не даёт
+   sidebar выйти за пределы parent. Sidebar тянется вверх вместе с
+   scrolling layout.
+   Fix: min-height на layout (≥1024px), убрать overflow-y из sidebar.
+*/
+@media (min-width: 1024px) {
+  .blog-index .blog-index-layout {
+    min-height: calc(100vh + 200px);  /* запас для нормального sticky range */
+  }
+}
+.blog-sidebar {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* === PR-2A-followup: sticky sidebar BUG FIX v2 === */
+/*
+ * Sticky-on-parent-grid behavior: при коротком content (1 post) parent grid
+ * = max(content, sidebar). Когда user scrolls, sidebar bottom упирается в
+ * parent grid bottom → sidebar смещается ВВЕРХ за viewport.
+ *
+ * Fix: force content column min-height чтобы parent grid >> sidebar height.
+ * Тогда sidebar имеет sticky-range = content_height - sidebar_height.
+ *
+ * Trade-off: при 1 посте пустое место ниже карточки. Это acceptable —
+ * "пустое место" даёт sidebar room to stick. После PR-2B (5 циклов)
+ * content naturally fills.
+ */
+@media (min-width: 1024px) {
+  .blog-index-main {
+    /* Content min-height: viewport + 800px scroll-range для sidebar sticky */
+    min-height: calc(100vh + 800px);
+  }
+}
