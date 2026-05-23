@@ -38,6 +38,12 @@ const blog = defineCollection({
 		draft: z.boolean().default(false),
 		readingTime: z.number().optional(),
 		translations: z.record(z.string(), z.string()).optional(),
+
+		// PR-2A (PRD-080): series support for narrative arcs spanning multiple posts.
+		// All optional — backwards-compatible with PR-1 frontmatter.
+		series: z.string().optional(),
+		seriesOrder: z.number().int().positive().optional(),
+		seriesDescription: z.string().optional(),
 	}),
 });
 
