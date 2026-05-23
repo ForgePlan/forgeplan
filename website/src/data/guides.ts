@@ -149,6 +149,30 @@ export const guides: Guide[] = [
     desc_en: 'Coordinating 2-5 agents in one repo without conflicts. Planner cuts work into conflict-free buckets, worker takes one with TTL, release returns to pool. WIP=1 hard limit. Adversarial review always in a separate agent.',
     desc_ru: 'Координация 2–5 agent\'ов в одном репо без конфликтов. Planner режет работу на конфликт-free buckets, worker берёт под себя с TTL, release возвращает в pool. WIP=1 hard limit.',
   },
+  {
+    slug: 'fpf-cycle',
+    order: 11,
+    category: 'foundation',
+    pill: 'theory',
+    title_en: 'FPF · First Principles Framework as the parent rail',
+    title_ru: 'FPF · First Principles Framework как родительская рамка',
+    tag_en: 'meta framework',
+    tag_ru: 'meta-фреймворк',
+    desc_en: 'Six base concepts (Bounded Context, Trust Calculus, F-G-R, ADI Cycle, Category Error, Gamma Algebra) + three usage modes (decompose / evaluate / reason). Shows how Trust Calculus and ADI are not separate ideas but built-in moves inside the same parent framework.',
+    desc_ru: 'Шесть базовых понятий (Bounded Context, Trust Calculus, F-G-R, ADI Cycle, Category Error, Gamma Algebra) + три режима использования (decompose / evaluate / reason). Показывает, что Trust Calculus и ADI — не отдельные идеи, а встроенные приёмы внутри одной родительской рамки.',
+  },
+  {
+    slug: 'first-artifact',
+    order: 12,
+    category: 'tool',
+    pill: 'interactive',
+    title_en: 'First Artifact · 20-minute hands-on walkthrough',
+    title_ru: 'Первый артефакт · 20-минутный hands-on walkthrough',
+    tag_en: 'tutorial',
+    tag_ru: 'туториал',
+    desc_en: 'Step-by-step simulated terminal: init → health → route → new prd → validate → reason (ADI) → build → new evidence → link + score → activate. Progress bar with clickable points, live workspace side-panel, common-error blocks at each step.',
+    desc_ru: 'Пошаговый симулированный терминал: init → health → route → new prd → validate → reason (ADI) → build → new evidence → link + score → activate. Прогресс-бар с кликабельными точками, side-panel состояния workspace, типичные ошибки на каждом шаге.',
+  },
 ];
 
 export function getGuide(slug: string): Guide | undefined {
