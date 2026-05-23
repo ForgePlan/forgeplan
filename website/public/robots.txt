@@ -1,69 +1,133 @@
-# Forgeplan documentation — robots.txt
+# Forgeplan documentation — robots.txt (v2)
 # Forgeplan is built FOR agents. We explicitly invite AI crawlers to
 # index, learn from, and cite this documentation. Human search engines
 # remain welcome too.
 #
 # Strategy: opt-in by default; deny abusive scrapers individually if needed.
 
-# ---------------------------------------------------------------------
-# AI / LLM crawlers — explicit ALLOW
-# ---------------------------------------------------------------------
+# =====================================================================
+# Content Signals (Cloudflare AI Audit / draft RFC-style header block)
+# Documents intent at file-level — orthogonal to per-User-agent rules
+# below. Bots that don't read Content-Signal fall through to traditional
+# User-agent: */Allow rules.
+# =====================================================================
 
-# OpenAI ChatGPT (GPT-5+, o3, etc.)
+# As a condition of accessing this website, you agree to abide by the
+# following Content Signals declared by the site operator:
+#
+#   search:   yes  → building a search index and providing search results
+#                    (returning hyperlinks and short excerpts)
+#   ai-input: yes  → using content as input to AI models at inference time
+#                    (RAG, grounding, real-time citation)
+#   ai-train: yes  → training or fine-tuning AI models on this content
+#
+# Content-Signal: search=yes, ai-input=yes, ai-train=yes
+
+# =====================================================================
+# Search engines — explicit allow (broadest compatibility)
+# =====================================================================
+
+User-agent: Googlebot
+Allow: /
+
+User-agent: Googlebot-Image
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Slurp
+Allow: /
+
+User-agent: DuckDuckBot
+Allow: /
+
+User-agent: Baiduspider
+Allow: /
+
+User-agent: YandexBot
+Allow: /
+
+User-agent: Yandex
+Allow: /
+
+User-agent: Sogou
+Allow: /
+
+# =====================================================================
+# AI training & on-demand crawlers — explicit allow
+# =====================================================================
+
+# OpenAI — training crawler (GPT-5+, o3, etc.)
 User-agent: GPTBot
 Allow: /
 
-# OpenAI ChatGPT-User (on-demand fetches when answering user queries)
+# OpenAI — on-demand fetch when ChatGPT answers user queries
 User-agent: ChatGPT-User
 Allow: /
 
-# OpenAI search/training crawler
+# OpenAI — search-oriented crawler
 User-agent: OAI-SearchBot
 Allow: /
 
-# Anthropic Claude (training + on-demand citation)
+# Anthropic — Claude training + on-demand citation
 User-agent: ClaudeBot
 Allow: /
 
-# Anthropic on-demand fetcher (Claude tool-use, Claude Code)
+# Anthropic — on-demand fetcher (Claude tool-use, Claude Code)
 User-agent: Claude-User
 Allow: /
 
-# Anthropic search-and-cite
+# Anthropic — search-and-cite
 User-agent: Claude-SearchBot
 Allow: /
 
-# Google AI training (Gemini, Bard) — separate from googlebot
+# Anthropic — legacy / sub-products
+User-agent: anthropic-ai
+Allow: /
+
+# Google AI training (Gemini, Bard) — separate from Googlebot
 User-agent: Google-Extended
 Allow: /
 
-# Common Crawl (foundation dataset for many models)
+# Google Notebook LM crawler
+User-agent: Google-NotebookLM
+Allow: /
+
+# Common Crawl — foundation dataset feeding many AI models
 User-agent: CCBot
 Allow: /
 
-# Apple Intelligence
+# Apple Intelligence — on-device LLMs + Spotlight
 User-agent: Applebot
 Allow: /
 
 User-agent: Applebot-Extended
 Allow: /
 
-# Perplexity
+# Perplexity AI
 User-agent: PerplexityBot
 Allow: /
 
 User-agent: Perplexity-User
 Allow: /
 
-# Meta AI training
+# Meta — training (Llama models)
 User-agent: Meta-ExternalAgent
 Allow: /
 
-# DuckDuckGo / DuckAssist
+User-agent: Meta-ExternalFetcher
+Allow: /
+
+# Meta — FacebookExternalHit (for OG previews on FB/Instagram/WhatsApp)
+User-agent: facebookexternalhit
+Allow: /
+
+# DuckDuckGo AI (DuckAssist)
 User-agent: DuckAssistBot
 Allow: /
 
-# Brave Leo / Brave Search AI
+# Brave Search AI (Leo)
 User-agent: BraveBot
 Allow: /
 
@@ -79,30 +143,65 @@ Allow: /
 User-agent: MistralAI-User
 Allow: /
 
-# Bytedance / Doubao (China LLMs)
+# Bytedance / Doubao (China LLMs — TikTok parent)
 User-agent: Bytespider
 Allow: /
 
-# Diffbot (used by many AI products)
+# Diffbot — used by many AI products as upstream
 User-agent: Diffbot
 Allow: /
 
-# Phind (developer-focused AI)
+# Phind — developer-focused AI search
 User-agent: PhindBot
 Allow: /
 
-# ---------------------------------------------------------------------
+# Tavily — research/RAG specialist
+User-agent: TavilyBot
+Allow: /
+
+# Exa.ai (formerly Metaphor) — neural search
+User-agent: ExaBot
+Allow: /
+
+# Amazon — Bedrock + Kendra
+User-agent: Amazonbot
+Allow: /
+
+# Twitter/X — Twitterbot for Twitter Cards + Grok training
+User-agent: Twitterbot
+Allow: /
+
+User-agent: GrokBot
+Allow: /
+
+# LinkedIn — LinkedInBot for share previews
+User-agent: LinkedInBot
+Allow: /
+
+# Slack — preview unfurl
+User-agent: Slackbot
+Allow: /
+
+# Discord — preview unfurl
+User-agent: Discordbot
+Allow: /
+
+# =====================================================================
 # Default — anything else allowed (we are documentation, not secrets)
-# ---------------------------------------------------------------------
+# =====================================================================
 
 User-agent: *
 Allow: /
 
-# ---------------------------------------------------------------------
-# Sitemap — Astro Starlight auto-generates, but explicit ref helps
-# ---------------------------------------------------------------------
+# =====================================================================
+# Sitemap & LLM entry points
+# =====================================================================
 
+# XML sitemap (Astro Starlight auto-generated, includes hreflang annotations)
 Sitemap: https://forgeplan.dev/sitemap-index.xml
 
-# LLM-specific entry point — see /llms.txt
-# (Convention: https://llmstxt.org/)
+# LLM-friendly Markdown index — convention from https://llmstxt.org/
+# Crawlers respecting this convention should prefer /llms.txt over scraping
+# every page individually.
+
+# (See /llms.txt for site-wide LLM-curated index of methodology + reference.)
