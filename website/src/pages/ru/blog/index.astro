@@ -1,34 +1,68 @@
 ---
 import { getCollection } from 'astro:content';
 import Landing from '../../../layouts/Landing.astro';
+import Header from '../../../components/Header.astro';
+import TopicChip from '../../../components/blog/TopicChip.astro';
+import TopicFilter from '../../../components/blog/TopicFilter.astro';
+import SeriesBanner from '../../../components/blog/SeriesBanner.astro';
+import BlogSidebar from '../../../components/blog/BlogSidebar.astro';
+import BlogFooter from '../../../components/blog/BlogFooter.astro';
 import '../../../styles/blog-theme.css';
 
 const posts = (await getCollection('blog', ({ data }) => data.lang === 'ru' && !data.draft))
   .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf());
+
+const topicsSet = new Set(posts.map(p => p.data.topic));
+const topics = [...topicsSet].sort();
+
+const NOW = Date.now();
+const FOURTEEN_DAYS = 14 * 24 * 60 * 60 * 1000;
+const isNew = (d: Date) => NOW - d.valueOf() < FOURTEEN_DAYS;
 ---
-<Landing title="Блог — Forgeplan" description="Развёрнутые заметки о R_eff, ADI, FPF, MCP и методологии Forgeplan." lang="ru">
+<Landing title="Блог — Forgeplan" description="Развёрнутые заметки об инженерных решениях — как их структурировать, оценивать доказательства и не забывать, почему они были сделаны." lang="ru">
+  <Header />
   <article class="blog-index">
-    <main id="main-content" class="blog-index-main">
-      <p class="blog-index-eyebrow">БЛОГ</p>
-      <h1 class="blog-index-heading">Записи</h1>
-      <p class="blog-index-subtitle">Развёрнутые заметки о R_eff, ADI, FPF, MCP и методологии Forgeplan.</p>
+    <div class="blog-index-layout">
+      <main id="main-content" class="blog-index-main">
+        <p class="blog-index-eyebrow">БЛОГ</p>
+        <h1 class="blog-index-heading">Записи</h1>
+        <p class="blog-index-subtitle">Развёрнутые заметки об инженерных решениях — как команды их структурируют, оценивают доказательства и не забывают, почему сделали тот или иной выбор.</p>
 
-      <ul class="blog-index-list">
-        {posts.map(post => (
-          <li class="blog-index-card">
-            <a href={`/ru/blog/${post.id.replace(/^ru\//, '').replace(/\.(md|mdx)$/, '')}`}>
-              <p class="blog-index-meta">{post.data.kind} · {post.data.topic}</p>
-              <h2 class="blog-index-card-title">{post.data.title}</h2>
-              <p class="blog-index-card-desc">{post.data.description}</p>
-              <p class="blog-index-date">{post.data.publishedAt.toISOString().slice(0, 10)}</p>
-            </a>
-          </li>
-        ))}
-      </ul>
+        {topics.length > 1 && <TopicFilter topics={topics} lang="ru" />}
 
-      <p class="blog-index-rss">
-        RSS: <a href="/ru/blog/rss.xml">/ru/blog/rss.xml</a>
-      </p>
-    </main>
+        <SeriesBanner lang="ru" />
+
+        <ul class="blog-index-list">
+          {posts.map(post => (
+            <li class="blog-index-card" data-topic={post.data.topic}>
+              <a href={`/ru/blog/${post.id.replace(/^ru\//, '').replace(/\.(md|mdx)$/, '')}`}>
+                <div class={`blog-index-card-thumb blog-index-card-thumb-${post.data.topic}`}>
+                  {post.data.cover ? (
+                    <img src={post.data.cover} alt={post.data.title} />
+                  ) : (
+                    <span class="blog-index-card-thumb-fallback">{post.data.topic}</span>
+                  )}
+                  {isNew(post.data.publishedAt) && (
+                    <span class="blog-index-card-badge">NEW</span>
+                  )}
+                </div>
+                <div class="blog-index-card-body">
+                  <p class="blog-index-card-meta">
+                    <TopicChip topic={post.data.topic} />
+                    <span> · {post.data.kind}</span>
+                  </p>
+                  <h2 class="blog-index-card-title">{post.data.title}</h2>
+                  <p class="blog-index-card-desc">{post.data.description}</p>
+                  <p class="blog-index-card-date">{post.data.publishedAt.toISOString().slice(0, 10)}</p>
+                </div>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </main>
+
+      <BlogSidebar lang="ru" />
+    </div>
   </article>
+  <BlogFooter lang="ru" />
 </Landing>

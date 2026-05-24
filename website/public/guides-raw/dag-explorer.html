@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAG Explorer · 3D-граф артефактов — ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Artifact type colors */
+    --t-epic: #ff5a1f;
+    --t-prd:  #60a5fa;
+    --t-rfc:  #22c55e;
+    --t-adr:  #c084fc;
+    --t-spec: #f59e0b;
+    --t-evid: #ec4899;
+    --t-prob: #ef4444;
+    /* Edge colors */
+    --e-parent: #525252;
+    --e-informs: #ff5a1f;
+    --e-triggers: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
+  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  .t-epic { color: var(--t-epic); font-weight: 500; }
+  .t-prd  { color: var(--t-prd);  font-weight: 500; }
+  .t-rfc  { color: var(--t-rfc);  font-weight: 500; }
+  .t-adr  { color: var(--t-adr);  font-weight: 500; }
+  .t-spec { color: var(--t-spec); font-weight: 500; }
+  .t-evid { color: var(--t-evid); font-weight: 500; }
+  .t-prob { color: var(--t-prob); font-weight: 500; }
+
+  /* Mini-pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* 3D chart wrap */
+  .chart-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .chart-toolbar { background: var(--bg-2); padding: 12px 16px; border-bottom: 1px solid var(--line-2); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .toolbar-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-right: 4px; }
+  .type-toggle { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; padding: 5px 11px; border-radius: 3px; cursor: pointer; user-select: none; transition: opacity .15s, transform .15s; display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: var(--bg-3); color: var(--text-1); }
+  .type-toggle .tt-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .type-toggle .tt-count { color: var(--text-3); font-size: 10px; }
+  .type-toggle.off { opacity: 0.35; }
+  .type-toggle:hover { transform: translateY(-1px); }
+  .type-toggle.epic .tt-dot { background: var(--t-epic); } .type-toggle.epic.on { border-color: var(--t-epic); }
+  .type-toggle.prd  .tt-dot { background: var(--t-prd); }  .type-toggle.prd.on  { border-color: var(--t-prd); }
+  .type-toggle.rfc  .tt-dot { background: var(--t-rfc); }  .type-toggle.rfc.on  { border-color: var(--t-rfc); }
+  .type-toggle.adr  .tt-dot { background: var(--t-adr); }  .type-toggle.adr.on  { border-color: var(--t-adr); }
+  .type-toggle.spec .tt-dot { background: var(--t-spec); } .type-toggle.spec.on { border-color: var(--t-spec); }
+  .type-toggle.evid .tt-dot { background: var(--t-evid); } .type-toggle.evid.on { border-color: var(--t-evid); }
+  .type-toggle.prob .tt-dot { background: var(--t-prob); } .type-toggle.prob.on { border-color: var(--t-prob); }
+
+  #plot3d { width: 100%; height: 620px; background: var(--bg-1); }
+
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 18px; padding: 12px 16px; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); border-top: 1px solid var(--line-2); background: var(--bg-2); }
+  .chart-legend .item { display: flex; align-items: center; gap: 7px; }
+  .chart-legend .sw { width: 14px; height: 0; border-top: 2px solid; display: inline-block; }
+  .chart-legend .sw.solid.parent { border-color: var(--e-parent); }
+  .chart-legend .sw.solid.informs { border-color: var(--e-informs); }
+  .chart-legend .sw.solid.triggers { border-color: var(--e-triggers); border-style: dashed; }
+
+  /* Concept */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Layers explanation */
+  .layers { display: grid; grid-template-columns: 60px 1fr; gap: 0; margin: 22px 0 0; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+  .layers-y { background: var(--bg-3); display: flex; flex-direction: column; }
+  .y-mark { padding: 14px 12px; border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; color: var(--text-3); text-align: right; flex: 1; display: flex; align-items: center; justify-content: flex-end; }
+  .y-mark:last-child { border-bottom: none; }
+  .layers-body { display: flex; flex-direction: column; }
+  .layer-row { padding: 14px 18px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; }
+  .layer-row:last-child { border-bottom: none; }
+  .layer-row .l-desc { font-size: 13.5px; color: var(--text-1); line-height: 1.55; }
+  .layer-row .l-desc .l-types { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); letter-spacing: 0.04em; margin-top: 2px; }
+  .layer-row .l-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; border-radius: 3px; }
+  .layer-row.namerenie .l-tag { background: rgba(255, 90, 31, 0.14); color: var(--t-epic); }
+  .layer-row.obsuzhdenie .l-tag { background: rgba(96, 165, 250, 0.14); color: var(--t-prd); }
+  .layer-row.reshenie .l-tag { background: rgba(192, 132, 252, 0.14); color: var(--t-adr); }
+  .layer-row.dokazatelstvo .l-tag { background: rgba(236, 72, 153, 0.14); color: var(--t-evid); }
+
+  /* Patterns */
+  .patterns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .pattern-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px 18px; }
+  .pattern-card .pc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .pattern-card .pc-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 10px; line-height: 1.35; }
+  .pattern-card .pc-desc { font-size: 13px; color: var(--text-2); line-height: 1.55; margin-bottom: 12px; }
+  .pattern-card .pc-shape { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); line-height: 1.7; padding: 10px 12px; background: var(--bg-1); border-radius: 4px; }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; } .pipe-arrow { display: none; }
+    .patterns, .cross-links { grid-template-columns: 1fr; }
+    .layers { grid-template-columns: 50px 1fr; }
+    h1 { font-size: 32px; } .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- HERO -->
+  <p class="eyebrow">Цикл проектного графа · интерактив</p>
+  <h1>DAG Explorer · артефакты в 3D</h1>
+  <p class="lead">
+    Каждый артефакт в проекте — узел. Каждая связь между ними (parent / informs / triggers) —
+    ребро. В сумме это <b class="k">направленный ациклический граф</b> (DAG), который показывает,
+    откуда взялось каждое решение. Когда артефактов 20+ и связей 50+, читать его текстом
+    невозможно. Эта страница рендерит реальный пример проекта в 3D — крутите мышью, прячьте
+    типы кнопками сверху, наводитесь на узлы для деталей.
+  </p>
+
+  <!-- MINI-PIPELINE -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · Layout</div>
+      <div class="step-title">Иерархия по Y-оси</div>
+      <div class="step-desc">Epic сверху · Evidence снизу · 5 слоёв</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · Nodes</div>
+      <div class="step-title">Узлы по типу</div>
+      <div class="step-desc">7 типов артефактов · 7 цветов</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Edges</div>
+      <div class="step-title">Связи по семантике</div>
+      <div class="step-desc">parent · informs · triggers</div>
+    </div>
+  </div>
+
+  <!-- 3D CHART -->
+  <h2>Knowledge Vault MVP · реальный проектный граф</h2>
+  <p>
+    Сценарий: Vault — приложение для заметок. Один Epic, четыре PRD под ним, RFC-обсуждения для
+    каждого, ADR-решения, Spec-контракты, Evidence-замеры, плюс Problem, который запустил одну
+    из PRD. Всего <b class="k">22 артефакта и 30 связей</b>. Сцена крутится, узлы наведения
+    показывают полный frontmatter, кнопки сверху прячут типы.
+  </p>
+
+  <div class="chart-wrap">
+    <div class="chart-toolbar">
+      <span class="toolbar-label">показать типы:</span>
+      <span class="type-toggle epic on" data-type="EPIC"><span class="tt-dot"></span>EPIC <span class="tt-count">1</span></span>
+      <span class="type-toggle prd  on" data-type="PRD"><span class="tt-dot"></span>PRD <span class="tt-count">4</span></span>
+      <span class="type-toggle rfc  on" data-type="RFC"><span class="tt-dot"></span>RFC <span class="tt-count">4</span></span>
+      <span class="type-toggle adr  on" data-type="ADR"><span class="tt-dot"></span>ADR <span class="tt-count">4</span></span>
+      <span class="type-toggle spec on" data-type="SPEC"><span class="tt-dot"></span>SPEC <span class="tt-count">4</span></span>
+      <span class="type-toggle evid on" data-type="EVID"><span class="tt-dot"></span>EVID <span class="tt-count">6</span></span>
+      <span class="type-toggle prob on" data-type="PROB"><span class="tt-dot"></span>PROB <span class="tt-count">1</span></span>
+    </div>
+    <div id="plot3d"></div>
+    <div class="chart-legend">
+      <span class="item"><span class="sw solid parent"></span>parent · структурная связь</span>
+      <span class="item"><span class="sw solid informs"></span>informs · evidence подкрепляет</span>
+      <span class="item"><span class="sw solid triggers"></span>triggers · problem запускает PRD</span>
+    </div>
+  </div>
+
+  <!-- LAYERS -->
+  <h2>Раскладка по слоям · что читается на Y-оси</h2>
+  <p>Высота узла на сцене — это уровень в DAG. Чем выше, тем абстрактнее (намерение); чем ниже, тем конкретнее (доказательство).</p>
+  <div class="layers">
+    <div class="layers-y">
+      <div class="y-mark">y = 4</div>
+      <div class="y-mark">y = 3</div>
+      <div class="y-mark">y = 2.5</div>
+      <div class="y-mark">y = 2</div>
+      <div class="y-mark">y = 1</div>
+      <div class="y-mark">y = 0</div>
+    </div>
+    <div class="layers-body">
+      <div class="layer-row namerenie">
+        <div class="l-desc">Стратегическая цель проекта — что вообще делаем<br><span class="l-types"><span class="t-epic">EPIC</span></span></div>
+        <span class="l-tag">намерение</span>
+      </div>
+      <div class="layer-row namerenie">
+        <div class="l-desc">Продуктовые требования — что строим и для кого<br><span class="l-types"><span class="t-prd">PRD</span></span></div>
+        <span class="l-tag">намерение</span>
+      </div>
+      <div class="layer-row">
+        <div class="l-desc">Сигналы, которые запустили работу — баги, риски, наблюдения<br><span class="l-types"><span class="t-prob">PROB</span></span></div>
+        <span class="l-tag" style="background: rgba(239, 68, 68, 0.14); color: var(--t-prob);">сигнал</span>
+      </div>
+      <div class="layer-row obsuzhdenie">
+        <div class="l-desc">Архитектурные обсуждения — какие альтернативы рассматриваем<br><span class="l-types"><span class="t-rfc">RFC</span></span></div>
+        <span class="l-tag">обсуждение</span>
+      </div>
+      <div class="layer-row reshenie">
+        <div class="l-desc">Принятые решения и контракты системы<br><span class="l-types"><span class="t-adr">ADR</span> · <span class="t-spec">SPEC</span></span></div>
+        <span class="l-tag">решение</span>
+      </div>
+      <div class="layer-row dokazatelstvo">
+        <div class="l-desc">Данные, подкрепляющие или опровергающие решения<br><span class="l-types"><span class="t-evid">EVID</span></span></div>
+        <span class="l-tag">доказательство</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="insight">
+    <div class="insight-tag">Стрелки идут снизу вверх для evidence</div>
+    <p>
+      <b class="k">Структурная</b> иерархия (parent) — Epic сверху, остальное под ним. Серые
+      тонкие линии. <b class="k">Информационные</b> связи (informs) идут <i>снизу вверх</i> —
+      от Evidence к ADR/SPEC. Оранжевые линии. <b class="k">Триггер-связи</b> (triggers) от
+      Problem к PRD — пунктирные красные, событие запустило цепочку.
+    </p>
+  </div>
+
+  <!-- PATTERNS -->
+  <h2>Что видно в графе · паттерны для чтения</h2>
+  <p>Когда вы крутите сцену, обратите внимание на типичные конфигурации — они показывают здоровье решения сразу.</p>
+  <div class="patterns">
+    <div class="pattern-card">
+      <div class="pc-tag">паттерн A · здоровая цепочка</div>
+      <div class="pc-title">PRD → RFC → ADR ← Evidence</div>
+      <div class="pc-desc">Требование породило обсуждение, обсуждение — решение, решение подкреплено хотя бы одним evidence. R_eff &gt; 0, активация легитимна.</div>
+      <div class="pc-shape">EPIC<br>  └─ PRD-001<br>     └─ RFC-001<br>        └─ ADR-001 ← EVID-001</div>
+    </div>
+    <div class="pattern-card">
+      <div class="pc-tag">паттерн B · blind spot</div>
+      <div class="pc-title">ADR без Evidence</div>
+      <div class="pc-desc">Решение принято, но снизу к нему ничего не подходит. R_eff = 0. <code>forgeplan blindspots</code> подсветит, активация невозможна.</div>
+      <div class="pc-shape">ADR-XXX<br>  · нет входящих informs<br>  · R_eff = 0<br>  · status: draft (заблокирован)</div>
+    </div>
+    <div class="pattern-card">
+      <div class="pc-tag">паттерн C · orphan</div>
+      <div class="pc-title">RFC без PRD</div>
+      <div class="pc-desc">Обсуждение существует, но не связано с продуктовым требованием. Сирота — либо забыли линкануть parent, либо RFC устарел.</div>
+      <div class="pc-shape">RFC-XXX<br>  · нет parent<br>  · нет children<br>  · кандидат на supersede/deprecate</div>
+    </div>
+    <div class="pattern-card">
+      <div class="pc-tag">паттерн D · разветвление</div>
+      <div class="pc-title">PRD с несколькими ADR</div>
+      <div class="pc-desc">Одно требование породило несколько архитектурных решений по разным аспектам. Нормально для Critical-depth. Каждый ADR со своим evidence-набором.</div>
+      <div class="pc-shape">PRD-002<br>  ├─ RFC-002a → ADR-002a<br>  └─ RFC-002b → ADR-002b</div>
+    </div>
+  </div>
+
+  <!-- CROSS-LINKS -->
+  <h2>Связанные разборы</h2>
+  <div class="cross-links">
+    <div class="next-step">
+      <div class="ns-head">
+        <span class="ns-badge">Цикл проекта</span>
+        <h3>Forgeplan как operational layer</h3>
+      </div>
+      <p>Откуда берутся типы артефактов и как они связаны через frontmatter. Если граф выше не очевиден — начните с теории.</p>
+      <a class="ns-link" href="forgeplan-cycle.html">→ открыть</a>
+    </div>
+    <div class="next-step">
+      <div class="ns-head">
+        <span class="ns-badge">Цикл спеки</span>
+        <h3>Spec · Delta · R_eff</h3>
+      </div>
+      <p>Что значит каждая связь от Evidence к ADR. F-G-R, verdict, CL, R_eff = min(scores). Без этого паттерны B и C в графе непрозрачны.</p>
+      <a class="ns-link" href="spec-cycle.html">→ открыть</a>
+    </div>
+  </div>
+
+  <!-- READER WALKTHROUGH -->
+  <h2>Как читать этот разбор</h2>
+  <div class="teaching">
+    <ol>
+      <li><b>Сначала найдите EPIC сверху сцены.</b> Это «макушка пирамиды» — стратегическая цель проекта. Под ней — четыре PRD на одной высоте. Это и есть «намерение».</li>
+      <li><b>Поверните сцену так, чтобы видеть Y-ось как высоту.</b> Структура раскладки очевидна: чем ниже узел, тем конкретнее. Evidence — на самом дне, потому что это «земля», к которой апеллируют решения.</li>
+      <li><b>Покликайте кнопки типов сверху.</b> Спрячьте Evidence — и сразу видно «скелет» проекта: только намерения и решения. Спрячьте RFC — увидите, что без обсуждения цепочка PRD→ADR не строится.</li>
+      <li><b>Найдите оранжевую линию снизу вверх.</b> Это <code>informs</code>: evidence подкрепляет ADR. Без хотя бы одной такой линии у ADR — R_eff = 0, blindspot.</li>
+      <li><b>Найдите красную пунктирную.</b> Это <code>triggers</code>: PROB-001 запустил создание PRD-004. Реальная связь «проблема → требование» — она видна и не теряется в Slack.</li>
+      <li><b>Подведите курсор к любому узлу.</b> Tooltip покажет полный frontmatter артефакта — id, type, depth, status, related_artifacts. Это та самая «трейсируемость», которая через год отвечает на «почему мы выбрали именно так».</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <span>dag-explorer · interactive · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev/docs/cli/graph</span>
+  </div>
+
+</main>
+
+<script>
+  // ============ Dataset · Knowledge Vault MVP ============
+  // Each artifact: id, type, label, layer-y, x, z, depth, status, summary, related[]
+  const artifacts = [
+    // Layer 4: Epic
+    { id: 'EPIC-001', type: 'EPIC', label: 'Knowledge Vault MVP', x: 0,    y: 4,   z: 0,    depth: 'critical', status: 'active',     summary: 'Local-first knowledge management with semantic search', related: [] },
+
+    // Layer 3: PRDs
+    { id: 'PRD-001',  type: 'PRD',  label: 'Notes CRUD',          x: -4,   y: 3,   z: -2,   depth: 'standard', status: 'active',     summary: 'Create, read, update, delete notes with frontmatter', related: ['EPIC-001'] },
+    { id: 'PRD-002',  type: 'PRD',  label: 'Tags + Saved Search', x: -1.5, y: 3,   z: 2,    depth: 'standard', status: 'active',     summary: 'Many-to-many tagging with search by tag combination', related: ['EPIC-001'] },
+    { id: 'PRD-003',  type: 'PRD',  label: 'Streaming endpoint',  x: 1.5,  y: 3,   z: -2,   depth: 'deep',     status: 'active',     summary: 'GET /query/stream with SSE, p50 first token < 800ms', related: ['EPIC-001'] },
+    { id: 'PRD-004',  type: 'PRD',  label: 'Hybrid search',       x: 4,    y: 3,   z: 2,    depth: 'deep',     status: 'active',     summary: 'BM25 + sqlite-vec, RRF combination, p99 < 100ms', related: ['EPIC-001'] },
+
+    // Layer 2.5: Problem
+    { id: 'PROB-001', type: 'PROB', label: 'Search slow at 50k',  x: 4,    y: 2.5, z: 0.2,  depth: '-',        status: 'active',     summary: 'p95 search latency exceeded 200ms at 50k notes', related: [] },
+
+    // Layer 2: RFCs
+    { id: 'RFC-001',  type: 'RFC',  label: 'Storage backend',     x: -4,   y: 2,   z: -2,   depth: 'standard', status: 'superseded', summary: 'SQLite vs PostgreSQL vs LMDB — three options', related: ['PRD-001'] },
+    { id: 'RFC-002',  type: 'RFC',  label: 'Tag data model',      x: -1.5, y: 2,   z: 2,    depth: 'standard', status: 'active',     summary: 'JSON column vs junction table vs hierarchy', related: ['PRD-002'] },
+    { id: 'RFC-003',  type: 'RFC',  label: 'Streaming protocol',  x: 1.5,  y: 2,   z: -2,   depth: 'deep',     status: 'active',     summary: 'SSE vs WebSockets vs HTTP/2 push', related: ['PRD-003'] },
+    { id: 'RFC-004',  type: 'RFC',  label: 'Search architecture', x: 4,    y: 2,   z: 2,    depth: 'deep',     status: 'active',     summary: 'BM25-only vs vec-only vs RRF hybrid', related: ['PRD-004'] },
+
+    // Layer 1: ADRs + SPECs
+    { id: 'ADR-001',  type: 'ADR',  label: 'SQLite + sqlite-vec', x: -4.5, y: 1,   z: -2.5, depth: 'deep',     status: 'active',     summary: 'Single-file embedded DB, vector ext, ACID guarantees', related: ['RFC-001'] },
+    { id: 'ADR-002',  type: 'ADR',  label: 'Junction table',      x: -1,   y: 1,   z: 2.5,  depth: 'standard', status: 'active',     summary: 'note_tags(note_id, tag_id) many-to-many', related: ['RFC-002'] },
+    { id: 'ADR-003',  type: 'ADR',  label: 'SSE for streaming',   x: 1,    y: 1,   z: -2.5, depth: 'deep',     status: 'active',     summary: 'Server-Sent Events over HTTP, simpler than WS for one-way', related: ['RFC-003'] },
+    { id: 'ADR-004',  type: 'ADR',  label: 'RRF k=60 hybrid',     x: 4.5,  y: 1,   z: 1.5,  depth: 'deep',     status: 'active',     summary: 'Reciprocal Rank Fusion with k=60 candidate window', related: ['RFC-004'] },
+    { id: 'SPEC-001', type: 'SPEC', label: 'Storage API',         x: -3.5, y: 1,   z: -1,   depth: 'deep',     status: 'active',     summary: 'CREATE/READ/UPDATE/DELETE on notes with frontmatter parsing', related: ['ADR-001'] },
+    { id: 'SPEC-002', type: 'SPEC', label: 'Tagging API',         x: -2,   y: 1,   z: 1.5,  depth: 'standard', status: 'active',     summary: 'POST /notes/:id/tags, idempotent, max 10 per note', related: ['ADR-002'] },
+    { id: 'SPEC-003', type: 'SPEC', label: 'Stream endpoint',     x: 2.2,  y: 1,   z: -1.2, depth: 'deep',     status: 'active',     summary: 'GET /query/stream Content-Type: text/event-stream', related: ['ADR-003'] },
+    { id: 'SPEC-004', type: 'SPEC', label: 'Search API',          x: 3.5,  y: 1,   z: 2.7,  depth: 'deep',     status: 'active',     summary: 'GET /search?q=&limit=&filter=', related: ['ADR-004'] },
+
+    // Layer 0: Evidence
+    { id: 'EVID-001', type: 'EVID', label: 'SQLite bench',        x: -5,   y: 0,   z: -3,   depth: '-',        status: 'active',     summary: 'p99 < 5ms for 50k rows, JOIN by indexed FK', related: ['ADR-001'] },
+    { id: 'EVID-002', type: 'EVID', label: 'sqlite-vec compat',   x: -4,   y: 0,   z: -1.5, depth: '-',        status: 'active',     summary: '0.1.0 release, Rust SDK working, 1024-dim vectors', related: ['ADR-001'] },
+    { id: 'EVID-003', type: 'EVID', label: 'JOIN vs JSON',        x: -1,   y: 0,   z: 2.5,  depth: '-',        status: 'active',     summary: 'F=7 G=9 R=7, junction wins on filter queries', related: ['ADR-002'] },
+    { id: 'EVID-004', type: 'EVID', label: 'SSE vs WS bench',     x: 1,    y: 0,   z: -2.5, depth: '-',        status: 'active',     summary: 'p50 first token: SSE 240ms, WS 220ms, diff negligible', related: ['ADR-003'] },
+    { id: 'EVID-005', type: 'EVID', label: 'RRF quality',         x: 4,    y: 0,   z: 2,    depth: '-',        status: 'active',     summary: 'NDCG@10: BM25 0.62, vec 0.71, RRF 0.78', related: ['ADR-004'] },
+    { id: 'EVID-006', type: 'EVID', label: 'Stream prod p50',     x: 2,    y: 0,   z: -3,   depth: '-',        status: 'active',     summary: 'Production: p50 first token 380ms, meets SLA', related: ['SPEC-003'] },
+  ];
+
+  // Triggers edges (problem → PRD)
+  const triggers = [
+    { from: 'PROB-001', to: 'PRD-004' },
+  ];
+
+  // Type styling
+  const typeColor = {
+    EPIC: '#ff5a1f', PRD: '#60a5fa', RFC: '#22c55e', ADR: '#c084fc',
+    SPEC: '#f59e0b', EVID: '#ec4899', PROB: '#ef4444',
+  };
+  const typeSize = { EPIC: 14, PRD: 12, RFC: 10, ADR: 12, SPEC: 10, EVID: 8, PROB: 10 };
+  const typeOrder = ['EPIC', 'PRD', 'RFC', 'ADR', 'SPEC', 'EVID', 'PROB'];
+
+  // Find artifact by id
+  const byId = Object.fromEntries(artifacts.map(a => [a.id, a]));
+
+  // ---------- Build traces ----------
+  function buildTraces(visibleTypes) {
+    const traces = [];
+
+    // 1. Parent edges (informs / structural)
+    const parentX = [], parentY = [], parentZ = [];
+    artifacts.forEach(a => {
+      if (!visibleTypes.has(a.type)) return;
+      a.related.forEach(parentId => {
+        const p = byId[parentId];
+        if (!p || !visibleTypes.has(p.type)) return;
+        // Direction: child to parent (parent on top, child below pulls toward)
+        // For ADR/SPEC related to RFC etc — structural
+        parentX.push(a.x, p.x, null);
+        parentY.push(a.y, p.y, null);
+        parentZ.push(a.z, p.z, null);
+      });
+    });
+    traces.push({
+      type: 'scatter3d', mode: 'lines',
+      x: parentX, y: parentY, z: parentZ,
+      line: { color: '#525252', width: 1.5 },
+      hoverinfo: 'skip', showlegend: false, name: 'parent',
+    });
+
+    // 2. Informs edges (Evidence → ADR/SPEC)
+    const informsX = [], informsY = [], informsZ = [];
+    artifacts.forEach(a => {
+      if (a.type !== 'EVID') return;
+      if (!visibleTypes.has('EVID')) return;
+      a.related.forEach(targetId => {
+        const t = byId[targetId];
+        if (!t || !visibleTypes.has(t.type)) return;
+        informsX.push(a.x, t.x, null);
+        informsY.push(a.y, t.y, null);
+        informsZ.push(a.z, t.z, null);
+      });
+    });
+    traces.push({
+      type: 'scatter3d', mode: 'lines',
+      x: informsX, y: informsY, z: informsZ,
+      line: { color: '#ff5a1f', width: 2.5 },
+      hoverinfo: 'skip', showlegend: false, name: 'informs',
+    });
+
+    // 3. Triggers edges (Problem → PRD), dashed via render trick (Plotly 3D doesn't truly dash but we use distinct color)
+    const trigX = [], trigY = [], trigZ = [];
+    triggers.forEach(t => {
+      const from = byId[t.from], to = byId[t.to];
+      if (!from || !to) return;
+      if (!visibleTypes.has(from.type) || !visibleTypes.has(to.type)) return;
+      trigX.push(from.x, to.x, null);
+      trigY.push(from.y, to.y, null);
+      trigZ.push(from.z, to.z, null);
+    });
+    traces.push({
+      type: 'scatter3d', mode: 'lines',
+      x: trigX, y: trigY, z: trigZ,
+      line: { color: '#ef4444', width: 3, dash: 'dash' },
+      hoverinfo: 'skip', showlegend: false, name: 'triggers',
+    });
+
+    // 4. Nodes per type
+    typeOrder.forEach(t => {
+      const items = artifacts.filter(a => a.type === t);
+      if (items.length === 0) return;
+      const visible = visibleTypes.has(t);
+      traces.push({
+        type: 'scatter3d', mode: 'markers+text',
+        name: t,
+        x: items.map(a => a.x),
+        y: items.map(a => a.y),
+        z: items.map(a => a.z),
+        text: items.map(a => a.id),
+        textposition: 'top center',
+        textfont: { color: '#e5e5e5', size: 10, family: 'JetBrains Mono, monospace' },
+        hoverinfo: 'text',
+        hovertext: items.map(a =>
+          '<b>' + a.id + '</b> · <span style="color:' + typeColor[a.type] + '">' + a.type + '</span><br>' +
+          a.label + '<br>' +
+          '<span style="color:#737373">depth:</span> ' + a.depth + ' · <span style="color:#737373">status:</span> ' + a.status + '<br>' +
+          '<span style="color:#a3a3a3">' + a.summary + '</span>' +
+          (a.related.length ? '<br><span style="color:#737373">related:</span> ' + a.related.join(', ') : '')
+        ),
+        marker: {
+          size: typeSize[t],
+          color: typeColor[t],
+          line: { color: '#050505', width: 1.5 },
+          opacity: visible ? 0.95 : 0.05,
+          symbol: t === 'EVID' ? 'diamond' : (t === 'PROB' ? 'cross' : 'circle'),
+        },
+        visible: visible ? true : 'legendonly',
+        showlegend: false,
+      });
+    });
+
+    return traces;
+  }
+
+  const visibleTypes = new Set(typeOrder);
+
+  const ax = {
+    showbackground: true,
+    backgroundcolor: 'rgba(11, 11, 11, 0.6)',
+    gridcolor: 'rgba(255, 255, 255, 0.06)',
+    zerolinecolor: 'rgba(255, 255, 255, 0.1)',
+    showticklabels: false,
+    title: { text: '' },
+  };
+  const ay = {
+    ...ax,
+    tickfont: { color: '#a3a3a3', size: 10, family: 'JetBrains Mono, monospace' },
+    showticklabels: true,
+    tickvals: [0, 1, 2, 2.5, 3, 4],
+    ticktext: ['evidence', 'decision', 'discussion', 'signal', 'intent', 'goal'],
+    range: [-0.5, 4.5],
+    title: { text: 'depth', font: { color: '#a3a3a3', size: 11, family: 'JetBrains Mono, monospace' } },
+  };
+
+  const layout = {
+    paper_bgcolor: 'transparent',
+    plot_bgcolor: 'transparent',
+    margin: { l: 0, r: 0, t: 10, b: 0 },
+    showlegend: false,
+    scene: {
+      xaxis: ax,
+      yaxis: ay,
+      zaxis: ax,
+      camera: { eye: { x: 1.6, y: 1.0, z: 1.4 } },
+      aspectmode: 'manual',
+      aspectratio: { x: 2, y: 1.3, z: 1.6 },
+    },
+  };
+
+  Plotly.newPlot('plot3d', buildTraces(visibleTypes), layout, { displaylogo: false, responsive: true });
+
+  // ---------- Type filter buttons ----------
+  document.querySelectorAll('.type-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = btn.getAttribute('data-type');
+      if (visibleTypes.has(t)) {
+        visibleTypes.delete(t);
+        btn.classList.remove('on');
+        btn.classList.add('off');
+      } else {
+        visibleTypes.add(t);
+        btn.classList.add('on');
+        btn.classList.remove('off');
+      }
+      Plotly.react('plot3d', buildTraces(visibleTypes), layout, { displaylogo: false, responsive: true });
+    });
+  });
+</script>
+
+</body>
+</html>

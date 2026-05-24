@@ -1,0 +1,124 @@
+---
+title: "The decision graveyard: why six months later nobody remembers why you picked one auth flow over another"
+description: Teams accumulate invisible debt not in their code, but in forgotten architectural decisions. Notion and Confluence don't fix this — you need a different format. I break down what this debt looks like on real cases and what a decision format must contain to still be useful a year later.
+slug: decision-graveyard
+lang: en
+publishedAt: 2026-05-23
+kind: explainer
+topic: methodology
+draft: false
+series: decision-cycle
+seriesOrder: 1
+seriesDescription: "The single-decision cycle · 8 posts on discipline for architectural decisions"
+translations:
+  ru: decision-graveyard
+---
+
+## The familiar scene
+
+Six months after release, someone on a retro asks: "Why did we pick JWT over sessions?"
+
+You remember the discussion happened. You remember there was a long Slack thread. You remember the call was made on a Friday evening before a demo. But **why exactly JWT** — you don't remember.
+
+You open Confluence — empty. The ADR template lived in the repo, but nobody filled it in. You try to find the Slack thread — it's past the search horizon because the free plan only keeps 90 days. You watch the meeting recording — at this exact moment the lead says "let's discuss this offline," and the conversation moved into a private DM between two people, one of whom has since left the company.
+
+So you start a fresh lap. The team sits down, spends another two hours, lands on the same decision — because the reasons back then were probably the right ones. But **there's no proof of that**. And six months from now this whole loop repeats, because **the re-made decision also wasn't documented**.
+
+This is not a rare case. It is the typical disease of teams that grow faster than their decision-making culture. I want to break down why it happens, why ordinary tools don't cure it, and what the way out looks like — without having to overhaul the whole company process by tomorrow morning.
+
+## This is not a documentation problem
+
+First reflex: "we need a better wiki." The team buys Notion instead of Confluence. Or Confluence instead of Notion. Or starts a new folder in Google Drive. Three months later — same pain: there are pages, but they're either empty or filled with text at the level of "decided to use JWT."
+
+The root of the problem isn't the tool, it's the **format**. Free-form text doesn't force the author to record the fields that turn out to matter a year later:
+
+- What alternatives were on the table?
+- Why was each one rejected?
+- What data did you rely on to make the call?
+- Under what conditions should this decision be reopened?
+
+Free-form text tempts the author to write "after discussion we settled on JWT" — and that's technically true, but six months later it's useless. Good documentation isn't "more text," it's **structure that doesn't let you skip what matters**.
+
+## How much it costs
+
+Ask yourself: how many times in the last year did your team re-open the same architectural conversation?
+
+I keep a rough calculation for teams I've worked with:
+
+- One "why did we do it this way" incident — two or three engineers × a week of review and back-and-forth = six to nine person-weeks.
+- These incidents happen two to four times a year in a typical 8–15 person team.
+- That's anywhere from twelve to thirty-six person-weeks a year **re-discussing something that was already decided**.
+
+If you convert this into money for a team with a median engineer salary around $8,000/month — it's **between $25,000 and $75,000 a year**. And that's only the visible part. Invisible: a new hire spends the first two weeks asking "why is it this way," and seniors can't answer confidently. And the team a few times a year **flips a decision for no real reason** — they forgot the original rationale — and then a couple of months later reverts.
+
+This cost doesn't show up in any report. But it's real, it repeats, and it grows as the team gets larger and stays in business longer.
+
+## A concrete example
+
+Let me tell one case, details changed.
+
+A B2B fintech team picked Stripe as their payment provider two years ago. The decision was made fast — they had to launch a paid plan by quarter start. Discussed it in chat, picked, started integrating. The decision was written into an ADR file in the repo, but the "alternatives considered" section was left empty: "we'll fill it in later."
+
+They never did.
+
+A year and a half later, legal raises a question: the company is expanding into the EU, and Stripe expects the team to handle VAT reporting per country themselves. One of the engineers remembers that Lemon Squeezy was considered back then specifically because it handled that. But nobody remembers **why it was rejected**.
+
+The team now spends two weeks re-comparing Stripe vs Lemon Squeezy. It turns out that on decision day two years ago, the main argument against Lemon Squeezy was **its limited feature set at the time** — but two years later, that set has caught up. So the **decision was right then, but it expired**. And **nobody noticed it expired** until a new requirement ran into a wall.
+
+If the original ADR had a "when to reopen" section, it could have said: "revisit if we expand to merchant-of-record territories or face new tax-reporting requirements in regions of presence." That one line would have turned two weeks of fire-drill review into a planned 90-minute reassessment.
+
+## What a decision format must contain
+
+I thought about it for a long time — what's the minimum structure that prevents the problem described above. I landed on six required sections. Each one closes off a category of mistakes that otherwise surfaces a year later.
+
+**Context**. One or two paragraphs: the situation at decision time, the constraints, the requirements. Without this, a year later it's impossible to tell whether the decision still applies to the new situation.
+
+**Alternatives considered**. At least three. Not "JWT vs sessions" but "JWT with refresh-token rotation, classic sessions backed by Redis, delegating to an external OAuth provider." Three is the empirical threshold below which a choice almost always turns out to be false: you either picked from two obvious paths and didn't consider a third, or you didn't really choose — you just walked into the first version.
+
+**Evidence**. What you relied on to make the call. Not "discussed and decided" but specific references: "our own benchmark on our data showed these numbers," "vendor documentation says this," "a colleague's experience on a similar project." Each piece of evidence — annotated with how strong it is (your own measurement on your project is stronger than a third-party blog post).
+
+**Decision**. One sentence. "We choose JWT with refresh-token rotation, TTL of 7 days."
+
+**Rejected alternatives**. Each — with a concrete reason for rejection. Not "didn't fit" but "didn't fit because Lemon Squeezy at the time didn't support our merchant-of-record region" or "classic sessions require dedicated Redis support in production, and we have one DevOps engineer for everything." A year later, this reason either still holds — and the decision stands — or it has expired — and it's time to reopen.
+
+**Conditions for reopening**. The most important section, and the one most often skipped. What event, metric, or date should make us reopen this decision. "Reopen if we expand beyond our current territory" — works. "Reopen if JWT verification time exceeds 5ms" — works. "Reopen when the library hits its next major version" — works. Something that **fires by itself**, without relying on the team's memory.
+
+This format isn't my invention; different people have called it different things. I settled on the name **DDR** (Decision-Driven Record) — a short record that drives the team toward a decision, rather than describing it after the fact.
+
+## Cost of adoption
+
+The first time I introduced this structure on a team, the reaction was: "we don't have time for formalities."
+
+That's a normal reaction. And it's usually based on the wrong picture: people imagine DDR is a twenty-page document signed off by the DevOps director.
+
+In reality — it's 200–400 words in one markdown file. Five minutes to fill in six sections. No new tools needed: a `docs/decisions/` directory in your existing repo and one team rule — "every architecturally significant decision gets a DDR file before the branch merges."
+
+Architecturally significant means: something where, six months from now, someone is going to be looking for the answer to "why did we do this here." Fixing a typo in the README? No DDR. Picking a payment provider? Definitely DDR.
+
+The boundary is fuzzy, and the team learns to feel it in the first two or three weeks of working with the format. I usually suggest starting with the rule: "if the task was discussed in a Slack thread longer than ten messages, or in a synchronous meeting longer than 20 minutes, it deserves a DDR."
+
+## What to hand to the AI agent, what to keep for yourself
+
+One separate question: can we get an AI agent to write the DDR for us?
+
+Partially — yes. An agent (Claude Code, Cursor, any coding assistant) is good at the first draft: it pulls context from a Slack thread or a pull-request conversation, lists alternatives, suggests reopen conditions. In a minute it does what would take a human 15–20.
+
+But the final judgement — especially the "rejected alternatives with reason" section — is worth keeping for yourself. The agent doesn't know that you rejected Lemon Squeezy not for functionality reasons, but because that vendor's CEO recently had a public falling-out with one of your investors. That reason will never appear in public documentation, never surface in a Slack thread — but it is the actual motivation. Only a human can record that.
+
+Baseline rule: the agent is the draft, the human is the substance. If AI writes 100% of your DDR — you don't have a DDR, you have a polished evasion. If 0% — you're burning that one week per year on formalities you could have automated.
+
+## What to read next
+
+This article is the first in a series of eight posts on the discipline of making architectural decisions, in teams that work with AI coding assistants. Next I'll cover:
+
+- How to make an architectural decision without locking onto the first version of the cause
+- How to rate the strength of evidence — why averages lie and minimums are honest
+- What the DDR format looks like in detail, in full
+- How a single Slack message turns into a product document with 13 sections without scope-creep monstering
+- How to tell intent apart from behavior when documenting requirements
+- How all these pieces come together into one tool — Forgeplan
+- How the agent stopped hallucinating its next steps after a simple contract on output was introduced
+
+Each post is paired with an interactive walkthrough on [/guides](/guides) — you can spin a 3D scene of evidence in F/G/R space, try a calculator for task-depth routing, or look at the full artifact graph of one project.
+
+If you want to start with practice — the main hub of interactive walkthroughs is [/guides](/guides). The nav is "if you're looking for X — start with Y." If you'd rather wait for the next post — it ships in a week.

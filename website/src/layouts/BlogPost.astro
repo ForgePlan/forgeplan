@@ -1,5 +1,15 @@
 ---
 import Header from '../components/Header.astro';
+import Hero from '../components/blog/Hero.astro';
+import TOC from '../components/blog/TOC.astro';
+import SeriesNav from '../components/blog/SeriesNav.astro';
+import SeoMeta from '../components/blog/SeoMeta.astro';
+import RelatedPosts from '../components/blog/RelatedPosts.astro';
+import BlogFooter from '../components/blog/BlogFooter.astro';
+import SiteJsonLd from '../components/SiteJsonLd.astro';
+// global.css MUST come first — Header.astro uses Tailwind utilities
+// (hidden, lg:grid, bg-forge-bg, etc.) defined here.
+import '../styles/global.css';
 import '../styles/blog-theme.css';
 // Self-hosted fonts via @fontsource — replaces Google Fonts CDN <link> tags (FIX-2).
 // package.json declares @fontsource/space-grotesk and @fontsource/geist-mono.
@@ -22,9 +32,30 @@ interface Props {
   topic: string;
   readingTime?: number;
   translations?: Record<string, string>;
+  cover?: string;
+  series?: string;
+  currentId?: string;
+  headings?: { depth: number; slug: string; text: string }[];
+  slug: string;
 }
 
-const { title, description, publishedAt, updatedAt, lang, kind, topic, readingTime, translations } = Astro.props;
+const {
+  title,
+  description,
+  publishedAt,
+  updatedAt,
+  lang,
+  kind,
+  topic,
+  readingTime,
+  translations,
+  cover,
+  series,
+  currentId,
+  headings = [],
+  slug,
+} = Astro.props;
+
 const oppositeLang = lang === 'en' ? 'ru' : 'en';
 const oppositeSlug = translations?.[oppositeLang];
 const oppositeUrl = oppositeSlug
@@ -37,29 +68,66 @@ const oppositeUrl = oppositeSlug
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" id="favicon-link" />
+    <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <script is:inline>
+      (function() {
+        function updateFavicon() {
+          var l = document.getElementById('favicon-link');
+          if (!l) return;
+          var isLight = document.documentElement.classList.contains('light');
+          l.href = isLight ? '/favicon-light.svg' : '/favicon-dark.svg';
+        }
+        updateFavicon();
+        new MutationObserver(updateFavicon).observe(document.documentElement, {
+          attributes: true, attributeFilter: ['class']
+        });
+      })();
+    </script>
     <title>{title} — Forgeplan Blog</title>
+    <SeoMeta
+      title={title}
+      description={description}
+      lang={lang}
+      cover={cover}
+      publishedAt={publishedAt}
+      updatedAt={updatedAt}
+      translations={translations}
+      slug={slug}
+    />
+    <SiteJsonLd lang={lang} />
   </head>
   <body>
     <Header />
     <article class="blog-post">
-      <main style="max-width: 880px; margin: 0 auto; padding: 64px 32px 96px;">
-        <p class="eyebrow">{kind} · {topic}</p>
-        <h1>{title}</h1>
-        <p style="font-size: 17px; color: var(--text-1); margin: 14px 0 24px;">{description}</p>
-        <div class="meta" style="display: flex; gap: 18px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 32px;">
-          <time datetime={publishedAt.toISOString()}>{publishedAt.toISOString().slice(0, 10)}</time>
-          {updatedAt && <span>upd {updatedAt.toISOString().slice(0, 10)}</span>}
-          {readingTime && <span>{readingTime} min read</span>}
-        </div>
-        <slot />
-        {oppositeUrl && (
-          <footer style="margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line);">
-            <a href={oppositeUrl} style="font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); text-decoration: none;">
-              {oppositeLang === 'ru' ? 'Читать на русском →' : 'Read in English →'}
-            </a>
-          </footer>
-        )}
-      </main>
+      <Hero cover={cover} topic={topic} kind={kind} title={title} />
+      <div class="blog-layout">
+        <main id="main-content" class="blog-content">
+          <p class="blog-description">{description}</p>
+          <slot />
+          {series && currentId && <SeriesNav currentId={currentId} currentSeries={series} lang={lang} />}
+          <RelatedPosts slug={slug} lang={lang} topic={topic} series={series} />
+          {oppositeUrl && (
+            <footer class="blog-lang-switch">
+              <a href={oppositeUrl}>
+                {oppositeLang === 'ru' ? 'Читать на русском →' : 'Read in English →'}
+              </a>
+            </footer>
+          )}
+        </main>
+        <TOC
+          headings={headings}
+          lang={lang}
+          publishedAt={publishedAt}
+          updatedAt={updatedAt}
+          readingTime={readingTime}
+          topic={topic}
+          title={title}
+          slug={slug}
+        />
+      </div>
     </article>
+    <BlogFooter lang={lang} />
   </body>
 </html>

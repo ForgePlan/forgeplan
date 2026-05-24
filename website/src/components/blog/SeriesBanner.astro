@@ -1,0 +1,61 @@
+---
+import { getCollection } from 'astro:content';
+
+interface Props {
+  lang: 'en' | 'ru';
+}
+const { lang } = Astro.props;
+
+const all = await getCollection('blog', ({ data }) =>
+  data.lang === lang && !data.draft && !!data.series
+);
+
+// Group by series, pick the seriesOrder=1 post for the description
+const seriesMap = new Map<string, { name: string; description: string; count: number }>();
+for (const post of all) {
+  const name = post.data.series!;
+  if (!seriesMap.has(name)) {
+    seriesMap.set(name, { name, description: '', count: 0 });
+  }
+  const entry = seriesMap.get(name)!;
+  entry.count += 1;
+  if (post.data.seriesOrder === 1 && post.data.seriesDescription) {
+    entry.description = post.data.seriesDescription;
+  }
+}
+const seriesList = [...seriesMap.values()].sort((a, b) => b.count - a.count);
+
+const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
+const seriesLabel = lang === 'ru' ? 'Серия' : 'Series';
+const postsLabel = (n: number) => {
+  if (lang === 'ru') {
+    // Russian plural rules: 1 пост · 2-4 поста · 5+ постов (and 11-14 use "постов")
+    const mod100 = n % 100;
+    const mod10 = n % 10;
+    const form = (mod100 >= 11 && mod100 <= 14) ? 'постов'
+               : mod10 === 1 ? 'пост'
+               : (mod10 >= 2 && mod10 <= 4) ? 'поста'
+               : 'постов';
+    return `${n} ${form}`;
+  }
+  return n === 1 ? '1 post' : `${n} posts`;
+};
+const exploreLabel = lang === 'ru' ? 'Открыть серию →' : 'Open series →';
+
+// Human-readable series title: first chunk of seriesDescription before " · ",
+// fall back to the slug if no description was set.
+const humanTitle = (slug: string, desc: string) =>
+  desc ? desc.split(' · ')[0] : slug;
+---
+{seriesList.length > 0 && (
+  <section class="blog-series-banner" aria-label={lang === 'ru' ? 'Активные серии' : 'Active series'}>
+    {seriesList.map(s => (
+      <a href={`${langPrefix}/series/${s.name}`} class="blog-series-banner-card">
+        <p class="blog-series-banner-eyebrow">{seriesLabel} · {postsLabel(s.count)}</p>
+        <h2 class="blog-series-banner-title">{humanTitle(s.name, s.description)}</h2>
+        {s.description && <p class="blog-series-banner-desc">{s.description}</p>}
+        <p class="blog-series-banner-cta">{exploreLabel}</p>
+      </a>
+    ))}
+  </section>
+)}

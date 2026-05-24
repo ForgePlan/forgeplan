@@ -1,0 +1,96 @@
+---
+interface Props {
+  title: string;
+  description: string;
+  lang: 'en' | 'ru';
+  cover?: string;
+  publishedAt: Date;
+  updatedAt?: Date;
+  translations?: Record<string, string>;
+  slug: string;
+}
+const { title, description, lang, cover, publishedAt, updatedAt, translations, slug } = Astro.props;
+const site = Astro.site ?? new URL('https://forgeplan.dev');
+const canonical = new URL(Astro.url.pathname, site).href;
+const ogImage = cover ? new URL(cover, site).href : new URL('/og-default.png', site).href;
+
+const altEn = translations?.en ? new URL(`/blog/${translations.en}`, site).href : null;
+const altRu = translations?.ru ? new URL(`/ru/blog/${translations.ru}`, site).href : null;
+
+// hreflang self-link logic: emit self-link for current lang only when no translated alternate
+// for the same lang already exists (prevents duplicate hreflang="en" when altEn===canonical).
+const emitEn = altEn ?? (lang === 'en' ? canonical : null);
+const emitRu = altRu ?? (lang === 'ru' ? canonical : null);
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BlogPosting',
+  headline: title,
+  description,
+  datePublished: publishedAt.toISOString(),
+  ...(updatedAt && { dateModified: updatedAt.toISOString() }),
+  author: {
+    '@type': 'Person',
+    name: 'Eli Rum',
+    url: 'https://elirum.me',
+  },
+  publisher: {
+    '@type': 'Organization',
+    name: 'Forgeplan',
+    url: 'https://forgeplan.dev',
+    logo: {
+      '@type': 'ImageObject',
+      url: new URL('/og-default.png', site).href,
+    },
+  },
+  mainEntityOfPage: {
+    '@type': 'WebPage',
+    '@id': canonical,
+  },
+  image: ogImage,
+  inLanguage: lang,
+  url: canonical,
+};
+
+// BreadcrumbList — Google rich result + AI context
+const blogLabel = lang === 'ru' ? 'Блог' : 'Blog';
+const homeLabel = lang === 'ru' ? 'Forgeplan' : 'Forgeplan';
+const blogIndexUrl = lang === 'ru' ? new URL('/ru/blog/', site).href : new URL('/blog/', site).href;
+const breadcrumbs = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: homeLabel, item: site.href },
+    { '@type': 'ListItem', position: 2, name: blogLabel, item: blogIndexUrl },
+    { '@type': 'ListItem', position: 3, name: title, item: canonical },
+  ],
+};
+
+const safeJson = (obj: unknown) =>
+  JSON.stringify(obj)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+---
+<link rel="canonical" href={canonical} />
+{emitEn && <link rel="alternate" hreflang="en" href={emitEn} />}
+{emitRu && <link rel="alternate" hreflang="ru" href={emitRu} />}
+{(emitEn || emitRu) && <link rel="alternate" hreflang="x-default" href={emitEn ?? emitRu} />}
+
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:image" content={ogImage} />
+<meta property="og:type" content="article" />
+<meta property="og:url" content={canonical} />
+<meta property="og:locale" content={lang === 'ru' ? 'ru_RU' : 'en_US'} />
+<meta property="article:published_time" content={publishedAt.toISOString()} />
+{updatedAt && <meta property="article:modified_time" content={updatedAt.toISOString()} />}
+<meta property="article:author" content="Eli Rum" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={ogImage} />
+
+<script type="application/ld+json" set:html={safeJson(jsonLd)} />
+<script type="application/ld+json" set:html={safeJson(breadcrumbs)} />

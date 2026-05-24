@@ -5,6 +5,7 @@ import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
 import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
+import { remarkReadingTime } from './src/lib/reading-time.mjs';
 
 export default defineConfig({
   site: 'https://forgeplan.dev',
@@ -39,6 +40,15 @@ export default defineConfig({
       { icon: 'github', label: 'GitHub', href: 'https://github.com/ForgePlan/forgeplan' },
     ],
     customCss: ['./src/styles/forge-theme.css'],
+    components: {
+      // Unified Header on /docs via DocsHeader (inline content; no nested <header>).
+      // Prior attempt rendered our standalone <header position:fixed> here,
+      // which Starlight wrapped inside its own <header.header> → invalid HTML
+      // + broke grid (article 19px, sidebar 0). DocsHeader renders ONLY the
+      // brand+nav+toggle row → Starlight's outer <header> remains the single
+      // header element on the page.
+      Header: './src/components/StarlightHeaderWrapper.astro',
+    },
     sidebar: [
       {
         label: 'Getting Started',
@@ -98,6 +108,9 @@ export default defineConfig({
     mdx(),
     react(),
   ],
+  markdown: {
+    remarkPlugins: [remarkReadingTime],
+  },
   vite: {
     plugins: [tailwindcss()],
   },

@@ -1,0 +1,108 @@
+---
+import path from 'node:path';
+import Landing from '../../layouts/Landing.astro';
+import Header from '../../components/Header.astro';
+import BlogFooter from '../../components/blog/BlogFooter.astro';
+import SiteJsonLd from '../../components/SiteJsonLd.astro';
+import { guides, getGuide } from '../../data/guides.ts';
+import { extractEmbed } from '../../lib/embed-html.js';
+import '../../styles/blog-theme.css';
+
+export async function getStaticPaths() {
+  return guides.map(g => ({ params: { slug: g.slug } }));
+}
+
+const { slug } = Astro.params;
+const guide = getGuide(slug as string);
+if (!guide) throw new Error(`Guide not found: ${slug}`);
+
+const filepath = path.resolve(`public/guides-raw/${slug}.html`);
+const embed = extractEmbed(filepath);
+
+const site = Astro.site ?? new URL('https://forgeplan.dev');
+const canonical = new URL(Astro.url.pathname, site).href;
+const altRu = new URL(`/ru/guides/${slug}`, site).href;
+
+const ld = {
+  '@context': 'https://schema.org',
+  '@type': 'LearningResource',
+  name: guide.title_en,
+  description: guide.desc_en,
+  url: canonical,
+  inLanguage: 'en',
+  isPartOf: { '@type': 'WebSite', name: 'Forgeplan', url: site.href },
+  learningResourceType: guide.pill === 'interactive' ? 'Interactive Resource' : 'Lesson',
+  educationalLevel: 'Intermediate',
+};
+const breadcrumbs = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Forgeplan', item: site.href },
+    { '@type': 'ListItem', position: 2, name: 'Guides', item: new URL('/guides/', site).href },
+    { '@type': 'ListItem', position: 3, name: guide.title_en, item: canonical },
+  ],
+};
+const safeJson = (o: unknown) => JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+
+const ordered = [...guides].sort((a, b) => a.order - b.order);
+const idx = ordered.findIndex(g => g.slug === slug);
+const prev = idx > 0 ? ordered[idx - 1] : null;
+const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+---
+<Landing title={`${guide.title_en} — Forgeplan Guides`} description={guide.desc_en}>
+  <Header />
+  <link slot="head" rel="canonical" href={canonical} />
+  <link slot="head" rel="alternate" hreflang="en" href={canonical} />
+  <link slot="head" rel="alternate" hreflang="ru" href={altRu} />
+  <link slot="head" rel="alternate" hreflang="x-default" href={canonical} />
+  <script slot="head" type="application/ld+json" set:html={safeJson(ld)} />
+  <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
+  <SiteJsonLd lang="en" />
+
+  <style is:global set:html={embed.scopedCss}></style>
+
+  {embed.externalScripts.map(src => (
+    <script src={src} is:inline></script>
+  ))}
+
+  <!-- Top compact bar: full breadcrumb (Forgeplan / Guides / Lesson) — lang switch lives in Header nav -->
+  <nav class="guide-topbar" aria-label="Breadcrumb">
+    <ol class="guide-crumbs">
+      <li><a href="/">Forgeplan</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li><a href="/guides">Guides</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li class="guide-crumb-current" aria-current="page">{guide.title_en}</li>
+    </ol>
+  </nav>
+
+  <!-- Lesson content IS the page (no wrapping h1/summary — lesson has its own). -->
+  <article id="main-content" class="guide-embedded" set:html={embed.bodyHtml}></article>
+
+  {embed.inlineScripts.map(src => (
+    <script is:inline set:html={src}></script>
+  ))}
+
+  <!-- Bottom prev/next within reading order -->
+  <nav class="guide-prevnext" aria-label="Reading order navigation">
+    <div class="guide-prevnext-cell">
+      {prev ? (
+        <a href={`/guides/${prev.slug}`}>
+          <span class="guide-prevnext-dir">← Previous</span>
+          <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_en}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">— Start of series</span>}
+    </div>
+    <div class="guide-prevnext-cell guide-prevnext-next">
+      {next ? (
+        <a href={`/guides/${next.slug}`}>
+          <span class="guide-prevnext-dir">Next →</span>
+          <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_en}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">End of series —</span>}
+    </div>
+  </nav>
+
+  <BlogFooter lang="en" />
+</Landing>

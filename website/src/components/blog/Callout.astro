@@ -1,0 +1,20 @@
+---
+interface Props {
+  type: 'info' | 'warn' | 'tip' | 'danger';
+}
+const { type } = Astro.props;
+
+const config = {
+  info:   { icon: 'ℹ',  label: 'Info' },
+  warn:   { icon: '⚠',  label: 'Warning' },
+  tip:    { icon: '✓',  label: 'Tip' },
+  danger: { icon: '✕',  label: 'Danger' },
+};
+const { icon, label } = config[type];
+---
+<aside class={`blog-callout blog-callout-${type}`} role="note" aria-label={label}>
+  <span class="blog-callout-icon" aria-hidden="true">{icon}</span>
+  <div class="blog-callout-content">
+    <slot />
+  </div>
+</aside>

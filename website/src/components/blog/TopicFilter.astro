@@ -1,0 +1,36 @@
+---
+interface Props {
+  topics: string[];        // unique topics present in current posts
+  lang?: 'en' | 'ru';
+}
+const { topics, lang = 'en' } = Astro.props;
+const labelAll = lang === 'ru' ? 'Все' : 'All';
+const ariaLabel = lang === 'ru' ? 'Фильтр по теме' : 'Filter by topic';
+---
+<nav class="blog-topic-filter" aria-label={ariaLabel}>
+  <button class="blog-topic-pill is-active" data-topic="all" type="button">{labelAll}</button>
+  {topics.map(t => (
+    <button class={`blog-topic-pill blog-topic-pill-${t}`} data-topic={t} type="button">{t}</button>
+  ))}
+</nav>
+
+<script>
+  const filter = document.querySelector('.blog-topic-filter');
+  if (filter) {
+    const cards = document.querySelectorAll<HTMLElement>('.blog-index-card[data-topic]');
+    filter.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (!target.matches('.blog-topic-pill')) return;
+      const topic = target.dataset.topic;
+      filter.querySelectorAll('.blog-topic-pill').forEach(b => b.classList.remove('is-active'));
+      target.classList.add('is-active');
+      cards.forEach(card => {
+        if (topic === 'all' || card.dataset.topic === topic) {
+          card.style.display = '';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+    });
+  }
+</script>

@@ -57,6 +57,12 @@ html {
    Header — Full / Compact states
    ======================================== */
 
+/* Scope transitions to properties that should animate during shrink/grow.
+   Explicitly EXCLUDE border-* — transitioning border-width through 0..1px
+   produces a "fat double border" flicker because inner border (full state)
+   and outer border (compact state) overlap for the ~0.4s window. Both
+   borders draw simultaneously during the transition before one collapses
+   to zero. Solution: jump border state instantly, animate everything else. */
 #site-header,
 .header-inner,
 .header-logo,
@@ -64,7 +70,11 @@ html {
 .header-brand-cell,
 .nav-cell,
 .header-right {
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition-property: padding, height, grid-template-columns, max-width,
+                       width, margin, background-color, color, font-size,
+                       letter-spacing, transform;
+  transition-duration: 0.4s;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Full state (hero visible) */
@@ -73,20 +83,34 @@ html {
 .header-full .header-logo { width: 28px; height: 28px; }
 .header-full .header-brand { font-size: 18px; }
 .header-full .header-brand-cell { padding: 0 20px; }
-.header-full .header-nav { grid-template-columns: repeat(4, 120px) 150px 110px; }
+/* 5 text cells (Docs/Blog/Guides/CLI/MCP) · RU · Install · GitHub icon */
+.header-full .header-nav { grid-template-columns: repeat(4, 110px) 140px 60px 105px 48px; }
 .header-full .nav-cell { font-size: 15px; }
 
 /* Compact state (scrolled past hero) */
-.header-compact { padding: 0; }
+.header-compact {
+  padding: 0;
+  border-bottom: 1px solid var(--forge-line);
+  /* Fill the full viewport width with header bg — inner is centered at
+     1280px max-width, so without an outer bg the sides outside that band
+     show the page bg through (most visible in light theme). */
+  background: var(--forge-bg);
+}
 .header-compact .header-inner {
   height: 36px;
-  grid-template-columns: auto auto 36px;
-  border-left: none; border-right: none; border-top: none;
+  grid-template-columns: 1fr auto 36px;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  border-bottom: none;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 32px;
 }
 .header-compact .header-logo { width: 16px; height: 16px; }
 .header-compact .header-brand { font-size: 13px; }
 .header-compact .header-brand-cell { padding: 0 12px; }
-.header-compact .header-nav { grid-template-columns: repeat(4, 80px) 100px 80px; }
+.header-compact .header-nav { grid-template-columns: repeat(4, 74px) 94px 44px 76px 36px; }
 .header-compact .nav-cell { font-size: 12px; }
 
 /* Nav cell hover — wipe fill with inverted text */
@@ -103,9 +127,9 @@ html {
 .nav-cell::before {
   content: '';
   position: absolute;
-  inset: 0;
+  inset: 0 -2px 0 -2px; /* extend 2px beyond cell to avoid sub-pixel sliver */
   background: var(--forge-fg);
-  transform: translateX(-100%);
+  transform: translateX(-101%);
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: -1; /* fill behind text */
 }
@@ -114,6 +138,21 @@ html {
 .nav-cell:hover,
 .nav-cell:focus-visible { color: var(--forge-bg); } /* inverted: fg text → bg text */
 .nav-cell:focus-visible { outline: 2px solid var(--color-forge-ember); outline-offset: -2px; }
+/* Active route highlight — accent underline + tinted bg */
+.nav-cell.active {
+  color: var(--color-forge-ember);
+  font-weight: 500;
+}
+.nav-cell.active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  width: 24px;
+  height: 2px;
+  background: var(--color-forge-ember);
+}
 
 /* Logo/toggle hover — ember → fg color (white in dark, dark in light) */
 #theme-toggle { transition: transform 0.3s; border: none; }
@@ -145,3 +184,41 @@ html {
 /* Burger button */
 #mobile-menu-btn { background: none; border: none; cursor: pointer; }
 .burger-line { transition: all 0.3s; }
+
+/* === Skip-to-content link (WCAG 2.4.1 Bypass Blocks) ===
+   Visible only on focus — keyboard users get it via Tab, screen-reader users
+   get it as the first focusable element. Renders above the fixed Header. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 12px;
+  z-index: 100;
+  padding: 8px 12px;
+  background: var(--color-forge-ember);
+  color: var(--forge-bg);
+  font-family: var(--font-body, system-ui, sans-serif);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  border: 2px solid var(--color-forge-ember);
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 12px;
+  outline: 2px solid var(--forge-fg);
+  outline-offset: 2px;
+}
+
+/* === Icon-only nav cells (e.g. GitHub) === */
+.nav-cell-icon svg { width: 16px; height: 16px; transition: transform 0.2s; }
+.nav-cell-icon:hover svg { transform: scale(1.1); }
+.header-compact .nav-cell-icon svg { width: 14px; height: 14px; }
+
+/* Install cell — host for InstallMenu popup. Cannot use overflow:hidden
+   here (would clip the popup). Also disables the hover-wipe (.nav-cell::before)
+   for this cell — the popup trigger has its own ember styling. */
+.nav-cell-install {
+  overflow: visible;
+  padding: 0;
+}
+.nav-cell-install::before { display: none; }

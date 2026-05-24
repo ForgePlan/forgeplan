@@ -1,0 +1,112 @@
+---
+title: "Markdown as source of truth, LanceDB as derived index — and the 32 violations that almost killed the invariant"
+description: "How ForgePlan's load-bearing ADR-003 invariant got compile-time-enforced: 4 audit rounds, 56 findings, a pub(crate) lockdown across 32 call sites, and why the boring discipline matters more than clever architecture."
+slug: markdown-source-of-truth
+lang: en
+publishedAt: 2026-05-23
+kind: explainer
+topic: methodology
+draft: false
+---
+
+### The invariant in one sentence
+
+In ForgePlan, **markdown files in `.forgeplan/{prds,adrs,specs,rfcs,evidence,...}/*.md` are the source of truth. The LanceDB index is derived and rebuildable.**
+
+Every artifact mutation flows from markdown into LanceDB, never the reverse. If LanceDB and markdown disagree, markdown wins, and `forgeplan scan-import` rebuilds LanceDB from the on-disk files.
+
+This is ADR-003. It's the single most load-bearing architectural decision in the project. It's also the one we almost lost — twice.
+
+This is the story of how the invariant got compile-time-enforced, what it took (4 audit rounds, 56 findings, a `pub(crate)` lockdown across 32 call sites), and why the boring discipline matters more than the clever architecture.
+
+### Why one-way
+
+Two-way sync between markdown and a vector DB is a tar pit. The failure modes are:
+
+1. **Stale index** — someone edits the markdown directly (or `git pull` brings in changes from another agent), the index doesn't know, semantic search misses results.
+2. **Stale markdown** — code path mutates the index without writing the markdown, the file becomes a fossil, `git diff` lies, code review can't catch the drift.
+3. **Conflict on regenerate** — index has data the markdown doesn't, regeneration overwrites it, work is silently lost.
+
+We picked one-way: markdown is authoritative, LanceDB is a cache. The cache can be deleted at any time and rebuilt with `forgeplan scan-import`. This is also why `.forgeplan/lance/` and `.forgeplan/.fastembed_cache/` are gitignored — they're derived artifacts.
+
+The CLI and MCP server enforce this through a single discipline: **never call `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` directly from `commands/*.rs` or `server.rs`**. All mutations go through `forgeplan_core::projection::sync_file_to_store` and `render_projection`.
+
+That's the rule. It's a one-line rule. It would not survive contact with a 12.8K-LOC codebase touched by AI agents and human contributors over six months. So.
+
+### How the rule failed (PROB-048)
+
+Six weeks ago I ran an audit asking "how many places call `LanceStore::*` mutators directly?" The answer was supposed to be zero.
+
+It was 32.
+
+Thirty-two places in `commands/*.rs` and `server.rs` were doing direct `LanceStore::create_artifact(...)` or `LanceStore::add_relation(...)` calls. They were spread across history; some were copy-paste from earlier patterns; some were "just for this one edge case"; one was a debug helper that nobody removed.
+
+Each violation was a quiet bomb. None of them caused immediate breakage, because the markdown writes and the LanceDB writes happened in the same commit. But they meant: the projection invariant existed in the *original author's head* and nowhere else. New code, written by a new agent or a new contributor reading the existing patterns, would inherit the violation as the norm.
+
+I logged this as PROB-048. I scoped a fix as PRD-073, with three phases:
+
+- **Phase 3a** — refactor all 32 call sites to go through the projection helpers
+- **Phase 3b** — introduce 15 helper functions wrapping the canonical flows
+- **Phase 4** — flip the visibility of the dangerous `LanceStore` mutators to `pub(crate)` so the compiler refuses to let `commands/*.rs` ever call them again
+
+### The four audit rounds
+
+Refactoring is the easy part. Refactoring without regression is the hard part. I ran four adversarial audit rounds, each with two AI agents (a security reviewer and a code reviewer), each instructed to find at least three issues. Zero findings = re-spawn (suspect superficial review).
+
+Round-by-round:
+
+| Round | Findings closed | What broke |
+|-------|------------------|------------|
+| R1 | 19 | Initial refactor missed 7 sites; 12 helper signatures didn't match call-site needs |
+| R2 | 18 | `pub(crate)` flip exposed 11 unit tests that imported `LanceStore` directly; 7 doc examples broke |
+| R3 | 13 | Edge case in `forgeplan_link` — relation deletion path bypassed the projection helper |
+| R4 | 6 | Final cleanup; one dead function in `journal/`, two stale doc comments |
+| **Total** | **56** | — |
+
+The regression guard sealed it. `tests/adr_003_invariant.rs` is a single integration test that walks the source tree, counts direct `LanceStore::create_artifact / update_* / delete_*` calls in `commands/` and `server.rs`, and fails the build if the count rises above the floor (currently 0). It's ten lines of code. It is the single most important ten lines in the repo.
+
+The compile-time piece (`pub(crate)`) blocks new violations. The runtime test (the regression guard) blocks regressions in case someone adds a new module under `commands/` and forgets the rule. Belt and suspenders.
+
+### Why I'm telling this story
+
+Three reasons.
+
+**One: invariants without compile-enforced guards are folklore.**
+
+ADR-003 was written on day one of the project. It was clear. It was correct. It was 32-times violated within six months. Any architectural document that relies on "we'll all remember the rule" loses to entropy. The interesting question isn't "what's the right invariant" — it's "how does the build break when someone forgets the invariant?" If the answer is "it doesn't," your invariant is decorative.
+
+**Two: AI-augmented codebases need this discipline more, not less.**
+
+When you spawn parallel sub-agents to refactor or extend a codebase, each agent has a context window and a partial view. The agent reading existing patterns doesn't see ADR-003 unless you put it in the agent's prompt. And even then, "remember the rule" is a fragile commitment when the agent is making 50 file edits in one pass. The compiler is the only reviewer that doesn't get tired or distracted.
+
+This is why ForgePlan's CLAUDE.md has explicit red lines and why every multi-agent dispatch in our cohort assigns explicit file-ownership grids. The cost of letting an AI agent freelance on architectural invariants is paid weeks later, when the next agent reads the freelanced code and treats it as canon.
+
+**Three: dogfooding stress-tests the methodology.**
+
+The whole point of ForgePlan is "every decision leaves a trail." PROB-048's resolution lives in `.forgeplan/problems/PROB-048-*.md`. PRD-073 is in `.forgeplan/prds/`. The four audit-round summaries are EvidencePacks. EVID-094 (the closing pack) scored R_eff=0.80, grade A. That's not perfect; one piece of evidence on the post-Phase-4 fuzz benchmark hasn't been re-run since v0.28. The decay is honest. The artifact graph reflects it.
+
+When I teach this story in the cohort, I run `forgeplan get PRD-073` live. The students see the FRs marked complete, the linked EvidencePack, the R_eff score, the closing note. The methodology is not a slide deck. It's the file the tool reads.
+
+### What changed for the codebase, concretely
+
+Post-Phase-4, the `forgeplan-core::store` module looks like this:
+
+- All `create_*`, `update_*`, `delete_*`, `add_relation`, `delete_relation` mutators are `pub(crate)`.
+- 15 helper functions in `forgeplan_core::projection` wrap the canonical flows: `sync_file_to_store`, `render_projection`, `apply_link_change`, etc.
+- The canonical CLI command for a one-shot mutation is `crates/forgeplan-cli/src/commands/deprecate.rs` — 40 lines, no direct store access, every step routed through projection.
+- New contributors get a compile error on day one if they try to shortcut.
+- The regression guard is part of every CI run.
+
+`cargo test` ran 1995 tests at the time of writing, 0 failures, 0 warnings on both feature configurations. The lockdown didn't slow anything down measurably; it removed an entire class of bugs.
+
+### What I'd tell another founder building methodology tooling
+
+If you only take one thing from this post: **the rule is enforced by the compiler or it's not enforced**.
+
+Documentation is necessary but not sufficient. Code review catches some violations. CI tests catch more. But if a senior contributor or an AI agent can write code that compiles and ships while breaking the invariant, that invariant will erode. The only way to preserve it across a year of changes is to make it physically impossible to violate.
+
+`pub(crate)` is one of the cheapest, most underused features in Rust. It cost me ten minutes of typing and saved an entire architectural layer.
+
+The cost of the four audit rounds was real (about three weeks of wall time, mostly running adversarial reviews and closing findings). The cost of *not* doing this work would have been a slow drift back into 50-violation territory by month nine, at which point untangling it becomes a multi-month project instead of a multi-week one.
+
+This is the boring discipline. It's also the difference between a tool that survives its second year and one that quietly rots.
