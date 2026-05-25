@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как выглядит хороший DDR - шаблон с примером - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  /* Definition list (6 fields) */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  /* Start-here grid */
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  /* Code block for DDR example */
+  .code-block {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 28px 32px;
+    margin: 24px 0 0;
+    overflow-x: auto;
+    max-width: none;
+  }
+  .code-block pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+    white-space: pre;
+  }
+  .code-block .cb-heading { color: var(--accent-soft); }
+  .code-block .cb-field { color: var(--text); }
+  .code-block .cb-value { color: var(--text-2); }
+  .code-block .cb-comment { color: var(--text-4); font-style: italic; }
+
+  /* Length hint bar */
+  .length-bar {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 0;
+    padding: 22px 28px;
+    margin: 24px 0 0;
+    max-width: 760px;
+  }
+  .length-bar .lb-row { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; }
+  .length-bar .lb-row:last-child { margin-bottom: 0; }
+  .length-bar .lb-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); width: 130px; flex-shrink: 0; }
+  .length-bar .lb-track { flex: 1; height: 6px; background: var(--bg-2); border-radius: 0; }
+  .length-bar .lb-fill { height: 6px; border-radius: 0; }
+  .length-bar .lb-fill.good { background: var(--ok); width: 45%; }
+  .length-bar .lb-fill.warn { background: var(--warn); width: 75%; }
+  .length-bar .lb-fill.bad  { background: var(--err);  width: 100%; }
+  .length-bar .lb-note { font-size: 12.5px; color: var(--text-3); width: 110px; flex-shrink: 0; text-align: right; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ЖУРНАЛ РЕШЕНИЙ · ФОРМАТ</p>
+  <h1>Как выглядит хороший DDR - шаблон с примером</h1>
+  <p class="lead">
+    Хороший DDR должен читаться за две минуты. Если вы открыли запись
+    и за две минуты не поняли, что было выбрано, почему и при каких
+    условиях нужно пересмотреть - запись сделана неправильно. Разбираю
+    формат по частям и показываю, как он выглядит на реальном примере.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Что такое DDR</h2>
+  <p>
+    DDR - Decision-Driven Record - это расширенная форма записи решения.
+    Классический ADR (Architecture Decision Record) существует уже
+    больше десяти лет и по сути - четыре поля: контекст, статус, решение,
+    последствия. Для многих случаев этого хватает.
+  </p>
+  <p>
+    DDR появился, когда выяснилось, что в классическом ADR легко
+    пропустить две вещи, из-за которых запись через год становится
+    бесполезной. Первое - <b class="k">доказательства</b>: на что
+    именно опирались при выборе. Второе -
+    <b class="k">условие пересмотра</b>: при каком событии нужно
+    вернуться к этому вопросу. Без доказательств запись выглядит как
+    мнение. Без условия пересмотра запись превращается в памятник -
+    её перестают трогать, даже когда контекст давно поменялся.
+  </p>
+  <p>
+    Соотношение форматов:
+  </p>
+  <ul>
+    <li><b class="k">ADR</b> - контекст, решение, последствия. Быстро, минималистично. Хорошо для небольших технических выборов с коротким горизонтом.</li>
+    <li><b class="k">DDR</b> - всё из ADR плюс явные доказательства и условия пересмотра. Чуть дольше писать, но запись остаётся живой через год и три года.</li>
+  </ul>
+  <p>
+    Различие не в объёме - в содержании. DDR из 250 слов лучше ADR из
+    тех же 250 слов, если в нём есть доказательства и условие пересмотра.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Шесть обязательных полей</h2>
+  <p>
+    Если хотя бы одно поле пропущено - это не DDR, это заготовка.
+    Именно обязательность полей отличает живую запись от свободного
+    текста.
+  </p>
+
+  <ol class="deflist">
+    <li>
+      <div class="def-num">01 · КОНТЕКСТ</div>
+      <div class="def-title">В какой ситуации принимали решение</div>
+      <div class="def-body">Что было известно, какие ограничения действовали, каков был масштаб. Без этого через год невозможно понять, применимо ли решение к новой ситуации или контекст полностью изменился.</div>
+    </li>
+    <li>
+      <div class="def-num">02 · ВАРИАНТЫ</div>
+      <div class="def-title">Что рассматривали</div>
+      <div class="def-body">Минимум три варианта, каждый с кратким плюсом и минусом. Если вариантов меньше двух - выбора не было, и запись это должна отражать явно.</div>
+    </li>
+    <li>
+      <div class="def-num">03 · ДОКАЗАТЕЛЬСТВА</div>
+      <div class="def-title">На что опирались при выборе</div>
+      <div class="def-body">Конкретные источники: замер на своих данных, документация поставщика, опыт коллеги из другой команды. Каждое доказательство - с коротким указанием на его применимость к вашему контексту.</div>
+    </li>
+    <li>
+      <div class="def-num">04 · РЕШЕНИЕ</div>
+      <div class="def-title">Один вариант, одна строка</div>
+      <div class="def-body">Точная формулировка выбранного варианта. Без «остановились на», без «решили попробовать». По этой строке через год можно однозначно проверить, выполняется ли решение.</div>
+    </li>
+    <li>
+      <div class="def-num">05 · ОТВЕРГНУТЫЕ</div>
+      <div class="def-title">Почему другие варианты не подошли</div>
+      <div class="def-body">Каждый отвергнутый вариант с конкретной причиной. Не «не подходит», а «не подходит, потому что X». Через год эта причина либо валидна, либо устарела - и это само по себе сигнал к пересмотру.</div>
+    </li>
+    <li>
+      <div class="def-num">06 · УСЛОВИЯ ПЕРЕСМОТРА</div>
+      <div class="def-title">Когда вернуться к этому вопросу</div>
+      <div class="def-body">Самая важная и чаще всего пропускаемая секция. Конкретное событие, метрика или дата, при достижении которой запись нужно открыть заново. Без этого поля запись мертва с первого дня.</div>
+    </li>
+  </ol>
+
+  <div class="aside">
+    Шестое поле - это главное отличие DDR от заметки. Заметка описывает
+    прошлое. DDR с условием пересмотра - это живой контракт, который
+    сам сигнализирует, когда его нужно проверить.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Полный пример</h2>
+  <p>
+    Ниже - реальная структура DDR-файла для конкретного решения: выбор
+    механизма авторизации в приложении для заметок небольшой команды.
+    Три варианта: JWT-токены, серверные сессии, OAuth через стороннего
+    провайдера. Поля заполнены так, как они выглядели бы в практике.
+  </p>
+
+  <div class="code-block">
+<pre>
+<span class="cb-heading"># DDR-007: Механизм авторизации - JWT vs сессии vs OAuth</span>
+
+<span class="cb-field">Дата:</span>       <span class="cb-value">2025-11-14</span>
+<span class="cb-field">Статус:</span>     <span class="cb-value">активен</span>
+<span class="cb-field">Автор:</span>      <span class="cb-value">Михаил Д.</span>
+<span class="cb-field">Пересмотреть:</span> <span class="cb-value">если DAU превысит 5 000 или появится требование SSO</span>
+
+<span class="cb-heading">## Контекст</span>
+
+<span class="cb-value">Приложение для личных заметок - 4 разработчика, один бэкенд на Node.js,
+планируемый DAU 200-800 человек. Единственный требуемый тип входа -
+email + пароль. Нет требований к SSO, нет корпоративных клиентов.
+Инфраструктура: один сервер без горизонтального масштабирования.</span>
+
+<span class="cb-heading">## Варианты</span>
+
+<span class="cb-value">A. JWT-токены
+   + Не требует серверного хранилища состояния.
+   − Отзыв токена сложен: нужен blacklist или короткий TTL + refresh.
+
+B. Серверные сессии (httpOnly cookie + session store)
+   + Простой отзыв: удалить запись из store.
+   + Зрелые библиотеки, минимум логики на клиенте.
+   − Требует постоянного серверного хранилища (Redis или DB-таблица).
+
+C. OAuth через стороннего провайдера (Google, GitHub)
+   + Нет собственной логики паролей.
+   − Зависимость от внешнего сервиса; требует домена и HTTPS с первого дня.
+   − Усложняет онбординг: пользователи без Google/GitHub аккаунта.</span>
+
+<span class="cb-heading">## Доказательства</span>
+
+<span class="cb-value">1. Бенчмарк внутри команды: серверная сессия с PostgreSQL store -
+   p95 проверки сессии 4 мс на нашем железе (замер 14.11.2025,
+   1 000 параллельных запросов). Для нашей нагрузки достаточно.
+
+2. Документация express-session: поддержка pg-simple store,
+   production-ready, последнее обновление ноябрь 2025.
+
+3. Опыт команды Аркадия (схожий стек, схожий DAU): перешли с JWT
+   на сессии, потому что blacklist JWT добавил больше сложности,
+   чем сэкономило отсутствие state. Субъективно применимо к нашей ситуации.</span>
+
+<span class="cb-heading">## Решение</span>
+
+<span class="cb-value">Используем серверные сессии: express-session + pg-simple store в той же
+PostgreSQL БД, которая уже есть в проекте.</span>
+
+<span class="cb-heading">## Отвергнутые варианты</span>
+
+<span class="cb-value">A (JWT): отвергнут, потому что без горизонтального масштабирования
+выгода JWT перед сессиями отсутствует, а сложность отзыва токена выше.
+
+C (OAuth): отвергнут, потому что добавляет зависимость от внешнего
+сервиса и усложняет онбординг при нашей целевой аудитории.</span>
+
+<span class="cb-heading">## Условия пересмотра</span>
+
+<span class="cb-value">1. DAU превышает 5 000 - проверить, не стал ли pg-simple store узким местом.
+2. Появляется требование SSO от корпоративного клиента - переходить на OAuth/SAML.
+3. Переход на горизонтальное масштабирование - пересмотреть store (Redis).</span>
+</pre>
+  </div>
+
+  <p>
+    Обратите внимание на несколько вещей. Первое: доказательства -
+    конкретные. Не «по нашему опыту», а «замер 14.11.2025, 1 000
+    запросов, 4 мс». Второе: в отвергнутых вариантах каждая причина
+    относится именно к нашему контексту - не «JWT сложный», а «выгода
+    JWT исчезает без горизонтального масштабирования». Третье: условия
+    пересмотра привязаны к конкретным триггерам, а не к абстрактному
+    «при необходимости».
+  </p>
+
+  <hr class="sep">
+
+  <h2>Длина и читаемость</h2>
+  <p>
+    Хороший DDR умещается в 200-400 слов основного текста. Это одна
+    экранная страница при стандартном шрифте. Если запись длиннее -
+    скорее всего, одно из двух: либо в неё пытаются запихнуть несколько
+    несвязанных решений (нужно разбить на отдельные), либо объяснение
+    пишется там, где должна быть ссылка.
+  </p>
+  <p>
+    Три ориентира по длине полей:
+  </p>
+
+  <div class="length-bar">
+    <div class="lb-row">
+      <div class="lb-label">КОНТЕКСТ</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">3-5 предложений</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">ВАРИАНТЫ</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">2-3 строки на вариант</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">ДОКАЗАТЕЛЬСТВА</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">1-2 предложения на источник</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">РЕШЕНИЕ</div>
+      <div class="lb-track"><div class="lb-fill good" style="width:20%"></div></div>
+      <div class="lb-note">1 строка</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">ОТВЕРГНУТЫЕ</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">1-2 строки на вариант</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">УСЛОВИЯ</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">2-4 пункта</div>
+    </div>
+  </div>
+
+  <p>
+    Самая частая ошибка - огромный контекст (5-10 абзацев), в котором
+    пишут всё, что знали, плюс цитаты из документации. Это не контекст,
+    это черновик встречи. Контекст - это минимум, достаточный для того,
+    чтобы через год понять, при каких ограничениях принималось решение.
+  </p>
+  <p>
+    Вторая ошибка - решение на три абзаца. Поле «Решение» - это одна
+    формулировка. Аргументацию несут другие поля. Если хочется объяснить
+    решение - смотрите поля «Доказательства» и «Отвергнутые».
+  </p>
+
+  <div class="aside">
+    Критерий проверки: дайте запись человеку, который не был на встрече.
+    Если за две минуты чтения он может сказать, что выбрано и почему -
+    длина правильная. Если начинает листать вниз в поисках решения -
+    запись перегружена.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Глубже</h2>
+  <p>
+    Две темы, которые дополняют этот формат с разных сторон: формальный
+    цикл, в рамках которого живёт DDR, и то, что происходит с записью
+    после того, как она активирована.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="../guides/decision-cycle">
+      <div class="start-who">ФОРМАЛЬНЫЙ ЦИКЛ</div>
+      <div class="start-where">Как формулируется и проходит одно решение от черновика до активации <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/lifecycle-cycle">
+      <div class="start-who">ЖИЗНЕННЫЙ ЦИКЛ</div>
+      <div class="start-where">Что после активации DDR: stale, renew, supersede <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+  <div class="closing">
+    <p>
+      <b class="k">Главное:</b> DDR не длиннее ADR - он точнее. Две
+      секции, которые добавляет формат - доказательства и условия
+      пересмотра - превращают запись из «мы так решили» в «мы так
+      решили вот почему, и вот когда нужно проверить, не устарело ли
+      это». Именно это отличает живой журнал от архива.
+    </p>
+  </div>
+
+</main>
+</body>
+</html>

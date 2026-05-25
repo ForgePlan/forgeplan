@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADI: трёхверсионный анализ как ежедневная практика - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  .ba-cell ul, .ba-cell li { padding-left: 0; }
+  .ba-cell li::before { content: none; }
+  .ba-cell li { padding-left: 14px; }
+  .ba-cell li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--text-3); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  .audience-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 720px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 24px; }
+  .audience-card .role-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .audience-card .role-title { font-size: 17px; font-weight: 500; color: var(--text); margin: 0 0 10px; line-height: 1.3; }
+  .audience-card .role-body { font-size: 14px; color: var(--text-2); line-height: 1.55; margin: 0 0 8px; }
+  .audience-card .role-pain { font-size: 13px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-style: italic; }
+
+  .usecase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 0; }
+  @media (max-width: 960px) { .usecase-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .usecase-grid { grid-template-columns: 1fr; } }
+  .usecase-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; border-top: 2px solid var(--accent); }
+  .usecase-card .uc-domain { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .usecase-card .uc-title { font-size: 15px; font-weight: 500; color: var(--text); margin: 0 0 8px; line-height: 1.35; }
+  .usecase-card .uc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  .compare-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 24px 0 0; }
+  .compare-wrap .compare-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .compare-wrap .compare-title { font-size: 18px; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  .compare-wrap .chart-host { position: relative; height: 320px; }
+  .compare-wrap .compare-note { font-size: 12.5px; color: var(--text-3); margin-top: 14px; line-height: 1.5; max-width: 760px; }
+
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 0; }
+  @media (max-width: 720px) { .ba-grid { grid-template-columns: 1fr; } }
+  .ba-cell { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 22px; }
+  .ba-cell .ba-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .ba-cell.ba-bad .ba-head { color: var(--err); }
+  .ba-cell.ba-good .ba-head { color: var(--ok); }
+  .ba-cell ul { margin: 0; padding-left: 18px; }
+  .ba-cell li { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  .hypothesis-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0 0; }
+  @media (max-width: 900px) { .hypothesis-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .hypothesis-grid { grid-template-columns: 1fr; } }
+  .hyp-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; }
+  .hyp-card .hyp-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+  .hyp-card .hyp-title { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 8px; line-height: 1.3; }
+  .hyp-card .hyp-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+  .hyp-card .hyp-check { font-size: 12.5px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-family: var(--font-mono); }
+
+  .cycle-steps { margin: 20px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; max-width: 820px; counter-reset: cycle-counter; }
+  .cycle-step { display: flex; gap: 0; counter-increment: cycle-counter; }
+  .cycle-step-num { font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 500; min-width: 48px; padding: 18px 0 18px 0; text-align: right; padding-right: 20px; flex-shrink: 0; }
+  .cycle-step-body { background: var(--bg-1); border: 1px solid var(--line); border-radius: 0; padding: 16px 20px 18px; flex: 1; margin-bottom: 2px; }
+  .cycle-step-body::before { content: none; }
+  .cycle-step-title { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
+  .cycle-step-desc { font-size: 13.5px; color: var(--text-2); line-height: 1.6; }
+  .cycle-step-example { font-size: 12.5px; color: var(--text-3); font-family: var(--font-mono); margin-top: 8px; padding: 8px 12px; background: var(--bg-2); border-radius: 0; }
+
+  .when-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 20px 0 0; }
+  @media (max-width: 900px) { .when-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .when-grid { grid-template-columns: 1fr; } }
+  .when-card { background: var(--bg-1); border: 1px solid var(--line-2); border-top: 2px solid var(--accent); border-radius: 0; padding: 16px 18px 18px; }
+  .when-card .when-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .when-card .when-title { font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 6px; line-height: 1.3; }
+  .when-card .when-body { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+
+  .three-comparison { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0 0; }
+  @media (max-width: 800px) { .three-comparison { grid-template-columns: 1fr; } }
+  .three-col { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; }
+  .three-col .tc-count { font-family: var(--font-mono); font-size: 32px; font-weight: 500; color: var(--accent); line-height: 1; margin-bottom: 8px; }
+  .three-col .tc-label { font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 10px; }
+  .three-col .tc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+  .three-col.tc-highlight { border-color: var(--accent); }
+  .three-col.tc-highlight .tc-count { color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ADI · ОБЗОР</p>
+  <h1>ADI: трёхверсионный анализ как ежедневная практика</h1>
+  <p class="lead">
+    Хороший следователь не фиксируется на первой версии. Он выписывает несколько,
+    описывает проверяемое следствие для каждой - и только потом собирает замеры.
+    ADI (Adversarial Decision Inquiry - состязательный анализ решений) переносит
+    этот приём в инженерную практику: три версии причины, одна из которых должна
+    вас опровергнуть.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Откуда приём</h2>
+  <p>
+    В XIX веке терапевты заметили закономерность: врач, первым назвавший диагноз,
+    редко его менял - даже когда симптомы указывали в другую сторону. Первая версия
+    создаёт когнитивный коридор: всё последующее интерпретируется в её пользу.
+  </p>
+  <p>
+    Ответом стала практика дифференциальной диагностики. Прежде чем выбрать лечение,
+    врач обязан записать несколько конкурирующих объяснений симптомов - и для каждого
+    описать, какое наблюдение его подтвердит или опровергнет. Только после этого -
+    сбор данных и выбор.
+  </p>
+  <p>
+    Та же логика появилась в философии науки под именами абдукция, дедукция, индукция.
+    Абдукция - «объяснение удивительного факта», то есть построение лучшей гипотезы.
+    Дедукция - «если гипотеза верна, мы должны наблюдать X». Индукция - «мы
+    наблюдаем X, значит гипотеза подтверждена». Без первого шага (нескольких
+    конкурирующих гипотез) вся цепочка работает как самоисполняющееся пророчество.
+  </p>
+  <p>
+    В инженерной практике приём разошёлся по нескольким областям. В контроле
+    качества производства - анализ первопричин с обязательным «не менее трёх
+    возможных причин». В информационной безопасности - threat modeling, где
+    аналитик обязан рассмотреть несколько векторов атаки перед тем как решить,
+    какой закрывать. В исследовательской разработке - конкурирующие гипотезы
+    как стандарт оформления эксперимента.
+  </p>
+  <p>
+    Общее во всех версиях: <b class="k">одна версия - это не анализ, это рефлекс.</b>
+    ADI - это практика, которая переводит рефлекс в анализ.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Когда применять</h2>
+  <p>
+    ADI эффективен в ситуациях, где первая версия объяснения создаёт ложное ощущение
+    понимания. Шесть типовых контекстов.
+  </p>
+
+  <div class="when-grid">
+    <div class="when-card">
+      <div class="when-tag">ОТЛАДКА</div>
+      <div class="when-title">«Почему сервис начал падать»</div>
+      <div class="when-body">Первая версия («утечка памяти») часто оказывается правильной, но не единственной. Одновременно может быть и утечка, и гонка состояний, и деградация соседнего сервиса. Три версии помогают не остановиться на первой починке.</div>
+    </div>
+    <div class="when-card">
+      <div class="when-tag">АРХИТЕКТУРНЫЙ ВЫБОР</div>
+      <div class="when-title">«Почему наш первый вариант кажется лучшим»</div>
+      <div class="when-body">Команда предлагает решение, которое с первого взгляда кажется очевидным. ADI заставляет выписать две конкурирующие архитектуры и явно проверить, по каким критериям они хуже - а не просто принять «ну, все так делают».</div>
+    </div>
+    <div class="when-card">
+      <div class="when-tag">РЕТРОСПЕКТИВА</div>
+      <div class="when-title">«Почему задача заняла втрое больше»</div>
+      <div class="when-body">«Недооценили сложность» - ответ, который закрывает разговор и не даёт выводов. ADI разворачивает его в три конкурирующие версии: недооценили, изменились требования, были заблокированы внешне. Каждая требует разного лечения.</div>
+    </div>
+    <div class="when-card">
+      <div class="when-tag">МЕТРИКИ ПЛЫВУТ</div>
+      <div class="when-title">«Конверсия упала на 12%»</div>
+      <div class="when-body">Версии могут быть несовместимы (деградация API, изменение поведения пользователей, проблема с формой на мобильных). Без явного списка версий команда обычно проверяет первую, не находит «явного виновника» и объявляет «статистический шум».</div>
+    </div>
+    <div class="when-card">
+      <div class="when-tag">ОТКАЗ ЗАВИСИМОСТИ</div>
+      <div class="when-title">«Внешний сервис не отвечает»</div>
+      <div class="when-body">Причина может быть у поставщика, в сетевом слое, в изменении аутентификации или в нашем коде. ADI даёт порядок проверки - от самой вероятной к самой редкой - вместо хаотичного «давайте перезапустим всё подряд».</div>
+    </div>
+    <div class="when-card">
+      <div class="when-tag">РЕШЕНИЕ НЕ РАБОТАЕТ</div>
+      <div class="when-title">«Мы внедрили X, но ситуация не улучшилась»</div>
+      <div class="when-body">Версии: X неправильно имплементирован, X решает не ту проблему, проблема усилилась по другой причине. Третья версия самая неудобная - и именно её чаще всего пропускают без явного списка.</div>
+    </div>
+  </div>
+
+  <hr class="sep">
+
+  <h2>Как выглядит один цикл</h2>
+  <p>
+    Четыре шага. Цикл занимает 20-40 минут для простой ситуации, 2-3 часа для
+    сложной архитектурной. Главное - что он заканчивается конкретным действием,
+    а не расширенным обсуждением.
+  </p>
+
+  <div class="cycle-steps">
+    <div class="cycle-step">
+      <div class="cycle-step-num">01</div>
+      <div class="cycle-step-body">
+        <div class="cycle-step-title">Выписать три версии причины</div>
+        <div class="cycle-step-desc">
+          Записать три конкурирующих объяснения наблюдаемого явления. Первая -
+          та, что пришла в голову сразу. Вторая - альтернатива из другого слоя
+          (например, если первая была «баг в коде», вторая - «инфраструктурная»).
+          Третья - «неудобная»: та, которую хочется отмахнуться как маловероятную,
+          но которая объясняет все симптомы.
+        </div>
+        <div class="cycle-step-example">
+          Пример: падение времени ответа API. В1: утечка соединений с базой.
+          В2: деградация соседнего сервиса. В3: изменился паттерн трафика клиентов.
+        </div>
+      </div>
+    </div>
+    <div class="cycle-step">
+      <div class="cycle-step-num">02</div>
+      <div class="cycle-step-body">
+        <div class="cycle-step-title">Описать проверяемое следствие для каждой</div>
+        <div class="cycle-step-desc">
+          Для каждой версии - один вопрос: «если эта версия верна, что именно
+          мы должны наблюдать в данных». Следствие должно быть проверяемым:
+          конкретный показатель, конкретный диапазон. Не «счётчик ошибок вырастет»,
+          а «p95 latency вырастет при нагрузке выше 200 RPS».
+        </div>
+        <div class="cycle-step-example">
+          В1: если утечка - pool_size в метриках должен расти монотонно.
+          В2: если соседний - его latency должна коррелировать с нашей.
+          В3: если трафик - распределение по эндпоинтам изменилось в логах.
+        </div>
+      </div>
+    </div>
+    <div class="cycle-step">
+      <div class="cycle-step-num">03</div>
+      <div class="cycle-step-body">
+        <div class="cycle-step-title">Собрать замеры</div>
+        <div class="cycle-step-desc">
+          Не «посмотреть» на данные, а целенаправленно проверить следствие
+          каждой версии. Порядок - от самой дешёвой проверки к самой дорогой.
+          Важно: замеры делаются до того, как принято решение о действии.
+          Иначе действие будет по первой версии, которая кажется «очевидной».
+        </div>
+        <div class="cycle-step-example">
+          Проверили: pool_size стабилен. Latency соседнего сервиса - ровная.
+          Распределение запросов: доля тяжёлых эндпоинтов выросла с 12% до 31%.
+        </div>
+      </div>
+    </div>
+    <div class="cycle-step">
+      <div class="cycle-step-num">04</div>
+      <div class="cycle-step-body">
+        <div class="cycle-step-title">Отбросить неподтверждённые, зафиксировать вывод</div>
+        <div class="cycle-step-desc">
+          Версии, чьи следствия не подтвердились - явно отброшены с причиной.
+          Версия, чьё следствие совпало с наблюдением - принята как рабочая.
+          Если ни одна не подтвердилась - цикл повторяется с новым набором версий.
+          Вывод и отброшенные версии записываются в артефакт.
+        </div>
+        <div class="cycle-step-example">
+          Вывод: причина - смещение профиля трафика. В1 и В2 отброшены: данные
+          не совпали. Действие: оптимизировать тяжёлые эндпоинты, не трогать пул.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="aside">
+    Ключевой момент второго шага: следствие должно быть опровергающим, а не
+    подтверждающим. Не «если версия верна, мы найдём что-то похожее», а «если
+    версия верна, мы найдём именно это - и если не найдём, версия ложна».
+    Разница тонкая, но именно она отличает анализ от поиска подтверждений.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Почему именно три</h2>
+  <p>
+    Число не случайное. Есть конкретная статистическая причина, почему именно
+    три версии - а не одна, не две и не пять.
+  </p>
+
+  <div class="three-comparison">
+    <div class="three-col">
+      <div class="tc-count">1</div>
+      <div class="tc-label">Одна версия</div>
+      <div class="tc-body">
+        Это рефлекс, а не анализ. Человеческий мозг формирует первую версию
+        объяснения за доли секунды - из эвристик, паттернов, недавнего опыта.
+        Одна версия не требует усилия, не создаёт сравнения и не имеет механизма
+        самопроверки. Любые данные будут интерпретированы в её пользу.
+      </div>
+    </div>
+    <div class="three-col">
+      <div class="tc-count">2</div>
+      <div class="tc-label">Две версии</div>
+      <div class="tc-body">
+        Лучше, но создаёт ложный выбор. Психологически две версии воспринимаются
+        как бинарная дилемма: «либо А, либо Б». Команды с двумя версиями тратят
+        время на споры «чья версия правильная» вместо поиска данных. Проблема
+        может оказаться третьей, которую никто не рассмотрел.
+      </div>
+    </div>
+    <div class="three-col tc-highlight">
+      <div class="tc-count">3</div>
+      <div class="tc-label">Три версии</div>
+      <div class="tc-body">
+        Ломают коридор. Третья версия заставляет выйти за пределы первых двух
+        и рассмотреть объяснение из другого слоя. Статистически: в реальных
+        инцидентах более 60% случаев - причина не первая и не вторая версия.
+        Три версии - минимум, при котором реальная причина попадает в список.
+      </div>
+    </div>
+  </div>
+
+  <p style="margin-top: 24px;">
+    Число «три» - это не магия, это эмпирика. Четыре и пять версий тоже работают,
+    но порог усилий растёт быстрее, чем польза. На практике третья версия уже
+    даёт 80% защиты от «первая версия всегда правильная». Четвёртая и пятая -
+    для ситуаций, где ставки очень высоки.
+  </p>
+  <p>
+    Один важный нюанс: третья версия должна быть <b class="k">из другого слоя</b>,
+    а не просто вариацией первой. Если первые две - «утечка в коде» и «ещё одна
+    утечка в коде», третья должна быть инфраструктурной, продуктовой или
+    операционной. Иначе три версии остаются одним коридором, только чуть шире.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Глубже</h2>
+  <p>
+    Полный формальный разбор цикла принятия одного решения - включая то, как
+    ADI встраивается в документирование выбора и доказательную базу.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="../guides/decision-cycle">
+      <div class="start-who">ФОРМАЛЬНЫЙ ЦИКЛ</div>
+      <div class="start-where">Детальный разбор одного решения: варианты, доказательства, выбор <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/artifacts-overview">
+      <div class="start-who">АРТЕФАКТЫ</div>
+      <div class="start-where">Как вести артефакты команды: структура, ритм, живые vs мёртвые <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+</main>
+</body>
+</html>
