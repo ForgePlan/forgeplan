@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DAG Explorer · 3D-граф артефактов — ForgePlan</title>
+<title>DAG Explorer · 3D-граф артефактов - ForgePlan</title>
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
@@ -39,9 +39,9 @@
   h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
   h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
   h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
-  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
-  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
-  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
   b.k { color: var(--text); font-weight: 500; }
 
   .t-epic { color: var(--t-epic); font-weight: 500; }
@@ -54,17 +54,17 @@
 
   /* Mini-pipeline */
   .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
-  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
   .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
   .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
   .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
   .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
 
   /* 3D chart wrap */
-  .chart-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .chart-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 0; margin: 22px 0 0; overflow: hidden; }
   .chart-toolbar { background: var(--bg-2); padding: 12px 16px; border-bottom: 1px solid var(--line-2); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .toolbar-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-right: 4px; }
-  .type-toggle { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; padding: 5px 11px; border-radius: 3px; cursor: pointer; user-select: none; transition: opacity .15s, transform .15s; display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: var(--bg-3); color: var(--text-1); }
+  .type-toggle { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; padding: 5px 11px; border-radius: 0; cursor: pointer; user-select: none; transition: opacity .15s, transform .15s; display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: var(--bg-3); color: var(--text-1); }
   .type-toggle .tt-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .type-toggle .tt-count { color: var(--text-3); font-size: 10px; }
   .type-toggle.off { opacity: 0.35; }
@@ -87,18 +87,18 @@
   .chart-legend .sw.solid.triggers { border-color: var(--e-triggers); border-style: dashed; }
 
   /* Concept */
-  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
   .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
   .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
   .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
   .concept .analogy + .analogy { margin-top: 12px; }
 
-  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
   .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
   .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
 
   /* Layers explanation */
-  .layers { display: grid; grid-template-columns: 60px 1fr; gap: 0; margin: 22px 0 0; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+  .layers { display: grid; grid-template-columns: 60px 1fr; gap: 0; margin: 22px 0 0; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; }
   .layers-y { background: var(--bg-3); display: flex; flex-direction: column; }
   .y-mark { padding: 14px 12px; border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; color: var(--text-3); text-align: right; flex: 1; display: flex; align-items: center; justify-content: flex-end; }
   .y-mark:last-child { border-bottom: none; }
@@ -107,7 +107,7 @@
   .layer-row:last-child { border-bottom: none; }
   .layer-row .l-desc { font-size: 13.5px; color: var(--text-1); line-height: 1.55; }
   .layer-row .l-desc .l-types { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); letter-spacing: 0.04em; margin-top: 2px; }
-  .layer-row .l-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; border-radius: 3px; }
+  .layer-row .l-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; border-radius: 0; }
   .layer-row.namerenie .l-tag { background: rgba(255, 90, 31, 0.14); color: var(--t-epic); }
   .layer-row.obsuzhdenie .l-tag { background: rgba(96, 165, 250, 0.14); color: var(--t-prd); }
   .layer-row.reshenie .l-tag { background: rgba(192, 132, 252, 0.14); color: var(--t-adr); }
@@ -115,24 +115,24 @@
 
   /* Patterns */
   .patterns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
-  .pattern-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px 18px; }
+  .pattern-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
   .pattern-card .pc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
   .pattern-card .pc-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 10px; line-height: 1.35; }
   .pattern-card .pc-desc { font-size: 13px; color: var(--text-2); line-height: 1.55; margin-bottom: 12px; }
-  .pattern-card .pc-shape { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); line-height: 1.7; padding: 10px 12px; background: var(--bg-1); border-radius: 4px; }
+  .pattern-card .pc-shape { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); line-height: 1.7; padding: 10px 12px; background: var(--bg-1); border-radius: 0; }
 
   /* Cross-links */
   .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
-  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; position: relative; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
   .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
   .next-step h3 { font-size: 15.5px; line-height: 1.3; }
   .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
-  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
   .next-step a.ns-link:hover { background: var(--accent-bg); }
 
-  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
   .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
   .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
   .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
@@ -156,10 +156,10 @@
   <p class="eyebrow">Цикл проектного графа · интерактив</p>
   <h1>DAG Explorer · артефакты в 3D</h1>
   <p class="lead">
-    Каждый артефакт в проекте — узел. Каждая связь между ними (parent / informs / triggers) —
+    Каждый артефакт в проекте - узел. Каждая связь между ними (parent / informs / triggers) -
     ребро. В сумме это <b class="k">направленный ациклический граф</b> (DAG), который показывает,
     откуда взялось каждое решение. Когда артефактов 20+ и связей 50+, читать его текстом
-    невозможно. Эта страница рендерит реальный пример проекта в 3D — крутите мышью, прячьте
+    невозможно. Эта страница рендерит реальный пример проекта в 3D - крутите мышью, прячьте
     типы кнопками сверху, наводитесь на узлы для деталей.
   </p>
 
@@ -187,7 +187,7 @@
   <!-- 3D CHART -->
   <h2>Knowledge Vault MVP · реальный проектный граф</h2>
   <p>
-    Сценарий: Vault — приложение для заметок. Один Epic, четыре PRD под ним, RFC-обсуждения для
+    Сценарий: Vault - приложение для заметок. Один Epic, четыре PRD под ним, RFC-обсуждения для
     каждого, ADR-решения, Spec-контракты, Evidence-замеры, плюс Problem, который запустил одну
     из PRD. Всего <b class="k">22 артефакта и 30 связей</b>. Сцена крутится, узлы наведения
     показывают полный frontmatter, кнопки сверху прячут типы.
@@ -214,7 +214,7 @@
 
   <!-- LAYERS -->
   <h2>Раскладка по слоям · что читается на Y-оси</h2>
-  <p>Высота узла на сцене — это уровень в DAG. Чем выше, тем абстрактнее (намерение); чем ниже, тем конкретнее (доказательство).</p>
+  <p>Высота узла на сцене - это уровень в DAG. Чем выше, тем абстрактнее (намерение); чем ниже, тем конкретнее (доказательство).</p>
   <div class="layers">
     <div class="layers-y">
       <div class="y-mark">y = 4</div>
@@ -226,19 +226,19 @@
     </div>
     <div class="layers-body">
       <div class="layer-row namerenie">
-        <div class="l-desc">Стратегическая цель проекта — что вообще делаем<br><span class="l-types"><span class="t-epic">EPIC</span></span></div>
+        <div class="l-desc">Стратегическая цель проекта - что вообще делаем<br><span class="l-types"><span class="t-epic">EPIC</span></span></div>
         <span class="l-tag">намерение</span>
       </div>
       <div class="layer-row namerenie">
-        <div class="l-desc">Продуктовые требования — что строим и для кого<br><span class="l-types"><span class="t-prd">PRD</span></span></div>
+        <div class="l-desc">Продуктовые требования - что строим и для кого<br><span class="l-types"><span class="t-prd">PRD</span></span></div>
         <span class="l-tag">намерение</span>
       </div>
       <div class="layer-row">
-        <div class="l-desc">Сигналы, которые запустили работу — баги, риски, наблюдения<br><span class="l-types"><span class="t-prob">PROB</span></span></div>
+        <div class="l-desc">Сигналы, которые запустили работу - баги, риски, наблюдения<br><span class="l-types"><span class="t-prob">PROB</span></span></div>
         <span class="l-tag" style="background: rgba(239, 68, 68, 0.14); color: var(--t-prob);">сигнал</span>
       </div>
       <div class="layer-row obsuzhdenie">
-        <div class="l-desc">Архитектурные обсуждения — какие альтернативы рассматриваем<br><span class="l-types"><span class="t-rfc">RFC</span></span></div>
+        <div class="l-desc">Архитектурные обсуждения - какие альтернативы рассматриваем<br><span class="l-types"><span class="t-rfc">RFC</span></span></div>
         <span class="l-tag">обсуждение</span>
       </div>
       <div class="layer-row reshenie">
@@ -255,21 +255,21 @@
   <div class="insight">
     <div class="insight-tag">Стрелки идут снизу вверх для evidence</div>
     <p>
-      <b class="k">Структурная</b> иерархия (parent) — Epic сверху, остальное под ним. Серые
-      тонкие линии. <b class="k">Информационные</b> связи (informs) идут <i>снизу вверх</i> —
+      <b class="k">Структурная</b> иерархия (parent) - Epic сверху, остальное под ним. Серые
+      тонкие линии. <b class="k">Информационные</b> связи (informs) идут <i>снизу вверх</i> -
       от Evidence к ADR/SPEC. Оранжевые линии. <b class="k">Триггер-связи</b> (triggers) от
-      Problem к PRD — пунктирные красные, событие запустило цепочку.
+      Problem к PRD - пунктирные красные, событие запустило цепочку.
     </p>
   </div>
 
   <!-- PATTERNS -->
   <h2>Что видно в графе · паттерны для чтения</h2>
-  <p>Когда вы крутите сцену, обратите внимание на типичные конфигурации — они показывают здоровье решения сразу.</p>
+  <p>Когда вы крутите сцену, обратите внимание на типичные конфигурации - они показывают здоровье решения сразу.</p>
   <div class="patterns">
     <div class="pattern-card">
       <div class="pc-tag">паттерн A · здоровая цепочка</div>
       <div class="pc-title">PRD → RFC → ADR ← Evidence</div>
-      <div class="pc-desc">Требование породило обсуждение, обсуждение — решение, решение подкреплено хотя бы одним evidence. R_eff &gt; 0, активация легитимна.</div>
+      <div class="pc-desc">Требование породило обсуждение, обсуждение - решение, решение подкреплено хотя бы одним evidence. R_eff &gt; 0, активация легитимна.</div>
       <div class="pc-shape">EPIC<br>  └─ PRD-001<br>     └─ RFC-001<br>        └─ ADR-001 ← EVID-001</div>
     </div>
     <div class="pattern-card">
@@ -281,7 +281,7 @@
     <div class="pattern-card">
       <div class="pc-tag">паттерн C · orphan</div>
       <div class="pc-title">RFC без PRD</div>
-      <div class="pc-desc">Обсуждение существует, но не связано с продуктовым требованием. Сирота — либо забыли линкануть parent, либо RFC устарел.</div>
+      <div class="pc-desc">Обсуждение существует, но не связано с продуктовым требованием. Сирота - либо забыли линкануть parent, либо RFC устарел.</div>
       <div class="pc-shape">RFC-XXX<br>  · нет parent<br>  · нет children<br>  · кандидат на supersede/deprecate</div>
     </div>
     <div class="pattern-card">
@@ -290,40 +290,6 @@
       <div class="pc-desc">Одно требование породило несколько архитектурных решений по разным аспектам. Нормально для Critical-depth. Каждый ADR со своим evidence-набором.</div>
       <div class="pc-shape">PRD-002<br>  ├─ RFC-002a → ADR-002a<br>  └─ RFC-002b → ADR-002b</div>
     </div>
-  </div>
-
-  <!-- CROSS-LINKS -->
-  <h2>Связанные разборы</h2>
-  <div class="cross-links">
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">Цикл проекта</span>
-        <h3>Forgeplan как operational layer</h3>
-      </div>
-      <p>Откуда берутся типы артефактов и как они связаны через frontmatter. Если граф выше не очевиден — начните с теории.</p>
-      <a class="ns-link" href="forgeplan-cycle.html">→ открыть</a>
-    </div>
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">Цикл спеки</span>
-        <h3>Spec · Delta · R_eff</h3>
-      </div>
-      <p>Что значит каждая связь от Evidence к ADR. F-G-R, verdict, CL, R_eff = min(scores). Без этого паттерны B и C в графе непрозрачны.</p>
-      <a class="ns-link" href="spec-cycle.html">→ открыть</a>
-    </div>
-  </div>
-
-  <!-- READER WALKTHROUGH -->
-  <h2>Как читать этот разбор</h2>
-  <div class="teaching">
-    <ol>
-      <li><b>Сначала найдите EPIC сверху сцены.</b> Это «макушка пирамиды» — стратегическая цель проекта. Под ней — четыре PRD на одной высоте. Это и есть «намерение».</li>
-      <li><b>Поверните сцену так, чтобы видеть Y-ось как высоту.</b> Структура раскладки очевидна: чем ниже узел, тем конкретнее. Evidence — на самом дне, потому что это «земля», к которой апеллируют решения.</li>
-      <li><b>Покликайте кнопки типов сверху.</b> Спрячьте Evidence — и сразу видно «скелет» проекта: только намерения и решения. Спрячьте RFC — увидите, что без обсуждения цепочка PRD→ADR не строится.</li>
-      <li><b>Найдите оранжевую линию снизу вверх.</b> Это <code>informs</code>: evidence подкрепляет ADR. Без хотя бы одной такой линии у ADR — R_eff = 0, blindspot.</li>
-      <li><b>Найдите красную пунктирную.</b> Это <code>triggers</code>: PROB-001 запустил создание PRD-004. Реальная связь «проблема → требование» — она видна и не теряется в Slack.</li>
-      <li><b>Подведите курсор к любому узлу.</b> Tooltip покажет полный frontmatter артефакта — id, type, depth, status, related_artifacts. Это та самая «трейсируемость», которая через год отвечает на «почему мы выбрали именно так».</li>
-    </ol>
   </div>
 
   <div class="footer">
@@ -350,7 +316,7 @@
     { id: 'PROB-001', type: 'PROB', label: 'Search slow at 50k',  x: 4,    y: 2.5, z: 0.2,  depth: '-',        status: 'active',     summary: 'p95 search latency exceeded 200ms at 50k notes', related: [] },
 
     // Layer 2: RFCs
-    { id: 'RFC-001',  type: 'RFC',  label: 'Storage backend',     x: -4,   y: 2,   z: -2,   depth: 'standard', status: 'superseded', summary: 'SQLite vs PostgreSQL vs LMDB — three options', related: ['PRD-001'] },
+    { id: 'RFC-001',  type: 'RFC',  label: 'Storage backend',     x: -4,   y: 2,   z: -2,   depth: 'standard', status: 'superseded', summary: 'SQLite vs PostgreSQL vs LMDB - three options', related: ['PRD-001'] },
     { id: 'RFC-002',  type: 'RFC',  label: 'Tag data model',      x: -1.5, y: 2,   z: 2,    depth: 'standard', status: 'active',     summary: 'JSON column vs junction table vs hierarchy', related: ['PRD-002'] },
     { id: 'RFC-003',  type: 'RFC',  label: 'Streaming protocol',  x: 1.5,  y: 2,   z: -2,   depth: 'deep',     status: 'active',     summary: 'SSE vs WebSockets vs HTTP/2 push', related: ['PRD-003'] },
     { id: 'RFC-004',  type: 'RFC',  label: 'Search architecture', x: 4,    y: 2,   z: 2,    depth: 'deep',     status: 'active',     summary: 'BM25-only vs vec-only vs RRF hybrid', related: ['PRD-004'] },
@@ -402,7 +368,7 @@
         const p = byId[parentId];
         if (!p || !visibleTypes.has(p.type)) return;
         // Direction: child to parent (parent on top, child below pulls toward)
-        // For ADR/SPEC related to RFC etc — structural
+        // For ADR/SPEC related to RFC etc - structural
         parentX.push(a.x, p.x, null);
         parentY.push(a.y, p.y, null);
         parentZ.push(a.z, p.z, null);

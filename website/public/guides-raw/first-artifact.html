@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>First Artifact · 20-минутный walkthrough — ForgePlan</title>
+<title>First Artifact · 20-минутный walkthrough - ForgePlan</title>
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
@@ -25,18 +25,18 @@
   .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
   h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
   h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
-  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
-  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
-  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
   b.k { color: var(--text); font-weight: 500; }
 
   /* Progress bar */
-  .progress-wrap { margin: 22px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 20px; }
+  .progress-wrap { margin: 22px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; }
   .progress-meta { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
   .progress-meta .pm-current { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
   .progress-meta .pm-total { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
   .progress-steps { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
-  .ps-step { height: 6px; background: var(--bg-3); border-radius: 3px; transition: background .3s; cursor: pointer; }
+  .ps-step { height: 6px; background: var(--bg-3); border-radius: 0; transition: background .3s; cursor: pointer; }
   .ps-step:hover { background: var(--bg-2); }
   .ps-step.done { background: var(--ok); opacity: 0.7; }
   .ps-step.current { background: var(--accent); }
@@ -44,7 +44,7 @@
   .progress-labels .pl { padding: 0 2px; }
 
   /* ============ Tutorial container ============ */
-  .tutorial { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; margin: 18px 0 0; overflow: hidden; }
+  .tutorial { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; margin: 18px 0 0; overflow: hidden; }
   .tutorial-head { background: var(--bg-2); padding: 18px 24px; border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
   .tutorial-head .th-step { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
   .tutorial-head .th-title { font-size: 20px; color: var(--text); font-weight: 500; line-height: 1.3; }
@@ -58,10 +58,10 @@
   @media (max-width: 900px) { .tut-left { border-right: none; border-bottom: 1px solid var(--line-2); } }
   .tut-desc { font-size: 14.5px; color: var(--text-1); line-height: 1.6; margin-bottom: 16px; }
   .tut-desc p { margin-bottom: 12px; color: var(--text-1); }
-  .tut-cmd-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 4px; padding: 12px 14px; margin: 14px 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--accent-soft); position: relative; }
+  .tut-cmd-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 12px 14px; margin: 14px 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--accent-soft); position: relative; }
   .tut-cmd-block .tcb-prompt { color: var(--text-3); margin-right: 6px; }
 
-  .tut-error { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: 0 4px 4px 0; padding: 12px 14px; margin: 14px 0 0; }
+  .tut-error { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: 0; padding: 12px 14px; margin: 14px 0 0; }
   .tut-error summary { cursor: pointer; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--warn); user-select: none; outline: none; }
   .tut-error summary::-webkit-details-marker { display: none; }
   .tut-error summary::before { content: "▶"; display: inline-block; margin-right: 8px; transition: transform .2s; font-size: 8px; }
@@ -69,7 +69,7 @@
   .tut-error[open] summary { margin-bottom: 10px; }
   .tut-error .te-body { font-size: 13px; color: var(--text-1); line-height: 1.55; }
   .tut-error .te-body code { background: var(--bg-3); color: var(--err); }
-  .tut-error .te-fix { font-family: var(--font-mono); font-size: 12px; color: var(--ok); padding: 8px 10px; background: rgba(34, 197, 94, 0.06); border-radius: 3px; margin-top: 8px; }
+  .tut-error .te-fix { font-family: var(--font-mono); font-size: 12px; color: var(--ok); padding: 8px 10px; background: rgba(34, 197, 94, 0.06); border-radius: 0; margin-top: 8px; }
 
   /* Right column: terminal + workspace state */
   .tut-right { background: var(--bg); padding: 0; display: flex; flex-direction: column; }
@@ -96,7 +96,7 @@
   .ws-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 0; font-size: 12.5px; }
   .ws-row .ws-name { font-family: var(--font-mono); color: var(--text-1); }
   .ws-row .ws-name.id { color: var(--text-3); }
-  .ws-row .ws-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; }
+  .ws-row .ws-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; }
   .ws-row .ws-status.draft  { background: rgba(163, 163, 163, 0.18); color: var(--text-1); }
   .ws-row .ws-status.active { background: rgba(34, 197, 94, 0.14); color: #86efac; }
   .ws-row .ws-status.reff   { background: rgba(255, 90, 31, 0.14); color: var(--accent); }
@@ -104,7 +104,7 @@
 
   /* Nav buttons */
   .tut-nav { background: var(--bg-2); padding: 14px 24px; border-top: 1px solid var(--line-2); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
-  .tut-btn { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 10px 18px; border-radius: 3px; cursor: pointer; user-select: none; transition: all .15s; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--line-2); }
+  .tut-btn { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 10px 18px; border-radius: 0; cursor: pointer; user-select: none; transition: all .15s; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--line-2); }
   .tut-btn:hover { border-color: var(--accent); color: var(--accent); }
   .tut-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   .tut-btn.primary:hover { background: var(--accent-soft); border-color: var(--accent-soft); color: #fff; }
@@ -113,7 +113,7 @@
   .tut-btn-group { display: flex; gap: 8px; }
 
   /* Completion screen */
-  .completion { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .completion { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
   .completion .comp-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ok); margin-bottom: 8px; }
   .completion h3 { font-size: 22px; color: var(--text); font-weight: 500; margin: 0 0 14px; }
   .completion p { font-size: 15px; color: var(--text-1); line-height: 1.6; max-width: 760px; }
@@ -123,13 +123,13 @@
 
   /* Cross-links */
   .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
-  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; position: relative; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
   .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
   .next-step h3 { font-size: 15.5px; line-height: 1.3; }
   .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
-  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
   .next-step a.ns-link:hover { background: var(--accent-bg); }
 
   .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
@@ -151,9 +151,9 @@
     Полный цикл от пустого репозитория до активированного PRD с подтверждённой надёжностью.
     Реальная функция (<code>--dry-run</code> флаг для <code>forgeplan new</code>) проходит
     через <b class="k">10 шагов</b>: routing → создание → проверка → разбор гипотез → сбор
-    доказательств → активация. На каждом шаге — терминал-симулятор с реальным выводом,
+    доказательств → активация. На каждом шаге - терминал-симулятор с реальным выводом,
     типичные ошибки с фиксом, и панель состояния вашего рабочего пространства справа.
-    Кликайте «дальше» — увидите, как растёт проект артефактов.
+    Кликайте «дальше» - увидите, как растёт проект артефактов.
   </p>
 
   <!-- Progress bar -->
@@ -233,34 +233,13 @@
     <p>За 10 шагов вы прошли полный цикл Forgeplan: routing → shape → validate → reason → build → prove → activate. PRD-001 теперь активен, R_eff = 1.00, проект здоров.</p>
     <p style="margin-top: 18px; font-weight: 500; color: var(--text);">Что вы освоили:</p>
     <ul>
-      <li><b>Route first.</b> Не начали с кода — спросили инструмент, какой глубины задача</li>
+      <li><b>Route first.</b> Не начали с кода - спросили инструмент, какой глубины задача</li>
       <li><b>Shape before code.</b> PRD зафиксировал «зачем» и «что» до единой строки реализации</li>
       <li><b>Validate early.</b> Проверка поймала implementation leakage и пустые секции до того, как они стали привычкой</li>
-      <li><b>Reason with ADI.</b> Сгенерировали альтернативы до решения — так избегаете «жаль, не подумали»</li>
-      <li><b>Prove with evidence.</b> R_eff — не украшение, это число, которое говорит, можно ли доверять собственному решению</li>
-      <li><b>Activate when ready.</b> Точка невозврата защищает от «активных PRD без кода» — ложного обещания будущим читателям</li>
+      <li><b>Reason with ADI.</b> Сгенерировали альтернативы до решения - так избегаете «жаль, не подумали»</li>
+      <li><b>Prove with evidence.</b> R_eff - не украшение, это число, которое говорит, можно ли доверять собственному решению</li>
+      <li><b>Activate when ready.</b> Точка невозврата защищает от «активных PRD без кода» - ложного обещания будущим читателям</li>
     </ul>
-  </div>
-
-  <!-- Cross-links -->
-  <h2>Что почитать дальше</h2>
-  <div class="cross-links">
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">Теория</span>
-        <h3>Forgeplan as operational layer</h3>
-      </div>
-      <p>Полный разбор: 10 типов артефактов, depth-routing, quality gates, активация как точка невозврата. То же самое, что вы только что прошли, но в теоретической перспективе.</p>
-      <a class="ns-link" href="forgeplan-cycle.html">→ открыть</a>
-    </div>
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">Интерактив</span>
-        <h3>Depth Calibrator</h3>
-      </div>
-      <p>Калькулятор routing с тремя слайдерами и тремя гейтами. Подвиньте — увидите, как меняется depth tier и pipeline. То, что делает <code>forgeplan route</code>, но интерактивно.</p>
-      <a class="ns-link" href="depth-calibrator.html">→ открыть</a>
-    </div>
   </div>
 
   <div class="footer">
@@ -275,31 +254,31 @@
   const steps = [
     {
       tag: 'init', title: 'Инициализация рабочего пространства', time: '~1 минута',
-      desc: '<p>Forgeplan живёт в каталоге <code>.forgeplan/</code> вашего проекта. Команда <code>forgeplan init -y</code> создаёт структуру: каталоги под PRD, RFC, ADR, evidence, и config-файл.</p><p>Флаг <code>-y</code> — non-interactive режим: соглашаемся со всеми дефолтами. Для tutorial берём throwaway-каталог, чтобы не смешать с реальным проектом.</p>',
+      desc: '<p>Forgeplan живёт в каталоге <code>.forgeplan/</code> вашего проекта. Команда <code>forgeplan init -y</code> создаёт структуру: каталоги под PRD, RFC, ADR, evidence, и config-файл.</p><p>Флаг <code>-y</code> - non-interactive режим: соглашаемся со всеми дефолтами. Для tutorial берём throwaway-каталог, чтобы не смешать с реальным проектом.</p>',
       cmd: 'forgeplan init -y',
       output: '<span class="to-prompt">$</span> mkdir ~/forgeplan-tutorial &amp;&amp; cd ~/forgeplan-tutorial\n<span class="to-prompt">$</span> forgeplan init -y\n\n<span class="to-ok">✓</span> Initialized .forgeplan/ workspace at /Users/you/forgeplan-tutorial/.forgeplan\n  <span class="to-key">Created:</span> prds/, rfcs/, adrs/, evidence/, notes/, problems/, ...\n  <span class="to-key">Created:</span> config.yaml\n<span class="to-val">Ready.</span>\n\n<span class="to-emph">Next:</span> forgeplan health',
-      error: { summary: 'Если каталог уже инициализирован', body: '<code>Error: .forgeplan/ already exists</code> — вы запустили init во второй раз или в каталоге с уже существующим workspace.<div class="te-fix">$ cd elsewhere &amp;&amp; mkdir new-dir &amp;&amp; cd new-dir &amp;&amp; forgeplan init -y</div>На реальном проекте перед удалением: <code>forgeplan export --output backup.json</code>.' },
+      error: { summary: 'Если каталог уже инициализирован', body: '<code>Error: .forgeplan/ already exists</code> - вы запустили init во второй раз или в каталоге с уже существующим workspace.<div class="te-fix">$ cd elsewhere &amp;&amp; mkdir new-dir &amp;&amp; cd new-dir &amp;&amp; forgeplan init -y</div>На реальном проекте перед удалением: <code>forgeplan export --output backup.json</code>.' },
       workspace: { artifacts: [] }
     },
     {
       tag: 'health', title: 'Проверка здоровья пустого workspace', time: '~30 секунд',
-      desc: '<p>Сразу после <code>init</code> запускаем <code>forgeplan health</code>, чтобы убедиться, что workspace настроен правильно. На пустом проекте — 0 артефактов, 0 пробелов. Это базовая привычка: запускать <code>health</code> в начале каждой сессии.</p>',
+      desc: '<p>Сразу после <code>init</code> запускаем <code>forgeplan health</code>, чтобы убедиться, что workspace настроен правильно. На пустом проекте - 0 артефактов, 0 пробелов. Это базовая привычка: запускать <code>health</code> в начале каждой сессии.</p>',
       cmd: 'forgeplan health',
-      output: '<span class="to-prompt">$</span> forgeplan health\n\n<span class="to-key">Project Health</span>\n  <span class="to-key">Total artifacts:</span> 0\n  <span class="to-key">Blind spots:</span>    0\n  <span class="to-key">Orphans:</span>         0\n  <span class="to-key">Stale:</span>           0\n  <span class="to-key">Status:</span> <span class="to-ok">OK</span> — empty workspace\n\n<span class="to-emph">Next:</span> forgeplan route "your task"',
+      output: '<span class="to-prompt">$</span> forgeplan health\n\n<span class="to-key">Project Health</span>\n  <span class="to-key">Total artifacts:</span> 0\n  <span class="to-key">Blind spots:</span>    0\n  <span class="to-key">Orphans:</span>         0\n  <span class="to-key">Stale:</span>           0\n  <span class="to-key">Status:</span> <span class="to-ok">OK</span> - empty workspace\n\n<span class="to-emph">Next:</span> forgeplan route "your task"',
       error: null,
       workspace: { artifacts: [] }
     },
     {
-      tag: 'route', title: 'Routing — какой глубины задача', time: '~30 секунд',
-      desc: '<p>Перед написанием PRD спрашиваем у инструмента, какая depth-уровень нужен для нашей задачи. Описываем задачу обычным языком — Forgeplan возвращает рекомендацию.</p><p>Наша задача: добавить флаг <code>--dry-run</code> в <code>forgeplan new</code>, чтобы пользователь мог посмотреть, что будет создано, без записи на диск. Должно получиться <span class="to-emph" style="background: var(--bg-3); padding: 1px 6px; border-radius: 3px;">Standard</span>.</p>',
+      tag: 'route', title: 'Routing - какой глубины задача', time: '~30 секунд',
+      desc: '<p>Перед написанием PRD спрашиваем у инструмента, какая depth-уровень нужен для нашей задачи. Описываем задачу обычным языком - Forgeplan возвращает рекомендацию.</p><p>Наша задача: добавить флаг <code>--dry-run</code> в <code>forgeplan new</code>, чтобы пользователь мог посмотреть, что будет создано, без записи на диск. Должно получиться <span class="to-emph" style="background: var(--bg-3); padding: 1px 6px; border-radius: 0;">Standard</span>.</p>',
       cmd: 'forgeplan route "add --dry-run flag to forgeplan new for preview"',
       output: '<span class="to-prompt">$</span> forgeplan route <span class="to-val">"add --dry-run flag to forgeplan new for preview"</span>\n\n<span class="to-key">Task:</span> add --dry-run flag to forgeplan new for preview\n<span class="to-key">Depth:</span>      <span class="to-emph">Standard</span>\n<span class="to-key">Pipeline:</span>   PRD → RFC\n<span class="to-key">Confidence:</span> 82%\n<span class="to-key">Signals:</span>\n  + new feature (not a fix)\n  + CLI UX surface change\n  + multiple possible implementations\n\n<span class="to-key">Recommendation:</span>\n  1. forgeplan new prd "CLI dry-run flag"\n  2. Fill MUST sections (Problem, Goals, FR)\n  3. forgeplan reason PRD-XXX  (recommended at Standard)\n\n<span class="to-emph">Next:</span> forgeplan new prd "CLI dry-run flag"',
-      error: { summary: 'Если router сказал Tactical', body: 'Иногда router возвращает <code>Tactical</code> для задач, которые на самом деле Standard (новая фича с CLI-surface изменением — частый пример). В tutorial-режиме переопределяем на Standard, чтобы пройти полный цикл.<div class="te-fix">Игнорируйте Tactical-вердикт, продолжайте как Standard</div>' },
+      error: { summary: 'Если router сказал Tactical', body: 'Иногда router возвращает <code>Tactical</code> для задач, которые на самом деле Standard (новая фича с CLI-surface изменением - частый пример). В tutorial-режиме переопределяем на Standard, чтобы пройти полный цикл.<div class="te-fix">Игнорируйте Tactical-вердикт, продолжайте как Standard</div>' },
       workspace: { artifacts: [] }
     },
     {
       tag: 'new', title: 'Создание PRD с шаблоном', time: '~2 минуты',
-      desc: '<p>Команда <code>forgeplan new prd</code> создаёт файл с готовыми секциями — Problem, Goals, Non-Goals, Target Users, Functional Requirements. Ваша работа — заполнить их по существу.</p><p>В реальном tutorial вы открываете файл в редакторе и пишете содержимое. Здесь покажу, что должно получиться: каждая секция в формате <code>[Actor] can [capability]</code>, без implementation leakage.</p>',
+      desc: '<p>Команда <code>forgeplan new prd</code> создаёт файл с готовыми секциями - Problem, Goals, Non-Goals, Target Users, Functional Requirements. Ваша работа - заполнить их по существу.</p><p>В реальном tutorial вы открываете файл в редакторе и пишете содержимое. Здесь покажу, что должно получиться: каждая секция в формате <code>[Actor] can [capability]</code>, без implementation leakage.</p>',
       cmd: 'forgeplan new prd "CLI dry-run flag"',
       output: '<span class="to-prompt">$</span> forgeplan new prd <span class="to-val">"CLI dry-run flag"</span>\n\n<span class="to-ok">✓</span> Created: PRD-001\n  <span class="to-key">Path:</span> .forgeplan/prds/PRD-001-cli-dry-run-flag.md\n  <span class="to-key">Status:</span> draft\n\n<span class="to-comment"># Откройте файл, заполните MUST секции:</span>\n<span class="to-comment">#   ## Problem</span>\n<span class="to-comment">#   ## Goals</span>\n<span class="to-comment">#   ## Non-Goals</span>\n<span class="to-comment">#   ## Target Users</span>\n<span class="to-comment">#   ## Functional Requirements</span>\n\n<span class="to-emph">Next:</span> forgeplan validate PRD-001',
       error: null,
@@ -307,34 +286,34 @@
     },
     {
       tag: 'validate', title: 'Проверка PRD на качество', time: '~2 минуты',
-      desc: '<p>Команда <code>forgeplan validate</code> запускает 30+ правил проверки: все ли MUST-секции на месте, нет ли implementation leakage в требованиях (упомянуты технологии вместо capabilities), нет ли filler-фраз, есть ли измеримые критерии.</p><p>В первый раз почти всегда есть ошибки. Это нормально — проверка ловит то, что глаз пропускает.</p>',
+      desc: '<p>Команда <code>forgeplan validate</code> запускает 30+ правил проверки: все ли MUST-секции на месте, нет ли implementation leakage в требованиях (упомянуты технологии вместо capabilities), нет ли filler-фраз, есть ли измеримые критерии.</p><p>В первый раз почти всегда есть ошибки. Это нормально - проверка ловит то, что глаз пропускает.</p>',
       cmd: 'forgeplan validate PRD-001',
       output: '<span class="to-prompt">$</span> forgeplan validate PRD-001\n\n<span class="to-err">PRD-001: FAIL ✗</span>\n  <span class="to-key">MUST errors:</span> 2\n  <span class="to-key">SHOULD warnings:</span> 1\n\n<span class="to-err">  ✗ MUST</span> implementation leakage in FR2\n      строка: "Use JSON output with serde"\n      <span class="to-comment">→ переписать как "User can see structured output"</span>\n\n<span class="to-err">  ✗ MUST</span> vague goal "system should be fast"\n      строка: G3\n      <span class="to-comment">→ заменить на измеримое (например "p99 &lt; 50ms на 1000 заметках")</span>\n\n<span class="to-warn">  ⚠ SHOULD</span> density: Problem section is terse (2 sentences)\n\n<span class="to-emph">Fix:</span> отредактируйте PRD-001, затем запустите forgeplan validate PRD-001',
-      error: { summary: 'После починки — повторите validate', body: 'После каждой правки запускайте <code>forgeplan validate PRD-001</code> заново — это итеративный процесс. Цель — <code>PASS ✓</code> с 0 MUST-ошибок.<div class="te-fix">$ forgeplan validate PRD-001 # повторяем, пока PASS</div>Aliases для секций работают: <code>## Motivation</code> = <code>## Problem</code>, <code>## Success Criteria</code> = <code>## Goals</code>.' },
+      error: { summary: 'После починки - повторите validate', body: 'После каждой правки запускайте <code>forgeplan validate PRD-001</code> заново - это итеративный процесс. Цель - <code>PASS ✓</code> с 0 MUST-ошибок.<div class="te-fix">$ forgeplan validate PRD-001 # повторяем, пока PASS</div>Aliases для секций работают: <code>## Motivation</code> = <code>## Problem</code>, <code>## Success Criteria</code> = <code>## Goals</code>.' },
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
       tag: 'reason', title: 'ADI · разбор с тремя гипотезами', time: '~3 минуты',
-      desc: '<p>На Standard ADI рекомендован, на Deep+ — обязателен. Команда <code>forgeplan reason</code> запускает цикл Abduction → Deduction → Induction: выписать минимум 3 гипотезы, для каждой описать проверяемое следствие, сверить с фактами.</p><p>Если в <code>.forgeplan/config.yaml</code> настроен LLM-провайдер — генерация автоматическая. Без LLM — заготовка с пустыми слотами, заполняете руками.</p>',
+      desc: '<p>На Standard ADI рекомендован, на Deep+ - обязателен. Команда <code>forgeplan reason</code> запускает цикл Abduction → Deduction → Induction: выписать минимум 3 гипотезы, для каждой описать проверяемое следствие, сверить с фактами.</p><p>Если в <code>.forgeplan/config.yaml</code> настроен LLM-провайдер - генерация автоматическая. Без LLM - заготовка с пустыми слотами, заполняете руками.</p>',
       cmd: 'forgeplan reason PRD-001',
-      output: '<span class="to-prompt">$</span> forgeplan reason PRD-001\n\n<span class="to-key">ADI cycle for PRD-001</span>\n<span class="to-key">─────────────────────</span>\n<span class="to-key">Abduction</span> — 3 гипотезы:\n  H1: --dry-run флаг короткого замыкания записи файла\n  H2: Отдельная команда `forgeplan preview new`\n  H3: Интерактивный prompt подтверждения (y/n)\n\n<span class="to-key">Deduction</span> — предсказания для каждой:\n  H1: минимальное изменение, 1 ветка в `new`\n  H2: дискаверабельно через --help, дублирует логику шаблона\n  H3: ломает AI-agent workflow (нарушает -y контракт)\n\n<span class="to-key">Induction</span> — сверка с фактами:\n  H1: <span class="to-ok">supports</span> — паттерн уже в `init -y`\n  H2: <span class="to-warn">weakens</span> — дублирование не оправдано\n  H3: <span class="to-err">refutes</span> — нарушает MUST из CLAUDE.md\n\n<span class="to-emph">Рекомендация:</span> H1\n<span class="to-emph">Confidence:</span> 0.87\n\n<span class="to-emph">Next:</span> implement H1, then create evidence',
-      error: { summary: 'Если нет LLM-провайдера', body: '<code>Error: no LLM provider configured</code> — добавьте provider блок в <code>.forgeplan/config.yaml</code>, либо заполните 3 гипотезы руками в PRD под секцией <code>## Reasoning</code>.<div class="te-fix">Для tutorial допустимо обойтись без LLM — ценность в мышлении, а не в выводе</div>' },
+      output: '<span class="to-prompt">$</span> forgeplan reason PRD-001\n\n<span class="to-key">ADI cycle for PRD-001</span>\n<span class="to-key">─────────────────────</span>\n<span class="to-key">Abduction</span> - 3 гипотезы:\n  H1: --dry-run флаг короткого замыкания записи файла\n  H2: Отдельная команда `forgeplan preview new`\n  H3: Интерактивный prompt подтверждения (y/n)\n\n<span class="to-key">Deduction</span> - предсказания для каждой:\n  H1: минимальное изменение, 1 ветка в `new`\n  H2: дискаверабельно через --help, дублирует логику шаблона\n  H3: ломает AI-agent workflow (нарушает -y контракт)\n\n<span class="to-key">Induction</span> - сверка с фактами:\n  H1: <span class="to-ok">supports</span> - паттерн уже в `init -y`\n  H2: <span class="to-warn">weakens</span> - дублирование не оправдано\n  H3: <span class="to-err">refutes</span> - нарушает MUST из CLAUDE.md\n\n<span class="to-emph">Рекомендация:</span> H1\n<span class="to-emph">Confidence:</span> 0.87\n\n<span class="to-emph">Next:</span> implement H1, then create evidence',
+      error: { summary: 'Если нет LLM-провайдера', body: '<code>Error: no LLM provider configured</code> - добавьте provider блок в <code>.forgeplan/config.yaml</code>, либо заполните 3 гипотезы руками в PRD под секцией <code>## Reasoning</code>.<div class="te-fix">Для tutorial допустимо обойтись без LLM - ценность в мышлении, а не в выводе</div>' },
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
       tag: 'build', title: 'Build · пишем код и тесты', time: '~5 минут',
-      desc: '<p>В реальном tutorial — реализуете H1 и пишете тесты. В Forgeplan-проектах правило: <b class="k">0 предупреждений, 0 ошибок</b> на каждом коммите. <code>cargo test</code> или эквивалент должен зеленеть, <code>cargo fmt</code> должен пройти, <code>cargo check</code> — без warnings.</p><p>Для tutorial делаем вид, что реализация готова. В реальности после этого шага у вас есть рабочий код и проходящие тесты.</p>',
+      desc: '<p>В реальном tutorial - реализуете H1 и пишете тесты. В Forgeplan-проектах правило: <b class="k">0 предупреждений, 0 ошибок</b> на каждом коммите. <code>cargo test</code> или эквивалент должен зеленеть, <code>cargo fmt</code> должен пройти, <code>cargo check</code> - без warnings.</p><p>Для tutorial делаем вид, что реализация готова. В реальности после этого шага у вас есть рабочий код и проходящие тесты.</p>',
       cmd: 'cargo test  &amp;&amp;  cargo fmt --check  &amp;&amp;  cargo check',
-      output: '<span class="to-prompt">$</span> cargo test\n  Compiling forgeplan v0.30.0\n   Finished test [unoptimized + debuginfo] in 12.34s\n     Running unittests src/lib.rs\n\n<span class="to-ok">running 8 tests</span>\ntest cli::new::tests::test_dry_run_flag ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_no_write ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_stdout ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_exit_code ... <span class="to-ok">ok</span>\n...\n<span class="to-ok">test result: ok. 8 passed; 0 failed; 0 ignored</span>\n\n<span class="to-prompt">$</span> cargo fmt --check\n<span class="to-ok">✓</span> Formatting OK\n\n<span class="to-prompt">$</span> cargo check\n<span class="to-ok">✓</span> Finished dev [unoptimized + debuginfo] in 1.84s\n  <span class="to-key">0 warnings · 0 errors</span>\n\n<span class="to-emph">Next:</span> forgeplan new evidence "CLI dry-run — 8 tests pass"',
+      output: '<span class="to-prompt">$</span> cargo test\n  Compiling forgeplan v0.30.0\n   Finished test [unoptimized + debuginfo] in 12.34s\n     Running unittests src/lib.rs\n\n<span class="to-ok">running 8 tests</span>\ntest cli::new::tests::test_dry_run_flag ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_no_write ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_stdout ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_exit_code ... <span class="to-ok">ok</span>\n...\n<span class="to-ok">test result: ok. 8 passed; 0 failed; 0 ignored</span>\n\n<span class="to-prompt">$</span> cargo fmt --check\n<span class="to-ok">✓</span> Formatting OK\n\n<span class="to-prompt">$</span> cargo check\n<span class="to-ok">✓</span> Finished dev [unoptimized + debuginfo] in 1.84s\n  <span class="to-key">0 warnings · 0 errors</span>\n\n<span class="to-emph">Next:</span> forgeplan new evidence "CLI dry-run - 8 tests pass"',
       error: null,
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
       tag: 'evidence', title: 'Создание Evidence с обязательными полями', time: '~2 минуты',
-      desc: '<p>Доказательство (Evidence) — это запись о том, что код работает. Создаётся командой <code>forgeplan new evidence</code> с кратким описанием.</p><p>В файле обязательно нужны три структурированных поля: <code>verdict</code> (supports/weakens/refutes), <code>congruence_level</code> (0-3), <code>evidence_type</code> (test/benchmark/measurement). <b class="k">Самая частая ошибка №1</b>: забыть эти поля. Без них парсер ставит CL0 (штраф 0.9) и R_eff падает почти до нуля.</p>',
-      cmd: 'forgeplan new evidence "CLI dry-run — 8 unit tests pass"',
-      output: '<span class="to-prompt">$</span> forgeplan new evidence <span class="to-val">"CLI dry-run — 8 unit tests pass"</span>\n\n<span class="to-ok">✓</span> Created: EVID-001\n  <span class="to-key">Path:</span> .forgeplan/evidence/EVID-001-cli-dry-run-...md\n  <span class="to-key">Status:</span> draft\n\n<span class="to-comment"># Откройте файл, добавьте в body:</span>\n<span class="to-comment">#   ## Structured Fields</span>\n<span class="to-comment">#   verdict: supports</span>\n<span class="to-comment">#   congruence_level: 3</span>\n<span class="to-comment">#   evidence_type: test</span>\n\n<span class="to-emph">Next:</span> forgeplan link EVID-001 PRD-001 --relation informs',
-      error: { summary: 'Самая частая ошибка №1', body: '<b class="k">Забыть Structured Fields в body</b>. Если в файле есть только проза без блока<br><code>verdict: supports / congruence_level: 3 / evidence_type: test</code><br>— парсер ставит CL0 (штраф 0.9), R_eff падает к 0.1 даже при сильных доказательствах.<div class="te-fix">Всегда добавляйте три обязательных поля в body EVID</div>' },
+      desc: '<p>Доказательство (Evidence) - это запись о том, что код работает. Создаётся командой <code>forgeplan new evidence</code> с кратким описанием.</p><p>В файле обязательно нужны три структурированных поля: <code>verdict</code> (supports/weakens/refutes), <code>congruence_level</code> (0-3), <code>evidence_type</code> (test/benchmark/measurement). <b class="k">Самая частая ошибка №1</b>: забыть эти поля. Без них парсер ставит CL0 (штраф 0.9) и R_eff падает почти до нуля.</p>',
+      cmd: 'forgeplan new evidence "CLI dry-run - 8 unit tests pass"',
+      output: '<span class="to-prompt">$</span> forgeplan new evidence <span class="to-val">"CLI dry-run - 8 unit tests pass"</span>\n\n<span class="to-ok">✓</span> Created: EVID-001\n  <span class="to-key">Path:</span> .forgeplan/evidence/EVID-001-cli-dry-run-...md\n  <span class="to-key">Status:</span> draft\n\n<span class="to-comment"># Откройте файл, добавьте в body:</span>\n<span class="to-comment">#   ## Structured Fields</span>\n<span class="to-comment">#   verdict: supports</span>\n<span class="to-comment">#   congruence_level: 3</span>\n<span class="to-comment">#   evidence_type: test</span>\n\n<span class="to-emph">Next:</span> forgeplan link EVID-001 PRD-001 --relation informs',
+      error: { summary: 'Самая частая ошибка №1', body: '<b class="k">Забыть Structured Fields в body</b>. Если в файле есть только проза без блока<br><code>verdict: supports / congruence_level: 3 / evidence_type: test</code><br>- парсер ставит CL0 (штраф 0.9), R_eff падает к 0.1 даже при сильных доказательствах.<div class="te-fix">Всегда добавляйте три обязательных поля в body EVID</div>' },
       workspace: { artifacts: [
         { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' },
         { id: 'EVID-001', name: 'CLI dry-run tests', status: 'draft' },
@@ -342,10 +321,10 @@
     },
     {
       tag: 'link', title: 'Связать Evidence с PRD + проверить R_eff', time: '~1 минута',
-      desc: '<p>Создание EVID — это половина работы. Чтобы доказательство влияло на R_eff конкретного решения, нужна связь через <code>forgeplan link</code>. Без связи EVID-001 будет «сиротой» — отдельным файлом, который ни на что не влияет.</p><p>После линковки запускаем <code>forgeplan score</code> — видим финальный R_eff.</p>',
+      desc: '<p>Создание EVID - это половина работы. Чтобы доказательство влияло на R_eff конкретного решения, нужна связь через <code>forgeplan link</code>. Без связи EVID-001 будет «сиротой» - отдельным файлом, который ни на что не влияет.</p><p>После линковки запускаем <code>forgeplan score</code> - видим финальный R_eff.</p>',
       cmd: 'forgeplan link EVID-001 PRD-001 --relation informs  &amp;&amp;  forgeplan score PRD-001',
-      output: '<span class="to-prompt">$</span> forgeplan link EVID-001 PRD-001 --relation informs\n<span class="to-ok">✓</span> Linked: EVID-001 → PRD-001 (informs)\n\n<span class="to-prompt">$</span> forgeplan score PRD-001\n\n<span class="to-key">PRD-001:</span> CLI dry-run flag\n  <span class="to-key">R_eff =</span> <span class="to-ok">1.00</span> — <span class="to-ok">Adequate</span>\n  <span class="to-key">Evidence:</span>\n    EVID-001: supports, CL3, test → score 1.0\n\n<span class="to-emph">Next:</span> forgeplan review PRD-001',
-      error: { summary: 'Если R_eff = 0.0', body: 'Если score показывает 0.0 — проверьте три вещи:<br>1. <code>forgeplan list evidence</code> — EVID-001 существует?<br>2. <code>cat .forgeplan/evidence/EVID-001-*.md | grep -E "verdict|congruence_level"</code> — поля на месте?<br>3. <code>forgeplan link</code> отработала без ошибок?<div class="te-fix">Чаще всего — забыли Structured Fields в EVID body</div>' },
+      output: '<span class="to-prompt">$</span> forgeplan link EVID-001 PRD-001 --relation informs\n<span class="to-ok">✓</span> Linked: EVID-001 → PRD-001 (informs)\n\n<span class="to-prompt">$</span> forgeplan score PRD-001\n\n<span class="to-key">PRD-001:</span> CLI dry-run flag\n  <span class="to-key">R_eff =</span> <span class="to-ok">1.00</span> - <span class="to-ok">Adequate</span>\n  <span class="to-key">Evidence:</span>\n    EVID-001: supports, CL3, test → score 1.0\n\n<span class="to-emph">Next:</span> forgeplan review PRD-001',
+      error: { summary: 'Если R_eff = 0.0', body: 'Если score показывает 0.0 - проверьте три вещи:<br>1. <code>forgeplan list evidence</code> - EVID-001 существует?<br>2. <code>cat .forgeplan/evidence/EVID-001-*.md | grep -E "verdict|congruence_level"</code> - поля на месте?<br>3. <code>forgeplan link</code> отработала без ошибок?<div class="te-fix">Чаще всего - забыли Structured Fields в EVID body</div>' },
       workspace: { artifacts: [
         { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft', reff: '1.00' },
         { id: 'EVID-001', name: 'CLI dry-run tests', status: 'draft' },
@@ -353,10 +332,10 @@
     },
     {
       tag: 'activate', title: 'Активация · точка невозврата', time: '~30 секунд',
-      desc: '<p>Финальный шаг. <code>forgeplan review</code> делает предполётную проверку (validation pass + R_eff > 0). <code>forgeplan activate</code> переводит PRD из draft в active — файл становится <b class="k">immutable</b>.</p><p>Изменения после активации — только через <code>forgeplan supersede</code> с созданием нового PRD, который явно заменяет старый. Это даёт честную историю решений: видно, что было решено тогда, что — потом, в каком порядке.</p>',
+      desc: '<p>Финальный шаг. <code>forgeplan review</code> делает предполётную проверку (validation pass + R_eff > 0). <code>forgeplan activate</code> переводит PRD из draft в active - файл становится <b class="k">immutable</b>.</p><p>Изменения после активации - только через <code>forgeplan supersede</code> с созданием нового PRD, который явно заменяет старый. Это даёт честную историю решений: видно, что было решено тогда, что - потом, в каком порядке.</p>',
       cmd: 'forgeplan review PRD-001  &amp;&amp;  forgeplan activate PRD-001',
       output: '<span class="to-prompt">$</span> forgeplan review PRD-001\n  <span class="to-key">Validation:</span> <span class="to-ok">PASS ✓</span>\n  <span class="to-key">Evidence:</span> 1 linked (R_eff = 1.00)\n  <span class="to-key">Status:</span> <span class="to-ok">ready to activate</span>\n\n<span class="to-prompt">$</span> forgeplan activate PRD-001\n\n<span class="to-ok">✓</span> PRD-001: <span class="to-key">draft</span> → <span class="to-ok">active</span>\n  <span class="to-key">Validation gate:</span> PASS\n  <span class="to-key">R_eff preserved:</span> 1.00\n\n<span class="to-prompt">$</span> forgeplan health\n\n<span class="to-key">Project Health</span>\n  <span class="to-key">Total artifacts:</span> 2 (PRD-001, EVID-001)\n  <span class="to-key">Active:</span>          1\n  <span class="to-key">Blind spots:</span>     0\n  <span class="to-key">Orphans:</span>          0\n  <span class="to-key">Stale:</span>            0\n  <span class="to-key">Status:</span> <span class="to-ok">HEALTHY ✓</span>\n\n<span class="to-emph">Done.</span>',
-      error: { summary: 'Если activate отклонён', body: 'Чаще всего — после успешного validate вы внесли правку в PRD, которая нарушила MUST.<div class="te-fix">$ forgeplan validate PRD-001 # перепроверить, починить, повторить activate</div>' },
+      error: { summary: 'Если activate отклонён', body: 'Чаще всего - после успешного validate вы внесли правку в PRD, которая нарушила MUST.<div class="te-fix">$ forgeplan validate PRD-001 # перепроверить, починить, повторить activate</div>' },
       workspace: { artifacts: [
         { id: 'PRD-001', name: 'CLI dry-run flag', status: 'active', reff: '1.00' },
         { id: 'EVID-001', name: 'CLI dry-run tests', status: 'draft' },

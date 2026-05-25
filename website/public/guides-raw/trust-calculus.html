@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trust Calculus — F/G/R в 3D и связь с ADI</title>
+<title>Trust Calculus - F/G/R в 3D и связь с ADI</title>
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
@@ -38,9 +38,9 @@
     --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
     /* Axes data-viz colors */
-    --f-color:   #ff5a1f;  /* F · Formality — brand orange */
-    --g-color:   #22c55e;  /* G · Granularity — brand green */
-    --r-color:   #60a5fa;  /* R · Reliability — sky blue */
+    --f-color:   #ff5a1f;  /* F · Formality - brand orange */
+    --g-color:   #22c55e;  /* G · Granularity - brand green */
+    --r-color:   #60a5fa;  /* R · Reliability - sky blue */
 
     /* Hypothesis colors */
     --h1-color:  #ef4444;
@@ -92,15 +92,15 @@
     color: var(--text);
     margin: 0;
   }
-  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
-  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; }
   code {
     font-family: var(--font-mono);
     font-size: 13px;
     color: var(--accent-soft);
     background: var(--accent-bg);
     padding: 1px 6px;
-    border-radius: 3px;
+    border-radius: 0;
   }
   b.k { color: var(--text); font-weight: 500; }
 
@@ -108,7 +108,7 @@
   .card {
     background: var(--bg-1);
     border: 1px solid var(--line-2);
-    border-radius: 6px;
+    border-radius: 0;
     padding: 18px 20px 16px;
     position: relative;
   }
@@ -137,7 +137,7 @@
 
   /* Axes grid (F / G / R explainer) */
   .axes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 32px; }
-  .axis-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px; }
+  .axis-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px; }
   .axis-card .axis-tag {
     font-family: var(--font-mono);
     font-size: 11px;
@@ -170,12 +170,12 @@
   .ax-r { color: var(--r-color); font-weight: 500; }
 
   /* Scenario hypothesis cards */
-  .scenario { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 24px; }
+  .scenario { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px; }
   .scenario .hypotheses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
   .hypo {
     background: var(--bg-2);
     border: 1px solid var(--line-2);
-    border-radius: 6px;
+    border-radius: 0;
     padding: 14px 16px 16px;
   }
   .hypo .tag-row {
@@ -198,7 +198,7 @@
   .chart-wrap {
     background: var(--bg-1);
     border: 1px solid var(--line-2);
-    border-radius: 6px;
+    border-radius: 0;
     padding: 14px 14px 6px;
     margin: 18px 0 0;
   }
@@ -214,10 +214,10 @@
   }
   .chart-legend .item { display: flex; align-items: center; gap: 7px; }
   .chart-legend .sw { width: 9px; height: 9px; border-radius: 50%; }
-  .chart-legend .sw-plane { display: inline-block; width: 14px; height: 14px; border: 1.5px dashed var(--err); border-radius: 0; }
+  .chart-legend .sw-plane { display: inline-block; width: 14px; height: 14px; border: 1.5px dashed var(--err); }
 
   /* Evidence table */
-  .table-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; margin: 18px 0 0; }
+  .table-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 18px 0 0; }
   .evidence-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .evidence-table th, .evidence-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); }
   .evidence-table th {
@@ -238,7 +238,7 @@
   .evidence-table .id { font-family: var(--font-mono); color: var(--text-3); }
   .evidence-table .src { color: var(--text-1); }
 
-  .hpill { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; display: inline-flex; align-items: center; gap: 6px; }
+  .hpill { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; display: inline-flex; align-items: center; gap: 6px; }
   .hpill .dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
   .hpill.h1 { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
   .hpill.h1 .dot { background: var(--h1-color); }
@@ -247,20 +247,20 @@
   .hpill.h3 { background: rgba(34, 197, 94, 0.12); color: #86efac; }
   .hpill.h3 .dot { background: var(--h3-color); }
 
-  .verdict { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; display: inline-block; }
+  .verdict { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; display: inline-block; }
   .verdict.supports { background: rgba(34, 197, 94, 0.12); color: #86efac; }
   .verdict.refutes  { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
   .verdict.weakens  { background: rgba(245, 158, 11, 0.12); color: #fcd34d; }
 
   /* Bar chart wrap */
-  .bars-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 18px 22px; margin-top: 18px; }
+  .bars-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 18px 22px; margin-top: 18px; }
   #barChart { height: 360px; }
 
   /* Winner card */
   .winner {
     background: var(--bg-1);
     border: 1px solid var(--line-2);
-    border-radius: 6px;
+    border-radius: 0;
     padding: 22px 24px 22px;
     margin: 18px 0 0;
     position: relative;
@@ -274,21 +274,21 @@
     background: var(--accent);
   }
   .winner .head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .winner .badge { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .winner .badge { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
   .winner h3 { font-size: 18px; }
   .winner p { margin: 8px 0 0; font-size: 14.5px; color: var(--text-2); }
   .winner .winner-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); position: absolute; right: 24px; bottom: 18px; }
 
   /* Pipeline */
   .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 20px 0 0; }
-  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 14px 16px; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; }
   .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
   .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
   .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
   .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
 
   /* Teaching notes */
-  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
   .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
   .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
   .teaching ol li::before {
@@ -334,16 +334,16 @@
   <p class="eyebrow">ADI → Evidence → DDR · интерактивный разбор</p>
   <h1>Trust Calculus в 3D</h1>
   <p class="lead">
-    Каждое доказательство, на котором держится решение, — это вектор в трёх независимых осях:
+    Каждое доказательство, на котором держится решение, - это вектор в трёх независимых осях:
     <span class="ax-f">F</span> (Formality), <span class="ax-g">G</span> (Granularity),
     <span class="ax-r">R</span> (Reliability).
     Чтобы выбрать гипотезу после ADI-разбора, мы не считаем среднее по этим осям. Доверие
-    ограничено самым слабым звеном — <code>trust = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>.
+    ограничено самым слабым звеном - <code>trust = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>.
     Это правило WLNK.
   </p>
 
   <h2>Три оси, по которым оценивается каждое утверждение</h2>
-  <p>Шкала 0–9 для каждой оси, оси независимы. Одно доказательство может быть строгим, но из ненадёжного источника — слабое звено решит за всё.</p>
+  <p>Шкала 0-9 для каждой оси, оси независимы. Одно доказательство может быть строгим, но из ненадёжного источника - слабое звено решит за всё.</p>
 
   <div class="axes">
     <div class="axis-card f">
@@ -351,9 +351,9 @@
       <h3><span class="ax-f">F</span> · Formality · строгость</h3>
       <p class="desc">Насколько точно сформулировано. Можно ли проверить или опровергнуть утверждение?</p>
       <div class="scale">
-        <b>0–2</b> «мне кажется» · интуиция<br>
-        <b>3–5</b> claim с условиями<br>
-        <b>6–8</b> «при X p99 &lt; Y ms»<br>
+        <b>0-2</b> «мне кажется» · интуиция<br>
+        <b>3-5</b> claim с условиями<br>
+        <b>6-8</b> «при X p99 &lt; Y ms»<br>
         <b>9</b> формальная спецификация
       </div>
     </div>
@@ -362,9 +362,9 @@
       <h3><span class="ax-g">G</span> · Granularity · конкретика</h3>
       <p class="desc">Насколько детально описано: числа, условия, окружение, повторы.</p>
       <div class="scale">
-        <b>0–2</b> «медленно», «много»<br>
-        <b>3–5</b> «на 15% быстрее»<br>
-        <b>6–8</b> «p99 = 47 ms на 10k RPS»<br>
+        <b>0-2</b> «медленно», «много»<br>
+        <b>3-5</b> «на 15% быстрее»<br>
+        <b>6-8</b> «p99 = 47 ms на 10k RPS»<br>
         <b>9</b> воспроизводимый сетап
       </div>
     </div>
@@ -373,10 +373,10 @@
       <h3><span class="ax-r">R</span> · Reliability · источник</h3>
       <p class="desc">Откуда пришло утверждение. Можно ли доверять источнику в этом контексте?</p>
       <div class="scale">
-        <b>0–2</b> анекдот, одна реплика<br>
-        <b>3–5</b> whitepaper вендора, блог<br>
-        <b>6–7</b> внутренний бенчмарк<br>
-        <b>8–9</b> production-замер, peer-review
+        <b>0-2</b> анекдот, одна реплика<br>
+        <b>3-5</b> whitepaper вендора, блог<br>
+        <b>6-7</b> внутренний бенчмарк<br>
+        <b>8-9</b> production-замер, peer-review
       </div>
     </div>
   </div>
@@ -384,7 +384,7 @@
   <h2>Контекст · ADI-разбор «/search медленный»</h2>
   <div class="scenario">
     <p style="margin: 0;">
-      p95 на эндпоинте <code>/search</code> вырос до 184 ms при 50k документов. Цель — вернуть p95 ниже 120 ms
+      p95 на эндпоинте <code>/search</code> вырос до 184 ms при 50k документов. Цель - вернуть p95 ниже 120 ms
       без смены поисковой архитектуры. Перед тем как менять код, ADI-разбор зафиксировал три разные гипотезы.
     </p>
     <div class="hypotheses">
@@ -408,8 +408,8 @@
 
   <h2>Доказательства в <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span>-пространстве</h2>
   <p>
-    Каждая точка — отдельное доказательство. Цвет указывает гипотезу, которую evidence адресует.
-    Прозрачная плоскость показывает порог <code><span class="ax-f">F</span> + <span class="ax-g">G</span> + <span class="ax-r">R</span> = 12</code> — всё, что лежит «под» ней, считается слабым evidence.
+    Каждая точка - отдельное доказательство. Цвет указывает гипотезу, которую evidence адресует.
+    Прозрачная плоскость показывает порог <code><span class="ax-f">F</span> + <span class="ax-g">G</span> + <span class="ax-r">R</span> = 12</code> - всё, что лежит «под» ней, считается слабым evidence.
     Сцена крутится мышью; при наведении видна полная карточка с WLNK и вердиктом.
   </p>
 
@@ -425,7 +425,7 @@
 
   <h2>Семь evidence · что показывает Trust Calculus</h2>
   <p>
-    Колонка <b class="k">WLNK</b> = <code>min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>. Это не сумма и не среднее — это самое слабое звено вектора.
+    Колонка <b class="k">WLNK</b> = <code>min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>. Это не сумма и не среднее - это самое слабое звено вектора.
     Сравните с тем, как обманывает «средний балл», когда одна ось критически проседает.
   </p>
 
@@ -450,7 +450,7 @@
 
   <h2>Среднее обманывает · WLNK против Average</h2>
   <p>
-    Возьмите E5 (whitepaper вендора): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. Среднее = 6 — выглядит твёрдо. Но <span class="ax-r">R</span>=3 — это маркетинговая бумага,
+    Возьмите E5 (whitepaper вендора): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. Среднее = 6 - выглядит твёрдо. Но <span class="ax-r">R</span>=3 - это маркетинговая бумага,
     источник продаёт продукт. Для production-решения слабое <span class="ax-r">R</span> не компенсируется красивой формулировкой.
     WLNK = 3 честно показывает: использовать как опору для решения нельзя.
   </p>
@@ -460,8 +460,8 @@
 
   <h2>Кто победил по ADI · выбор гипотезы</h2>
   <p>
-    Применяем Trust Calculus к семи evidence. Победитель — гипотеза с самым сильным <i>supporting</i> доказательством
-    по правилу WLNK. Среднее проигнорировано — считаем только <code>min(F, G, R)</code>.
+    Применяем Trust Calculus к семи evidence. Победитель - гипотеза с самым сильным <i>supporting</i> доказательством
+    по правилу WLNK. Среднее проигнорировано - считаем только <code>min(F, G, R)</code>.
   </p>
   <div class="winner">
     <div class="head">
@@ -469,16 +469,16 @@
       <h3>H3 · уменьшение candidateLimit</h3>
     </div>
     <p>
-      Лучшее supporting evidence — E6 (внутренний бенчмарк): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
-      H1 опровергнута собственным замером E2 (EXPLAIN ANALYZE показал 18–24 ms, это
+      Лучшее supporting evidence - E6 (внутренний бенчмарк): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
+      H1 опровергнута собственным замером E2 (EXPLAIN ANALYZE показал 18-24 ms, это
       <i>weakens</i> гипотезу). H2 имеет WLNK=7 от flamegraph, но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у H3.
-      DDR пишется по H3 с условиями пересмотра — decay-триггеры показаны в pipeline ниже.
+      DDR пишется по H3 с условиями пересмотра - decay-триггеры показаны в pipeline ниже.
     </p>
     <span class="winner-tag">H3 · activated</span>
   </div>
 
   <h2>Цикл целиком · ADI → Evidence → Trust Calculus → DDR</h2>
-  <p>Trust Calculus — это инспекция между сбором фактов и фиксацией решения. Не пропустите decay-триггеры в DDR — без них решение становится памятником.</p>
+  <p>Trust Calculus - это инспекция между сбором фактов и фиксацией решения. Не пропустите decay-триггеры в DDR - без них решение становится памятником.</p>
   <div class="pipeline">
     <div class="pipe-box">
       <div class="step-tag">01 · ADI</div>
@@ -503,18 +503,6 @@
       <div class="step-title">Решение + decay</div>
       <div class="step-desc">Условия пересмотра, триггеры, TTL</div>
     </div>
-  </div>
-
-  <h2>Как читать этот разбор</h2>
-  <div class="teaching">
-    <ol>
-      <li><b>Сначала проекция на одну ось.</b> Посмотрите на E5 (whitepaper, <span class="ax-f">F</span>=7) и E4 (Slack-реплика, <span class="ax-f">F</span>=2). По <span class="ax-f">F</span> кажется, что E5 явно сильнее. Это правда — но только по одной оси. Теперь поверните сцену.</li>
-      <li><b>Поверните сцену так, чтобы видна <span class="ax-r">R</span>-ось.</b> E5 опускается к <span class="ax-r">R</span>=3. Тот самый whitepaper, который выглядел твёрдо по формальности, на оси «источник» оказывается внизу. Это и есть момент, когда видно, как среднее обманывает.</li>
-      <li><b>Обратите внимание на плоскость <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span>=12.</b> Всё, что под ней, — слабое evidence. Это не запрет принимать решение. Это требование честно отметить в DDR: «принято при слабом evidence, пересмотреть через 30 дней или после конкретной метрики».</li>
-      <li><b>Почему min, а не average.</b> Каждая ось отвечает за свой риск: <span class="ax-f">F</span> — за проверяемость, <span class="ax-g">G</span> — за детализацию, <span class="ax-r">R</span> — за источник. Если хоть один риск провален, решение шатается. Слабое звено = реальное доверие.</li>
-      <li><b>Связь с ADI.</b> Trust Calculus без ADI бесполезен. Одна гипотеза — evidence собирается только под неё (confirmation bias). Три гипотезы — три независимых набора evidence — три независимых WLNK. Только тогда выбор честный.</li>
-      <li><b>Что можно отдать AI-агенту.</b> Сбор источников, предзаполнение <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span>-таблицы, поиск противоречий. Финальную <span class="ax-r">R</span>-оценку оставляйте за собой: агент переоценит популярный источник, не увидит коммерческий интерес или потеряет контекст вашей компании.</li>
-    </ol>
   </div>
 
   <div class="footer">
@@ -715,7 +703,7 @@
             max: 9,
             ticks: { color: '#a3a3a3', stepSize: 1, font: { family: 'JetBrains Mono, monospace' } },
             grid: { color: 'rgba(255,255,255,0.06)' },
-            title: { display: true, text: 'Балл (0–9)', color: '#a3a3a3', font: { family: 'Inter, sans-serif' } }
+            title: { display: true, text: 'Балл (0-9)', color: '#a3a3a3', font: { family: 'Inter, sans-serif' } }
           },
           x: {
             ticks: { color: '#a3a3a3', autoSkip: false, maxRotation: 0, font: { family: 'JetBrains Mono, monospace' } },

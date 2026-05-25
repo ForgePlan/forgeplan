@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Цикл одного проекта · Forgeplan operational layer — ForgePlan</title>
+<title>Цикл одного проекта · Forgeplan operational layer - ForgePlan</title>
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
@@ -55,9 +55,9 @@
   h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
   h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
   h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
-  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
-  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
-  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
   b.k { color: var(--text); font-weight: 500; }
 
   .dp-tac  { color: var(--dp-tac);  font-weight: 500; }
@@ -67,14 +67,14 @@
 
   /* Pipeline */
   .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
-  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
   .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
   .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
   .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
   .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
 
   /* Concept block */
-  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
   .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
   .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
   .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
@@ -87,13 +87,13 @@
   .deflist li b { color: var(--text); font-weight: 500; }
   .deflist li .term { color: var(--accent); font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.02em; }
 
-  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
   .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
   .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
 
   /* Code block (terminal-like) */
   .code-block {
-    background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 6px;
+    background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0;
     padding: 16px 20px; margin: 16px 0 0;
     font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
     color: var(--text-1); white-space: pre-wrap; overflow-x: auto;
@@ -110,7 +110,7 @@
 
   /* POS analogy split (Concept 1) */
   .pos-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
-  .pos-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px 18px; }
+  .pos-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
   .pos-col.head { border-top: 2px solid var(--text-3); }
   .pos-col.tool { border-top: 2px solid var(--accent); }
   .pos-col .pos-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; color: var(--text-3); }
@@ -123,7 +123,7 @@
 
   /* Artifact type grid (Concept 2) */
   .arts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 22px 0 0; }
-  .art-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 14px 16px 16px; position: relative; }
+  .art-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px 16px; position: relative; }
   .art-card .art-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
   .art-card .art-prefix { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
   .art-card .art-q { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); margin-bottom: 8px; line-height: 1.4; }
@@ -131,13 +131,13 @@
   .art-card .art-desc { font-size: 13px; color: var(--text-1); line-height: 1.55; }
 
   /* Artifact DAG (clean horizontal lanes) */
-  .art-dag { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px 18px; margin: 22px 0 0; }
+  .art-dag { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 18px; margin: 22px 0 0; }
   .art-dag .dag-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
   .lanes { display: grid; gap: 10px; }
   .lane { display: grid; grid-template-columns: 110px 1fr; gap: 18px; align-items: center; padding: 6px 0; }
   .lane .lane-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
   .lane .nodes { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .node { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 4px; padding: 6px 11px; font-family: var(--font-mono); font-size: 12px; color: var(--text-1); }
+  .node { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 6px 11px; font-family: var(--font-mono); font-size: 12px; color: var(--text-1); }
   .node.epic   { border-color: var(--accent); color: var(--accent-soft); background: rgba(255, 90, 31, 0.06); }
   .node.prd    { border-color: var(--info);   color: #93c5fd; background: rgba(96, 165, 250, 0.06); }
   .node.rfc    { border-color: var(--info);   color: #93c5fd; background: rgba(96, 165, 250, 0.06); }
@@ -149,7 +149,7 @@
 
   /* Depth levels chart (Concept 3) */
   .depth-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 22px 0 0; }
-  .depth-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 14px 18px; }
+  .depth-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 14px 18px; }
   .depth-card.tac  { border-top: 2px solid var(--dp-tac); }
   .depth-card.std  { border-top: 2px solid var(--dp-std); }
   .depth-card.deep { border-top: 2px solid var(--dp-deep); }
@@ -165,7 +165,7 @@
   .depth-card .d-when { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
 
   /* Quality gates table */
-  .gates-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; margin: 22px 0 0; }
+  .gates-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 22px 0 0; }
   .gates-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
   .gates-head .gh-tag { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; color: var(--text); }
   .gates-head .gh-cmd { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
@@ -174,14 +174,14 @@
   .gate-row .g-num { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; color: var(--text-3); }
   .gate-row .g-name { font-family: var(--font-mono); font-size: 12px; color: var(--text); font-weight: 500; letter-spacing: 0.02em; }
   .gate-row .g-desc { font-size: 13px; color: var(--text-2); line-height: 1.5; }
-  .gate-row .g-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; border-radius: 3px; text-align: center; }
+  .gate-row .g-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; border-radius: 0; text-align: center; }
   .gate-row .g-status.pass { background: rgba(34, 197, 94, 0.12); color: #86efac; }
 
   /* Activate timeline */
-  .activate-timeline { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; margin: 22px 0 0; }
+  .activate-timeline { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; margin: 22px 0 0; }
   .at-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 16px; }
   .at-steps { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; }
-  .at-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 4px; padding: 10px 14px; }
+  .at-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 10px 14px; }
   .at-step.active { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
   .at-step.terminal { border-color: var(--text-3); opacity: 0.85; }
   .at-step .as-state { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
@@ -190,7 +190,7 @@
   .at-arrow { display: flex; align-items: center; justify-content: center; color: var(--text-3); font-family: var(--font-mono); font-size: 14px; }
 
   /* Worked example */
-  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px 24px; margin: 22px 0 0; }
+  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px 24px; margin: 22px 0 0; }
   .worked-step { display: grid; grid-template-columns: 110px 1fr; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
   .worked-step:first-of-type { border-top: none; padding-top: 4px; }
   .worked-step .step-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
@@ -200,7 +200,7 @@
   .worked-step .step-content code { font-size: 12px; }
 
   /* Inline deep-link */
-  .deep-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 14px 18px; margin: 18px 0 0; text-decoration: none; transition: border-color .2s, background .2s; }
+  .deep-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; text-decoration: none; transition: border-color .2s, background .2s; }
   .deep-link:hover { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
   .deep-link .dl-text { display: flex; flex-direction: column; gap: 2px; }
   .deep-link .dl-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
@@ -209,24 +209,24 @@
 
   /* Cross-links (3 cards row) */
   .cross-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 0; }
-  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; position: relative; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
   .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
   .next-step h3 { font-size: 15.5px; line-height: 1.3; }
   .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
-  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
   .next-step a.ns-link:hover { background: var(--accent-bg); }
 
   /* Teaching */
-  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
   .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
   .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
   .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
   .teaching ol li b { color: var(--text); font-weight: 500; }
 
   /* 10-types footnote table */
-  .tax-foot { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 20px 18px; margin: 18px 0 0; }
+  .tax-foot { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px 18px; margin: 18px 0 0; }
   .tax-foot .tf-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 10px; }
   .tax-foot table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .tax-foot th, .tax-foot td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); }
@@ -263,10 +263,7 @@
   <p class="eyebrow">Цикл одного проекта · теория</p>
   <h1>Forgeplan как operational layer</h1>
   <p class="lead">
-    Три предыдущих разбора показали методологии: ADI / DDR / Trust Calculus для одного решения,
-    BMAD / PRD / Adversarial Review для одной фичи, Spec / Delta / R_eff для одной спецификации.
-    Этот разбор — про <b class="k">инструмент</b>, который держит все четыре в одной плоскости и
-    напоминает о пропусках. <b class="k">Forgeplan</b> — CLI плюс MCP-сервер, который стоит рядом
+    <b class="k">Forgeplan</b> - CLI плюс MCP-сервер, который стоит рядом
     с репо и забирает на себя механическую часть, оставляя вам только содержательные решения.
   </p>
 
@@ -299,11 +296,11 @@
     <p class="analogy">
       Когда в ресторане официант принимает заказ, он не держит в голове прайс, состав блюд, НДС,
       дисконтные карты и бонусы. Он нажимает кнопки в POS-терминале, а терминал помнит всё.
-      Роль официанта — <b class="k">выбрать блюдо</b>. Роль терминала — <b class="k">правильно
+      Роль официанта - <b class="k">выбрать блюдо</b>. Роль терминала - <b class="k">правильно
       оформить</b>.
     </p>
     <p class="analogy">
-      Forgeplan — это POS для методологий. Конкретно — CLI плюс MCP-сервер, который встаёт рядом
+      Forgeplan - это POS для методологий. Конкретно - CLI плюс MCP-сервер, который встаёт рядом
       с репо и берёт на себя механическую часть FPF, BMAD, OpenSpec и QuintCode. Вы решаете,
       какую фичу строить. Forgeplan помнит, какие секции требует BMAD PRD, какой формат ожидает
       OpenSpec от delta, какую структуру имеет ADR с FPF reasoning, какие оси R_eff проставить
@@ -363,24 +360,24 @@
       Файл создаётся с готовой структурой: frontmatter с <code>depth</code> и
       <code>related_artifacts</code>, секция «Рассмотренные гипотезы» (минимум три, как требует
       FPF), секция «Evidence» (с F-G-R, как требует QuintCode), секция «Условия пересмотра»
-      (как требует Evidence Decay). Остаётся заполнить по существу — не помнить, какие секции
+      (как требует Evidence Decay). Остаётся заполнить по существу - не помнить, какие секции
       должны быть.
     </p>
 
     <p style="margin-top: 14px;">
-      Вторая половина — MCP-сервер. После подключения Forgeplan в <code>.mcp.json</code> агент
+      Вторая половина - MCP-сервер. После подключения Forgeplan в <code>.mcp.json</code> агент
       (Claude Code, Cursor, Windsurf) видит ваши артефакты. Когда вы пишете «добавь логирование
       в auth-сервис», агент сам подтягивает релевантный PRD и ADR и не противоречит принятым
-      решениям. Это не «ещё одна папка с документами» — это <b class="k">память проекта,
+      решениям. Это не «ещё одна папка с документами» - это <b class="k">память проекта,
       которую агент читает сам</b>.
     </p>
 
     <div class="insight">
       <div class="insight-tag">Дисциплина переходит из головы в инструмент</div>
       <p>
-        Одну методологию в голове удержать реально. Четыре — нет. CLI удерживает все четыре и
+        Одну методологию в голове удержать реально. Четыре - нет. CLI удерживает все четыре и
         напоминает о пропусках, пока вы решаете, что вообще строить. Это и есть смысл слова
-        «<b class="k">интегратор</b>» — не «новая методология сверху», а «общий слой под
+        «<b class="k">интегратор</b>» - не «новая методология сверху», а «общий слой под
         старыми».
       </p>
     </div>
@@ -390,16 +387,16 @@
   <h2>02 · Типология артефактов и DAG зависимостей</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 02 · типология артефактов</div>
-    <h3 class="concept-h">Шесть типов в активном ходу. Связи — через frontmatter, не через память</h3>
+    <h3 class="concept-h">Шесть типов в активном ходу. Связи - через frontmatter, не через память</h3>
     <p class="analogy">
       В типичной команде requirements живут в Jira, дизайн-решения в Confluence, ADR в
-      <code>docs/</code>, evidence — в PR-комментариях и бенчмарках на Google Drive. Связи —
+      <code>docs/</code>, evidence - в PR-комментариях и бенчмарках на Google Drive. Связи -
       в голове автора. Автор уходит, связи теряются. Через год никто не помнит, почему выбрали
       gRPC вместо REST.
     </p>
     <p class="analogy">
       Forgeplan сводит это в один файловый репозиторий с шестью основными типами артефактов
-      (плюс четыре ситуативных — см. таблицу ниже):
+      (плюс четыре ситуативных - см. таблицу ниже):
     </p>
 
     <!-- 6 core artifact type cards -->
@@ -443,7 +440,7 @@
     </div>
 
     <p style="margin-top: 22px;">
-      Каждый артефакт ссылается на другие через frontmatter — это и есть DAG:
+      Каждый артефакт ссылается на другие через frontmatter - это и есть DAG:
     </p>
 
     <div class="code-block">
@@ -508,11 +505,11 @@
     </div>
 
     <div class="insight">
-      <div class="insight-tag">Через полгода — одна команда вместо археологии</div>
+      <div class="insight-tag">Через полгода - одна команда вместо археологии</div>
       <p>
         Новый член команды открывает <code>forgeplan graph --format mermaid</code> и видит DAG
         одной картинкой. За пять минут понимает, откуда что взялось. Не «тогда казалось
-        логичным» — явная цепочка от требования до evidence. Это превращает мнения в
+        логичным» - явная цепочка от требования до evidence. Это превращает мнения в
         <b class="k">трейсируемые артефакты</b>: у каждого есть источник, альтернативы и данные.
       </p>
     </div>
@@ -537,7 +534,7 @@
           <tr><td class="t-name">Epic</td><td><code>epic-</code></td><td>Группа PRD вокруг цели</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">Evidence</td><td><code>evid-</code></td><td>Бенчмарк, тест, замер</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">Problem</td><td><code>prob-</code></td><td>Сигнал с контекстом · баг / риск</td><td class="t-usage sit">ситуативно</td></tr>
-          <tr><td class="t-name">Solution</td><td><code>sol-</code></td><td>Сравнение 2–3 вариантов</td><td class="t-usage sit">ситуативно</td></tr>
+          <tr><td class="t-name">Solution</td><td><code>sol-</code></td><td>Сравнение 2-3 вариантов</td><td class="t-usage sit">ситуативно</td></tr>
           <tr><td class="t-name">Note</td><td><code>note-</code></td><td>Микро-решение · 90-day TTL</td><td class="t-usage sit">ситуативно</td></tr>
           <tr><td class="t-name">Refresh</td><td><code>ref-</code></td><td>Re-evaluation просроченного</td><td class="t-usage sit">ситуативно</td></tr>
         </tbody>
@@ -549,16 +546,16 @@
   <h2>03 · Depth calibration и quality gates</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 03 · аналогия досмотра в аэропорту</div>
-    <h3 class="concept-h">Полный pipeline ко всему — остановит работу. Никакого — обрушит качество. Нужна калибровка</h3>
+    <h3 class="concept-h">Полный pipeline ко всему - остановит работу. Никакого - обрушит качество. Нужна калибровка</h3>
     <p class="analogy">
       Даже с одним инструментом остаётся вопрос: на какой задаче применять полный pipeline, а
       на какой коммитить без артефактов? Переименование переменной не требует PRD. Переход на
-      новую базу — требует всего. Между ними — континуум.
+      новую базу - требует всего. Между ними - континуум.
     </p>
     <p class="analogy">
-      Аналогия — досмотр в аэропорту. Внутренний рейс — быстрая проверка. Международный —
-      полный. Transit — своя процедура. «Полный» ко всем — аэропорт остановится. «Быстрый»
-      ко всем — безопасность рухнет. Нужна <b class="k">калибровка под ситуацию</b>.
+      Аналогия - досмотр в аэропорту. Внутренний рейс - быстрая проверка. Международный -
+      полный. Transit - своя процедура. «Полный» ко всем - аэропорт остановится. «Быстрый»
+      ко всем - безопасность рухнет. Нужна <b class="k">калибровка под ситуацию</b>.
     </p>
 
     <!-- 4 depth levels -->
@@ -590,7 +587,7 @@
     </div>
 
     <p style="margin-top: 22px;">
-      Калибровка не делается на глаз — её считает CLI:
+      Калибровка не делается на глаз - её считает CLI:
     </p>
 
     <div class="code-block">
@@ -610,7 +607,7 @@
     <p style="margin-top: 14px;">
       Спорить можно, но <b class="k">с CLI</b>. Это убирает бесконечное «а нужен ли тут RFC?».
       CLI знает правила (security → минимум deep, cross-team → минимум standard) и выдаёт ответ
-      за полсекунды. Экономится не час работы — <b class="k">когнитивная нагрузка на сомнения</b>.
+      за полсекунды. Экономится не час работы - <b class="k">когнитивная нагрузка на сомнения</b>.
     </p>
 
     <!-- Quality gates table -->
@@ -640,8 +637,8 @@
     </div>
 
     <p style="margin-top: 14px;">
-      Все три прошли — <span style="color: var(--ok)">PASS</span>. Хотя бы один упал — CLI
-      возвращает конкретные pointers «что и где починить». Не «общая ошибка» — а строка и
+      Все три прошли - <span style="color: var(--ok)">PASS</span>. Хотя бы один упал - CLI
+      возвращает конкретные pointers «что и где починить». Не «общая ошибка» - а строка и
       название секции, в которой что-то не так.
     </p>
 
@@ -672,13 +669,13 @@
     </div>
 
     <div class="insight">
-      <div class="insight-tag">Activate — самая важная команда</div>
+      <div class="insight-tag">Activate - самая важная команда</div>
       <p>
         После <code>forgeplan activate adr-001</code> файл нельзя править. Только
         <code>forgeplan supersede adr-001 --by adr-002</code> создаёт замену с новым ID и явной
         ссылкой на superseded. Это даёт <b class="k">честную историю</b>: видно, что решено
         тогда, что решено потом, в каком порядке. Не перезаписанный файл без следов
-        изменений — а immutable timeline решений.
+        изменений - а immutable timeline решений.
       </p>
     </div>
   </div>
@@ -705,14 +702,14 @@
       <div class="step-num">03 · reason</div>
       <div class="step-content">
         <h4><code>forgeplan reason PRD-018</code> · ADI</h4>
-        <p>FPF требует минимум три гипотезы. SSE / WebSockets / HTTP/2 push. Для каждой — проверяемое следствие. Без этого <code>activate</code> заблокирован.</p>
+        <p>FPF требует минимум три гипотезы. SSE / WebSockets / HTTP/2 push. Для каждой - проверяемое следствие. Без этого <code>activate</code> заблокирован.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">04 · validate</div>
       <div class="step-content">
         <h4><code>forgeplan validate PRD-018</code> · 3 quality gates</h4>
-        <p>BMAD validation (13 секций — pass). OpenSpec consistency (delta-spec ссылается на api-spec — pass). FPF reasoning (3 гипотезы и отвергнутые альтернативы — pass). Все три зелёные — переходим к evidence.</p>
+        <p>BMAD validation (13 секций - pass). OpenSpec consistency (delta-spec ссылается на api-spec - pass). FPF reasoning (3 гипотезы и отвергнутые альтернативы - pass). Все три зелёные - переходим к evidence.</p>
       </div>
     </div>
     <div class="worked-step">
@@ -726,38 +723,8 @@
       <div class="step-num">06 · activate</div>
       <div class="step-content">
         <h4><code>forgeplan activate ADR-001</code> · точка невозврата</h4>
-        <p>R_eff &gt; 0, все gates pass. ADR-001 уходит в <code>status: activated</code>. Файл immutable. Через год, если evidence протухнет — <code>forgeplan supersede adr-001 --by adr-002</code> создаст замену с явной ссылкой. Timeline честный, история не теряется.</p>
+        <p>R_eff &gt; 0, все gates pass. ADR-001 уходит в <code>status: activated</code>. Файл immutable. Через год, если evidence протухнет - <code>forgeplan supersede adr-001 --by adr-002</code> создаст замену с явной ссылкой. Timeline честный, история не теряется.</p>
       </div>
-    </div>
-  </div>
-
-  <!-- ============ CROSS-LINKS to all 3 prior explainers ============ -->
-  <h2>Связанные разборы · трилогия + meta</h2>
-  <p>Forgeplan интегрирует все три методологии в одном инструменте. Чтобы понять, что именно проверяет <code>forgeplan validate</code> или что лежит за <code>forgeplan reason</code>, откройте соответствующий разбор:</p>
-  <div class="cross-links">
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">01 · решение</span>
-        <h3>ADI · DDR · Trust Calculus</h3>
-      </div>
-      <p>Что именно делает <code>forgeplan reason</code> внутри: три гипотезы и проверяемые следствия. Plus 3D-разбор F/G/R-пространства evidence.</p>
-      <a class="ns-link" href="decision-cycle.html">→ открыть</a>
-    </div>
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">02 · фича</span>
-        <h3>BMAD · 13-step PRD · AR</h3>
-      </div>
-      <p>Откуда берётся 13 секций PRD и какой ручной проход делается после <code>forgeplan new prd</code>. Adversarial Review как третий quality gate.</p>
-      <a class="ns-link" href="bmad-cycle.html">→ открыть</a>
-    </div>
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">03 · спека</span>
-        <h3>Spec · Delta · R_eff</h3>
-      </div>
-      <p>Как устроен OpenSpec-формат, который проверяет <code>forgeplan validate</code> на втором gate. Каскад зависимостей между спеками.</p>
-      <a class="ns-link" href="spec-cycle.html">→ открыть</a>
     </div>
   </div>
 
@@ -770,19 +737,6 @@
     <span class="dl-arrow">↗</span>
   </a>
 
-  <!-- ============ READER WALKTHROUGH ============ -->
-  <h2>Как читать этот разбор</h2>
-  <div class="teaching">
-    <ol>
-      <li><b>Начните с POS-сравнения.</b> Левая колонка — что приходится помнить руками без инструмента (13 секций, формат delta, шаблон ADR, F-G-R). Правая — что забирает Forgeplan. Это и есть суть «operational layer» — не новая методология, а слой, который держит существующие.</li>
-      <li><b>В типологии шесть карточек идут core, четыре в таблице снизу — ситуативные.</b> Это согласуется с практикой: PRD, RFC, ADR, Spec, Epic, Evidence — ежедневный набор. Problem, Solution, Note, Refresh — когда нужно отдельно зафиксировать сигнал, сравнить варианты, оставить микро-решение, переоценить просроченное.</li>
-      <li><b>На DAG-схеме читайте сверху вниз по lane-меткам.</b> Намерение (Epic/PRD) → обсуждение (RFC) → решение (ADR) → контракт (Spec). Evidence — отдельная lane снизу, со стрелкой вверх: данные подкрепляют решение, а не приходят первыми.</li>
-      <li><b>Четыре depth-карточки идут по нарастающей.</b> Серая Tactical — без артефактов. Голубая Standard — обычный поток. Оранжевая Deep — где архитектура. Янтарная Critical — security, cross-team, регуляторика. Цвет показывает, насколько сильно стоит вкладываться в pipeline.</li>
-      <li><b>Quality gates — три независимых проверки в одном <code>validate</code>.</b> BMAD (формат PRD), OpenSpec (целостность delta и DAG), FPF (минимум 3 гипотезы в ADR). Если хоть один gate падает — конкретные pointers, что починить.</li>
-      <li><b>Activate — точка невозврата.</b> Таймлайн draft → validate → activate → superseded читается как timeline решений: видно, в каком порядке принимались, какое чем заменено. Это и отличает «папку с документами» от «памяти проекта».</li>
-    </ol>
-  </div>
-
   <div class="footer">
     <span>forgeplan-cycle · explainer · v1</span>
     <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
@@ -791,7 +745,7 @@
 </main>
 
 <script>
-  // Эта страница теории не использует тяжёлых viz-библиотек —
+  // Эта страница теории не использует тяжёлых viz-библиотек -
   // POS-split, artifact grid, DAG lanes, depth grid, gates table,
   // activate timeline собраны в HTML/CSS.
 </script>
