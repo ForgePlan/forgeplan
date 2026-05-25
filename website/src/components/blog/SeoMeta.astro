@@ -8,8 +8,10 @@ interface Props {
   updatedAt?: Date;
   translations?: Record<string, string>;
   slug: string;
+  topic?: string;
+  tags?: string[];
 }
-const { title, description, lang, cover, publishedAt, updatedAt, translations, slug } = Astro.props;
+const { title, description, lang, cover, publishedAt, updatedAt, translations, slug, topic, tags } = Astro.props;
 const site = Astro.site ?? new URL('https://forgeplan.dev');
 const canonical = new URL(Astro.url.pathname, site).href;
 const ogImage = cover ? new URL(cover, site).href : new URL('/og-default.png', site).href;
@@ -21,6 +23,9 @@ const altRu = translations?.ru ? new URL(`/ru/blog/${translations.ru}`, site).hr
 // for the same lang already exists (prevents duplicate hreflang="en" when altEn===canonical).
 const emitEn = altEn ?? (lang === 'en' ? canonical : null);
 const emitRu = altRu ?? (lang === 'ru' ? canonical : null);
+// x-default: always point to EN URL (or fall back to canonical if no EN version exists).
+// Google treats x-default as "the version most users land on" — EN is the correct default.
+const xDefault = emitEn ?? canonical;
 
 const jsonLd = {
   '@context': 'https://schema.org',
@@ -47,7 +52,12 @@ const jsonLd = {
     '@type': 'WebPage',
     '@id': canonical,
   },
-  image: ogImage,
+  image: {
+    '@type': 'ImageObject',
+    url: ogImage,
+    width: 1200,
+    height: 630,
+  },
   inLanguage: lang,
   url: canonical,
 };
@@ -75,7 +85,7 @@ const safeJson = (obj: unknown) =>
 <link rel="canonical" href={canonical} />
 {emitEn && <link rel="alternate" hreflang="en" href={emitEn} />}
 {emitRu && <link rel="alternate" hreflang="ru" href={emitRu} />}
-{(emitEn || emitRu) && <link rel="alternate" hreflang="x-default" href={emitEn ?? emitRu} />}
+<link rel="alternate" hreflang="x-default" href={xDefault} />
 
 <meta property="og:title" content={title} />
 <meta property="og:description" content={description} />
@@ -83,14 +93,20 @@ const safeJson = (obj: unknown) =>
 <meta property="og:type" content="article" />
 <meta property="og:url" content={canonical} />
 <meta property="og:locale" content={lang === 'ru' ? 'ru_RU' : 'en_US'} />
+{translations?.ru && lang === 'en' && <meta property="og:locale:alternate" content="ru_RU" />}
+{translations?.en && lang === 'ru' && <meta property="og:locale:alternate" content="en_US" />}
 <meta property="article:published_time" content={publishedAt.toISOString()} />
 {updatedAt && <meta property="article:modified_time" content={updatedAt.toISOString()} />}
-<meta property="article:author" content="Eli Rum" />
+<meta property="article:author" content="https://elirum.me" />
+{topic && <meta property="article:section" content={topic} />}
+{tags && tags.map(t => <meta property="article:tag" content={t} />)}
 
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content={title} />
 <meta name="twitter:description" content={description} />
 <meta name="twitter:image" content={ogImage} />
+
+<meta name="robots" content="max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
 
 <script type="application/ld+json" set:html={safeJson(jsonLd)} />
 <script type="application/ld+json" set:html={safeJson(breadcrumbs)} />

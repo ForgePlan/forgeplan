@@ -85,7 +85,7 @@ const oppositeUrl = oppositeSlug
         });
       })();
     </script>
-    <title>{title} — Forgeplan Blog</title>
+    <title>{title} {lang === 'ru' ? '— Блог Forgeplan' : '— Forgeplan Blog'}</title>
     <SeoMeta
       title={title}
       description={description}
@@ -95,6 +95,8 @@ const oppositeUrl = oppositeSlug
       updatedAt={updatedAt}
       translations={translations}
       slug={slug}
+      topic={topic}
+      tags={[topic, series].filter(Boolean) as string[]}
     />
     <SiteJsonLd lang={lang} />
   </head>
