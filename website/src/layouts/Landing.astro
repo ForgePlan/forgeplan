@@ -66,8 +66,7 @@ const {
     </script>
     <title>{title}</title>
     <LandingMeta title={title} description={description} lang={lang} slug={slug} />
-    <!-- Google Search Console verification — replace TODO with content from GSC -->
-    <meta name="google-site-verification" content="TODO_PASTE_GSC_VERIFICATION_CODE_HERE" />
+    {/* GSC ownership verified via DNS TXT (Domain property covers all subdomains/protocols) — no HTML tag needed */}
     <SiteJsonLd lang={lang} includeSoftware={includeSoftware} />
   </head>
   <body class="bg-forge-bg text-forge-fg font-body antialiased">
@@ -75,8 +74,6 @@ const {
       Skip to content
     </a>
     <slot />
-    <!-- Cloudflare Web Analytics — paste beacon token after enabling in CF dashboard.
-         Get it from: https://dash.cloudflare.com/?to=/:account/analytics/web -->
-    <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "TODO_PASTE_CLOUDFLARE_BEACON_TOKEN"}'></script>
+    {/* Cloudflare Web Analytics injected automatically via 'Deploy with automatic setup' at the CF edge (domain on CF), no manual beacon script needed */}
   </body>
 </html>
