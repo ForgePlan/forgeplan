@@ -8,9 +8,11 @@ interface Props {
 const { cover, topic, kind, title } = Astro.props;
 ---
 {cover ? (
-  <div class="blog-hero blog-hero-image">
-    <img src={cover} alt={title} class="blog-hero-img" />
-    <div class="blog-hero-overlay">
+  <div class={`blog-hero blog-hero-cover blog-hero-topic-${topic}`}>
+    <div class="blog-hero-image">
+      <img src={cover} alt={title} class="blog-hero-img" />
+    </div>
+    <div class="blog-hero-meta">
       <p class="eyebrow">{kind} · {topic}</p>
       <h1 class="blog-hero-title">{title}</h1>
     </div>
