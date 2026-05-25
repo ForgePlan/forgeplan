@@ -58,6 +58,17 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
   <link slot="head" rel="alternate" hreflang="x-default" href={canonical} />
   <script slot="head" type="application/ld+json" set:html={safeJson(ld)} />
   <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
+  <meta slot="head" property="og:type" content="article" />
+  <meta slot="head" property="og:title" content={guide.title_en} />
+  <meta slot="head" property="og:description" content={guide.desc_en} />
+  <meta slot="head" property="og:url" content={canonical} />
+  <meta slot="head" property="og:image" content={new URL('/og-default.png', site).href} />
+  <meta slot="head" property="og:locale" content="en_US" />
+  <meta slot="head" property="og:site_name" content="Forgeplan" />
+  <meta slot="head" name="twitter:card" content="summary_large_image" />
+  <meta slot="head" name="twitter:title" content={guide.title_en} />
+  <meta slot="head" name="twitter:description" content={guide.desc_en} />
+  <meta slot="head" name="twitter:image" content={new URL('/og-default.png', site).href} />
   <SiteJsonLd lang="en" />
 
   <style is:global set:html={embed.scopedCss}></style>
@@ -83,6 +94,22 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
   {embed.inlineScripts.map(src => (
     <script is:inline set:html={src}></script>
   ))}
+
+  <!-- Resources footer: docs / github / discussions -->
+  <aside class="guide-resources" aria-label="Resources">
+    <a href="/docs/methodology/overview" class="guide-resource">
+      <span class="guide-resource-tag">DOCS</span>
+      <span class="guide-resource-name">Methodology overview & reference</span>
+    </a>
+    <a href="https://github.com/ForgePlan/forgeplan" class="guide-resource" target="_blank" rel="noopener">
+      <span class="guide-resource-tag">GITHUB</span>
+      <span class="guide-resource-name">Source code & releases</span>
+    </a>
+    <a href="https://github.com/ForgePlan/forgeplan/discussions" class="guide-resource" target="_blank" rel="noopener">
+      <span class="guide-resource-tag">DISCUSSIONS</span>
+      <span class="guide-resource-name">Questions & feedback</span>
+    </a>
+  </aside>
 
   <!-- Bottom prev/next within reading order -->
   <nav class="guide-prevnext" aria-label="Reading order navigation">

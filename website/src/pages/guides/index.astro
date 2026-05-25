@@ -2,6 +2,7 @@
 import Landing from '../../layouts/Landing.astro';
 import Header from '../../components/Header.astro';
 import BlogFooter from '../../components/blog/BlogFooter.astro';
+import GuideMap from '../../components/GuideMap.astro';
 import { guides } from '../../data/guides.ts';
 import '../../styles/blog-theme.css';
 
@@ -12,6 +13,7 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
 <Landing
   title="Guides — Forgeplan"
   description="Interactive lessons on Forgeplan methodology — ADI, R_eff, BMAD, multi-agent dispatch. Theory + 3D visualizations."
+  slug="guides"
 >
   <Header />
   <article class="guides-index">
@@ -24,6 +26,8 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
         not average, how a PRD becomes a Spec becomes a shipped feature, and
         how multiple AI agents stay out of each other's way.
       </p>
+
+      <GuideMap lang="en" />
 
       <div class="guides-stats">
         <div class="guides-stat"><strong>{guides.length}</strong> lessons</div>

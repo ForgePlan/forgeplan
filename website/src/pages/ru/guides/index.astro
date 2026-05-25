@@ -2,6 +2,7 @@
 import Landing from '../../../layouts/Landing.astro';
 import Header from '../../../components/Header.astro';
 import BlogFooter from '../../../components/blog/BlogFooter.astro';
+import GuideMap from '../../../components/GuideMap.astro';
 import { guides } from '../../../data/guides.ts';
 import '../../../styles/blog-theme.css';
 
@@ -13,6 +14,7 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
   title="Гайды — Forgeplan"
   description="Интерактивные разборы методологии Forgeplan — ADI, R_eff, BMAD, multi-agent. Теория + 3D визуализации."
   lang="ru"
+  slug="ru/guides"
 >
   <Header />
   <article class="guides-index">
@@ -25,6 +27,8 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
         среднее, как PRD превращается в Spec и в выкаченную фичу, и как
         несколько AI-агентов не мешают друг другу в одном репо.
       </p>
+
+      <GuideMap lang="ru" />
 
       <div class="guides-stats">
         <div class="guides-stat"><strong>{guides.length}</strong> уроков</div>
