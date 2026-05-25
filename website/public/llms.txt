@@ -1,72 +1,67 @@
 # Forgeplan
 
-> Forgeplan — Rust CLI + MCP server for running engineering projects from
-> idea to implementation through structured artifacts (PRD, RFC, ADR,
-> Epic, Spec, Evidence, Problem, Note). Quality scoring via R_eff
-> (weakest-link), semantic search via BGE-M3, typed links, lifecycle
-> with validation gates. Built for AI agents.
+> Local-first CLI + MCP server that turns architectural decisions into first-class artifacts with quality scoring (R_eff), evidence tracking, lifecycle states, and semantic search. Built for engineering teams who want to stop relitigating the same choices every six months.
 
-Forgeplan is opinionated about what makes engineering work auditable:
-markdown is the source of truth, derived data (vector index, scores)
-rebuilds from it; every decision carries evidence with structured
-fields (verdict / congruence_level / evidence_type); every artifact
-has a state machine (draft → active → superseded | deprecated | stale).
+## Core
 
-The CLI binary (`forgeplan`, alias `fpl`) is local-first single-file.
-The MCP server exposes the same operations to any agent via stdio.
-
-## Methodology — start here
-
-- [Overview](https://forgeplan.dev/docs/methodology/overview): how the artifact-driven workflow composes
-- [Routing & Depth](https://forgeplan.dev/docs/methodology/routing): one question that decides ceremony level (Tactical / Standard / Deep / Critical)
-- [Artifact Lifecycle](https://forgeplan.dev/docs/methodology/lifecycle): draft → active → terminal states
-- [Evidence & Scoring](https://forgeplan.dev/docs/methodology/evidence): R_eff weakest-link calculus, why averaging trust is wrong
-- [ADI Reasoning](https://forgeplan.dev/docs/methodology/adi): Abduction → Deduction → Induction cycle for non-trivial decisions
-- [Hint Contract](https://forgeplan.dev/docs/methodology/agent-protocol): every CLI/MCP output emits one of `Next:` / `Or:` / `Wait:` / `Done.` / `Fix:` markers
-
-## Reference
-
-- [CLI Reference](https://forgeplan.dev/docs/cli/): all subcommands with examples
-- [MCP Reference](https://forgeplan.dev/docs/mcp/): MCP tool surface for agents
-- [Marketplace](https://forgeplan.dev/docs/marketplace/): playbooks, mappings, plugin packs
+- [Home](https://forgeplan.dev/): Product overview, quickstart, and install instructions
+- [Guides — 19 interactive lessons](https://forgeplan.dev/guides/): Decision-logging, DDR/ADR format, Trust Calculus, AI-agent harness engineering
+- [Blog — long-form](https://forgeplan.dev/blog/): Essays on engineering decisions, evidence scoring, and AI-agent context
 
 ## Getting Started
 
 - [Installation](https://forgeplan.dev/docs/getting-started/installation): brew, cargo, or scripted install
-- [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): from `forgeplan init` to first activated PRD in 5 minutes
-- [Configuration](https://forgeplan.dev/docs/getting-started/configuration): config.yaml + LLM provider setup
+- [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): From `forgeplan init` to first activated PRD in 5 minutes
+- [Configuration](https://forgeplan.dev/docs/getting-started/configuration): config.yaml and LLM provider setup
 
-## Guides — interactive lessons
+## Methodology
 
-- [Guides index (EN)](https://forgeplan.dev/guides): catalog of 12 interactive lessons
-- [Guides index (RU)](https://forgeplan.dev/ru/guides): русская версия (mirror)
-- [Decision Cycle](https://forgeplan.dev/guides/decision-cycle): ADI + DDR + Trust Calculus
-- [Trust Calculus 3D](https://forgeplan.dev/guides/trust-calculus): F/G/R in 3D interactive scene
-- [BMAD Cycle](https://forgeplan.dev/guides/bmad-cycle): 4 phases + 13-step PRD + adversarial review
-- [Spec Cycle](https://forgeplan.dev/guides/spec-cycle): delta-spec, R_eff = min(scores)
-- [Forgeplan Cycle](https://forgeplan.dev/guides/forgeplan-cycle): the tool itself — POS for methodologies
-- [DAG Explorer](https://forgeplan.dev/guides/dag-explorer): 3D artifact graph (interactive)
-- [Depth Calibrator](https://forgeplan.dev/guides/depth-calibrator): real-time routing calculator (interactive)
-- [Lifecycle Cycle](https://forgeplan.dev/guides/lifecycle-cycle): draft → active → terminal states
-- [Agent Protocol Cycle](https://forgeplan.dev/guides/agent-protocol-cycle): Hint Contract 5 markers
-- [Multi-agent Cycle](https://forgeplan.dev/guides/multi-agent-cycle): dispatch / claim / release
+- [Overview](https://forgeplan.dev/docs/methodology/overview): How the artifact-driven workflow composes
+- [Routing & Depth](https://forgeplan.dev/docs/methodology/routing): One question that decides ceremony level (Tactical / Standard / Deep / Critical)
+- [Artifact Lifecycle](https://forgeplan.dev/docs/methodology/lifecycle): draft → active → terminal states
+- [Evidence & Scoring](https://forgeplan.dev/docs/methodology/evidence): R_eff weakest-link calculus, why averaging trust is wrong
+- [ADI Reasoning](https://forgeplan.dev/docs/methodology/adi): Abduction → Deduction → Induction for non-trivial decisions
+- [Hint Contract](https://forgeplan.dev/docs/methodology/agent-protocol): Every CLI/MCP output emits `Next:` / `Or:` / `Wait:` / `Done.` / `Fix:` markers
+
+## Selected Guides
+
+- [What a decision log is](https://forgeplan.dev/guides/intro): Six mandatory fields, ADR/DDR formats, who needs one
+- [DDR format with full example](https://forgeplan.dev/guides/ddr-format): DDR vs ADR, six mandatory fields, JWT vs sessions example
+- [Trust Calculus: F/G/R axes](https://forgeplan.dev/guides/trust-calculus-overview): Weakest-link rule, R_eff formula, context-level penalty
+- [Trust Calculus in 3D](https://forgeplan.dev/guides/trust-calculus): Interactive 3D F/G/R scene with seven evidence points
+- [ADI as a daily practice](https://forgeplan.dev/guides/adi-overview): Three-version analysis, when to apply
+- [Lifecycle: draft to terminal](https://forgeplan.dev/guides/lifecycle-cycle): State machine, stale as forgotten state, renew/reopen
+- [Hint Contract — 5 markers](https://forgeplan.dev/guides/agent-protocol-cycle): Next/Or/Wait/Done/Fix rules for agent tools
+- [Multi-agent coordination](https://forgeplan.dev/guides/multi-agent-cycle): Dispatch/claim/release, conflict-free buckets, WIP=1
+- [Forgeplan as operational layer](https://forgeplan.dev/guides/forgeplan-cycle): CLI + MCP + artifact DAG, four depth levels
+- [First Artifact — hands-on walkthrough](https://forgeplan.dev/guides/first-artifact): Simulated terminal: init → activate in 20 minutes
+
+## Reference
+
+- [CLI Reference](https://forgeplan.dev/docs/cli/): 76 subcommands with examples
+- [MCP Reference](https://forgeplan.dev/docs/mcp/): 73 MCP tools for Claude Code, Cursor, Codex
+- [Marketplace](https://forgeplan.dev/docs/marketplace/): Playbooks, mappings, plugin packs
+- [Changelog](https://forgeplan.dev/docs/changelog): Release history with theme summaries
 
 ## Blog
 
-- [Blog index (EN)](https://forgeplan.dev/blog): long-form essays on engineering decisions — how to structure them, score evidence, and stop forgetting why they were made
-- [Blog index (RU)](https://forgeplan.dev/ru/blog): русская версия (mirror)
-- [Blog RSS (EN)](https://forgeplan.dev/blog/rss.xml)
-- [Blog RSS (RU)](https://forgeplan.dev/ru/blog/rss.xml)
-- [Decision graveyard](https://forgeplan.dev/blog/decision-graveyard): why six months later nobody remembers why you picked one auth flow over another
-- [Git for decisions](https://forgeplan.dev/blog/git-for-decisions): a CLI that teaches engineers what good decisions look like
+- [Decision graveyard](https://forgeplan.dev/blog/decision-graveyard): Why six months later nobody remembers why you picked that auth flow
+- [Git for decisions](https://forgeplan.dev/blog/git-for-decisions): A CLI that teaches engineers what good decisions look like
 - [Markdown as source of truth](https://forgeplan.dev/blog/markdown-source-of-truth): LanceDB as derived index, why files own the truth
-- [R_eff: trust = weakest link](https://forgeplan.dev/blog/r-eff-weakest-link): the math behind weakest-link evidence scoring
-- [Forgeplan as agent harness](https://forgeplan.dev/blog/forgeplan-as-agent-harness): decision framework that doubled as harness
-- [Harness engineering for AI agents](https://forgeplan.dev/blog/harness-engineering-for-ai-agents): why your prompt is the smallest part of the system
-- [Forgeplan Rust + LanceDB](https://forgeplan.dev/blog/forgeplan-rust-lancedb): tech stack deep-dive
+- [R_eff: trust = weakest link](https://forgeplan.dev/blog/r-eff-weakest-link): The math behind weakest-link evidence scoring
+- [Forgeplan as agent harness](https://forgeplan.dev/blog/forgeplan-as-agent-harness): Decision framework that doubled as AI harness
+- [Harness engineering for AI agents](https://forgeplan.dev/blog/harness-engineering-for-ai-agents): Why your prompt is the smallest part of the system
+- [Forgeplan Rust + LanceDB](https://forgeplan.dev/blog/forgeplan-rust-lancedb): Tech stack deep-dive
+- [Blog RSS (EN)](https://forgeplan.dev/blog/rss.xml)
 
-## Optional
+## Russian content
 
-- [Changelog](https://forgeplan.dev/docs/changelog): release history with theme summaries
-- [GitHub Repo](https://github.com/ForgePlan/forgeplan): source, issues, releases
-- [Author — Eli Rum](https://elirum.me): personal page
+- [Guides (RU)](https://forgeplan.dev/ru/guides/): All 19 lessons in Russian
+- [Blog (RU)](https://forgeplan.dev/ru/blog/): Long-form in Russian
+- [Blog RSS (RU)](https://forgeplan.dev/ru/blog/rss.xml)
+
+## Source
+
+- [GitHub repository](https://github.com/ForgePlan/forgeplan): Rust source, MIT license, open development
+- [Releases](https://github.com/ForgePlan/forgeplan/releases): Pre-built binaries (cargo install, brew, curl)
+- [Author — Eli Rum](https://elirum.me): Personal page

@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
+import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
@@ -10,6 +11,10 @@ import { remarkReadingTime } from './src/lib/reading-time.mjs';
 export default defineConfig({
   site: 'https://forgeplan.dev',
   integrations: [
+    // Sitemap before starlight(): generates sitemap-index.xml + sitemap-0.xml.
+    // Filter /docs/* because Starlight emits its own sitemap entries for those
+    // routes and we don't want duplicates in the index.
+    sitemap({ filter: (page) => !page.includes('/docs/') }),
     // ORDER: starlight() MUST come before mdx().
     // Starlight bundles astro-expressive-code (ECE) as a sub-integration.
     // ECE throws a hard error at astro:config:setup if it detects mdx() already
@@ -40,6 +45,76 @@ export default defineConfig({
       { icon: 'github', label: 'GitHub', href: 'https://github.com/ForgePlan/forgeplan' },
     ],
     customCss: ['./src/styles/forge-theme.css'],
+    head: [
+      // 1. AI Overview snippet directive (March 2026 Google update)
+      {
+        tag: 'meta',
+        attrs: {
+          name: 'robots',
+          content: 'max-snippet:-1, max-image-preview:large, max-video-preview:-1',
+        },
+      },
+      // 2. Default og:image / twitter:image — applies to all docs pages
+      {
+        tag: 'meta',
+        attrs: {
+          property: 'og:image',
+          content: 'https://forgeplan.dev/og-default.png',
+        },
+      },
+      {
+        tag: 'meta',
+        attrs: {
+          property: 'og:image:width',
+          content: '1200',
+        },
+      },
+      {
+        tag: 'meta',
+        attrs: {
+          property: 'og:image:height',
+          content: '630',
+        },
+      },
+      {
+        tag: 'meta',
+        attrs: {
+          property: 'og:image:alt',
+          content: 'Forgeplan — engineering methodology for decisions that last',
+        },
+      },
+      {
+        tag: 'meta',
+        attrs: {
+          name: 'twitter:image',
+          content: 'https://forgeplan.dev/og-default.png',
+        },
+      },
+      {
+        tag: 'meta',
+        attrs: {
+          property: 'og:site_name',
+          content: 'Forgeplan',
+        },
+      },
+      // 3. hreflang x-default — point to EN docs root
+      {
+        tag: 'link',
+        attrs: {
+          rel: 'alternate',
+          hreflang: 'x-default',
+          href: 'https://forgeplan.dev/docs/',
+        },
+      },
+      // 4. GSC verification placeholder — replace TODO with code from Google Search Console
+      {
+        tag: 'meta',
+        attrs: {
+          name: 'google-site-verification',
+          content: 'TODO_PASTE_GSC_VERIFICATION_CODE_HERE',
+        },
+      },
+    ],
     components: {
       // Unified Header on /docs via DocsHeader (inline content; no nested <header>).
       // Prior attempt rendered our standalone <header position:fixed> here,

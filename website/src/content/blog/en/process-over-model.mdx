@@ -1,0 +1,108 @@
+---
+title: "Process over model: three theses on why AI without guardrails breaks code"
+description: "Three aphorisms I repeat more than the rest: 'PRD = WHAT, not HOW', 'CLAUDE.md is one agent's constitution, BMAD is the team's', 'without a process, AI raises code complexity'. The last one isn't rhetoric - MSR 2026 gives numbers: 42.7% of agent commits raise cyclomatic complexity, 56.1% lower the Maintainability Index, +39% cognitive complexity over time."
+slug: process-over-model
+lang: en
+publishedAt: 2026-10-01
+kind: explainer
+topic: methodology
+cover: '/blog-covers/process-model.webp'
+draft: false
+translations:
+  ru: process-over-model
+---
+
+Everyone says AI accelerates development. That's true - we checked. Over eighteen months of working with AI assistants, the speed of writing code went up noticeably. But speed and quality turned out to be different vectors. Without guardrails we got fast work with accumulating debt - PR after PR, each one fine on its own, and still the codebase was begging for a refactor three months later. When we added process - the first few weeks were slower, every step required artifact sign-off. But there were no rollbacks.
+
+Over those months, three theses solidified for me. Not rules - theses: claims you can verify and disprove. I repeat them more than anything else when talking to teams that are starting to take agents seriously.
+
+---
+
+## 1. PRD = WHAT, not HOW
+
+> "PRD = WHAT, not HOW. If you write the stack in a PRD, you're not writing a PRD - you're writing a ticket."
+
+A PRD (Product Requirements Document) answers two questions: **why this is needed** and **what should happen from the user's perspective**. Not "how to implement it" and not "what to implement it with" - those are questions for an architectural decision, a specification, a technical design.
+
+Sounds obvious. Gets violated constantly in practice.
+
+I've seen PRDs with "use PostgreSQL for event storage" written directly in the requirements section. Or "implement caching via Redis." These aren't product requirements - they're technical decisions that accidentally ended up in the wrong document. The distinction is fundamental: a requirement describes **expected behavior**, a decision describes **the means of implementation**. When a decision lands in a requirement, it loses the context of why it appeared and becomes "because that's what's written" - without justification, without revision conditions, without an author.
+
+A concrete example. A B2B team was choosing an analytics tool. In the PRD they wrote: "use Mixpanel for conversion funnels." A year later Mixpanel tripled its pricing. The team wanted to move to Amplitude - and found that the tool was baked into a requirement, meaning a tool change formally required rewriting the PRD and going through sign-off again. Three weeks of negotiation because "Mixpanel is in the requirements." The tool had ended up in a document that should have contained only behavior.
+
+The right formulation in that PRD would have been: "the team needs conversion funnels across five key events, p95 latency under two seconds." That's it. The tool choice is a separate architectural decision with revision conditions: "if the price exceeds X per year or the functionality limits Y, we revisit."
+
+When an AI agent is working from a PRD, this problem compounds. The agent obediently executes what's written in the requirements. If the stack is in there - the agent builds exactly that, no questions asked. Requirement and decision stop being separate layers, the agent builds "correctly per the document" and ships technical debt that's invisible until review.
+
+Practical rule: if your PRD has the words "PostgreSQL," "Redis," "Kafka," "React," or "S3" in the requirements section - that's a signal. Not that those tools are wrong. That they ended up in the wrong document.
+
+More on how the thirteen sections of a PRD are structured and how a specification differs from requirements: [The PRD → RFC → ADR cycle](/guides/bmad-cycle) and [Specifications vs. requirements](/guides/spec-cycle).
+
+---
+
+## 2. CLAUDE.md is one agent's constitution. BMAD is the team's.
+
+> "CLAUDE.md is one agent's constitution. BMAD is the constitution of a team of agents. The first scales to one person. The second scales to a process."
+
+CLAUDE.md (or its equivalent in other tools - `.cursorrules`, `AGENTS.md`, the system prompt at session start) is a set of rules a single AI agent reads at the beginning of every session. Without it, the agent guesses your conventions from scratch each time: how you name variables, where you put tests, how you format commits, what counts as "done." With it, the agent works like a new hire who read the onboarding guide before their first day.
+
+That solves the problem of one developer with one agent. And that's exactly where the next problem starts.
+
+Take a team of five, each with their own agent. Every agent is correctly configured, every one works within its own CLAUDE.md. Developer one's agent implements feature A over a few hours - opens a PR. Developer two's agent implements feature B in parallel - also opens a PR. Both PRs are technically sound. During review it turns out: feature A assumes event X is stored in the database, feature B assumes it's in a queue. Both agents worked "correctly" by their own conventions. They had no shared space to align on an architectural assumption.
+
+Five developers with five agents isn't five people - it's twenty-five "workers" in one repository. To keep that from becoming Babel, you need a shared constitution: one PRD format, one architectural decision format, one depth scale for tasks. No single agent makes a unilateral decision, because "one person's rules" don't compose at "team scale."
+
+BMAD (Breakthrough Method for Agile AI-Driven Development) is one format for that shared constitution. Not the only one, not necessarily the best fit for every team. What matters is the principle: a shared artifact format as the **lingua franca** between agents across different developers.
+
+Without it, a team scales speed. Along with it - misalignment.
+
+With it - each agent knows not just "how my developer works," but also "how decisions get made here." The difference between "I'm executing a task" and "I understand the context of a task" lives right there.
+
+Details on coordinating two to five agents in one repository: [Multi-agent coordination](/guides/multi-agent-cycle). The hint contract - the language in which an agent and a tool speak to each other: [Agent protocol](/guides/agent-protocol-cycle).
+
+---
+
+## 3. MSR 2026: AI without process raises code complexity
+
+> "Speed of AI is real. Quality drops almost symmetrically."
+
+The first two theses are methodological arguments. This one is backed by data.
+
+In 2026, Mining Software Repositories published a study I've re-read several times: **"Speed at the Cost of Quality: How Cursor AI Increases Short-Term Velocity and Long-Term Complexity in Open-Source Projects"** (Courtney E. Miller et al., MSR 2026). The authors examined commits made by AI agents in real open-source repositories and compared them to non-agent commits across several code complexity metrics.
+
+The numbers:
+
+- **56.1%** of agent commits lower the Maintainability Index
+- **42.7%** of agent commits raise Cyclomatic Complexity
+- **+18%** in static compiler and linter warnings over time
+- **+39%** in cognitive complexity - a persistent "agent-induced technical debt"
+
+This doesn't mean AI writes bad code. It means AI writes code fast - with the same systemic issues a human developer produces when rushing. More commits per unit of time at the same defect rate equals more problems at the output. Speed amplifies what's already there.
+
+A second study from the same conference - **"When AI Code Doesn't Stick"** (MSR 2026) - examined reverted AI commits: why code an agent wrote got rolled back. The taxonomy of causes:
+
+- **22.33%** - unintended side effects and over-engineering
+- **22.13%** - functional incorrectness
+- **17.71%** - code quality issues
+- **12.47%** - dependency problems
+
+What stops me in that taxonomy: the largest category isn't "wrong algorithm" or "syntax error." It's **over-engineering and side effects**. The agent solves the problem but does it in a way that touches things it shouldn't, or creates structure that's far more complex than the task required. That's the classic result of working without context - without understanding task boundaries, without architectural constraints, without a definition of done.
+
+What distinguished teams whose metrics held up? The MSR authors don't dedicate a separate section to it, but the pattern shows up in the examples: they had a process. Not a specific tool - a process: PRDs with clear boundaries, architectural decisions with revision conditions, a review cadence, artifacts where an agent could read "what's allowed here and what isn't."
+
+The math is simple. An agent produces commits faster than a human. If the fraction of problematic commits hasn't dropped - as speed increases you get more problems in the same time window. The only way to lower that fraction is to give the agent guardrails that let it understand task context. That's what process is.
+
+The answer isn't "use agents less." It's to build the process before you push the speed. Speed is an outcome, not a cause. Process is the cause of good speed.
+
+Sources:
+
+- [Speed at the Cost of Quality (arxiv)](https://arxiv.org/pdf/2511.04427)
+- [When AI Code Doesn't Stick (MSR 2026)](https://2026.msrconf.org/details/msr-2026-mining-challenge/27/When-AI-Code-Doesn-t-Stick-An-Empirical-Study-on-Reverted-Changes-Introduced-by-AI-C)
+
+---
+
+If there's one thesis to take away from the three, make it the third.
+
+The first two are about how to think about tasks and teams. The third is about what happens when you don't. The numbers aren't rhetoric: 56%, 42%, +39% - that isn't "AI is bad," it's "AI without process produces debt at industrial scale." Not worse than a human without process. Just faster.
+
+Process isn't a luxury or bureaucracy. It's protection against technical debt that AI starts manufacturing at industrial pace the moment you give it speed without guardrails.

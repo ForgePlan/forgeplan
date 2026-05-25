@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Depth Calibrator · интерактивный routing — ForgePlan</title>
+<title>Depth Calibrator · интерактивный routing - ForgePlan</title>
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
@@ -31,9 +31,9 @@
   h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
   h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
   h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
-  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
-  p.lead { font-size: 17px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
-  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 3px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
   b.k { color: var(--text); font-weight: 500; }
 
   .dp-tac  { color: var(--dp-tac);  font-weight: 500; }
@@ -43,40 +43,40 @@
 
   /* Mini-pipeline */
   .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
-  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
   .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
   .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
   .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
   .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
 
   /* Concept */
-  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
   .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
   .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
   .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
   .concept .analogy + .analogy { margin-top: 12px; }
 
-  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
   .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
   .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
 
   /* ============ THE CALCULATOR ============ */
-  .calc { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .calc { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 0; margin: 22px 0 0; overflow: hidden; }
   .calc-head { background: var(--bg-2); padding: 14px 22px; border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
   .calc-head .ch-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); }
   .calc-head .ch-presets { display: flex; gap: 6px; flex-wrap: wrap; }
-  .calc-head .preset-btn { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; padding: 4px 10px; border-radius: 3px; cursor: pointer; user-select: none; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--line-2); transition: all .15s; }
+  .calc-head .preset-btn { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; padding: 4px 10px; border-radius: 0; cursor: pointer; user-select: none; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--line-2); transition: all .15s; }
   .calc-head .preset-btn:hover { border-color: var(--accent); color: var(--accent); }
 
   .calc-body { padding: 24px 26px 26px; }
 
   /* Inputs */
   .inputs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; margin-bottom: 24px; }
-  .input-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 14px 16px 16px; }
+  .input-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px 16px; }
   .input-card .ic-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
   .input-card .ic-name { font-size: 13.5px; color: var(--text); font-weight: 500; line-height: 1.3; }
   .input-card .ic-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-  .input-card input[type="range"] { -webkit-appearance: none; flex: 1; height: 4px; background: var(--bg-1); border-radius: 2px; outline: none; cursor: pointer; }
+  .input-card input[type="range"] { -webkit-appearance: none; flex: 1; height: 4px; background: var(--bg-1); border-radius: 0; outline: none; cursor: pointer; }
   .input-card input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg-1); cursor: pointer; transition: transform .1s; }
   .input-card input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
   .input-card input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg-1); cursor: pointer; }
@@ -85,10 +85,10 @@
 
   /* Gate checkboxes */
   .gates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 26px; }
-  .gate-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 12px 14px; cursor: pointer; user-select: none; transition: border-color .15s, background .15s; display: flex; align-items: center; gap: 12px; }
+  .gate-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 12px 14px; cursor: pointer; user-select: none; transition: border-color .15s, background .15s; display: flex; align-items: center; gap: 12px; }
   .gate-card:hover { border-color: var(--accent); }
   .gate-card.on { background: rgba(255, 90, 31, 0.06); border-color: var(--accent); }
-  .gate-card .gc-box { width: 16px; height: 16px; border: 1.5px solid var(--text-3); border-radius: 3px; display: flex; align-items: center; justify-content: center; transition: all .15s; flex-shrink: 0; }
+  .gate-card .gc-box { width: 16px; height: 16px; border: 1.5px solid var(--text-3); border-radius: 0; display: flex; align-items: center; justify-content: center; transition: all .15s; flex-shrink: 0; }
   .gate-card.on .gc-box { background: var(--accent); border-color: var(--accent); }
   .gate-card.on .gc-box::after { content: ""; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg) translate(-1px, -1px); display: block; }
   .gate-card .gc-text { display: flex; flex-direction: column; gap: 2px; }
@@ -98,10 +98,10 @@
 
   /* ============ THE OUTPUT ============ */
   /* Big depth scale */
-  .depth-scale { margin: 8px 0 0; padding: 18px 22px 14px; background: var(--bg-3); border-radius: 6px; }
+  .depth-scale { margin: 8px 0 0; padding: 18px 22px 14px; background: var(--bg-3); border-radius: 0; }
   .depth-scale .ds-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 14px; }
   .scale-wrap { position: relative; height: 56px; margin: 4px 0; }
-  .scale-track { position: absolute; top: 22px; left: 0; right: 0; height: 12px; border-radius: 6px; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; overflow: hidden; }
+  .scale-track { position: absolute; top: 22px; left: 0; right: 0; height: 12px; border-radius: 0; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; overflow: hidden; }
   .scale-track .zone { transition: opacity .25s; }
   .scale-track .zone.tac  { background: var(--dp-tac); }
   .scale-track .zone.std  { background: var(--dp-std); }
@@ -139,10 +139,10 @@
 
   /* Pipeline + reasons row */
   .out-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; margin-top: 14px; }
-  .pipeline-box { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .pipeline-box { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
   .pipeline-box .pb-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 12px; }
   .pipeline-flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .artifact-chip { font-family: var(--font-mono); font-size: 11.5px; padding: 6px 11px; border-radius: 3px; letter-spacing: 0.04em; transition: opacity .25s, background .25s; background: var(--bg-3); color: var(--text-3); border: 1px solid var(--line); }
+  .artifact-chip { font-family: var(--font-mono); font-size: 11.5px; padding: 6px 11px; border-radius: 0; letter-spacing: 0.04em; transition: opacity .25s, background .25s; background: var(--bg-3); color: var(--text-3); border: 1px solid var(--line); }
   .artifact-chip.active { color: var(--text); border-color: var(--accent); background: rgba(255, 90, 31, 0.08); }
   .artifact-chip.dim { opacity: 0.3; }
   .pipe-sep { color: var(--text-4); font-family: var(--font-mono); font-size: 12px; }
@@ -150,7 +150,7 @@
   .pipe-extra { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.02em; }
   .pipe-extra .ex-tag { color: var(--accent); margin-right: 6px; }
 
-  .reasons-box { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 18px; }
+  .reasons-box { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
   .reasons-box .rb-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 12px; }
   .reason-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
   .reason-list li { font-size: 12.5px; color: var(--text-1); line-height: 1.5; padding-left: 16px; position: relative; }
@@ -159,7 +159,7 @@
   .reason-list li.gate::before { content: "⚡"; color: var(--err); }
 
   /* CLI command output */
-  .cli-out { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 14px 18px; margin-top: 18px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--text-1); overflow-x: auto; }
+  .cli-out { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 18px; margin-top: 18px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--text-1); overflow-x: auto; }
   .cli-out .cb-prompt { color: var(--accent-soft); }
   .cli-out .cb-key { color: var(--text-3); }
   .cli-out .cb-val { color: var(--text); }
@@ -167,7 +167,7 @@
 
   /* Depth tiers reference */
   .tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 22px 0 0; }
-  .tier-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px 14px 18px; }
+  .tier-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 14px 18px; }
   .tier-card.tac  { border-top: 2px solid var(--dp-tac); }
   .tier-card.std  { border-top: 2px solid var(--dp-std); }
   .tier-card.deep { border-top: 2px solid var(--dp-deep); }
@@ -177,22 +177,22 @@
   .tier-card.std  .tc-tag { color: var(--dp-std); }
   .tier-card.deep .tc-tag { color: var(--dp-deep); }
   .tier-card.crit .tc-tag { color: var(--dp-crit); }
-  .tier-card .tc-pipe { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-1); padding: 10px 12px; background: var(--bg-1); border-radius: 4px; margin: 10px 0 12px; min-height: 40px; line-height: 1.5; }
+  .tier-card .tc-pipe { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-1); padding: 10px 12px; background: var(--bg-1); border-radius: 0; margin: 10px 0 12px; min-height: 40px; line-height: 1.5; }
   .tier-card .tc-pipe.none { color: var(--text-4); font-style: italic; }
   .tier-card .tc-when { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
 
   /* Cross-links */
   .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
-  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 20px 22px; position: relative; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
   .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 3px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
   .next-step h3 { font-size: 15.5px; line-height: 1.3; }
   .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
-  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; transition: background .2s; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
   .next-step a.ns-link:hover { background: var(--accent-bg); }
 
-  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
   .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
   .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
   .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
@@ -218,7 +218,7 @@
   <p class="lead">
     «Нужен ли тут PRD?» «А RFC?» «Можно ли просто закоммитить?» Эти споры съедают часы, и
     обычно сходятся на той же логике: чем выше сложность × обратимость × радиус, тем тяжелее
-    pipeline. Forgeplan делает эту логику CLI-командой <code>forgeplan route</code>. Ниже —
+    pipeline. Forgeplan делает эту логику CLI-командой <code>forgeplan route</code>. Ниже -
     тот же routing в виде калькулятора: <b class="k">подвиньте слайдеры, увидьте депт-уровень
     и обязательные артефакты в реальном времени</b>.
   </p>
@@ -250,14 +250,14 @@
     <div class="concept-tag">аналогия досмотра в аэропорту</div>
     <h3 class="concept-h">«Полный pipeline ко всему» остановит работу. «Никакого pipeline» обрушит качество</h3>
     <p class="analogy">
-      В аэропорту три процедуры: внутренний рейс — быстрая проверка, международный — полный,
-      transit — отдельная. Применить «полный» ко всем — аэропорт остановится. Применить
-      «быстрый» — безопасность рухнет. Нужна <b class="k">калибровка под ситуацию</b>.
+      В аэропорту три процедуры: внутренний рейс - быстрая проверка, международный - полный,
+      transit - отдельная. Применить «полный» ко всем - аэропорт остановится. Применить
+      «быстрый» - безопасность рухнет. Нужна <b class="k">калибровка под ситуацию</b>.
     </p>
     <p class="analogy">
       Forgeplan делает то же самое для разработки: депт-уровень определяется по характеристикам
-      задачи, а pipeline (какие артефакты создавать) выводится из уровня. Спорить можно — но
-      с CLI, не друг с другом. Калькулятор ниже — это та же формула, только наглядно.
+      задачи, а pipeline (какие артефакты создавать) выводится из уровня. Спорить можно - но
+      с CLI, не друг с другом. Калькулятор ниже - это та же формула, только наглядно.
     </p>
   </div>
 
@@ -267,7 +267,7 @@
 
   <div class="calc">
     <div class="calc-head">
-      <span class="ch-tag">forgeplan route — интерактив</span>
+      <span class="ch-tag">forgeplan route - интерактив</span>
       <div class="ch-presets">
         <span class="preset-btn" data-preset="cosmetic">cosmetic</span>
         <span class="preset-btn" data-preset="feature">team feature</span>
@@ -407,7 +407,7 @@
     <div class="tier-card std">
       <div class="tc-tag">● standard</div>
       <div class="tc-pipe">PRD → RFC → Evidence</div>
-      <div class="tc-when">Новая фича внутри одной команды без breaking changes. ADI рекомендован, validation gate — да.</div>
+      <div class="tc-when">Новая фича внутри одной команды без breaking changes. ADI рекомендован, validation gate - да.</div>
     </div>
     <div class="tier-card deep">
       <div class="tc-tag">● deep</div>
@@ -422,48 +422,14 @@
   </div>
 
   <div class="insight">
-    <div class="insight-tag">Калькулятор — это не приговор</div>
+    <div class="insight-tag">Калькулятор - это не приговор</div>
     <p>
       Хард-гейты (security / cross-team / public API) форсят минимум, потому что цена ошибки
-      высока даже при низкой сложности. Слайдеры — это эвристика, а не закон. Если вы видите
-      «standard», но интуиция кричит «нужен ADR» — создайте ADR. Если калькулятор говорит
-      «deep», а задача обратима за один <code>git revert</code> — упростите. CLI знает правила,
+      высока даже при низкой сложности. Слайдеры - это эвристика, а не закон. Если вы видите
+      «standard», но интуиция кричит «нужен ADR» - создайте ADR. Если калькулятор говорит
+      «deep», а задача обратима за один <code>git revert</code> - упростите. CLI знает правила,
       но решение принимаете вы.
     </p>
-  </div>
-
-  <!-- CROSS-LINKS -->
-  <h2>Связанные разборы</h2>
-  <div class="cross-links">
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">Цикл проекта</span>
-        <h3>Forgeplan как operational layer</h3>
-      </div>
-      <p>Откуда берутся четыре tier'а, что значит quality gate, и где physically живёт routing-логика в <code>.forgeplan/</code>.</p>
-      <a class="ns-link" href="forgeplan-cycle.html">→ открыть</a>
-    </div>
-    <div class="next-step">
-      <div class="ns-head">
-        <span class="ns-badge">Цикл фичи</span>
-        <h3>BMAD · 13-step PRD · AR</h3>
-      </div>
-      <p>Что значит «13-step PRD» в pipeline standard. Adversarial Review — это и есть «Review» на deep+ уровне, который форсит чистую сессию.</p>
-      <a class="ns-link" href="bmad-cycle.html">→ открыть</a>
-    </div>
-  </div>
-
-  <!-- READER WALKTHROUGH -->
-  <h2>Как читать этот калькулятор</h2>
-  <div class="teaching">
-    <ol>
-      <li><b>Начните с пресета «cosmetic».</b> Маркер уйдёт в левый край, pipeline станет пустым, verdict — <span class="dp-tac">TACTICAL</span>. Это шкала «нижней границы»: переименование переменной, цвет кнопки, опечатка в README.</li>
-      <li><b>Переключитесь на «team feature».</b> Маркер пойдёт в зону <span class="dp-std">standard</span>, pipeline покажет <code>PRD → RFC → Evidence</code>. Это «новая фича внутри команды без breaking changes» — типичная работа sprint.</li>
-      <li><b>Затем «public API».</b> Чекбокс Public API API загорится, маркер уедет в зону <span class="dp-deep">deep</span> с пометкой «public API forces ≥ deep». Pipeline добавит Spec и ADR. Это контракт, который видят external consumers — стоит ADR.</li>
-      <li><b>Финал — «auth rewrite».</b> Security-гейт включит критический режим. Pipeline добавит Epic и Adversarial Review. Это правило «if security → critical» — даже если сложность невысокая, цена ошибки в auth слишком велика.</li>
-      <li><b>Покрутите слайдеры вручную.</b> Обратите внимание: при низкой <b>reversibility</b> (легко откатить) tier может опуститься на ступеньку. Обратимость — это страховка от плохого решения. Если можно вернуть всё одним <code>git revert</code>, риск меньше.</li>
-      <li><b>В блоке «why» читайте, какие правила сработали.</b> ⚡ перед строкой — это хард-гейт (forces tier), → — score-based. Если видите ⚡, ваш слайдер-скор не главный — гейт перекрыл.</li>
-    </ol>
   </div>
 
   <div class="footer">
@@ -534,9 +500,9 @@
       if (depth === 'tac') {
         reasons.push({ type: 'score', text: 'cost ≤ 3.0 → TACTICAL: достаточно commit message' });
       } else if (depth === 'std') {
-        reasons.push({ type: 'score', text: 'cost 3.0–5.0 → STANDARD: внутри команды, без breaking changes' });
+        reasons.push({ type: 'score', text: 'cost 3.0-5.0 → STANDARD: внутри команды, без breaking changes' });
       } else if (depth === 'deep' && !s.public) {
-        reasons.push({ type: 'score', text: 'cost 5.0–7.0 → DEEP: архитектурный выбор' });
+        reasons.push({ type: 'score', text: 'cost 5.0-7.0 → DEEP: архитектурный выбор' });
       } else if (depth === 'crit' && !s.security && !s.crossteam) {
         reasons.push({ type: 'score', text: 'cost > 7.0 → CRITICAL: высокий риск по совокупности' });
       }

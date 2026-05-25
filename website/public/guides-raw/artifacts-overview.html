@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как вести артефакты команды - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  .ba-cell ul, .ba-cell li { padding-left: 0; }
+  .ba-cell li::before { content: none; }
+  .ba-cell li { padding-left: 14px; }
+  .ba-cell li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--text-3); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  .audience-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 720px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 24px; }
+  .audience-card .role-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .audience-card .role-title { font-size: 17px; font-weight: 500; color: var(--text); margin: 0 0 10px; line-height: 1.3; }
+  .audience-card .role-body { font-size: 14px; color: var(--text-2); line-height: 1.55; margin: 0 0 8px; }
+  .audience-card .role-pain { font-size: 13px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-style: italic; }
+
+  .usecase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 0; }
+  @media (max-width: 960px) { .usecase-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .usecase-grid { grid-template-columns: 1fr; } }
+  .usecase-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; border-top: 2px solid var(--accent); }
+  .usecase-card .uc-domain { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .usecase-card .uc-title { font-size: 15px; font-weight: 500; color: var(--text); margin: 0 0 8px; line-height: 1.35; }
+  .usecase-card .uc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  .compare-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 24px 0 0; }
+  .compare-wrap .compare-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .compare-wrap .compare-title { font-size: 18px; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  .compare-wrap .chart-host { position: relative; height: 320px; }
+  .compare-wrap .compare-note { font-size: 12.5px; color: var(--text-3); margin-top: 14px; line-height: 1.5; max-width: 760px; }
+
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 0; }
+  @media (max-width: 720px) { .ba-grid { grid-template-columns: 1fr; } }
+  .ba-cell { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 22px; }
+  .ba-cell .ba-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .ba-cell.ba-bad .ba-head { color: var(--err); }
+  .ba-cell.ba-good .ba-head { color: var(--ok); }
+  .ba-cell ul { margin: 0; padding-left: 18px; }
+  .ba-cell li { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  .antipattern-list { margin: 20px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; max-width: 820px; }
+  .antipattern-list li { background: var(--bg-1); border: 1px solid var(--line-2); border-left: 2px solid var(--err); border-radius: 0; padding: 14px 18px; padding-left: 0; display: flex; align-items: baseline; gap: 0; }
+  .antipattern-list li::before { content: none; }
+  .ap-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--err); min-width: 180px; padding: 0 18px; flex-shrink: 0; }
+  .ap-body { font-size: 14px; color: var(--text-2); line-height: 1.55; padding-right: 18px; }
+  @media (max-width: 720px) { .antipattern-list li { flex-direction: column; } .ap-label { padding: 14px 18px 6px; } .ap-body { padding: 0 18px 14px; } }
+
+  .rhythm-steps { margin: 20px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; max-width: 820px; counter-reset: rhythm-counter; }
+  .rhythm-steps li { display: flex; align-items: baseline; gap: 16px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 0; padding: 14px 18px; counter-increment: rhythm-counter; }
+  .rhythm-steps li::before { content: counter(rhythm-counter, decimal-leading-zero); font-family: var(--font-mono); font-size: 12px; color: var(--accent); letter-spacing: 0.1em; font-weight: 500; flex-shrink: 0; }
+  .rhythm-steps .step-title { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 3px; }
+  .rhythm-steps .step-body { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .rhythm-steps .step-content { display: flex; flex-direction: column; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">АРТЕФАКТЫ · ОБЗОР</p>
+  <h1>Как вести артефакты команды</h1>
+  <p class="lead">
+    Через полгода после релиза у команды есть либо файлы с ответами, либо мифы.
+    Разница не в дисциплине людей - разница в том, есть ли место, куда решения
+    <b class="k">обязаны</b> ложиться. Эта статья о том, что такое артефакт
+    в инженерной практике, как выглядит нормальный ритм работы с ними
+    и почему большинство документации умирает ещё до первого пересмотра.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Что считается «артефактом»</h2>
+  <p>
+    В обычной речи «артефакт» - любой рабочий файл. В инженерной практике
+    журналирования это слово означает конкретную вещь: <b class="k">запись
+    с обязательной структурой, которая фиксирует одно решение, одно требование
+    или одно доказательство</b>.
+  </p>
+  <p>
+    Три свойства отличают артефакт от обычного документа.
+  </p>
+  <p>
+    Первое - <b class="k">обязательные поля</b>. Артефакт без поля «условие
+    пересмотра» - неполный артефакт, а не просто «неудобный документ». Структура
+    не рекомендация, а контракт. Если поле пропущено, запись будет молча
+    деградировать в устаревший памятник.
+  </p>
+  <p>
+    Второе - <b class="k">версионируется</b>. Артефакт хранится рядом с кодом,
+    в системе контроля версий. История изменений читается как git-лог: кто,
+    когда и что именно переосмыслил. Это не «последняя версия в облаке», а
+    полная хронология.
+  </p>
+  <p>
+    Третье - <b class="k">после активации не редактируется, а пересматривается</b>.
+    Вместо того чтобы тихо исправить старый файл, команда открывает новый
+    пересмотр - с отдельной записью, датой и мотивировкой. Это фундаментальное
+    отличие от вики: в вики правка незаметна, в артефакте - всегда видна.
+  </p>
+
+  <div class="aside">
+    Аналогия из медицины: история болезни. Врач не редактирует прошлые записи -
+    он добавляет новые. Каждая запись датирована и подписана. Итоговая картина
+    складывается из последовательности, а не из «последней исправленной версии».
+  </div>
+
+  <hr class="sep">
+
+  <h2>Один файл, одна ответственность</h2>
+  <p>
+    Самый частый антипаттерн: «давайте соберём все решения за квартал в один
+    большой документ». Или: «у нас есть мастер-спецификация, всё там». Логика
+    понятна - меньше файлов, меньше переключений.
+  </p>
+  <p>
+    Проблема обнаруживается через четыре-шесть месяцев. Мастер-документ разрастается
+    до 80 страниц. Поиск нужного решения занимает час. Никто не знает, что актуально,
+    а что давно устарело. Условие пересмотра если и было, то утонуло где-то в середине.
+    В итоге документ превращается в «архив, который мы не открываем».
+  </p>
+  <p>
+    Принцип «один файл - одно решение» решает эту проблему напрямую. Когда
+    меняется контекст для одного выбора - открывается ровно тот файл, который
+    к нему относится. Пересмотр не затрагивает соседние решения. Статус каждого
+    решения («активно», «пересмотрено», «устарело») виден без чтения всего
+    документа.
+  </p>
+  <p>
+    Практически это выглядит так: решение о выборе базы данных - отдельный файл.
+    Решение о формате API - отдельный файл. Требование к производительности -
+    отдельный файл. Доказательство того, что требование выполнено - ещё один
+    отдельный файл, с явной ссылкой на требование.
+  </p>
+  <p>
+    Звучит как много файлов. На практике за год активная команда накапливает
+    40-80 артефактов - это нормально. Главное не количество, а то, что каждый
+    из них <b class="k">отвечает на один вопрос</b>, и его легко найти через
+    поиск по ключевому слову.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Ритм работы с артефактами</h2>
+  <p>
+    Нет смысла изучать структуру артефактов отдельно от цикла работы с ними.
+    Типичный цикл выглядит так - от первого черновика до момента, когда запись
+    перестаёт быть актуальной.
+  </p>
+
+  <ol class="rhythm-steps">
+    <li>
+      <div class="step-content">
+        <div class="step-title">Создать черновик</div>
+        <div class="step-body">Завести запись по шаблону, заполнить контекст и предварительную мотивировку. Черновик - не обязательство: это пространство для мышления вслух перед тем, как записать окончательный выбор.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Заполнить обязательные поля</div>
+        <div class="step-body">Контекст, варианты (минимум три), доказательства, выбранный вариант, причины отказа от других, условие пересмотра. Пока хотя бы одно поле пропущено - черновик не готов к активации.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Проверить на валидность</div>
+        <div class="step-body">Кто-то из команды читает запись и отвечает на один вопрос: «если я буду работать с этим через год, пойму ли, что именно решено и почему». Если нет - возвращается на доработку.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Активировать</div>
+        <div class="step-body">Запись переходит из черновика в активное состояние. С этого момента она не редактируется, только пересматривается. Команда может на неё ссылаться как на источник истины.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Следить за условием пересмотра</div>
+        <div class="step-body">Каждая активная запись несёт дату или событие, по которому нужно вернуться. Инструмент журналирования показывает «устаревшие» записи - те, у которых дата пересмотра прошла. Это не ошибка, это сигнал.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Пересмотреть или продлить</div>
+        <div class="step-body">Два исхода: решение всё ещё актуально - продлить с новой датой и краткой мотивировкой. Решение устарело - открыть новый черновик с обновлённым контекстом и начать цикл заново. Старая запись остаётся как история.</div>
+      </div>
+    </li>
+  </ol>
+
+  <hr class="sep">
+
+  <h2>Что отличает живой артефакт от мёртвого</h2>
+  <p>
+    Большинство документации умирает не потому что команда ленится. Она умирает
+    потому что при создании в ней не было встроено ни одного механизма
+    самообновления. Есть три признака, по которым живой артефакт отличается
+    от мёртвого памятника.
+  </p>
+  <p>
+    <b class="k">Автор - реальный человек, не «секретарь команды».</b>
+    Мёртвые документы часто написаны нейтральным корпоративным голосом без
+    имени: «было решено», «команда постановила». Живой артефакт подписан
+    конкретным человеком, который сделал конкретный выбор. Это не вопрос
+    ответственности - это вопрос контекста. Через год читатель знает,
+    кому задать уточняющий вопрос, если запись неполная.
+  </p>
+  <p>
+    <b class="k">Есть условие пересмотра, которое сработает само.</b>
+    Не «пересмотреть когда-нибудь», а конкретный триггер: «через 6 месяцев»,
+    «при росте нагрузки в три раза», «при выходе новой версии библиотеки».
+    Что-то, что не требует, чтобы кто-то это вспомнил. Инструмент журналирования
+    помечает устаревшие записи - и именно поэтому важно, чтобы каждая запись
+    несла это условие.
+  </p>
+  <p>
+    <b class="k">Доказательства привязаны, а не упомянуты вскользь.</b>
+    «Мы проверяли - всё нормально» - это не доказательство. Живой артефакт
+    ссылается на конкретный замер: «тест на реальных данных показал 230 мс
+    при пиковой нагрузке, данные от 12 апреля, файл такой-то». Когда контекст
+    меняется, видно, актуален ли замер или он сделан при других условиях.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Антипаттерны</h2>
+  <p>
+    Четыре ошибки, которые я видел чаще всего. Каждая выглядит разумно в моменте
+    и разрушительна через полгода.
+  </p>
+
+  <ul class="antipattern-list">
+    <li>
+      <div class="ap-label">АРХИВНАЯ СВАЛКА</div>
+      <div class="ap-body">Команда создаёт артефакты, но никогда не пересматривает. Через год в репозитории 60 «активных» записей, половина из которых описывает реальность, которой больше нет. Никто не решается трогать «потому что вдруг что-то сломается».</div>
+    </li>
+    <li>
+      <div class="ap-label">ТИХАЯ ПРАВКА</div>
+      <div class="ap-body">Кто-то открывает активный артефакт и молча исправляет формулировку «чтобы актуализировать». Изменение не датировано, мотивировка не записана. Через три месяца никто не знает, когда именно поменялось решение и что было до.</div>
+    </li>
+    <li>
+      <div class="ap-label">ШАБЛОН БЕЗ ЗАПОЛНЕНИЯ</div>
+      <div class="ap-body">Файл создан по шаблону, но поля заполнены формально: «контекст - работаем над проектом X», «варианты - рассмотрели несколько», «условие пересмотра - по необходимости». Такая запись хуже пустой: она создаёт иллюзию того, что документация есть.</div>
+    </li>
+    <li>
+      <div class="ap-label">МЕГАДОКУМЕНТ</div>
+      <div class="ap-body">Все решения квартала - в одном файле. Каждый раз при изменении одного решения файл редактируется целиком. Git-история нечитаема. Никто не понимает, что изменилось и когда. Поиск нужного решения занимает 20 минут.</div>
+    </li>
+    <li>
+      <div class="ap-label">АРТЕФАКТ БЕЗ ДОКАЗАТЕЛЬСТВ</div>
+      <div class="ap-body">Решение выбрано, записано, активировано - но доказательства не привязаны. «Мы решили» без «потому что замер показал». Такой артефакт описывает выбор, но не даёт возможности проверить, актуален ли он при изменившихся данных.</div>
+    </li>
+  </ul>
+
+  <hr class="sep">
+
+  <h2>Глубже</h2>
+  <p>
+    Две следующие статьи разбирают отдельные части практики детально:
+    как устроен полный цикл принятия одного решения и что происходит
+    с записью после активации.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="../guides/decision-cycle">
+      <div class="start-who">ФОРМАЛЬНЫЙ ЦИКЛ</div>
+      <div class="start-where">Полный разбор одного решения: варианты, доказательства, выбор <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/lifecycle-cycle">
+      <div class="start-who">ЖИЗНЕННЫЙ ЦИКЛ</div>
+      <div class="start-where">Что после активации: stale, renew, supersede - пошаговый разбор <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+</main>
+</body>
+</html>

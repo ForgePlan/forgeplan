@@ -16,8 +16,9 @@
 
 interface Props {
   lang?: 'en' | 'ru';
+  includeSoftware?: boolean;
 }
-const { lang = 'en' } = Astro.props;
+const { lang = 'en', includeSoftware = false } = Astro.props;
 const site = Astro.site ?? new URL('https://forgeplan.dev');
 
 const url = (path: string) => new URL(path, site).href;
@@ -93,6 +94,30 @@ const siteNavigation = navItems.map((item, idx) => ({
   url: item.url.startsWith('http') ? item.url : url(item.url),
 }));
 
+const softwareApplication = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Forgeplan',
+  applicationCategory: 'DeveloperApplication',
+  applicationSubCategory: 'Decision Management',
+  operatingSystem: 'macOS, Linux, Windows',
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'USD',
+  },
+  softwareVersion: '0.33',
+  downloadUrl: 'https://github.com/ForgePlan/forgeplan/releases',
+  url: 'https://forgeplan.dev',
+  description: ru
+    ? 'Инструментарий инженерной методологии для решений, которые не протухают — CLI + MCP server с оценкой качества, отслеживанием доказательств и семантическим поиском.'
+    : 'Engineering methodology toolkit for decisions that last — CLI + MCP server with quality scoring, evidence tracking, and semantic search.',
+  publisher: {
+    '@type': 'Organization',
+    name: 'Forgeplan',
+  },
+};
+
 const safeJson = (obj: unknown) =>
   JSON.stringify(obj)
     .replace(/</g, '\\u003c')
@@ -102,3 +127,4 @@ const safeJson = (obj: unknown) =>
 <script type="application/ld+json" set:html={safeJson(organization)} />
 <script type="application/ld+json" set:html={safeJson(website)} />
 <script type="application/ld+json" set:html={safeJson(siteNavigation)} />
+{includeSoftware && <script type="application/ld+json" set:html={safeJson(softwareApplication)} />}
