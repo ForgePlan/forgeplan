@@ -1,0 +1,314 @@
+---
+// DocsHeader — inline content for Starlight's <header.header> slot.
+// NO outer <header> tag (Starlight provides one) and NO position:fixed
+// (Starlight's outer header is already sticky/positioned).
+// Mirrors Header.astro nav structure for visual consistency across the site.
+import Search from '@astrojs/starlight/components/Search.astro';
+import InstallMenu from './InstallMenu.astro';
+const path = Astro.url.pathname;
+const isActive = (...prefixes: string[]) =>
+  prefixes.some(p => path === p || path.startsWith(p));
+const isDocsActive   = isActive('/docs', '/ru/docs') &&
+  !isActive('/docs/cli', '/ru/docs/cli', '/docs/mcp', '/ru/docs/mcp');
+const isBlogActive   = isActive('/blog', '/ru/blog');
+const isGuidesActive = isActive('/guides', '/ru/guides');
+const isCliActive    = isActive('/docs/cli', '/ru/docs/cli');
+const isMcpActive    = isActive('/docs/mcp', '/ru/docs/mcp');
+
+const isRu = path === '/ru' || path === '/ru/' || path.startsWith('/ru/');
+const altPath = isRu
+  ? (path.replace(/^\/ru/, '') || '/')
+  : (path === '/' ? '/ru/blog' : '/ru' + path);
+const altLabel = isRu ? 'EN' : 'RU';
+const altLangName = isRu ? 'English' : 'Russian';
+---
+
+<a href="#main-content" class="skip-link">Skip to content</a>
+<div class="docs-header-row">
+  <a href="/" class="docs-header-brand">F<span class="docs-brand-dot">●</span>RGEPLAN</a>
+
+  <Search class="docs-search" />
+
+  <nav aria-label="Primary navigation" class="docs-header-nav">
+    <a href="/docs/getting-started/installation" class={`docs-nav-cell${isDocsActive ? ' active' : ''}`}>Docs</a>
+    <a href="/blog" class={`docs-nav-cell${isBlogActive ? ' active' : ''}`}>Blog</a>
+    <a href="/guides" class={`docs-nav-cell${isGuidesActive ? ' active' : ''}`}>Guides</a>
+    <a href="/docs/cli/health" class={`docs-nav-cell${isCliActive ? ' active' : ''}`}>CLI Ref</a>
+    <a href="/docs/mcp/" class={`docs-nav-cell${isMcpActive ? ' active' : ''}`}>MCP Tools</a>
+    <a href={altPath} class="docs-nav-cell" aria-label={`Switch to ${altLangName}`}>{altLabel}</a>
+    <div class="docs-nav-cell docs-nav-cell-install">
+      <InstallMenu />
+    </div>
+    <a href="https://github.com/ForgePlan/forgeplan" class="docs-nav-cell docs-nav-cell-icon" rel="noopener noreferrer" target="_blank" aria-label="GitHub" title="GitHub">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+    </a>
+  </nav>
+
+  <button id="theme-toggle" class="docs-theme-toggle" aria-label="Toggle dark/light theme">
+    <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7"
+               stroke="#FF6B35" stroke-width="1.5" fill="var(--forge-fg)"/>
+    </svg>
+  </button>
+</div>
+
+<script>
+  // --- Theme toggle ---
+  // Sync BOTH our `.light`/`.dark` class (used by forge palette CSS vars on landing/blog/guides)
+  // AND Starlight's `data-theme="light|dark"` attribute (used by Starlight on /docs).
+  const toggle = document.getElementById('theme-toggle');
+  const html = document.documentElement;
+  function applyTheme(theme: 'light' | 'dark') {
+    if (theme === 'light') { html.classList.remove('dark'); html.classList.add('light'); }
+    else { html.classList.remove('light'); html.classList.add('dark'); }
+    html.setAttribute('data-theme', theme);
+    localStorage.setItem('forgeplan-theme', theme);
+    try { localStorage.setItem('starlight-theme', theme); } catch {}
+  }
+  const saved = (localStorage.getItem('forgeplan-theme')
+    || localStorage.getItem('starlight-theme')
+    || html.getAttribute('data-theme')
+    || 'dark') as 'light' | 'dark';
+  applyTheme(saved === 'light' ? 'light' : 'dark');
+  toggle?.addEventListener('click', () => {
+    const next = html.classList.contains('light') ? 'dark' : 'light';
+    applyTheme(next);
+  });
+
+  // --- Shrink-on-scroll ---
+  // Reduce --sl-nav-height when scrolled past 64px so Starlight's outer header
+  // (height: var(--sl-nav-height)) shrinks and main-frame padding-top adjusts.
+  const docsHeader = document.querySelector('header.header');
+  if (docsHeader) {
+    let compact = false;
+    function applyCompact(c: boolean) {
+      if (c === compact) return;
+      compact = c;
+      html.style.setProperty('--sl-nav-height', c ? '2.25rem' : '4rem');
+      docsHeader.classList.toggle('docs-header-compact', c);
+    }
+    let ticking = false;
+    function check() {
+      applyCompact(window.scrollY > 64);
+      ticking = false;
+    }
+    window.addEventListener('scroll', () => {
+      if (!ticking) { requestAnimationFrame(check); ticking = true; }
+    }, { passive: true });
+    check();
+  }
+</script>
+
+<style is:global>
+  /* Starlight outer <header.header> — repaint to forge tokens */
+  header.header {
+    background: var(--forge-bg) !important;
+    border-bottom: 1px solid var(--forge-line) !important;
+    padding: 0 !important;
+    transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .docs-header-row {
+    height: 100%;
+    display: grid;
+    /* col 1 = sidebar width (brand sits here, aligned with sidebar items via its own padding)
+       col 2 = search (grows, starts at sidebar right edge = main content start)
+       col 3 = nav, col 4 = theme */
+    grid-template-columns: var(--sl-sidebar-width, 18.75rem) minmax(120px, 1fr) auto auto;
+    align-items: center;
+    /* gap 0 between col 1 and col 2 so search starts exactly at sidebar right edge.
+       Use right padding on brand-cell + left padding on search for visual breathing. */
+    column-gap: 0;
+    padding: 0 16px 0 0;
+    font-family: var(--font-body, 'Space Grotesk', system-ui, sans-serif);
+  }
+
+  .docs-header-brand {
+    color: var(--forge-fg);
+    text-decoration: none;
+    font-weight: 600;
+    letter-spacing: 3px;
+    font-size: 14px;
+    white-space: nowrap;
+    /* match sidebar item left indent (Starlight default ~24px) */
+    padding-inline-start: 24px;
+    transition: font-size 0.3s, letter-spacing 0.3s;
+  }
+  .docs-brand-dot { color: var(--color-forge-ember, #FF6B35); }
+
+  .docs-header-nav {
+    display: flex;
+    justify-self: end;
+    align-items: stretch;
+    height: 100%;
+    margin-inline-start: 16px;
+  }
+  .docs-nav-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 14px;
+    font-size: 12.5px;
+    color: var(--forge-fg);
+    text-decoration: none;
+    border: none;
+    position: relative;
+    overflow: hidden;
+    z-index: 1;
+    transition: color 0.2s, padding 0.3s, font-size 0.3s;
+  }
+  .docs-nav-cell::before {
+    content: '';
+    position: absolute;
+    /* extend 2px beyond cell to avoid sub-pixel sliver showing at boundaries */
+    inset: 0 -2px 0 -2px;
+    background: var(--forge-fg);
+    transform: translateX(-101%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: -1;
+  }
+  .docs-nav-cell:hover::before,
+  .docs-nav-cell:focus-visible::before { transform: translateX(0); }
+  .docs-nav-cell:hover,
+  .docs-nav-cell:focus-visible { color: var(--forge-bg); }
+  .docs-nav-cell:focus-visible {
+    outline: 2px solid var(--color-forge-ember, #FF6B35);
+    outline-offset: -2px;
+  }
+  .docs-nav-cell.active {
+    color: var(--color-forge-ember, #FF6B35);
+    font-weight: 500;
+  }
+  .docs-nav-install {
+    color: var(--color-forge-ember, #FF6B35);
+    font-weight: 500;
+  }
+  .docs-nav-cell-icon { padding: 0 12px; }
+  .docs-nav-cell-icon svg { transition: transform 0.2s; }
+  .docs-nav-cell-icon:hover svg { transform: scale(1.1); }
+  .docs-header-compact .docs-nav-cell-icon svg { width: 14px; height: 14px; }
+
+  /* Install cell hosts InstallMenu popup — must not clip (overflow visible).
+     Also gets visible right separator before the theme toggle. */
+  .docs-nav-cell-install {
+    overflow: visible;
+    padding: 0;
+    border-right: 1px solid var(--forge-line);
+  }
+  .docs-nav-cell-install::before { display: none; }
+
+  /* --- Search (Starlight <Search /> component) — wide bar between brand and nav.
+     Override Starlight default styles so its button looks like our forge search bar.
+     Starlight provides full functionality: click + Cmd/Ctrl+K + dialog + Pagefind UI. */
+  site-search.docs-search { display: contents; }
+
+  site-search.docs-search button[data-open-modal] {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: 36px !important;
+    padding: 0 14px !important;
+    background: var(--forge-surface, color-mix(in srgb, var(--forge-bg) 88%, var(--forge-fg))) !important;
+    border: 1px solid var(--forge-line) !important;
+    border-radius: 0 !important;
+    color: var(--forge-dim, var(--forge-fg)) !important;
+    font-family: inherit !important;
+    font-size: 13px !important;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  site-search.docs-search button[data-open-modal]:hover {
+    border-color: var(--color-forge-ember, #FF6B35) !important;
+    color: var(--forge-fg) !important;
+  }
+  site-search.docs-search button[data-open-modal]:focus-visible {
+    outline: 2px solid var(--color-forge-ember, #FF6B35) !important;
+    outline-offset: 2px;
+  }
+  site-search.docs-search button[data-open-modal] svg {
+    flex-shrink: 0;
+    opacity: 0.7;
+    width: 16px;
+    height: 16px;
+  }
+  site-search.docs-search button[data-open-modal] > span {
+    flex: 1;
+    text-align: start;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  site-search.docs-search button[data-open-modal] kbd {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    padding: 2px 6px;
+    background: transparent;
+    border: 1px solid var(--forge-line);
+    color: inherit;
+    flex-shrink: 0;
+    margin-inline-start: auto;
+  }
+  site-search.docs-search button[data-open-modal] kbd kbd {
+    border: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  /* Search dialog styling — match forge theme */
+  site-search.docs-search dialog {
+    background: var(--forge-bg);
+    color: var(--forge-fg);
+    border: 1px solid var(--forge-line);
+  }
+
+  .docs-theme-toggle {
+    width: 36px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    margin-inline-start: 8px;
+    transition: transform 0.3s;
+  }
+  .docs-theme-toggle:hover { transform: scale(1.05); }
+  .docs-theme-toggle svg { width: 18px; height: 18px; }
+  .docs-theme-toggle polygon { transition: stroke 0.3s, fill 0.3s; }
+  .docs-theme-toggle:hover polygon { stroke: var(--forge-fg); fill: var(--forge-fg); }
+  .docs-theme-toggle:focus-visible {
+    outline: 2px solid var(--color-forge-ember, #FF6B35);
+    outline-offset: -2px;
+  }
+
+  /* --- Compact state (scrolled) — tightens up the header --- */
+  .docs-header-compact .docs-header-brand {
+    font-size: 11px;
+    letter-spacing: 2px;
+  }
+  .docs-header-compact .docs-nav-cell {
+    padding: 0 10px;
+    font-size: 11px;
+  }
+  .docs-header-compact site-search.docs-search button[data-open-modal] {
+    height: 24px !important;
+    padding: 0 10px !important;
+    font-size: 11px !important;
+    gap: 6px !important;
+  }
+  .docs-header-compact site-search.docs-search button[data-open-modal] kbd { display: none; }
+  .docs-header-compact site-search.docs-search button[data-open-modal] > span { display: none; }
+  .docs-header-compact .docs-theme-toggle svg { width: 14px; height: 14px; }
+
+  /* Hide native Starlight search button inside Mobile Menu Footer to prevent dup */
+  @media (max-width: 900px) {
+    .docs-header-nav { display: none; }
+    .docs-search-btn kbd { display: none; }
+  }
+</style>

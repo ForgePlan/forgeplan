@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trust Calculus - F/G/R в 3D и связь с ADI</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root {
+    /* ForgePlan dark palette */
+    --bg:        #050505;
+    --bg-1:      #0b0b0b;
+    --bg-2:      #141414;
+    --bg-3:      #1a1a1a;
+
+    --text:      #f5f5f5;
+    --text-1:    #e5e5e5;
+    --text-2:    #a3a3a3;
+    --text-3:    #737373;
+    --text-4:    #525252;
+
+    --line:      rgba(255, 255, 255, 0.06);
+    --line-2:    rgba(255, 255, 255, 0.14);
+
+    --accent:    #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg: rgba(255, 90, 31, 0.18);
+
+    --ok:        #22c55e;
+    --err:       #ef4444;
+    --warn:      #f59e0b;
+
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* Axes data-viz colors */
+    --f-color:   #ff5a1f;  /* F · Formality - brand orange */
+    --g-color:   #22c55e;  /* G · Granularity - brand green */
+    --r-color:   #60a5fa;  /* R · Reliability - sky blue */
+
+    /* Hypothesis colors */
+    --h1-color:  #ef4444;
+    --h2-color:  #a3a3a3;
+    --h3-color:  #22c55e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  /* Typography */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--font-sans);
+    font-size: clamp(40px, 5.4vw, 64px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0 0 18px;
+  }
+  h2 {
+    font-family: var(--font-sans);
+    font-size: 28px;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    font-weight: 500;
+    color: var(--text);
+    margin: 64px 0 14px;
+  }
+  h3 {
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.3;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0;
+  }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; }
+  code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent-soft);
+    background: var(--accent-bg);
+    padding: 1px 6px;
+    border-radius: 0;
+  }
+  b.k { color: var(--text); font-weight: 500; }
+
+  /* Artifact cards (ForgePlan pattern) */
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 18px 20px 16px;
+    position: relative;
+  }
+  .card .tag-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 10px;
+  }
+  .card .tag-row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); display: inline-block; }
+  .card .meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+
+  /* Axes grid (F / G / R explainer) */
+  .axes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 32px; }
+  .axis-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px; }
+  .axis-card .axis-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 6px;
+  }
+  .axis-card h3 { font-size: 16px; margin-bottom: 6px; }
+  .axis-card .desc { font-size: 13px; color: var(--text-2); margin: 0 0 14px; line-height: 1.5; }
+  .axis-card .scale { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2); line-height: 1.85; }
+  .axis-card .scale b { color: var(--text); font-weight: 500; display: inline-block; min-width: 36px; }
+
+  .axis-card.f .axis-tag,
+  .axis-card.f .axis-letter { color: var(--f-color); }
+  .axis-card.g .axis-tag,
+  .axis-card.g .axis-letter { color: var(--g-color); }
+  .axis-card.r .axis-tag,
+  .axis-card.r .axis-letter { color: var(--r-color); }
+  .axis-card .axis-letter {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  /* Inline colored axis letters in body text */
+  .ax-f { color: var(--f-color); font-weight: 500; }
+  .ax-g { color: var(--g-color); font-weight: 500; }
+  .ax-r { color: var(--r-color); font-weight: 500; }
+
+  /* Scenario hypothesis cards */
+  .scenario { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px; }
+  .scenario .hypotheses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+  .hypo {
+    background: var(--bg-2);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 14px 16px 16px;
+  }
+  .hypo .tag-row {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 8px;
+  }
+  .hypo .tag-row .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .hypo.h1 .tag-row .dot { background: var(--h1-color); }
+  .hypo.h2 .tag-row .dot { background: var(--h2-color); }
+  .hypo.h3 .tag-row .dot { background: var(--h3-color); }
+  .hypo .title { font-size: 14px; color: var(--text); margin: 0 0 6px; font-weight: 500; line-height: 1.35; }
+  .hypo .hint { font-size: 12.5px; color: var(--text-2); line-height: 1.5; margin: 0; }
+
+  /* 3D chart wrap */
+  .chart-wrap {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 14px 14px 6px;
+    margin: 18px 0 0;
+  }
+  #plot3d { width: 100%; height: 580px; }
+  .chart-legend {
+    display: flex; flex-wrap: wrap; gap: 18px;
+    padding: 14px 16px 18px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .chart-legend .item { display: flex; align-items: center; gap: 7px; }
+  .chart-legend .sw { width: 9px; height: 9px; border-radius: 50%; }
+  .chart-legend .sw-plane { display: inline-block; width: 14px; height: 14px; border: 1.5px dashed var(--err); }
+
+  /* Evidence table */
+  .table-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 18px 0 0; }
+  .evidence-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .evidence-table th, .evidence-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+  .evidence-table th {
+    color: var(--text-3);
+    font-weight: 500;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line-2);
+  }
+  .evidence-table tr:last-child td { border-bottom: none; }
+  .evidence-table .num { font-family: var(--font-mono); text-align: right; color: var(--text-1); }
+  .evidence-table .num.avg { color: var(--text-3); }
+  .evidence-table .num.wlnk { color: var(--text); font-weight: 500; }
+  .evidence-table .num.wlnk.low { color: var(--err); }
+  .evidence-table .id { font-family: var(--font-mono); color: var(--text-3); }
+  .evidence-table .src { color: var(--text-1); }
+
+  .hpill { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; display: inline-flex; align-items: center; gap: 6px; }
+  .hpill .dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+  .hpill.h1 { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
+  .hpill.h1 .dot { background: var(--h1-color); }
+  .hpill.h2 { background: rgba(163, 163, 163, 0.12); color: var(--text-1); }
+  .hpill.h2 .dot { background: var(--h2-color); }
+  .hpill.h3 { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+  .hpill.h3 .dot { background: var(--h3-color); }
+
+  .verdict { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; display: inline-block; }
+  .verdict.supports { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+  .verdict.refutes  { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
+  .verdict.weakens  { background: rgba(245, 158, 11, 0.12); color: #fcd34d; }
+
+  /* Bar chart wrap */
+  .bars-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 18px 22px; margin-top: 18px; }
+  #barChart { height: 360px; }
+
+  /* Winner card */
+  .winner {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 22px 24px 22px;
+    margin: 18px 0 0;
+    position: relative;
+  }
+  .winner::before {
+    content: "";
+    position: absolute;
+    left: 24px; bottom: 22px;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .winner .head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .winner .badge { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .winner h3 { font-size: 18px; }
+  .winner p { margin: 8px 0 0; font-size: 14.5px; color: var(--text-2); }
+  .winner .winner-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); position: absolute; right: 24px; bottom: 18px; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 20px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Teaching notes */
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before {
+    counter-increment: step;
+    content: "0" counter(step);
+    position: absolute;
+    left: -8px; top: 1px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+  }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  /* Footer */
+  .footer {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-top: 64px;
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .axes, .scenario .hypotheses { grid-template-columns: 1fr; }
+    .pipeline { grid-template-columns: 1fr; }
+    .pipe-arrow { display: none; }
+    h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ADI → Evidence → DDR · интерактивный разбор</p>
+  <h1>Trust Calculus в 3D</h1>
+  <p class="lead">
+    Каждое доказательство, на котором держится решение, - это вектор в трёх независимых осях:
+    <span class="ax-f">F</span> (Formality), <span class="ax-g">G</span> (Granularity),
+    <span class="ax-r">R</span> (Reliability).
+    Чтобы выбрать гипотезу после ADI-разбора, мы не считаем среднее по этим осям. Доверие
+    ограничено самым слабым звеном - <code>trust = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>.
+    Это правило WLNK.
+  </p>
+
+  <h2>Три оси, по которым оценивается каждое утверждение</h2>
+  <p>Шкала 0-9 для каждой оси, оси независимы. Одно доказательство может быть строгим, но из ненадёжного источника - слабое звено решит за всё.</p>
+
+  <div class="axes">
+    <div class="axis-card f">
+      <div class="axis-tag">Ось · <span class="axis-letter">F</span></div>
+      <h3><span class="ax-f">F</span> · Formality · строгость</h3>
+      <p class="desc">Насколько точно сформулировано. Можно ли проверить или опровергнуть утверждение?</p>
+      <div class="scale">
+        <b>0-2</b> «мне кажется» · интуиция<br>
+        <b>3-5</b> claim с условиями<br>
+        <b>6-8</b> «при X p99 &lt; Y ms»<br>
+        <b>9</b> формальная спецификация
+      </div>
+    </div>
+    <div class="axis-card g">
+      <div class="axis-tag">Ось · <span class="axis-letter">G</span></div>
+      <h3><span class="ax-g">G</span> · Granularity · конкретика</h3>
+      <p class="desc">Насколько детально описано: числа, условия, окружение, повторы.</p>
+      <div class="scale">
+        <b>0-2</b> «медленно», «много»<br>
+        <b>3-5</b> «на 15% быстрее»<br>
+        <b>6-8</b> «p99 = 47 ms на 10k RPS»<br>
+        <b>9</b> воспроизводимый сетап
+      </div>
+    </div>
+    <div class="axis-card r">
+      <div class="axis-tag">Ось · <span class="axis-letter">R</span></div>
+      <h3><span class="ax-r">R</span> · Reliability · источник</h3>
+      <p class="desc">Откуда пришло утверждение. Можно ли доверять источнику в этом контексте?</p>
+      <div class="scale">
+        <b>0-2</b> анекдот, одна реплика<br>
+        <b>3-5</b> whitepaper вендора, блог<br>
+        <b>6-7</b> внутренний бенчмарк<br>
+        <b>8-9</b> production-замер, peer-review
+      </div>
+    </div>
+  </div>
+
+  <h2>Контекст · ADI-разбор «/search медленный»</h2>
+  <div class="scenario">
+    <p style="margin: 0;">
+      p95 на эндпоинте <code>/search</code> вырос до 184 ms при 50k документов. Цель - вернуть p95 ниже 120 ms
+      без смены поисковой архитектуры. Перед тем как менять код, ADI-разбор зафиксировал три разные гипотезы.
+    </p>
+    <div class="hypotheses">
+      <div class="hypo h1">
+        <div class="tag-row"><span class="dot"></span><span>H1 · гипотеза</span></div>
+        <div class="title">Bottleneck в индексе</div>
+        <p class="hint">Прогноз: <code>EXPLAIN ANALYZE</code> показывает &gt;50 ms на индексном поиске.</p>
+      </div>
+      <div class="hypo h2">
+        <div class="tag-row"><span class="dot"></span><span>H2 · гипотеза</span></div>
+        <div class="title">Bottleneck в re-ranking</div>
+        <p class="hint">Прогноз: flamegraph показывает &gt;60% времени в <code>rerankCandidates</code>.</p>
+      </div>
+      <div class="hypo h3">
+        <div class="tag-row"><span class="dot"></span><span>H3 · гипотеза</span></div>
+        <div class="title">Слишком большое окно кандидатов</div>
+        <p class="hint">Прогноз: <code>candidateLimit 1000→200</code> снизит p95 минимум на 25%.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2>Доказательства в <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span>-пространстве</h2>
+  <p>
+    Каждая точка - отдельное доказательство. Цвет указывает гипотезу, которую evidence адресует.
+    Прозрачная плоскость показывает порог <code><span class="ax-f">F</span> + <span class="ax-g">G</span> + <span class="ax-r">R</span> = 12</code> - всё, что лежит «под» ней, считается слабым evidence.
+    Сцена крутится мышью; при наведении видна полная карточка с WLNK и вердиктом.
+  </p>
+
+  <div class="chart-wrap">
+    <div id="plot3d"></div>
+    <div class="chart-legend">
+      <span class="item"><span class="sw" style="background: var(--h1-color)"></span>H1 · индекс</span>
+      <span class="item"><span class="sw" style="background: var(--h2-color)"></span>H2 · re-ranking</span>
+      <span class="item"><span class="sw" style="background: var(--h3-color)"></span>H3 · candidateLimit</span>
+      <span class="item" style="margin-left: 12px;"><span class="sw-plane"></span>порог <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span> = 12 · weak zone</span>
+    </div>
+  </div>
+
+  <h2>Семь evidence · что показывает Trust Calculus</h2>
+  <p>
+    Колонка <b class="k">WLNK</b> = <code>min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>. Это не сумма и не среднее - это самое слабое звено вектора.
+    Сравните с тем, как обманывает «средний балл», когда одна ось критически проседает.
+  </p>
+
+  <div class="table-wrap">
+    <table class="evidence-table" id="ev-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Гипотеза</th>
+          <th>Источник</th>
+          <th class="num"><span class="ax-f">F</span></th>
+          <th class="num"><span class="ax-g">G</span></th>
+          <th class="num"><span class="ax-r">R</span></th>
+          <th class="num">Avg</th>
+          <th class="num">WLNK</th>
+          <th>Вердикт</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h2>Среднее обманывает · WLNK против Average</h2>
+  <p>
+    Возьмите E5 (whitepaper вендора): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. Среднее = 6 - выглядит твёрдо. Но <span class="ax-r">R</span>=3 - это маркетинговая бумага,
+    источник продаёт продукт. Для production-решения слабое <span class="ax-r">R</span> не компенсируется красивой формулировкой.
+    WLNK = 3 честно показывает: использовать как опору для решения нельзя.
+  </p>
+  <div class="bars-wrap">
+    <canvas id="barChart" role="img" aria-label="Сравнение среднего F+G+R и WLNK (min) для семи доказательств"></canvas>
+  </div>
+
+  <h2>Кто победил по ADI · выбор гипотезы</h2>
+  <p>
+    Применяем Trust Calculus к семи evidence. Победитель - гипотеза с самым сильным <i>supporting</i> доказательством
+    по правилу WLNK. Среднее проигнорировано - считаем только <code>min(F, G, R)</code>.
+  </p>
+  <div class="winner">
+    <div class="head">
+      <span class="badge">winner</span>
+      <h3>H3 · уменьшение candidateLimit</h3>
+    </div>
+    <p>
+      Лучшее supporting evidence - E6 (внутренний бенчмарк): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
+      H1 опровергнута собственным замером E2 (EXPLAIN ANALYZE показал 18-24 ms, это
+      <i>weakens</i> гипотезу). H2 имеет WLNK=7 от flamegraph, но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у H3.
+      DDR пишется по H3 с условиями пересмотра - decay-триггеры показаны в pipeline ниже.
+    </p>
+    <span class="winner-tag">H3 · activated</span>
+  </div>
+
+  <h2>Цикл целиком · ADI → Evidence → Trust Calculus → DDR</h2>
+  <p>Trust Calculus - это инспекция между сбором фактов и фиксацией решения. Не пропустите decay-триггеры в DDR - без них решение становится памятником.</p>
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · ADI</div>
+      <div class="step-title">3 гипотезы</div>
+      <div class="step-desc">Проверяемые следствия для каждой версии</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · Evidence</div>
+      <div class="step-title">Замеры и источники</div>
+      <div class="step-desc">Каждое доказательство с <span class="ax-f">F</span> · <span class="ax-g">G</span> · <span class="ax-r">R</span></div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Trust Calculus</div>
+      <div class="step-title">WLNK = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</div>
+      <div class="step-desc">Порог <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span>&lt;12 = слабое evidence</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">04 · DDR</div>
+      <div class="step-title">Решение + decay</div>
+      <div class="step-desc">Условия пересмотра, триггеры, TTL</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>trust-calculus · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
+  </div>
+
+</main>
+
+<script>
+  // ---------- Safety helpers ----------
+  function showError(host, msg) {
+    if (!host) return;
+    host.innerHTML =
+      '<div style="padding: 48px 24px; text-align: center; color: #fca5a5; font-family: var(--font-mono, monospace); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; line-height: 1.6;">' +
+      msg + '</div>';
+  }
+  function waitFor(globalName, then, timeoutMs) {
+    const start = Date.now();
+    (function poll() {
+      if (typeof window[globalName] !== 'undefined') { then(); return; }
+      if (Date.now() - start > (timeoutMs || 8000)) {
+        const msg = globalName + ' не загрузился · проверьте интернет или CDN-блокировку (cdn.plot.ly · cdn.jsdelivr.net)';
+        if (globalName === 'Plotly') showError(document.getElementById('plot3d'), msg);
+        if (globalName === 'Chart')  {
+          const c = document.getElementById('barChart');
+          if (c && c.parentNode) showError(c.parentNode, msg);
+        }
+        return;
+      }
+      setTimeout(poll, 100);
+    })();
+  }
+
+  // ---------- Evidence dataset ----------
+  const evidence = [
+    { id: 'E1', hypo: 'H1', source: 'PostgreSQL docs (vendor)',         F: 6, G: 4, R: 4, verdict: 'supports' },
+    { id: 'E2', hypo: 'H1', source: 'EXPLAIN ANALYZE on staging (own)', F: 7, G: 8, R: 8, verdict: 'refutes'  },
+    { id: 'E3', hypo: 'H2', source: 'Flamegraph staging (own)',         F: 7, G: 8, R: 7, verdict: 'supports' },
+    { id: 'E4', hypo: 'H2', source: 'Slack message from engineer',      F: 2, G: 3, R: 2, verdict: 'weakens'  },
+    { id: 'E5', hypo: 'H3', source: 'Vendor whitepaper',                F: 7, G: 8, R: 3, verdict: 'supports' },
+    { id: 'E6', hypo: 'H3', source: 'Internal benchmark (own)',         F: 7, G: 9, R: 7, verdict: 'supports' },
+    { id: 'E7', hypo: 'H3', source: 'Customer support ticket',          F: 4, G: 5, R: 5, verdict: 'supports' },
+  ];
+
+  // ForgePlan-aligned palette for hypotheses
+  const colorHypo = { H1: '#ef4444', H2: '#a3a3a3', H3: '#22c55e' };
+  const symbolVerdict = { supports: 'circle', weakens: 'diamond-open', refutes: 'cross' };
+
+  function wlnk(e) { return Math.min(e.F, e.G, e.R); }
+  function avg(e)  { return ((e.F + e.G + e.R) / 3); }
+
+  // ---------- Build evidence table ----------
+  (function renderTable() {
+    const tbody = document.querySelector('#ev-table tbody');
+    evidence.forEach(e => {
+      const w = wlnk(e);
+      const a = avg(e).toFixed(1);
+      const lowClass = w < 5 ? 'low' : '';
+      tbody.insertAdjacentHTML('beforeend',
+        '<tr>' +
+          '<td class="id">' + e.id + '</td>' +
+          '<td><span class="hpill ' + e.hypo.toLowerCase() + '"><span class="dot"></span>' + e.hypo + '</span></td>' +
+          '<td class="src">' + e.source + '</td>' +
+          '<td class="num">' + e.F + '</td>' +
+          '<td class="num">' + e.G + '</td>' +
+          '<td class="num">' + e.R + '</td>' +
+          '<td class="num avg">' + a + '</td>' +
+          '<td class="num wlnk ' + lowClass + '">' + w + '</td>' +
+          '<td><span class="verdict ' + e.verdict + '">' + e.verdict + '</span></td>' +
+        '</tr>');
+    });
+  })();
+
+  // ---------- 3D scatter (Plotly) ----------
+  function plot3d() {
+    const groups = {};
+    evidence.forEach(e => {
+      const key = e.hypo;
+      if (!groups[key]) groups[key] = { x: [], y: [], z: [], text: [], hovertext: [], symbol: [] };
+      groups[key].x.push(e.F);
+      groups[key].y.push(e.G);
+      groups[key].z.push(e.R);
+      groups[key].text.push(e.id);
+      groups[key].symbol.push(symbolVerdict[e.verdict] || 'circle');
+      const w = wlnk(e);
+      groups[key].hovertext.push(
+        '<b>' + e.id + '</b> · ' + e.hypo + ' · ' + e.verdict + '<br>' +
+        e.source + '<br>' +
+        '<span style="color:#ff5a1f">F</span>=' + e.F +
+        ' · <span style="color:#22c55e">G</span>=' + e.G +
+        ' · <span style="color:#60a5fa">R</span>=' + e.R + '<br>' +
+        'WLNK = min(<span style="color:#ff5a1f">F</span>,<span style="color:#22c55e">G</span>,<span style="color:#60a5fa">R</span>) = <b>' + w + '</b><br>' +
+        'Average = ' + avg(e).toFixed(1)
+      );
+    });
+
+    const traces = Object.keys(groups).map(h => ({
+      type: 'scatter3d',
+      mode: 'markers+text',
+      name: h,
+      x: groups[h].x, y: groups[h].y, z: groups[h].z,
+      text: groups[h].text,
+      textposition: 'top center',
+      textfont: { color: '#f5f5f5', size: 11, family: 'JetBrains Mono, monospace' },
+      hoverinfo: 'text',
+      hovertext: groups[h].hovertext,
+      marker: {
+        size: 9,
+        color: colorHypo[h],
+        symbol: groups[h].symbol,
+        line: { color: '#050505', width: 1 },
+        opacity: 0.95
+      }
+    }));
+
+    // Threshold plane F+G+R = 12
+    const plane = {
+      type: 'mesh3d',
+      x: [12, 0, 0], y: [0, 12, 0], z: [0, 0, 12],
+      i: [0], j: [1], k: [2],
+      opacity: 0.14,
+      color: '#ef4444',
+      hoverinfo: 'skip',
+      showlegend: false
+    };
+    const planeEdge = {
+      type: 'scatter3d',
+      mode: 'lines',
+      x: [12, 0, 0, 12], y: [0, 12, 0, 0], z: [0, 0, 12, 0],
+      line: { color: '#ef4444', width: 2, dash: 'dash' },
+      hoverinfo: 'skip',
+      showlegend: false
+    };
+
+    const axisCommon = {
+      range: [0, 9.6],
+      tick0: 0,
+      dtick: 1,
+      gridcolor: 'rgba(255, 255, 255, 0.08)',
+      zerolinecolor: 'rgba(255, 255, 255, 0.18)',
+      tickfont: { color: '#a3a3a3', size: 11, family: 'JetBrains Mono, monospace' },
+      backgroundcolor: 'rgba(11, 11, 11, 0.6)',
+      showbackground: true
+    };
+
+    const layout = {
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: 'transparent',
+      margin: { l: 0, r: 0, t: 8, b: 0 },
+      showlegend: false,
+      scene: {
+        xaxis: { ...axisCommon, title: { text: 'F · Formality',   font: { color: '#ff5a1f', size: 14, family: 'JetBrains Mono, monospace' } } },
+        yaxis: { ...axisCommon, title: { text: 'G · Granularity', font: { color: '#22c55e', size: 14, family: 'JetBrains Mono, monospace' } } },
+        zaxis: { ...axisCommon, title: { text: 'R · Reliability', font: { color: '#60a5fa', size: 14, family: 'JetBrains Mono, monospace' } } },
+        camera: { eye: { x: 1.5, y: 1.4, z: 1.0 } },
+        aspectmode: 'cube'
+      }
+    };
+
+    const config = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ['orbitRotation'] };
+    Plotly.newPlot('plot3d', [...traces, plane, planeEdge], layout, config);
+  }
+
+  // ---------- Bar chart: Average vs WLNK ----------
+  function barChart() {
+    const ctx = document.getElementById('barChart');
+    const labels = evidence.map(e => e.id + ' · ' + e.hypo);
+    const avgs = evidence.map(e => Number(avg(e).toFixed(2)));
+    const wlnks = evidence.map(e => wlnk(e));
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Average · (F + G + R) / 3',
+            data: avgs,
+            backgroundColor: 'rgba(163, 163, 163, 0.35)',
+            borderColor: '#a3a3a3',
+            borderWidth: 1
+          },
+          {
+            label: 'WLNK · min(F, G, R)',
+            data: wlnks,
+            backgroundColor: 'rgba(255, 90, 31, 0.7)',
+            borderColor: '#ff5a1f',
+            borderWidth: 1
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            max: 9,
+            ticks: { color: '#a3a3a3', stepSize: 1, font: { family: 'JetBrains Mono, monospace' } },
+            grid: { color: 'rgba(255,255,255,0.06)' },
+            title: { display: true, text: 'Балл (0-9)', color: '#a3a3a3', font: { family: 'Inter, sans-serif' } }
+          },
+          x: {
+            ticks: { color: '#a3a3a3', autoSkip: false, maxRotation: 0, font: { family: 'JetBrains Mono, monospace' } },
+            grid: { display: false }
+          }
+        },
+        plugins: {
+          legend: {
+            labels: {
+              color: '#e5e5e5',
+              boxWidth: 12,
+              boxHeight: 12,
+              font: { family: 'Inter, sans-serif', size: 12 }
+            }
+          },
+          tooltip: {
+            backgroundColor: '#0b0b0b',
+            borderColor: 'rgba(255,255,255,0.14)',
+            borderWidth: 1,
+            titleColor: '#f5f5f5',
+            bodyColor: '#e5e5e5',
+            titleFont: { family: 'JetBrains Mono, monospace' },
+            bodyFont:  { family: 'JetBrains Mono, monospace' },
+            callbacks: {
+              footer: (items) => {
+                const i = items[0].dataIndex;
+                const e = evidence[i];
+                return 'F=' + e.F + ' G=' + e.G + ' R=' + e.R + ' · ' + e.source;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ---------- Boot ----------
+  function boot() {
+    waitFor('Plotly', plot3d);
+    waitFor('Chart',  barChart);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+</script>
+
+</body>
+</html>

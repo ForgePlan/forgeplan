@@ -1,0 +1,130 @@
+---
+import path from 'node:path';
+import Landing from '../../../layouts/Landing.astro';
+import Header from '../../../components/Header.astro';
+import BlogFooter from '../../../components/blog/BlogFooter.astro';
+import SiteJsonLd from '../../../components/SiteJsonLd.astro';
+import { guides, getGuide } from '../../../data/guides.ts';
+import { extractEmbed } from '../../../lib/embed-html.js';
+import '../../../styles/blog-theme.css';
+
+export async function getStaticPaths() {
+  return guides.map(g => ({ params: { slug: g.slug } }));
+}
+
+const { slug } = Astro.params;
+const guide = getGuide(slug as string);
+if (!guide) throw new Error(`Guide not found: ${slug}`);
+
+const filepath = path.resolve(`public/guides-raw/${slug}.html`);
+const embed = extractEmbed(filepath);
+
+const site = Astro.site ?? new URL('https://forgeplan.dev');
+const canonical = new URL(Astro.url.pathname, site).href;
+const altEn = new URL(`/guides/${slug}`, site).href;
+
+const ld = {
+  '@context': 'https://schema.org',
+  '@type': 'LearningResource',
+  name: guide.title_ru,
+  description: guide.desc_ru,
+  url: canonical,
+  inLanguage: 'ru',
+  isPartOf: { '@type': 'WebSite', name: 'Forgeplan', url: site.href },
+  learningResourceType: guide.pill === 'interactive' ? 'Interactive Resource' : 'Lesson',
+  educationalLevel: 'Intermediate',
+};
+const breadcrumbs = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Forgeplan', item: site.href },
+    { '@type': 'ListItem', position: 2, name: 'Гайды', item: new URL('/ru/guides/', site).href },
+    { '@type': 'ListItem', position: 3, name: guide.title_ru, item: canonical },
+  ],
+};
+const safeJson = (o: unknown) => JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+
+const ordered = [...guides].sort((a, b) => a.order - b.order);
+const idx = ordered.findIndex(g => g.slug === slug);
+const prev = idx > 0 ? ordered[idx - 1] : null;
+const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+---
+<Landing title={`${guide.title_ru} — Forgeplan Гайды`} description={guide.desc_ru} lang="ru">
+  <Header />
+  <link slot="head" rel="canonical" href={canonical} />
+  <link slot="head" rel="alternate" hreflang="ru" href={canonical} />
+  <link slot="head" rel="alternate" hreflang="en" href={altEn} />
+  <link slot="head" rel="alternate" hreflang="x-default" href={altEn} />
+  <script slot="head" type="application/ld+json" set:html={safeJson(ld)} />
+  <script slot="head" type="application/ld+json" set:html={safeJson(breadcrumbs)} />
+  <meta slot="head" property="og:type" content="article" />
+  <meta slot="head" property="og:title" content={guide.title_ru} />
+  <meta slot="head" property="og:description" content={guide.desc_ru} />
+  <meta slot="head" property="og:url" content={canonical} />
+  <meta slot="head" property="og:image" content={new URL('/og-default.png', site).href} />
+  <meta slot="head" property="og:locale" content="ru_RU" />
+  <meta slot="head" property="og:site_name" content="Forgeplan" />
+  <meta slot="head" name="twitter:card" content="summary_large_image" />
+  <meta slot="head" name="twitter:title" content={guide.title_ru} />
+  <meta slot="head" name="twitter:description" content={guide.desc_ru} />
+  <meta slot="head" name="twitter:image" content={new URL('/og-default.png', site).href} />
+  <SiteJsonLd lang="ru" />
+
+  <style is:global set:html={embed.scopedCss}></style>
+  {embed.externalScripts.map(src => (
+    <script src={src} is:inline></script>
+  ))}
+
+  <nav class="guide-topbar" aria-label="Хлебные крошки">
+    <ol class="guide-crumbs">
+      <li><a href="/ru">Forgeplan</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li><a href="/ru/guides">Гайды</a></li>
+      <li class="guide-crumb-sep" aria-hidden="true">/</li>
+      <li class="guide-crumb-current" aria-current="page">{guide.title_ru}</li>
+    </ol>
+  </nav>
+
+  <article id="main-content" class="guide-embedded" set:html={embed.bodyHtml}></article>
+
+  {embed.inlineScripts.map(src => (
+    <script is:inline set:html={src}></script>
+  ))}
+
+  <aside class="guide-resources" aria-label="Ресурсы">
+    <a href="/ru/docs/methodology/overview" class="guide-resource">
+      <span class="guide-resource-tag">DOCS</span>
+      <span class="guide-resource-name">Обзор методологии и справочник</span>
+    </a>
+    <a href="https://github.com/ForgePlan/forgeplan" class="guide-resource" target="_blank" rel="noopener">
+      <span class="guide-resource-tag">GITHUB</span>
+      <span class="guide-resource-name">Исходный код и релизы</span>
+    </a>
+    <a href="https://github.com/ForgePlan/forgeplan/discussions" class="guide-resource" target="_blank" rel="noopener">
+      <span class="guide-resource-tag">DISCUSSIONS</span>
+      <span class="guide-resource-name">Вопросы и обратная связь</span>
+    </a>
+  </aside>
+
+  <nav class="guide-prevnext" aria-label="Навигация по порядку чтения">
+    <div class="guide-prevnext-cell">
+      {prev ? (
+        <a href={`/ru/guides/${prev.slug}`}>
+          <span class="guide-prevnext-dir">← Назад</span>
+          <span class="guide-prevnext-title">#{String(prev.order).padStart(2, '0')} · {prev.title_ru}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">— Начало серии</span>}
+    </div>
+    <div class="guide-prevnext-cell guide-prevnext-next">
+      {next ? (
+        <a href={`/ru/guides/${next.slug}`}>
+          <span class="guide-prevnext-dir">Вперёд →</span>
+          <span class="guide-prevnext-title">#{String(next.order).padStart(2, '0')} · {next.title_ru}</span>
+        </a>
+      ) : <span class="guide-prevnext-empty">Конец серии —</span>}
+    </div>
+  </nav>
+
+  <BlogFooter lang="ru" />
+</Landing>

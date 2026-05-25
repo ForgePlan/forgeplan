@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgePlan · интерактивные разборы методологии</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Section colors */
+    --sec-foundation: #60a5fa;
+    --sec-feature: #22c55e;
+    --sec-spec: #f59e0b;
+    --sec-tool: #ff5a1f;
+    --sec-agent: #c084fc;
+    --sec-3d: #ec4899;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.8vw, 72px); line-height: 1.04; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 24px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 56px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 14px; color: var(--text-2); font-size: 15px; max-width: 760px; }
+  p.lead { font-size: 18px; color: var(--text-1); line-height: 1.55; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+
+  /* Stats line */
+  .stats { display: flex; gap: 28px; flex-wrap: wrap; margin: 24px 0 0; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); }
+  .stats .stat strong { color: var(--text); font-weight: 500; }
+
+  /* Where to start · decision blocks */
+  .where-start { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 22px 0 0; }
+  .where-start .ws-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+  .ws-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 18px 0 0; }
+  .ws-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px; text-decoration: none; transition: border-color .2s, background .2s; display: flex; flex-direction: column; gap: 10px; }
+  .ws-card:hover { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
+  .ws-card .ws-q { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+  .ws-card .ws-ans { font-size: 14.5px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .ws-card .ws-go { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
+
+  /* Reading order */
+  .order { display: grid; gap: 12px; margin: 22px 0 0; }
+  .order-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; text-decoration: none; display: grid; grid-template-columns: 56px 1fr auto; gap: 20px; align-items: center; transition: border-color .2s, background .2s; }
+  .order-card:hover { background: rgba(255, 90, 31, 0.04); }
+  .order-card.foundation:hover { border-color: var(--sec-foundation); }
+  .order-card.feature:hover    { border-color: var(--sec-feature); }
+  .order-card.spec:hover       { border-color: var(--sec-spec); }
+  .order-card.tool:hover       { border-color: var(--sec-tool); }
+  .order-card.agent:hover      { border-color: var(--sec-agent); }
+  .order-card.lifecycle:hover  { border-color: var(--sec-feature); }
+  .order-card.multi:hover      { border-color: var(--sec-agent); }
+  .order-card.viz:hover        { border-color: var(--sec-3d); }
+  .order-card .oc-num { font-family: var(--font-mono); font-size: 28px; font-weight: 500; color: var(--text-3); letter-spacing: -0.02em; }
+  .order-card.foundation .oc-num { color: var(--sec-foundation); }
+  .order-card.feature .oc-num    { color: var(--sec-feature); }
+  .order-card.spec .oc-num       { color: var(--sec-spec); }
+  .order-card.tool .oc-num       { color: var(--sec-tool); }
+  .order-card.agent .oc-num      { color: var(--sec-agent); }
+  .order-card.lifecycle .oc-num  { color: var(--sec-feature); }
+  .order-card.multi .oc-num      { color: var(--sec-agent); }
+  .order-card.viz .oc-num        { color: var(--sec-3d); }
+  .order-card .oc-body { display: flex; flex-direction: column; gap: 6px; }
+  .order-card .oc-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .order-card .oc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); }
+  .order-card .oc-pill { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; padding: 2px 7px; border-radius: 0; }
+  .order-card .oc-pill.theory { background: rgba(96, 165, 250, 0.12); color: #93c5fd; }
+  .order-card .oc-pill.interactive { background: rgba(236, 72, 153, 0.12); color: #f9a8d4; }
+  .order-card .oc-pill.tool { background: rgba(255, 90, 31, 0.12); color: var(--accent); }
+  .order-card .oc-title { font-size: 18px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .order-card .oc-sub { font-size: 13.5px; color: var(--text-2); line-height: 1.55; max-width: 600px; }
+  .order-card .oc-arrow { font-family: var(--font-mono); font-size: 24px; color: var(--text-3); letter-spacing: -0.05em; transition: color .2s, transform .2s; }
+  .order-card:hover .oc-arrow { color: var(--accent); transform: translateX(4px); }
+
+  /* Topic groups (alternative navigation) */
+  .topic-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .topic-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
+  .topic-card .tc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .topic-card .tc-title { font-size: 15px; color: var(--text); font-weight: 500; margin-bottom: 10px; line-height: 1.35; }
+  .topic-card ul { margin: 0; padding-left: 18px; color: var(--text-1); font-size: 13.5px; line-height: 1.7; }
+  .topic-card ul a { color: var(--text-1); text-decoration: none; border-bottom: 1px dotted var(--text-3); }
+  .topic-card ul a:hover { color: var(--accent); border-color: var(--accent); }
+  .topic-card ul li { margin: 4px 0; }
+
+  /* External docs link */
+  .ext-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 22px; margin: 22px 0 0; text-decoration: none; transition: border-color .2s, background .2s; }
+  .ext-link:hover { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
+  .ext-link .el-text { display: flex; flex-direction: column; gap: 4px; }
+  .ext-link .el-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+  .ext-link .el-title { font-family: var(--font-sans); font-size: 15px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .ext-link .el-arrow { font-family: var(--font-mono); font-size: 18px; color: var(--accent); letter-spacing: -0.05em; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .ws-grid, .topic-grid { grid-template-columns: 1fr; }
+    .order-card { grid-template-columns: 40px 1fr; gap: 14px; padding: 18px 20px; }
+    .order-card .oc-arrow { display: none; }
+    .order-card .oc-num { font-size: 22px; }
+    h1 { font-size: 36px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">teaching-assets · index · v1</p>
+  <h1>Интерактивные разборы методологии</h1>
+  <p class="lead">
+    Восемь самодостаточных страниц, которые объясняют ForgePlan-методологию через аналогии,
+    визуализации и worked examples. Каждая открывается двойным кликом, читается одним человеком,
+    идёт по сценарию от концепции до cli-команды. Ниже - три способа найти нужный разбор:
+    через вопрос, через рекомендуемый порядок, или через тему.
+  </p>
+
+  <div class="stats">
+    <span class="stat">пар <strong>10</strong> разборов</span>
+    <span class="stat">шесть <strong>теоретических</strong></span>
+    <span class="stat">три <strong>интерактива</strong></span>
+    <span class="stat">один <strong>landing</strong> (этот файл)</span>
+  </div>
+
+  <!-- WHERE TO START -->
+  <h2>Откуда начать · по вопросу</h2>
+  <div class="where-start">
+    <div class="ws-tag">три типичных входа</div>
+    <p>
+      Выберите вопрос, который ближе всего к вашей ситуации. Каждая карточка ведёт в разбор,
+      который отвечает именно на этот вопрос - не на всю методологию сразу.
+    </p>
+    <div class="ws-grid">
+      <a class="ws-card" href="decision-cycle.html">
+        <span class="ws-q">если вы хотите понять</span>
+        <span class="ws-ans">«Как принимать архитектурные решения, чтобы через год команда понимала, почему именно так?»</span>
+        <span class="ws-go">→ decision-cycle</span>
+      </a>
+      <a class="ws-card" href="bmad-cycle.html">
+        <span class="ws-q">если вы хотите понять</span>
+        <span class="ws-ans">«Как одна строка из Slack превращается в production-ready фичу без скоупа-монстра?»</span>
+        <span class="ws-go">→ bmad-cycle</span>
+      </a>
+      <a class="ws-card" href="forgeplan-cycle.html">
+        <span class="ws-q">если вы хотите понять</span>
+        <span class="ws-ans">«Что вообще такое ForgePlan и почему это не очередной ADR-шаблон в Notion?»</span>
+        <span class="ws-go">→ forgeplan-cycle</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- READING ORDER -->
+  <h2>Рекомендуемый порядок чтения</h2>
+  <p>
+    Каждый последующий разбор опирается на предыдущие. Можно скакать, но если читаете впервые -
+    сверху вниз даёт наименьшие пробелы.
+  </p>
+  <div class="order">
+
+    <a class="order-card foundation" href="decision-cycle.html">
+      <div class="oc-num">01</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">фундамент · одно решение</span>
+          <span class="oc-pill theory">теория</span>
+        </div>
+        <div class="oc-title">ADI · DDR · Trust Calculus</div>
+        <div class="oc-sub">Как работает следователь: три гипотезы, проверяемые следствия, evidence. DDR - мотивировочная часть с условиями пересмотра. Trust Calculus - F/G/R-оценка силы доказательств с правилом WLNK.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card viz" href="trust-calculus.html">
+      <div class="oc-num">02</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">приложение к 01 · интерактив</span>
+          <span class="oc-pill interactive">3D-чарт</span>
+        </div>
+        <div class="oc-title">Trust Calculus в 3D F/G/R</div>
+        <div class="oc-sub">3D-сцена с семью evidence на сценарии <code>/search</code> latency. Плоскость порога F+G+R=12, hover-карточки, выбор гипотезы по WLNK. Сцену можно крутить мышью - учебный артефакт для проектора.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card feature" href="bmad-cycle.html">
+      <div class="oc-num">03</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">одна фича</span>
+          <span class="oc-pill theory">теория</span>
+        </div>
+        <div class="oc-title">BMAD · 13-step PRD · Adversarial Review</div>
+        <div class="oc-sub">Четыре фазы воронки (Brainstorming → Modeling → Architecting → Delivery), 13 секций PRD из которых 3 критичные (Non-Goals, Risks, Open Questions), и adversarial review чужими глазами как third quality gate.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card spec" href="spec-cycle.html">
+      <div class="oc-num">04</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">одна спецификация</span>
+          <span class="oc-pill theory">теория</span>
+        </div>
+        <div class="oc-title">Spec · Delta · R_eff</div>
+        <div class="oc-sub">Spec против PRD: проверяемое поведение, а не намерение. Delta-формат ADDED/MODIFIED/REMOVED как git diff для требований. R_eff = min(scores) с Evidence Decay - почему среднее обманывает, а минимум - нет.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card tool" href="forgeplan-cycle.html">
+      <div class="oc-num">05</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">сам инструмент</span>
+          <span class="oc-pill tool">meta</span>
+        </div>
+        <div class="oc-title">Forgeplan как operational layer</div>
+        <div class="oc-sub">POS для методологий: CLI + MCP + .forgeplan/ забирают на себя FPF, BMAD, OpenSpec, QuintCode. 10 типов артефактов (6 в активном ходу) с DAG зависимостей. Четыре depth-уровня и три quality gates в одном <code>validate</code>.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card viz" href="dag-explorer.html">
+      <div class="oc-num">06</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">приложение к 05 · интерактив</span>
+          <span class="oc-pill interactive">3D-граф</span>
+        </div>
+        <div class="oc-title">DAG Explorer · артефакты в 3D</div>
+        <div class="oc-sub">Plotly 3D scatter с узлами-артефактами и линиями-рёбрами. Knowledge Vault MVP как реальный пример: 22 артефакта, 30 связей, фильтры по типам. Покажет паттерны (здоровая цепочка / blindspot / orphan / разветвление) и трейсируемость одной картинкой.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card tool" href="depth-calibrator.html">
+      <div class="oc-num">07</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">приложение к 05 · интерактив</span>
+          <span class="oc-pill interactive">калькулятор</span>
+        </div>
+        <div class="oc-title">Depth Calibrator · routing в реальном времени</div>
+        <div class="oc-sub">Три слайдера (complexity / blast radius / reversibility) + три хард-гейта (public API / security / cross-team) → реал-тайм depth tier + pipeline. Пресеты для типовых сценариев (cosmetic / team feature / public API / auth rewrite). Покрутите слайдеры - увидите, как двигается маркер и меняется список артефактов.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card lifecycle" href="lifecycle-cycle.html">
+      <div class="oc-num">08</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">что после activate</span>
+          <span class="oc-pill theory">теория</span>
+        </div>
+        <div class="oc-title">Lifecycle · от draft до terminal</div>
+        <div class="oc-sub">State machine с 5 состояниями и 6 переходами: draft → active → {superseded | deprecated | stale} → renew/reopen. Аналогия паспорта с визой. Stale как «забытое состояние», требующее явного решения.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card agent" href="agent-protocol-cycle.html">
+      <div class="oc-num">09</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">язык агента ↔ инструмента</span>
+          <span class="oc-pill theory">теория</span>
+        </div>
+        <div class="oc-title">Hint Contract · 5 маркеров</div>
+        <div class="oc-sub">Как агент перестал галлюцинировать next steps. Пять маркеров (<code>Next:</code> / <code>Or:</code> / <code>Wait:</code> / <code>Done.</code> / <code>Fix:</code>) + пять правил контракта (Presence / Actionability / Determinism / Conditionality / Consistency). Reference card.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+    <a class="order-card multi" href="multi-agent-cycle.html">
+      <div class="oc-num">10</div>
+      <div class="oc-body">
+        <div class="oc-meta">
+          <span class="oc-tag">параллельная работа</span>
+          <span class="oc-pill theory">теория</span>
+        </div>
+        <div class="oc-title">Multi-agent · dispatch · claim · release</div>
+        <div class="oc-sub">Координация 2-5 agent'ов в одном репо без конфликтов. Planner режет работу на конфликт-free buckets, worker берёт под себя с TTL, release возвращает в pool. WIP=1 hard limit. Adversarial review всегда в отдельном agent'е.</div>
+      </div>
+      <span class="oc-arrow">→</span>
+    </a>
+
+  </div>
+
+  <!-- ALTERNATIVE NAV: BY TOPIC -->
+  <h2>По теме · если ищете конкретное</h2>
+  <div class="topic-grid">
+
+    <div class="topic-card">
+      <div class="tc-tag">если ищете про эпистемологию</div>
+      <div class="tc-title">Как принимаются решения и оценивается evidence</div>
+      <ul>
+        <li><a href="decision-cycle.html">decision-cycle</a> · ADI / DDR / Trust Calculus в целом</li>
+        <li><a href="trust-calculus.html">trust-calculus 3D</a> · F/G/R в пространстве</li>
+        <li><a href="spec-cycle.html">spec-cycle</a> · R_eff = min(scores), Evidence Decay</li>
+      </ul>
+    </div>
+
+    <div class="topic-card">
+      <div class="tc-tag">если ищете про процесс разработки</div>
+      <div class="tc-title">От строки в Slack до production</div>
+      <ul>
+        <li><a href="bmad-cycle.html">bmad-cycle</a> · BMAD-воронка и 13-step PRD</li>
+        <li><a href="spec-cycle.html">spec-cycle</a> · спецификация поведения системы</li>
+        <li><a href="forgeplan-cycle.html">forgeplan-cycle</a> · depth-routing и quality gates</li>
+        <li><a href="dag-explorer.html">dag-explorer</a> · граф артефактов в 3D</li>
+        <li><a href="depth-calibrator.html">depth-calibrator</a> · интерактивный калькулятор routing</li>
+      </ul>
+    </div>
+
+    <div class="topic-card">
+      <div class="tc-tag">если ищете про долгосрочную поддержку</div>
+      <div class="tc-title">Что бывает с артефактом через год</div>
+      <ul>
+        <li><a href="lifecycle-cycle.html">lifecycle-cycle</a> · полный state machine с stale</li>
+        <li><a href="spec-cycle.html">spec-cycle</a> · delta + DAG + decay-триггеры</li>
+        <li><a href="forgeplan-cycle.html">forgeplan-cycle</a> · activate как точка невозврата</li>
+      </ul>
+    </div>
+
+    <div class="topic-card">
+      <div class="tc-tag">если ищете про работу с AI-агентами</div>
+      <div class="tc-title">Как агент читает и взаимодействует</div>
+      <ul>
+        <li><a href="agent-protocol-cycle.html">agent-protocol-cycle</a> · Hint Contract + 5 маркеров</li>
+        <li><a href="multi-agent-cycle.html">multi-agent-cycle</a> · dispatch / claim / release</li>
+        <li><a href="bmad-cycle.html">bmad-cycle</a> · adversarial review в чистой сессии</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- EXTERNAL DOCS -->
+  <h2>Полная документация</h2>
+  <a class="ext-link" href="https://forgeplan.dev/docs/methodology/overview" target="_blank" rel="noopener">
+    <div class="el-text">
+      <span class="el-tag">forgeplan.dev · официальные docs</span>
+      <span class="el-title">Methodology Overview · 10 Rules · CLI Reference (~80 команд) · MCP Reference · Marketplace</span>
+    </div>
+    <span class="el-arrow">↗</span>
+  </a>
+
+  <div class="footer">
+    <span>teaching-assets · index · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
+  </div>
+
+</main>
+</body>
+</html>

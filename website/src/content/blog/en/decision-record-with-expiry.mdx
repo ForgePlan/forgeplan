@@ -1,0 +1,131 @@
+---
+title: "The motivation section for an architectural decision - making a record that opens itself for review a year later"
+description: "A judge writes which evidence was considered, which was rejected, and why - so the case can be reopened a year later. Architectural decisions need exactly the same discipline. I break down the six sections of a DDR, with special attention to the one that's skipped most often: conditions for reopening."
+slug: decision-record-with-expiry
+lang: en
+publishedAt: 2026-08-22
+kind: explainer
+topic: methodology
+cover: '/blog-covers/decision-record-with-expiry.webp'
+draft: false
+series: decision-cycle
+seriesOrder: 4
+seriesDescription: "The single-decision cycle · 8 posts on discipline for architectural decisions"
+translations:
+  ru: decision-record-with-expiry
+---
+
+## The courtroom analogy
+
+A judge doesn't just say "guilty." They write a reasoned opinion: which evidence was considered, which was dismissed and why, on what basis the conclusion was reached.
+
+This isn't formality. A year later, if new circumstances emerge, the case can be reopened. And the next judge gets the full picture: what was decided, why exactly that way, what alternatives were on the table, and under what conditions the decision might have gone differently.
+
+If judges wrote "after deliberation we settled on this verdict," the legal system wouldn't function. You couldn't appeal, couldn't build precedent, couldn't understand the principle underlying the ruling.
+
+In software development we write exactly like that: "after discussion we settled on JWT." Six months later the team has no rationale, no alternatives considered, no conditions for reopening. There's technically a record - but it's useless.
+
+The third post in this series already hinted at the format of a record with a built-in reopening condition. Today I'll go through it in detail - all six sections, which one matters most, and why it's the one most often left blank.
+
+## The six sections of a DDR
+
+DDR (Decision-Driven Record) - an extended ADR format that explicitly captures evidence and review conditions - is a short record that guides the team toward a decision rather than describing it after the fact. Six sections. Each one closes off a class of mistakes that otherwise surfaces a year later.
+
+**Context**. One or two paragraphs: the situation at decision time, the constraints, the requirements. Without this, a year later it's impossible to tell whether the decision still applies to the new situation. "Chose JWT" without context is useless. "Chose JWT because we had a single authentication provider and needed to ship the integration in two weeks" - a year later that gives you the ability to say "we now have three providers and no time pressure, the context has changed."
+
+**Alternatives considered**. At minimum three. Not "JWT vs sessions" but "JWT with refresh-token rotation, classic sessions backed by Redis, delegating to an external OAuth provider." Three is the empirical threshold below which a choice almost always turns out to be false.
+
+**Evidence**. What you relied on to make the call. Not "discussed and decided" but specific references: "benchmark on our own data," "vendor documentation," "a colleague's experience on a similar project." Each piece of evidence annotated with a reliability rating - the F/G/R logic from the previous post in this series, plus a context-match level.
+
+**Decision**. One sentence. "We choose JWT with refresh-token rotation, TTL of 7 days."
+
+**Rejected alternatives**. Each - with a concrete reason for rejection. Not "didn't fit" but "Redis would have required a dedicated DevOps engineer to maintain, and we have one covering everything." A year later, this reason either still holds - and the decision stands - or it has expired - and it's time to reopen.
+
+**Conditions for reopening**. The most important section, and the one skipped most often. What event, metric, or date should cause this decision to be reopened. Something that fires by itself, without relying on the team's memory.
+
+## Why the sixth section is the most important
+
+Take a typical scenario: a year ago the team decided "don't launch a free tier." The reasons are on record: "support team is four people, the load from free users would overwhelm them." A year later: support automation has improved significantly, ticket volume is down. Support can handle it - but nobody realizes the **decision is ready to be revisited**, because the record has no trigger.
+
+The decision persists by inertia. Another six months pass and someone at a quarterly review says "why don't we do freemium like every competitor?" The team sits down, re-hashes all the arguments. Two weeks spent on something that could have been one line in the original record.
+
+With a reopening condition: "revisit if support automates 80% of tickets or paid conversion climbs above 12%." Six months later the support metric hits 78%, conversion hits 14%. **The decision opens itself for review** - no heroism of memory required. The team sits down, reads the old record with its alternatives, and makes a new decision in 30 minutes.
+
+That one section turns a record from a monument into a living document. Without it, any decision capture becomes "that's what we decided back then, don't touch it."
+
+The condition can take many forms:
+
+- metric: "revisit if JWT verification time exceeds 5ms"
+- date: "revisit in one year, regardless"
+- event: "revisit if we expand into the European market"
+- release: "revisit when the next major version of the library ships"
+
+The key is that the event must be observable automatically. "Revisit when it becomes a problem" doesn't work - nobody's watching. "Revisit when metric X exceeds Y" works - you can put an alert on a metric.
+
+## Evidence has a shelf life too
+
+Related to the reopening condition: the evidence that underpinned a decision also expires.
+
+A benchmark from last year for one version of a library is no longer valid for a new one. A production observation at 50 requests per second doesn't apply at 500. A colleague's experience on a Postgres 12 project doesn't transfer directly to Postgres 16.
+
+A good record acknowledges this upfront. Each piece of evidence gets a note: "valid under conditions X, reverify if Y changes." When load grows tenfold, the system automatically flags the evidence as "stale," and the decision tied to it moves into the reopen queue.
+
+This is the second guard against the "we have a record about the cache" situation. The record exists - but the evidence it was built on doesn't. And nobody noticed because nobody was checking.
+
+## Record length
+
+When I first walked a team through the six sections, the reaction was: "we don't have time for documents like this."
+
+That reaction is based on the wrong picture. People imagine a DDR is a twenty-page document signed off by the DevOps director.
+
+In reality - 200-400 words in one markdown file. One screen of text. Five to ten minutes to fill in all six sections. No new tools needed: a `docs/decisions/` directory in your existing repo and one team rule.
+
+If it runs to two thousand words, nobody will come back to it in a month. A record needs to be readable in two minutes, otherwise it can't do its job. A long document is a lecture; a DDR should be a reference card.
+
+Hard limit: one screen, no "supporting appendices." If something doesn't fit, it's not "context for this one decision" - it's a separate decision that needs its own record.
+
+## A concrete example: the decision that reopens itself
+
+Let me walk through a real case, details changed.
+
+A B2B SaaS team decided two quarters ago not to launch a free tier. They wrote it up as a DDR. All six sections:
+
+- **Context**: support team of four people, barely keeping up with the current customer volume. Paid conversion at 8%. Forecast: a free tier would bring ten times the support load - the team would buckle.
+- **Alternatives considered**: a full free tier with no restrictions; a restricted free tier (no support, docs only); a pilot for twenty partner companies.
+- **Evidence**: measured support tickets per paid user (8 per user per year); estimated time per ticket (40 minutes); load projection for 10× user growth; experience from two similar SaaS teams we know.
+- **Decision**: don't launch a free tier until support automation improves.
+- **Rejected alternatives**: full free tier - would overwhelm support; restricted without support - hurts reputation (users don't distinguish "free without support" from "free with bad support"); partner pilot - risk of damaging relationships if we can't sustain it.
+- **Conditions for reopening**: revisit if support automates 80% of tickets OR if paid conversion climbs above 12% OR in one year regardless.
+
+Six months later the support manager posts the quarterly report: 78% of tickets automated (the bot handles most standard requests). The metric lands on the DDR dashboard - the system sees "DDR-014 reopen trigger approaching." Two weeks later the metric crosses 80%. The team pulls up DDR-014, reads the old alternatives. They look different now:
+
+- Full free tier - with automation the load is manageable. Better.
+- Restricted without support - no longer needed, support can handle it. Better.
+- Partner pilot - has lost relevance, the product has matured past that stage.
+
+The decision is revisited in 30 minutes. They launch the restricted free tier (fastest path and it tests the demand hypothesis). Next quarter - if it works - they expand to the full tier.
+
+That's the whole point of a DDR. Not "record what was said" but "make it so the team knows six months from now, without a feat of memory, when to come back to the question."
+
+## What to hand to the AI agent, what to keep for yourself
+
+An AI agent handles the first DDR draft well: it pulls context from a chat thread or pull request, lists alternatives (even ones mentioned only in passing), suggests reopening conditions following the template "when metric X crosses threshold Y."
+
+The final section worth writing by hand is rejected alternatives with reasons. The agent doesn't know that you rejected a vendor not because of functionality, but because that vendor's CEO recently had a public falling-out with your investor. That reason won't appear in public documentation - but it is the real motivation. Only a human records it.
+
+Baseline rule: the agent is the draft, the human is the substance. If AI writes 100% of the DDR - you don't have a decision record, you have a polished evasion.
+
+## What to read next
+
+This is the fourth post in the series. Previous posts:
+
+- [The decision graveyard](/blog/decision-graveyard) - why a record without structure doesn't save you
+- [Before fixing - write three versions](/blog/before-fixing-write-three-versions) - a diagnostic technique
+- [Averages lie](/blog/averages-lie-trust-calculus) - how to rate evidence strength
+
+Coming next:
+
+- How a single Slack message turns into a product document with 13 sections without scope-creep monstering.
+- How to tell intent apart from behavior when documenting requirements.
+
+This post comes with an interactive DDR template: enter your decision across six sections and get a complete record with automatic reopening triggers. It lives at [/guides](/guides).

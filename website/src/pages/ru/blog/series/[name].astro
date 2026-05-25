@@ -1,0 +1,68 @@
+---
+import { getCollection } from 'astro:content';
+import Landing from '../../../../layouts/Landing.astro';
+import Header from '../../../../components/Header.astro';
+import BlogFooter from '../../../../components/blog/BlogFooter.astro';
+import '../../../../styles/blog-theme.css';
+
+export async function getStaticPaths() {
+  const allPosts = await getCollection('blog', ({ data }) => data.lang === 'ru' && !data.draft && data.series);
+  const seriesNames = [...new Set(allPosts.map(p => p.data.series!))];
+  return seriesNames.map(name => ({
+    params: { name },
+    props: { name },
+  }));
+}
+
+const { name } = Astro.props;
+const posts = (await getCollection('blog', ({ data }) =>
+  data.lang === 'ru' && !data.draft && data.series === name
+)).sort((a, b) => (a.data.seriesOrder ?? 0) - (b.data.seriesOrder ?? 0));
+
+const firstWithDesc = posts.find(p => p.data.seriesDescription);
+const description = firstWithDesc?.data.seriesDescription ?? `Посты серии: ${name}`;
+const humanTitle = description.includes(' · ')
+  ? description.split(' · ')[0]
+  : name;
+// RU plural: 1 пост · 2-4 поста · 5+ постов (with 11-14 exception).
+const n = posts.length;
+const mod100 = n % 100;
+const mod10 = n % 10;
+const postForm = (mod100 >= 11 && mod100 <= 14) ? 'постов'
+               : mod10 === 1 ? 'пост'
+               : (mod10 >= 2 && mod10 <= 4) ? 'поста'
+               : 'постов';
+const postsLabel = `${n} ${postForm}`;
+const stripLang = (id: string) => id.replace(/^ru\//, '').replace(/\.(md|mdx)$/, '');
+---
+<Landing title={`${name} — Forgeplan Блог`} description={description} lang="ru">
+  <Header />
+  <article class="blog-index">
+    <div class="blog-index-layout blog-index-layout--solo">
+      <main id="main-content" class="blog-index-main">
+        <p class="blog-index-eyebrow">СЕРИЯ · {name}</p>
+        <h1 class="blog-index-heading">{humanTitle}</h1>
+        <p class="blog-index-subtitle">{description}</p>
+        <p class="blog-index-meta"><span class="blog-index-date">{postsLabel}</span></p>
+
+        <ul class="blog-index-list">
+          {posts.map(post => (
+            <li class="blog-index-card">
+              <a href={`/ru/blog/${stripLang(post.id)}`}>
+                <p class="blog-index-card-meta">
+                  <span class="series-order">#{post.data.seriesOrder ?? '?'}</span>
+                  <span> · {post.data.kind} · {post.data.topic}</span>
+                </p>
+                <h2 class="blog-index-card-title">{post.data.title}</h2>
+                <p class="blog-index-card-desc">{post.data.description}</p>
+              </a>
+            </li>
+          ))}
+        </ul>
+
+        <p class="blog-index-rss"><a href="/ru/blog">← Все записи</a></p>
+      </main>
+    </div>
+  </article>
+  <BlogFooter lang="ru" />
+</Landing>

@@ -1,0 +1,62 @@
+---
+interface Props {
+  lang?: 'en' | 'ru';
+}
+const { lang = 'en' } = Astro.props;
+const year = new Date().getFullYear();
+const isRu = lang === 'ru';
+
+const links = isRu
+  ? [
+      { href: '/ru/docs/getting-started/installation', label: 'Документация' },
+      { href: '/ru/guides', label: 'Гайды' },
+      { href: '/ru/blog', label: 'Блог' },
+      { href: 'https://github.com/ForgePlan/forgeplan', label: 'GitHub', external: true },
+      { href: '/ru/docs/cli/health', label: 'CLI' },
+      { href: '/ru/docs/mcp/', label: 'MCP' },
+      { href: '/ru/blog/rss.xml', label: 'RSS' },
+    ]
+  : [
+      { href: '/docs/getting-started/installation', label: 'Docs' },
+      { href: '/guides', label: 'Guides' },
+      { href: '/blog', label: 'Blog' },
+      { href: 'https://github.com/ForgePlan/forgeplan', label: 'GitHub', external: true },
+      { href: '/docs/cli/health', label: 'CLI' },
+      { href: '/docs/mcp/', label: 'MCP' },
+      { href: '/blog/rss.xml', label: 'RSS' },
+    ];
+const authorLabel = isRu ? 'Автор' : 'Author';
+const tagline = isRu
+  ? 'Инженерная методология для решений, которые не протухают.'
+  : 'Engineering methodology for decisions that last.';
+---
+<footer class="blog-footer" role="contentinfo">
+  <div class="blog-footer-inner">
+    <div class="blog-footer-brand">
+      <a href={isRu ? '/ru' : '/'} class="blog-footer-mark">
+        F<span class="blog-footer-mark-dot">●</span>RGEPLAN
+      </a>
+      <p class="blog-footer-tagline">{tagline}</p>
+    </div>
+
+    <nav class="blog-footer-nav" aria-label={isRu ? 'Подвал' : 'Footer navigation'}>
+      {links.map(l => (
+        <a
+          href={l.href}
+          class="blog-footer-link"
+          {...(l.external ? { rel: 'noopener noreferrer', target: '_blank' } : {})}
+        >
+          {l.label}{l.external && <span aria-hidden="true"> ↗</span>}
+        </a>
+      ))}
+    </nav>
+
+    <div class="blog-footer-meta">
+      <p class="blog-footer-author">
+        {authorLabel}:&nbsp;
+        <a href="https://elirum.me" rel="external noopener noreferrer" target="_blank">Eli Rum · elirum.me</a>
+      </p>
+      <p class="blog-footer-copy">© {year} Forgeplan</p>
+    </div>
+  </div>
+</footer>

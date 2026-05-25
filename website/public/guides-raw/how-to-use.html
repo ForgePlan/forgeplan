@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как ввести практику журналирования решений в команде - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 19px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 32px 0 10px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 820px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  /* Plain inline lists (без класса) - узкие для читаемости.
+     Grid lists (.timeline, .ways-grid, .anti) переопределяют через свои стили. */
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  /* Reset для classes with own numbering / custom layout */
+  .timeline li { padding-left: 0; }
+  .timeline li::before { content: ""; }
+  .anti ul { padding-left: 0; }
+  .anti li { padding-left: 14px; }
+  .anti li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--err); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  pre { font-family: var(--font-mono); font-size: 14px; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; overflow-x: auto; line-height: 1.6; color: var(--text-1); margin: 16px 0; max-width: 820px; }
+  pre code { background: transparent; color: var(--text-1); padding: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  .rule-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 20px 0 0; }
+  @media (max-width: 720px) { .rule-grid { grid-template-columns: 1fr; } }
+  .rule-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 20px; }
+  .rule-card .rule-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; color: var(--accent); margin-bottom: 6px; }
+  .rule-card .rule-q { font-size: 15px; color: var(--text); font-weight: 500; margin: 0 0 8px; }
+  .rule-card .rule-detail { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  .depth-table { margin: 18px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; }
+  .depth-row { display: grid; grid-template-columns: 160px 1fr 1.4fr; border-bottom: 1px solid var(--line); }
+  .depth-row:last-child { border-bottom: 0; }
+  .depth-row.depth-head { background: var(--bg-2); }
+  .depth-cell { padding: 14px 18px; font-size: 14px; color: var(--text-2); border-right: 1px solid var(--line); }
+  .depth-cell:last-child { border-right: 0; }
+  .depth-row.depth-head .depth-cell { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+  .depth-cell .depth-level { color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .depth-cell .depth-name { color: var(--text); font-weight: 500; margin-top: 2px; display: block; font-size: 14px; }
+
+  .timeline { margin: 24px 0 0; padding: 0; list-style: none; border-left: 2px solid var(--accent); padding-left: 22px; max-width: none; }
+  .timeline li { margin-bottom: 22px; position: relative; }
+  .timeline li::before { content: ""; position: absolute; left: -29px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  .timeline .when { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .timeline .what { color: var(--text-1); font-size: 14.5px; line-height: 1.55; }
+  .timeline .what b { color: var(--text); font-weight: 500; }
+
+  .ways-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 20px 0 0; }
+  @media (max-width: 720px) { .ways-grid { grid-template-columns: 1fr; } }
+  .way-card { background: var(--bg-1); border: 1px solid var(--line-2); border-left: 2px solid var(--accent); border-radius: 0; padding: 16px 20px 18px; }
+  .way-card .way-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; color: var(--accent); margin-bottom: 6px; }
+  .way-card .way-title { color: var(--text); font-weight: 500; font-size: 14.5px; margin: 0 0 6px; }
+  .way-card .way-body { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0; }
+
+  .anti { margin: 20px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--err); border-radius: 0; padding: 18px 22px 20px; }
+  .anti .anti-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--err); margin-bottom: 10px; }
+  .anti ul { margin: 0; padding-left: 18px; }
+  .anti li { color: var(--text-2); font-size: 14px; line-height: 1.55; margin-bottom: 8px; }
+  .anti li b { color: var(--text); font-weight: 500; }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .next-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .next-grid { grid-template-columns: 1fr; } }
+  .next-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .next-link:hover { border-color: var(--accent); color: var(--text); }
+  .next-link .next-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .next-link .next-where { font-size: 14px; color: var(--text); }
+  .next-link .next-arrow { float: right; color: var(--accent); }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ЖУРНАЛ РЕШЕНИЙ · ПРАКТИКА</p>
+  <h1>Как ввести практику журналирования решений в команде</h1>
+  <p class="lead">
+    Журнал решений - это не «ещё один документ для команды». Это
+    конкретные правила: когда писать запись, а когда не нужно; как
+    настроить так, чтобы AI-агент (Claude Code, Cursor, Codex) читал
+    ваш контекст на старте сессии и не предлагал заново отвергнутые
+    варианты; как выглядит день инженера, у которого журнал вписан в
+    процесс - без перегруза и бюрократии.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Когда писать запись, а когда нет</h2>
+  <p>
+    Самая частая ошибка - пытаться записывать каждое решение. Это
+    утомляет и быстро отбивает желание. Хорошее эмпирическое правило:
+    запись стоит писать, если ответ «да» хотя бы на два из четырёх
+    вопросов ниже.
+  </p>
+
+  <div class="rule-grid">
+    <div class="rule-card">
+      <div class="rule-num">ВОПРОС 01</div>
+      <p class="rule-q">Это решение влияет на код через 6+ месяцев?</p>
+      <p class="rule-detail">Выбор библиотеки, схемы данных, протокола обмена - да. Исправление опечатки в логе - нет.</p>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">ВОПРОС 02</div>
+      <p class="rule-q">Контекст, в котором решение принято, не очевиден из кода?</p>
+      <p class="rule-detail">Если код через год не позволит ответить «почему так» - нужна запись. Если код сам по себе говорит «потому что» - не нужна.</p>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">ВОПРОС 03</div>
+      <p class="rule-q">Было обсуждение с двумя или более жизнеспособными вариантами?</p>
+      <p class="rule-detail">Спор в чате на десять сообщений - точно да. Решение «вместо if напишу switch» - нет.</p>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">ВОПРОС 04</div>
+      <p class="rule-q">Откатить это решение быстро и без боли невозможно?</p>
+      <p class="rule-detail">Сменить переменную окружения - обратимо. Сменить базу данных - нет. Чем дороже откат, тем важнее запись.</p>
+    </div>
+  </div>
+
+  <div class="aside">
+    Если «да» меньше двух - пропускайте. Запись «на всякий случай»
+    хуже, чем её отсутствие: она занимает место, тратит время на
+    написание и со временем становится шумом, в котором теряются
+    важные записи.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Шкала глубины задачи - сколько и каких записей</h2>
+  <p>
+    Не все задачи требуют одинакового набора документов. Сложилась
+    эмпирическая шкала из четырёх уровней - она хорошо коррелирует с
+    риском и обратимостью задачи. На каждом уровне свой минимальный
+    набор записей.
+  </p>
+
+  <div class="depth-table">
+    <div class="depth-row depth-head">
+      <div class="depth-cell">Уровень</div>
+      <div class="depth-cell">Что писать</div>
+      <div class="depth-cell">Примеры задач</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">01 · ТАКТИЧЕСКИЙ</span>
+        <span class="depth-name">1 файл, обратимо за час</span>
+      </div>
+      <div class="depth-cell">Ничего. Просто код + сообщение коммита.</div>
+      <div class="depth-cell">Опечатка в логе, переименование переменной, исправление округления.</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">02 · СТАНДАРТНЫЙ</span>
+        <span class="depth-name">1-3 дня, есть выбор</span>
+      </div>
+      <div class="depth-cell">Документ продукта + черновик архитектурного решения.</div>
+      <div class="depth-cell">Новая функция в существующем модуле, выбор библиотеки для одной задачи.</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">03 · ГЛУБОКИЙ</span>
+        <span class="depth-name">1-2 недели, необратимо</span>
+      </div>
+      <div class="depth-cell">Документ продукта + спецификация + решение + доказательство замером.</div>
+      <div class="depth-cell">Новый сервис, переход на другую базу данных, изменение схемы публичного API.</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">04 · КРИТИЧЕСКИЙ</span>
+        <span class="depth-name">кросс-командное, стратегия</span>
+      </div>
+      <div class="depth-cell">Группа документов (5-10 записей), включая отдельный обзор архитектуры.</div>
+      <div class="depth-cell">Миграция с одной модели аутентификации на другую, выделение нового продукта из монолита.</div>
+    </div>
+  </div>
+
+  <p>
+    На практике быстрее всего определить уровень по двум вопросам: «легко
+    откатить?» и «затронут ли другие команды?». Если оба ответа «нет» -
+    тактический. Если первый «да», второй «нет» - стандартный. И так
+    далее. Подробный калькулятор уровня (с интерактивными слайдерами) -
+    в одном из дальнейших уроков серии.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Типичный день инженера с журналом в процессе</h2>
+  <p>
+    Чтобы не оставаться в абстракции - реальный день. Из жизни команды
+    из 6 человек, делающих B2B-продукт. Без привязки к конкретному
+    инструменту: подойдёт любой способ хранения записей - папка в репо,
+    собственный CLI, готовый продукт.
+  </p>
+
+  <ul class="timeline">
+    <li>
+      <div class="when">09:15 · УТРО · ВХОЖДЕНИЕ В КОНТЕКСТ</div>
+      <div class="what">
+        Открываю каталог решений в проекте. Бегло смотрю активные записи
+        и те, у которых приближается условие пересмотра. Это даёт картину
+        «что сейчас в работе» и сигнал «вот это пора обсудить».
+      </div>
+    </li>
+    <li>
+      <div class="when">09:30 · НАЧАЛО ЗАДАЧИ</div>
+      <div class="what">
+        Беру в работу тикет «оптимизировать обработку загрузки файлов».
+        Прохожу два вопроса шкалы глубины (легко откатить? затронуты
+        другие команды?) - получается стандартный уровень. Создаю
+        заготовку документа продукта - это либо markdown по шаблону,
+        либо запись в выбранном инструменте.
+      </div>
+    </li>
+    <li>
+      <div class="when">10:00 · ТРИ ВАРИАНТА · ПРОВЕРЯЕМЫЕ СЛЕДСТВИЯ</div>
+      <div class="what">
+        Заполнил основные разделы. Выписываю три варианта реализации с
+        проверяемыми следствиями (если выбираем вариант А, должно
+        наблюдаться X; если Б - Y; если В - Z). Час уходит на прогон
+        трёх прототипов, метрики записываются как доказательства. <b>Эту
+        работу я бы делал и без журнала</b> - просто без фиксации.
+      </div>
+    </li>
+    <li>
+      <div class="when">14:00 · РЕАЛИЗАЦИЯ</div>
+      <div class="what">
+        Запускаю AI-агента, у которого в инструкции прописано «прочитай
+        активные решения проекта перед началом задачи». Агент <b>не
+        предлагает</b> вариант, который мы вчера отвергли в обсуждении -
+        потому что отвергнутые альтернативы записаны и агент их видит.
+      </div>
+    </li>
+    <li>
+      <div class="when">17:30 · ФИКСАЦИЯ РЕЗУЛЬТАТА</div>
+      <div class="what">
+        Реализация готова, замер показал нужные числа. Создаю короткую
+        запись доказательства (одна страница: что замерили, на каких
+        данных, какой результат). Привязываю её к решению. Перевожу
+        решение в статус «активное» - теперь файл не редактируется
+        напрямую, только через создание новой версии, которая явно
+        заменяет старую.
+      </div>
+    </li>
+    <li>
+      <div class="when">18:00 · ЗАКРЫТИЕ ДНЯ</div>
+      <div class="what">
+        Открываю pull request. В описании ссылки на связанные записи.
+        Ревьюер читает их перед код-ревью и приходит с правильным
+        контекстом, а не «давайте вспомним, что мы тут хотели сделать».
+      </div>
+    </li>
+  </ul>
+
+  <p>
+    Накладные расходы по сравнению с «обычным» днём - около часа на
+    заполнение записи и активацию решения. Возврат - отсутствие повторных
+    обсуждений «почему так», бесплатный контекст для агента, автоматический
+    триггер пересмотра через полгода.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Как AI-агент читает ваш контекст на старте сессии</h2>
+  <p>
+    Это самая важная часть для тех, кто кодит с AI-помощником. Без
+    записей решений каждая новая сессия с Claude Code или Cursor
+    начинается с пустого контекста: агент не знает, что у вас выбрана
+    библиотека X, он каждый раз предлагает Y. С записями агент читает
+    активные решения на старте и работает уже в правильных рамках.
+  </p>
+
+  <p>Три способа подключения, от простого к продвинутому.</p>
+
+  <h3>Способ 1 · Просто текстовые файлы в репозитории</h3>
+  <p>
+    Записи лежат в выделенном каталоге проекта как обычные markdown-файлы.
+    Любой AI-агент, у которого есть доступ к файлам, может их прочитать.
+    Достаточно одной строки в системной инструкции (типа <code>CLAUDE.md</code>,
+    <code>.cursorrules</code> или эквивалент):
+  </p>
+
+  <pre><code># CLAUDE.md или .cursorrules
+Перед началом любой задачи прочитай файлы в каталоге docs/decisions/
+со статусом active. Это активные архитектурные решения проекта.
+Не предлагай варианты, которые явно записаны как отвергнутые.</code></pre>
+
+  <p>
+    Этого достаточно для 80% случаев. Не нужен ни плагин, ни специальная
+    интеграция - агент сам подгрузит контекст из текстовых файлов.
+  </p>
+
+  <h3>Способ 2 · Через тулинг вашего агента</h3>
+  <p>
+    У современных агентов есть свои механизмы подключения внешнего
+    контекста - Cursor Rules для Cursor, slash-commands и подключаемые
+    инструменты в Claude Code, custom GPTs у OpenAI. Каждый из них может
+    забирать записи решений по своей схеме: целиком, по запросу, по
+    seman­ti­че­ско­му поиску. Если у инструмента есть свой механизм
+    подключения данных - используйте его, он будет эффективнее, чем
+    каждый раз читать файлы целиком.
+  </p>
+
+  <h3>Способ 3 · Гейты в процессе непрерывной интеграции</h3>
+  <p>
+    Самый строгий вариант: pull request не сливается, если затронуты
+    файлы, для которых нет активного решения. Это не «бюрократия» - это
+    защита от случайного обхода уже принятых ограничений. Реализуется
+    обычным шагом в CI (GitHub Actions, GitLab CI, Buildkite - что
+    используете), который сравнивает diff с каталогом решений и
+    блокирует merge, если найдено расхождение.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Пять способов работы агента с записями</h2>
+  <p>
+    После подключения агент может делать одно из пяти. Конкретные
+    сценарии - что вы можете попросить и что произойдёт.
+  </p>
+
+  <div class="ways-grid">
+
+    <div class="way-card">
+      <div class="way-tag">01 · ЧИТАТЬ КОНТЕКСТ</div>
+      <p class="way-title">«Какие активные решения связаны с модулем X?»</p>
+      <p class="way-body">Агент возвращает список релевантных архитектурных решений с кратким описанием. Дальше он работает в их рамках, не пытаясь предложить отвергнутое.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">02 · СОЗДАВАТЬ ЗАПИСИ</div>
+      <p class="way-title">«Создай запись решения по обсуждению, которое мы сейчас ведём»</p>
+      <p class="way-body">Агент собирает контекст из диалога, выписывает три рассмотренных варианта, предлагает условие пересмотра. Человек проверяет «отвергнутые альтернативы» - настоящие причины часто внутренние.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">03 · ПРОВЕРЯТЬ СООТВЕТСТВИЕ</div>
+      <p class="way-title">«Соответствует ли этот код активному решению X?»</p>
+      <p class="way-body">Агент читает решение, читает код, говорит «соответствует» / «нарушает в части X». Полезно перед коммитом или код-ревью.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">04 · ЛИНКОВАТЬ ДОКАЗАТЕЛЬСТВА</div>
+      <p class="way-title">«Создай запись доказательства из результата теста и привяжи к решению X»</p>
+      <p class="way-body">Агент берёт вывод бенчмарка или результат нагрузочного теста, оформляет как структурированное доказательство, привязывает к решению, обновляет оценку надёжности.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">05 · ИНИЦИИРОВАТЬ ПЕРЕСМОТР</div>
+      <p class="way-title">«Найди решения, у которых триггер пересмотра приближается»</p>
+      <p class="way-body">Агент проверяет метрики (если подключены), сравнивает с условиями пересмотра записей, предлагает список «вот эти три решения пора посмотреть заново».</p>
+    </div>
+
+  </div>
+
+  <hr class="sep">
+
+  <h2>Что показать новому члену команды в первый день</h2>
+  <p>
+    Если у команды уже есть журнал решений, новый человек должен пройти
+    четыре шага в первый день, чтобы войти в курс. Это занимает
+    суммарно час.
+  </p>
+
+  <ol>
+    <li><b class="k">Открыть каталог решений</b> и посмотреть структуру. Это покажет, какие типы записей живут в проекте.</li>
+    <li><b class="k">Бегло просмотреть активные записи</b> - отсортировать по дате, прочитать 10-15 самых свежих. Не вчитываться, просто понять «о чём команда вообще принимает решения».</li>
+    <li><b class="k">Открыть граф связей</b> (если у вас есть визуализация) или просто посмотреть, какие решения ссылаются друг на друга. Это покажет, как устроена «карта» проекта.</li>
+    <li><b class="k">Попробовать создать одну тестовую запись</b> (например, заметку о наблюдении первого дня). Это снимает страх «а вдруг что-то сломаю».</li>
+  </ol>
+
+  <p>
+    После этих четырёх шагов человек знает: где живут решения, как их
+    читать, как создавать новые, как они связаны. Дальше обучение
+    происходит органически - на конкретных задачах.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Антипаттерны: чего не делать</h2>
+  <p>
+    Шесть типовых ошибок, которые я видел в командах, начавших вести
+    журнал решений. Каждая снижает доверие к процессу и приводит к
+    отказу от практики через 2-3 месяца.
+  </p>
+
+  <div class="anti">
+    <div class="anti-tag">НЕ ДЕЛАЙТЕ ТАК</div>
+    <ul>
+      <li><b>Запись на каждый коммит.</b> Если репозиторий за месяц получил 200 решений - это шум, в котором теряются настоящие. Четыре правила из первой секции этого урока - фильтр.</li>
+      <li><b>Запись задним числом «для галочки».</b> Если решение уже принято и не обсуждалось при записи - это не запись решения, а отчёт о свершившемся. Отчёты тоже нужны, но это другой жанр.</li>
+      <li><b>Копирование шаблона без контекста.</b> Шесть полей в каждой записи должны быть заполнены конкретно для этой задачи. «Контекст: типовая ситуация» - это не контекст.</li>
+      <li><b>Один человек пишет все записи.</b> Если фиксация делегирована «секретарю команды» - записи будут писать формально, без знания внутренних причин. Каждый автор задачи пишет свои записи сам.</li>
+      <li><b>Запись без условия пересмотра.</b> Шестая секция - самая важная. Без неё запись через год становится памятником, на который никто не смотрит.</li>
+      <li><b>Активация без доказательств.</b> Если у решения нет ни одного связанного доказательства - это не решение, это намерение. Активируйте только после прогона хотя бы одного замера или явной аргументации.</li>
+    </ul>
+  </div>
+
+  <hr class="sep">
+
+  <h2>С чем интегрируется и что не заменяет</h2>
+  <p>
+    Чтобы было понятно, во что встаёт журнал решений и что от него
+    нужно оставить отдельным инструментам.
+  </p>
+
+  <h3>Хорошо интегрируется</h3>
+  <ul>
+    <li><b class="k">git</b> - записи живут рядом с кодом, в том же репозитории. История правок видна через <code>git log</code>.</li>
+    <li><b class="k">AI-агенты</b> (Claude Code, Cursor, Codex и другие) - через прямое чтение файлов или через специализированные протоколы.</li>
+    <li><b class="k">CI/CD</b> (GitHub Actions, GitLab CI, Buildkite) - гейты перед слиянием, проверка соответствия pull request активным решениям.</li>
+    <li><b class="k">Slack / Telegram</b> - уведомления о приближающихся условиях пересмотра через простой скрипт.</li>
+    <li><b class="k">Системы мониторинга</b> (Grafana, Datadog, Prometheus) - метрики из дашбордов как триггер пересмотра.</li>
+  </ul>
+
+  <h3>Не заменяет</h3>
+  <ul>
+    <li><b class="k">Jira / Linear / Trello</b> - управление задачами и сроками. Журнал решений не знает, кто что делает прямо сейчас и когда дедлайн.</li>
+    <li><b class="k">Notion / Confluence</b> - общие документы, дизайн-системы, заметки со встреч. Не для пересказа митингов.</li>
+    <li><b class="k">Slack / Discord</b> - коммуникация. Решения записываются после обсуждения в чате, не вместо него.</li>
+  </ul>
+
+  <hr class="sep">
+
+  <h2>Куда дальше</h2>
+  <p>
+    После двух нулевых уроков - серия из двенадцати разборов конкретных
+    частей процесса. Выбор зависит от того, что для вас сейчас актуальнее.
+  </p>
+
+  <div class="next-grid">
+    <a class="next-link" href="../guides/decision-cycle">
+      <div class="next-who">ФОРМАЛЬНЫЙ ЦИКЛ</div>
+      <div class="next-where">Как формулируется одно решение <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/trust-calculus">
+      <div class="next-who">3D ИНТЕРАКТИВ</div>
+      <div class="next-where">Trust Calculus в пространстве F/G/R <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/bmad-cycle">
+      <div class="next-who">ОТ ИДЕИ К ФУНКЦИИ</div>
+      <div class="next-where">BMAD · 13-step PRD · adversarial review <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/spec-cycle">
+      <div class="next-who">СПЕЦИФИКАЦИЯ</div>
+      <div class="next-where">Чем спецификация отличается от PRD <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/lifecycle-cycle">
+      <div class="next-who">ЖИЗНЕННЫЙ ЦИКЛ</div>
+      <div class="next-where">Что после активации записи: stale / renew / supersede <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/depth-calibrator">
+      <div class="next-who">КАЛИБРОВКА</div>
+      <div class="next-where">Интерактивный калькулятор глубины задачи <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/agent-protocol-cycle">
+      <div class="next-who">КОНТРАКТ С АГЕНТОМ</div>
+      <div class="next-where">Как агент перестал галлюцинировать следующие шаги <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="../guides/multi-agent-cycle">
+      <div class="next-who">НЕСКОЛЬКО АГЕНТОВ</div>
+      <div class="next-where">Координация 2-5 агентов в одном репозитории <span class="next-arrow">→</span></div>
+    </a>
+  </div>
+
+
+</main>
+</body>
+</html>

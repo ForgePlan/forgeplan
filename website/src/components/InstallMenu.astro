@@ -1,0 +1,304 @@
+---
+// Install dropdown — click "Install" → popup with cargo/brew/shell/AI Skill
+// commands and copy buttons. Mirrors the #install section on the landing page
+// so users on /blog, /guides, /docs can install without scrolling away.
+//
+// Used by both Header.astro (landing/blog/guides) and DocsHeader.astro (/docs).
+// All event wiring lives in the inline <script> at the bottom.
+---
+
+<div class="install-menu-wrap">
+  <button
+    type="button"
+    class="install-menu-trigger"
+    aria-haspopup="dialog"
+    aria-expanded="false"
+    aria-controls="install-popup"
+    data-install-trigger>
+    Install
+    <svg class="install-menu-chevron" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+      <path d="M3 4.5L6 7.5L9 4.5"/>
+    </svg>
+  </button>
+
+  <div id="install-popup" class="install-popup" role="dialog" aria-label="Install commands" hidden>
+    <p class="install-popup-eyebrow">Install</p>
+
+    <div class="install-popup-row" data-cmd="cargo install forgeplan">
+      <p class="install-popup-label">Cargo</p>
+      <div class="install-popup-cmd">
+        <code>cargo install forgeplan</code>
+        <button type="button" class="install-popup-copy" data-copy-target aria-label="Copy command" title="Copy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="install-popup-row" data-cmd="brew install forgeplan">
+      <p class="install-popup-label">Homebrew</p>
+      <div class="install-popup-cmd">
+        <code>brew install forgeplan</code>
+        <button type="button" class="install-popup-copy" data-copy-target aria-label="Copy command" title="Copy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="install-popup-row" data-cmd="curl -fsSL install.sh | sh">
+      <p class="install-popup-label">Shell</p>
+      <div class="install-popup-cmd">
+        <code>curl -fsSL install.sh | sh</code>
+        <button type="button" class="install-popup-copy" data-copy-target aria-label="Copy command" title="Copy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="install-popup-row" data-cmd="forgeplan setup-skill">
+      <p class="install-popup-label">AI Skill <span class="install-popup-tag">Claude Code · Cursor · Windsurf</span></p>
+      <div class="install-popup-cmd">
+        <code>forgeplan setup-skill</code>
+        <a href="/docs/marketplace/forgeplan-workflow/" class="install-popup-docs" title="Documentation">docs ↗</a>
+      </div>
+    </div>
+
+    <a href="/#install" class="install-popup-more">All install options →</a>
+  </div>
+</div>
+
+<script>
+  // Wire all instances (Header + DocsHeader may both render on different routes;
+  // only one actually mounts per page).
+  document.querySelectorAll<HTMLButtonElement>('[data-install-trigger]').forEach(trigger => {
+    const wrap = trigger.closest('.install-menu-wrap');
+    const popup = wrap?.querySelector<HTMLDivElement>('.install-popup');
+    if (!popup) return;
+
+    const setOpen = (open: boolean) => {
+      popup.hidden = !open;
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      wrap?.classList.toggle('install-menu-open', open);
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = !popup.hidden;
+      setOpen(!isOpen);
+    });
+
+    // Click outside → close
+    document.addEventListener('click', (e) => {
+      if (popup.hidden) return;
+      if (!wrap?.contains(e.target as Node)) setOpen(false);
+    });
+
+    // Escape → close + restore focus
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !popup.hidden) {
+        setOpen(false);
+        trigger.focus();
+      }
+    });
+
+    // Copy buttons inside this popup
+    popup.querySelectorAll<HTMLButtonElement>('[data-copy-target]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const row = btn.closest<HTMLElement>('.install-popup-row');
+        const cmd = row?.dataset.cmd;
+        if (!cmd) return;
+        try {
+          await navigator.clipboard.writeText(cmd);
+          row?.classList.add('install-popup-copied');
+          setTimeout(() => row?.classList.remove('install-popup-copied'), 1200);
+        } catch {
+          // Silent fail — fallback would be selectText + execCommand, but
+          // modern browsers all support clipboard API.
+        }
+      });
+    });
+  });
+</script>
+
+<style is:global>
+  .install-menu-wrap {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    height: 100%;
+  }
+
+  /* Trigger button — same size/layout as a nav cell. Specific colors come
+     from the parent header's .nav-cell or .docs-nav-cell rules (color: ember,
+     hover wipe etc) by reusing those class names where possible. */
+  .install-menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 100%;
+    width: 100%;
+    padding: 0 14px;
+    background: transparent;
+    border: none;
+    color: var(--color-forge-ember, #FF6B35);
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .install-menu-trigger:focus-visible {
+    outline: 2px solid var(--color-forge-ember, #FF6B35);
+    outline-offset: -2px;
+  }
+  .install-menu-chevron {
+    transition: transform 0.2s;
+  }
+  .install-menu-open .install-menu-chevron { transform: rotate(180deg); }
+
+  /* Popup — absolute, right-aligned under the trigger */
+  .install-popup {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    width: 380px;
+    max-width: calc(100vw - 32px);
+    margin-top: 8px;
+    padding: 16px;
+    background: var(--forge-surface, var(--forge-bg));
+    color: var(--forge-fg);
+    border: 1px solid var(--forge-line);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    z-index: 60;
+    text-align: start;
+  }
+  .install-popup[hidden] { display: none; }
+
+  .install-popup-eyebrow {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-forge-ember, #FF6B35);
+    margin: 0 0 12px;
+  }
+
+  .install-popup-row {
+    margin-bottom: 12px;
+  }
+  .install-popup-row:last-of-type { margin-bottom: 8px; }
+
+  .install-popup-label {
+    font-size: 12px;
+    color: var(--forge-dim);
+    margin: 0 0 4px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .install-popup-tag {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    color: var(--color-forge-ember, #FF6B35);
+  }
+
+  .install-popup-cmd {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--forge-bg);
+    border: 1px solid var(--forge-line);
+    transition: border-color 0.2s;
+  }
+  .install-popup-cmd:hover { border-color: var(--color-forge-ember, #FF6B35); }
+  .install-popup-cmd code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    color: var(--forge-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .install-popup-copy {
+    flex-shrink: 0;
+    /* Fixed dimensions so the ✓ feedback (≠ svg width) doesn't shrink/grow
+       the button and shift the rest of the row. */
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--forge-dim);
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.15s;
+  }
+  .install-popup-copy:hover { color: var(--forge-fg); }
+  .install-popup-copy:focus-visible {
+    outline: 2px solid var(--color-forge-ember, #FF6B35);
+    outline-offset: 2px;
+  }
+
+  .install-popup-docs {
+    flex-shrink: 0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    color: var(--forge-dim);
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color 0.15s;
+  }
+  .install-popup-docs:hover { color: var(--color-forge-ember, #FF6B35); }
+
+  /* Copied feedback */
+  .install-popup-copied .install-popup-cmd {
+    border-color: var(--color-forge-green, #28C840);
+  }
+  /* Hide the svg WITHOUT taking it out of layout (visibility:hidden keeps
+     the 14×14 box) — the absolute-positioned ✓ overlays it exactly. */
+  .install-popup-copied .install-popup-copy svg { visibility: hidden; }
+  .install-popup-copied .install-popup-copy::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-forge-green, #28C840);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+  }
+  /* Anchor for ::after — the button itself */
+  .install-popup-copy { position: relative; }
+
+  .install-popup-more {
+    display: block;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--forge-line);
+    text-align: center;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--color-forge-ember, #FF6B35);
+    text-decoration: none;
+  }
+  .install-popup-more:hover { text-decoration: underline; }
+</style>

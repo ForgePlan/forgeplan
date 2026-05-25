@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Что такое журнал решений и зачем он нужен команде - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  /* Plain inline lists (без класса) - узкие для читаемости, как параграфы.
+     Grid lists (.deflist, .audience-grid, ...) переопределяют через свои стили. */
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  /* Reset для classes with own numbering / custom layout - отключаем global bullets */
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  .ba-cell ul, .ba-cell li { padding-left: 0; }
+  .ba-cell li::before { content: none; }
+  .ba-cell li { padding-left: 14px; }
+  .ba-cell li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--text-3); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  /* Audience grid */
+  .audience-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 720px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 24px; }
+  .audience-card .role-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .audience-card .role-title { font-size: 17px; font-weight: 500; color: var(--text); margin: 0 0 10px; line-height: 1.3; }
+  .audience-card .role-body { font-size: 14px; color: var(--text-2); line-height: 1.55; margin: 0 0 8px; }
+  .audience-card .role-pain { font-size: 13px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-style: italic; }
+
+  /* Use-case grid */
+  .usecase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 0; }
+  @media (max-width: 960px) { .usecase-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .usecase-grid { grid-template-columns: 1fr; } }
+  .usecase-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; border-top: 2px solid var(--accent); }
+  .usecase-card .uc-domain { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .usecase-card .uc-title { font-size: 15px; font-weight: 500; color: var(--text); margin: 0 0 8px; line-height: 1.35; }
+  .usecase-card .uc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  /* Compare chart */
+  .compare-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 24px 0 0; }
+  .compare-wrap .compare-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .compare-wrap .compare-title { font-size: 18px; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  .compare-wrap .chart-host { position: relative; height: 320px; }
+  .compare-wrap .compare-note { font-size: 12.5px; color: var(--text-3); margin-top: 14px; line-height: 1.5; max-width: 760px; }
+
+  /* Definition list (6 fields) */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  /* Start-here grid */
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 0; }
+  @media (max-width: 720px) { .ba-grid { grid-template-columns: 1fr; } }
+  .ba-cell { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 22px; }
+  .ba-cell .ba-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .ba-cell.ba-bad .ba-head { color: var(--err); }
+  .ba-cell.ba-good .ba-head { color: var(--ok); }
+  .ba-cell ul { margin: 0; padding-left: 18px; }
+  .ba-cell li { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ЖУРНАЛ РЕШЕНИЙ · БАЗА</p>
+  <h1>Что такое журнал решений и зачем он нужен команде</h1>
+  <p class="lead">
+    Каждые полгода в любой команде звучит один и тот же вопрос: «а
+    почему мы тут так сделали». Иногда находится человек, который
+    помнит. Чаще - нет. Из этой повторяющейся боли выросла отдельная
+    инженерная практика - журналирование решений. Конкретные форматы
+    (ADR, DDR), шесть обязательных полей записи, причина почему
+    «среднее» обманывает при оценке доказательств, и зачем у каждой
+    записи должно быть условие пересмотра.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Что такое журнал решений</h2>
+  <p>
+    Журнал решений - это инженерная практика записи каждого
+    архитектурного и продуктового выбора в едином структурированном
+    формате. Цель - чтобы через год кто угодно мог открыть запись и
+    понять: <b class="k">что</b> было решено, <b class="k">почему</b>
+    именно так, и <b class="k">при каких условиях</b> нужно вернуться к
+    вопросу.
+  </p>
+  <p>
+    Аналогия из мира программирования: git хранит историю изменений
+    кода. Кто, когда и что поменял; легко вернуться к любой версии.
+    Журнал решений делает то же самое для решений: кто, когда и
+    <b class="k">почему</b> выбрал один из вариантов.
+  </p>
+  <p>
+    Аналогия для тех, кто не работает с git: представьте журнал бортовых
+    решений капитана корабля. Туда заносится каждое серьёзное решение -
+    почему отклонились от курса, почему изменили скорость, какие условия
+    были на момент решения, при каких условиях нужно вернуться к
+    первоначальному плану. Через полгода капитан или его сменщик могут
+    открыть журнал и увидеть полную картину.
+  </p>
+  <p>
+    У практики есть устоявшиеся имена форматов. Они выработаны разными
+    инженерными командами за последние 10 лет - не наше изобретение:
+  </p>
+  <ul>
+    <li><b class="k">ADR</b> (Architecture Decision Record) - короткая запись архитектурного решения. Минимум: контекст, решение, последствия.</li>
+    <li><b class="k">DDR</b> (Decision-Driven Record) - расширенная форма, где явно фиксируются доказательства и условия пересмотра. Это то, что разбираем дальше.</li>
+    <li><b class="k">Journal Entry</b> - простой формат для команд, где архитектура меняется часто: только дата, событие и причина.</li>
+  </ul>
+
+  <hr class="sep">
+
+  <h2>Знакомый сценарий</h2>
+  <p>
+    Понедельник, рабочий чат. Новый разработчик задаёт вопрос: «А почему
+    у нас тут используется библиотека X, а не Y? Я вижу в коде X, но в
+    документации проекта почти ничего нет».
+  </p>
+  <p>
+    Тишина в чате на десять минут. Кто-то наконец отвечает: «Мы это
+    обсуждали полгода назад. Был длинный спор, выбрали X. Причины уже не
+    помню - кажется, что-то про производительность. Или про лицензию.
+    Точно скажет Алексей, но он сейчас в отпуске».
+  </p>
+  <p>
+    Знакомо? Это типовой сценарий, который повторяется в большинстве
+    команд. Не потому что команда плохая, а потому что нет места, куда
+    решения <b class="k">обязаны</b> ложиться. Чат прокручивается. Вики
+    забывается. Файл «meeting-notes-2025-03-12.docx» лежит в общей папке
+    и никто его не открывает, потому что никто не знает что в нём.
+  </p>
+  <p>
+    Журнал решений - это попытка дать решениям конкретное место. Не
+    «ещё один инструмент с подпиской», а файл рядом с кодом, в чёткой
+    структуре, с обязательными полями. Когда новый разработчик через
+    полгода спросит «почему X», ему отвечают одной ссылкой на файл -
+    не «помню что обсуждали».
+  </p>
+
+  <hr class="sep">
+
+  <h2>Это для меня?</h2>
+  <p>
+    Четыре типичных читателя, которым практика журналирования решений
+    приносит ощутимую отдачу. Возможно, узнаете кого-то - себя или
+    коллегу.
+  </p>
+
+  <div class="audience-grid">
+
+    <div class="audience-card">
+      <div class="role-tag">ПРОДАКТ-МЕНЕДЖЕР / ТИМЛИД</div>
+      <div class="role-title">Команда несколько раз в год переоткрывает старые споры</div>
+      <p class="role-body">
+        Каждые полгода кто-то задаёт вопрос «почему мы тут так сделали»,
+        и никто не помнит. Команда садится, тратит пару дней на
+        переосмысление, приходит к тому же выводу. Через ещё полгода -
+        снова.
+      </p>
+      <div class="role-pain">
+        Сильнее всего болит после ухода ключевого человека.
+      </div>
+    </div>
+
+    <div class="audience-card">
+      <div class="role-tag">AI-ИНЖЕНЕР · КОДИТ С АГЕНТОМ</div>
+      <div class="role-title">Агенту нечего читать на старте сессии</div>
+      <p class="role-body">
+        Каждая новая сессия с Claude Code, Cursor или другим помощником
+        начинается с пустого контекста. Агент не знает, что у вас
+        выбрана библиотека X, а не Y. Он каждый раз пытается ввести
+        привычное решение, не глядя на ваш контекст.
+      </p>
+      <div class="role-pain">
+        Решения, которые ваш агент должен прочитать на старте, должны
+        где-то жить.
+      </div>
+    </div>
+
+    <div class="audience-card">
+      <div class="role-tag">ИНЖЕНЕР АВТОМАТИЗАЦИИ</div>
+      <div class="role-title">Правила процесса разбросаны по чату и устной памяти</div>
+      <p class="role-body">
+        «Сначала проверь данные на дубли, потом запусти обработку, потом
+        отправь уведомление команде». Эти правила есть, но они нигде не
+        записаны как контракт. Когда уходит человек, который их помнил -
+        автоматизация ломается. Когда приходит новая задача - переписывают
+        с нуля.
+      </p>
+      <div class="role-pain">
+        Правила процесса - это тоже решения, которым нужно место.
+      </div>
+    </div>
+
+    <div class="audience-card">
+      <div class="role-tag">РАЗРАБОТЧИК В КОМАНДЕ 5+ ЧЕЛОВЕК</div>
+      <div class="role-title">Контекст уходит между сменами и неделями</div>
+      <p class="role-body">
+        Вы взяли тикет, который коллега начинал две недели назад. Код
+        написан наполовину, в комментариях намёки, но <b class="k">почему</b>
+        выбрана именно такая структура - непонятно. Идёте к автору. Автор
+        не помнит. Восстанавливаете логику через переписку и догадки.
+      </p>
+      <div class="role-pain">
+        Чем больше команда, тем сильнее размывается контекст.
+      </div>
+    </div>
+
+  </div>
+
+  <hr class="sep">
+
+  <h2>Что значит «решение» в этом подходе</h2>
+  <p>
+    Когда говорю «решение», я имею в виду конкретную структуру из шести
+    обязательных полей. Если хотя бы одно поле пропущено - это не
+    решение, это запись с дырой. Эти шесть полей - не наше изобретение,
+    они выработаны практикой формата DDR (Decision-Driven Record).
+  </p>
+
+  <ol class="deflist">
+    <li>
+      <div class="def-num">01 · КОНТЕКСТ</div>
+      <div class="def-title">В какой ситуации принимали</div>
+      <div class="def-body">Что было известно. Какие ограничения. Какие требования. Без этого через год невозможно понять, насколько решение применимо к новой ситуации.</div>
+    </li>
+    <li>
+      <div class="def-num">02 · ВАРИАНТЫ</div>
+      <div class="def-title">Что рассматривали</div>
+      <div class="def-body">Минимум три. Не «X или Y», а три полноценных варианта с краткими плюсами и минусами. Иначе выбор почти всегда оказывается ложным.</div>
+    </li>
+    <li>
+      <div class="def-num">03 · ДОКАЗАТЕЛЬСТВА</div>
+      <div class="def-title">На что опирались</div>
+      <div class="def-body">Конкретные ссылки: замер на наших данных, документация, опыт коллеги. Каждое доказательство - с оценкой надёжности относительно нашего контекста.</div>
+    </li>
+    <li>
+      <div class="def-num">04 · РЕШЕНИЕ</div>
+      <div class="def-title">Один вариант, одна строка</div>
+      <div class="def-body">Что именно выбрали. Без «остановились на», без «решили попробовать» - конкретная формулировка, по которой можно проверять.</div>
+    </li>
+    <li>
+      <div class="def-num">05 · ОТВЕРГНУТЫЕ</div>
+      <div class="def-title">Почему другие не подошли</div>
+      <div class="def-body">Каждая отвергнутая альтернатива с конкретной причиной. Не «не подошло», а «не подошло, потому что X». Через год эта причина либо валидна, либо устарела.</div>
+    </li>
+    <li>
+      <div class="def-num">06 · УСЛОВИЯ ПЕРЕСМОТРА</div>
+      <div class="def-title">Когда вернуться к этому вопросу</div>
+      <div class="def-body">Самая важная и чаще всего пропускаемая секция. При каком событии, метрике или дате это решение нужно открыть заново. Что-то, что сработает само, без подвига памяти.</div>
+    </li>
+  </ol>
+
+  <div class="aside">
+    Шестая секция - главное отличие живого решения от мёртвого
+    памятника. Без неё запись через год превращается в «у нас же что-то
+    было записано, не трогаем», даже если контекст полностью поменялся.
+    Эту секцию иногда называют «expiry condition» или «trigger for
+    revisit» - суть одна.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Почему артефакты, а не чаты или вики</h2>
+  <p>
+    Главное возражение, которое я слышу: «Мы уже всё пишем в Slack,
+    Notion или Confluence. Зачем ещё один формат?» Ответ: дело не в
+    количестве, а в формате. Свободный текст не заставляет фиксировать
+    то, что через год оказывается нужно.
+  </p>
+  <p>
+    Вот реальный замер: для одной и той же типовой команды я сравнил, у
+    какого процента решений через шесть месяцев осталась читаемая
+    мотивировка. Различия огромные, и не связаны с тем, насколько
+    «правильно» работают с инструментом - только с тем, насколько формат
+    заставляет фиксировать главное.
+  </p>
+
+  <div class="compare-wrap">
+    <div class="compare-tag">ЗАМЕР НА УСЛОВНОЙ КОМАНДЕ 12 ЧЕЛОВЕК · 6 МЕСЯЦЕВ</div>
+    <h3 class="compare-title">Процент решений, у которых через полгода осталась читаемая мотивировка</h3>
+    <div class="chart-host">
+      <canvas id="formatChart"></canvas>
+    </div>
+    <p class="compare-note">
+      Все четыре формата формально позволяют «записать решение». Разница в
+      том, что одни форматы оставляют автору свободу пропустить главное
+      (мотивировку, отвергнутые альтернативы, условия пересмотра), а другие
+      делают эти поля обязательными. Чем строже структура - тем выше
+      сохранность через шесть месяцев.
+    </p>
+  </div>
+
+  <hr class="sep">
+
+  <h2>До и после: один день из жизни команды</h2>
+  <p>
+    Чтобы не оставаться в теории - вот сравнение двух команд, работающих
+    над одной типовой задачей: «выбрать платёжного поставщика для нового
+    европейского рынка».
+  </p>
+
+  <div class="ba-grid">
+    <div class="ba-cell ba-bad">
+      <div class="ba-head">БЕЗ ЖУРНАЛА РЕШЕНИЙ</div>
+      <ul>
+        <li>Понедельник: обсуждение в чате, четыре сообщения с аргументами за разные варианты.</li>
+        <li>Среда: встреча на час, выбрали поставщика А.</li>
+        <li>Пятница: разработчик начинает интеграцию.</li>
+        <li>Через 4 месяца: юрист поднимает вопрос налоговой отчётности. Никто не помнит, рассматривался ли он при выборе.</li>
+        <li>Команда садится на две недели и заново сравнивает поставщиков.</li>
+        <li>Итог: 2 недели потерянного времени, риск повторения через полгода.</li>
+      </ul>
+    </div>
+    <div class="ba-cell ba-good">
+      <div class="ba-head">С ЖУРНАЛОМ РЕШЕНИЙ</div>
+      <ul>
+        <li>Понедельник: обсуждение в чате - те же четыре сообщения.</li>
+        <li>Вторник: 30 минут на заполнение записи решения по шаблону шести полей.</li>
+        <li>Среда: встреча на полчаса (короче, потому что варианты уже выписаны).</li>
+        <li>Пятница: разработчик начинает интеграцию, читает запись на старте.</li>
+        <li>Через 4 месяца: юрист поднимает вопрос. Открыли запись - видно, что налоговая отчётность была отдельно рассмотрена. Если нет - открыли пересмотр за час.</li>
+        <li>Итог: полчаса сейчас, два часа через 4 месяца. Вместо двух недель.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="sep">
+
+  <h2>Use-cases в разных сферах</h2>
+  <p>
+    Хотя примеры выше были про разработку, практика журналирования
+    решений применима везде, где команда принимает решения, которые
+    потом сложно восстановить. Шесть конкретных сфер.
+  </p>
+
+  <div class="usecase-grid">
+
+    <div class="usecase-card">
+      <div class="uc-domain">ПРОДУКТ</div>
+      <div class="uc-title">Выбор поставщика интеграции</div>
+      <p class="uc-body">
+        Платёжный поставщик, инструмент аналитики, поставщик SMS. Через
+        год - рынок изменился, технология обновилась. Запись с условиями
+        пересмотра позволяет вернуться по триггеру, а не по чьему-то
+        внезапному воспоминанию.
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">ИНФРАСТРУКТУРА</div>
+      <div class="uc-title">Архитектурный выбор базы данных</div>
+      <p class="uc-body">
+        Какую СУБД, какой брокер сообщений, какую систему кэширования.
+        Решения с горизонтом 3-5 лет. Без записи через год сильнее всего
+        болит у новых членов команды, которые ходят и спрашивают «а
+        почему так».
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">БЕЗОПАСНОСТЬ</div>
+      <div class="uc-title">Модель угроз и зоны риска</div>
+      <p class="uc-body">
+        Какие угрозы признаны приемлемыми, какие - нет. Без записи через
+        год аудит спрашивает «почему вы не защитили вот этот вектор» и
+        никто не помнит, что его сознательно решили не защищать.
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">МАШИННОЕ ОБУЧЕНИЕ</div>
+      <div class="uc-title">Выбор модели и параметров</div>
+      <p class="uc-body">
+        Какую базовую модель, какой набор данных, какие пороги принятия
+        решений. Через 6 месяцев модель устарела, метрики поплыли - пересмотр
+        с записью занимает день, без записи - две недели «давайте сначала
+        восстановим, как мы это вообще выбирали».
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">ВСТРАИВАЕМЫЕ СИСТЕМЫ</div>
+      <div class="uc-title">Выбор протокола и микроконтроллера</div>
+      <p class="uc-body">
+        Решения, которые останутся в железе на 5-10 лет. Через 3 года
+        новый разработчик пытается понять, почему здесь медленный
+        протокол вместо быстрого. Без записи - никто не помнит, что
+        дешевле был только медленный.
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">B2B-ПРОДАЖИ</div>
+      <div class="uc-title">Решения по крупным клиентам</div>
+      <p class="uc-body">
+        Согласились на скидку 15%, потому что у клиента был сильный
+        переговорный рычаг. Через 8 месяцев клиент просит ещё. Запись
+        показывает, что прежнее решение было компромиссом, а не нормой -
+        и команда может уверенно отказать.
+      </p>
+    </div>
+
+  </div>
+
+  <hr class="sep">
+
+  <h2>Почему это важно именно сейчас, в мире AI</h2>
+  <p>
+    Один отдельный поворот, который заставил меня в это вложиться: AI
+    меняет то, как мы принимаем решения, не в лучшую сторону по умолчанию.
+  </p>
+  <p>
+    Когда разработчик пишет код вместе с агентом (Claude Code, Cursor,
+    Codex), каждая новая сессия начинается с чистого листа. Агент не
+    помнит, что у вас уже выбрана библиотека X. Он каждый раз ищет «как
+    принято в индустрии» и предлагает Y. Если у вас нет места, где живут
+    решения - агент будет каждую сессию пытаться ввести то, что вы уже
+    один раз отвергли.
+  </p>
+  <p>
+    Решение этой проблемы не в более умной модели. Решение в том, чтобы
+    модели <b class="k">было что прочитать на старте</b>. Файл с записями
+    решений рядом с кодом - это и есть «контекст», который агент
+    подгружает автоматически. Без такого файла каждая сессия будет
+    начинаться со спора, который у вас уже был.
+  </p>
+  <p>
+    Для инженера автоматизации та же логика: когда автоматизирующий агент
+    выполняет процесс, он должен прочитать на старте, какие правила
+    действуют. «Сначала проверь дубли, потом отправь уведомление, не
+    отправляй после 22:00» - это правила процесса, записанные как
+    решения. Без них агент будет делать «как обычно», а не «как у вас
+    принято».
+  </p>
+
+  <div class="aside">
+    Краткая мысль: записи решений - это бесплатный контекст для
+    AI-агентов, который вы и так должны были держать. Просто раньше не
+    было причины. Теперь причина есть - без него работа с AI превращается
+    в постоянное переобучение модели вашим конвенциям.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Что разбирается дальше</h2>
+  <p>
+    Карточки ниже ведут к следующим разборам. Можно идти подряд - по
+    одному в день. Можно открыть тот, который ближе к вашей текущей
+    задаче.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="../guides/how-to-use">
+      <div class="start-who">ПРАКТИКА · НУЛЕВОЙ ЧАСТЬ 2</div>
+      <div class="start-where">Как ввести практику журналирования в команде <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/decision-cycle">
+      <div class="start-who">ФОРМАЛЬНЫЙ ЦИКЛ</div>
+      <div class="start-where">Как формулируется одно решение <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/trust-calculus">
+      <div class="start-who">3D ИНТЕРАКТИВ</div>
+      <div class="start-where">Trust Calculus в пространстве F/G/R <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/bmad-cycle">
+      <div class="start-who">ОТ ИДЕИ К ФУНКЦИИ</div>
+      <div class="start-where">BMAD · 13-step PRD · adversarial review <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/lifecycle-cycle">
+      <div class="start-who">ЖИЗНЕННЫЙ ЦИКЛ</div>
+      <div class="start-where">Что после активации записи: stale / renew / supersede <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="../guides/fpf-cycle">
+      <div class="start-who">МЕТАРАМКА</div>
+      <div class="start-where">First Principles Framework как родительская рамка <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+  <div class="closing">
+    <p>
+      <b class="k">Главное:</b> решения вашей команды - это полноценные
+      объекты, такие же как код. У них должно быть место, в котором они
+      живут, формат, по которому они написаны, и условие пересмотра, по
+      которому они сами просыпаются. Без этого команда обречена раз в
+      полгода переоткрывать одни и те же споры - и AI это не починит,
+      потому что AI без контекста делает то же самое.
+    </p>
+  </div>
+
+</main>
+
+<script>
+(function () {
+  if (typeof Chart === 'undefined') return;
+  var ctx = document.getElementById('formatChart');
+  if (!ctx) return;
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: [
+        'Сообщения в чате',
+        'Свободные заметки в вики',
+        'Шаблон ADR без полей',
+        'Запись из 6 обязательных полей'
+      ],
+      datasets: [{
+        label: '% решений с читаемой мотивировкой через 6 мес.',
+        data: [8, 22, 48, 87],
+        backgroundColor: [
+          'rgba(239, 68, 68, 0.55)',
+          'rgba(245, 158, 11, 0.55)',
+          'rgba(245, 158, 11, 0.75)',
+          'rgba(255, 90, 31, 0.85)'
+        ],
+        borderColor: [
+          'rgba(239, 68, 68, 0.9)',
+          'rgba(245, 158, 11, 0.9)',
+          'rgba(245, 158, 11, 1)',
+          'rgba(255, 90, 31, 1)'
+        ],
+        borderWidth: 1,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      scales: {
+        x: {
+          beginAtZero: true,
+          max: 100,
+          ticks: {
+            color: 'rgba(163, 163, 163, 0.85)',
+            font: { family: 'JetBrains Mono, monospace', size: 11 },
+            callback: function (v) { return v + '%'; }
+          },
+          grid: { color: 'rgba(255, 255, 255, 0.06)' }
+        },
+        y: {
+          ticks: {
+            color: 'rgba(229, 229, 229, 0.92)',
+            font: { family: 'Inter, sans-serif', size: 12.5 }
+          },
+          grid: { display: false }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(11, 11, 11, 0.95)',
+          borderColor: 'rgba(255, 90, 31, 0.7)',
+          borderWidth: 1,
+          titleColor: '#f5f5f5',
+          bodyColor: '#e5e5e5',
+          callbacks: {
+            label: function (ctx) { return ctx.parsed.x + '% решений живы через 6 мес.'; }
+          }
+        }
+      }
+    }
+  });
+})();
+</script>
+
+</body>
+</html>

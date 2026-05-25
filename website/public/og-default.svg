@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#050505"/>
+  <defs>
+    <pattern id="dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="12" cy="12" r="0.9" fill="rgba(255,255,255,0.1)"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="url(#dots)"/>
+  <text x="80" y="320" font-family="'Space Grotesk', sans-serif" font-size="96" font-weight="500" fill="#f5f5f5" letter-spacing="-0.02em">Forgeplan</text>
+  <text x="80" y="380" font-family="'Geist Mono', monospace" font-size="20" font-weight="500" fill="#a3a3a3" letter-spacing="0.18em">BLOG</text>
+  <rect x="80" y="420" width="80" height="4" fill="#ff5a1f"/>
+</svg>

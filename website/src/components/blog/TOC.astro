@@ -1,0 +1,190 @@
+---
+// Sticky sidebar for blog posts — Smashing Magazine style.
+// Sections: meta (date/reading time/topic) → TOC (if headings) → quick share → author mini.
+// Always renders the aside so layout stays 2-column even for short posts.
+interface Props {
+  headings: { depth: number; slug: string; text: string }[];
+  lang?: 'en' | 'ru';
+  publishedAt?: Date;
+  updatedAt?: Date;
+  readingTime?: number;
+  topic?: string;
+  title?: string;
+  slug?: string;
+}
+const {
+  headings,
+  lang = 'en',
+  publishedAt,
+  updatedAt,
+  readingTime,
+  topic,
+  title = '',
+  slug = '',
+} = Astro.props;
+
+const tocHeadings = headings.filter(h => h.depth >= 2 && h.depth <= 3);
+const hasToc = tocHeadings.length > 0;
+
+const t = lang === 'ru'
+  ? {
+      tocLabel: 'На этой странице',
+      tocAriaLabel: 'Содержание',
+      meta: 'Об этом посте',
+      published: 'Опубликовано',
+      updated: 'Обновлено',
+      reading: 'Чтение',
+      minutes: 'мин',
+      topic: 'Тема',
+      share: 'Поделиться',
+      shareX: 'X (Twitter)',
+      shareLinkedin: 'LinkedIn',
+      shareCopy: 'Скопировать ссылку',
+      shareCopied: 'Скопировано!',
+      author: 'Автор',
+    }
+  : {
+      tocLabel: 'On this page',
+      tocAriaLabel: 'Table of contents',
+      meta: 'About this post',
+      published: 'Published',
+      updated: 'Updated',
+      reading: 'Reading',
+      minutes: 'min',
+      topic: 'Topic',
+      share: 'Share',
+      shareX: 'X (Twitter)',
+      shareLinkedin: 'LinkedIn',
+      shareCopy: 'Copy link',
+      shareCopied: 'Copied!',
+      author: 'Author',
+    };
+
+// Canonical URL for share buttons (built at compile time via Astro.site)
+const path = lang === 'ru' ? `/ru/blog/${slug}` : `/blog/${slug}`;
+const canonicalUrl = new URL(path, Astro.site ?? 'https://forgeplan.dev').href;
+const shareText = title;
+---
+<aside class="blog-aside" aria-label={t.tocAriaLabel}>
+
+  <!-- Meta panel: date / reading time / topic -->
+  <section class="blog-aside-section">
+    <h3 class="blog-aside-title">{t.meta}</h3>
+    <dl class="blog-aside-meta-list">
+      {publishedAt && (
+        <>
+          <dt>{t.published}</dt>
+          <dd><time datetime={publishedAt.toISOString()}>{publishedAt.toISOString().slice(0, 10)}</time></dd>
+        </>
+      )}
+      {updatedAt && (
+        <>
+          <dt>{t.updated}</dt>
+          <dd><time datetime={updatedAt.toISOString()}>{updatedAt.toISOString().slice(0, 10)}</time></dd>
+        </>
+      )}
+      {readingTime && (
+        <>
+          <dt>{t.reading}</dt>
+          <dd>{readingTime} {t.minutes}</dd>
+        </>
+      )}
+      {topic && (
+        <>
+          <dt>{t.topic}</dt>
+          <dd><span class={`blog-aside-topic-chip blog-topic-${topic}`}>{topic}</span></dd>
+        </>
+      )}
+    </dl>
+  </section>
+
+  <!-- TOC list (only if h2/h3 headings exist) -->
+  {hasToc && (
+    <section class="blog-aside-section">
+      <h3 class="blog-aside-title">{t.tocLabel}</h3>
+      <nav aria-label={t.tocAriaLabel}>
+        <ul class="blog-aside-toc">
+          {tocHeadings.map(h => (
+            <li class={`blog-toc-h${h.depth}`}>
+              <a href={`#${h.slug}`}>{h.text}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </section>
+  )}
+
+  <!-- Quick share -->
+  <section class="blog-aside-section">
+    <h3 class="blog-aside-title">{t.share}</h3>
+    <div class="blog-aside-share">
+      <a
+        href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(canonicalUrl)}`}
+        rel="noopener noreferrer"
+        target="_blank"
+        class="blog-aside-share-btn"
+        aria-label={t.shareX}
+        title={t.shareX}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+        </svg>
+        <span>X</span>
+      </a>
+      <a
+        href={`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(canonicalUrl)}`}
+        rel="noopener noreferrer"
+        target="_blank"
+        class="blog-aside-share-btn"
+        aria-label={t.shareLinkedin}
+        title={t.shareLinkedin}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.36V9h3.41v1.56h.05c.47-.9 1.64-1.85 3.37-1.85 3.6 0 4.26 2.37 4.26 5.45zM5.34 7.43c-1.14 0-2.07-.93-2.07-2.07s.93-2.07 2.07-2.07 2.07.93 2.07 2.07-.93 2.07-2.07 2.07zm1.78 13.02H3.56V9h3.56z"/>
+        </svg>
+        <span>LinkedIn</span>
+      </a>
+      <button
+        type="button"
+        class="blog-aside-share-btn blog-aside-copy-btn"
+        data-copy-url={canonicalUrl}
+        aria-label={t.shareCopy}
+        title={t.shareCopy}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        <span class="blog-aside-copy-label">{t.shareCopy}</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- Author mini -->
+  <section class="blog-aside-section">
+    <h3 class="blog-aside-title">{t.author}</h3>
+    <a href="https://elirum.me" rel="external noopener noreferrer" target="_blank" class="blog-aside-author-link">
+      <span class="blog-aside-author-name">Eli Rum</span>
+      <span class="blog-aside-author-url">elirum.me →</span>
+    </a>
+  </section>
+
+</aside>
+
+<script>
+  // Copy link button — copies canonical URL to clipboard, shows "Copied!" feedback
+  document.querySelectorAll<HTMLButtonElement>('.blog-aside-copy-btn').forEach(btn => {
+    const url = btn.dataset.copyUrl;
+    if (!url) return;
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        const label = btn.querySelector('.blog-aside-copy-label');
+        if (label) {
+          const original = label.textContent ?? '';
+          label.textContent = btn.title?.includes('Скопиров') ? 'Скопировано!' : 'Copied!';
+          setTimeout(() => { label.textContent = original; }, 1500);
+        }
+      } catch (e) {
+        console.warn('Clipboard write failed', e);
+      }
+    });
+  });
+</script>

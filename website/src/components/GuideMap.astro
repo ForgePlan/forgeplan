@@ -1,0 +1,246 @@
+---
+// Visual map of the guides series.
+// Groups 19 lessons into 6 pedagogical tiers for one-glance navigation.
+// Used at the top of /guides and /ru/guides index pages.
+
+import { guides } from '../data/guides.ts';
+
+interface Props {
+  lang: 'en' | 'ru';
+}
+
+const { lang } = Astro.props;
+
+interface Tier {
+  id: string;
+  label_en: string;
+  label_ru: string;
+  hint_en: string;
+  hint_ru: string;
+  slugs: string[];
+}
+
+const tiers: Tier[] = [
+  {
+    id: 'start',
+    label_en: 'START',
+    label_ru: 'СТАРТ',
+    hint_en: 'why & how',
+    hint_ru: 'зачем и как',
+    slugs: ['intro', 'how-to-use'],
+  },
+  {
+    id: 'concepts',
+    label_en: 'CONCEPTS',
+    label_ru: 'КОНЦЕПТЫ',
+    hint_en: 'overviews',
+    hint_ru: 'обзорные',
+    slugs: ['artifacts-overview', 'adi-overview', 'ddr-format', 'trust-calculus-overview', 'evidence-and-decay'],
+  },
+  {
+    id: 'cycle',
+    label_en: 'CYCLE & FORMAT',
+    label_ru: 'ЦИКЛ И ФОРМАТ',
+    hint_en: 'detailed',
+    hint_ru: 'детальные',
+    slugs: ['decision-cycle', 'bmad-cycle', 'spec-cycle', 'lifecycle-cycle', 'fpf-cycle'],
+  },
+  {
+    id: 'viz',
+    label_en: 'INTERACTIVE',
+    label_ru: 'ИНТЕРАКТИВЫ',
+    hint_en: '3D & sliders',
+    hint_ru: '3D и слайдеры',
+    slugs: ['trust-calculus', 'dag-explorer', 'depth-calibrator'],
+  },
+  {
+    id: 'agents',
+    label_en: 'AGENTS',
+    label_ru: 'АГЕНТЫ',
+    hint_en: 'contracts & coordination',
+    hint_ru: 'контракты и координация',
+    slugs: ['agent-protocol-cycle', 'multi-agent-cycle'],
+  },
+  {
+    id: 'tool',
+    label_en: 'TOOL',
+    label_ru: 'ИНСТРУМЕНТ',
+    hint_en: 'one implementation',
+    hint_ru: 'одна реализация',
+    slugs: ['forgeplan-cycle', 'first-artifact'],
+  },
+];
+
+function findGuide(slug: string) {
+  return guides.find(g => g.slug === slug);
+}
+
+const headerLabel = lang === 'ru' ? 'КАРТА СЕРИИ' : 'SERIES MAP';
+const headerHint = lang === 'ru'
+  ? 'Шесть уровней — от старта к инструменту. Можно идти подряд или прыгать туда, где сейчас интерес.'
+  : 'Six tiers — from start to tool. Read in order or jump to the topic of current interest.';
+---
+
+<section class="guide-map" aria-label={headerLabel}>
+  <header class="map-header">
+    <span class="map-header-tag">{headerLabel}</span>
+    <p class="map-header-hint">{headerHint}</p>
+  </header>
+
+  <div class="map-grid">
+    {tiers.map((tier, idx) => (
+      <div class="map-tier" data-tier={tier.id}>
+        <div class="map-tier-head">
+          <span class="map-tier-num">{String(idx + 1).padStart(2, '0')}</span>
+          <span class="map-tier-label">{lang === 'ru' ? tier.label_ru : tier.label_en}</span>
+        </div>
+        <div class="map-tier-hint">{lang === 'ru' ? tier.hint_ru : tier.hint_en}</div>
+        <div class="map-tier-nodes">
+          {tier.slugs.map(slug => {
+            const g = findGuide(slug);
+            if (!g) return null;
+            const href = lang === 'ru' ? `/ru/guides/${slug}` : `/guides/${slug}`;
+            const title = lang === 'ru' ? g.title_ru : g.title_en;
+            return (
+              <a class={`map-node map-node-${g.pill}`} href={href}>
+                <span class="map-node-num">{String(g.order).padStart(2, '0')}</span>
+                <span class="map-node-title">{title}</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+    ))}
+  </div>
+</section>
+
+<style is:global>
+.guide-map {
+  max-width: 1280px;
+  margin: 0 auto 56px;
+  padding: 28px 32px 32px;
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 2px solid var(--forge-ember, #ff5a1f);
+  box-sizing: border-box;
+}
+
+.map-header {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.map-header-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--forge-ember, #ff5a1f);
+}
+.map-header-hint {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  color: var(--forge-fg-2, #a3a3a3);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.map-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .map-grid { grid-template-columns: repeat(3, 1fr); row-gap: 24px; }
+}
+@media (max-width: 640px) {
+  .map-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.map-tier { display: flex; flex-direction: column; gap: 8px; }
+.map-tier-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.map-tier-num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--forge-ember, #ff5a1f);
+  opacity: 0.55;
+}
+.map-tier-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--forge-fg, #f5f5f5);
+}
+.map-tier-hint {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--forge-fg-3, #737373);
+  margin: 0 0 6px;
+  line-height: 1.35;
+}
+
+.map-tier-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.map-node {
+  display: block;
+  padding: 10px 12px 11px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  text-decoration: none;
+  color: var(--forge-fg, #f5f5f5);
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.map-node:hover {
+  border-color: var(--forge-ember, #ff5a1f);
+  background: rgba(255, 90, 31, 0.06);
+  transform: translateY(-1px);
+}
+
+.map-node-interactive { border-left: 2px solid var(--forge-ember, #ff5a1f); }
+.map-node-tool        { border-left: 2px solid #60a5fa; }
+
+.map-node-num {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--forge-ember, #ff5a1f);
+  margin-bottom: 4px;
+}
+.map-node-title {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--forge-fg, #f5f5f5);
+}
+
+/* Light theme inversion */
+html.light .guide-map {
+  background: rgba(0, 0, 0, 0.015);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+html.light .map-tier-head { border-bottom-color: rgba(0, 0, 0, 0.1); }
+html.light .map-node {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+html.light .map-node:hover {
+  background: rgba(255, 90, 31, 0.08);
+}
+</style>

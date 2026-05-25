@@ -1,0 +1,7 @@
+---
+interface Props {
+  topic: 'r-eff' | 'adi' | 'fpf' | 'mcp' | 'methodology' | 'release';
+}
+const { topic } = Astro.props;
+---
+<span class={`topic-chip topic-chip-${topic}`}>{topic}</span>

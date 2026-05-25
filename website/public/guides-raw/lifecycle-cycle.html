@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Цикл жизни артефакта · draft → active → terminal - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* State colors */
+    --s-draft: #a3a3a3;
+    --s-active: #22c55e;
+    --s-stale: #f59e0b;
+    --s-superseded: #60a5fa;
+    --s-deprecated: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  .s-draft { color: var(--s-draft); font-weight: 500; }
+  .s-active { color: var(--s-active); font-weight: 500; }
+  .s-stale { color: var(--s-stale); font-weight: 500; }
+  .s-super { color: var(--s-superseded); font-weight: 500; }
+  .s-dep { color: var(--s-deprecated); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* States grid */
+  .states-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 22px 0 0; }
+  .state-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 14px 16px; }
+  .state-card.draft { border-top: 2px solid var(--s-draft); }
+  .state-card.active { border-top: 2px solid var(--s-active); }
+  .state-card.stale { border-top: 2px solid var(--s-stale); }
+  .state-card.super { border-top: 2px solid var(--s-superseded); }
+  .state-card.dep { border-top: 2px solid var(--s-deprecated); }
+  .state-card .sc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .state-card.draft .sc-tag { color: var(--s-draft); }
+  .state-card.active .sc-tag { color: var(--s-active); }
+  .state-card.stale .sc-tag { color: var(--s-stale); }
+  .state-card.super .sc-tag { color: var(--s-superseded); }
+  .state-card.dep .sc-tag { color: var(--s-deprecated); }
+  .state-card .sc-title { font-size: 13.5px; color: var(--text); font-weight: 500; margin-bottom: 8px; line-height: 1.3; }
+  .state-card .sc-can { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.02em; line-height: 1.5; padding-top: 8px; border-top: 1px solid var(--line); }
+  .state-card .sc-can.terminal { color: var(--text-4); font-style: italic; }
+
+  /* State machine SVG wrap */
+  .sm-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 14px; margin: 22px 0 0; }
+  .sm-wrap .sm-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .sm-wrap svg { width: 100%; height: auto; display: block; }
+  .sm-legend { display: flex; flex-wrap: wrap; gap: 18px; padding-top: 12px; margin-top: 4px; border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+  .sm-legend .item { display: flex; align-items: center; gap: 7px; }
+  .sm-legend .sw { width: 11px; height: 11px; border-radius: 50%; }
+
+  /* Transitions decision tree */
+  .tree-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .tree-head { background: var(--bg-3); padding: 14px 20px; border-bottom: 1px solid var(--line-2); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); }
+  .tree-row { display: grid; grid-template-columns: 130px 1fr 110px 1fr; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+  .tree-row:last-child { border-bottom: none; }
+  .tree-row .tr-cmd { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 500; letter-spacing: 0.02em; }
+  .tree-row .tr-when { font-size: 13px; color: var(--text-1); line-height: 1.5; }
+  .tree-row .tr-flow { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.04em; text-align: center; padding: 4px 8px; background: var(--bg-1); border-radius: 0; }
+  .tree-row .tr-example { font-size: 12.5px; color: var(--text-2); line-height: 1.5; font-style: italic; }
+
+  /* Code block */
+  .code-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; margin: 16px 0 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
+  .code-block .cb-tag { display: block; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; font-weight: 500; font-family: var(--font-mono); }
+  .code-block .cb-prompt { color: var(--accent-soft); }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-ok { color: var(--ok); }
+
+  /* Stale story */
+  .stale-story { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--s-stale); border-radius: 0; padding: 18px 22px; margin: 22px 0 0; }
+  .stale-story .ss-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--s-stale); margin-bottom: 8px; }
+  .stale-story p { color: var(--text-1); font-size: 14.5px; line-height: 1.6; max-width: 760px; }
+  .stale-story p + p { margin-top: 10px; }
+
+  /* Stale timeline */
+  .stale-time { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 22px 0 0; }
+  .st-step { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px 16px; position: relative; }
+  .st-step.now { border-top: 2px solid var(--s-active); }
+  .st-step.aging { border-top: 2px solid var(--s-stale); opacity: 0.85; }
+  .st-step.choice { border-top: 2px solid var(--accent); }
+  .st-step.terminal { border-top: 2px solid var(--text-3); opacity: 0.7; }
+  .st-step .stm-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .st-step.now .stm-tag { color: var(--s-active); }
+  .st-step.aging .stm-tag { color: var(--s-stale); }
+  .st-step.choice .stm-tag { color: var(--accent); }
+  .st-step .stm-title { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.3; margin-bottom: 6px; }
+  .st-step .stm-desc { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+
+  /* Worked example */
+  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px 24px; margin: 22px 0 0; }
+  .worked-step { display: grid; grid-template-columns: 100px 1fr; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .worked-step:first-of-type { border-top: none; padding-top: 4px; }
+  .worked-step .step-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+  .worked-step.crit .step-num { color: var(--accent); }
+  .worked-step .step-content h4 { margin: 0 0 6px; font-size: 15px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .worked-step .step-content p { margin: 0; font-size: 13.5px; color: var(--text-2); line-height: 1.55; }
+  .worked-step .step-content code { font-size: 12px; }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; } .pipe-arrow { display: none; }
+    .states-grid { grid-template-columns: 1fr 1fr; }
+    .stale-time { grid-template-columns: 1fr; }
+    .tree-row { grid-template-columns: 1fr; gap: 8px; }
+    .cross-links { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; } .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- HERO -->
+  <p class="eyebrow">Цикл жизни артефакта · теория</p>
+  <h1>Lifecycle · от draft до terminal</h1>
+  <p class="lead">
+    Артефакт - не статичный документ, который пишется один раз и забывается. Он эволюционирует:
+    draft становится validated planом, активное решение через год заменяется лучшим, бенчмарк
+    устаревает и требует пересмотра. Без управления жизненным циклом - зомби-документы,
+    устаревшие спеки, которым никто не доверяет, но никто не удаляет.
+    <b class="k">Lifecycle</b> даёт каждому артефакту явный статус и явные правила перехода -
+    так что вы всегда знаете: это current? validated? replaced? нужно ли ему ещё доверять?
+  </p>
+
+  <!-- MINI-PIPELINE -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · 5 states</div>
+      <div class="step-title">Что значит статус</div>
+      <div class="step-desc"><span class="s-draft">draft</span> · <span class="s-active">active</span> · <span class="s-stale">stale</span> · <span class="s-super">superseded</span> · <span class="s-dep">deprecated</span></div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · 6 transitions</div>
+      <div class="step-title">Какая команда - какой переход</div>
+      <div class="step-desc">activate · supersede · deprecate · renew · reopen · stale (auto)</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · stale</div>
+      <div class="step-title">Забытое состояние</div>
+      <div class="step-desc">самое опасное · требует решения, не молчания</div>
+    </div>
+  </div>
+
+  <!-- CONCEPT 01 · STATE MACHINE -->
+  <h2>01 · Пять состояний · что означает каждое</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 01 · аналогия паспорта с визой</div>
+    <h3 class="concept-h">Каждый артефакт всегда находится в одном из пяти состояний</h3>
+    <p class="analogy">
+      Паспорт сам по себе - это draft: документ есть, но без визы пересечь границу нельзя.
+      Активная виза - это active. Виза с истёкшим сроком - stale: не invalid, но требует
+      переоформления. Аннулированная виза - superseded или deprecated в зависимости от причины:
+      заменили на новую (supersede) или просто закрыли страну для въезда (deprecate).
+    </p>
+    <p class="analogy">
+      Система журналирования фиксирует это явно - у каждого артефакта в frontmatter поле <code>status:</code>
+      строго одно из пяти значений. Никаких «не помним», никаких «вроде закрыли».
+    </p>
+
+    <div class="states-grid">
+      <div class="state-card draft">
+        <div class="sc-tag">● draft</div>
+        <div class="sc-title">Work in progress</div>
+        <div class="sc-can">→ <span class="s-active">active</span> (через validate)</div>
+      </div>
+      <div class="state-card active">
+        <div class="sc-tag">● active</div>
+        <div class="sc-title">Validated, in use</div>
+        <div class="sc-can">→ <span class="s-super">superseded</span><br>→ <span class="s-dep">deprecated</span><br>→ <span class="s-stale">stale</span></div>
+      </div>
+      <div class="state-card stale">
+        <div class="sc-tag">● stale</div>
+        <div class="sc-title">valid_until истёк</div>
+        <div class="sc-can">→ <span class="s-active">active</span> (renew)<br>→ <span class="s-dep">deprecated</span> (reopen)</div>
+      </div>
+      <div class="state-card super">
+        <div class="sc-tag">● superseded</div>
+        <div class="sc-title">Заменён новым</div>
+        <div class="sc-can terminal">terminal · no exit</div>
+      </div>
+      <div class="state-card dep">
+        <div class="sc-tag">● deprecated</div>
+        <div class="sc-title">Больше не релевантен</div>
+        <div class="sc-can terminal">terminal · no exit</div>
+      </div>
+    </div>
+
+    <!-- State machine SVG -->
+    <div class="sm-wrap">
+      <div class="sm-tag">State machine · 5 состояний + 6 переходов</div>
+      <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="State machine жизненного цикла артефакта">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#a3a3a3" />
+          </marker>
+          <marker id="arr-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff5a1f" />
+          </marker>
+        </defs>
+
+        <!-- draft (left) -->
+        <g>
+          <rect x="20" y="160" width="130" height="60" rx="6" fill="#141414" stroke="#a3a3a3" stroke-width="1.5" />
+          <text x="85" y="186" text-anchor="middle" fill="#f5f5f5" font-family="Inter, sans-serif" font-size="14" font-weight="500">draft</text>
+          <text x="85" y="204" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">work in progress</text>
+        </g>
+
+        <!-- active (center) -->
+        <g>
+          <rect x="290" y="160" width="130" height="60" rx="6" fill="#0e2014" stroke="#22c55e" stroke-width="1.5" />
+          <text x="355" y="186" text-anchor="middle" fill="#86efac" font-family="Inter, sans-serif" font-size="14" font-weight="500">active</text>
+          <text x="355" y="204" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">validated, in use</text>
+        </g>
+
+        <!-- stale (right) -->
+        <g>
+          <rect x="560" y="160" width="130" height="60" rx="6" fill="#1f1606" stroke="#f59e0b" stroke-width="1.5" />
+          <text x="625" y="186" text-anchor="middle" fill="#fcd34d" font-family="Inter, sans-serif" font-size="14" font-weight="500">stale</text>
+          <text x="625" y="204" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">valid_until истёк</text>
+        </g>
+
+        <!-- superseded (top-right) -->
+        <g>
+          <rect x="450" y="20" width="160" height="50" rx="6" fill="#0a1626" stroke="#60a5fa" stroke-width="1.5" stroke-dasharray="4 3" />
+          <text x="530" y="42" text-anchor="middle" fill="#93c5fd" font-family="Inter, sans-serif" font-size="13" font-weight="500">superseded</text>
+          <text x="530" y="58" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.5">TERMINAL</text>
+        </g>
+
+        <!-- deprecated (bottom-right) -->
+        <g>
+          <rect x="450" y="310" width="160" height="50" rx="6" fill="#260c0c" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 3" />
+          <text x="530" y="332" text-anchor="middle" fill="#fca5a5" font-family="Inter, sans-serif" font-size="13" font-weight="500">deprecated</text>
+          <text x="530" y="348" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.5">TERMINAL</text>
+        </g>
+
+        <!-- Transitions -->
+        <!-- draft → active -->
+        <line x1="150" y1="190" x2="290" y2="190" stroke="#ff5a1f" stroke-width="1.5" marker-end="url(#arr-orange)" />
+        <text x="220" y="180" text-anchor="middle" fill="#ff8a5b" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">activate</text>
+
+        <!-- active → superseded (up-right) -->
+        <line x1="395" y1="160" x2="475" y2="70" stroke="#a3a3a3" stroke-width="1.2" marker-end="url(#arr)" />
+        <text x="448" y="120" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">supersede</text>
+
+        <!-- active → deprecated (down-right) -->
+        <line x1="395" y1="220" x2="475" y2="310" stroke="#a3a3a3" stroke-width="1.2" marker-end="url(#arr)" />
+        <text x="445" y="265" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">deprecate</text>
+
+        <!-- active → stale (auto, dotted) -->
+        <line x1="420" y1="190" x2="560" y2="190" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arr)" />
+        <text x="490" y="180" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">stale (auto)</text>
+
+        <!-- stale → active (renew, arc back) -->
+        <path d="M 560 200 Q 490 250 425 215" stroke="#ff5a1f" stroke-width="1.5" fill="none" marker-end="url(#arr-orange)" />
+        <text x="490" y="248" text-anchor="middle" fill="#ff8a5b" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">renew</text>
+
+        <!-- stale → deprecated (reopen, down) -->
+        <line x1="600" y1="220" x2="540" y2="310" stroke="#a3a3a3" stroke-width="1.2" marker-end="url(#arr)" />
+        <text x="595" y="270" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">reopen</text>
+      </svg>
+      <div class="sm-legend">
+        <span class="item"><span class="sw" style="background: var(--accent)"></span>транзишн, требующий действия</span>
+        <span class="item"><span class="sw" style="background: var(--text-3)"></span>транзишн в терминальное состояние</span>
+        <span class="item"><span class="sw" style="background: var(--warn); border-radius: 0; width: 14px; height: 0; border-top: 1.5px dashed var(--warn);"></span>auto-transition (по TTL)</span>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Terminal - буквально terminal</div>
+      <p>
+        Из <span class="s-super">superseded</span> и <span class="s-dep">deprecated</span> нет
+        выхода. Это не «временно убрали, потом вернём» - это <b class="k">точка истории</b>.
+        Если решение нужно вернуть (например, выбирали JWT → переходили на sessions → опять
+        нужен JWT) - создаётся новый артефакт <code>ADR-003</code>, который supersede'ит
+        <code>ADR-002</code>. Старый <code>ADR-001</code> остаётся superseded - это сохраняет
+        реальный timeline решений.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 02 · TRANSITIONS DECISION TREE -->
+  <h2>02 · Шесть переходов · какой когда</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 02 · decision tree переходов</div>
+    <h3 class="concept-h">Не «как переименовать» - а «какой transition отражает реальность»</h3>
+    <p class="analogy">
+      Каждый переход - это семантическое утверждение, а не просто смена строки в frontmatter.
+      Выбор не «как мне удобнее назвать», а «что на самом деле произошло с решением».
+    </p>
+
+    <div class="tree-wrap">
+      <div class="tree-head">decision tree · какой transition применять</div>
+      <div class="tree-row">
+        <span class="tr-cmd">activate</span>
+        <span class="tr-when">Артефакт готов, validated, можно строить от него</span>
+        <span class="tr-flow">draft → active</span>
+        <span class="tr-example">«зелёный свет» - план одобрен и пошёл в работу</span>
+      </div>
+      <div class="tree-row">
+        <span class="tr-cmd">supersede</span>
+        <span class="tr-when">Появился лучший вариант, который заменяет старый</span>
+        <span class="tr-flow">active → superseded</span>
+        <span class="tr-example">PRD-001 (basic JWT) → PRD-002 (OAuth2 federation)</span>
+      </div>
+      <div class="tree-row">
+        <span class="tr-cmd">deprecate</span>
+        <span class="tr-when">Артефакт больше не релевантен совсем</span>
+        <span class="tr-flow">active → deprecated</span>
+        <span class="tr-example">Фича отменена, модуль удалён, контекст изменился</span>
+      </div>
+      <div class="tree-row">
+        <span class="tr-cmd">renew</span>
+        <span class="tr-when">Stale-артефакт всё ещё валиден после re-evaluation</span>
+        <span class="tr-flow">stale → active</span>
+        <span class="tr-example">ADR про LanceDB через год - пересмотрели, всё ещё лучший выбор</span>
+      </div>
+      <div class="tree-row">
+        <span class="tr-cmd">reopen</span>
+        <span class="tr-when">Stale-артефакт нужно переосмыслить заново</span>
+        <span class="tr-flow">stale → deprecated + new draft</span>
+        <span class="tr-example">Старый deprecated, новый draft создаётся с lineage</span>
+      </div>
+      <div class="tree-row">
+        <span class="tr-cmd">(auto)</span>
+        <span class="tr-when"><code>valid_until</code> истёк - артефакт автоматически становится stale</span>
+        <span class="tr-flow">active → stale</span>
+        <span class="tr-example">Не команда, а сигнал: пора пересмотреть</span>
+      </div>
+    </div>
+
+    <div class="code-block">
+      <span class="cb-tag">Шпаргалка · когда какой переход</span>
+<span class="cb-comment">// Проверить готовность перед активацией</span>
+review PRD-001
+<span class="cb-ok">→</span> Review PASSED -- ready to activate
+
+<span class="cb-comment">// Активировать: draft → active</span>
+activate PRD-001
+<span class="cb-ok">→</span> Validation gate passes MUST rules
+
+<span class="cb-comment">// Заменить: active → superseded, PRD-002 становится преемником</span>
+supersede PRD-001 --by PRD-002
+<span class="cb-ok">→</span> Creates link: PRD-002 supersedes PRD-001
+
+<span class="cb-comment">// Устаревить: больше не релевантен</span>
+deprecate PRD-001 --reason <span style="color: #ff8a5b">"No longer needed"</span>
+
+<span class="cb-comment">// Продлить stale: пересмотрели, всё ещё актуален</span>
+renew PRD-001 --reason <span style="color: #ff8a5b">"Re-validated"</span> --until 2026-12-31
+
+<span class="cb-comment">// Открыть пересмотр: старое устаревает, новый draft создаётся</span>
+reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</span>
+<span class="cb-ok">→</span> PRD-001 deprecated, new draft created (PRD-NNN)
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Validation gates по типу артефакта</div>
+      <p>
+        PRD, RFC, ADR, Epic, Spec требуют проверки перед активацией -
+        30+ правил на тип артефакта (MUST-секции, отсутствие implementation leakage,
+        information density, measurability, traceability). Note и Problem могут активироваться
+        без validation gate - они быстрые captures, и формальные правила здесь только мешали бы
+        фиксировать сигнал.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 03 · STALE -->
+  <h2>03 · Stale · самое опасное состояние</h2>
+  <div class="concept">
+    <div class="concept-tag">Концепция 03 · забытое состояние</div>
+    <h3 class="concept-h">Stale не значит «неверно». Stale значит «никто не проверил, что всё ещё верно»</h3>
+    <p class="analogy">
+      Большинство команд игнорируют stale - и это самая опасная ошибка. Когда дата
+      <code>valid_until</code> у артефакта истекает, он автоматически становится stale. Это не
+      «он сломался» - это сигнал, что <b class="k">контекст мог измениться, а решение
+      зафиксировано на старых данных</b>.
+    </p>
+
+    <div class="stale-story">
+      <div class="ss-tag">⚡ типичный пример</div>
+      <p>
+        Вы создали ADR полгода назад: выбрали LanceDB, потому что у него тогда был лучший
+        Rust SDK. Поставили <code>valid_until: 180 дней</code>. Сейчас он stale. Может быть,
+        LanceDB всё ещё лучший вариант - а может быть, появился более зрелый конкурент.
+        Статус stale заставляет вас явно переоценить, вместо тихого допущения «оно ещё работает».
+      </p>
+      <p>
+        Без stale-состояния это решение продолжало бы быть active, R_eff его evidence считался
+        бы по 6-месячному бенчмарку, и вы бы спокойно жили в иллюзии «всё проверено и работает».
+        Через год команда упирается в проблему, начинает гадать «почему мы выбрали LanceDB», и
+        выясняется, что evidence давно нерелевантен.
+      </p>
+    </div>
+
+    <!-- Stale timeline -->
+    <div class="stale-time">
+      <div class="st-step now">
+        <div class="stm-tag">01 · сейчас</div>
+        <div class="stm-title">active · fresh</div>
+        <div class="stm-desc">valid_until ещё в будущем. R_eff считается по evidence как обычно.</div>
+      </div>
+      <div class="st-step aging">
+        <div class="stm-tag">02 · истечение</div>
+        <div class="stm-title">active → stale (auto)</div>
+        <div class="stm-desc">valid_until прошёл. Артефакт переходит в stale без вашего действия. Score evidence → 0.1.</div>
+      </div>
+      <div class="st-step choice">
+        <div class="stm-tag">03 · выбор</div>
+        <div class="stm-title">renew или reopen</div>
+        <div class="stm-desc">Пересмотр обязателен. <code>renew</code> - всё ещё лучший выбор. <code>reopen</code> - нужен новый разбор.</div>
+      </div>
+      <div class="st-step terminal">
+        <div class="stm-tag">04 · итог</div>
+        <div class="stm-title">active → или → deprecated + new</div>
+        <div class="stm-desc">После renew - продлеваем valid_until. После reopen - старое уходит в deprecated, начинается новый draft с lineage.</div>
+      </div>
+    </div>
+
+    <div class="code-block">
+      <span class="cb-tag">Работа со stale-артефактами</span>
+<span class="cb-comment">// Просмотреть все stale-артефакты в проекте</span>
+list --status stale
+
+<span class="cb-comment">// Продлить - всё ещё лучший вариант после пересмотра</span>
+renew ADR-001 --reason <span style="color: #ff8a5b">"Re-evaluated, still best option"</span> --until 2027-06-30
+
+<span class="cb-comment">// Или открыть пересмотр заново - появились новые альтернативы</span>
+reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available, fresh evaluation"</span>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Связь со scoring</div>
+      <p>
+        Когда evidence становится stale, его score падает до 0.1 (а не до 0 - «решение было,
+        контекст мог измениться»). Это значит, что R_eff = min(scores) у всего связанного
+        артефакта тоже падает до 0.1 - <b class="k">тихий сигнал</b>, который виден в
+        health-дашборде системы. Игнорировать его = молчаливо принимать риск.
+      </p>
+    </div>
+  </div>
+
+  <!-- WORKED EXAMPLE -->
+  <h2>Полный цикл на одном артефакте · ADR-001</h2>
+  <p>Vault choice - LanceDB как embedded DB. Артефакт проживает все возможные состояния за 18 месяцев.</p>
+  <div class="worked">
+    <div class="worked-step">
+      <div class="step-num">М 0 · draft</div>
+      <div class="step-content">
+        <h4>ADR-001 создан · статус <code>draft</code></h4>
+        <p>Frontmatter: <code>status: draft</code>, depth: deep, valid_until не установлен. 3 гипотезы из ADI (FAISS / LanceDB / pgvector), evidence пока пустое.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">М 0.5 · active</div>
+      <div class="step-content">
+        <h4>Validation pass → артефакт активирован</h4>
+        <p>3 quality gates прошли, evidence линкован (бенчмарк CL2), R_eff = 0.7. <code>status: active</code>, <code>valid_until: 2026-12-01</code>. Файл immutable.</p>
+      </div>
+    </div>
+    <div class="worked-step crit">
+      <div class="step-num">М 12 · stale</div>
+      <div class="step-content">
+        <h4>valid_until истёк · автоматический переход в stale</h4>
+        <p>Контекст не меняли, ничего не делали - но <code>valid_until</code> прошёл. <code>status: stale</code> выставлен системой. Health-дашборд показывает: «1 stale artifact, R_eff degraded».</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">М 12 · renew</div>
+      <div class="step-content">
+        <h4>Re-evaluation → продлено до 2027-06-30</h4>
+        <p>Перезамерили на новой версии LanceDB. Те же тренды - выбор валиден. Renew продлевает <code>valid_until</code>, статус возвращается в active, evidence актуализируется.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">М 18 · supersede</div>
+      <div class="step-content">
+        <h4>Появился лучший вариант → ADR-002 заменяет ADR-001</h4>
+        <p>В индустрии появился sqlite-vec с лучшим API. ADR-002 (новое решение) создан, активирован. ADR-001 помечается как superseded, ADR-002 ссылается на ADR-001 как на источник lineage. ADR-001 уходит в terminal.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- CROSS-LINKS -->
+
+  <div class="footer">
+    <span>lifecycle-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> один из инструментов, реализующих этот lifecycle, - <a href="https://forgeplan.dev/docs/methodology/lifecycle" style="color: inherit; text-decoration: none;">Forgeplan</a></span>
+  </div>
+
+</main>
+</body>
+</html>

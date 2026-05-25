@@ -71,6 +71,28 @@ ForgePlan/
 - **Code identifiers & commit descriptions:** English
 - **Communication with the user:** Russian
 
+## Authorship (single author)
+
+Forgeplan is a single-author project. When generating ANY author-attributed content, use:
+
+- **Name:** `Eli Rum`
+- **URL:** `https://elirum.me`
+
+This applies to:
+
+- Blog post `AuthorBlock` (`website/src/components/blog/AuthorBlock.astro`)
+- Blog footer author line (`website/src/components/blog/BlogFooter.astro`)
+- JSON-LD `author.name` + `Person.url` (`website/src/components/blog/SeoMeta.astro`)
+- Schema.org `Organization.founder` (`website/src/components/SiteJsonLd.astro`)
+- OpenGraph `article:author` meta tags
+- `package.json` `author` field (if updated)
+- Any author byline in `docs/`, `.forgeplan/notes/`, blog `.mdx` frontmatter
+- Conventional commit `Co-Authored-By` lines for solo work (do not add — Eli Rum is sole author)
+
+**DO NOT use** placeholder names: `Mike Kubal`, `Forgeplan Author`, `Anonymous`, `Maintainer`, etc.
+
+If a future contributor joins, this section will be updated to reflect multi-author conventions. Until then, treat the single-author invariant as load-bearing for credibility, SEO authority signal, and brand consistency.
+
 ## See also
 
 - [`CLAUDE.md`](CLAUDE.md) — full project instructions (primary)
