@@ -1,0 +1,184 @@
+---
+title: "The full cycle on a single feature - from a one-liner in chat to a decision that opens itself for review a year later"
+description: "Six months ago, one line in chat: 'we need streaming for model responses.' Today, a connected set of six files marked active, with measured trust and explicit review conditions. The series capstone: the path from that line to a decision, in seven steps on one real task."
+slug: full-cycle-on-one-feature
+lang: en
+publishedAt: 2026-09-19
+kind: case-study
+topic: methodology
+cover: '/blog-covers/full-cycle-on-one-feature.webp'
+draft: false
+series: decision-cycle
+seriesOrder: 8
+seriesDescription: "The single-decision cycle · 8 posts on discipline for architectural decisions"
+translations:
+  ru: full-cycle-on-one-feature
+---
+
+## Context
+
+Six months ago, one message appeared in the Vault team chat: "we need streaming for model responses." The context: users were complaining that LLM responses took 5-10 seconds, and the interface looked dead. Competitors were already streaming tokens as they were generated; we had users staring at a loading spinner.
+
+Today the repository holds a connected set of six files: PRD-018, Spec-012, RFC-007, ADR-012, EVID-001, and DDR-014. All marked active. Each one has a measured trust score following the logic developed in the previous posts in this series. ADR-012 has an explicit review condition that has already triggered once.
+
+I want to walk through this path step by step and show how the methods from the seven previous posts in the series come together into one coherent process on one real task. This isn't theory - it's a breakdown of seven steps and one invisible boundary: the line between "active" and "gone stale."
+
+## Step 1. Routing
+
+The project manager picks up the chat message and frames the task: "Add a streaming endpoint `GET /query/stream` for model responses, so the first token reaches the user within 800 ms."
+
+`forgeplan route "Add streaming endpoint GET /query/stream for model responses, first token under 800ms"`
+
+The command returns: "depth level: deep, need PRD, Spec, RFC, ADR. ADI (three-version analysis) is required."
+
+That recommendation takes half a second. Without it, the team would have spent an hour debating "do we need a separate ADR here, or is an RFC enough?" With it - the debate closes and the work moves.
+
+Routing is the first step, and it's a short one. Not "an attempt to guess the truth," but "an escape from the argument that doesn't move the work forward."
+
+## Step 2. Shaping the PRD
+
+`forgeplan new prd "Streaming endpoint for model queries"`. A file `PRD-018` is created with 13 sections and "fill in" placeholders.
+
+The project manager spends 30-40 minutes filling in:
+
+- **Goal**: the first token of a model response reaches the user within 800 ms at the 95th percentile; full response within 5 seconds on average.
+- **Audience**: Vault users making queries to the model through the notes interface.
+- **Success metrics**: p95 first-token ≤ 800 ms on staging; p95 first-token ≤ 1000 ms under production load; drop in the "abandonment during response wait" metric from the current 12% to 4%.
+- **Functional requirements**: ten of them, each in the form "when X, the system does Y."
+- **Edge cases**: what happens on mid-stream disconnection; what happens on 30-second timeout; what happens on model provider overload.
+- **Non-goals**: no streaming caching in MVP; no partial-response persistence on disconnect; no streaming over WebSockets.
+- **Risks**: a slow model provider may delay the first token; uneven server load may break p95.
+
+## Step 3. Validating the PRD
+
+`forgeplan validate PRD-018`. Three checks run automatically.
+
+The first - document format. Are all 13 sections filled in? Are metrics expressed as numbers? Is implementation leaking into requirements?
+
+The second - consistency with existing specifications. Does anything in the new requirements conflict with the current API schema?
+
+The third - sufficient alternatives (for the ADI step coming next). This check doesn't run yet; it comes at the ADR stage.
+
+The command returns one remark: "PRD-018: functional requirement FR-7 contains the phrase 'handle errors reasonably' without specifying what 'reasonably' means." The project manager opens the section and replaces it with: "on model provider error, return a message to the user - 'Service temporarily unavailable, try again in a minute' - with response code 503."
+
+Running `forgeplan validate PRD-018` again - all three checks are green.
+
+This is the guard against the situation "by the document everything is done, but the user says - it doesn't work." The check doesn't let through phrases that can be interpreted two different ways.
+
+## Step 4. Three-version architecture analysis
+
+`forgeplan reason PRD-018`. The command generates three implementation options with testable consequences. This is what Forgeplan calls **ADI** (Architectural Decision Intelligence) - an automated prompt that forces the team to produce at least three competing hypotheses, each with a concrete prediction that can be falsified by a measurement.
+
+- **Version 1**: SSE (Server-Sent Events) over standard HTTP. Testable consequence: if we pick SSE, p95 first-token should be ≤ 800 ms on staging under current load. Measurement: build a 100-line prototype, run a load test.
+- **Version 2**: WebSockets. Testable consequence: if we pick WebSockets, p95 first-token should be comparable to SSE, but connection management (heartbeat, reconnect) adds complexity. Measurement: same prototype, but through a WebSocket library.
+- **Version 3**: HTTP/2 server push. Testable consequence: if we pick HTTP/2 push, p95 first-token may be 50-100 ms lower than SSE, but requires HTTP/2 end-to-end from client to server. Measurement: prototype + infrastructure check.
+
+The team spends half a day on three prototypes. Results:
+
+- SSE: p95 first-token 180 ms. Implementation - 80 lines. No additional infrastructure.
+- WebSockets: p95 first-token 170 ms. Implementation - 250 lines (including reconnect logic).
+- HTTP/2 push: p95 first-token 140 ms. But the proxy in front of our servers strips push. No proxy support - no push.
+
+Version 1 (SSE) wins on the result-to-complexity ratio. Version 3 (HTTP/2 push) is theoretically faster, but requires reworking the infrastructure - not justified for a 40 ms difference. Version 2 (WebSockets) is no faster than SSE but three times more complex - no reason to choose it.
+
+## Step 5. Recording the architectural decision
+
+`forgeplan new adr "Use SSE for streaming model responses"`. This creates `ADR-012` with six sections - the **DDR** (Decision-Driven Record) format described in post 4 of this series.
+
+- **Context**: streaming is needed for model responses; target metric - p95 first-token ≤ 800 ms; team of 4 engineers, infrastructure - standard HTTP stack.
+- **Alternatives considered**: SSE; WebSockets; HTTP/2 server push.
+- **Evidence**: three measurements on staging (one per option), all with CL3 (our own measurement on our own load). **CL3** is the highest congruence level - evidence gathered in your own context, on your own system, with no incentive to distort.
+- **Decision**: use SSE for streaming model responses.
+- **Rejected alternatives**: WebSockets - three times more complex implementation for the same result; HTTP/2 push - requires reworking proxy infrastructure, 40 ms savings not justified.
+- **Conditions for reopening**: reopen if p95 first-token exceeds 600 ms under production load (200 ms margin to the target metric); OR if traffic to the streaming endpoint grows fivefold; OR in 12 months regardless.
+
+## Step 6. Implementation and evidence collection
+
+The developer picks up ADR-012, RFC-007 (describing the implementation in phases), and Spec-012 (describing endpoint behavior). Over three days: code, tests, API documentation.
+
+After going live - a load test in production. Measurements: p95 first-token - 220 ms. p99 - 380 ms. p99.9 - 750 ms. The "abandonment during response wait" metric drops from 12% to 3% over two weeks.
+
+`forgeplan new evidence "SSE streaming endpoint production benchmark"`. This creates `EVID-001` with three evaluation axes - what Forgeplan calls the **R_eff** (effective reliability) scoring: each piece of evidence is rated on Framing (F), Grounding (G), and Reliability (R), then penalized for congruence gap between where evidence was gathered and where the decision applies.
+
+- F = 8 (framing is strict, metrics clearly defined).
+- G = 9 (detailed numbers, percentile breakdown).
+- R = 8 (our own measurement in production, no incentive to inflate).
+- CL3 - no penalty; measurement is in our own production on our own load.
+
+`forgeplan link EVID-001 ADR-012 --relation informs`. The evidence is connected to the decision.
+
+## Step 7. Activation and the point of no return
+
+`forgeplan score ADR-012`. The command shows: R_eff = 0.89. All three quality checks - green.
+
+`forgeplan activate ADR-012`. The file moves to active state. Direct editing is locked - changes are only possible through `forgeplan supersede`.
+
+Same file, but now with tags: status "active," activation date, link to evidence, link to review conditions. The record becomes part of the project's official decision history.
+
+`forgeplan health` - shows: 87 decisions in the project, 0 without evidence, 0 without review conditions, 0 orphans (records without links). A healthy graph. The same report six months from now will show which decisions are approaching their review date.
+
+## Six months later
+
+Six months passed. Traffic to the streaming endpoint grew sevenfold. p95 first-token gradually climbed from 220 ms to 580 ms. ADR-012's review condition is close to triggering (threshold: 600 ms).
+
+`forgeplan stale` - the command shows ADR-012 as "approaching review condition." The project manager gets a notification in chat.
+
+The team sits down, opens ADR-012, reads the old alternatives. They look different now:
+
+- WebSockets - still more complex, won't help with latency.
+- HTTP/2 push - over six months the proxy infrastructure was upgraded for other reasons and now supports push. The 40 ms savings may provide the margin needed.
+- SSE - current option, but needs hot-path optimization.
+
+Two choices: either `forgeplan renew ADR-012` (extend with an updated review condition and an optimized implementation), or `forgeplan supersede ADR-012 --by ADR-019` (create ADR-019 switching to HTTP/2 push; ADR-012 is marked "superseded by ADR-019").
+
+The team picks the first path - update the SSE implementation with an optimized hot path. Measurement shows p95 first-token at 280 ms. ADR-012 is updated through `forgeplan renew` with a new review condition (threshold 700 ms) and a link to new evidence.
+
+The cycle closes. The decision made six months ago didn't turn into a monument. It opened itself for review, was updated, and is alive again.
+
+## What stayed off-screen
+
+I described seven steps and one invisible boundary - the transition from "active" to "approaching review." That's the full cycle of one task.
+
+What I did **not** show in this capstone:
+
+- Parallel work by multiple teams on different PRDs within one Epic.
+- Conflicts when two developers pick up linked ADRs - and how the claim/release mechanism separates them.
+- Cases where a decision has to be rolled back and made again (via `forgeplan reopen`).
+- Cases where the review condition was wrong, and the team learns to write triggers more precisely.
+
+These situations are real life that doesn't fit into one post. But the basic seven-step cycle on one feature is the foundation everything else rests on. If this cycle hasn't been run on an individual task - no amount of "team process organization" layered on top will work.
+
+## What to hand to the AI agent, what to keep for yourself
+
+Each of the seven steps has a portion of work for AI and a portion of work for a human.
+
+- Step 1 (routing): AI recommends the depth level. The human checks that the recommendation matches the actual task.
+- Step 2 (PRD): AI produces the first draft of all 13 sections. The human fills in the content, metrics, and scope.
+- Step 3 (validation): fully automated. The human fixes the remarks.
+- Step 4 (ADI): AI generates three hypotheses with testable consequences. The human runs the measurements and interprets the results.
+- Step 5 (ADR): AI fills in the six-section structure. The human writes the real reason for rejecting each alternative - often internal team context that never surfaces in public documentation.
+- Step 6 (evidence): AI templates the evidence file. The human sets the F/G/R scores and the congruence level.
+- Step 7 (activation): fully automated. The human confirms the final step.
+
+If AI completes all seven steps at 100% - you don't have a decision cycle, you have seven polished files that nobody will be able to make sense of in a year. If AI does 0% - you're burning the two days of work that could have taken an hour. The baseline rule: AI generates structure and drafts, the human adds substance and context.
+
+## What to read next
+
+This is the final, eighth post in the "The single-decision cycle" series.
+
+Full list:
+
+1. [The decision graveyard](/blog/decision-graveyard) - why six months later nobody remembers the rationale
+2. [Before fixing - write three versions](/blog/before-fixing-write-three-versions) - a diagnostic technique
+3. [Averages lie](/blog/averages-lie-trust-calculus) - how to evaluate evidence
+4. [The rationale section for an architectural decision](/blog/decision-record-with-expiry) - the six DDR sections
+5. [The architect doesn't start with blueprints](/blog/architect-doesnt-start-with-blueprints) - four BMAD phases
+6. [A spec is not a PRD, it's a taste test](/blog/spec-vs-prd-tasting-test) - intent vs behavior
+7. [POS terminal for methodologies](/blog/forgeplan-pos-terminal) - what Forgeplan is
+8. This post (series capstone)
+
+The series is complete. The site has ten interactive walkthroughs that go deeper on each step: a 3D graph of artifacts for one project, a task-depth routing calculator, a DDR template, the delta format for specifications, the R_eff formula in action. The walkthroughs hub is [/guides](/guides). Navigation is "if you're looking for X - start with Y."
+
+If you want to try Forgeplan on your own task - it's on GitHub under an open license. Local, no cloud, no subscription. One binary, installs in a minute. The `.forgeplan/` directory lives in your code repository; sync is through git, just like everything else.
+
+Thanks for reading the series to the end.
