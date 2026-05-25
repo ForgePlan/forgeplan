@@ -106,14 +106,7 @@ export default defineConfig({
           href: 'https://forgeplan.dev/docs/',
         },
       },
-      // 4. GSC verification placeholder — replace TODO with code from Google Search Console
-      {
-        tag: 'meta',
-        attrs: {
-          name: 'google-site-verification',
-          content: 'TODO_PASTE_GSC_VERIFICATION_CODE_HERE',
-        },
-      },
+      // GSC ownership verified via DNS TXT (Domain property covers all subdomains/protocols) — no HTML tag needed
     ],
     components: {
       // Unified Header on /docs via DocsHeader (inline content; no nested <header>).
