@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPF: карта согласованности - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  .guide-embedded,
+  .guide-embedded * { box-sizing: border-box; }
+
+  .guide-embedded {
+    --bg:          var(--forge-bg, #050505);
+    --bg-1:        var(--forge-bg-1, #0b0b0b);
+    --bg-2:        var(--forge-bg-2, #141414);
+    --bg-3:        var(--forge-bg-3, #1a1a1a);
+    --text:        var(--forge-text, #f5f5f5);
+    --text-1:      var(--forge-text-1, #e5e5e5);
+    --text-2:      var(--forge-text-2, #a3a3a3);
+    --text-3:      var(--forge-text-3, #737373);
+    --line:        var(--forge-line, rgba(255, 255, 255, 0.06));
+    --line-2:      var(--forge-line-2, rgba(255, 255, 255, 0.14));
+    --accent:      var(--forge-accent, #ff5a1f);
+    --accent-soft: var(--forge-accent-soft, #ff8a5b);
+    --accent-bg:   var(--forge-accent-bg, rgba(255, 90, 31, 0.18));
+    --ok:          var(--forge-ok, #22c55e);
+    --err:         var(--forge-err, #ef4444);
+    --warn:        var(--forge-warn, #f59e0b);
+    --font-sans:   "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono:   "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text-1);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+
+  .lesson-fpf-main {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 64px 32px 96px;
+  }
+
+  .lesson-fpf-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+
+  .lesson-fpf-h1 {
+    font-family: var(--font-sans);
+    font-size: clamp(40px, 5.4vw, 60px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0 0 18px;
+  }
+
+  .lesson-fpf-h2 {
+    font-family: var(--font-sans);
+    font-size: 28px;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    font-weight: 500;
+    color: var(--text);
+    margin: 64px 0 14px;
+  }
+
+  .lesson-fpf-h3 {
+    font-family: var(--font-sans);
+    font-size: 18px;
+    line-height: 1.3;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0 0 8px;
+  }
+
+  .lesson-fpf-p {
+    margin: 0 0 16px;
+    color: var(--text-2);
+    font-size: 17px;
+    line-height: 1.65;
+    max-width: 760px;
+  }
+
+  .lesson-fpf-lead {
+    font-size: 19.5px;
+    color: var(--text-1);
+    line-height: 1.6;
+    max-width: 820px;
+    margin: 0 0 16px;
+  }
+
+  .lesson-fpf-sep {
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 56px 0 0;
+  }
+
+  .lesson-fpf-a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid var(--accent-bg);
+    transition: border-color .15s ease;
+  }
+  .lesson-fpf-a:hover { border-color: var(--accent); }
+
+  .lesson-fpf-k {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  /* SVG section */
+  .lesson-fpf-svg-wrap {
+    background: #0F1419;
+    border: 1px solid var(--line-2);
+    margin: 24px 0 0;
+    padding: 8px;
+    overflow: hidden;
+  }
+
+  .lesson-fpf-svg-caption {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    text-align: center;
+    margin: 12px 0 4px;
+  }
+
+  /* Confusion cards */
+  .lesson-fpf-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin: 24px 0 0;
+  }
+  @media (max-width: 800px) {
+    .lesson-fpf-cards { grid-template-columns: 1fr; }
+  }
+
+  .lesson-fpf-card {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-top: 3px solid var(--accent);
+    padding: 20px 22px 24px;
+  }
+
+  .lesson-fpf-card-tag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 8px;
+  }
+
+  .lesson-fpf-card-title {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0 0 10px;
+    line-height: 1.3;
+  }
+
+  .lesson-fpf-card-body {
+    font-size: 14px;
+    color: var(--text-2);
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  /* When useful table */
+  .lesson-fpf-table-wrap {
+    overflow-x: auto;
+    margin: 24px 0 0;
+  }
+
+  .lesson-fpf-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+  }
+
+  .lesson-fpf-table th {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 500;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line-2);
+    text-align: left;
+  }
+
+  .lesson-fpf-table th.col-yes { color: var(--ok); }
+  .lesson-fpf-table th.col-no  { color: var(--err); }
+
+  .lesson-fpf-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    color: var(--text-2);
+    vertical-align: top;
+    line-height: 1.55;
+  }
+
+  .lesson-fpf-table tr:last-child td { border-bottom: none; }
+
+  .lesson-fpf-table td.td-yes { color: var(--text-1); }
+  .lesson-fpf-table td.td-no  { color: var(--text-3); }
+
+  /* Next-steps list */
+  .lesson-fpf-next {
+    list-style: none;
+    padding: 0;
+    margin: 16px 0 0;
+    max-width: 820px;
+  }
+
+  .lesson-fpf-next li {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    font-size: 15px;
+    color: var(--text-2);
+    line-height: 1.55;
+    position: relative;
+  }
+
+  .lesson-fpf-next li:first-child { border-top: 1px solid var(--line); }
+
+  .lesson-fpf-next li b {
+    color: var(--text);
+    font-weight: 500;
+    display: inline-block;
+    margin-right: 6px;
+  }
+
+  /* Closing box */
+  .lesson-fpf-closing {
+    margin: 48px 0 0;
+    padding: 28px 32px 30px;
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-left: 3px solid var(--accent);
+  }
+
+  .lesson-fpf-closing-p {
+    color: var(--text-1);
+    font-size: 15.5px;
+    max-width: 820px;
+    margin: 0;
+    line-height: 1.65;
+  }
+
+  /* Node tooltip on hover */
+  .fpf-node { cursor: default; }
+  .fpf-node-label { pointer-events: none; }
+
+  .fpf-tooltip {
+    display: none;
+    position: absolute;
+    background: #0b0b0b;
+    border: 1px solid rgba(255, 90, 31, 0.6);
+    color: #e5e5e5;
+    font-family: "Inter", sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 10px 14px;
+    max-width: 240px;
+    pointer-events: none;
+    z-index: 20;
+  }
+</style>
+</head>
+<body>
+<div class="guide-embedded">
+<main class="lesson-fpf-main">
+
+  <p class="lesson-fpf-eyebrow">FPF · ОБЗОР</p>
+  <h1 class="lesson-fpf-h1">FPF: карта согласованности</h1>
+  <p class="lesson-fpf-lead">
+    FPF - это не методология. Это карта того, что должно остаться
+    согласованным когда работаешь не один: с командой, с AI-агентами,
+    с самим собой через полгода. Ниже - сама карта.
+  </p>
+  <p class="lesson-fpf-lead" style="font-size:17px; color: var(--text-2);">
+    Авторство - Анатолий Левенчук (<a class="lesson-fpf-a" href="https://github.com/ailev/FPF" target="_blank" rel="noopener">github.com/ailev/FPF</a>).
+    Эта страница - пользовательский обзор, не пересказ спеки.
+    Она отвечает на один вопрос: как семь понятий ядра FPF связаны
+    между собой и почему они работают только вместе.
+  </p>
+
+  <hr class="lesson-fpf-sep">
+
+  <h2 class="lesson-fpf-h2">Семь узлов ядра FPF</h2>
+  <p class="lesson-fpf-p">
+    Ядро FPF состоит из семи взаимосвязанных понятий. Это не
+    последовательность шагов и не чек-лист. Это набор вопросов, которые
+    нужно держать согласованными - между участниками, между сессиями,
+    между версиями одного решения.
+  </p>
+
+  <div class="lesson-fpf-svg-wrap" style="position:relative;">
+    <svg
+      viewBox="0 0 700 420"
+      width="100%"
+      style="display:block; max-height:420px;"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-label="Семь узлов ядра FPF"
+      role="img"
+    >
+      <defs>
+        <style>
+          .fpf-line { stroke: rgba(255,255,255,0.15); stroke-width: 1.5; }
+          .fpf-rect { fill: #FF6B35; }
+          .fpf-rect-center { fill: #ff5a1f; }
+          .fpf-lbl-top { font-family: "Inter", sans-serif; font-size: 12px; font-weight: 600; fill: #ffffff; text-anchor: middle; }
+          .fpf-lbl-sub { font-family: "Inter", sans-serif; font-size: 10px; fill: rgba(255,255,255,0.65); text-anchor: middle; }
+          .fpf-lbl-center-top { font-family: "Inter", sans-serif; font-size: 13px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+          .fpf-lbl-center-sub { font-family: "Inter", sans-serif; font-size: 10.5px; fill: rgba(255,255,255,0.70); text-anchor: middle; }
+        </style>
+      </defs>
+
+      <!-- Background -->
+      <rect width="700" height="420" fill="#0F1419"/>
+
+      <!--
+        Layout: hexagon of 6 outer nodes + 1 center.
+        Center (Цикл рассуждения) at 350,200.
+        Outer positions at radius ~148px from center, 60deg apart starting top.
+        Node 1 top      350, 52   (350-0, 200-148)
+        Node 2 top-R    478,126   (350+128, 200-74)
+        Node 3 bot-R    478,274   (350+128, 200+74)
+        Node 4 bottom   350,348   (350-0, 200+148)
+        Node 5 bot-L    222,274   (350-128, 200+74)
+        Node 6 top-L    222,126   (350-128, 200-74)
+      -->
+
+      <!-- Lines from center to each outer node -->
+      <line class="fpf-line" x1="350" y1="200" x2="350" y2="78"/>
+      <line class="fpf-line" x1="350" y1="200" x2="539" y2="152"/>
+      <line class="fpf-line" x1="350" y1="200" x2="539" y2="248"/>
+      <line class="fpf-line" x1="350" y1="200" x2="350" y2="322"/>
+      <line class="fpf-line" x1="350" y1="200" x2="161" y2="248"/>
+      <line class="fpf-line" x1="350" y1="200" x2="161" y2="152"/>
+
+      <!-- Ring connecting outer nodes -->
+      <line class="fpf-line" x1="350" y1="78"  x2="539" y2="152"/>
+      <line class="fpf-line" x1="539" y1="152" x2="539" y2="248"/>
+      <line class="fpf-line" x1="539" y1="248" x2="350" y2="322"/>
+      <line class="fpf-line" x1="350" y1="322" x2="161" y2="248"/>
+      <line class="fpf-line" x1="161" y1="248" x2="161" y2="152"/>
+      <line class="fpf-line" x1="161" y1="152" x2="350" y2="78"/>
+
+      <!-- Center node: Цикл рассуждения -->
+      <rect x="283" y="174" width="134" height="52" class="fpf-rect-center"/>
+      <text x="350" y="197" class="fpf-lbl-center-top">Цикл рассуждения</text>
+      <text x="350" y="212" class="fpf-lbl-center-sub">гипотеза → форма</text>
+      <text x="350" y="224" class="fpf-lbl-center-sub">→ доказательство → практика</text>
+
+      <!-- Node 1: Холон (top) -->
+      <rect x="289" y="26" width="122" height="52" class="fpf-rect"/>
+      <text x="350" y="49" class="fpf-lbl-top">Холон</text>
+      <text x="350" y="65" class="fpf-lbl-sub">целое или часть?</text>
+
+      <!-- Node 2: Контекст (top right) -->
+      <rect x="477" y="100" width="122" height="52" class="fpf-rect"/>
+      <text x="538" y="123" class="fpf-lbl-top">Контекст</text>
+      <text x="538" y="138" class="fpf-lbl-sub">где слово имеет смысл?</text>
+
+      <!-- Node 3: Различения (bottom right) -->
+      <rect x="477" y="222" width="122" height="52" class="fpf-rect"/>
+      <text x="538" y="245" class="fpf-lbl-top">Различения</text>
+      <text x="538" y="261" class="fpf-lbl-sub">роль ≠ метод ≠ план</text>
+
+      <!-- Node 4: Срок годности (bottom) -->
+      <rect x="289" y="296" width="122" height="52" class="fpf-rect"/>
+      <text x="350" y="319" class="fpf-lbl-top">Срок годности</text>
+      <text x="350" y="335" class="fpf-lbl-sub">когда устарело?</text>
+
+      <!-- Node 5: Открытый/закрытый мир (bottom left) -->
+      <rect x="101" y="222" width="122" height="52" class="fpf-rect"/>
+      <text x="162" y="245" class="fpf-lbl-top">Открытый мир</text>
+      <text x="162" y="261" class="fpf-lbl-sub">не указано = нет или ?</text>
+
+      <!-- Node 6: Trust F-G-R (top left) -->
+      <rect x="101" y="100" width="122" height="52" class="fpf-rect"/>
+      <text x="162" y="123" class="fpf-lbl-top">Trust F-G-R</text>
+      <text x="162" y="138" class="fpf-lbl-sub">формальность / надёжность</text>
+    </svg>
+
+    <div id="fpf-tooltip" class="fpf-tooltip"></div>
+  </div>
+  <p class="lesson-fpf-svg-caption">Ядро FPF - 7 согласуемых понятий</p>
+
+  <p class="lesson-fpf-p" style="margin-top:20px;">
+    Узлы не иерархия - это ограничения, которые действуют одновременно.
+    Если один разъехался (например, словарь не синхронизирован между
+    участниками), остальные начинают работать на разный объект. Цикл
+    рассуждения в центре - это не старт, а механизм: он связывает
+    гипотезу с формой записи, доказательством и практикой.
+  </p>
+  <p class="lesson-fpf-p">
+    <b class="lesson-fpf-k">Холон</b> - вопрос о масштабе: обсуждаем мы сейчас подсистему или
+    всю систему? <b class="lesson-fpf-k">Контекст</b> - где и для кого слово обретает смысл,
+    без контекста нет денотата. <b class="lesson-fpf-k">Различения</b> разрывают смешение
+    категорий: роль, метод, план и работа - это разные онтологические
+    слоты, подстановка одного вместо другого ломает координацию.
+  </p>
+  <p class="lesson-fpf-p">
+    <b class="lesson-fpf-k">Trust F-G-R</b> - три оси оценки доверия к любому доказательству:
+    формальность формулировки, детализация данных, надёжность источника
+    в вашем контексте. <b class="lesson-fpf-k">Срок годности</b> - явная дата или условие, после
+    которого доказательство теряет силу. <b class="lesson-fpf-k">Открытый / закрытый мир</b> -
+    договорённость о том, что означает отсутствие записи: «этого нет» или
+    «это ещё не зафиксировано». <b class="lesson-fpf-k">Цикл рассуждения</b> - маршрут от
+    гипотезы через форму записи и проверку к практике, который делает
+    мышление воспроизводимым.
+  </p>
+
+  <hr class="lesson-fpf-sep">
+
+  <h2 class="lesson-fpf-h2">Что часто путают</h2>
+  <p class="lesson-fpf-p">
+    Три разрыва в понимании, которые появляются раньше всего.
+    Каждый - отдельная проблема с отдельным решением. Ни один
+    из них не решается переговорами или уточнением требований
+    в общем виде. Сначала нужно назвать, какой именно тип
+    несогласованности произошёл.
+  </p>
+
+  <div class="lesson-fpf-cards">
+    <div class="lesson-fpf-card">
+      <div class="lesson-fpf-card-tag">Путаница 01</div>
+      <h3 class="lesson-fpf-h3 lesson-fpf-card-title">Роль ≠ метод ≠ результат</h3>
+      <p class="lesson-fpf-card-body">
+        «Тестировщик не работает» - три разных утверждения в одной фразе.
+        Роль не назначена? Метод не описан? Результат не появился? Это
+        разные проблемы, решаются по-разному. FPF требует назвать
+        <b class="lesson-fpf-k">именно что</b> разъехалось - прежде чем
+        обсуждать решение.
+      </p>
+    </div>
+
+    <div class="lesson-fpf-card">
+      <div class="lesson-fpf-card-tag">Путаница 02</div>
+      <h3 class="lesson-fpf-h3 lesson-fpf-card-title">Слово ≠ смысл без контекста</h3>
+      <p class="lesson-fpf-card-body">
+        «Пользователь» в одном домене - это запись в таблице с правами
+        доступа. В другом домене - человек с сессионной куки. Без явного
+        определения границы домена переход между командами создаёт баги,
+        которые выглядят как недопонимание, а на деле - разные денотаты
+        одного слова.
+      </p>
+    </div>
+
+    <div class="lesson-fpf-card">
+      <div class="lesson-fpf-card-tag">Путаница 03</div>
+      <h3 class="lesson-fpf-h3 lesson-fpf-card-title">План ≠ выполненная работа</h3>
+      <p class="lesson-fpf-card-body">
+        «Релиз готов» - план составлен или работа завершена? FPF требует
+        явно называть: что именно существует прямо сейчас - намерение,
+        описание, артефакт, или измеримый факт. Смешение состояний плана
+        и состояний мира - источник большинства срывов сроков.
+      </p>
+    </div>
+  </div>
+
+  <hr class="lesson-fpf-sep">
+
+  <h2 class="lesson-fpf-h2">Когда FPF полезен, когда лишний</h2>
+  <p class="lesson-fpf-p">
+    FPF добавляет явность и сопряжён с небольшими затратами на
+    фиксацию. Эти затраты оправданы не всегда. Простое правило:
+    если контекст не теряется и feedback дешёвый - FPF избыточен.
+    Если контекст передаётся между участниками или между сессиями,
+    и ошибка дорогая - FPF окупается.
+  </p>
+
+  <div class="lesson-fpf-table-wrap">
+    <table class="lesson-fpf-table">
+      <thead>
+        <tr>
+          <th class="col-yes">FPF полезен</th>
+          <th class="col-no">FPF лишний</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="td-yes">Работа распределена между людьми и AI-агентами - контекст не передаётся автоматически</td>
+          <td class="td-no">Один человек в задаче, память о контексте не теряется</td>
+        </tr>
+        <tr>
+          <td class="td-yes">Реальная проверка медленная и дорогая - нельзя просто попробовать и посмотреть</td>
+          <td class="td-no">Feedback дешёвый и быстрый: ошибся - исправил за минуту</td>
+        </tr>
+        <tr>
+          <td class="td-yes">Разным аудиториям нужны разные срезы одного и того же объекта</td>
+          <td class="td-no">Один читатель, одна точка зрения</td>
+        </tr>
+        <tr>
+          <td class="td-yes">Словарь трещит под новыми задачами - одни и те же слова значат разное для разных людей</td>
+          <td class="td-no">Словарь стабилен и разделяем всеми участниками</td>
+        </tr>
+        <tr>
+          <td class="td-yes">Нужно рассуждение, которое можно переиспользовать и передать другому агенту</td>
+          <td class="td-no">Достаточно одноразового ответа «здесь и сейчас»</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr class="lesson-fpf-sep">
+
+  <h2 class="lesson-fpf-h2">Куда дальше</h2>
+  <p class="lesson-fpf-p">
+    Каждый узел ядра FPF разобран подробно в отдельном уроке. Начни
+    с того, что сейчас болит - или с Trust Calculus как центрального
+    инструмента оценки. Если хочешь понять FPF в целом - читай
+    оригинальную спеку и блог-пост. Если хочешь применить конкретный
+    инструмент прямо сейчас - выбери нужный урок ниже.
+  </p>
+
+  <ul class="lesson-fpf-next">
+    <li>
+      <b>Trust Calculus детально</b>
+      Три оси F-G-R, правило слабого звена, расчёт R_eff -
+      <a class="lesson-fpf-a" href="/guides/trust-calculus-overview-ru/">/guides/trust-calculus-overview-ru/</a>
+    </li>
+    <li>
+      <b>Цикл ADI</b>
+      Abduction - Deduction - Induction: цикл рассуждения от смелой гипотезы к проверенной практике -
+      <a class="lesson-fpf-a" href="/guides/adi-overview-ru/">/guides/adi-overview-ru/</a>
+    </li>
+    <li>
+      <b>Срок годности evidence</b>
+      Evidence decay: когда доказательство устаревает и что с этим делать -
+      <a class="lesson-fpf-a" href="/guides/evidence-and-decay-ru/">/guides/evidence-and-decay-ru/</a>
+    </li>
+    <li>
+      <b>Формат записи решения DDR</b>
+      Шесть секций, которые делают решение передаваемым -
+      <a class="lesson-fpf-a" href="/guides/ddr-format-ru/">/guides/ddr-format-ru/</a>
+    </li>
+    <li>
+      <b>Подробный блог-пост</b>
+      Полный разбор FPF с примерами и историей появления -
+      <a class="lesson-fpf-a" href="/blog/ru/chto-takoe-fpf/">/blog/ru/chto-takoe-fpf/</a>
+    </li>
+    <li>
+      <b>Оригинальная спека FPF</b>
+      Источник: Анатолий Левенчук, первичный текст -
+      <a class="lesson-fpf-a" href="https://github.com/ailev/FPF" target="_blank" rel="noopener">github.com/ailev/FPF</a>
+    </li>
+  </ul>
+
+  <div class="lesson-fpf-closing">
+    <p class="lesson-fpf-closing-p">
+      <b class="lesson-fpf-k">Главное:</b> FPF не добавляет работы ради
+      работы. Он делает явным то, что обычно теряется при передаче
+      контекста - между сессиями, между участниками, между агентами.
+      Семь узлов - это не список правил, а контрольные точки: если
+      хоть одна разъехалась, разговор ведётся о разных объектах.
+    </p>
+  </div>
+
+</main>
+</div>
+
+<script>
+(function() {
+  // No interactive chart needed - SVG is static.
+  // Tooltip logic for SVG nodes is pure CSS/pointer for now.
+})();
+</script>
+</body>
+</html>

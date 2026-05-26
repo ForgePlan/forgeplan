@@ -90,8 +90,20 @@ export const guides: Guide[] = [
     desc_ru: 'Обзор формата DDR. Сравнение DDR и ADR, шесть обязательных полей, полный markdown-пример (JWT vs сессии vs OAuth). Почему 200–400 слов и одна экранная страница. Ссылки на формальный цикл и lifecycle.',
   },
   {
-    slug: 'trust-calculus-overview',
+    slug: 'fpf-overview',
     order: 5,
+    category: 'foundation',
+    pill: 'theory',
+    title_en: 'FPF: the consistency map',
+    title_ru: 'FPF: карта согласованности',
+    tag_en: 'overview · fpf',
+    tag_ru: 'обзор · fpf',
+    desc_en: 'Seven kernel nodes of FPF - holons, context, distinctions, decay, open/closed world, F-G-R trust, reasoning cycle. How they connect and why keeping them consistent matters.',
+    desc_ru: 'Семь узлов ядра FPF - холоны, контекст, различения, срок годности, открытый/закрытый мир, доверие F-G-R, цикл рассуждения. Как они связаны и зачем держать их согласованными.',
+  },
+  {
+    slug: 'trust-calculus-overview',
+    order: 6,
     category: 'foundation',
     pill: 'theory',
     title_en: 'Trust Calculus: F/G/R and its connection to DDR',
@@ -103,7 +115,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'evidence-and-decay',
-    order: 6,
+    order: 7,
     category: 'foundation',
     pill: 'theory',
     title_en: 'Evidence and decay: why proofs have a shelf life',
@@ -115,7 +127,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'decision-cycle',
-    order: 7,
+    order: 8,
     category: 'foundation',
     pill: 'theory',
     title_en: 'How decisions are made and evidence weighted',
@@ -127,7 +139,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'trust-calculus',
-    order: 8,
+    order: 9,
     category: 'viz',
     pill: 'interactive',
     title_en: 'Trust Calculus in 3D F/G/R',
@@ -139,7 +151,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'bmad-cycle',
-    order: 9,
+    order: 10,
     category: 'feature',
     pill: 'theory',
     title_en: 'BMAD · 13-step PRD · Adversarial Review',
@@ -151,7 +163,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'spec-cycle',
-    order: 10,
+    order: 11,
     category: 'spec',
     pill: 'theory',
     title_en: 'Spec · Delta · R_eff',
@@ -163,7 +175,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'lifecycle-cycle',
-    order: 11,
+    order: 12,
     category: 'lifecycle',
     pill: 'theory',
     title_en: 'Lifecycle · from draft to terminal',
@@ -175,7 +187,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'fpf-cycle',
-    order: 12,
+    order: 13,
     category: 'foundation',
     pill: 'theory',
     title_en: 'FPF · First Principles Framework as the parent rail',
@@ -187,7 +199,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'dag-explorer',
-    order: 13,
+    order: 14,
     category: 'viz',
     pill: 'interactive',
     title_en: 'DAG Explorer · artifacts in 3D',
@@ -199,7 +211,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'depth-calibrator',
-    order: 14,
+    order: 15,
     category: 'tool',
     pill: 'interactive',
     title_en: 'Depth Calibrator · routing in real-time',
@@ -211,7 +223,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'agent-protocol-cycle',
-    order: 15,
+    order: 16,
     category: 'agent',
     pill: 'theory',
     title_en: 'Hint Contract · 5 markers',
@@ -223,7 +235,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'multi-agent-cycle',
-    order: 16,
+    order: 17,
     category: 'multi',
     pill: 'theory',
     title_en: 'Multi-agent · dispatch · claim · release',
@@ -235,7 +247,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'forgeplan-cycle',
-    order: 17,
+    order: 18,
     category: 'tool',
     pill: 'tool',
     title_en: 'Forgeplan as the operational layer',
@@ -247,7 +259,7 @@ export const guides: Guide[] = [
   },
   {
     slug: 'first-artifact',
-    order: 18,
+    order: 19,
     category: 'tool',
     pill: 'interactive',
     title_en: 'First Artifact · 20-minute hands-on walkthrough',
