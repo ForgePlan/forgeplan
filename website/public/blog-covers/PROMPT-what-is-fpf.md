@@ -1,10 +1,10 @@
-# Cover prompt: chto-takoe-fpf (FPF map of consistency)
+# Cover prompt: what-is-fpf (FPF map of consistency)
 
 ## Slug
-chto-takoe-fpf / what-is-fpf
+what-is-fpf / what-is-fpf
 
 ## Output filename
-/website/public/blog-covers/chto-takoe-fpf.webp (1600x900, ~95-97% quality)
+/website/public/blog-covers/what-is-fpf.webp (1600x900, ~95-97% quality)
 
 ## Prompt (copy-paste to image generator)
 
@@ -15,6 +15,6 @@ A minimalist isometric architectural blueprint diagram on a dark navy background
 - Avoid: stock-photo office settings, brain illustrations, gear icons, cliche AI visualizations, neon cyberpunk glow
 
 ## After generation
-1. Save PNG to /tmp/chto-takoe-fpf-raw.png
-2. Convert: `cwebp -q 95 -m 6 /tmp/chto-takoe-fpf-raw.png -o website/public/blog-covers/chto-takoe-fpf.webp`
+1. Save PNG to /tmp/what-is-fpf-raw.png
+2. Convert: `cwebp -q 95 -m 6 /tmp/what-is-fpf-raw.png -o website/public/blog-covers/what-is-fpf.webp`
 3. Verify: file size 80-150KB, dimensions 1600x900
