@@ -229,21 +229,30 @@
   }
 
   .lesson-fpf-next li {
-    padding: 12px 16px;
+    padding: 14px 16px 16px;
     border-bottom: 1px solid var(--line);
-    font-size: 15px;
-    color: var(--text-2);
-    line-height: 1.55;
     position: relative;
   }
 
   .lesson-fpf-next li:first-child { border-top: 1px solid var(--line); }
 
-  .lesson-fpf-next li b {
-    color: var(--text);
-    font-weight: 500;
+  .lesson-fpf-next-title {
     display: inline-block;
-    margin-right: 6px;
+    color: var(--accent);
+    font-size: 16px;
+    font-weight: 500;
+    text-decoration: none;
+    border-bottom: 1px solid var(--accent-bg);
+    margin-bottom: 4px;
+    transition: border-color .15s ease;
+  }
+  .lesson-fpf-next-title:hover { border-color: var(--accent); }
+
+  .lesson-fpf-next-desc {
+    font-size: 14.5px;
+    color: var(--text-2);
+    line-height: 1.55;
+    margin: 0;
   }
 
   /* Closing box */
@@ -534,34 +543,28 @@
 
   <ul class="lesson-fpf-next">
     <li>
-      <b>Trust Calculus детально</b>
-      Три оси F-G-R, правило слабого звена, расчёт R_eff -
-      <a class="lesson-fpf-a" href="/ru/guides/trust-calculus-overview/">/ru/guides/trust-calculus-overview/</a>
+      <a class="lesson-fpf-next-title" href="/ru/guides/trust-calculus-overview/">Trust Calculus детально →</a>
+      <p class="lesson-fpf-next-desc">Три оси F-G-R, правило слабого звена, расчёт R_eff.</p>
     </li>
     <li>
-      <b>Цикл ADI</b>
-      Abduction - Deduction - Induction: цикл рассуждения от смелой гипотезы к проверенной практике -
-      <a class="lesson-fpf-a" href="/ru/guides/adi-overview/">/ru/guides/adi-overview/</a>
+      <a class="lesson-fpf-next-title" href="/ru/guides/adi-overview/">Цикл ADI →</a>
+      <p class="lesson-fpf-next-desc">Abduction - Deduction - Induction: цикл рассуждения от смелой гипотезы к проверенной практике.</p>
     </li>
     <li>
-      <b>Срок годности evidence</b>
-      Evidence decay: когда доказательство устаревает и что с этим делать -
-      <a class="lesson-fpf-a" href="/ru/guides/evidence-and-decay/">/ru/guides/evidence-and-decay/</a>
+      <a class="lesson-fpf-next-title" href="/ru/guides/evidence-and-decay/">Срок годности evidence →</a>
+      <p class="lesson-fpf-next-desc">Evidence decay: когда доказательство устаревает и что с этим делать.</p>
     </li>
     <li>
-      <b>Формат записи решения DDR</b>
-      Шесть секций, которые делают решение передаваемым -
-      <a class="lesson-fpf-a" href="/ru/guides/ddr-format/">/ru/guides/ddr-format/</a>
+      <a class="lesson-fpf-next-title" href="/ru/guides/ddr-format/">Формат записи решения DDR →</a>
+      <p class="lesson-fpf-next-desc">Шесть секций, которые делают решение передаваемым.</p>
     </li>
     <li>
-      <b>Подробный блог-пост</b>
-      Полный разбор FPF с примерами и историей появления -
-      <a class="lesson-fpf-a" href="/blog/ru/what-is-fpf/">/blog/ru/what-is-fpf/</a>
+      <a class="lesson-fpf-next-title" href="/ru/blog/what-is-fpf/">Подробный блог-пост →</a>
+      <p class="lesson-fpf-next-desc">Полный разбор FPF с примерами и историей появления.</p>
     </li>
     <li>
-      <b>Оригинальная спека FPF</b>
-      Источник: Анатолий Левенчук, первичный текст -
-      <a class="lesson-fpf-a" href="https://github.com/ailev/FPF" target="_blank" rel="noopener">github.com/ailev/FPF</a>
+      <a class="lesson-fpf-next-title" href="https://github.com/ailev/FPF" target="_blank" rel="noopener noreferrer">Оригинальная спека FPF ↗</a>
+      <p class="lesson-fpf-next-desc">Источник: Анатолий Левенчук, первичный текст в GitHub.</p>
     </li>
   </ul>
 
