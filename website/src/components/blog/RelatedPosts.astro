@@ -42,10 +42,20 @@ const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
 const t = lang === 'ru'
   ? { heading: 'Читайте дальше', readMore: 'Открыть →' }
   : { heading: 'Read next', readMore: 'Open →' };
+
+function relatedLabel(n: number): string {
+  if (lang === 'ru') {
+    if (n === 1) return 'связанный пост';
+    if (n >= 2 && n <= 4) return 'связанных поста';
+    return 'связанных постов';
+  }
+  return n === 1 ? 'related post' : 'related posts';
+}
 ---
 {scored.length > 0 && (
   <section class="blog-related" aria-label={t.heading}>
     <h2 class="blog-related-heading">{t.heading}</h2>
+    <p class="blog-related-subtitle">{`${scored.length} ${relatedLabel(scored.length)}`}</p>
     <ul class="blog-related-grid">
       {scored.map(post => (
         <li class="blog-related-card">
@@ -65,3 +75,14 @@ const t = lang === 'ru'
     </ul>
   </section>
 )}
+
+<style>
+  .blog-related-subtitle {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin: 4px 0 24px;
+  }
+</style>

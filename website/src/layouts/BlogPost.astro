@@ -63,11 +63,25 @@ const oppositeUrl = oppositeSlug
   : null;
 ---
 <!doctype html>
-<html lang={lang} class="dark">
+<html lang={lang}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
+    <script is:inline>
+      (function() {
+        var t = localStorage.getItem('forgeplan-theme');
+        if (t === 'light') {
+          document.documentElement.classList.remove('dark');
+          document.documentElement.classList.add('light');
+        } else if (!t && matchMedia('(prefers-color-scheme: light)').matches) {
+          document.documentElement.classList.remove('dark');
+          document.documentElement.classList.add('light');
+        } else {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" id="favicon-link" />
     <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
@@ -101,6 +115,9 @@ const oppositeUrl = oppositeSlug
     <SiteJsonLd lang={lang} />
   </head>
   <body>
+    <a href="#main-content" class="skip-link">
+      {lang === 'ru' ? 'Перейти к содержимому' : 'Skip to content'}
+    </a>
     <Header />
     <article class="blog-post">
       <Hero cover={cover} topic={topic} kind={kind} title={title} />
@@ -133,3 +150,22 @@ const oppositeUrl = oppositeSlug
     <BlogFooter lang={lang} />
   </body>
 </html>
+
+<style>
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: -9999px;
+  }
+  .skip-link:focus {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 1000;
+    padding: 12px 18px;
+    background: var(--forge-ember, #FF6B35);
+    color: #050505;
+    font-weight: 600;
+    text-decoration: none;
+  }
+</style>
