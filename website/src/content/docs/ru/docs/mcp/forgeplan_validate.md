@@ -9,7 +9,7 @@ description: "Валидирует полноту артефакта в соот
 
 ## Когда агент вызывает эту функцию
 
-- Сразу после заполнения заглушки — «покрыл ли я всё, что требуется шаблоном?»
+- Сразу после заполнения заглушки - «покрыл ли я всё, что требуется шаблоном?»
 - В цикле с `forgeplan_update`: валидировать → исправить результат → валидировать → повторять до статуса PASS.
 - Проверка перед активацией: если остаются какие-либо MUST-сбои, `forgeplan_activate` всё равно завершится неудачей, поэтому сначала выполните валидацию.
 
@@ -23,7 +23,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ValidateParam
 
 ## Возвращает
 
-Вердикт плюс список результатов. Каждый результат содержит `severity` (MUST / SHOULD / COULD), `rule_id`, `message` и часто указатель `section`. `status: PASS` означает отсутствие MUST-сбоев — агент может активировать.
+Вердикт плюс список результатов. Каждый результат содержит `severity` (MUST / SHOULD / COULD), `rule_id`, `message` и часто указатель `section`. `status: PASS` означает отсутствие MUST-сбоев - агент может активировать.
 
 Пример структуры ответа:
 
@@ -60,11 +60,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ValidateParam
 
 ## Эквивалент CLI
 
-- [`forgeplan validate`](/ru/docs/cli/validate/) — те же правила, вывод в терминал
+- [`forgeplan validate`](/ru/docs/cli/validate/) - те же правила, вывод в терминал
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — гейт, соблюдение которого обеспечивает валидация
-- [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) — ортогональный сигнал качества (R_eff)
-- [`forgeplan_review`](/ru/docs/mcp/forgeplan_review/) — удобочитаемый отчёт о готовности
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - гейт, соблюдение которого обеспечивает валидация
+- [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) - ортогональный сигнал качества (R_eff)
+- [`forgeplan_review`](/ru/docs/mcp/forgeplan_review/) - удобочитаемый отчёт о готовности

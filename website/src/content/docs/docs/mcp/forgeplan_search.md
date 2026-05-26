@@ -3,13 +3,13 @@ title: forgeplan_search
 description: "Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle."
 ---
 
-Full-text discovery over every artifact in the workspace. v0.18.0 uses production BM25 (`bm25` crate) with Russian morphology (Snowball stemmer), template noise stripping, and O(N) batch search. This is the agent's primary tool for "find anything about X" questions — much richer than `forgeplan_list` (which is metadata-only) and much cheaper than a `forgeplan_get` loop.
+Full-text discovery over every artifact in the workspace. v0.18.0 uses production BM25 (`bm25` crate) with Russian morphology (Snowball stemmer), template noise stripping, and O(N) batch search. This is the agent's primary tool for "find anything about X" questions - much richer than `forgeplan_list` (which is metadata-only) and much cheaper than a `forgeplan_get` loop.
 
 **Category**: Reading Artifacts
 
 ## When an agent calls this
 
-- User asks "do we already have a decision about retries?" — agent searches before creating a new ADR.
+- User asks "do we already have a decision about retries?" - agent searches before creating a new ADR.
 - Duplicate check before `forgeplan_new`: confirm no existing PRD already covers the topic.
 - Context gathering for `forgeplan_reason`: pull 3-5 related artifacts to seed the ADI prompt.
 
@@ -66,11 +66,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan search`](/docs/cli/search/) — same engine, terminal output
+- [`forgeplan search`](/docs/cli/search/) - same engine, terminal output
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
 - [v0.18.0 BM25 search guide](/docs/guides/search-v2/)
-- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) — FPF KB semantic search
-- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) — exploratory discovery
+- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) - FPF KB semantic search
+- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - exploratory discovery

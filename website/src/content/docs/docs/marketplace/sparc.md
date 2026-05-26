@@ -24,7 +24,7 @@ Design the solution logic before writing real code. Focus on algorithms and data
 **Agent:** `@pseudocode`
 
 ### 3. Architecture
-Define the system structure — components, interfaces, dependencies, data models.
+Define the system structure - components, interfaces, dependencies, data models.
 
 **Agent:** `@architecture`
 

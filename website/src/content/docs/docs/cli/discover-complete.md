@@ -3,21 +3,21 @@ title: forgeplan discover complete
 description: "Finalize a discovery session and emit recommended artifacts (PROBs, PRDs, Notes) to create"
 ---
 
-`forgeplan discover complete <SESSION_ID>` closes a brownfield discovery session. It marks the session row as completed, runs the recommendation pass over all accumulated findings, and prints a list of **proposed artifacts** — typically Problem cards, PRDs, Notes, and sometimes ADRs — for the user to create with `forgeplan new`.
+`forgeplan discover complete <SESSION_ID>` closes a brownfield discovery session. It marks the session row as completed, runs the recommendation pass over all accumulated findings, and prints a list of **proposed artifacts** - typically Problem cards, PRDs, Notes, and sometimes ADRs - for the user to create with `forgeplan new`.
 
 This is where the brownfield pipeline turns raw findings into real methodology state.
 
 ## When to use
 
 - **After the agent has finished walking the source tiers** and `discover show` reports adequate coverage.
-- **At the end of an onboarding sprint** — crystalize everything learned into artifacts.
-- **When you want to stop a session and capture whatever was found so far** — partial sessions still produce recommendations.
+- **At the end of an onboarding sprint** - crystalize everything learned into artifacts.
+- **When you want to stop a session and capture whatever was found so far** - partial sessions still produce recommendations.
 
 ## When NOT to use
 
-- While the agent is still actively submitting findings — wait for it to settle.
-- To abort without saving — there's no rollback; once completed, proposals are emitted.
-- On an already-completed session — idempotent but pointless.
+- While the agent is still actively submitting findings - wait for it to settle.
+- To abort without saving - there's no rollback; once completed, proposals are emitted.
+- On an already-completed session - idempotent but pointless.
 
 ## Usage
 
@@ -59,9 +59,9 @@ forgeplan new prd  "Unified config loader"
 At completion, the engine:
 
 1. **Groups findings** by category (decisions, invariants, drift, debt, risks, ownership).
-2. **Deduplicates** — merges findings that reference the same module/concept.
-3. **Maps categories to artifact kinds** — drift → Problem, major decisions → ADR, gaps → PRD, observations → Note.
-4. **Suggests depth** — Tactical / Standard / Deep based on blast radius and reversibility heuristics.
+2. **Deduplicates** - merges findings that reference the same module/concept.
+3. **Maps categories to artifact kinds** - drift → Problem, major decisions → ADR, gaps → PRD, observations → Note.
+4. **Suggests depth** - Tactical / Standard / Deep based on blast radius and reversibility heuristics.
 5. **Emits proposals** as a list of `forgeplan new` commands the user can accept, edit, or skip.
 
 The user stays in control: proposals are printed, not auto-created.
@@ -82,9 +82,9 @@ From here, the project flows through the standard Shape → Validate → ADI →
 
 ## See also
 
-- [`forgeplan discover`](/docs/cli/discover/) — parent command + pipeline overview
-- [`forgeplan discover show`](/docs/cli/discover-show/) — coverage check before completing
-- [`forgeplan discover list`](/docs/cli/discover-list/) — session index
-- [`forgeplan new`](/docs/cli/new/) — create the proposed artifacts
-- [`forgeplan validate`](/docs/cli/validate/) — next step after new
+- [`forgeplan discover`](/docs/cli/discover/) - parent command + pipeline overview
+- [`forgeplan discover show`](/docs/cli/discover-show/) - coverage check before completing
+- [`forgeplan discover list`](/docs/cli/discover-list/) - session index
+- [`forgeplan new`](/docs/cli/new/) - create the proposed artifacts
+- [`forgeplan validate`](/docs/cli/validate/) - next step after new
 - [Methodology guide](/docs/methodology/overview/)

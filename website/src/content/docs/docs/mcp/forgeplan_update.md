@@ -3,7 +3,7 @@ title: forgeplan_update
 description: "Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update."
 ---
 
-Patches an existing artifact's body and/or frontmatter metadata in-place. This is the direct-edit path — the agent uses it to fill a freshly created stub, rewrite a section after user feedback, or rename an artifact. For lifecycle transitions (draft → active → superseded) the agent must use the dedicated `forgeplan_activate` / `forgeplan_supersede` / `forgeplan_deprecate` tools instead, which enforce validation gates.
+Patches an existing artifact's body and/or frontmatter metadata in-place. This is the direct-edit path - the agent uses it to fill a freshly created stub, rewrite a section after user feedback, or rename an artifact. For lifecycle transitions (draft → active → superseded) the agent must use the dedicated `forgeplan_activate` / `forgeplan_supersede` / `forgeplan_deprecate` tools instead, which enforce validation gates.
 
 **Category**: Editing Artifacts
 
@@ -26,7 +26,7 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::UpdateParams`_
 
 ## Returns
 
-The updated artifact record with new `updated_at`. The markdown projection on disk is re-rendered automatically. If `status` is set to a value that requires a lifecycle gate (e.g. `active`), the call is rejected — the agent must use `forgeplan_activate` instead.
+The updated artifact record with new `updated_at`. The markdown projection on disk is re-rendered automatically. If `status` is set to a value that requires a lifecycle gate (e.g. `active`), the call is rejected - the agent must use `forgeplan_activate` instead.
 
 Example response shape:
 
@@ -59,11 +59,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- Direct markdown edits (no single-command equivalent — CLI users edit `.forgeplan/*/*.md` and rely on auto-projection).
+- Direct markdown edits (no single-command equivalent - CLI users edit `.forgeplan/*/*.md` and rely on auto-projection).
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — the correct path for `draft → active`
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — verify after the edit
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — replace instead of edit
+- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the correct path for `draft → active`
+- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - verify after the edit
+- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - replace instead of edit

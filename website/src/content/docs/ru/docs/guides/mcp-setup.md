@@ -1,9 +1,9 @@
 ---
-title: Настройка MCP — установка одной командой
+title: Настройка MCP - установка одной командой
 description: Подключите Forgeplan как MCP-сервер к Claude Code, Cursor или Windsurf за 30 секунд.
 ---
 
-После `brew install forgeplan` подключение к AI-агенту — это **одна команда**.
+После `brew install forgeplan` подключение к AI-агенту - это **одна команда**.
 Никакого редактирования JSON, никакого копирования. Smart-merge сохраняет
 ваш существующий конфиг.
 
@@ -22,7 +22,7 @@ forgeplan mcp install --client cursor
 forgeplan mcp install --client windsurf
 ```
 
-Перезапустите клиента. Готово — все 47 `forgeplan_*` MCP-инструментов
+Перезапустите клиента. Готово - все 47 `forgeplan_*` MCP-инструментов
 доступны агенту.
 
 ## Что делает команда
@@ -45,7 +45,7 @@ forgeplan mcp install --client windsurf
 - Заменяет `command` / `args` / `transport` (чтобы `forgeplan upgrade` работал чисто)
 - **Сохраняет ваш `env`** (API-ключи, `RUST_LOG`, кастомные пути)
 - Не трогает другие MCP-серверы в файле
-- Идемпотентна — безопасно перезапускать
+- Идемпотентна - безопасно перезапускать
 
 ## Опции
 
@@ -62,7 +62,7 @@ forgeplan binary или env.
 ### Короткое имя (`forgeplan` или `fpl`)
 
 По умолчанию команда записывает **абсолютный путь** к binary. Это самый
-надёжный вариант — работает в любом клиенте, включая GUI-приложения macOS,
+надёжный вариант - работает в любом клиенте, включая GUI-приложения macOS,
 которые не наследуют ваш shell `$PATH`.
 
 Если хотите использовать короткое имя (и уверены что клиент запускается
@@ -75,7 +75,7 @@ forgeplan mcp install --client claude --use-name forgeplan # запишет "for
 
 :::caution
 **GUI-приложения macOS** (Claude Code Mac app, Cursor app) получают только
-системный `$PATH` по умолчанию — `/opt/homebrew/bin` в нём **нет**. Короткие
+системный `$PATH` по умолчанию - `/opt/homebrew/bin` в нём **нет**. Короткие
 имена молча не сработают в этих клиентах. Используйте абсолютный путь
 (default), если не настроили `launchctl setenv PATH ...` системно.
 :::
@@ -104,7 +104,7 @@ forgeplan mcp install --client claude --dry-run
 
 ```bash
 # 1. Перезапустите AI-клиента чтобы загрузил новый конфиг
-#    (Claude Code, Cursor, Windsurf — полностью закрыть и открыть)
+#    (Claude Code, Cursor, Windsurf - полностью закрыть и открыть)
 
 # 2. В вашей директории проекта инициализируйте workspace
 forgeplan init -y
@@ -113,7 +113,7 @@ forgeplan init -y
 #    Спросите агента: "use forgeplan_health to check the project"
 ```
 
-Если агент вернёт "healthy project status" — MCP работает.
+Если агент вернёт "healthy project status" - MCP работает.
 
 ## Пути конфигов по клиентам
 
@@ -130,10 +130,10 @@ Windows использует `%USERPROFILE%` вместо `~`.
 ### Symlink отклонён
 
 ```
-Error: refusing to write to symlink: ~/.claude.json — remove the symlink and re-run install
+Error: refusing to write to symlink: ~/.claude.json - remove the symlink and re-run install
 ```
 
-Целевой файл — symlink. Мы отказываемся следовать (security: предотвращает
+Целевой файл - symlink. Мы отказываемся следовать (security: предотвращает
 атаки когда злоумышленник заранее создаёт symlink на чувствительный файл,
 куда мы бы записали наш конфиг). Замените symlink обычным файлом или
 удалите.
@@ -144,7 +144,7 @@ Error: refusing to write to symlink: ~/.claude.json — remove the symlink and r
 ✓ Claude Code MCP config already up to date: ~/.claude.json
 ```
 
-Конфиг совпадает с тем что мы бы записали — менять нечего. Идемпотентность
+Конфиг совпадает с тем что мы бы записали - менять нечего. Идемпотентность
 работает как задумано.
 
 ### Workspace not initialized
@@ -156,11 +156,11 @@ Workspace not initialized. Call forgeplan_init first.
 ```
 
 Запустите `forgeplan init -y` в директории проекта, или попросите агента
-вызвать `forgeplan_init` через MCP — он использует свою текущую директорию.
+вызвать `forgeplan_init` через MCP - он использует свою текущую директорию.
 
 ### Перезапуск после `brew upgrade`
 
-`forgeplan mcp install` идемпотентна — перезапустите её после любого
+`forgeplan mcp install` идемпотентна - перезапустите её после любого
 обновления версии чтобы обновить конфиг. Детектированный путь к binary
 автоматически подхватит новую версию.
 

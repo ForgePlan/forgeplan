@@ -6,7 +6,7 @@ description: "Suggest a depth level (Tactical/Standard/Deep/Critical) by reading
 `forgeplan calibrate` re-runs the depth heuristics on an existing artifact and suggests
 whether it should stay Tactical, be upgraded to Standard, or escalated to Deep/Critical.
 Where `forgeplan route` calibrates **before** you create the artifact, `calibrate` runs
-the same signals **after** the content is written — which usually produces a more
+the same signals **after** the content is written - which usually produces a more
 accurate result because there is real content to read.
 
 Signals include FR count, presence of irreversibility keywords ("schema migration",
@@ -16,15 +16,15 @@ or split the artifact.
 
 ## When to use
 
-- Mid-sprint: "this PRD is growing — should it still be Standard?"
-- After importing artifacts from outside (Brownfield) — see if routing matches reality.
+- Mid-sprint: "this PRD is growing - should it still be Standard?"
+- After importing artifacts from outside (Brownfield) - see if routing matches reality.
 - When `forgeplan route` guessed wrong during creation and you want a second opinion.
 - As part of `forgeplan gaps` triage: calibrate flagged artifacts before escalating depth.
 
 ## When NOT to use
 
-- Tactical Notes — they don't carry a depth field, calibration is meaningless.
-- On every artifact every day — this is a corrective tool, not a daily check.
+- Tactical Notes - they don't carry a depth field, calibration is meaningless.
+- On every artifact every day - this is a corrective tool, not a daily check.
 
 ## Usage
 
@@ -56,7 +56,7 @@ forgeplan calibrate PRD-001
 Output:
 
 ```text
-PRD-001 — Auth System
+PRD-001 - Auth System
   current depth:     Standard
   suggested depth:   Deep
   drivers:
@@ -88,7 +88,7 @@ is correctly routed.
 If the recommendation is higher than current: either upgrade the `depth` field and add
 the missing pipeline stages (Spec, ADR) or split the artifact into smaller ones.
 
-If the recommendation is lower: consider simplifying — you may be over-engineering.
+If the recommendation is lower: consider simplifying - you may be over-engineering.
 
 ## How it fits the workflow
 
@@ -101,8 +101,8 @@ Use it when something feels off, or as a scheduled monthly health pass.
 
 ## See also
 
-- [`forgeplan route`](/docs/cli/route/) — initial depth guess before creation
-- [`forgeplan gaps`](/docs/cli/gaps/) — finds missing pipeline stages after calibration
-- [`forgeplan estimate`](/docs/cli/estimate/) — depth shapes the estimation scale
+- [`forgeplan route`](/docs/cli/route/) - initial depth guess before creation
+- [`forgeplan gaps`](/docs/cli/gaps/) - finds missing pipeline stages after calibration
+- [`forgeplan estimate`](/docs/cli/estimate/) - depth shapes the estimation scale
 - [Depth Calibration](/docs/methodology/routing/)
 - [CLI overview](/docs/cli/)

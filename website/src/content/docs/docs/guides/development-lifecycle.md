@@ -1,6 +1,6 @@
 ---
 title: Development Lifecycle
-description: Complete cycle from idea to production — Observe → Route → Shape → Build → Prove → Ship
+description: Complete cycle from idea to production - Observe → Route → Shape → Build → Prove → Ship
 ---
 
 ## The Full Cycle
@@ -30,7 +30,7 @@ flowchart LR
 
 ## Phase 0: Observe
 
-Before doing anything — understand what's happening:
+Before doing anything - understand what's happening:
 
 ```bash
 # 1. Restore context from memory
@@ -45,7 +45,7 @@ forgeplan health
 # Or: check TODO.md
 ```
 
-**Rule**: if health shows blind spots or orphans — **fix them FIRST**, before starting new work.
+**Rule**: if health shows blind spots or orphans - **fix them FIRST**, before starting new work.
 
 ## Phase 1: Route
 
@@ -76,7 +76,7 @@ Create the right artifacts and fill them:
 forgeplan new prd "Payment Processing"
 
 # Fill MUST sections: Problem, Goals, Non-Goals, Target Users, FR
-# Each FR: "[Actor] can [capability]" — no tech names
+# Each FR: "[Actor] can [capability]" - no tech names
 
 # Validate
 forgeplan validate PRD-001
@@ -85,7 +85,7 @@ forgeplan validate PRD-001
 
 ### ADI Reasoning (Standard+)
 
-Before coding — reason through alternatives:
+Before coding - reason through alternatives:
 
 ```bash
 forgeplan reason PRD-001
@@ -130,7 +130,7 @@ pnpm test          # TypeScript
 /audit
 
 # Fix all HIGH/CRITICAL findings
-# Then RE-RUN tests after fixes — don't trust previous run
+# Then RE-RUN tests after fixes - don't trust previous run
 ```
 
 ## Phase 4: Prove
@@ -171,7 +171,7 @@ forgeplan activate PRD-001
 git push origin feat/payment-processing
 gh pr create --base dev --title "[PRD-001] Payment Processing"
 
-# 3. After merge — sync
+# 3. After merge - sync
 git checkout dev && git pull origin dev
 
 # 4. Save to memory

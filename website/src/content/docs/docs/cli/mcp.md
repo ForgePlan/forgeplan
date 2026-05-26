@@ -1,10 +1,10 @@
 ---
 title: forgeplan mcp
-description: "Parent command for MCP integration helpers — install Forgeplan into Claude Code, Cursor, or Windsurf, and start the MCP server."
+description: "Parent command for MCP integration helpers - install Forgeplan into Claude Code, Cursor, or Windsurf, and start the MCP server."
 ---
 
 `forgeplan mcp` groups the helpers an AI-agent client needs to talk to Forgeplan over the
-Model Context Protocol. It is **not** a tool you call from agents — its subcommands run on
+Model Context Protocol. It is **not** a tool you call from agents - its subcommands run on
 the host machine to wire the binary into client config files (`mcp install`) or to start
 the stdio server when launched manually (`mcp serve`, an alias for [`forgeplan serve`](/docs/cli/serve/)).
 
@@ -22,8 +22,8 @@ gets you from a fresh `brew install forgeplan` to a working agent without hand-e
 
 ## When NOT to use
 
-- For day-to-day artifact work — that is what the agent-side MCP tools (`forgeplan_*`) are for.
-- For HTTP / network exposure — `mcp` only covers stdio. Forgeplan is local-first.
+- For day-to-day artifact work - that is what the agent-side MCP tools (`forgeplan_*`) are for.
+- For HTTP / network exposure - `mcp` only covers stdio. Forgeplan is local-first.
 
 ## Usage
 
@@ -43,7 +43,7 @@ forgeplan mcp <COMMAND>
 | Command | Purpose |
 |---|---|
 | [`install`](/docs/cli/mcp-install/) | Smart-merge Forgeplan into a client config (Claude / Cursor / Windsurf) |
-| [`serve`](/docs/cli/mcp-serve/) | Alias for [`forgeplan serve`](/docs/cli/serve/) — starts the stdio MCP server |
+| [`serve`](/docs/cli/mcp-serve/) | Alias for [`forgeplan serve`](/docs/cli/serve/) - starts the stdio MCP server |
 | `help` | Print help for `mcp` or its subcommands |
 
 ## Examples
@@ -55,7 +55,7 @@ forgeplan mcp install --client claude --scope user
 ```
 
 Writes Forgeplan into `~/.claude.json` so every Claude Code session sees `mcp__forgeplan__*`
-tools. Idempotent — safe to re-run after upgrades.
+tools. Idempotent - safe to re-run after upgrades.
 
 ### Project-scoped Cursor config
 
@@ -85,8 +85,8 @@ runtime; you almost never invoke it manually because the client launches it for 
 
 ## See also
 
-- [`forgeplan mcp install`](/docs/cli/mcp-install/) — wire Forgeplan into a client
-- [`forgeplan mcp serve`](/docs/cli/mcp-serve/) — alias for `forgeplan serve`
-- [`forgeplan serve`](/docs/cli/serve/) — primary reference for the MCP server
-- [MCP tools index](/docs/mcp/) — what the server exposes
-- [`forgeplan health`](/docs/cli/health/) — verify the workspace before connecting
+- [`forgeplan mcp install`](/docs/cli/mcp-install/) - wire Forgeplan into a client
+- [`forgeplan mcp serve`](/docs/cli/mcp-serve/) - alias for `forgeplan serve`
+- [`forgeplan serve`](/docs/cli/serve/) - primary reference for the MCP server
+- [MCP tools index](/docs/mcp/) - what the server exposes
+- [`forgeplan health`](/docs/cli/health/) - verify the workspace before connecting

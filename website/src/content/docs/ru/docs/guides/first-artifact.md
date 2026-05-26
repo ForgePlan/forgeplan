@@ -1,6 +1,6 @@
 ---
 title: Руководство по первому артефакту
-description: "20-минутное практическое руководство: создание, валидация, обоснование, доказательство и активация вашего первого PRD — с распространёнными ошибками и способами их исправления."
+description: "20-минутное практическое руководство: создание, валидация, обоснование, доказательство и активация вашего первого PRD - с распространёнными ошибками и способами их исправления."
 ---
 
 Это расширенная версия [Краткого руководства](/docs/getting-started/quick-start/).
@@ -17,7 +17,7 @@ PRD для небольшой, реальной функции: **«Добави
 `forgeplan new`, чтобы пользователи могли предварительно просматривать, что будет
 создано, без записи файлов.»**
 
-Она намеренно небольшая — роутинг, вероятно, покажет `Standard`, что означает,
+Она намеренно небольшая - роутинг, вероятно, покажет `Standard`, что означает,
 что мы пройдём каждый шаг, за исключением уровней Epic/Spec. Идеальная
 тренировочная нагрузка.
 
@@ -36,7 +36,7 @@ flowchart LR
 - Каталог, где вы можете создать рабочее пространство (временный подойдёт)
 - Необязательно: `GEMINI_API_KEY` или другой провайдер LLM для обоснования ADI
 
-## Шаг 1 — Инициализация рабочего пространства
+## Шаг 1 - Инициализация рабочего пространства
 
 ```bash
 mkdir ~/forgeplan-tutorial && cd ~/forgeplan-tutorial
@@ -64,18 +64,18 @@ Project Health
   Blind spots: 0
   Orphans: 0
   Stale: 0
-  Status: OK — empty workspace
+  Status: OK - empty workspace
 ```
 
 ### Возможная ошибка
 
-**`Error: .forgeplan/ already exists`** — вы запустили `init` в уже
+**`Error: .forgeplan/ already exists`** - вы запустили `init` в уже
 существующем рабочем пространстве. Либо перейдите в другой каталог (`cd`),
 либо удалите `.forgeplan` (`rm -rf .forgeplan`) (только в каталоге для
-временного руководства — никогда не делайте этого в реальном проекте без
+временного руководства - никогда не делайте этого в реальном проекте без
 предварительного экспорта: `forgeplan export --output backup.json`).
 
-## Шаг 2 — Роутинг задачи
+## Шаг 2 - Роутинг задачи
 
 ```bash
 forgeplan route "add --dry-run flag to forgeplan new for preview"
@@ -99,10 +99,10 @@ Recommendation:
 ```
 
 Если роутер покажет `Tactical`, переопределите и всё равно рассматривайте это
-как Standard — мы хотим отработать полный цикл. См. [Роутинг и глубина](/docs/methodology/routing/)
+как Standard - мы хотим отработать полный цикл. См. [Роутинг и глубина](/docs/methodology/routing/)
 для дерева решений.
 
-## Шаг 3 — Shape: создание PRD
+## Шаг 3 - Shape: создание PRD
 
 ```bash
 forgeplan new prd "CLI dry-run flag"
@@ -134,8 +134,8 @@ Created: PRD-001 at .forgeplan/prds/PRD-001-cli-dry-run-flag.md
 
 ## Не-цели
 
-- Не полноценный «режим симуляции» — охватывает только команду `new`
-- Не механизм отката — файлы, созданные без `--dry-run`, остаются созданными
+- Не полноценный «режим симуляции» - охватывает только команду `new`
+- Не механизм отката - файлы, созданные без `--dry-run`, остаются созданными
 
 ## Целевые пользователи
 
@@ -153,10 +153,10 @@ Created: PRD-001 at .forgeplan/prds/PRD-001-cli-dry-run-flag.md
 ```
 
 Обратите внимание: нет упоминаний «использовать clap» или «выводить JSON»
-или какой-либо конкретной реализации. Это правило 3 — функциональные
+или какой-либо конкретной реализации. Это правило 3 - функциональные
 требования описывают возможности, а не реализации. См. [Обзор методологии](/docs/methodology/overview/).
 
-## Шаг 4 — Validate
+## Шаг 4 - Validate
 
 ```bash
 forgeplan validate PRD-001
@@ -172,25 +172,25 @@ PRD-001: PASS ✓
 
 ### Ошибки, с которыми вы, вероятно, столкнётесь
 
-**`MUST error: Problem section missing`** — вы забыли обязательный заголовок.
-Работают псевдонимы: `## Motivation`, `## Background`, `## Problem Statement` —
+**`MUST error: Problem section missing`** - вы забыли обязательный заголовок.
+Работают псевдонимы: `## Motivation`, `## Background`, `## Problem Statement` -
 все они считаются Problem. Добавьте один.
 
-**`MUST error: implementation leakage in FR2`** — вы написали что-то вроде
+**`MUST error: implementation leakage in FR2`** - вы написали что-то вроде
 «Использовать вывод JSON с serde». Перепишите как «Пользователь может видеть
 точный путь к файлу и его содержимое». Валидатор помечает названия библиотек
 и технологические решения в требованиях.
 
-**`MUST error: no functional requirements`** — раздел `## Functional Requirements`
+**`MUST error: no functional requirements`** - раздел `## Functional Requirements`
 существует, но не содержит пунктов. Добавьте хотя бы одно функциональное
 требование по шаблону `[Действующее лицо] может [возможность]`.
 
-**`MUST error: vague goal "system should be fast"`** — валидатор обнаружил
+**`MUST error: vague goal "system should be fast"`** - валидатор обнаружил
 неизмеримое утверждение. Перепишите с использованием чисел или удалите.
 
 Перезапускайте `forgeplan validate PRD-001` после каждого исправления.
 
-## Шаг 5 — Reason (ADI)
+## Шаг 5 - Reason (ADI)
 
 ```bash
 forgeplan reason PRD-001
@@ -202,12 +202,12 @@ forgeplan reason PRD-001
 ```
 ADI cycle for PRD-001
 ─────────────────────
-Abduction — 3 hypotheses:
+Abduction - 3 hypotheses:
   H1: Single --dry-run flag that short-circuits file write
   H2: Separate `forgeplan preview new` command
   H3: Interactive confirmation prompt (y/n before write)
 
-Deduction — predictions per hypothesis:
+Deduction - predictions per hypothesis:
   H1:
     - Minimal code change, 1 branch in `new` command
     - Reusable: same flag can extend to other write commands
@@ -221,28 +221,28 @@ Deduction — predictions per hypothesis:
     - No way to see output before committing
     - Violates `-y` non-interactive contract
 
-Induction — evidence check:
-  H1: supports — aligns with existing flag patterns (e.g. `init -y`)
-  H2: weakens — duplication + discoverability win does not offset cost
-  H3: refutes — breaks AI agent workflow (see MUST in CLAUDE.md)
+Induction - evidence check:
+  H1: supports - aligns with existing flag patterns (e.g. `init -y`)
+  H2: weakens - duplication + discoverability win does not offset cost
+  H3: refutes - breaks AI agent workflow (see MUST in CLAUDE.md)
 
 Recommendation: H1
 Confidence: 0.87
 ```
 
 LLM не настроен? Вы получите шаблон, предлагающий заполнить гипотезы вручную.
-Это всё равно считается — ценность заключается в обдумывании альтернатив, а не
+Это всё равно считается - ценность заключается в обдумывании альтернатив, а не
 в выводе LLM.
 
 См. [Обоснование ADI](/docs/methodology/adi/), чтобы понять, почему этот шаг существует.
 
 ### Ошибка
 
-**`Error: no LLM provider configured`** — откройте `.forgeplan/config.yaml`
+**`Error: no LLM provider configured`** - откройте `.forgeplan/config.yaml`
 и добавьте блок провайдера. Для руководства вы можете пропустить это и
 записать 3 гипотезы непосредственно в тело PRD в разделе `## Reasoning`.
 
-## Шаг 6 — Build
+## Шаг 6 - Build
 
 Напишите код. Для этого руководства представьте, что вы реализовали H1 и
 написали тесты. В реальной работе с Forgeplan вы бы:
@@ -254,13 +254,13 @@ cargo check     # 0 warnings, 0 errors
 ```
 
 Все три должны пройти, прежде чем вы создадите доказательство, утверждающее это.
-Если `cargo check` выдаёт предупреждения, исправьте их — собственное правило
+Если `cargo check` выдаёт предупреждения, исправьте их - собственное правило
 Forgeplan CLAUDE.md гласит: «0 предупреждений, 0 ошибок» при каждом коммите.
 
-## Шаг 7 — Prove: создание Evidence
+## Шаг 7 - Prove: создание Evidence
 
 ```bash
-forgeplan new evidence "CLI dry-run — 8 unit tests pass, flag works end-to-end"
+forgeplan new evidence "CLI dry-run - 8 unit tests pass, flag works end-to-end"
 ```
 
 ```
@@ -299,7 +299,7 @@ evidence_type: test`, парсер R_eff вернётся к CL0 со штраф
 будет близок к нулю, даже если доказательство сильное. Всегда включайте эти
 три поля.
 
-## Шаг 8 — Проверка балла
+## Шаг 8 - Проверка балла
 
 ```bash
 forgeplan score PRD-001
@@ -309,21 +309,21 @@ forgeplan score PRD-001
 
 ```
 PRD-001: CLI dry-run flag
-  R_eff = 1.00 — Adequate
+  R_eff = 1.00 - Adequate
   Evidence:
     EVID-001: supports, CL3, test → score 1.0
 ```
 
 ### Что если R_eff = 0.0?
 
-1. `forgeplan list evidence` — есть ли EVID-001 в рабочем пространстве?
+1. `forgeplan list evidence` - есть ли EVID-001 в рабочем пространстве?
 2. `cat .forgeplan/evidence/EVID-001-*.md | grep -E "verdict|congruence_level|evidence_type"`
-   — все три поля присутствуют?
-3. `forgeplan link EVID-001 PRD-001 --relation informs` — была ли создана связь?
+   - все три поля присутствуют?
+3. `forgeplan link EVID-001 PRD-001 --relation informs` - была ли создана связь?
 
 См. [Доказательства и R_eff](/docs/methodology/evidence/) для полной формулы.
 
-## Шаг 9 — Активация
+## Шаг 9 - Активация
 
 ```bash
 forgeplan review PRD-001
@@ -347,10 +347,10 @@ PRD-001: draft → active
 ```
 
 Если гейт валидации здесь не проходит, переход отклоняется. Самая
-частая причина — вы отредактировали PRD после шага 4 и внесли
+частая причина - вы отредактировали PRD после шага 4 и внесли
 нарушение правила MUST. Перезапустите `forgeplan validate PRD-001` и исправьте.
 
-## Шаг 10 — Проверка
+## Шаг 10 - Проверка
 
 ```bash
 forgeplan health
@@ -360,18 +360,18 @@ forgeplan health
 Project Health
   Total artifacts: 2 (PRD-001, EVID-001)
   Active: 1
-  Draft: 1 (EVID-001 — пакеты доказательств остаются в черновике)
+  Draft: 1 (EVID-001 - пакеты доказательств остаются в черновике)
   Blind spots: 0
   Orphans: 0
   Stale: 0
   Status: HEALTHY
 ```
 
-Поздравляем — у вас есть полностью отслеживаемое решение с измеримым доверием.
+Поздравляем - у вас есть полностью отслеживаемое решение с измеримым доверием.
 
 ## Что вы узнали
 
-- **Сначала роутинг.** Вы не начали сразу кодировать — вы спросили
+- **Сначала роутинг.** Вы не начали сразу кодировать - вы спросили
   Forgeplan, какая глубина нужна задаче.
 - **Shape до кода.** PRD зафиксировал «зачем» и «что» до
   первой строки реализации.
@@ -379,16 +379,16 @@ Project Health
   отсутствующие разделы до того, как они стали привычкой.
 - **Обоснование через ADI.** Вы сгенерировали альтернативы до принятия
   обязательств, и именно так вы избегаете моментов «жаль, что не подумали об этом».
-- **Подтверждение доказательствами.** R_eff — это не украшение, а число,
+- **Подтверждение доказательствами.** R_eff - это не украшение, а число,
   которое говорит вам, стоит ли доверять собственному решению.
 - **Активация только при готовности.** Гейт предотвращает появление «активных PRD без
-  кода» — ложного обещания будущим читателям.
+  кода» - ложного обещания будущим читателям.
 
 ## Следующие шаги
 
 - Запустите полный цикл на реальной задаче в вашем основном проекте
 - Прочитайте [Обзор методологии](/docs/methodology/overview/) для ознакомления с 10 правилами
-- Изучите [Справочник CLI](/docs/cli/) — каждая команда задокументирована
+- Изучите [Справочник CLI](/docs/cli/) - каждая команда задокументирована
 - Погрузитесь в [Жизненный цикл артефакта](/docs/methodology/lifecycle/), чтобы узнать
   про `supersede`, `deprecate`, `renew` и `reopen`
 - Проверьте [Конфигурацию](/docs/getting-started/configuration/) для настройки

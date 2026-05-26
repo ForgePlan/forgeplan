@@ -10,7 +10,7 @@ Creates a new artifact **with a fully-authored body** from a natural-language de
 ## When an agent calls this
 
 - User provides a rich description and wants a ready-to-review first draft, not an empty stub.
-- Migrating a decision from chat history into a formal ADR — feed the chat summary as description.
+- Migrating a decision from chat history into a formal ADR - feed the chat summary as description.
 - Bulk bootstrap: turning an informal roadmap into 5 draft PRDs in one session.
 
 ## Input parameters
@@ -24,7 +24,7 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::GenerateParams`_
 
 ## Returns
 
-The new artifact ID plus the generated body. Unlike `forgeplan_new`, the agent can usually go straight to `forgeplan_validate` without an intermediate `forgeplan_update` — the body is already populated.
+The new artifact ID plus the generated body. Unlike `forgeplan_new`, the agent can usually go straight to `forgeplan_validate` without an intermediate `forgeplan_update` - the body is already populated.
 
 Example response shape:
 
@@ -59,11 +59,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan generate`](/docs/cli/generate/) — same operation
+- [`forgeplan generate`](/docs/cli/generate/) - same operation
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — empty-stub alternative
-- [`forgeplan_capture`](/docs/mcp/forgeplan_capture/) — capture decisions from conversation
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — always validate generated output
+- [`forgeplan_new`](/docs/mcp/forgeplan_new/) - empty-stub alternative
+- [`forgeplan_capture`](/docs/mcp/forgeplan_capture/) - capture decisions from conversation
+- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - always validate generated output

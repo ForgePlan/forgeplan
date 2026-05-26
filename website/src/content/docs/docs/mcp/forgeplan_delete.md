@@ -3,7 +3,7 @@ title: forgeplan_delete
 description: "Delete an artifact from LanceDB and remove its markdown projection file."
 ---
 
-Permanently removes an artifact from the workspace — both the LanceDB row and the markdown file on disk. This is destructive and unrecoverable (without an export backup), so agents should strongly prefer lifecycle transitions (`supersede`, `deprecate`) over deletion. Only call `forgeplan_delete` when the user explicitly asks to remove a typo, a test artifact, or a duplicate.
+Permanently removes an artifact from the workspace - both the LanceDB row and the markdown file on disk. This is destructive and unrecoverable (without an export backup), so agents should strongly prefer lifecycle transitions (`supersede`, `deprecate`) over deletion. Only call `forgeplan_delete` when the user explicitly asks to remove a typo, a test artifact, or a duplicate.
 
 **Category**: Editing Artifacts
 
@@ -13,7 +13,7 @@ Permanently removes an artifact from the workspace — both the LanceDB row and 
 - Cleaning up a test artifact from `forge-smoke` runs.
 - Removing an orphan created during an interrupted decompose flow.
 
-Agents should NEVER call this to "retire" an active decision — use `forgeplan_supersede` or `forgeplan_deprecate` so history is preserved.
+Agents should NEVER call this to "retire" an active decision - use `forgeplan_supersede` or `forgeplan_deprecate` so history is preserved.
 
 ## Input parameters
 
@@ -57,11 +57,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan delete`](/docs/cli/delete/) — same operation, prompts for confirmation
+- [`forgeplan delete`](/docs/cli/delete/) - same operation, prompts for confirmation
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) — reversible retirement
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — replacement with history
-- [`forgeplan_export`](/docs/mcp/forgeplan_export/) — back up before destructive ops
+- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - reversible retirement
+- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - replacement with history
+- [`forgeplan_export`](/docs/mcp/forgeplan_export/) - back up before destructive ops

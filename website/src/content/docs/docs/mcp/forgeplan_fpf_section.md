@@ -3,16 +3,16 @@ title: forgeplan_fpf_section
 description: "Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1')."
 ---
 
-Fetch the full markdown content of a specific FPF (First Principles Framework) section by its stable ID — e.g. `B.3` (Trust Calculus), `B.5` (ADI Cycle), `C.2.2`, `A.1`. Returns the complete section body plus linked sibling / parent / child section IDs for navigation.
+Fetch the full markdown content of a specific FPF (First Principles Framework) section by its stable ID - e.g. `B.3` (Trust Calculus), `B.5` (ADI Cycle), `C.2.2`, `A.1`. Returns the complete section body plus linked sibling / parent / child section IDs for navigation.
 
 **Category**: FPF Knowledge Base
 
 ## When an agent calls it
 
-- **After `forgeplan_fpf_search`** — read the full text of the top hit.
-- **Direct lookup** — when you already know the section ID from prior context or a citation.
-- **Navigation** — follow `parent` / `children` links to traverse the FPF tree.
-- **Context grounding** — pull a specific principle into an ADI reasoning prompt.
+- **After `forgeplan_fpf_search`** - read the full text of the top hit.
+- **Direct lookup** - when you already know the section ID from prior context or a citation.
+- **Navigation** - follow `parent` / `children` links to traverse the FPF tree.
+- **Context grounding** - pull a specific principle into an ADI reasoning prompt.
 
 ## Input parameters
 
@@ -54,9 +54,9 @@ If the ID is unknown:
 
 ## Typical sequence
 
-1. `forgeplan_fpf_search "trust"` — discover `B.3` is the top hit.
-2. `forgeplan_fpf_section { "id": "B.3" }` — read full body.
-3. `forgeplan_fpf_section { "id": "B.3.1" }` — walk into a child section.
+1. `forgeplan_fpf_search "trust"` - discover `B.3` is the top hit.
+2. `forgeplan_fpf_section { "id": "B.3" }` - read full body.
+3. `forgeplan_fpf_section { "id": "B.3.1" }` - walk into a child section.
 4. Use the content as FPF grounding for `forgeplan_reason`.
 
 ## CLI equivalent
@@ -67,6 +67,6 @@ forgeplan fpf section B.3
 
 ## See also
 
-- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) — discover sections by query.
-- [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) — ADI reasoning with FPF context.
+- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) - discover sections by query.
+- [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) - ADI reasoning with FPF context.
 - [Methodology guide](/docs/methodology/overview/)

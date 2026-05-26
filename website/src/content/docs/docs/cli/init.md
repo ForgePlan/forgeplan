@@ -1,6 +1,6 @@
 ---
 title: forgeplan init
-description: "Create a new .forgeplan/ workspace — LanceDB tables, config, and subdirectories"
+description: "Create a new .forgeplan/ workspace - LanceDB tables, config, and subdirectories"
 ---
 
 `forgeplan init` bootstraps a new Forgeplan workspace in the current directory. It creates the `.forgeplan/` folder with all subdirectories for artifacts (adrs, prds, rfcs, epics, specs, evidence, problems, solutions, notes, refresh, memory), initializes the LanceDB index, and writes a default `config.yaml`. After this, you can start creating artifacts with `forgeplan new`.
@@ -8,13 +8,13 @@ description: "Create a new .forgeplan/ workspace — LanceDB tables, config, and
 ## When to use
 
 - Bootstrapping Forgeplan on a brand-new project for the first time.
-- Fresh clone of an existing Forgeplan repo — markdown is tracked but `.forgeplan/lance/` is gitignored, so the index must be rebuilt locally.
+- Fresh clone of an existing Forgeplan repo - markdown is tracked but `.forgeplan/lance/` is gitignored, so the index must be rebuilt locally.
 - Recovery after catastrophic workspace corruption or a lost `.forgeplan/lance/` directory (pair with a fresh export backup).
 
 ## When NOT to use
 
-- `.forgeplan/` already exists and is healthy — use [`forgeplan migrate`](/docs/cli/migrate/) for schema upgrades instead of reinitializing.
-- Rebuilding only the LanceDB index from intact markdown — use [`forgeplan scan-import`](/docs/cli/scan-import/) (no destructive reinit needed).
+- `.forgeplan/` already exists and is healthy - use [`forgeplan migrate`](/docs/cli/migrate/) for schema upgrades instead of reinitializing.
+- Rebuilding only the LanceDB index from intact markdown - use [`forgeplan scan-import`](/docs/cli/scan-import/) (no destructive reinit needed).
 
 ## Usage
 
@@ -40,7 +40,7 @@ forgeplan init [OPTIONS]
 forgeplan init -y
 ```
 
-Creates `.forgeplan/` with defaults and no interactive prompts. AI agents must always use `-y` — the interactive wizard will block them otherwise.
+Creates `.forgeplan/` with defaults and no interactive prompts. AI agents must always use `-y` - the interactive wizard will block them otherwise.
 
 ### Example 2: Fresh clone of a Forgeplan repo
 
@@ -71,25 +71,25 @@ forgeplan init -y --force
 forgeplan import backup.json
 ```
 
-The only safe reinit path — export + filesystem copy + reinit + import.
+The only safe reinit path - export + filesystem copy + reinit + import.
 
 ## How it fits the workflow
 
-This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) — see the tutorial for the end-to-end flow. `init` is step zero; the next command is almost always `forgeplan health` or `forgeplan scan-import`.
+This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) - see the tutorial for the end-to-end flow. `init` is step zero; the next command is almost always `forgeplan health` or `forgeplan scan-import`.
 
 ## Safety notes
 
 - **AI agents must always pass `-y`.** The interactive wizard will hang on stdin and look like a stuck process.
-- **Never `rm -rf .forgeplan` without an export first.** See [`forgeplan export`](/docs/cli/export/) — it is the only backup path that captures links, evidence, and scoring state.
+- **Never `rm -rf .forgeplan` without an export first.** See [`forgeplan export`](/docs/cli/export/) - it is the only backup path that captures links, evidence, and scoring state.
 - **`config.yaml` is gitignored.** If you reinit, you will lose your LLM provider settings. Back it up separately: `cp .forgeplan/config.yaml ~/fp-config-backup.yaml`.
 - **Markdown survives reinit only if you copy it out first.** `--force` wipes the folder. Always `cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)` as a secondary safety net.
-- **Schema drift between versions** (e.g. v0.17 → v0.18 added columns) — prefer [`forgeplan migrate`](/docs/cli/migrate/) over reinit when possible.
+- **Schema drift between versions** (e.g. v0.17 → v0.18 added columns) - prefer [`forgeplan migrate`](/docs/cli/migrate/) over reinit when possible.
 
 ## See also
 
-- [`forgeplan export`](/docs/cli/export/) — mandatory backup before any destructive operation
-- [`forgeplan import`](/docs/cli/import/) — restore artifacts after reinit
-- [`forgeplan scan-import`](/docs/cli/scan-import/) — rebuild LanceDB from tracked markdown
-- [`forgeplan migrate`](/docs/cli/migrate/) — non-destructive schema upgrades
-- [`forgeplan health`](/docs/cli/health/) — session start verification
-- [Configuration](/docs/getting-started/configuration/) — LLM provider setup
+- [`forgeplan export`](/docs/cli/export/) - mandatory backup before any destructive operation
+- [`forgeplan import`](/docs/cli/import/) - restore artifacts after reinit
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild LanceDB from tracked markdown
+- [`forgeplan migrate`](/docs/cli/migrate/) - non-destructive schema upgrades
+- [`forgeplan health`](/docs/cli/health/) - session start verification
+- [Configuration](/docs/getting-started/configuration/) - LLM provider setup

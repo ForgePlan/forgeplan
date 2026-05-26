@@ -6,7 +6,7 @@ description: "Generate a Mermaid dependency graph of linked artifacts"
 Emit a Mermaid-format dependency graph of all linked artifacts. Unlike
 [`tree`](/docs/cli/tree/), which only shows parent/child hierarchy, `graph`
 renders every typed link (`informs`, `supersedes`, `blocks`, `relates_to`,
-etc.) as an edge — the full decision DAG.
+etc.) as an edge - the full decision DAG.
 
 ## When to use
 
@@ -89,7 +89,7 @@ Active artifacts get a solid outline; superseded/deprecated ones get a dashed
 outline (if your renderer supports the class definitions emitted at the top
 of the graph).
 
-With `--json`, the envelope is `{ nodes: [...], edges: [...] }` — ready for
+With `--json`, the envelope is `{ nodes: [...], edges: [...] }` - ready for
 Cytoscape, D3, or any graph library.
 
 ### Example rendered diagram
@@ -117,7 +117,7 @@ blocked →  unresolved dependencies (planning)
 
 ## See also
 
-- [`forgeplan tree`](/docs/cli/tree/) — hierarchy view
-- [`forgeplan order`](/docs/cli/order/) — topological order
-- [`forgeplan blocked`](/docs/cli/blocked/) — blocking dependencies
-- [`forgeplan link`](/docs/cli/link/) — create typed edges
+- [`forgeplan tree`](/docs/cli/tree/) - hierarchy view
+- [`forgeplan order`](/docs/cli/order/) - topological order
+- [`forgeplan blocked`](/docs/cli/blocked/) - blocking dependencies
+- [`forgeplan link`](/docs/cli/link/) - create typed edges

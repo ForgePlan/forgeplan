@@ -1,16 +1,16 @@
 ---
 title: forgeplan_status
-description: "Show project status dashboard — total artifacts, counts by kind and status."
+description: "Show project status dashboard - total artifacts, counts by kind and status."
 ---
 
-Show a compact project status dashboard — total artifacts plus counts grouped by kind and status. This is a lighter-weight alternative to `forgeplan_health` when you only need a numeric summary without blind-spot / orphan analysis.
+Show a compact project status dashboard - total artifacts plus counts grouped by kind and status. This is a lighter-weight alternative to `forgeplan_health` when you only need a numeric summary without blind-spot / orphan analysis.
 
 **Category**: Dashboards & Graph
 
 ## When an agent calls it
 
-- **Quick sanity check** — how many artifacts exist, how many are active vs draft.
-- **Progress tracking across sprints** — compare counts to a previous baseline.
+- **Quick sanity check** - how many artifacts exist, how many are active vs draft.
+- **Progress tracking across sprints** - compare counts to a previous baseline.
 - **Answering "what's in this workspace?"** without triggering the full health scan.
 - **Fast path** when `forgeplan_health` is too heavy (e.g. large workspaces).
 
@@ -55,9 +55,9 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Typical sequence
 
-1. `forgeplan_status` — get counts.
-2. `forgeplan_list` with `kind` / `status` filter — drill down into a specific slice.
-3. `forgeplan_get` — read a specific artifact.
+1. `forgeplan_status` - get counts.
+2. `forgeplan_list` with `kind` / `status` filter - drill down into a specific slice.
+3. `forgeplan_get` - read a specific artifact.
 
 ## CLI equivalent
 
@@ -67,6 +67,6 @@ forgeplan status
 
 ## See also
 
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — full health report with blind spots and next actions.
-- [`forgeplan_list`](/docs/mcp/forgeplan_list/) — filtered artifact listing.
+- [`forgeplan_health`](/docs/mcp/forgeplan_health/) - full health report with blind spots and next actions.
+- [`forgeplan_list`](/docs/mcp/forgeplan_list/) - filtered artifact listing.
 - [Methodology guide](/docs/methodology/overview/)

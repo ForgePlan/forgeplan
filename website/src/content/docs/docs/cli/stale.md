@@ -1,10 +1,10 @@
 ---
 title: forgeplan stale
-description: "List artifacts with expired valid_until — the refresh backlog at a glance."
+description: "List artifacts with expired valid_until - the refresh backlog at a glance."
 ---
 
 `forgeplan stale` finds every artifact whose `valid_until` is in the past. These are
-the "stale" candidates in the lifecycle state machine — they have not yet been
+the "stale" candidates in the lifecycle state machine - they have not yet been
 deprecated, but their evidence is no longer fresh, so R_eff has been capped at 0.1
 (stale, not absent).
 
@@ -14,14 +14,14 @@ them before starting new work.
 
 ## When to use
 
-- Session start, right after `forgeplan health` — clear stale debt before new work.
-- Brownfield import — see which imported artifacts are already past their expiry.
-- Before relying on an ADR — is this decision still valid?
-- CI pipeline (with `--json`) — warn if stale artifacts are referenced in new code.
+- Session start, right after `forgeplan health` - clear stale debt before new work.
+- Brownfield import - see which imported artifacts are already past their expiry.
+- Before relying on an ADR - is this decision still valid?
+- CI pipeline (with `--json`) - warn if stale artifacts are referenced in new code.
 
 ## When NOT to use
 
-- As a gate on `activate` — use `validate` and `review` instead.
+- As a gate on `activate` - use `validate` and `review` instead.
 - On Notes (they auto-expire after 90 days and are hidden by default anyway).
 
 ## Usage
@@ -64,7 +64,7 @@ ADR-004  Auth token strategy  expired   3d ago   R_eff: 1.00 → 0.10
 forgeplan stale --json | jq '.[] | select(.days_overdue > 30)'
 ```
 
-Filter artifacts overdue by more than 30 days — high-priority refresh candidates.
+Filter artifacts overdue by more than 30 days - high-priority refresh candidates.
 
 ### Session-start triage
 
@@ -85,9 +85,9 @@ forgeplan reopen PRD-007 --reason "replace with new approach"
 
 For each stale artifact you have three options:
 
-1. **`renew`** — the decision is still correct; extend `valid_until` with a new reason.
-2. **`reopen`** — the context has changed; create a new draft and deprecate the old one (lineage preserved).
-3. **`deprecate`** — the decision no longer applies; mark it terminal with a reason.
+1. **`renew`** - the decision is still correct; extend `valid_until` with a new reason.
+2. **`reopen`** - the context has changed; create a new draft and deprecate the old one (lineage preserved).
+3. **`deprecate`** - the decision no longer applies; mark it terminal with a reason.
 
 ## How it fits the workflow
 
@@ -100,8 +100,8 @@ Unified Workflow protocol treats stale clearance as mandatory before picking up 
 
 ## See also
 
-- [`forgeplan decay`](/docs/cli/decay/) — preview upcoming expirations
-- [`forgeplan renew`](/docs/cli/renew/) — extend valid_until for still-valid decisions
-- [`forgeplan reopen`](/docs/cli/reopen/) — replace stale with a new draft (lineage)
-- [`forgeplan deprecate`](/docs/cli/deprecate/) — terminal state for no-longer-valid decisions
+- [`forgeplan decay`](/docs/cli/decay/) - preview upcoming expirations
+- [`forgeplan renew`](/docs/cli/renew/) - extend valid_until for still-valid decisions
+- [`forgeplan reopen`](/docs/cli/reopen/) - replace stale with a new draft (lineage)
+- [`forgeplan deprecate`](/docs/cli/deprecate/) - terminal state for no-longer-valid decisions
 - [CLI overview](/docs/cli/)

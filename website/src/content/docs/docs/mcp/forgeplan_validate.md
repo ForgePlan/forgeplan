@@ -9,7 +9,7 @@ Runs the rule-based validator over an artifact. Each kind (PRD, RFC, ADR, Epic, 
 
 ## When an agent calls this
 
-- Immediately after filling in a stub — "did I cover everything the template needs?"
+- Immediately after filling in a stub - "did I cover everything the template needs?"
 - As a loop with `forgeplan_update`: validate → fix finding → validate → repeat until PASS.
 - Pre-activation check: if any MUST remains, `forgeplan_activate` will fail anyway, so validate first.
 
@@ -23,7 +23,7 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ValidateParams`_
 
 ## Returns
 
-A verdict plus a list of findings. Each finding carries a `severity` (MUST / SHOULD / COULD), a `rule_id`, a `message`, and often a `section` locator. `status: PASS` means zero MUST failures — the agent can activate.
+A verdict plus a list of findings. Each finding carries a `severity` (MUST / SHOULD / COULD), a `rule_id`, a `message`, and often a `section` locator. `status: PASS` means zero MUST failures - the agent can activate.
 
 Example response shape:
 
@@ -60,11 +60,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan validate`](/docs/cli/validate/) — same rules, terminal output
+- [`forgeplan validate`](/docs/cli/validate/) - same rules, terminal output
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — the gate validate enforces
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — orthogonal quality signal (R_eff)
-- [`forgeplan_review`](/docs/mcp/forgeplan_review/) — human-readable readiness report
+- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the gate validate enforces
+- [`forgeplan_score`](/docs/mcp/forgeplan_score/) - orthogonal quality signal (R_eff)
+- [`forgeplan_review`](/docs/mcp/forgeplan_review/) - human-readable readiness report

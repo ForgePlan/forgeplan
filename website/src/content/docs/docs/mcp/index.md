@@ -33,15 +33,15 @@ Configure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of 
 
 | Tool | Description |
 |---|---|
-| [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) | Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts). |
+| [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) | Show blocked artifacts and their unmet dependencies. Only draft artifacts block - deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts). |
 | [`forgeplan_get`](/docs/mcp/forgeplan_get/) | Read a full artifact by ID. Returns all metadata and body content. |
 | [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) | Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges. |
-| [`forgeplan_journal`](/docs/mcp/forgeplan_journal/) | Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status. |
+| [`forgeplan_journal`](/docs/mcp/forgeplan_journal/) | Show decision journal - chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status. |
 | [`forgeplan_list`](/docs/mcp/forgeplan_list/) | List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact. |
 | [`forgeplan_order`](/docs/mcp/forgeplan_order/) | Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only. |
 | [`forgeplan_progress`](/docs/mcp/forgeplan_progress/) | Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages. |
 | [`forgeplan_search`](/docs/mcp/forgeplan_search/) | Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle. |
-| [`forgeplan_session`](/docs/mcp/forgeplan_session/) | Show current methodology session state — phase (idle/routing/shaping/coding/evidence/pr), active artifact, depth, enforcement status. Use this to know where in the workflow you are. |
+| [`forgeplan_session`](/docs/mcp/forgeplan_session/) | Show current methodology session state - phase (idle/routing/shaping/coding/evidence/pr), active artifact, depth, enforcement status. Use this to know where in the workflow you are. |
 
 ### Editing Artifacts
 
@@ -56,12 +56,12 @@ Configure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of 
 | Tool | Description |
 |---|---|
 | [`forgeplan_calibrate`](/docs/mcp/forgeplan_calibrate/) | Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity. |
-| [`forgeplan_coverage`](/docs/mcp/forgeplan_coverage/) | Show decision coverage per code module — which modules have architectural decisions and which are blind spots. |
+| [`forgeplan_coverage`](/docs/mcp/forgeplan_coverage/) | Show decision coverage per code module - which modules have architectural decisions and which are blind spots. |
 | [`forgeplan_decay`](/docs/mcp/forgeplan_decay/) | Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison. |
-| [`forgeplan_drift`](/docs/mcp/forgeplan_drift/) | Check for drifted decisions — affected files that changed after ADR/RFC was created. |
+| [`forgeplan_drift`](/docs/mcp/forgeplan_drift/) | Check for drifted decisions - affected files that changed after ADR/RFC was created. |
 | [`forgeplan_estimate`](/docs/mcp/forgeplan_estimate/) | Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring. |
 | [`forgeplan_guard`](/docs/mcp/forgeplan_guard/) | Check if a methodology phase transition is allowed. Use before performing actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason. |
-| [`forgeplan_review`](/docs/mcp/forgeplan_review/) | Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated. |
+| [`forgeplan_review`](/docs/mcp/forgeplan_review/) | Review an artifact - run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated. |
 | [`forgeplan_score`](/docs/mcp/forgeplan_score/) | Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores). |
 | [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) | Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry. |
 | [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) | Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD). |
@@ -86,9 +86,9 @@ Configure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of 
 
 | Tool | Description |
 |---|---|
-| [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) | Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections. |
-| [`forgeplan_health`](/docs/mcp/forgeplan_health/) | Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed. |
-| [`forgeplan_status`](/docs/mcp/forgeplan_status/) | Show project status dashboard — total artifacts, counts by kind and status. |
+| [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) | Show blind spots - decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections. |
+| [`forgeplan_health`](/docs/mcp/forgeplan_health/) | Show project health dashboard - gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. No LLM needed. |
+| [`forgeplan_status`](/docs/mcp/forgeplan_status/) | Show project status dashboard - total artifacts, counts by kind and status. |
 
 ### FPF Knowledge Base
 

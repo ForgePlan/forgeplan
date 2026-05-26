@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install Forgeplan — CLI, AI Skill, or MCP Server
+description: Install Forgeplan - CLI, AI Skill, or MCP Server
 ---
 
 ## AI Skill (recommended for AI agents)

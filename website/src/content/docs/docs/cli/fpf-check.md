@@ -3,21 +3,21 @@ title: forgeplan fpf check
 description: "Check which FPF rules match a given artifact and what action they recommend"
 ---
 
-`forgeplan fpf check <ID>` evaluates every active **First Principles Framework** rule against a single artifact and prints the matches — grouped by action (EXPLORE / INVESTIGATE / EXPLOIT) and annotated with the FPF section each rule is derived from.
+`forgeplan fpf check <ID>` evaluates every active **First Principles Framework** rule against a single artifact and prints the matches - grouped by action (EXPLORE / INVESTIGATE / EXPLOIT) and annotated with the FPF section each rule is derived from.
 
 It's the per-artifact projection of [`fpf rules`](/docs/cli/fpf-rules/) and [`fpf dashboard`](/docs/cli/fpf-dashboard/).
 
 ## When to use
 
-- **Before activating a PRD/RFC/ADR** — confirm no INVESTIGATE rules are still firing.
-- **When `forgeplan validate` passes but you want deeper reasoning review** — rules catch things validation can't (e.g. "too few hypotheses for Deep depth").
-- **While debugging a stuck artifact** — see exactly which rule is blocking progress.
-- **During adversarial review** — use rule output as a structured critique checklist.
+- **Before activating a PRD/RFC/ADR** - confirm no INVESTIGATE rules are still firing.
+- **When `forgeplan validate` passes but you want deeper reasoning review** - rules catch things validation can't (e.g. "too few hypotheses for Deep depth").
+- **While debugging a stuck artifact** - see exactly which rule is blocking progress.
+- **During adversarial review** - use rule output as a structured critique checklist.
 
 ## When NOT to use
 
-- For syntactic / structural checks — use [`forgeplan validate`](/docs/cli/validate/).
-- For project-wide views — use [`fpf dashboard`](/docs/cli/fpf-dashboard/).
+- For syntactic / structural checks - use [`forgeplan validate`](/docs/cli/validate/).
+- For project-wide views - use [`fpf dashboard`](/docs/cli/fpf-dashboard/).
 - On Tactical-depth items where FPF reasoning is deliberately bypassed.
 
 ## Usage
@@ -58,15 +58,15 @@ forgeplan fpf check ADR-005 --json
 
 Each bounded context the artifact belongs to has three derived R_eff values:
 
-- **`explore_reff`** — how well-covered the hypothesis space is. Low → EXPLORE rules fire ("generate alternatives").
-- **`investigate_reff`** — how strong the evidence is for the hypotheses that exist. Low → INVESTIGATE rules fire ("attach better evidence").
-- **`exploit_reff`** — whether the chosen path clears the "ready to commit" bar. High → EXPLOIT rules unlock activation.
+- **`explore_reff`** - how well-covered the hypothesis space is. Low → EXPLORE rules fire ("generate alternatives").
+- **`investigate_reff`** - how strong the evidence is for the hypotheses that exist. Low → INVESTIGATE rules fire ("attach better evidence").
+- **`exploit_reff`** - whether the chosen path clears the "ready to commit" bar. High → EXPLOIT rules unlock activation.
 
 Thresholds are calibrated per depth:
 
 | Depth     | Needs EXPLORE clear | Needs INVESTIGATE clear | Needs EXPLOIT clear |
 |-----------|---------------------|-------------------------|---------------------|
-| Tactical  | —                   | —                       | —                   |
+| Tactical  | -                   | -                       | -                   |
 | Standard  | recommended         | recommended             | required            |
 | Deep      | required            | required                | required            |
 | Critical  | required + review   | required + review       | required + review   |
@@ -85,9 +85,9 @@ For Deep/Critical artifacts, `fpf check` is effectively a pre-activation gate: f
 
 ## See also
 
-- [`forgeplan fpf`](/docs/cli/fpf/) — parent command
-- [`forgeplan fpf rules`](/docs/cli/fpf-rules/) — full rule set
-- [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/) — project-wide view
-- [`forgeplan validate`](/docs/cli/validate/) — structural validation
-- [`forgeplan reason`](/docs/cli/reason/) — generate more hypotheses when EXPLORE rules fire
-- [`forgeplan score`](/docs/cli/score/) — R_eff inputs behind the thresholds
+- [`forgeplan fpf`](/docs/cli/fpf/) - parent command
+- [`forgeplan fpf rules`](/docs/cli/fpf-rules/) - full rule set
+- [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/) - project-wide view
+- [`forgeplan validate`](/docs/cli/validate/) - structural validation
+- [`forgeplan reason`](/docs/cli/reason/) - generate more hypotheses when EXPLORE rules fire
+- [`forgeplan score`](/docs/cli/score/) - R_eff inputs behind the thresholds

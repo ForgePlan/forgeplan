@@ -1,9 +1,9 @@
 ---
 title: forgeplan_discover_complete
-description: "Finalise a brownfield discovery session. ForgePlan groups findings by phase and tier, runs forgeplan_health on the workspace, and proposes PROBs / PRDs / RFCs synthesised from the findings. Proposed artifacts are printed — not auto-created — so the agent or human can review before committing."
+description: "Finalise a brownfield discovery session. ForgePlan groups findings by phase and tier, runs forgeplan_health on the workspace, and proposes PROBs / PRDs / RFCs synthesised from the findings. Proposed artifacts are printed - not auto-created - so the agent or human can review before committing."
 ---
 
-Closes an active discovery session started by `forgeplan_discover_start`. ForgePlan walks the findings the agent reported, groups them by phase and tier, runs a project health pass, and synthesises a set of **proposed** follow-up artifacts (PROBs for risks, PRDs for requirements, RFCs for implementation shapes). Crucially, the proposals are **printed only** — they are not auto-created. The agent (or human) reviews them and decides which to promote into the workspace via `forgeplan_new`.
+Closes an active discovery session started by `forgeplan_discover_start`. ForgePlan walks the findings the agent reported, groups them by phase and tier, runs a project health pass, and synthesises a set of **proposed** follow-up artifacts (PROBs for risks, PRDs for requirements, RFCs for implementation shapes). Crucially, the proposals are **printed only** - they are not auto-created. The agent (or human) reviews them and decides which to promote into the workspace via `forgeplan_new`.
 
 **Category**: Brownfield Discovery
 
@@ -11,7 +11,7 @@ Closes an active discovery session started by `forgeplan_discover_start`. ForgeP
 
 - After the seven protocol phases have been walked and all findings emitted.
 - When the user says "wrap up discovery" / "propose next steps" / "finish the scan".
-- Before starting any Shape → Validate → Code cycle on the newly-discovered codebase — the proposals become the backlog seed.
+- Before starting any Shape → Validate → Code cycle on the newly-discovered codebase - the proposals become the backlog seed.
 
 ## What it does
 
@@ -54,7 +54,7 @@ A summary report plus the proposal set:
   "proposed": [
     { "kind": "rfc",     "title": "Consolidate retry layers in billing engine",
       "rationale": "3 tier-1 findings describe overlapping exponential backoff." },
-    { "kind": "problem", "title": "README drifted from src/auth — 4 claims unverified",
+    { "kind": "problem", "title": "README drifted from src/auth - 4 claims unverified",
       "rationale": "Tier-4 vs tier-1 reconciliation mismatch." },
     { "kind": "prd",     "title": "Formalise idempotency guarantees on checkout",
       "rationale": "Tests imply exactly-once semantics not reflected in code or docs." }
@@ -85,12 +85,12 @@ discover_start → …many discover_finding calls… → discover_complete
 
 ## CLI equivalent
 
-- [`forgeplan discover complete`](/docs/cli/discover-complete/) — same finalisation from the terminal.
+- [`forgeplan discover complete`](/docs/cli/discover-complete/) - same finalisation from the terminal.
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) — kick off a session
-- [`forgeplan_discover_finding`](/docs/mcp/forgeplan_discover_finding/) — report observations
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — the health snapshot bundled with the summary
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — promote a proposal into a real artifact
+- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - kick off a session
+- [`forgeplan_discover_finding`](/docs/mcp/forgeplan_discover_finding/) - report observations
+- [`forgeplan_health`](/docs/mcp/forgeplan_health/) - the health snapshot bundled with the summary
+- [`forgeplan_new`](/docs/mcp/forgeplan_new/) - promote a proposal into a real artifact

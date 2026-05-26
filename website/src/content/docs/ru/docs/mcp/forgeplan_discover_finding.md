@@ -1,13 +1,13 @@
 ---
 title: forgeplan_discover_finding
-description: "Сообщает об одном обнаруженном факте в активную сессию по исследованию существующей системы (brownfield). ForgePlan создаёт артефакт (Note / PRD / RFC / ProblemCard / Evidence) с содержимым обнаруженного факта, помечает его уровнем источника и связывает с сессией. Только MCP — нет эквивалента CLI — протокол намеренно управляется агентом."
+description: "Сообщает об одном обнаруженном факте в активную сессию по исследованию существующей системы (brownfield). ForgePlan создаёт артефакт (Note / PRD / RFC / ProblemCard / Evidence) с содержимым обнаруженного факта, помечает его уровнем источника и связывает с сессией. Только MCP - нет эквивалента CLI - протокол намеренно управляется агентом."
 ---
 
 Добавляет один **обнаруженный факт** в активную сессию исследования. После того как `forgeplan_discover_start` возвращает протокол, агент проходит каждую фазу (detect / structure / code / git / tests / docs), читает файлы в предписанном порядке уровней и вызывает этот инструмент один раз для каждого наблюдения, которое стоит зафиксировать. ForgePlan материализует каждый обнаруженный факт как реальный артефакт (Note / PRD / RFC / ProblemCard / Evidence), чтобы они сохранялись после сессии и оставались доступными для запросов.
 
 **Категория**: Обнаружение в Brownfield
 
-> **Только MCP по замыслу.** Этот инструмент не имеет эквивалента в `forgeplan` CLI. Протокол исследования *управляется агентом* — ForgePlan не читает исходные файлы самостоятельно. Оператор-человек, используя CLI, запускает сессию, а затем запускает агента; обнаруженные факты возвращаются только через MCP.
+> **Только MCP по замыслу.** Этот инструмент не имеет эквивалента в `forgeplan` CLI. Протокол исследования *управляется агентом* - ForgePlan не читает исходные файлы самостоятельно. Оператор-человек, используя CLI, запускает сессию, а затем запускает агента; обнаруженные факты возвращаются только через MCP.
 
 ## Когда агент вызывает этот инструмент
 
@@ -66,7 +66,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DiscoverFindi
   "tier": 1,
   "kind": "note",
   "title": "Billing engine uses two overlapping retry layers",
-  "body": "`src/billing/retry.rs` and `src/http/client.rs` both implement exponential backoff. The outer layer wraps the inner, producing effective delays of retry_inner × retry_outer on transient failures. Likely accidental — worth a RFC before any reliability work.",
+  "body": "`src/billing/retry.rs` and `src/http/client.rs` both implement exponential backoff. The outer layer wraps the inner, producing effective delays of retry_inner × retry_outer on transient failures. Likely accidental - worth a RFC before any reliability work.",
   "source_files": ["src/billing/retry.rs", "src/http/client.rs"]
 }
 ```
@@ -81,11 +81,11 @@ discover_start → (many) discover_finding → discover_complete
 
 ## Эквивалент CLI
 
-Нет — намеренно. Обнаруженные факты исследования передаются только через путь MCP.
+Нет - намеренно. Обнаруженные факты исследования передаются только через путь MCP.
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) — протокол, который является источником этого инструмента
-- [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) — синтезирует обнаруженные факты в предложения
-- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — альтернатива для создания артефактов вне сессии
+- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) - протокол, который является источником этого инструмента
+- [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) - синтезирует обнаруженные факты в предложения
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - альтернатива для создания артефактов вне сессии

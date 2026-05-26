@@ -3,18 +3,18 @@ title: forgeplan reason
 description: "Analyze an artifact using the FPF ADI reasoning cycle (Abduction→Deduction→Induction)"
 ---
 
-`forgeplan reason` runs a structured AI-driven analysis over an existing artifact using the FPF **ADI cycle**: **Abduction** (generate 3+ hypotheses) → **Deduction** (predict consequences of each) → **Induction** (check predictions against existing evidence). It's the gate between "PRD looks reasonable" and "I actually know which approach to take" — forcing the agent to enumerate alternatives instead of anchoring on the first plausible answer. For Deep and Critical depth it is **mandatory**: no code until `reason` has produced at least three competing hypotheses and a justified winner.
+`forgeplan reason` runs a structured AI-driven analysis over an existing artifact using the FPF **ADI cycle**: **Abduction** (generate 3+ hypotheses) → **Deduction** (predict consequences of each) → **Induction** (check predictions against existing evidence). It's the gate between "PRD looks reasonable" and "I actually know which approach to take" - forcing the agent to enumerate alternatives instead of anchoring on the first plausible answer. For Deep and Critical depth it is **mandatory**: no code until `reason` has produced at least three competing hypotheses and a justified winner.
 
 ## When to use
 
 - Right after `forgeplan new prd` + `forgeplan validate` PASS, before touching code.
-- Depth is **Deep** or **Critical** — ADI is non-negotiable.
+- Depth is **Deep** or **Critical** - ADI is non-negotiable.
 - Depth is **Standard** and the solution space has real trade-offs (caching layer, rate limiter algorithm, auth flow).
 
 ## When NOT to use
 
-- Depth is **Tactical** — a one-hour bug fix does not need three hypotheses.
-- MUST sections are not yet filled — ADI on a stub produces hallucinated context.
+- Depth is **Tactical** - a one-hour bug fix does not need three hypotheses.
+- MUST sections are not yet filled - ADI on a stub produces hallucinated context.
 - Artifact is a pure EvidencePack, Note, or RefreshReport (no decision to reason about).
 
 ## Usage
@@ -59,7 +59,7 @@ forgeplan reason PRD-001 --fpf
 
 `--fpf` injects relevant sections from the FPF knowledge base (B.3 Trust
 Calculus, B.5 Reasoning loops) into the prompt. Use this when the decision
-involves trust boundaries, reversibility, or reasoning quality — the LLM will
+involves trust boundaries, reversibility, or reasoning quality - the LLM will
 score hypotheses against FPF invariants instead of just engineering intuition.
 
 ### Example 3: Persist the analysis as a Note
@@ -86,30 +86,30 @@ Consumed by MCP clients and audit scripts.
 
 A typical markdown run prints three sections:
 
-- **Abduction** — 3+ hypotheses, each with a one-line claim and a confidence
+- **Abduction** - 3+ hypotheses, each with a one-line claim and a confidence
   score (0-100%). If all three converge on the same approach, you can proceed
   with high trust. If they diverge, treat this as a signal to discuss with a
   human before coding.
-- **Deduction** — predicted consequences per hypothesis (performance, rollback
+- **Deduction** - predicted consequences per hypothesis (performance, rollback
   cost, blast radius, user impact).
-- **Induction** — verdict per hypothesis: `supported`, `weakened`, or
+- **Induction** - verdict per hypothesis: `supported`, `weakened`, or
   `insufficient evidence`. The final recommendation lists the winning
   hypothesis and the evidence gaps that should become follow-up EvidencePacks.
 
 Red flags:
 
-- All hypotheses have confidence < 50% — the PRD is underspecified, go back to Shape
-- The winner is `insufficient evidence` — create targeted evidence before implementing
-- Only one hypothesis was generated — LLM anchoring, re-run with `--fpf` or a different model
+- All hypotheses have confidence < 50% - the PRD is underspecified, go back to Shape
+- The winner is `insufficient evidence` - create targeted evidence before implementing
+- Only one hypothesis was generated - LLM anchoring, re-run with `--fpf` or a different model
 
 ## How it fits the workflow
 
-This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) — see the tutorial for the end-to-end flow. `reason` runs after `validate` PASS and before code; for Critical depth, pair with `/audit` and a human review before implementation.
+This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) - see the tutorial for the end-to-end flow. `reason` runs after `validate` PASS and before code; for Critical depth, pair with `/audit` and a human review before implementation.
 
 ## See also
 
-- [`forgeplan route`](/docs/cli/route/) — decide whether ADI is required
-- [`forgeplan decompose`](/docs/cli/decompose/) — break reasoned PRD into RFC tasks
-- [`forgeplan validate`](/docs/cli/validate/) — prerequisite before reasoning
-- [`forgeplan generate`](/docs/cli/generate/) — draft artifact content
+- [`forgeplan route`](/docs/cli/route/) - decide whether ADI is required
+- [`forgeplan decompose`](/docs/cli/decompose/) - break reasoned PRD into RFC tasks
+- [`forgeplan validate`](/docs/cli/validate/) - prerequisite before reasoning
+- [`forgeplan generate`](/docs/cli/generate/) - draft artifact content
 - [Methodology: ADI cycle](/docs/methodology/overview/)

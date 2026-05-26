@@ -1,10 +1,10 @@
 ---
 title: forgeplan_release
-description: "Release an active claim — drop the lock so other sub-agents can pick up the artifact."
+description: "Release an active claim - drop the lock so other sub-agents can pick up the artifact."
 ---
 
 Removes the claim file at `.forgeplan/claims/<id>.yaml`. By default the call refuses
-when a different agent holds the claim — pass `force: true` (the orchestrator's escape
+when a different agent holds the claim - pass `force: true` (the orchestrator's escape
 hatch) to override after a sub-agent crash. Missing claim is a no-op (idempotent).
 Holds the workspace lock for the duration of the write so concurrent claim/release
 calls cannot interleave.
@@ -14,7 +14,7 @@ calls cannot interleave.
 ## When an agent calls it
 
 - Worker finishes the artifact and frees the slot for the next dispatch round.
-- Worker crashes / times out — orchestrator force-releases with `agent: null, force: true`.
+- Worker crashes / times out - orchestrator force-releases with `agent: null, force: true`.
 - Mistaken claim: agent grabbed the wrong ID, releases immediately to retry.
 - Cleanup at session end: walk active claims and release each one before exit.
 
@@ -24,7 +24,7 @@ calls cannot interleave.
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID whose claim to release. |
 | `agent` | `string` | no | Agent identity (must match the holder unless `force: true`). Defaults to the MCP caller's `clientInfo`. |
-| `force` | `bool` | no (default `false`) | Force-release regardless of holder — orchestrator override for crashed sub-agents. |
+| `force` | `bool` | no (default `false`) | Force-release regardless of holder - orchestrator override for crashed sub-agents. |
 
 _Schema source: `crates/forgeplan-mcp/src/types.rs::ReleaseParams`_
 
@@ -79,10 +79,10 @@ Explicit identity for shell-driven orchestrators:
 
 ## CLI equivalent
 
-[`forgeplan release <id>`](/docs/cli/) — same semantics.
+[`forgeplan release <id>`](/docs/cli/) - same semantics.
 
 ## See also
 
-- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) — acquire the claim
-- [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) — see who holds what
-- [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) — re-plan after release
+- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) - acquire the claim
+- [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) - see who holds what
+- [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) - re-plan after release

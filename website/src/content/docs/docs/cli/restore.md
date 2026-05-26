@@ -5,21 +5,21 @@ description: "Restore a soft-deleted artifact from the most recent non-consumed 
 
 `forgeplan restore` brings back a specific artifact that was previously deleted, superseded, or deprecated. You give it the ID (e.g. `PRD-042`); it finds the most recent record of that artifact's destruction in `.forgeplan/trash/` and replays it in reverse: the markdown file comes back, the search index entry is recreated, links are restored where their targets still exist, and the lifecycle status is flipped back from `superseded` / `deprecated`.
 
-If a different artifact already exists with the same ID, the command refuses (you must resolve the conflict manually first — rename or supersede the live one, then retry). Records older than 30 days are deleted and cannot be restored.
+If a different artifact already exists with the same ID, the command refuses (you must resolve the conflict manually first - rename or supersede the live one, then retry). Records older than 30 days are deleted and cannot be restored.
 
-This is the precise version of [`forgeplan undo-last`](/docs/cli/undo-last/) — `undo-last` reverses the newest destructive operation regardless of artifact, while `restore` targets one specific artifact by ID. Mirrors [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) on the MCP side.
+This is the precise version of [`forgeplan undo-last`](/docs/cli/undo-last/) - `undo-last` reverses the newest destructive operation regardless of artifact, while `restore` targets one specific artifact by ID. Mirrors [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) on the MCP side.
 
 ## When to use
 
-- You realised yesterday's `forgeplan delete PRD-042` was wrong — restore by exact ID.
+- You realised yesterday's `forgeplan delete PRD-042` was wrong - restore by exact ID.
 - A `forgeplan supersede` decision was incorrect and you want the original back, not whichever happened to be the newest destructive operation.
 - You want precise recovery without risk of reversing an unrelated operation that happened more recently.
 
 ## When NOT to use
 
-- You do not remember the ID — [`forgeplan undo-last`](/docs/cli/undo-last/) walks the destructive log newest-first and finds it for you.
-- A different artifact with the same ID currently exists — resolve the conflict first (rename or supersede the live one), then run `restore`.
-- The destruction was more than 30 days ago — the trash record has been purged. Recover by reading the artifact body from `git log` and re-creating it manually.
+- You do not remember the ID - [`forgeplan undo-last`](/docs/cli/undo-last/) walks the destructive log newest-first and finds it for you.
+- A different artifact with the same ID currently exists - resolve the conflict first (rename or supersede the live one), then run `restore`.
+- The destruction was more than 30 days ago - the trash record has been purged. Recover by reading the artifact body from `git log` and re-creating it manually.
 
 ## Usage
 
@@ -58,7 +58,7 @@ forgeplan restore PRD-042
 forgeplan show PRD-042
 ```
 
-Always inspect the body, status, and links after a restore — confirm everything looks right. Re-create any links reported as skipped manually if you need them.
+Always inspect the body, status, and links after a restore - confirm everything looks right. Re-create any links reported as skipped manually if you need them.
 
 ### Example 3: Machine-readable output
 
@@ -74,8 +74,8 @@ Recovery is two steps: figure out when the destruction happened, then restore. U
 
 ## See also
 
-- [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) — MCP equivalent
-- [`forgeplan undo-last`](/docs/cli/undo-last/) — reverse the most recent destructive op (no ID needed)
-- [`forgeplan activity`](/docs/cli/activity/) — locate the receipt before restoring
-- [`forgeplan delete`](/docs/cli/delete/) — the soft-delete this reverses
+- [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) - MCP equivalent
+- [`forgeplan undo-last`](/docs/cli/undo-last/) - reverse the most recent destructive op (no ID needed)
+- [`forgeplan activity`](/docs/cli/activity/) - locate the receipt before restoring
+- [`forgeplan delete`](/docs/cli/delete/) - the soft-delete this reverses
 - [CLI overview](/docs/cli/)

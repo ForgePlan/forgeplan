@@ -1,6 +1,6 @@
 ---
 title: forgeplan scan-import
-description: "Scan the filesystem for markdown docs and import them as Forgeplan artifacts — brownfield onboarding and index rebuild"
+description: "Scan the filesystem for markdown docs and import them as Forgeplan artifacts - brownfield onboarding and index rebuild"
 ---
 
 `forgeplan scan-import` walks the filesystem (standard doc directories by default, or a custom `--path`), detects markdown files that look like Forgeplan artifacts, and imports them into the LanceDB index. It is the primary tool for two scenarios: onboarding a legacy project that already has docs, and rebuilding the derived index from tracked markdown after a fresh `git clone`.
@@ -8,15 +8,15 @@ description: "Scan the filesystem for markdown docs and import them as Forgeplan
 ## When to use
 
 - **Brownfield onboarding.** You have existing RFCs, PRDs, or ADRs in markdown and want to bring them under Forgeplan methodology without rewriting them.
-- **Fresh git clone.** `.forgeplan/{adrs,prds,rfcs,...}` is tracked in git but `.forgeplan/lance/` is not — `scan-import` rebuilds the index from the tracked markdown.
+- **Fresh git clone.** `.forgeplan/{adrs,prds,rfcs,...}` is tracked in git but `.forgeplan/lance/` is not - `scan-import` rebuilds the index from the tracked markdown.
 - **After bulk external edits.** If you edited markdown directly (outside `forgeplan update`), `scan-import` re-syncs the LanceDB index to match.
 - **Index recovery.** `rm -rf .forgeplan/lance && forgeplan scan-import` is the safe way to nuke and rebuild the derived layer without touching artifacts.
 
 ## When NOT to use
 
-- To restore a backup — use [`forgeplan import`](/docs/cli/import/) with a JSON file. `scan-import` only reads markdown and cannot reconstruct scoring history or decay state.
-- To create new artifacts — use `forgeplan new <kind>`. `scan-import` is for discovering existing files.
-- To repair schema mismatches — use [`forgeplan migrate`](/docs/cli/migrate/). `scan-import` assumes the schema is already current.
+- To restore a backup - use [`forgeplan import`](/docs/cli/import/) with a JSON file. `scan-import` only reads markdown and cannot reconstruct scoring history or decay state.
+- To create new artifacts - use `forgeplan new <kind>`. `scan-import` is for discovering existing files.
+- To repair schema mismatches - use [`forgeplan migrate`](/docs/cli/migrate/). `scan-import` assumes the schema is already current.
 
 ## Usage
 
@@ -52,7 +52,7 @@ The standard "fresh clone" recipe. `.forgeplan/lance/` is gitignored, so every n
 forgeplan scan-import --dry-run
 ```
 
-Prints the list of files that would be imported, their detected artifact kind, and any parse warnings — without touching LanceDB. Use this on unfamiliar legacy repos before the real run.
+Prints the list of files that would be imported, their detected artifact kind, and any parse warnings - without touching LanceDB. Use this on unfamiliar legacy repos before the real run.
 
 ### Example 3: Brownfield onboarding with custom path
 
@@ -73,7 +73,7 @@ forgeplan scan-import
 forgeplan health
 ```
 
-Safe because markdown is the source of truth (ADR-003). The LanceDB folder is derived and always rebuildable. Do NOT `rm -rf .forgeplan/` — only the `lance/` subfolder.
+Safe because markdown is the source of truth (ADR-003). The LanceDB folder is derived and always rebuildable. Do NOT `rm -rf .forgeplan/` - only the `lance/` subfolder.
 
 ## How it fits the workflow
 
@@ -83,7 +83,7 @@ Safe because markdown is the source of truth (ADR-003). The LanceDB folder is de
 - **Brownfield setup**: `forgeplan init -y --scan` is equivalent to running `init` and `scan-import` together
 - **Recovery**: `rm -rf .forgeplan/lance && forgeplan scan-import` after any index corruption
 
-Because markdown is authoritative (ADR-003), this command is idempotent and safe to run repeatedly. It will not duplicate artifacts — re-running reconciles the index with the filesystem.
+Because markdown is authoritative (ADR-003), this command is idempotent and safe to run repeatedly. It will not duplicate artifacts - re-running reconciles the index with the filesystem.
 
 ## Safety notes
 
@@ -95,9 +95,9 @@ Because markdown is authoritative (ADR-003), this command is idempotent and safe
 
 ## See also
 
-- [`forgeplan init`](/docs/cli/init/) — create the workspace shell before scanning; `init --scan` combines both steps
-- [`forgeplan import`](/docs/cli/import/) — restore full state including scoring (needs JSON, not markdown)
-- [`forgeplan export`](/docs/cli/export/) — safety backup before any destructive operation
-- [`forgeplan migrate`](/docs/cli/migrate/) — apply schema changes without touching content
-- [`forgeplan health`](/docs/cli/health/) — verify the index matches expectations after scan
-- [ADR-003](/docs/methodology/overview/) — why markdown is the source of truth
+- [`forgeplan init`](/docs/cli/init/) - create the workspace shell before scanning; `init --scan` combines both steps
+- [`forgeplan import`](/docs/cli/import/) - restore full state including scoring (needs JSON, not markdown)
+- [`forgeplan export`](/docs/cli/export/) - safety backup before any destructive operation
+- [`forgeplan migrate`](/docs/cli/migrate/) - apply schema changes without touching content
+- [`forgeplan health`](/docs/cli/health/) - verify the index matches expectations after scan
+- [ADR-003](/docs/methodology/overview/) - why markdown is the source of truth

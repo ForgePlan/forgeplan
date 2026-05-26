@@ -1,15 +1,15 @@
 ---
 title: forgeplan mcp
-description: "Parent command for MCP integration helpers — install Forgeplan into Claude Code, Cursor, or Windsurf, and start the MCP server."
+description: "Parent command for MCP integration helpers - install Forgeplan into Claude Code, Cursor, or Windsurf, and start the MCP server."
 ---
 
 `forgeplan mcp` группирует помощники, которые нужны клиенту AI-агента, чтобы общаться с Forgeplan
-по протоколу Model Context Protocol. Это **не** инструмент, который вы вызываете из агентов —
+по протоколу Model Context Protocol. Это **не** инструмент, который вы вызываете из агентов -
 его подкоманды выполняются на хост-машине, чтобы прописать бинарник в файлы конфигурации
 клиента (`mcp install`) или вручную запустить stdio-сервер (`mcp serve`, алиас для
 [`forgeplan serve`](/ru/docs/cli/serve/)).
 
-Forgeplan — MCP-first: большая часть повседневной поверхности (73 инструмента) доступна
+Forgeplan - MCP-first: большая часть повседневной поверхности (73 инструмента) доступна
 через сервер. Эта родительская команда существует для того, чтобы один-единственный
 `forgeplan mcp install --client claude` довёл вас от свежего `brew install forgeplan` до
 работающего агента без ручного редактирования JSON.
@@ -24,9 +24,9 @@ Forgeplan — MCP-first: большая часть повседневной по
 
 ## Когда НЕ использовать
 
-- Для повседневной работы с артефактами — для этого есть MCP-инструменты на стороне
+- Для повседневной работы с артефактами - для этого есть MCP-инструменты на стороне
   агента (`forgeplan_*`).
-- Для HTTP / сетевого доступа — `mcp` покрывает только stdio. Forgeplan — local-first.
+- Для HTTP / сетевого доступа - `mcp` покрывает только stdio. Forgeplan - local-first.
 
 ## Использование
 
@@ -46,7 +46,7 @@ forgeplan mcp <COMMAND>
 | Команда | Назначение |
 |---|---|
 | [`install`](/ru/docs/cli/mcp-install/) | Умное слияние Forgeplan в конфигурацию клиента (Claude / Cursor / Windsurf) |
-| [`serve`](/ru/docs/cli/mcp-serve/) | Алиас для [`forgeplan serve`](/ru/docs/cli/serve/) — запускает stdio MCP-сервер |
+| [`serve`](/ru/docs/cli/mcp-serve/) | Алиас для [`forgeplan serve`](/ru/docs/cli/serve/) - запускает stdio MCP-сервер |
 | `help` | Печатает help для `mcp` или его подкоманд |
 
 ## Примеры
@@ -58,7 +58,7 @@ forgeplan mcp install --client claude --scope user
 ```
 
 Записывает Forgeplan в `~/.claude.json`, чтобы каждая сессия Claude Code видела
-инструменты `mcp__forgeplan__*`. Идемпотентно — безопасно перезапускать после обновлений.
+инструменты `mcp__forgeplan__*`. Идемпотентно - безопасно перезапускать после обновлений.
 
 ### Project-scoped конфигурация Cursor
 
@@ -81,16 +81,16 @@ JSON-RPC или подключаете `mcp-inspector`.
 
 ## Место в рабочем процессе
 
-`mcp install` — это однократный шаг настройки между «бинарник на диске» и «агент может
+`mcp install` - это однократный шаг настройки между «бинарник на диске» и «агент может
 вызывать инструменты». После того как он отработает, остальная методология
 (Shape → Validate → Code → Evidence → Activate) выполняется через MCP-инструменты,
-которые предоставляет сервер. `mcp serve` — это runtime; вы почти никогда не
+которые предоставляет сервер. `mcp serve` - это runtime; вы почти никогда не
 вызываете его вручную, потому что клиент запускает его за вас.
 
 ## См. также
 
-- [`forgeplan mcp install`](/ru/docs/cli/mcp-install/) — прописать Forgeplan в клиента
-- [`forgeplan mcp serve`](/ru/docs/cli/mcp-serve/) — алиас для `forgeplan serve`
-- [`forgeplan serve`](/ru/docs/cli/serve/) — основной справочник по MCP-серверу
-- [Индекс MCP-инструментов](/ru/docs/mcp/) — что предоставляет сервер
-- [`forgeplan health`](/ru/docs/cli/health/) — проверить рабочее пространство перед подключением
+- [`forgeplan mcp install`](/ru/docs/cli/mcp-install/) - прописать Forgeplan в клиента
+- [`forgeplan mcp serve`](/ru/docs/cli/mcp-serve/) - алиас для `forgeplan serve`
+- [`forgeplan serve`](/ru/docs/cli/serve/) - основной справочник по MCP-серверу
+- [Индекс MCP-инструментов](/ru/docs/mcp/) - что предоставляет сервер
+- [`forgeplan health`](/ru/docs/cli/health/) - проверить рабочее пространство перед подключением

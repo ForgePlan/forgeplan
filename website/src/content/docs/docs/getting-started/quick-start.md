@@ -65,7 +65,7 @@ Next: forgeplan new prd "User Authentication"
 `Standard` means you create a PRD for the "what" and an RFC for the "how".
 For more context see [Routing & Depth](/docs/methodology/routing/).
 
-## 3. Shape — create the PRD
+## 3. Shape - create the PRD
 
 ```bash
 forgeplan new prd "User Authentication"
@@ -74,11 +74,11 @@ forgeplan new prd "User Authentication"
 
 Open the file and fill the MUST sections:
 
-- **Problem** — why does this exist?
-- **Goals** — what does success look like? (SMART criteria)
-- **Non-Goals** — what is explicitly out of scope?
-- **Target Users** — who benefits?
-- **Functional Requirements (FR)** — `[Actor] can [capability]`
+- **Problem** - why does this exist?
+- **Goals** - what does success look like? (SMART criteria)
+- **Non-Goals** - what is explicitly out of scope?
+- **Target Users** - who benefits?
+- **Functional Requirements (FR)** - `[Actor] can [capability]`
 
 :::caution[Don't leave stubs]
 A stub PRD with no Problem/Goals is technical debt. Fill it now or
@@ -98,7 +98,7 @@ PRD-001: PASS ✓ (0 MUST errors, 2 SHOULD warnings)
 
 If you see MUST errors, the sections are missing or empty. Fix them and
 re-run. The validator also catches implementation leakage: writing
-"Use JWT" in a requirement fails the gate — requirements describe WHAT,
+"Use JWT" in a requirement fails the gate - requirements describe WHAT,
 not HOW.
 
 ## 5. Reason (ADI)
@@ -138,10 +138,10 @@ cargo check
 
 All must be green before you activate.
 
-## 7. Prove — create Evidence
+## 7. Prove - create Evidence
 
 ```bash
-forgeplan new evidence "Auth tests — 12 pass, JWT validate 0.3ms"
+forgeplan new evidence "Auth tests - 12 pass, JWT validate 0.3ms"
 # -> Created: EVID-001
 ```
 
@@ -171,7 +171,7 @@ forgeplan score PRD-001
 ```
 
 ```
-PRD-001: R_eff = 1.00 — Adequate
+PRD-001: R_eff = 1.00 - Adequate
   EVID-001: supports, CL3, test -> score 1.0
 ```
 
@@ -182,7 +182,7 @@ contain the structured fields? See [Evidence & R_eff](/docs/methodology/evidence
 
 ```bash
 forgeplan review PRD-001
-# -> Review PASSED — ready to activate
+# -> Review PASSED - ready to activate
 
 forgeplan activate PRD-001
 # -> draft → active
@@ -231,8 +231,8 @@ Anything less is an open tab, not a finished task.
 
 ## Next steps
 
-- [First Artifact Tutorial](/docs/guides/first-artifact/) — 20-minute guided version with error recovery
-- [Methodology Overview](/docs/methodology/overview/) — the 10 rules
-- [CLI Reference](/docs/cli/) — every command documented
-- [Configuration](/docs/getting-started/configuration/) — LLM providers, embeddings, git sync
-- [Marketplace Overview](/docs/marketplace/overview/) — plugins for `/audit`, `/sprint`, `/fpf` and more
+- [First Artifact Tutorial](/docs/guides/first-artifact/) - 20-minute guided version with error recovery
+- [Methodology Overview](/docs/methodology/overview/) - the 10 rules
+- [CLI Reference](/docs/cli/) - every command documented
+- [Configuration](/docs/getting-started/configuration/) - LLM providers, embeddings, git sync
+- [Marketplace Overview](/docs/marketplace/overview/) - plugins for `/audit`, `/sprint`, `/fpf` and more

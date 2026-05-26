@@ -5,7 +5,7 @@ description: "Capture a decision from conversation into a Note or ADR artifact"
 
 Records a decision that emerged mid-conversation into a **Note** artifact (90-day auto-expiring micro-decision). `capture` is designed for the moment when you and a teammate (or you and an AI agent) just agreed on something small and you don't want the friction of a full `new → fill MUST sections → validate` loop, but you also don't want the decision to evaporate.
 
-For permanent architectural decisions, use [`forgeplan new adr`](/docs/cli/new/) — `capture` targets Notes only.
+For permanent architectural decisions, use [`forgeplan new adr`](/docs/cli/new/) - `capture` targets Notes only.
 
 ## When to use
 
@@ -15,9 +15,9 @@ For permanent architectural decisions, use [`forgeplan new adr`](/docs/cli/new/)
 
 ## When NOT to use
 
-- The decision needs Problem / Goals / FRs — use [`forgeplan new prd`](/docs/cli/new/) instead.
-- The topic spans multiple files and stakeholders — use an RFC with Implementation Phases.
-- The decision is durable and architectural — use [`forgeplan new adr`](/docs/cli/new/) for the permanent decision log.
+- The decision needs Problem / Goals / FRs - use [`forgeplan new prd`](/docs/cli/new/) instead.
+- The topic spans multiple files and stakeholders - use an RFC with Implementation Phases.
+- The decision is durable and architectural - use [`forgeplan new adr`](/docs/cli/new/) for the permanent decision log.
 
 ## Usage
 
@@ -39,7 +39,7 @@ forgeplan capture [OPTIONS] <DECISION>
   -V, --version            Print version
 ```
 
-`capture` always produces a Note — the cheapest persistence option. If the decision turns out to be load-bearing, create a separate ADR with `forgeplan new adr` and link the original Note.
+`capture` always produces a Note - the cheapest persistence option. If the decision turns out to be load-bearing, create a separate ADR with `forgeplan new adr` and link the original Note.
 
 ## Examples
 
@@ -47,10 +47,10 @@ forgeplan capture [OPTIONS] <DECISION>
 
 ```bash
 forgeplan capture "skip retry for 4xx from embedding API; retry only 5xx" \
-  --context "discussed in sprint 13 sync — 4xx means malformed input, retry is wasted"
+  --context "discussed in sprint 13 sync - 4xx means malformed input, retry is wasted"
 ```
 
-Creates a NOTE-NNN with the decision as title and the context in the body. Notes auto-expire after 90 days — appropriate for reversible, scoped calls.
+Creates a NOTE-NNN with the decision as title and the context in the body. Notes auto-expire after 90 days - appropriate for reversible, scoped calls.
 
 ### Example 2: Minimal note with no extra context
 
@@ -58,7 +58,7 @@ Creates a NOTE-NNN with the decision as title and the context in the body. Notes
 forgeplan capture "log R_eff to stderr on every validate run"
 ```
 
-The fastest path from "we decided" to "it's tracked". No template prompts, no required sections — useful when the context is already obvious from recent commits.
+The fastest path from "we decided" to "it's tracked". No template prompts, no required sections - useful when the context is already obvious from recent commits.
 
 ### Example 3: Capture then promote to ADR when it matters
 
@@ -74,12 +74,12 @@ Start with a Note for minimal friction; create an ADR only once the decision cle
 
 ## How it fits the workflow
 
-This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) — see the tutorial for the end-to-end flow.
+This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) - see the tutorial for the end-to-end flow.
 
 ## See also
 
-- [`forgeplan new note`](/docs/cli/new/) — manual Note creation with template
-- [`forgeplan new adr`](/docs/cli/new/) — manual ADR creation for full workflow
-- [`forgeplan promote`](/docs/cli/promote/) — turn a saved memory into an artifact
-- [`forgeplan link`](/docs/cli/link/) — attach the captured decision to a parent PRD / RFC
+- [`forgeplan new note`](/docs/cli/new/) - manual Note creation with template
+- [`forgeplan new adr`](/docs/cli/new/) - manual ADR creation for full workflow
+- [`forgeplan promote`](/docs/cli/promote/) - turn a saved memory into an artifact
+- [`forgeplan link`](/docs/cli/link/) - attach the captured decision to a parent PRD / RFC
 - [Methodology: depth calibration](/docs/methodology/overview/)

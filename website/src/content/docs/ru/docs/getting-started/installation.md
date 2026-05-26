@@ -1,6 +1,6 @@
 ---
 title: Установка
-description: Установите Forgeplan — CLI, AI Skill или MCP Server
+description: Установите Forgeplan - CLI, AI Skill или MCP Server
 ---
 
 ## AI Skill (рекомендуется для AI-агентов)
@@ -16,7 +16,7 @@ npx skills add ForgePlan/marketplace --skill forge
 /forge "Add OAuth2 authentication"
 ```
 
-**Альтернатива**: если у вас уже установлен CLI, используйте вместо этого встроенную команду — она встраивает файл навыка напрямую, без необходимости подключения к сети:
+**Альтернатива**: если у вас уже установлен CLI, используйте вместо этого встроенную команду - она встраивает файл навыка напрямую, без необходимости подключения к сети:
 
 ```bash
 forgeplan setup-skill

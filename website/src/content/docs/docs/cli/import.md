@@ -1,6 +1,6 @@
 ---
 title: forgeplan import
-description: "Restore artifacts from a JSON export file — reinit recovery, backups, and workspace migration"
+description: "Restore artifacts from a JSON export file - reinit recovery, backups, and workspace migration"
 ---
 
 `forgeplan import` reads a JSON file produced by [`forgeplan export`](/docs/cli/export/) and loads every artifact, link, and evidence record back into the current workspace's LanceDB tables. It is the recovery half of the export/import backup pair and the only supported way to restore state after a destructive reinit.
@@ -14,9 +14,9 @@ description: "Restore artifacts from a JSON export file — reinit recovery, bac
 
 ## When NOT to use
 
-- To merge two live workspaces — `import` is a restore, not a merge. Conflicts require `--force` and can overwrite good data.
-- To rebuild the LanceDB index from markdown — that's [`forgeplan scan-import`](/docs/cli/scan-import/), which is safer because markdown is the source of truth (ADR-003).
-- To import data from another tool — Forgeplan's JSON schema is internal. Only files written by `forgeplan export` are supported.
+- To merge two live workspaces - `import` is a restore, not a merge. Conflicts require `--force` and can overwrite good data.
+- To rebuild the LanceDB index from markdown - that's [`forgeplan scan-import`](/docs/cli/scan-import/), which is safer because markdown is the source of truth (ADR-003).
+- To import data from another tool - Forgeplan's JSON schema is internal. Only files written by `forgeplan export` are supported.
 
 ## Usage
 
@@ -84,7 +84,7 @@ Useful when markdown alone is not enough (e.g. you want scoring history, decay s
 2. **After reinit or migration rollback**: `forgeplan import backup.json`
 3. **Verify**: `forgeplan health` should show the same artifacts, links, and scores as before
 
-For routine index rebuilds (after `git clone`, for example), prefer [`forgeplan scan-import`](/docs/cli/scan-import/) — it reads markdown, which is the source of truth.
+For routine index rebuilds (after `git clone`, for example), prefer [`forgeplan scan-import`](/docs/cli/scan-import/) - it reads markdown, which is the source of truth.
 
 ## Safety notes
 
@@ -96,8 +96,8 @@ For routine index rebuilds (after `git clone`, for example), prefer [`forgeplan 
 
 ## See also
 
-- [`forgeplan export`](/docs/cli/export/) — the other half of the backup pair
-- [`forgeplan init`](/docs/cli/init/) — the destructive step that usually precedes import
-- [`forgeplan scan-import`](/docs/cli/scan-import/) — rebuild from markdown (preferred for fresh clones)
-- [`forgeplan migrate`](/docs/cli/migrate/) — non-destructive alternative when only the schema has drifted
-- [`forgeplan health`](/docs/cli/health/) — post-import verification
+- [`forgeplan export`](/docs/cli/export/) - the other half of the backup pair
+- [`forgeplan init`](/docs/cli/init/) - the destructive step that usually precedes import
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild from markdown (preferred for fresh clones)
+- [`forgeplan migrate`](/docs/cli/migrate/) - non-destructive alternative when only the schema has drifted
+- [`forgeplan health`](/docs/cli/health/) - post-import verification

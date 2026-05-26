@@ -1,14 +1,14 @@
 ---
 title: forgeplan_phase
-description: "Read advisory phase state for an artifact — current phase, history, workflow type."
+description: "Read advisory phase state for an artifact - current phase, history, workflow type."
 ---
 
 Возвращает рекомендательную методологическую фазу артефакта (Shape, Validate, Adi,
 Code, Test, Audit, Evidence, Done) плюс полную append-only историю переходов из
-`.forgeplan/state/<id>.yaml`. Трекинг фаз — **рекомендательный**: ни один другой
+`.forgeplan/state/<id>.yaml`. Трекинг фаз - **рекомендательный**: ни один другой
 инструмент на нём не блокируется. Если файла состояния нет (артефакт до PRD-056 или
 `phase.enabled: false` в конфиге), ответом будет `current_phase: "unknown"` с пустой
-историей; никогда — ошибка.
+историей; никогда - ошибка.
 
 **Категория**: Lifecycle (рекомендательный)
 
@@ -54,7 +54,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseReadPara
   "current_phase": "unknown",
   "workflow_type": "greenfield",
   "history": [],
-  "message": "No phase state file on disk — advisory only, never an error",
+  "message": "No phase state file on disk - advisory only, never an error",
   "_next_action": "`PRD-001` has no phase state yet. ..."
 }
 ```
@@ -67,18 +67,18 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseReadPara
 
 ## Типичная последовательность
 
-1. `forgeplan_phase` — прочитать текущую фазу.
+1. `forgeplan_phase` - прочитать текущую фазу.
 2. Если `current_phase: "unknown"` и трекинг нужен:
    [`forgeplan_phase_advance --to shape`](/ru/docs/mcp/forgeplan_phase_advance/).
 3. Иначе следовать подсказке `_next_action` к рекомендуемой следующей фазе.
 
 ## CLI эквивалент
 
-[`forgeplan phase <id>`](/ru/docs/cli/) — те же данные, та же рекомендательная семантика.
+[`forgeplan phase <id>`](/ru/docs/cli/) - те же данные, та же рекомендательная семантика.
 
 ## См. также
 
-- [`forgeplan_phase_advance`](/ru/docs/mcp/forgeplan_phase_advance/) — записать следующий переход
-- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — гейт вокруг фазы `validate`
-- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — терминальное состояние `done` методологии
-- [Methodology guide](/ru/docs/methodology/overview/) — Shape → Validate → Code → Evidence → Activate
+- [`forgeplan_phase_advance`](/ru/docs/mcp/forgeplan_phase_advance/) - записать следующий переход
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) - гейт вокруг фазы `validate`
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - терминальное состояние `done` методологии
+- [Methodology guide](/ru/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate

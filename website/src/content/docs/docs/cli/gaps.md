@@ -1,28 +1,28 @@
 ---
 title: forgeplan gaps
-description: "Find pipeline compliance gaps — Deep/Critical artifacts missing their required downstream stages."
+description: "Find pipeline compliance gaps - Deep/Critical artifacts missing their required downstream stages."
 ---
 
 `forgeplan gaps` checks each artifact against its declared `depth` and reports what
 the pipeline **expects** versus what actually exists. A Deep PRD is supposed to have
 at least one linked Spec and one ADR; a Critical Epic is supposed to fan out into
 multiple PRDs, RFCs, and ADRs. When those downstream artifacts are missing, you have
-a pipeline gap — the depth is making a promise the evidence chain doesn't keep.
+a pipeline gap - the depth is making a promise the evidence chain doesn't keep.
 
-This is not a validation failure (the artifact itself may be fine) — it's a
+This is not a validation failure (the artifact itself may be fine) - it's a
 **methodology compliance** check: did you stop halfway?
 
 ## When to use
 
 - Mid-sprint: "I said this was Deep, did I actually build out Spec + ADR?"
-- After escalating depth via `calibrate` — see what's now missing.
+- After escalating depth via `calibrate` - see what's now missing.
 - Pre-release health pass: "is the project aligned with its own methodology?"
 - Brownfield cleanup: imported artifacts often have depth without downstream chain.
 
 ## When NOT to use
 
-- On a workspace with only Tactical artifacts — gaps don't apply.
-- As a blocker for activation — gaps are advisory, `validate` is the gate.
+- On a workspace with only Tactical artifacts - gaps don't apply.
+- As a blocker for activation - gaps are advisory, `validate` is the gate.
 
 ## Usage
 
@@ -93,8 +93,8 @@ is backed by the expected downstream chain. Together they keep the methodology h
 
 ## See also
 
-- [`forgeplan calibrate`](/docs/cli/calibrate/) — recalibrate depth when gaps appear
-- [`forgeplan health`](/docs/cli/health/) — project-level aggregate
-- [`forgeplan blocked`](/docs/cli/blocked/) — dependency graph view
-- [Artifact Model](/docs/methodology/overview/) — depth-to-pipeline mapping
+- [`forgeplan calibrate`](/docs/cli/calibrate/) - recalibrate depth when gaps appear
+- [`forgeplan health`](/docs/cli/health/) - project-level aggregate
+- [`forgeplan blocked`](/docs/cli/blocked/) - dependency graph view
+- [Artifact Model](/docs/methodology/overview/) - depth-to-pipeline mapping
 - [CLI overview](/docs/cli/)

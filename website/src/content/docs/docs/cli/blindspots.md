@@ -1,21 +1,21 @@
 ---
 title: forgeplan blindspots
-description: "Active decisions without evidence and orphan artifacts — critical health gate"
+description: "Active decisions without evidence and orphan artifacts - critical health gate"
 ---
 
-Find **blind spots** — active decisions that have no evidence backing them
+Find **blind spots** - active decisions that have no evidence backing them
 (R_eff = 0) and orphan artifacts not linked to any parent. This is the
 most important health-triage command: an active PRD/RFC/ADR without
-evidence is a "false promise" — a decision that looks real but has no
+evidence is a "false promise" - a decision that looks real but has no
 measurement behind it.
 
 ## When to use
 
-- **Session start** — run this right after `forgeplan health` and fix before
+- **Session start** - run this right after `forgeplan health` and fix before
   starting new work (do not accumulate debt)
-- **CI gate** — fail the build if any active `critical` artifact has no evidence
-- **Pre-release** — zero blind spots before cutting a tag
-- **Retro** — count how many blind spots accumulated over the sprint
+- **CI gate** - fail the build if any active `critical` artifact has no evidence
+- **Pre-release** - zero blind spots before cutting a tag
+- **Retro** - count how many blind spots accumulated over the sprint
 
 ## Not to use when
 
@@ -58,7 +58,7 @@ forgeplan health --ci && forgeplan blindspots
 
 ## Output interpretation
 
-Two sections — _blind decisions_ and _orphans_:
+Two sections - _blind decisions_ and _orphans_:
 
 ```
 BLIND DECISIONS (active, R_eff = 0.00)
@@ -82,7 +82,7 @@ Exit code: `0` if clean, `1` otherwise. Use this in git pre-push hooks or CI.
 ## How it fits
 
 `blindspots` is a strict subset of what [`health`](/docs/cli/health/) reports
-— extracted as a standalone command because it is the most common gate to
+- extracted as a standalone command because it is the most common gate to
 enforce. The unified workflow mandates:
 
 ```
@@ -90,15 +90,15 @@ session start → health → blindspots → (fix) → new work
 ```
 
 If `blindspots` is not empty, _fix it first_. Never let active decisions
-drift without measurement — that is exactly what the R_eff weakest-link
+drift without measurement - that is exactly what the R_eff weakest-link
 model is designed to prevent.
 
 ## See also
 
-- [`forgeplan health`](/docs/cli/health/) — full project dashboard (with
+- [`forgeplan health`](/docs/cli/health/) - full project dashboard (with
   `--ci` mode)
-- [`forgeplan journal --risk`](/docs/cli/journal/) — time-axis view of
+- [`forgeplan journal --risk`](/docs/cli/journal/) - time-axis view of
   blind decisions
-- [`forgeplan score`](/docs/cli/score/) — R_eff for one artifact
-- [`forgeplan new evidence`](/docs/cli/new/) — create an EvidencePack
-- [`forgeplan link`](/docs/cli/link/) — attach evidence with `--relation informs`
+- [`forgeplan score`](/docs/cli/score/) - R_eff for one artifact
+- [`forgeplan new evidence`](/docs/cli/new/) - create an EvidencePack
+- [`forgeplan link`](/docs/cli/link/) - attach evidence with `--relation informs`

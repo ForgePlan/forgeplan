@@ -3,7 +3,7 @@ title: forgeplan_list
 description: "List artifacts with optional kind/status/tag filters. Returns ID, kind, status, and title for each artifact."
 ---
 
-Returns a filtered inventory of artifacts in the workspace. This is the cheapest discovery call — agents use it to answer questions like "what PRDs are active?" or "how many stale ADRs do we have?" without pulling full bodies. For full-text discovery the agent should reach for `forgeplan_search` instead.
+Returns a filtered inventory of artifacts in the workspace. This is the cheapest discovery call - agents use it to answer questions like "what PRDs are active?" or "how many stale ADRs do we have?" without pulling full bodies. For full-text discovery the agent should reach for `forgeplan_search` instead.
 
 **Category**: Reading Artifacts
 
@@ -11,7 +11,7 @@ Returns a filtered inventory of artifacts in the workspace. This is the cheapest
 
 - Session bootstrap: agent needs a quick view of what exists before deciding next action.
 - Filtering by state: "show me all draft PRDs" before running a batch validation pass.
-- Answering a user question like "how many RFCs have we shipped?" — no full bodies needed.
+- Answering a user question like "how many RFCs have we shipped?" - no full bodies needed.
 
 ## Input parameters
 
@@ -24,7 +24,7 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ListParams`_
 
 ## Returns
 
-A JSON array of artifact summaries — ID, kind, status, title, and a few frontmatter fields (depth, tags, updated_at). Bodies are intentionally omitted; use `forgeplan_get` when the full content is needed.
+A JSON array of artifact summaries - ID, kind, status, title, and a few frontmatter fields (depth, tags, updated_at). Bodies are intentionally omitted; use `forgeplan_get` when the full content is needed.
 
 Example response shape:
 
@@ -55,15 +55,15 @@ With typical agent context:
 
 ## Typical sequence
 
-Usually the second or third call of a session — after `forgeplan_init`/`forgeplan_health` and before `forgeplan_get` on a specific ID. Agents often pipe the result into a user-facing summary without any further MCP calls.
+Usually the second or third call of a session - after `forgeplan_init`/`forgeplan_health` and before `forgeplan_get` on a specific ID. Agents often pipe the result into a user-facing summary without any further MCP calls.
 
 ## CLI equivalent
 
-- [`forgeplan list`](/docs/cli/list/) — same filters, human-readable table output
+- [`forgeplan list`](/docs/cli/list/) - same filters, human-readable table output
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_get`](/docs/mcp/forgeplan_get/) — read full content of one artifact
-- [`forgeplan_search`](/docs/mcp/forgeplan_search/) — full-text / semantic discovery
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) — aggregated project state
+- [`forgeplan_get`](/docs/mcp/forgeplan_get/) - read full content of one artifact
+- [`forgeplan_search`](/docs/mcp/forgeplan_search/) - full-text / semantic discovery
+- [`forgeplan_health`](/docs/mcp/forgeplan_health/) - aggregated project state

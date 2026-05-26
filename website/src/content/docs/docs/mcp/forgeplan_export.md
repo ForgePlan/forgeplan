@@ -9,17 +9,17 @@ Produces a complete JSON snapshot of the workspace: every artifact (PRD, RFC, AD
 
 ## When an agent calls this
 
-- **Backup** before a risky operation such as `forgeplan init` re-initialisation, a schema upgrade, or bulk deletes — the #1 guardrail against losing artifacts.
-- **Cross-machine transfer** — hand an encrypted JSON blob to another dev's machine and restore via `forgeplan_import`.
-- **CI seeding** — snapshot a reference workspace once and load it into each pipeline run deterministically.
-- **Audit / compliance** — freeze the state of decisions at a release boundary for traceability.
-- **Debugging ForgePlan itself** — attach the export to a bug report so maintainers can reproduce the exact workspace state.
+- **Backup** before a risky operation such as `forgeplan init` re-initialisation, a schema upgrade, or bulk deletes - the #1 guardrail against losing artifacts.
+- **Cross-machine transfer** - hand an encrypted JSON blob to another dev's machine and restore via `forgeplan_import`.
+- **CI seeding** - snapshot a reference workspace once and load it into each pipeline run deterministically.
+- **Audit / compliance** - freeze the state of decisions at a release boundary for traceability.
+- **Debugging ForgePlan itself** - attach the export to a bug report so maintainers can reproduce the exact workspace state.
 
 ## Safety notes
 
 - The export is **read-only**. It never mutates the workspace.
 - **API keys and local config are NOT exported.** `.forgeplan/config.yaml` is gitignored and lives outside the artifact domain; the export contains only artifacts + relations. You still need to reconfigure LLM providers after `forgeplan_import`.
-- Derived indexes (`.forgeplan/lance/`, `.fastembed_cache/`) are **not** included — they rebuild on demand via `forgeplan scan-import`.
+- Derived indexes (`.forgeplan/lance/`, `.fastembed_cache/`) are **not** included - they rebuild on demand via `forgeplan scan-import`.
 - The export is the canonical backup format. Never `rm -rf .forgeplan` without calling `forgeplan_export` first.
 
 ## Input parameters
@@ -102,10 +102,10 @@ For migration:
 
 ## CLI equivalent
 
-- [`forgeplan export`](/docs/cli/export/) — identical behaviour from the terminal.
+- [`forgeplan export`](/docs/cli/export/) - identical behaviour from the terminal.
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_import`](/docs/mcp/forgeplan_import/) — restore from the bundle
-- [`forgeplan_init`](/docs/mcp/forgeplan_init/) — initialise workspace before import
+- [`forgeplan_import`](/docs/mcp/forgeplan_import/) - restore from the bundle
+- [`forgeplan_init`](/docs/mcp/forgeplan_init/) - initialise workspace before import

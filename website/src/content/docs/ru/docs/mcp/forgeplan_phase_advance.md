@@ -4,7 +4,7 @@ description: "Manually advance (or set) the advisory phase marker for an artifac
 ---
 
 Записывает следующую фазу в `.forgeplan/state/<id>.yaml`, дописывая неизменяемую
-запись в историю с timestamp и опциональной причиной. Рекомендательный слой — **не**
+запись в историю с timestamp и опциональной причиной. Рекомендательный слой - **не**
 валидирует порядок фаз, поэтому скачки не по порядку (например, сразу к `done` для
 однострочной правки) разрешены by design. Полное обеспечение фаз появится в более
 позднем PRD в рамках EPIC-005. Используйте, когда авто-продвижение пропустило
@@ -70,18 +70,18 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseAdvanceP
 
 ## Типичная последовательность
 
-1. [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) — прочитать текущее состояние.
+1. [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) - прочитать текущее состояние.
 2. Сделать работу для рекомендуемой следующей фазы.
-3. `forgeplan_phase_advance` — записать переход.
+3. `forgeplan_phase_advance` - записать переход.
 4. Повторять, пока `current_phase: "done"`.
 
 ## CLI эквивалент
 
-[`forgeplan phase advance <id> --to <phase>`](/ru/docs/cli/) — та же запись, та же
+[`forgeplan phase advance <id> --to <phase>`](/ru/docs/cli/) - та же запись, та же
 рекомендательная семантика.
 
 ## См. также
 
-- [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) — прочитать текущее состояние + историю
-- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) — гейт активации методологии
-- [Methodology guide](/ru/docs/methodology/overview/) — Shape → Validate → Code → Evidence → Activate
+- [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) - прочитать текущее состояние + историю
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - гейт активации методологии
+- [Methodology guide](/ru/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate

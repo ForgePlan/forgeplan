@@ -1,6 +1,6 @@
 ---
 title: Marketplace Overview
-description: Plugin ecosystem for Claude Code — skills, agents, commands, hooks
+description: Plugin ecosystem for Claude Code - skills, agents, commands, hooks
 ---
 
 The [ForgePlan Marketplace](https://github.com/ForgePlan/marketplace) is the official plugin ecosystem for Claude Code and compatible AI coding agents (Cursor, Windsurf, Codex, etc.).

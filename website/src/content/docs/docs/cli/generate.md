@@ -3,7 +3,7 @@ title: forgeplan generate
 description: "Generate an artifact using AI from a natural language description"
 ---
 
-Generates a **fully-drafted artifact** from a natural language description using an LLM (Gemini / OpenAI / Anthropic, configured in `.forgeplan/config.yaml`). Unlike [`forgeplan new`](/docs/cli/new/), which produces an empty template you fill manually, `generate` asks the model to write Problem, Goals, Non-Goals, Functional Requirements, and the rest of the MUST sections in one pass. The result is a draft you still review — but the 30-minute cold-start of staring at an empty template disappears.
+Generates a **fully-drafted artifact** from a natural language description using an LLM (Gemini / OpenAI / Anthropic, configured in `.forgeplan/config.yaml`). Unlike [`forgeplan new`](/docs/cli/new/), which produces an empty template you fill manually, `generate` asks the model to write Problem, Goals, Non-Goals, Functional Requirements, and the rest of the MUST sections in one pass. The result is a draft you still review - but the 30-minute cold-start of staring at an empty template disappears.
 
 ## When to use
 
@@ -15,11 +15,11 @@ Generates a **fully-drafted artifact** from a natural language description using
 
 ## When NOT to use
 
-- You don't have LLM credentials configured — run `forgeplan config set llm.provider ...` first, or fall back to [`forgeplan new`](/docs/cli/new/).
-- The decision is tactical and doesn't need an artifact at all — just commit.
-- You want full manual control over wording — use [`forgeplan new`](/docs/cli/new/) and fill sections yourself.
-- You're logging a decision from a conversation — use [`forgeplan capture`](/docs/cli/capture/).
-- The content already exists in a saved memory — use [`forgeplan promote`](/docs/cli/promote/).
+- You don't have LLM credentials configured - run `forgeplan config set llm.provider ...` first, or fall back to [`forgeplan new`](/docs/cli/new/).
+- The decision is tactical and doesn't need an artifact at all - just commit.
+- You want full manual control over wording - use [`forgeplan new`](/docs/cli/new/) and fill sections yourself.
+- You're logging a decision from a conversation - use [`forgeplan capture`](/docs/cli/capture/).
+- The content already exists in a saved memory - use [`forgeplan promote`](/docs/cli/promote/).
 
 ## Usage
 
@@ -59,7 +59,7 @@ Produces `.forgeplan/prds/prd-NNN-add-rate-limiting.md` with Problem ("public en
 forgeplan generate rfc "current embedding pipeline: fastembed BGE-M3, 1024 dims, batch 32, cached in .forgeplan/.fastembed_cache/"
 ```
 
-Good for brown-field documentation — the LLM drafts an RFC describing the as-built architecture with Implementation Phases already checked off. Use this as a starting point, then correct any hallucinated details against the real code.
+Good for brown-field documentation - the LLM drafts an RFC describing the as-built architecture with Implementation Phases already checked off. Use this as a starting point, then correct any hallucinated details against the real code.
 
 ### Example 3: Draft a ProblemCard for a fresh signal
 
@@ -75,12 +75,12 @@ Generates Signal / Context / Goals / Anti-Goodhart indicators sections. ProblemC
 route  →  generate  →  (review + edit)  →  validate  →  reason  →  code  →  evidence  →  review  →  activate
 ```
 
-`generate` slots into the same Shape phase as `new`, but collapses "create stub" and "fill MUST sections" into one LLM call. The rest of the pipeline is unchanged: you still need `validate` to pass, `reason` for Deep/Critical depth, and Evidence before `activate`. Treat the generated text as a first draft — the model will not catch domain-specific constraints the way a human operator will.
+`generate` slots into the same Shape phase as `new`, but collapses "create stub" and "fill MUST sections" into one LLM call. The rest of the pipeline is unchanged: you still need `validate` to pass, `reason` for Deep/Critical depth, and Evidence before `activate`. Treat the generated text as a first draft - the model will not catch domain-specific constraints the way a human operator will.
 
 ## See also
 
-- [`forgeplan new`](/docs/cli/new/) — manual template stub, full control over wording
-- [`forgeplan validate`](/docs/cli/validate/) — required after editing the draft
-- [`forgeplan reason`](/docs/cli/reason/) — ADI cycle to verify hypotheses before coding
-- [`forgeplan capture`](/docs/cli/capture/) — log decisions from a live conversation
+- [`forgeplan new`](/docs/cli/new/) - manual template stub, full control over wording
+- [`forgeplan validate`](/docs/cli/validate/) - required after editing the draft
+- [`forgeplan reason`](/docs/cli/reason/) - ADI cycle to verify hypotheses before coding
+- [`forgeplan capture`](/docs/cli/capture/) - log decisions from a live conversation
 - [Methodology: artifact model](/docs/methodology/overview/)

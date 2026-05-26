@@ -1,9 +1,9 @@
 ---
 title: forgeplan_discover_complete
-description: "Завершает сессию исследования существующей системы (brownfield discovery). ForgePlan группирует результаты по фазам и уровням, запускает forgeplan_health в рабочем пространстве и предлагает PROB / PRD / RFC, синтезированные из результатов. Предложенные артефакты выводятся на печать — не создаются автоматически — чтобы агент или человек могли их просмотреть перед фиксацией."
+description: "Завершает сессию исследования существующей системы (brownfield discovery). ForgePlan группирует результаты по фазам и уровням, запускает forgeplan_health в рабочем пространстве и предлагает PROB / PRD / RFC, синтезированные из результатов. Предложенные артефакты выводятся на печать - не создаются автоматически - чтобы агент или человек могли их просмотреть перед фиксацией."
 ---
 
-Закрывает активную сессию исследования, начатую с помощью `forgeplan_discover_start`. ForgePlan обрабатывает результаты, о которых сообщил агент, группирует их по фазам и уровням, выполняет проверку состояния проекта и синтезирует набор **предложенных** последующих артефактов (PROB для рисков, PRD для требований, RFC для описания реализации). Критически важно, что предложения **только выводятся на печать** — они не создаются автоматически. Агент (или человек) просматривает их и решает, какие из них перенести в рабочее пространство с помощью `forgeplan_new`.
+Закрывает активную сессию исследования, начатую с помощью `forgeplan_discover_start`. ForgePlan обрабатывает результаты, о которых сообщил агент, группирует их по фазам и уровням, выполняет проверку состояния проекта и синтезирует набор **предложенных** последующих артефактов (PROB для рисков, PRD для требований, RFC для описания реализации). Критически важно, что предложения **только выводятся на печать** - они не создаются автоматически. Агент (или человек) просматривает их и решает, какие из них перенести в рабочее пространство с помощью `forgeplan_new`.
 
 **Категория**: Исследование существующей системы
 
@@ -11,7 +11,7 @@ description: "Завершает сессию исследования суще�
 
 - После прохождения всех семи фаз протокола и выдачи всех результатов.
 - Когда пользователь говорит «завершить исследование» / «предложить следующие шаги» / «завершить сканирование».
-- Перед началом любого цикла Shape → Validate → Code для вновь обнаруженной кодовой базы — предложения становятся основой бэклога.
+- Перед началом любого цикла Shape → Validate → Code для вновь обнаруженной кодовой базы - предложения становятся основой бэклога.
 
 ## Что она делает
 
@@ -54,7 +54,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DiscoverCompl
   "proposed": [
     { "kind": "rfc",     "title": "Consolidate retry layers in billing engine",
       "rationale": "3 tier-1 findings describe overlapping exponential backoff." },
-    { "kind": "problem", "title": "README drifted from src/auth — 4 claims unverified",
+    { "kind": "problem", "title": "README drifted from src/auth - 4 claims unverified",
       "rationale": "Tier-4 vs tier-1 reconciliation mismatch." },
     { "kind": "prd",     "title": "Formalise idempotency guarantees on checkout",
       "rationale": "Tests imply exactly-once semantics not reflected in code or docs." }
@@ -85,12 +85,12 @@ discover_start → …many discover_finding calls… → discover_complete
 
 ## Эквивалент CLI
 
-- [`forgeplan discover complete`](/ru/docs/cli/discover-complete/) — та же финализация из терминала.
+- [`forgeplan discover complete`](/ru/docs/cli/discover-complete/) - та же финализация из терминала.
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) — начать сессию
-- [`forgeplan_discover_finding`](/ru/docs/mcp/forgeplan_discover_finding/) — сообщать наблюдения
-- [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) — снимок состояния, включённый в сводку
-- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — перенести предложение в реальный артефакт
+- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) - начать сессию
+- [`forgeplan_discover_finding`](/ru/docs/mcp/forgeplan_discover_finding/) - сообщать наблюдения
+- [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) - снимок состояния, включённый в сводку
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - перенести предложение в реальный артефакт
