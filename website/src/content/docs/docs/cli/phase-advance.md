@@ -3,24 +3,24 @@ title: forgeplan phase-advance
 description: "Manually advance (or set) the advisory phase marker for an artifact and record an immutable transition entry. Out-of-order jumps allowed."
 ---
 
-`forgeplan phase-advance` moves an artifact to the next methodology phase (Shape, Validate, Adi, Code, Test, Audit, Evidence, Done) and records the transition in `.forgeplan/state/<id>.yaml` with a timestamp and optional reason. The history is append-only — once written, it cannot be edited or deleted, only appended to.
+`forgeplan phase-advance` moves an artifact to the next methodology phase (Shape, Validate, Adi, Code, Test, Audit, Evidence, Done) and records the transition in `.forgeplan/state/<id>.yaml` with a timestamp and optional reason. The history is append-only - once written, it cannot be edited or deleted, only appended to.
 
-This is the **advisory** layer: it does not check whether the jump makes sense (you can go straight from Shape to Done if you want), so out-of-order moves are allowed by design — useful for trivial fixes or backfilling old artifacts. Strict ordering enforcement is planned for a later PRD under EPIC-005.
+This is the **advisory** layer: it does not check whether the jump makes sense (you can go straight from Shape to Done if you want), so out-of-order moves are allowed by design - useful for trivial fixes or backfilling old artifacts. Strict ordering enforcement is planned for a later PRD under EPIC-005.
 
 Mirrors [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) on the MCP side.
 
 ## When to use
 
-- A tool ran but phase tracking was off, and now you want the artifact to reflect what really happened — advance manually to catch up.
-- An artifact moved from `code` to `audit` because a PR review wave just finished — record it.
+- A tool ran but phase tracking was off, and now you want the artifact to reflect what really happened - advance manually to catch up.
+- An artifact moved from `code` to `audit` because a PR review wave just finished - record it.
 - An old artifact (created before phase tracking existed) needs its history walked forward to show up correctly in current reports.
-- A trivial fix justifies skipping straight to `done` — pass `--reason` so the skip is documented.
+- A trivial fix justifies skipping straight to `done` - pass `--reason` so the skip is documented.
 
 ## When NOT to use
 
-- As a structural gate (something that blocks other commands) — phase-advance only writes the marker. For real gating, use [`forgeplan validate`](/docs/cli/validate/).
-- To rename a phase or rewrite the history — entries are immutable. Add a new entry with a corrective `--reason` instead.
-- Without a `--reason` when the jump is not obvious — six months from now during an audit, you will not remember why.
+- As a structural gate (something that blocks other commands) - phase-advance only writes the marker. For real gating, use [`forgeplan validate`](/docs/cli/validate/).
+- To rename a phase or rewrite the history - entries are immutable. Add a new entry with a corrective `--reason` instead.
+- Without a `--reason` when the jump is not obvious - six months from now during an audit, you will not remember why.
 
 ## Usage
 
@@ -52,7 +52,7 @@ forgeplan phase-advance [OPTIONS] --to <TO> <ID>
 forgeplan phase-advance PRD-057 --to test --reason "FR tests green"
 ```
 
-Records the transition with a short justification. The reason is preserved forever — future audits can replay exactly why the artifact moved.
+Records the transition with a short justification. The reason is preserved forever - future audits can replay exactly why the artifact moved.
 
 ### Example 2: Skip ahead for a trivial fix
 
@@ -74,11 +74,11 @@ Walks an artifact created before phase tracking existed through the phases so it
 
 ## How it fits the workflow
 
-Phase tracking sits alongside the methodology pipeline (Shape → Validate → Code → Evidence → Activate). Read the current state with [`forgeplan phase`](/docs/cli/phase/), write the next transition with `phase-advance`. Treat the `--reason` field like a commit message — it is the audit trail for how an artifact moved through the pipeline.
+Phase tracking sits alongside the methodology pipeline (Shape → Validate → Code → Evidence → Activate). Read the current state with [`forgeplan phase`](/docs/cli/phase/), write the next transition with `phase-advance`. Treat the `--reason` field like a commit message - it is the audit trail for how an artifact moved through the pipeline.
 
 ## See also
 
-- [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) — MCP equivalent
-- [`forgeplan phase`](/docs/cli/phase/) — read current state + history
-- [`forgeplan activate`](/docs/cli/activate/) — the methodology activation gate
-- [Methodology guide](/docs/methodology/overview/) — Shape → Validate → Code → Evidence → Activate
+- [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) - MCP equivalent
+- [`forgeplan phase`](/docs/cli/phase/) - read current state + history
+- [`forgeplan activate`](/docs/cli/activate/) - the methodology activation gate
+- [Methodology guide](/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate

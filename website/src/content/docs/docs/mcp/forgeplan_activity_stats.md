@@ -1,6 +1,6 @@
 ---
 title: forgeplan_activity_stats
-description: "Aggregate the activity log by tool name — counts, error rates, p50/p95 duration, total time."
+description: "Aggregate the activity log by tool name - counts, error rates, p50/p95 duration, total time."
 ---
 
 Reads the same activity log as [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) but
@@ -15,7 +15,7 @@ spent its time, instead of paging through individual entries.
 - Start of a debugging session: "which tool is hot in the last 24 h?".
 - Cost / latency triage when the user reports a slow workflow.
 - Pre-release sanity check: are any tools showing elevated `err_count` since the last build?
-- After a marathon session — confirm the destructive-tool count matches the agent's
+- After a marathon session - confirm the destructive-tool count matches the agent's
   mental model (no surprise `forgeplan_delete` calls).
 
 ## Input parameters
@@ -75,18 +75,18 @@ Full-month rollup:
 
 ## Typical sequence
 
-1. `forgeplan_activity_stats` — find the hot or erroring tool.
-2. `forgeplan_activity tool=<hot>` — drill into individual calls.
-3. If errors stand out — `forgeplan_activity tool=<hot> status=tool_err`.
+1. `forgeplan_activity_stats` - find the hot or erroring tool.
+2. `forgeplan_activity tool=<hot>` - drill into individual calls.
+3. If errors stand out - `forgeplan_activity tool=<hot> status=tool_err`.
 
 ## CLI equivalent
 
-No direct CLI command — activity instrumentation lives in the MCP layer (PRD-055).
+No direct CLI command - activity instrumentation lives in the MCP layer (PRD-055).
 For ad-hoc analysis, `jq` over `.forgeplan/logs/tools-*.jsonl` produces the same
 shape with more flexibility.
 
 ## See also
 
-- [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) — entry-level drill-down
-- [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) — pair with stats to reverse misfires
+- [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) - entry-level drill-down
+- [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) - pair with stats to reverse misfires
 - [MCP overview](/docs/mcp/)

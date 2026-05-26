@@ -42,13 +42,13 @@ BM25 keyword search (which is already production-grade as of v0.18.0).
 4. Writes vectors to the `embedding` column of the `artifacts` table.
 5. Caches the model weights in `.forgeplan/.fastembed_cache/` (gitignored).
 
-First run downloads ~500MB of model weights — subsequent runs reuse the cache.
+First run downloads ~500MB of model weights - subsequent runs reuse the cache.
 Embedding a typical 100-artifact workspace takes 10-60 seconds depending on
 your hardware (CPU fallback by default, CUDA/Metal if available).
 
 ## When you need it
 
-- You want **semantic search** — "find artifacts about trust decay" should
+- You want **semantic search** - "find artifacts about trust decay" should
   surface R_eff / evidence work even if those exact words don't appear.
 - You're building **AI agent workflows** where an MCP tool retrieves related
   context by similarity rather than keyword.
@@ -56,13 +56,13 @@ your hardware (CPU fallback by default, CUDA/Metal if available).
 
 ## When you don't need it
 
-- Your corpus is small (<50 artifacts) — keyword search (BM25 + Russian
+- Your corpus is small (<50 artifacts) - keyword search (BM25 + Russian
   morphology, v0.18.0) finds everything.
 - You prefer a minimal install without an ML dependency.
 - You want reproducible builds without a ~500MB model download on first run.
 
 Default `forgeplan search "query"` now uses production BM25 (v0.18.0) which
-handles Russian stemming, English, and template noise stripping — it's a
+handles Russian stemming, English, and template noise stripping - it's a
 strong keyword baseline and may be enough on its own.
 
 ## Example
@@ -81,6 +81,6 @@ forgeplan search "trust calculus" --semantic
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan search`](/docs/cli/search/) — keyword + semantic retrieval
-- [`forgeplan reindex`](/docs/cli/reindex/) — rebuild metadata (doesn't touch embeddings)
-- [`forgeplan fpf search`](/docs/cli/fpf-search/) — search FPF knowledge base
+- [`forgeplan search`](/docs/cli/search/) - keyword + semantic retrieval
+- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild metadata (doesn't touch embeddings)
+- [`forgeplan fpf search`](/docs/cli/fpf-search/) - search FPF knowledge base

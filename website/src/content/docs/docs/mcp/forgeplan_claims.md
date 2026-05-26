@@ -1,10 +1,10 @@
 ---
 title: forgeplan_claims
-description: "List live claims in the workspace — who is working on what right now."
+description: "List live claims in the workspace - who is working on what right now."
 ---
 
 Returns every non-expired claim in `.forgeplan/claims/`, sorted by expiry ascending
-(most-urgent first). Skips claims past their TTL — they are considered practically
+(most-urgent first). Skips claims past their TTL - they are considered practically
 released. Read-only and lock-free by design (audit-driven): an orchestrator polling at
 1 Hz must not serialize sub-agent writes. Malformed claim files are skipped with a
 counter so health checks can surface them.
@@ -52,7 +52,7 @@ _Schema source: `crates/forgeplan-mcp/src/types.rs::ClaimsListParams`_
 }
 ```
 
-`skipped > 0` means at least one claim file failed to parse or exceeded the size cap —
+`skipped > 0` means at least one claim file failed to parse or exceeded the size cap -
 the audit-flagged silent-drop bug now surfaces explicitly. Run `forgeplan health` to
 identify the offender.
 
@@ -62,21 +62,21 @@ identify the offender.
 {}
 ```
 
-(`active` defaults to `false` — the field is reserved; you do not need to pass it.)
+(`active` defaults to `false` - the field is reserved; you do not need to pass it.)
 
 ## Typical sequence
 
-1. `forgeplan_claims` — see who is busy.
-2. [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) — plan around the live claims.
+1. `forgeplan_claims` - see who is busy.
+2. [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) - plan around the live claims.
 3. Hand each bucket to a sub-agent that calls [`forgeplan_claim`](/docs/mcp/forgeplan_claim/).
 
 ## CLI equivalent
 
-[`forgeplan claims`](/docs/cli/) — same data; orchestrators that drive workers via shell
+[`forgeplan claims`](/docs/cli/) - same data; orchestrators that drive workers via shell
 poll this command.
 
 ## See also
 
-- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) — acquire a claim
-- [`forgeplan_release`](/docs/mcp/forgeplan_release/) — drop a claim
-- [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) — multi-agent work plan (full PRD-057 protocol)
+- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) - acquire a claim
+- [`forgeplan_release`](/docs/mcp/forgeplan_release/) - drop a claim
+- [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) - multi-agent work plan (full PRD-057 protocol)

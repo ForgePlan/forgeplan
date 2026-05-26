@@ -1,6 +1,6 @@
 ---
 title: forgeplan context
-description: "Single-call reasoning context — artifact + graph + validation + scoring in one payload"
+description: "Single-call reasoning context - artifact + graph + validation + scoring in one payload"
 ---
 
 `forgeplan context` returns everything an AI agent needs to reason about an
@@ -9,7 +9,7 @@ validation results, R_eff score, and related memory. Instead of making five
 round-trips (`get`, `validate`, `score`, `graph`, `memory`), the agent asks
 once and receives a complete picture.
 
-It is the primary data endpoint for the Forgeplan MCP server — every
+It is the primary data endpoint for the Forgeplan MCP server - every
 `forgeplan_context` tool call goes through this command. CLI use is mostly
 for debugging what the agent actually sees.
 
@@ -19,14 +19,14 @@ for debugging what the agent actually sees.
 - Debugging what context is passed to `forgeplan reason` or `forgeplan generate`
 - Writing an external script that analyzes artifact health and relationships
 - Auditing whether an artifact has enough linked evidence to be trustworthy
-- Preparing input for a manual review — single output covers everything
+- Preparing input for a manual review - single output covers everything
 
 ## When NOT to use
 
-- You only need the artifact body — use `forgeplan get <ID>` (lighter payload)
-- You only need validation results — use `forgeplan validate <ID>`
-- You only need the score — use `forgeplan score <ID>`
-- You are rendering a human dashboard — use `forgeplan health` or `forgeplan status`
+- You only need the artifact body - use `forgeplan get <ID>` (lighter payload)
+- You only need validation results - use `forgeplan validate <ID>`
+- You only need the score - use `forgeplan score <ID>`
+- You are rendering a human dashboard - use `forgeplan health` or `forgeplan status`
 
 ## Usage
 
@@ -94,18 +94,18 @@ exactly what the MCP layer is returning.
 
 The JSON payload has five sections; each is optional if empty:
 
-- **artifact** — frontmatter + markdown body exactly as stored on disk
-- **validation** — `verdict` is `PASS` or `FAIL`; `must` and `should` list rule violations
-- **scoring** — `r_eff` is the weakest-link evidence score (0.0-1.0);
+- **artifact** - frontmatter + markdown body exactly as stored on disk
+- **validation** - `verdict` is `PASS` or `FAIL`; `must` and `should` list rule violations
+- **scoring** - `r_eff` is the weakest-link evidence score (0.0-1.0);
   `evidence_count` is the number of linked EvidencePacks
-- **graph** — `parents`, `children`, `evidence` arrays with IDs and relation type
-- **memory** — decision-memory entries scoped to this artifact
+- **graph** - `parents`, `children`, `evidence` arrays with IDs and relation type
+- **memory** - decision-memory entries scoped to this artifact
 
 Red flags:
 
-- `r_eff: 0.0` and `evidence_count: 0` on an active artifact — blind spot, create evidence
-- `validation.verdict: "FAIL"` on an active artifact — should never happen, shows ingestion drift
-- Empty `graph.parents` on a PRD that claims to implement an Epic — missing link
+- `r_eff: 0.0` and `evidence_count: 0` on an active artifact - blind spot, create evidence
+- `validation.verdict: "FAIL"` on an active artifact - should never happen, shows ingestion drift
+- Empty `graph.parents` on a PRD that claims to implement an Epic - missing link
 
 ## How it fits the workflow
 
@@ -121,8 +121,8 @@ Shape → Validate → Reason → Code → Evidence → Activate
 
 ## See also
 
-- [`forgeplan get`](/docs/cli/get/) — lighter subset (artifact only)
-- [`forgeplan validate`](/docs/cli/validate/) — validation subset
-- [`forgeplan score`](/docs/cli/score/) — scoring subset
-- [`forgeplan reason`](/docs/cli/reason/) — consumes context for ADI analysis
-- [`forgeplan health`](/docs/cli/health/) — project-wide dashboard
+- [`forgeplan get`](/docs/cli/get/) - lighter subset (artifact only)
+- [`forgeplan validate`](/docs/cli/validate/) - validation subset
+- [`forgeplan score`](/docs/cli/score/) - scoring subset
+- [`forgeplan reason`](/docs/cli/reason/) - consumes context for ADI analysis
+- [`forgeplan health`](/docs/cli/health/) - project-wide dashboard

@@ -1,6 +1,6 @@
 ---
 title: forgeplan drift
-description: "Detect decisions whose affected files changed after the decision was made — de-facto stale ADRs."
+description: "Detect decisions whose affected files changed after the decision was made - de-facto stale ADRs."
 ---
 
 `forgeplan drift` compares each artifact's `Affected Files` list against git history.
@@ -15,15 +15,15 @@ and drift is often the one you forget.
 
 ## When to use
 
-- Monthly architecture review — which ADRs are the code actively violating?
-- After a big refactor — see which decisions need to be re-validated against the new shape of the code.
-- Before citing an ADR in a PR review — is it still describing reality?
-- Release prep — refresh drifted decisions before cutting the release.
+- Monthly architecture review - which ADRs are the code actively violating?
+- After a big refactor - see which decisions need to be re-validated against the new shape of the code.
+- Before citing an ADR in a PR review - is it still describing reality?
+- Release prep - refresh drifted decisions before cutting the release.
 
 ## When NOT to use
 
-- On artifacts without an `Affected Files` section — use `coverage --backfill` first.
-- On a fresh workspace — drift needs git history to compute against.
+- On artifacts without an `Affected Files` section - use `coverage --backfill` first.
+- On a fresh workspace - drift needs git history to compute against.
 
 ## Usage
 
@@ -56,12 +56,12 @@ ADR-002  LanceDB schema v2
   decided:  2026-03-15
   affected: crates/forgeplan-core/src/db/schema.rs (modified 5 times since)
             crates/forgeplan-core/src/db/migrations.rs (modified 3 times since)
-  verdict:  DRIFTED — reassess
+  verdict:  DRIFTED - reassess
 
 ADR-005  Lifecycle state machine
   decided:  2026-02-20
   affected: crates/forgeplan-core/src/lifecycle/mod.rs (modified 2 times since)
-  verdict:  POSSIBLY DRIFTED — review changes
+  verdict:  POSSIBLY DRIFTED - review changes
 
 2 decisions show drift
 ```
@@ -90,7 +90,7 @@ For each drifted ADR you have three moves:
 | POSSIBLY DRIFTED  | minor edits, review recommended                      |
 | CLEAN             | no changes to affected files (not shown by default)  |
 
-Heavy drift on a Deep or Critical ADR is a red flag — the codebase has outgrown its
+Heavy drift on a Deep or Critical ADR is a red flag - the codebase has outgrown its
 own documented architecture.
 
 ## How it fits the workflow
@@ -104,8 +104,8 @@ have ADRs?" and `drift` asks "do those ADRs still match the code?"
 
 ## See also
 
-- [`forgeplan coverage`](/docs/cli/coverage/) — module-level decision coverage
-- [`forgeplan scan`](/docs/cli/scan/) — populate the module list coverage uses
-- [`forgeplan supersede`](/docs/cli/supersede/) — retire a drifted decision in favour of a new one
-- [`forgeplan renew`](/docs/cli/renew/) — keep a still-valid decision alive
+- [`forgeplan coverage`](/docs/cli/coverage/) - module-level decision coverage
+- [`forgeplan scan`](/docs/cli/scan/) - populate the module list coverage uses
+- [`forgeplan supersede`](/docs/cli/supersede/) - retire a drifted decision in favour of a new one
+- [`forgeplan renew`](/docs/cli/renew/) - keep a still-valid decision alive
 - [CLI overview](/docs/cli/)

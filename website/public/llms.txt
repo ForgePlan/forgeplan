@@ -5,8 +5,8 @@
 ## Core
 
 - [Home](https://forgeplan.dev/): Product overview, quickstart, and install instructions
-- [Guides — 19 interactive lessons](https://forgeplan.dev/guides/): Decision-logging, DDR/ADR format, Trust Calculus, AI-agent harness engineering
-- [Blog — long-form](https://forgeplan.dev/blog/): Essays on engineering decisions, evidence scoring, and AI-agent context
+- [Guides - 19 interactive lessons](https://forgeplan.dev/guides/): Decision-logging, DDR/ADR format, Trust Calculus, AI-agent harness engineering
+- [Blog - long-form](https://forgeplan.dev/blog/): Essays on engineering decisions, evidence scoring, and AI-agent context
 
 ## Getting Started
 
@@ -31,10 +31,10 @@
 - [Trust Calculus in 3D](https://forgeplan.dev/guides/trust-calculus): Interactive 3D F/G/R scene with seven evidence points
 - [ADI as a daily practice](https://forgeplan.dev/guides/adi-overview): Three-version analysis, when to apply
 - [Lifecycle: draft to terminal](https://forgeplan.dev/guides/lifecycle-cycle): State machine, stale as forgotten state, renew/reopen
-- [Hint Contract — 5 markers](https://forgeplan.dev/guides/agent-protocol-cycle): Next/Or/Wait/Done/Fix rules for agent tools
+- [Hint Contract - 5 markers](https://forgeplan.dev/guides/agent-protocol-cycle): Next/Or/Wait/Done/Fix rules for agent tools
 - [Multi-agent coordination](https://forgeplan.dev/guides/multi-agent-cycle): Dispatch/claim/release, conflict-free buckets, WIP=1
 - [Forgeplan as operational layer](https://forgeplan.dev/guides/forgeplan-cycle): CLI + MCP + artifact DAG, four depth levels
-- [First Artifact — hands-on walkthrough](https://forgeplan.dev/guides/first-artifact): Simulated terminal: init → activate in 20 minutes
+- [First Artifact - hands-on walkthrough](https://forgeplan.dev/guides/first-artifact): Simulated terminal: init → activate in 20 minutes
 
 ## Reference
 
@@ -64,4 +64,4 @@
 
 - [GitHub repository](https://github.com/ForgePlan/forgeplan): Rust source, MIT license, open development
 - [Releases](https://github.com/ForgePlan/forgeplan/releases): Pre-built binaries (cargo install, brew, curl)
-- [Author — Eli Rum](https://elirum.me): Personal page
+- [Author - Eli Rum](https://elirum.me): Personal page

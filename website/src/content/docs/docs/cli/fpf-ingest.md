@@ -9,16 +9,16 @@ Run it **once per workspace**, typically right after `forgeplan init -y`. After 
 
 ## When to use
 
-- **Right after `forgeplan init -y`** — seed the KB before doing any reasoning work.
-- **After wiping `.forgeplan/lance/`** — because lance is gitignored, fresh clones need re-ingest.
-- **After a Forgeplan upgrade** that ships new FPF sections — re-ingest to refresh the corpus.
+- **Right after `forgeplan init -y`** - seed the KB before doing any reasoning work.
+- **After wiping `.forgeplan/lance/`** - because lance is gitignored, fresh clones need re-ingest.
+- **After a Forgeplan upgrade** that ships new FPF sections - re-ingest to refresh the corpus.
 - **When `fpf status` reports the KB as stale or empty.**
 
 ## When NOT to use
 
 - You don't need to run it before every reasoning session; the KB persists across invocations.
-- Don't run it in parallel with `forgeplan reason --fpf` — let ingest finish first.
-- Not a replacement for `forgeplan scan-import` — that rebuilds the **artifact** index, not the FPF KB.
+- Don't run it in parallel with `forgeplan reason --fpf` - let ingest finish first.
+- Not a replacement for `forgeplan scan-import` - that rebuilds the **artifact** index, not the FPF KB.
 
 ## Usage
 
@@ -34,12 +34,12 @@ forgeplan fpf ingest [OPTIONS]
   -V, --version      Print version
 ```
 
-By default, `fpf ingest` reads the FPF spec bundled inside the Forgeplan binary. Pass `--path` to ingest from an external sections directory instead — useful for local FPF spec development or testing a patched corpus.
+By default, `fpf ingest` reads the FPF spec bundled inside the Forgeplan binary. Pass `--path` to ingest from an external sections directory instead - useful for local FPF spec development or testing a patched corpus.
 
 ## Examples
 
 ```bash
-# First-time setup — uses bundled spec
+# First-time setup - uses bundled spec
 forgeplan init -y
 forgeplan fpf ingest
 
@@ -55,7 +55,7 @@ forgeplan fpf ingest --path ./fpf-sections/
 
 1. Forgeplan locates the bundled FPF spec (ships inside the binary).
 2. Sections are parsed into structured chunks (ID, title, part, body).
-3. Embeddings are generated via BGE-M3 (feature-gated — falls back gracefully if `semantic-search` is disabled).
+3. Embeddings are generated via BGE-M3 (feature-gated - falls back gracefully if `semantic-search` is disabled).
 4. LanceDB writes one row per section into the `fpf_kb` table.
 5. A status record is stamped with ingest timestamp and section count.
 
@@ -79,7 +79,7 @@ It's also a prerequisite for `forgeplan reason --fpf`, which pulls first-princip
 
 ## See also
 
-- [`forgeplan fpf`](/docs/cli/fpf/) — parent command
-- [`forgeplan fpf status`](/docs/cli/fpf-status/) — verify ingest succeeded
-- [`forgeplan fpf search`](/docs/cli/fpf-search/) — query the ingested KB
-- [`forgeplan init`](/docs/cli/init/) — workspace bootstrap that precedes ingest
+- [`forgeplan fpf`](/docs/cli/fpf/) - parent command
+- [`forgeplan fpf status`](/docs/cli/fpf-status/) - verify ingest succeeded
+- [`forgeplan fpf search`](/docs/cli/fpf-search/) - query the ingested KB
+- [`forgeplan init`](/docs/cli/init/) - workspace bootstrap that precedes ingest

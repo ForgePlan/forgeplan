@@ -1,6 +1,6 @@
 ---
 title: forgeplan_dispatch
-description: "Compute a parallel-safe work plan for N sub-agents — buckets, serial queue, reasoning."
+description: "Compute a parallel-safe work plan for N sub-agents - buckets, serial queue, reasoning."
 ---
 
 The orchestrator entry point for multi-agent work. Returns one bucket per agent with
@@ -8,7 +8,7 @@ artifacts that can be worked in parallel without file conflicts, plus a serial q
 leftover work. Skips artifacts already claimed (live claim by another agent), defers
 artifacts whose `affected_files` Jaccard-overlap exceeds the threshold (default 0.3),
 respects the structural dependency graph (blocked artifacts never enter a bucket), and
-when `agent_skills` is provided routes by domain match. Read-only — does not mutate
+when `agent_skills` is provided routes by domain match. Read-only - does not mutate
 workspace state.
 
 **Category**: Multi-agent
@@ -16,9 +16,9 @@ workspace state.
 ## When an agent calls it
 
 - Start of a multi-agent sprint: orchestrator wants 2–5 sub-agents on non-overlapping work.
-- After a [`forgeplan_release`](/docs/mcp/forgeplan_release/) — re-plan because the candidate set changed.
-- After [`forgeplan_new`](/docs/mcp/forgeplan_new/) creates fresh drafts — incorporate them.
-- TTL expiry on a stuck claim — re-dispatch to backfill the freed slot.
+- After a [`forgeplan_release`](/docs/mcp/forgeplan_release/) - re-plan because the candidate set changed.
+- After [`forgeplan_new`](/docs/mcp/forgeplan_new/) creates fresh drafts - incorporate them.
+- TTL expiry on a stuck claim - re-dispatch to backfill the freed slot.
 
 ## Input parameters
 
@@ -60,7 +60,7 @@ _Schema source: `crates/forgeplan-mcp/src/types.rs::DispatchParams`_
 
 Hand `buckets[i]` to sub-agent `i`. Re-dispatch when the claim set or candidate set
 changes. `skipped_parse_errors > 0` means at least one candidate's frontmatter could
-not be read — check server logs.
+not be read - check server logs.
 
 ## Example invocation
 
@@ -88,18 +88,18 @@ Whole-Epic re-plan:
 
 ## Typical sequence
 
-1. `forgeplan_dispatch agents=N` — orchestrator gets the plan.
+1. `forgeplan_dispatch agents=N` - orchestrator gets the plan.
 2. Each sub-agent `i` calls [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) on `buckets[i][0]`.
 3. Sub-agents work; orchestrator polls [`forgeplan_claims`](/docs/mcp/forgeplan_claims/).
 4. [`forgeplan_release`](/docs/mcp/forgeplan_release/) on completion → re-dispatch.
 
 ## CLI equivalent
 
-[`forgeplan dispatch`](/docs/cli/) — same engine. Shell-driven orchestrators use the CLI;
+[`forgeplan dispatch`](/docs/cli/) - same engine. Shell-driven orchestrators use the CLI;
 LLM-driven orchestrators use the MCP tool.
 
 ## See also
 
-- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) — sub-agent picks a bucket item
-- [`forgeplan_release`](/docs/mcp/forgeplan_release/) — return a slot to the pool
-- [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) — monitor in-flight work
+- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) - sub-agent picks a bucket item
+- [`forgeplan_release`](/docs/mcp/forgeplan_release/) - return a slot to the pool
+- [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) - monitor in-flight work

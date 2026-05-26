@@ -3,8 +3,8 @@ title: forgeplan remember
 description: "Save a memory (fact, convention, procedure, observation, constraint) for later recall"
 ---
 
-Capture a short-form memory — a fact, convention, procedure, observation, or
-constraint — into the Forgeplan decision journal. Memories are lightweight,
+Capture a short-form memory - a fact, convention, procedure, observation, or
+constraint - into the Forgeplan decision journal. Memories are lightweight,
 local notes that you can later surface with
 [`recall`](/docs/cli/recall/) or promote into a full artifact (Note, Problem,
 ADR) with [`promote`](/docs/cli/promote/).
@@ -91,16 +91,16 @@ forgeplan remember --forget MEM-012
 observe something → remember → recall later → promote to artifact
 ```
 
-1. **During work** — notice a fact, convention, or surprise. Capture it
+1. **During work** - notice a fact, convention, or surprise. Capture it
    immediately with `remember` so the context isn't lost.
-2. **Later** — [`forgeplan recall "keyword"`](/docs/cli/recall/) surfaces
+2. **Later** - [`forgeplan recall "keyword"`](/docs/cli/recall/) surfaces
    relevant memories when you start related work.
-3. **When it matures** — [`forgeplan promote MEM-XXX`](/docs/cli/promote/)
+3. **When it matures** - [`forgeplan promote MEM-XXX`](/docs/cli/promote/)
    upgrades the memory into a proper Note, ProblemCard, or ADR, preserving
    the original capture as evidence.
 
 This is the lightweight end of the Forgeplan artifact spectrum: you don't
-need to validate, score, or activate a memory — just capture it and move on.
+need to validate, score, or activate a memory - just capture it and move on.
 
 ## Storage
 
@@ -112,7 +112,7 @@ source-of-truth rules: edit via CLI, or edit the markdown and run
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan recall`](/docs/cli/recall/) — search and retrieve memories
-- [`forgeplan promote`](/docs/cli/promote/) — upgrade a memory into an artifact
-- [`forgeplan journal`](/docs/cli/journal/) — full decision journal with R_eff
-- [`forgeplan new note`](/docs/cli/new/) — go straight to a Note if the memory is already mature
+- [`forgeplan recall`](/docs/cli/recall/) - search and retrieve memories
+- [`forgeplan promote`](/docs/cli/promote/) - upgrade a memory into an artifact
+- [`forgeplan journal`](/docs/cli/journal/) - full decision journal with R_eff
+- [`forgeplan new note`](/docs/cli/new/) - go straight to a Note if the memory is already mature

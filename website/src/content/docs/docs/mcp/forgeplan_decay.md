@@ -9,12 +9,12 @@ Show how aged / expired evidence has degraded R_eff scores across the workspace.
 
 ## When an agent calls it
 
-- **Quality audit** — see which decisions are silently losing trust from old evidence.
-- **Prioritising refresh work** — the biggest current-vs-fresh deltas are the highest-impact renewals.
-- **Before a release** — make sure shipped decisions aren't riding on decayed evidence.
+- **Quality audit** - see which decisions are silently losing trust from old evidence.
+- **Prioritising refresh work** - the biggest current-vs-fresh deltas are the highest-impact renewals.
+- **Before a release** - make sure shipped decisions aren't riding on decayed evidence.
 - **Explaining R_eff drops** to the user ("why did PRD-039 score go from 0.85 to 0.41?").
 
-Decay follows the R_eff rule: expired evidence is not removed — it drops to CL0 with weight 0.1, so the weakest link in the chain collapses the overall score.
+Decay follows the R_eff rule: expired evidence is not removed - it drops to CL0 with weight 0.1, so the weakest link in the chain collapses the overall score.
 
 ## Input parameters
 
@@ -48,11 +48,11 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Typical sequence
 
-1. `forgeplan_stale` — find expired artifacts.
-2. `forgeplan_decay` — see which decisions they damaged.
-3. Sort by `delta` descending — highest-impact first.
+1. `forgeplan_stale` - find expired artifacts.
+2. `forgeplan_decay` - see which decisions they damaged.
+3. Sort by `delta` descending - highest-impact first.
 4. `forgeplan_renew` or create new `EvidencePack` → `forgeplan_link`.
-5. `forgeplan_score` — confirm R_eff rebounded.
+5. `forgeplan_score` - confirm R_eff rebounded.
 
 ## CLI equivalent
 
@@ -62,7 +62,7 @@ forgeplan decay
 
 ## See also
 
-- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) — list of expired artifacts.
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — recompute R_eff for a specific artifact.
-- [`forgeplan_journal`](/docs/mcp/forgeplan_journal/) — chronological view with R_eff.
+- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) - list of expired artifacts.
+- [`forgeplan_score`](/docs/mcp/forgeplan_score/) - recompute R_eff for a specific artifact.
+- [`forgeplan_journal`](/docs/mcp/forgeplan_journal/) - chronological view with R_eff.
 - [Methodology guide](/docs/methodology/overview/)

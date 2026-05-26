@@ -4,7 +4,7 @@ description: Practical rules from the Forgeplan methodology
 ---
 
 ## 1. Route before you build
-`forgeplan route "your task"` — determines depth and pipeline. Don't skip this.
+`forgeplan route "your task"` - determines depth and pipeline. Don't skip this.
 
 ## 2. Every requirement: "[Actor] can [capability]"
 No tech names in PRDs. Describe WHAT, not HOW. "User can log in" not "React component renders login form".
@@ -19,7 +19,7 @@ PRD → Epic, RFC → PRD, ADR → RFC. Always traceable upward.
 Old artifacts get `status: superseded`. History is preserved. Never `rm`.
 
 ## 6. R_eff = min(evidence)
-Trust is the weakest link. Not average — minimum. One blind spot drags everything.
+Trust is the weakest link. Not average - minimum. One blind spot drags everything.
 
 ## 7. Evidence expires
 `valid_until` TTL. Expired = 0.1 (stale, not absent). Re-test periodically.

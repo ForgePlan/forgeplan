@@ -1,26 +1,26 @@
 ---
 title: forgeplan release
-description: "Release an active claim — drop the lock so other sub-agents can pick up the artifact. Idempotent; missing claim is a no-op."
+description: "Release an active claim - drop the lock so other sub-agents can pick up the artifact. Idempotent; missing claim is a no-op."
 ---
 
-`forgeplan release` drops a claim — the artifact returns to the candidate pool, and the next [`forgeplan dispatch`](/docs/cli/dispatch/) can hand it to another agent. It deletes the claim file at `.forgeplan/claims/<id>.yaml`.
+`forgeplan release` drops a claim - the artifact returns to the candidate pool, and the next [`forgeplan dispatch`](/docs/cli/dispatch/) can hand it to another agent. It deletes the claim file at `.forgeplan/claims/<id>.yaml`.
 
-By default the command refuses if a different agent holds the claim — you can only release your own work. To override (e.g. after a sub-agent crashed and is no longer running), pass `--force`. Calling release on an artifact with no active claim is a no-op — idempotent — so cleanup scripts can run without checking first.
+By default the command refuses if a different agent holds the claim - you can only release your own work. To override (e.g. after a sub-agent crashed and is no longer running), pass `--force`. Calling release on an artifact with no active claim is a no-op - idempotent - so cleanup scripts can run without checking first.
 
 Mirrors [`forgeplan_release`](/docs/mcp/forgeplan_release/) on the MCP side.
 
 ## When to use
 
-- A worker finished its artifact — release so the next dispatch round can give it to someone else.
-- A worker crashed or hung — the orchestrator runs `release --force` to free the slot.
-- A worker claimed the wrong ID by mistake — release immediately and try again.
-- End-of-session cleanup — iterate active claims and release each one before exit.
+- A worker finished its artifact - release so the next dispatch round can give it to someone else.
+- A worker crashed or hung - the orchestrator runs `release --force` to free the slot.
+- A worker claimed the wrong ID by mistake - release immediately and try again.
+- End-of-session cleanup - iterate active claims and release each one before exit.
 
 ## When NOT to use
 
-- To delete the artifact itself — release only drops the claim. For the artifact, use [`forgeplan delete`](/docs/cli/delete/).
-- To shorten a claim's TTL — release drops the claim entirely. To set a shorter TTL, just call [`forgeplan claim`](/docs/cli/claim/) again with the new value (idempotent for the holder).
-- To free a crashed worker's claim without `--force` — the command will refuse, since the agent identity does not match.
+- To delete the artifact itself - release only drops the claim. For the artifact, use [`forgeplan delete`](/docs/cli/delete/).
+- To shorten a claim's TTL - release drops the claim entirely. To set a shorter TTL, just call [`forgeplan claim`](/docs/cli/claim/) again with the new value (idempotent for the holder).
+- To free a crashed worker's claim without `--force` - the command will refuse, since the agent identity does not match.
 
 ## Usage
 
@@ -60,7 +60,7 @@ Drops the claim under the default `cli/<version>` identity. Calling again on an 
 forgeplan release RFC-012 --force
 ```
 
-The override path when a worker died but its claim has not yet expired. Use this from the orchestrator only — sub-agents should never force-release each other's claims.
+The override path when a worker died but its claim has not yet expired. Use this from the orchestrator only - sub-agents should never force-release each other's claims.
 
 ### Example 3: Explicit identity for shell-script orchestrators
 
@@ -76,7 +76,7 @@ This closes the multi-agent loop: `dispatch` → `claim` → work → **`release
 
 ## See also
 
-- [`forgeplan_release`](/docs/mcp/forgeplan_release/) — MCP equivalent
-- [`forgeplan claim`](/docs/cli/claim/) — acquire the claim
-- [`forgeplan claims`](/docs/cli/claims/) — see who holds what
-- [`forgeplan dispatch`](/docs/cli/dispatch/) — re-plan after release
+- [`forgeplan_release`](/docs/mcp/forgeplan_release/) - MCP equivalent
+- [`forgeplan claim`](/docs/cli/claim/) - acquire the claim
+- [`forgeplan claims`](/docs/cli/claims/) - see who holds what
+- [`forgeplan dispatch`](/docs/cli/dispatch/) - re-plan after release

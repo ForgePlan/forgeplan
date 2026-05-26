@@ -4,15 +4,15 @@ description: "Show blocked artifacts and what is blocking them"
 ---
 
 List artifacts that cannot make progress because one or more of their
-dependencies is not yet `active` (or worse — `deprecated`/`stale`). For each
+dependencies is not yet `active` (or worse - `deprecated`/`stale`). For each
 blocked artifact, the blocker chain is printed so you can see exactly what
 to unblock.
 
 ## When to use
 
-- Sprint start — identify work that is stuck before assigning
-- Daily standup — "what is waiting on me?"
-- CI gate — fail if anything critical-depth is blocked
+- Sprint start - identify work that is stuck before assigning
+- Daily standup - "what is waiting on me?"
+- CI gate - fail if anything critical-depth is blocked
 - Dependency audit during a release freeze
 
 ## Not to use when
@@ -78,10 +78,10 @@ RFC-007  Embed cache policy            [draft]
 |------------|------------------------------------------------------|
 | `[draft]`  | Blocker exists but is not yet active                 |
 | `[stale]`  | Blocker exceeded its `valid_until` date              |
-| `[deprecated]` | Blocker was deprecated — update the edge         |
-| `[missing]` | Referenced ID does not exist — broken link          |
+| `[deprecated]` | Blocker was deprecated - update the edge         |
+| `[missing]` | Referenced ID does not exist - broken link          |
 
-Exit code is 0 if nothing is blocked, 1 otherwise — handy for CI gates.
+Exit code is 0 if nothing is blocked, 1 otherwise - handy for CI gates.
 
 ## How it fits
 
@@ -98,7 +98,7 @@ Combine with [`order`](/docs/cli/order/) to re-plan around blockers, and with
 
 ## See also
 
-- [`forgeplan order`](/docs/cli/order/) — topological sequence
-- [`forgeplan graph`](/docs/cli/graph/) — full dependency graph
-- [`forgeplan blindspots`](/docs/cli/blindspots/) — decisions without evidence
-- [`forgeplan health`](/docs/cli/health/) — project rollup
+- [`forgeplan order`](/docs/cli/order/) - topological sequence
+- [`forgeplan graph`](/docs/cli/graph/) - full dependency graph
+- [`forgeplan blindspots`](/docs/cli/blindspots/) - decisions without evidence
+- [`forgeplan health`](/docs/cli/health/) - project rollup

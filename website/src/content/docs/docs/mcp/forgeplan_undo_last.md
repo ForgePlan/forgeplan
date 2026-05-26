@@ -1,13 +1,13 @@
 ---
 title: forgeplan_undo_last
-description: "Reverse the most recent destructive operation (delete / supersede / deprecate) — undo button for AI agents."
+description: "Reverse the most recent destructive operation (delete / supersede / deprecate) - undo button for AI agents."
 ---
 
 Walks the soft-delete trash newest-first, finds the most recent non-consumed receipt
 within `within_hours`, and applies the same restore logic as
 [`forgeplan_restore`](/docs/mcp/forgeplan_restore/). Use when the agent realizes
 "the last thing I did was wrong" without needing to know the artifact ID.
-Returns an error with guidance when no matching receipt exists — never guesses.
+Returns an error with guidance when no matching receipt exists - never guesses.
 
 **Category**: Lifecycle / Recovery
 
@@ -16,7 +16,7 @@ Returns an error with guidance when no matching receipt exists — never guesses
 - Immediately after a misfired `forgeplan_delete` / `_supersede` / `_deprecate`.
 - User says "undo that" without specifying which artifact.
 - Recovering from an LLM hallucination that took a destructive action.
-- Pair with [`forgeplan_activity_stats`](/docs/mcp/forgeplan_activity_stats/) — saw the
+- Pair with [`forgeplan_activity_stats`](/docs/mcp/forgeplan_activity_stats/) - saw the
   unexpected destructive call, undo it.
 
 ## Input parameters
@@ -69,17 +69,17 @@ Wider search after an idle period:
 ## Typical sequence
 
 1. Misfire happens (`forgeplan_delete`, `_supersede`, or `_deprecate`).
-2. `forgeplan_undo_last` — reverse it.
+2. `forgeplan_undo_last` - reverse it.
 3. Repeat the call to undo the previous op (each call consumes the newest non-consumed receipt).
 4. Or switch to [`forgeplan_restore <id>`](/docs/mcp/forgeplan_restore/) once you know the specific ID.
 
 ## CLI equivalent
 
-[`forgeplan undo`](/docs/cli/) — same trash-walking logic.
+[`forgeplan undo`](/docs/cli/) - same trash-walking logic.
 
 ## See also
 
-- [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) — restore a specific artifact by ID
-- [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) — inspect the destructive-op timeline
-- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) — the soft-delete this reverses
+- [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) - restore a specific artifact by ID
+- [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) - inspect the destructive-op timeline
+- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) - the soft-delete this reverses
 - [MCP overview](/docs/mcp/)

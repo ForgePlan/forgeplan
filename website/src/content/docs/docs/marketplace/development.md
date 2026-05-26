@@ -27,9 +27,9 @@ Skills use **agentic RAG** -- intelligent retrieval that loads only ~300 lines a
 
 ### How it works:
 
-1. **SKILL.md** = router — maps user needs to sections via table
-2. **sections/_index.md** = section index — lists files with descriptions
-3. **sections/topic.md** = content — ~30-50 lines each
+1. **SKILL.md** = router - maps user needs to sections via table
+2. **sections/_index.md** = section index - lists files with descriptions
+3. **sections/topic.md** = content - ~30-50 lines each
 
 ```markdown
 <!-- SKILL.md -->

@@ -14,10 +14,10 @@ the TTL (30 days by default, lazily purged) are unrecoverable.
 
 ## When an agent calls it
 
-- "Restore PRD-042" — user noticed the wrong artifact was deleted yesterday.
+- "Restore PRD-042" - user noticed the wrong artifact was deleted yesterday.
 - After a `forgeplan_supersede` the agent realizes was wrong: restore the original.
 - Surgical recovery when [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) would
-  reverse the wrong operation — passing the ID is more precise than "the most recent".
+  reverse the wrong operation - passing the ID is more precise than "the most recent".
 - Auditing a trash receipt before committing to a real restore.
 
 ## Input parameters
@@ -74,18 +74,18 @@ When no receipt is found:
 
 ## Typical sequence
 
-1. [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) — find when the destructive op happened.
-2. `forgeplan_restore` — recover the specific artifact.
-3. [`forgeplan_get`](/docs/mcp/forgeplan_get/) — verify body, status, relations.
+1. [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) - find when the destructive op happened.
+2. `forgeplan_restore` - recover the specific artifact.
+3. [`forgeplan_get`](/docs/mcp/forgeplan_get/) - verify body, status, relations.
 4. Re-link any skipped relations manually if needed.
 
 ## CLI equivalent
 
-[`forgeplan restore <id>`](/docs/cli/) — same recovery semantics.
+[`forgeplan restore <id>`](/docs/cli/) - same recovery semantics.
 
 ## See also
 
-- [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) — reverse the most recent destructive op (no ID needed)
-- [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) — locate the receipt before restoring
-- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) — the soft-delete this reverses
+- [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) - reverse the most recent destructive op (no ID needed)
+- [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) - locate the receipt before restoring
+- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) - the soft-delete this reverses
 - [MCP overview](/docs/mcp/)

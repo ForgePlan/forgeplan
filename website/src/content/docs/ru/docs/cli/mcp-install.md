@@ -1,13 +1,13 @@
 ---
 title: forgeplan mcp install
-description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP config — cross-platform, idempotent, brew-upgrade-safe."
+description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP config - cross-platform, idempotent, brew-upgrade-safe."
 ---
 
 `forgeplan mcp install` записывает MCP-сервер Forgeplan в файл конфигурации клиента
 (`.mcp.json`, `~/.claude.json`, `~/.cursor/mcp.json` или `~/.codeium/windsurf/mcp_config.json`),
 не затирая ничего другого, что там уже есть. Команда определяет абсолютный путь к
 работающему бинарнику, мерджит его в карту `mcpServers` и сохраняет существующий блок
-`env` для записи Forgeplan — поэтому повторный запуск после обновления Homebrew просто
+`env` для записи Forgeplan - поэтому повторный запуск после обновления Homebrew просто
 обновляет путь.
 
 Кроссплатформенно: macOS, Linux, Windows (использует `dirs::home_dir()` и `PATHEXT` для
@@ -24,9 +24,9 @@ description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP co
 
 ## Когда НЕ использовать
 
-- Для пер-tool конфигурации — настраивать нечего, сервер читает `./.forgeplan/`.
-- Для HTTP / сетевого MCP — Forgeplan поставляется только со stdio.
-- Чтобы удалить Forgeplan из клиента — отредактируйте файл конфигурации вручную;
+- Для пер-tool конфигурации - настраивать нечего, сервер читает `./.forgeplan/`.
+- Для HTTP / сетевого MCP - Forgeplan поставляется только со stdio.
+- Чтобы удалить Forgeplan из клиента - отредактируйте файл конфигурации вручную;
   `install` только добавляет.
 
 ## Использование
@@ -59,7 +59,7 @@ forgeplan mcp install [OPTIONS] --client <CLIENT>
 forgeplan mcp install --client claude
 ```
 
-Записывает `~/.claude.json`. Scope по умолчанию — `user`, поэтому каждый проект,
+Записывает `~/.claude.json`. Scope по умолчанию - `user`, поэтому каждый проект,
 который открывает Claude Code, видит инструменты Forgeplan.
 
 ### Пример 2: Cursor, только проект
@@ -69,7 +69,7 @@ forgeplan mcp install --client cursor --scope project
 ```
 
 Записывает `./.cursor/mcp.json`. Forgeplan загружается только когда активным
-рабочим пространством является этот репозиторий — полезно, когда лишь часть
+рабочим пространством является этот репозиторий - полезно, когда лишь часть
 проектов в монорепозитории использует Forgeplan.
 
 ### Пример 3: Превью перед записью
@@ -87,10 +87,10 @@ forgeplan mcp install --client windsurf --dry-run
 forgeplan mcp install --client cursor --use-name forgeplan
 ```
 
-Записывает `"command": "forgeplan"` — рассчитывает на `$PATH` в момент запуска MCP.
+Записывает `"command": "forgeplan"` - рассчитывает на `$PATH` в момент запуска MCP.
 **Оговорка для GUI-клиентов macOS**: Claude Code Mac и Cursor app **не** наследуют
 shell PATH, поэтому короткие имена ломаются, если вы не настроили
-`launchctl setenv PATH ...`. Дефолт (абсолютный путь) — более безопасный выбор.
+`launchctl setenv PATH ...`. Дефолт (абсолютный путь) - более безопасный выбор.
 
 ## Записываемые файлы конфигурации
 
@@ -108,11 +108,11 @@ shell PATH, поэтому короткие имена ломаются, есл�
 - Заменяет `command`, `args` и transport для записи `forgeplan`.
 - **Сохраняет** существующий блок `env` для записи (project-specific API-ключи и т. д.).
 - Оставляет все остальные серверы в `mcpServers` нетронутыми.
-- Идемпотентно — повторный запуск с теми же флагами ничего не делает.
+- Идемпотентно - повторный запуск с теми же флагами ничего не делает.
 
 ## Место в рабочем процессе
 
-`mcp install` — мост между «бинарник на диске» и «агент может вызывать инструменты
+`mcp install` - мост между «бинарник на диске» и «агент может вызывать инструменты
 Forgeplan». После успеха перезапустите клиента, и поверхность методологии
 (Shape → Validate → Code → Evidence → Activate) станет доступна через
 инструменты `mcp__forgeplan__*`. После рестарта вызовите `forgeplan health`, чтобы
@@ -120,8 +120,8 @@ Forgeplan». После успеха перезапустите клиента, 
 
 ## См. также
 
-- [`forgeplan mcp`](/ru/docs/cli/mcp/) — родительская команда
-- [`forgeplan mcp serve`](/ru/docs/cli/mcp-serve/) — запустить сервер (алиас)
-- [`forgeplan serve`](/ru/docs/cli/serve/) — справочник по нижележащему серверу
-- [Индекс MCP-инструментов](/ru/docs/mcp/) — что предоставляет сервер после установки
-- [`forgeplan health`](/ru/docs/cli/health/) — проверка после рестарта клиента
+- [`forgeplan mcp`](/ru/docs/cli/mcp/) - родительская команда
+- [`forgeplan mcp serve`](/ru/docs/cli/mcp-serve/) - запустить сервер (алиас)
+- [`forgeplan serve`](/ru/docs/cli/serve/) - справочник по нижележащему серверу
+- [Индекс MCP-инструментов](/ru/docs/mcp/) - что предоставляет сервер после установки
+- [`forgeplan health`](/ru/docs/cli/health/) - проверка после рестарта клиента

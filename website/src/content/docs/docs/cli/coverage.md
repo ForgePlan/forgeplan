@@ -1,6 +1,6 @@
 ---
 title: forgeplan coverage
-description: "Show decision coverage per code module — which parts of the codebase have no linked ADR/PRD."
+description: "Show decision coverage per code module - which parts of the codebase have no linked ADR/PRD."
 ---
 
 `forgeplan coverage` cross-references the modules discovered by `forgeplan scan`
@@ -14,14 +14,14 @@ This is the "do we know why this exists?" view of the project. Paired with `drif
 ## When to use
 
 - Architecture review: "which modules are entirely undocumented?"
-- After a refactor that split or merged modules — rescan, recompute coverage.
+- After a refactor that split or merged modules - rescan, recompute coverage.
 - Onboarding: show a new teammate which files have ADRs they should read first.
 - Backfilling legacy: use `--backfill` to auto-insert `Affected Files` sections on artifacts that pre-date the module link requirement.
 
 ## When NOT to use
 
-- Before running `forgeplan scan` — coverage needs a module inventory first.
-- On tiny projects with 1–2 files — the signal is low.
+- Before running `forgeplan scan` - coverage needs a module inventory first.
+- On tiny projects with 1–2 files - the signal is low.
 
 ## Usage
 
@@ -90,11 +90,11 @@ uncovered module."
 | Section   | Meaning                                                            |
 |-----------|--------------------------------------------------------------------|
 | covered   | module → list of artifacts declaring it in `Affected Files`        |
-| uncovered | module with zero artifact references — document reasoning!        |
+| uncovered | module with zero artifact references - document reasoning!        |
 | overall   | percentage of scanned modules with at least one decision           |
 
 A healthy project sits above 70% coverage. Below 50% means you're coding by instinct.
-100% is usually over-documentation — some utility modules don't need ADRs.
+100% is usually over-documentation - some utility modules don't need ADRs.
 
 ## How it fits the workflow
 
@@ -107,8 +107,8 @@ from vibes into a prioritized list.
 
 ## See also
 
-- [`forgeplan scan`](/docs/cli/scan/) — populate the module inventory
-- [`forgeplan drift`](/docs/cli/drift/) — the other half of codebase reconciliation
-- [`forgeplan new adr`](/docs/cli/new/) — create the missing documentation
-- [`forgeplan health`](/docs/cli/health/) — includes coverage in project-level summary
+- [`forgeplan scan`](/docs/cli/scan/) - populate the module inventory
+- [`forgeplan drift`](/docs/cli/drift/) - the other half of codebase reconciliation
+- [`forgeplan new adr`](/docs/cli/new/) - create the missing documentation
+- [`forgeplan health`](/docs/cli/health/) - includes coverage in project-level summary
 - [CLI overview](/docs/cli/)

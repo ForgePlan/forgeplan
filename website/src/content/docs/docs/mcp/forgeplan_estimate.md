@@ -9,10 +9,10 @@ Estimate effort (in hours) for an artifact by parsing its Functional Requirement
 
 ## When an agent calls it
 
-- **Sprint planning** — get hours for each PRD / RFC before committing scope.
-- **Grade matching** — see how many hours the task takes for your own grade via `my_grade`.
-- **AI-assisted plans** — `grade: "ai"` applies AI multipliers (typically 0.03–0.4× of senior) for tasks that can be delegated.
-- **Calibration feedback loop** — compare actual vs estimated after the sprint to tune the profile.
+- **Sprint planning** - get hours for each PRD / RFC before committing scope.
+- **Grade matching** - see how many hours the task takes for your own grade via `my_grade`.
+- **AI-assisted plans** - `grade: "ai"` applies AI multipliers (typically 0.03–0.4× of senior) for tasks that can be delegated.
+- **Calibration feedback loop** - compare actual vs estimated after the sprint to tune the profile.
 
 ## Input parameters
 
@@ -53,8 +53,8 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::EstimateParams`_
 
 ## Typical sequence
 
-1. `forgeplan_estimate` with `my_grade: true` — get personal hours.
-2. Compare with sprint capacity — scope down if needed.
+1. `forgeplan_estimate` with `my_grade: true` - get personal hours.
+2. Compare with sprint capacity - scope down if needed.
 3. After sprint: feed actual vs estimate back into `grade_profile` config.
 
 ## CLI equivalent
@@ -66,6 +66,6 @@ forgeplan estimate PRD-039 --grade ai
 
 ## See also
 
-- [`forgeplan_calibrate`](/docs/mcp/forgeplan_calibrate/) — depth suggestion (feeds into estimation).
-- [`forgeplan_progress`](/docs/mcp/forgeplan_progress/) — actual completion % vs estimate.
+- [`forgeplan_calibrate`](/docs/mcp/forgeplan_calibrate/) - depth suggestion (feeds into estimation).
+- [`forgeplan_progress`](/docs/mcp/forgeplan_progress/) - actual completion % vs estimate.
 - [Methodology guide](/docs/methodology/overview/)

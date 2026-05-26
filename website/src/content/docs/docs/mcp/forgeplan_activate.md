@@ -3,14 +3,14 @@ title: forgeplan_activate
 description: "Activate an artifact (draft → active). Requires all MUST validation rules to pass."
 ---
 
-Promotes an artifact from `draft` to `active`. This is the lifecycle gate that enforces quality: if `forgeplan_validate` would report any MUST failure, activation is rejected with the list of blockers. Once active, the artifact counts in `forgeplan_health`, appears in `forgeplan_list --status active`, and becomes a citable decision. For Notes and Problems there is no validation gate — they activate immediately.
+Promotes an artifact from `draft` to `active`. This is the lifecycle gate that enforces quality: if `forgeplan_validate` would report any MUST failure, activation is rejected with the list of blockers. Once active, the artifact counts in `forgeplan_health`, appears in `forgeplan_list --status active`, and becomes a citable decision. For Notes and Problems there is no validation gate - they activate immediately.
 
 **Category**: Lifecycle
 
 ## When an agent calls this
 
-- After filling the PRD stub + validate PASS + evidence attached + R_eff > 0 — "ready to ship".
-- At the end of a sprint checklist: all FRs checked, all tests green, PR merged — time to flip the switch.
+- After filling the PRD stub + validate PASS + evidence attached + R_eff > 0 - "ready to ship".
+- At the end of a sprint checklist: all FRs checked, all tests green, PR merged - time to flip the switch.
 - When the user says "mark PRD-042 as active now" and the agent has verified the gates.
 
 ## Input parameters
@@ -66,15 +66,15 @@ With typical agent context:
 
 ## Typical sequence
 
-Full cycle: `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` PASS → code → `forgeplan_new evidence` → `forgeplan_link` → `forgeplan_score` > 0 → `forgeplan_activate`. Never activate a PRD without code and evidence — it becomes a false promise.
+Full cycle: `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` PASS → code → `forgeplan_new evidence` → `forgeplan_link` → `forgeplan_score` > 0 → `forgeplan_activate`. Never activate a PRD without code and evidence - it becomes a false promise.
 
 ## CLI equivalent
 
-- [`forgeplan activate`](/docs/cli/activate/) — same transition
+- [`forgeplan activate`](/docs/cli/activate/) - same transition
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — pre-flight check
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — next lifecycle stage
-- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) — terminal retirement
+- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - pre-flight check
+- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - next lifecycle stage
+- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - terminal retirement

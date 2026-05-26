@@ -20,14 +20,6 @@ for (const p of posts) {
 }
 const topicsSorted = [...topicCounts.entries()].sort((a, b) => b[1] - a[1]);
 
-// Archive by year-month
-const archiveCounts = new Map<string, number>();
-for (const p of posts) {
-  const ym = p.data.publishedAt.toISOString().slice(0, 7); // "2026-05"
-  archiveCounts.set(ym, (archiveCounts.get(ym) ?? 0) + 1);
-}
-const archive = [...archiveCounts.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-
 // Series with counts
 const seriesCounts = new Map<string, number>();
 for (const p of posts) {
@@ -46,7 +38,6 @@ const t = lang === 'ru'
       about: 'Об авторе',
       latest: 'Свежие посты',
       topics: 'Темы',
-      archive: 'Архив',
       series: 'Серии',
       subscribe: 'Подписка',
       rss: 'RSS лента',
@@ -58,7 +49,6 @@ const t = lang === 'ru'
       about: 'About',
       latest: 'Latest posts',
       topics: 'Topics',
-      archive: 'Archive',
       series: 'Series',
       subscribe: 'Subscribe',
       rss: 'RSS feed',
@@ -67,17 +57,16 @@ const t = lang === 'ru'
       bio: 'Indie hacker. Creator of Forgeplan. Writing about methodology, AI agents, and Rust.',
     };
 
-const monthName = (ym: string): string => {
-  const [y, m] = ym.split('-');
-  if (lang === 'ru') {
-    const months = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
-    return `${months[parseInt(m, 10) - 1]} ${y}`;
-  }
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${months[parseInt(m, 10) - 1]} ${y}`;
-};
-
 const rssUrl = lang === 'ru' ? '/ru/blog/rss.xml' : '/blog/rss.xml';
+
+function postsLabel(n: number): string {
+  if (lang === 'ru') {
+    if (n === 1) return 'пост';
+    if (n >= 2 && n <= 4) return 'поста';
+    return 'постов';
+  }
+  return n === 1 ? 'post' : 'posts';
+}
 ---
 <aside class="blog-sidebar" aria-label={lang === 'ru' ? 'Боковая панель' : 'Sidebar'}>
 
@@ -132,23 +121,8 @@ const rssUrl = lang === 'ru' ? '/ru/blog/rss.xml' : '/blog/rss.xml';
           <li>
             <a href={`${langPrefix}/series/${name}`}>
               <span class="blog-sidebar-post-title">{name}</span>
-              <span class="blog-sidebar-post-date">{count}</span>
+              <span class="blog-sidebar-post-date">{`${count} ${postsLabel(count)}`}</span>
             </a>
-          </li>
-        ))}
-      </ul>
-    </section>
-  )}
-
-  <!-- Archive by month -->
-  {archive.length > 0 && (
-    <section class="blog-sidebar-widget">
-      <h3 class="blog-sidebar-title">{t.archive}</h3>
-      <ul class="blog-sidebar-archive">
-        {archive.map(([ym, count]) => (
-          <li>
-            <span class="blog-sidebar-archive-month">{monthName(ym)}</span>
-            <span class="blog-sidebar-archive-count">{count}</span>
           </li>
         ))}
       </ul>

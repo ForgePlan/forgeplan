@@ -54,15 +54,15 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DeprecatePara
 
 ## Типичная последовательность
 
-`forgeplan_list --status active` (или `--status stale`) → выбрать цель → подтвердить с пользователем → `forgeplan_deprecate id=X reason="..."` → `forgeplan_health`, чтобы убедиться, что список слепых пятен сокращается. Для просроченных артефактов альтернативой является `forgeplan_renew` (продлить срок действия) — выберите правильный путь в зависимости от того, является ли решение всё ещё актуальным.
+`forgeplan_list --status active` (или `--status stale`) → выбрать цель → подтвердить с пользователем → `forgeplan_deprecate id=X reason="..."` → `forgeplan_health`, чтобы убедиться, что список слепых пятен сокращается. Для просроченных артефактов альтернативой является `forgeplan_renew` (продлить срок действия) - выберите правильный путь в зависимости от того, является ли решение всё ещё актуальным.
 
 ## Эквивалент CLI
 
-- [`forgeplan deprecate`](/ru/docs/cli/deprecate/) — та же операция
+- [`forgeplan deprecate`](/ru/docs/cli/deprecate/) - та же операция
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) — когда существует замена
-- [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) — предшествует отмене для просроченных артефактов
-- [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) — необратимое удаление (избегать)
+- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) - когда существует замена
+- [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) - предшествует отмене для просроченных артефактов
+- [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) - необратимое удаление (избегать)

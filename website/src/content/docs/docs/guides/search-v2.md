@@ -1,6 +1,6 @@
 ---
 title: Smart Search (v0.18 BM25 + Russian morphology)
-description: "How Forgeplan's production BM25 engine finds artifacts — stemming, multi-language support, and CLI/MCP usage."
+description: "How Forgeplan's production BM25 engine finds artifacts - stemming, multi-language support, and CLI/MCP usage."
 ---
 
 Forgeplan ships a production-grade search engine that finds artifacts by meaning,
@@ -21,7 +21,7 @@ how it works and how to use it from the CLI and MCP.
 
 Before v0.18 Forgeplan shipped a 140-line hand-written BM25 implementation. It
 worked, but it was hard to tune, had no built-in stemmer, and scored records
-one at a time — O(N²) in practice once the workspace grew past a hundred
+one at a time - O(N²) in practice once the workspace grew past a hundred
 artifacts. v0.18.0 replaces that prototype with the production-grade
 [`bm25` crate v2.3.2](https://crates.io/crates/bm25), which brings four
 concrete wins:
@@ -32,7 +32,7 @@ concrete wins:
   corpus in one pass. A 193-artifact workspace returns in **0.23s**,
   down from the multi-second stalls that made `search` feel laggy.
 - **Built-in tokenizer stack.** Unicode segmentation, stop-word removal,
-  and (crucially) pluggable stemmers — which is what enables Russian
+  and (crucially) pluggable stemmers - which is what enables Russian
   morphology in the next section.
 - **Template noise stripping.** `strip_indexing_noise()` runs before
   tokenization and drops YAML frontmatter, `{placeholder}` lines,
@@ -42,22 +42,22 @@ concrete wins:
   false positives. v0.18 indexes only real body content.
 
 These four changes land together in v0.18.0 and are covered by regression
-tests in `crates/forgeplan-core/src/search/` — see the CHANGELOG entry.
+tests in `crates/forgeplan-core/src/search/` - see the CHANGELOG entry.
 
 ## How it works
 
 Smart search runs a three-stage pipeline on every query:
 
-1. **Lexical (BM25)** — the `bm25` crate ranks documents by term frequency,
+1. **Lexical (BM25)** - the `bm25` crate ranks documents by term frequency,
    inverse document frequency and length normalization. This is the default
    and covers the 90% case.
-2. **Boosters** — exact-id match, kind filter, status filter, and recency
+2. **Boosters** - exact-id match, kind filter, status filter, and recency
    nudge the lexical score before the final sort.
-3. **Graph expansion** — results are optionally enriched with neighbors via
+3. **Graph expansion** - results are optionally enriched with neighbors via
    typed links (`informs`, `refines`, `supersedes`) so a hit on a PRD also
    surfaces its RFC and evidence.
 
-An optional semantic stage based on BGE-M3 embeddings can be layered on top —
+An optional semantic stage based on BGE-M3 embeddings can be layered on top -
 see [Semantic search](#semantic-search-feature-flag) below.
 
 ### Tokenization and stemming
@@ -106,7 +106,7 @@ on workspaces with hundreds of artifacts. v0.18 uses `search_scores()` from the
 v0.18.0 enables `LanguageMode::Detect` in the BM25 tokenizer: each document
 and each query is inspected by [`whichlang`](https://crates.io/crates/whichlang),
 which picks the right Snowball stemmer on the fly. Seventeen languages are
-supported out of the box — English, Russian, German, French, Spanish,
+supported out of the box - English, Russian, German, French, Spanish,
 Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Hungarian,
 Romanian, Turkish, Arabic, and a generic fallback.
 
@@ -258,14 +258,14 @@ Build from source with the feature:
 cargo install forgeplan-cli --features semantic-search
 ```
 
-Then search — the flag is transparent; BM25 still runs and semantic results
+Then search - the flag is transparent; BM25 still runs and semantic results
 are merged in:
 
 ```bash
 forgeplan search "how do I prove a decision is sound"
 ```
 
-When the feature is off, the same command still works — Forgeplan falls back
+When the feature is off, the same command still works - Forgeplan falls back
 to lexical-only search with a gentle log line. This graceful fallback is why
 PRD-042 (FPF KB vector search) can ship the same binary to both minimal and
 semantic users.
@@ -277,7 +277,7 @@ Run `forgeplan reindex`. The most common cause is markdown edited outside the
 CLI, so the index has stale term frequencies.
 
 **Query in Russian finds nothing but the same English term works.**
-Check that the document was indexed after v0.18.0 — earlier versions did not
+Check that the document was indexed after v0.18.0 - earlier versions did not
 have the Russian stemmer. Run `forgeplan reindex` once after upgrading.
 
 **Too many irrelevant hits from frontmatter fields.**
@@ -285,7 +285,7 @@ You are on a pre-v0.18 binary. `strip_indexing_noise()` fixes this. Upgrade
 and reindex.
 
 **Search is slow on a large workspace.**
-v0.18 is O(N) — a 193-artifact workspace should return in under a second. If
+v0.18 is O(N) - a 193-artifact workspace should return in under a second. If
 you see multi-second latency, file a PROB and attach the output of
 `forgeplan health` plus a count of files under `.forgeplan/`.
 
@@ -294,13 +294,13 @@ Reindex. The BM25 store is derived state; deletions need to be replayed.
 
 ## Related artifacts
 
-- **PRD-039** — Smart Search v2 (original v0.17 design)
-- **PRD-040** — Scoring Intelligence (ranking signals feeding into search)
-- **PRD-042** — FPF KB vector search (semantic search feature flag)
-- **PROB-026** — Tag canonicalization (query-side normalization)
-- **PROB-027** — Reindex without `lance/` folder
-- **PROB-030** — `auth` prefix false positives from frontmatter
-- **CHANGELOG v0.18.0** — production BM25 + Russian morphology release notes
+- **PRD-039** - Smart Search v2 (original v0.17 design)
+- **PRD-040** - Scoring Intelligence (ranking signals feeding into search)
+- **PRD-042** - FPF KB vector search (semantic search feature flag)
+- **PROB-026** - Tag canonicalization (query-side normalization)
+- **PROB-027** - Reindex without `lance/` folder
+- **PROB-030** - `auth` prefix false positives from frontmatter
+- **CHANGELOG v0.18.0** - production BM25 + Russian morphology release notes
 
 ## See also
 

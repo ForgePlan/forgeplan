@@ -1,5 +1,5 @@
 ---
-title: MCP Setup — One-Command Install
+title: MCP Setup - One-Command Install
 description: Connect Forgeplan as an MCP server to Claude Code, Cursor, or Windsurf in 30 seconds.
 ---
 
@@ -21,7 +21,7 @@ forgeplan mcp install --client cursor
 forgeplan mcp install --client windsurf
 ```
 
-Restart the client. Done — all 47 `forgeplan_*` MCP tools are now available.
+Restart the client. Done - all 47 `forgeplan_*` MCP tools are now available.
 
 ## What it does
 
@@ -43,7 +43,7 @@ It's **smart-merge**:
 - Replaces `command` / `args` / `transport` (so `forgeplan upgrade` works cleanly)
 - **Preserves your `env`** (API keys, `RUST_LOG`, custom paths)
 - Leaves other MCP servers in the file untouched
-- Idempotent — safe to re-run
+- Idempotent - safe to re-run
 
 ## Options
 
@@ -59,7 +59,7 @@ Per-project install lets each repo pin a different `forgeplan` binary or env.
 ### Short name (`forgeplan` or `fpl`)
 
 By default the command writes the **absolute path** to your binary. That's the
-safest choice — works in any client, including macOS GUI apps that don't
+safest choice - works in any client, including macOS GUI apps that don't
 inherit your shell `$PATH`.
 
 If you'd rather use the short name (and you're sure your client launches with
@@ -72,7 +72,7 @@ forgeplan mcp install --client claude --use-name forgeplan # writes "forgeplan"
 
 :::caution
 **macOS GUI applications** (Claude Code Mac app, Cursor app) get only the
-system default `$PATH` — `/opt/homebrew/bin` is **not** in it. Short names
+system default `$PATH` - `/opt/homebrew/bin` is **not** in it. Short names
 fail silently in those clients. Stick with the default (absolute path)
 unless you've configured `launchctl setenv PATH ...` system-wide.
 :::
@@ -101,7 +101,7 @@ Output shows a line-by-line diff of the proposed changes.
 
 ```bash
 # 1. Restart your AI client to load the new config
-#    (Claude Code, Cursor, Windsurf — fully quit and re-open)
+#    (Claude Code, Cursor, Windsurf - fully quit and re-open)
 
 # 2. In your project directory, initialize a workspace
 forgeplan init -y
@@ -127,7 +127,7 @@ Windows uses `%USERPROFILE%` instead of `~`.
 ### Symlink rejected
 
 ```
-Error: refusing to write to symlink: ~/.claude.json — remove the symlink and re-run install
+Error: refusing to write to symlink: ~/.claude.json - remove the symlink and re-run install
 ```
 
 The target file is a symlink. We refuse to follow it (security: prevents
@@ -140,7 +140,7 @@ Replace the symlink with a regular file or remove it.
 ✓ Claude Code MCP config already up to date: ~/.claude.json
 ```
 
-The config matches what we'd write — nothing to change. Idempotency working
+The config matches what we'd write - nothing to change. Idempotency working
 as intended.
 
 ### Workspace not initialized
@@ -152,12 +152,12 @@ Workspace not initialized. Call forgeplan_init first.
 ```
 
 Run `forgeplan init -y` in your project directory, or ask the agent to call
-`forgeplan_init` via MCP — it will use whatever directory the agent's
+`forgeplan_init` via MCP - it will use whatever directory the agent's
 working in.
 
 ### Re-run after `brew upgrade`
 
-`forgeplan mcp install` is idempotent — re-run it after any version bump to
+`forgeplan mcp install` is idempotent - re-run it after any version bump to
 refresh the config. The detected binary path will pick up the new version
 automatically.
 

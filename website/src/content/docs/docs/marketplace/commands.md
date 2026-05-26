@@ -49,10 +49,10 @@ Multi-expert code audit with Forgeplan methodology integration.
 **Plugin**: dev-toolkit
 
 Launches 4 parallel expert agents:
-- **Logic** — correctness, edge cases, race conditions
-- **Architecture** — SOLID, coupling, DRY, naming
-- **Security** — OWASP Top 10, injection, auth
-- **Tests** — coverage gaps, test quality
+- **Logic** - correctness, edge cases, race conditions
+- **Architecture** - SOLID, coupling, DRY, naming
+- **Security** - OWASP Top 10, injection, auth
+- **Tests** - coverage gaps, test quality
 
 Reports findings with severity: CRITICAL / HIGH / MEDIUM / LOW.
 
@@ -67,7 +67,7 @@ Adaptive sprint planning that scales:
 ### /recall
 **Plugin**: dev-toolkit
 
-Restores session context from Hindsight memory — what you worked on, what was decided, what's pending.
+Restores session context from Hindsight memory - what you worked on, what was decided, what's pending.
 
 ---
 
@@ -132,7 +132,7 @@ Look up a specific UX law with examples, violations, and best practices.
 ### /research "topic"
 **Plugin**: dev-toolkit
 
-Quick research — study a topic, find patterns, understand how something works. Uses Explore agents.
+Quick research - study a topic, find patterns, understand how something works. Uses Explore agents.
 
 ### /deep-research "topic"
 **Plugin**: dev-toolkit
@@ -152,12 +152,12 @@ Combine multiple research reports into a unified plan. Useful when you researche
 ### /do "task"
 **Plugin**: dev-toolkit
 
-Universal task executor — takes any description and figures out the right approach.
+Universal task executor - takes any description and figures out the right approach.
 
 ### /wave "description"
 **Plugin**: dev-toolkit
 
-Quick wave-based execution from current chat context. No research phase — just plan and execute.
+Quick wave-based execution from current chat context. No research phase - just plan and execute.
 
 ### /write-doc "type" "topic"
 **Plugin**: dev-toolkit

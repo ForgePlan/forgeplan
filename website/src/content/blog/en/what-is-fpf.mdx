@@ -1,0 +1,160 @@
+---
+title: "FPF: a map for thinking when you're not working alone"
+description: "Anatoly Levenchuk's pattern language for teams with humans and AI agents - in plain English with examples for PMs, engineers, and everyday people."
+slug: what-is-fpf
+lang: en
+publishedAt: 2026-05-26
+kind: explainer
+topic: methodology
+cover: '/blog-covers/what-is-fpf.webp'
+draft: false
+translations:
+  ru: what-is-fpf
+---
+
+## 1. The scene
+
+An evening meeting. Two hours, one question: buy an off-the-shelf SaaS, fine-tune an open model, or build a custom agent stack from scratch. Thirty arguments, real-world examples, someone draws TCO numbers on the whiteboard. The team wraps up and leaves the room satisfied: "Good talk, I think we've landed on something."
+
+The next morning the PM writes: "Great, let's start evaluating SaaS options." The lead engineer replies: "Hold on, we agreed on fine-tuning." The director reads both messages: "What fine-tuning? We decided to build in-house."
+
+All three were in the same room. All three heard the same words. And each walked away carrying the part of the conversation that matched their picture of the world before the meeting started.
+
+Memory isn't the problem. When thirty arguments fly without a shared skeleton, everyone builds their own - and three skeletons look like three different decisions.
+
+## 2. Who Levenchuk is, and what FPF is
+
+Anatoly Levenchuk is a Russian systems engineer, faculty at the Russian School of Systems Management, and author of several textbooks on systems thinking. He spent years studying why intelligent, well-meaning people reach different conclusions from the same data - and what to do about it.
+
+FPF (First Principles Framework) is his answer. Not a textbook and not a methodology like Agile. Closer to a pattern language in the sense Christopher Alexander introduced - the architect who described principles of building through a catalog of named patterns. The idea is the same: if people share a vocabulary of patterns, they can talk about complex things without reinventing terms each time.
+
+The current version is from May 2026. Seven megabytes of normative specification, roughly 3,195 section headings. Status: "perpetual alpha" - already used in real projects, still evolving.
+
+> To give a sense of the gap between the spec and casual reading: here is one actual pattern heading from inside FPF: `A.6.3.RT - RepresentationTransduction - same-described-entity representation-scheme transition`. And another: `U.RelationalPrecisionRestorationSuite`. That is the normal register inside FPF - precise, internally consistent. Which is exactly why translator articles like this one exist: the spec is written for itself, not for someone coming in cold.
+
+## 3. The core idea: one argument, many readers
+
+The real problem isn't that people lack intelligence. It's that one decision has to simultaneously answer very different audiences.
+
+An engineer sees a feature as API + dependencies + edge cases. A PM sees deadline and budget. The auditor cares about one thing: how to roll it back if it breaks. And the customer, honestly, doesn't care - they want to know if the price goes up. This isn't four features. It's one, viewed from different angles.
+
+If you maintain four documents - one for each reader - they diverge within a week. You update one, forget the rest. Every team has been here.
+
+FPF proposes one underlying argument, from which projections for different readers are published. The argument is the single source; projections are slices at a particular angle. If the argument changes, all projections change automatically.
+
+A separate question is how the argument stays consistent when different people touch it. FPF calls this "no semantic drift" - a word means the same thing in one context as in another, and if the meaning shifts, the shift is visible and explicit. FPF introduces several mechanisms for this. Three are worth unpacking: holons, `Strict Distinction`, and `Open/Closed World Assumption`.
+
+## 4. Holons
+
+A holon is a term from systems thinking for something that is simultaneously a **whole** for its components and a **part** of something larger. An atom is a holon: whole for its nucleus and electrons, part of a molecule. A team is a holon: whole for the people in it, part of an organization. A feature is a holon: whole for its sub-tasks, part of a product strategy.
+
+Most design mistakes are level confusions. When the team says "let's optimize checkout" - is that the holon-level of the page or the entire funnel? If one person understood page and another understood funnel, they talk past each other for two hours and never notice.
+
+**For a PM**: the "referral program" feature is a holon. Inside: invite flow, reward, analytics. Outside: part of the growth strategy. Discuss it only as an isolated unit and you lose the strategy connection - the referral program turns out to work against another product decision. Discuss it only as a strategy piece and you lose control over implementation - the shipped feature looks nothing like what was intended.
+
+**For an engineer**: the `auth` module is a holon. Inside: classes, functions, tests. Outside: part of the API consumed by other services. Refactoring the internals without knowing how the external API calls them is a classic category error. After the refactor the signatures were "cleaner" - but every calling service was broken. The conversation happened at the holon-classes level; the consequences landed at the holon-API level.
+
+**In everyday life**: dinner of meatballs and mashed potatoes is a holon. Inside the meatballs: ground meat, onion, egg, seasoning. Outside: part of the week's meal plan. If your partner says "can you handle dinner?" that's the holon-level of dinner, not meatballs. Starting to cook from scratch is the right answer at one level and the wrong one if there were leftovers in the fridge and the request was "just heat something up." A dispute about level.
+
+FPF requires explicitly naming the holon you are working with right now. Not "we're discussing the feature" but "we're discussing the feature as part of the strategy" or "we're discussing the feature as a set of tasks." This is not bureaucracy - it removes half the arguments that were actually running on different levels about the same object.
+
+## 5. Bounded Context and Strict Distinction
+
+**`Bounded Context`**: the same word means different things in different contexts. "User" in auth is a row in the `users` table with a hashed password. "User" in marketing is a person with an account, purchase history, and a cookie. "User" in support is an open ticket with a response-time clock. Move reasoning between contexts without labeling the seam and you get a bug: marketing counts 10,000 users, the backend sees 6,000, support is handling 800. Everyone is right in their own context; nobody understands the gap.
+
+FPF says: every context has a local meaning. Moving between them requires an explicit bridge - a mapping table, a transformation, or at minimum a note that says "this word means something different here." Without that bridge, the conversation happens through a wall: same words, different meanings.
+
+**`Strict Distinction`** is a separate hard rule in FPF. It calls out six things that get mixed together constantly in the same conversation:
+
+1. **System** - what exists or will exist
+2. **Role** - who does the work (a function, not a specific person)
+3. **Method description** - how it is written in a book, guide, or standard
+4. **Method** - how it actually gets done in practice
+5. **Plan** - what we intend to do
+6. **Work** - what actually happened
+
+**For a PM**: "the tester isn't working" - which of these is it? The *role* was never assigned to anyone. No time in the *plan*. Testing *happened* but results never reached the team. The accepted *method* doesn't fit this task type. Four different conversations, one phrase.
+
+**For an engineer**: "microservices perform poorly" - about what? The *method description* (textbook microservices don't match this team's reality)? The *method* (how it was actually deployed, with specific networking decisions)? The *work* (a specific service in a specific incident)? The *system* (the architectural decision overall)? Four different problems, each with its own diagnosis.
+
+**In everyday life**: "the family never talks to each other" - about what? The *role* (nobody took initiative). The *method description* (no dinner tradition). The *method* (tradition exists but everyone is on their phone). The *plan* (never set aside time). The *work* (last night was fine, tonight isn't - this specific case). Five different problems.
+
+Half of "misunderstanding" in teams lives right here: one person talks about role, another about plan, a third about method. Everyone thinks they're discussing the same thing. `Strict Distinction` forces you to say which one you mean.
+
+## 6. Open World and Closed World
+
+Two modes of working with information that look similar but are wired in opposite directions.
+
+**`Open World Assumption (OWA)`**: if something is absent from known data, that doesn't mean it doesn't exist. Absence of proof is not proof of absence. If a name isn't on the guest list, maybe it was forgotten. This is the mode of science, research, the open internet. A new fact can always appear that changes the picture.
+
+**`Closed World Assumption (CWA)`**: if something is not known to be true, it is treated as false. If a name isn't on the flight manifest, that passenger is not on the plane. This is the mode of databases, legal contracts, and engineering safety specifications. What is not explicitly permitted is forbidden.
+
+FPF doesn't pick one mode for everything. Instead it builds a hybrid: the world at large is open, but for any specific decision you draw an "island of closure." Inside a contract, context, or specification - everything is defined and ambiguity is forbidden. Outside - it stays open. Crossing between the island and the outside requires an explicit bridge.
+
+The point isn't which mode is "correct" - both are correct in their proper place. The problem arises when the mode isn't named and participants work from different assumptions. One person thinks "anything we didn't discuss needs clarification" (OWA); another thinks "anything we didn't discuss isn't happening" (CWA). Both are right in their own system, and both will be surprised by the result.
+
+**For a PM**: the sprint backlog. Inside the sprint - closed world: tasks not listed don't exist for these two weeks. Outside - open world: the backlog is infinite. Confuse them and you either get nothing done (keep pulling from the open world into a closed sprint) or miss something critical (the closed sprint didn't let in a real priority).
+
+**For an engineer**: an HTTP API. The endpoint list is a closed world: anything not described doesn't exist for clients. But inside each handler is an open world: requests can arrive in any shape and you can't assume input is well-formed. Path traversal vulnerabilities arise precisely because the developer thought in "closed world" mode where the world was actually open - assuming paths would only ever look "normal."
+
+**In everyday life**: a household budget spreadsheet. The "kids" category is a closed world: what didn't land there doesn't count as a child expense. But actual child expenses are an open world - something unexpected always comes up. Smart budgeting is an explicit decision: fixed categories as islands of closure, a buffer fund as the open world.
+
+FPF teaches you to say explicitly: "here I'm in open world mode, here I'm in closed world mode, here is the boundary between them." This removes a class of mistakes that arises when one person operates in OWA and another in CWA and both are certain they agreed.
+
+This is especially critical with AI agents. An agent operates in strict CWA: "what is not written in the prompt does not exist." The person who gave the task often thinks in OWA: "it's obvious that both things need to happen." This isn't a bug - it's a mode mismatch. FPF provides the language to name it before work begins, not after the agent did exactly what was written and exactly that turned out to be wrong.
+
+## 7. Trust calculus, Evidence, and ADI
+
+FPF has its own arithmetic of trust. Every claim has three dimensions: formalization (F), scope (G), and reliability (R). At junctions between claims sits congruence - how well they fit together. The key rule: overall reliability equals the weakest link, not the average. Averaging trust guarantees overestimation.
+
+Every fact has an expiry date. A benchmark from last year is history, not evidence. An architectural decision made "until something better comes along" without an explicit review date silently ages out. FPF makes expiry explicit and mandatory.
+
+The reasoning cycle: bold hypothesis (abduction) - formalize into a testable claim - collect evidence - apply in practice. This loop works for scientific research, product development, and architectural audits alike.
+
+More on how reliability is calculated and why averages lie: [Averages Lie](/blog/en/averages-lie-trust-calculus/) and the [Evidence methodology doc](/docs/methodology/evidence). The ADI reasoning cycle in practice: [ADI overview guide](/guides/adi-overview-en/) and the [ADI methodology doc](/docs/methodology/adi). How facts age out and the decay mechanics: [Evidence and Decay guide](/guides/evidence-and-decay-en/).
+
+## 8. Where this works in practice
+
+Up to here it may sound abstract. A few concrete situations to anchor the ideas - across fields, not just engineering.
+
+**A payments API mixes prohibitions, obligations, and penalties in one document.** Integrators break on every other integration. The fix is pattern `A.6 Boundary Discipline (L/A/D/E)` - route each statement by type: Law / Admissibility / Deontic / Effect. The lawyer then reads only L+D, SRE reads only E, the QA engineer writes separate suites for prohibitions and for obligations.
+
+**A radiologist writes "lesion, most likely benign".** The clinician reads it as a diagnosis and defers further imaging. A year later it turns out this was one of three hypotheses considered, and not the strongest one. The fix is `B.5.2.1 Creative Abduction` - return a Pareto front with weights, not a single winner. The report contains three hypotheses with criteria that discriminate between them.
+
+**A performance review reads "Anna does good work".** At calibration, the manager can't justify the promotion. The fix is `A.15 Role-Method-Work` - separate Role / Capability / Work. The review template demands: which new Capabilities were acquired, which Work was completed solo, how the Role expanded. "Good work" is no longer currency.
+
+**A couple has been debating relocation for three months.** Every conversation drifts to a different level: kids vs schools, taxes vs visas, climate vs in-laws. The fix is `A.1 Holon + A.7 Strict Distinction` - write out 4-5 explicit holons and discuss each separately. "Endless argument" becomes a structured decision over a weekend.
+
+The full catalogue of 25 situations is in a separate post: [Where FPF helps: 25 situations across 12 fields](/blog/en/where-fpf-helps/).
+
+## 9. When FPF gets in the way - and when it doesn't
+
+Not every task needs a full pattern language. Here is an honest breakdown.
+
+**FPF is overkill if:**
+- the task is small and isolated
+- everyone understands the vocabulary the same way
+- feedback is fast and cheap - mistake, catch it, fix it
+- the cost of semantic drift is low: diverging slightly doesn't break the work
+- you need a quick one-off answer, not a reusable argument
+- you're working alone and hold all context in your head
+
+**FPF is necessary if:**
+- work is spread across specialists, teams, or AI agents - each with their own mental model
+- real-world validation is slow, expensive, or risky
+- different audiences need different slices of the same work
+- the vocabulary is breaking down under new tasks - old terms start meaning different things to different people
+- you need a reusable analysis, not a one-off recommendation
+- you're working with AI agents in a shared repo where each agent knows only its own context
+
+The second list describes most product teams after their first six months.
+
+## 10. Where to start
+
+If you want to try it right now, the minimal three-step protocol is in a separate post: [How to start using FPF](/blog/en/how-to-use-fpf/).
+
+FPF itself: the [ailev/FPF](https://github.com/ailev/FPF) repository on GitHub - README with an introductory explanation, and seven megabytes of normative specification for anyone who wants the full picture.
+
+If you're curious how FPF ideas are implemented in a working tool - [our methodology docs](/docs/methodology/overview) cover the concrete practices.
+
+If you'd prefer a short visual introduction without going into the spec - the [FPF overview guide](/guides/fpf-overview-en/).

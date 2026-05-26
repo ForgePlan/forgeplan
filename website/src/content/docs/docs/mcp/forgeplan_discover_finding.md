@@ -1,13 +1,13 @@
 ---
 title: forgeplan_discover_finding
-description: "Report a single discovery finding into an active brownfield session. ForgePlan creates an artifact (note / prd / rfc / problem / evidence) with the finding content, tags it with the source tier, and links it to the session. MCP-only — no CLI equivalent — the protocol is intentionally agent-driven."
+description: "Report a single discovery finding into an active brownfield session. ForgePlan creates an artifact (note / prd / rfc / problem / evidence) with the finding content, tags it with the source tier, and links it to the session. MCP-only - no CLI equivalent - the protocol is intentionally agent-driven."
 ---
 
 Appends a single **finding** to an active discovery session. After `forgeplan_discover_start` returns the protocol, the agent walks through each phase (detect / structure / code / git / tests / docs), reads files in the prescribed tier order, and calls this tool once per observation worth capturing. ForgePlan materialises each finding as a real artifact (note / prd / rfc / problem / evidence) so they survive the session and remain queryable.
 
 **Category**: Brownfield Discovery
 
-> **MCP-only by design.** This tool has no `forgeplan` CLI equivalent. The discovery protocol is *agent-driven* — ForgePlan does not read source files on its own. A human operator using the CLI starts a session and then runs the agent; findings only flow back through MCP.
+> **MCP-only by design.** This tool has no `forgeplan` CLI equivalent. The discovery protocol is *agent-driven* - ForgePlan does not read source files on its own. A human operator using the CLI starts a session and then runs the agent; findings only flow back through MCP.
 
 ## When an agent calls this
 
@@ -66,7 +66,7 @@ The artifact is tagged with `discover:<session_id>` and `tier:<n>` so `forgeplan
   "tier": 1,
   "kind": "note",
   "title": "Billing engine uses two overlapping retry layers",
-  "body": "`src/billing/retry.rs` and `src/http/client.rs` both implement exponential backoff. The outer layer wraps the inner, producing effective delays of retry_inner × retry_outer on transient failures. Likely accidental — worth a RFC before any reliability work.",
+  "body": "`src/billing/retry.rs` and `src/http/client.rs` both implement exponential backoff. The outer layer wraps the inner, producing effective delays of retry_inner × retry_outer on transient failures. Likely accidental - worth a RFC before any reliability work.",
   "source_files": ["src/billing/retry.rs", "src/http/client.rs"]
 }
 ```
@@ -81,11 +81,11 @@ Agents typically produce 10–40 findings across a discovery session. There is n
 
 ## CLI equivalent
 
-None — intentional. Discovery findings only flow through the MCP path.
+None - intentional. Discovery findings only flow through the MCP path.
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) — protocol that sourced this tool
-- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) — synthesise findings into proposals
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) — alternative for creating artifacts outside a session
+- [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - protocol that sourced this tool
+- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - synthesise findings into proposals
+- [`forgeplan_new`](/docs/mcp/forgeplan_new/) - alternative for creating artifacts outside a session

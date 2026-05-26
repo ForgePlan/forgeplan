@@ -1,17 +1,17 @@
 ---
 title: forgeplan list
-description: "List artifacts with filters — primary inventory command"
+description: "List artifacts with filters - primary inventory command"
 ---
 
 List artifacts in the current workspace, optionally filtered by kind, status,
-tag, or creation date. This is the primary inventory command — use it to
+tag, or creation date. This is the primary inventory command - use it to
 answer "what do we have in this project?" before planning, routing, or
 searching.
 
 ## When to use
 
 - At session start, after `forgeplan health`, to scan what exists
-- Before `forgeplan new` — avoid creating duplicates
+- Before `forgeplan new` - avoid creating duplicates
 - When drafting sprint scope ("all active PRDs tagged `auth`")
 - In CI scripts to enumerate artifacts by status for reporting
 
@@ -47,7 +47,7 @@ List everything (default view on a fresh workspace):
 forgeplan list
 ```
 
-Only active PRDs — current in-flight product scope:
+Only active PRDs - current in-flight product scope:
 
 ```bash
 forgeplan list --type prd --status active
@@ -66,12 +66,12 @@ Default output is a table with four columns:
 | Column   | Meaning                                                   |
 |----------|-----------------------------------------------------------|
 | `ID`     | Stable artifact ID (e.g. `PRD-001`, `RFC-002`, `EVID-012`) |
-| `KIND`   | Artifact type — prd, rfc, adr, epic, note, problem, evidence |
+| `KIND`   | Artifact type - prd, rfc, adr, epic, note, problem, evidence |
 | `STATUS` | Lifecycle: draft / active / superseded / deprecated / stale |
 | `TITLE`  | Human-readable title from frontmatter                     |
 
 Rows are sorted by `created` descending (newest first). With `--json`, each
-record includes full frontmatter plus `score` and `R_eff` where available —
+record includes full frontmatter plus `score` and `R_eff` where available -
 useful piped into `jq` for dashboards.
 
 ## How it fits
@@ -88,8 +88,8 @@ artifacts without evidence.
 
 ## See also
 
-- [`forgeplan get`](/docs/cli/get/) — read full markdown of one artifact
-- [`forgeplan tree`](/docs/cli/tree/) — hierarchy view
-- [`forgeplan search`](/docs/cli/search/) — smart keyword + semantic search
-- [`forgeplan health`](/docs/cli/health/) — project-level dashboard
+- [`forgeplan get`](/docs/cli/get/) - read full markdown of one artifact
+- [`forgeplan tree`](/docs/cli/tree/) - hierarchy view
+- [`forgeplan search`](/docs/cli/search/) - smart keyword + semantic search
+- [`forgeplan health`](/docs/cli/health/) - project-level dashboard
 - [Methodology guide](/docs/methodology/overview/)

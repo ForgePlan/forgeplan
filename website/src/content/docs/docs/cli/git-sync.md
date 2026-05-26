@@ -4,7 +4,7 @@ description: "Sync artifact changes from git operations (pull/merge) into LanceD
 ---
 
 Incrementally sync LanceDB with markdown changes introduced by a git
-operation — typically `git pull`, `git merge`, or `git rebase`. Instead of
+operation - typically `git pull`, `git merge`, or `git rebase`. Instead of
 rebuilding the entire index, `git-sync` diffs the working tree against a
 git reference and only re-parses the artifacts that actually changed.
 
@@ -36,11 +36,11 @@ set it to the previous tip of the current branch, giving `git-sync` an exact
 
 ## When to use it
 
-- **After `git pull`** — teammates merged new PRDs/RFCs into `dev`, you just
+- **After `git pull`** - teammates merged new PRDs/RFCs into `dev`, you just
   pulled, and you want them in your local LanceDB. `git-sync` runs in a
   fraction of the time of a full reindex.
-- **After `git merge feature/xyz`** — same idea for local merges.
-- **After `git checkout`** between branches with divergent artifact state —
+- **After `git merge feature/xyz`** - same idea for local merges.
+- **After `git checkout`** between branches with divergent artifact state -
   pass `--since <other-branch>` to sync the diff.
 
 ## Remote team workflow
@@ -57,7 +57,7 @@ forgeplan health             # check for new blind spots
 Compare against a cold rebuild:
 
 ```bash
-forgeplan reindex            # walks the whole workspace — safe but slower
+forgeplan reindex            # walks the whole workspace - safe but slower
 ```
 
 For small workspaces the difference is negligible; for workspaces with
@@ -79,7 +79,7 @@ fallback.
 ## Example
 
 ```bash
-# Default — since last pull/merge
+# Default - since last pull/merge
 forgeplan git-sync
 
 # Explicit diff base (e.g. against main)
@@ -92,14 +92,14 @@ forgeplan git-sync --since dev
 
 ## Limitations
 
-- Requires a clean git working tree for reliable diffing — uncommitted
+- Requires a clean git working tree for reliable diffing - uncommitted
   edits may be skipped or double-counted. Pair with `watch` for dirty trees.
 - If `ORIG_HEAD` is stale (no recent pull/merge), pass `--since` explicitly.
-- Doesn't detect out-of-band markdown edits — use `reindex` for those.
+- Doesn't detect out-of-band markdown edits - use `reindex` for those.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan reindex`](/docs/cli/reindex/) — full rebuild fallback
-- [`forgeplan watch`](/docs/cli/watch/) — live sync daemon
-- [`forgeplan health`](/docs/cli/health/) — verify after sync
+- [`forgeplan reindex`](/docs/cli/reindex/) - full rebuild fallback
+- [`forgeplan watch`](/docs/cli/watch/) - live sync daemon
+- [`forgeplan health`](/docs/cli/health/) - verify after sync

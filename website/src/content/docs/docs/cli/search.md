@@ -1,6 +1,6 @@
 ---
 title: forgeplan search
-description: "Smart search — BM25 + semantic + graph expansion with Russian morphology"
+description: "Smart search - BM25 + semantic + graph expansion with Russian morphology"
 ---
 
 Smart search across artifacts. As of v0.18.0, Forgeplan ships **production
@@ -11,8 +11,8 @@ used as a ranker booster when the `semantic-search` feature flag is enabled.
 ## When to use
 
 - You remember a concept but not the ID
-- Onboarding — "what do we have on authentication?"
-- Drafting a new artifact — find related prior decisions to link
+- Onboarding - "what do we have on authentication?"
+- Drafting a new artifact - find related prior decisions to link
 - AI agents doing retrieval-augmented reasoning
 
 ## Not to use when
@@ -55,7 +55,7 @@ forgeplan search [OPTIONS] <QUERY>
 
 ## Examples
 
-Smart default — BM25 + semantic + graph expansion:
+Smart default - BM25 + semantic + graph expansion:
 
 ```bash
 forgeplan search "authentication flow"
@@ -85,9 +85,9 @@ ADR-004  [active ]  score=5.30  JWT vs session cookies
 
 Columns: `ID`, `STATUS`, `SCORE`, `TITLE`, plus a `(graph-expanded)` marker
 when a hit came in as a 1-hop neighbor rather than a direct term match.
-Scores are not comparable across queries — they rank within one call only.
+Scores are not comparable across queries - they rank within one call only.
 
-Russian queries work the same — "авторизация" will match "авторизации",
+Russian queries work the same - "авторизация" will match "авторизации",
 "авторизованный", etc., thanks to Snowball stemming.
 
 ## How it fits
@@ -104,7 +104,7 @@ expansion), see the [Search v2 guide](/docs/guides/search-v2/).
 
 ## See also
 
-- [Search v2 guide](/docs/guides/search-v2/) — architecture and tuning
-- [`forgeplan get`](/docs/cli/get/) — read a hit in full
-- [`forgeplan recall`](/docs/cli/recall/) — search memories (not artifacts)
-- [`forgeplan reindex`](/docs/cli/reindex/) — rebuild the BM25 index
+- [Search v2 guide](/docs/guides/search-v2/) - architecture and tuning
+- [`forgeplan get`](/docs/cli/get/) - read a hit in full
+- [`forgeplan recall`](/docs/cli/recall/) - search memories (not artifacts)
+- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild the BM25 index

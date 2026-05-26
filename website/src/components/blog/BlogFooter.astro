@@ -40,10 +40,10 @@ const tagline = isRu
     </div>
 
     <nav class="blog-footer-nav" aria-label={isRu ? 'Подвал' : 'Footer navigation'}>
-      {links.map(l => (
+      {links.map((l, i) => (
         <a
           href={l.href}
-          class="blog-footer-link"
+          class={i === 0 ? 'blog-footer-link blog-footer-link-primary' : 'blog-footer-link'}
           {...(l.external ? { rel: 'noopener noreferrer', target: '_blank' } : {})}
         >
           {l.label}{l.external && <span aria-hidden="true"> ↗</span>}

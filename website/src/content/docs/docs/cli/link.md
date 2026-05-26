@@ -4,7 +4,7 @@ description: "Link two artifacts with a typed relationship"
 ---
 
 Create a typed, directed relation from one artifact to another. Relations are
-how Forgeplan builds the decision graph — they power health checks, R_eff
+how Forgeplan builds the decision graph - they power health checks, R_eff
 scoring, the dependency Mermaid graph, topological sort for sprint planning,
 and blind-spot detection.
 
@@ -35,7 +35,7 @@ forgeplan link [OPTIONS] <SOURCE> <TARGET>
 ## Valid relations (v0.18)
 
 Forgeplan enforces a closed vocabulary. Only these five relation types are
-accepted — any other value is rejected by the validator.
+accepted - any other value is rejected by the validator.
 
 | Relation      | Direction reads as...                          | When to use                                                                 |
 |---------------|------------------------------------------------|-----------------------------------------------------------------------------|
@@ -47,7 +47,7 @@ accepted — any other value is rejected by the validator.
 
 ## Examples
 
-The canonical evidence flow — link a fresh EvidencePack to the PRD it supports:
+The canonical evidence flow - link a fresh EvidencePack to the PRD it supports:
 
 ```bash
 forgeplan new evidence "Benchmark: BM25 vs TF-IDF on Russian corpus"
@@ -88,7 +88,7 @@ Older docs and LLM completions sometimes suggest relation types that are
 | `implements`      | `refines`                             | Spec/RFC refines the intent of a PRD                      |
 | `references`      | `informs`                             | Default soft link                                         |
 
-When in doubt, pick `informs` — it's the neutral "this artifact is relevant to
+When in doubt, pick `informs` - it's the neutral "this artifact is relevant to
 that one" link.
 
 ## Direction matters
@@ -113,7 +113,7 @@ and confuse topological sort.
 ## What happens after linking
 
 - The link is persisted to the LanceDB `links` table.
-- [`forgeplan score`](/docs/cli/score/) recomputes R_eff for the target —
+- [`forgeplan score`](/docs/cli/score/) recomputes R_eff for the target -
   `informs` links from `verdict: supports` evidence raise the score.
 - [`forgeplan graph`](/docs/cli/graph/) includes the edge in the Mermaid output.
 - [`forgeplan blocked`](/docs/cli/blocked/) and [`forgeplan order`](/docs/cli/order/)
@@ -122,8 +122,8 @@ and confuse topological sort.
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan unlink`](/docs/cli/unlink/) — remove a relation
-- [`forgeplan score`](/docs/cli/score/) — evaluate R_eff after linking evidence
-- [`forgeplan graph`](/docs/cli/graph/) — visualize the relation graph
-- [`forgeplan health`](/docs/cli/health/) — find orphans and missing evidence
+- [`forgeplan unlink`](/docs/cli/unlink/) - remove a relation
+- [`forgeplan score`](/docs/cli/score/) - evaluate R_eff after linking evidence
+- [`forgeplan graph`](/docs/cli/graph/) - visualize the relation graph
+- [`forgeplan health`](/docs/cli/health/) - find orphans and missing evidence
 - [Methodology guide](/docs/methodology/overview/)

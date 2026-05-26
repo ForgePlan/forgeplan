@@ -1,13 +1,13 @@
 ---
 title: forgeplan_claim
-description: "Claim an artifact for exclusive work — TTL-based advisory lock for multi-agent dispatch."
+description: "Claim an artifact for exclusive work - TTL-based advisory lock for multi-agent dispatch."
 ---
 
 Записывает `.forgeplan/claims/<id>.yaml`, объявляя, что конкретный агент работает над
 артефактом. Удерживает workspace-lock на время записи, чтобы два суб-агента не могли
 гоняться за одним и тем же клеймом. Падает с понятной ошибкой, когда другой агент уже
 держит живой клейм; вызовы тем же агентом продлевают TTL (идемпотентно для держателя).
-По дизайну рекомендательный — никакой другой инструмент не блокируется на клеймах, но
+По дизайну рекомендательный - никакой другой инструмент не блокируется на клеймах, но
 оркестраторы должны проверять [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/)
 перед диспатчем параллельной работы.
 
@@ -26,7 +26,7 @@ description: "Claim an artifact for exclusive work — TTL-based advisory lock f
 | Имя | Тип | Обязательно | Описание |
 |---|---|---|---|
 | `id` | `string` | yes | ID артефакта для клейма (например, `PRD-057`). На диске нормализуется к верхнему регистру. |
-| `agent` | `string` | no | Идентичность агента (`"name/version"` или произвольная строка). По умолчанию — `clientInfo` MCP-вызывающего. |
+| `agent` | `string` | no | Идентичность агента (`"name/version"` или произвольная строка). По умолчанию - `clientInfo` MCP-вызывающего. |
 | `ttl_minutes` | `number` | no (default 30, max 1440) | TTL в минутах. Жёсткий потолок 24 ч предотвращает зомби-клеймы. |
 | `note` | `string` | no | Произвольная заметка, которую отображает `forgeplan_claims`. |
 
@@ -70,18 +70,18 @@ _Источник схемы: `crates/forgeplan-mcp/src/types.rs::ClaimParams`_
 
 ## Типичная последовательность
 
-1. [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) — оркестратор строит бакеты.
+1. [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) - оркестратор строит бакеты.
 2. Работник вызывает `forgeplan_claim` на назначенном артефакте.
 3. Работник делает реальные правки кода / артефакта.
-4. [`forgeplan_release`](/ru/docs/mcp/forgeplan_release/) — снимает клейм по завершении.
+4. [`forgeplan_release`](/ru/docs/mcp/forgeplan_release/) - снимает клейм по завершении.
 
 ## CLI эквивалент
 
-[`forgeplan claim`](/ru/docs/cli/) — те же семантики, используется оркестраторами,
+[`forgeplan claim`](/ru/docs/cli/) - те же семантики, используется оркестраторами,
 которые управляют суб-агентами через shell, а не через MCP.
 
 ## См. также
 
-- [`forgeplan_release`](/ru/docs/mcp/forgeplan_release/) — снять активный клейм
-- [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/) — список активных клеймов
-- [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) — производит план работы, который защищают клеймы (полный протокол PRD-057)
+- [`forgeplan_release`](/ru/docs/mcp/forgeplan_release/) - снять активный клейм
+- [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/) - список активных клеймов
+- [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) - производит план работы, который защищают клеймы (полный протокол PRD-057)

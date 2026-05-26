@@ -1,11 +1,11 @@
 ---
 title: forgeplan_phase
-description: "Read advisory phase state for an artifact — current phase, history, workflow type."
+description: "Read advisory phase state for an artifact - current phase, history, workflow type."
 ---
 
 Returns the advisory methodology phase for an artifact (Shape, Validate, Adi, Code, Test,
 Audit, Evidence, Done) plus the full append-only transition history from
-`.forgeplan/state/<id>.yaml`. Phase tracking is **advisory** — no other tool blocks on it.
+`.forgeplan/state/<id>.yaml`. Phase tracking is **advisory** - no other tool blocks on it.
 If the state file does not exist (pre-PRD-056 artifact, or `phase.enabled: false` in
 config) the response is `current_phase: "unknown"` with an empty history; never an error.
 
@@ -52,7 +52,7 @@ When no state file exists yet:
   "current_phase": "unknown",
   "workflow_type": "greenfield",
   "history": [],
-  "message": "No phase state file on disk — advisory only, never an error",
+  "message": "No phase state file on disk - advisory only, never an error",
   "_next_action": "`PRD-001` has no phase state yet. ..."
 }
 ```
@@ -65,18 +65,18 @@ When no state file exists yet:
 
 ## Typical sequence
 
-1. `forgeplan_phase` — read current phase.
+1. `forgeplan_phase` - read current phase.
 2. If `current_phase: "unknown"` and tracking is desired:
    [`forgeplan_phase_advance --to shape`](/docs/mcp/forgeplan_phase_advance/).
 3. Otherwise follow the `_next_action` hint to the suggested next phase.
 
 ## CLI equivalent
 
-[`forgeplan phase <id>`](/docs/cli/) — same data, same advisory semantics.
+[`forgeplan phase <id>`](/docs/cli/) - same data, same advisory semantics.
 
 ## See also
 
-- [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) — write the next transition
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — gate around the `validate` phase
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — the `done` terminal state of the methodology
-- [Methodology guide](/docs/methodology/overview/) — Shape → Validate → Code → Evidence → Activate
+- [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) - write the next transition
+- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - gate around the `validate` phase
+- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the `done` terminal state of the methodology
+- [Methodology guide](/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate

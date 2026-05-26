@@ -1,6 +1,6 @@
 ---
 title: forgeplan get
-description: "Чтение полного содержимого артефакта по ID — получение markdown, удобное для ИИ"
+description: "Чтение полного содержимого артефакта по ID - получение markdown, удобное для ИИ"
 ---
 
 Прочитать полное содержимое артефакта в формате markdown по его ID. Так ИИ-агенты и люди извлекают отдельный документ-решение для контекста. Команда считывает данные из представления, проецируемого LanceDB, которое синхронизировано с исходным markdown-файлом в `.forgeplan/`.
@@ -39,7 +39,7 @@ forgeplan get [OPTIONS] <ID>
 
 ## Примеры
 
-Прочитать PRD полностью — стандартное получение для ИИ-агента:
+Прочитать PRD полностью - стандартное получение для ИИ-агента:
 
 ```bash
 forgeplan get PRD-001
@@ -51,7 +51,7 @@ forgeplan get PRD-001
 forgeplan get RFC-002 | less
 ```
 
-Вывод JSON — тело плюс весь frontmatter, готовый для `jq`:
+Вывод JSON - тело плюс весь frontmatter, готовый для `jq`:
 
 ```bash
 forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruence_level'
@@ -59,7 +59,7 @@ forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruenc
 
 ## Интерпретация вывода
 
-Вывод по умолчанию — это необработанный markdown-файл: YAML frontmatter, ограниченный `---`, за которым следуют разделы тела (Problem, Goals, FR и т.д.). Это тот же текст, который человек увидит, открыв файл в редакторе.
+Вывод по умолчанию - это необработанный markdown-файл: YAML frontmatter, ограниченный `---`, за которым следуют разделы тела (Problem, Goals, FR и т.д.). Это тот же текст, который человек увидит, открыв файл в редакторе.
 
 С опцией `--json` структура вывода следующая:
 
@@ -77,7 +77,7 @@ forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruenc
 
 ## Как это вписывается
 
-`get` — это "детальный просмотр" по отношению к "индексному просмотру" `list`:
+`get` - это "детальный просмотр" по отношению к "индексному просмотру" `list`:
 
 ```
 list (найти) → get (прочитать) → validate / reason / link / score (действовать)
@@ -87,8 +87,8 @@ list (найти) → get (прочитать) → validate / reason / link / sc
 
 ## См. также
 
-- [`forgeplan list`](/docs/cli/list/) — обнаружение ID
-- [`forgeplan search`](/docs/cli/search/) — поиск по запросу
-- [`forgeplan validate`](/docs/cli/validate/) — проверка качества
-- [`forgeplan score`](/docs/cli/score/) — метрики R_eff + F-G-R
+- [`forgeplan list`](/docs/cli/list/) - обнаружение ID
+- [`forgeplan search`](/docs/cli/search/) - поиск по запросу
+- [`forgeplan validate`](/docs/cli/validate/) - проверка качества
+- [`forgeplan score`](/docs/cli/score/) - метрики R_eff + F-G-R
 - [Руководство по методологии](/docs/methodology/overview/)

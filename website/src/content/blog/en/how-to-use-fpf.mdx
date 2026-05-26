@@ -1,0 +1,166 @@
+---
+title: "How to start using FPF: the minimal protocol"
+description: "Three steps to try Anatoly Levenchuk's pattern language on your own project. With two Name Card examples and a list of traps that are easy to fall into when working with an LLM."
+slug: how-to-use-fpf
+lang: en
+publishedAt: 2026-05-26
+kind: explainer
+topic: methodology
+cover: '/blog-covers/how-to-use-fpf.webp'
+draft: false
+translations:
+  ru: how-to-use-fpf
+---
+
+The [first post](/blog/en/what-is-fpf/) covered what FPF is: where it comes from, how the basic vocabulary works, and how it differs from a textbook. The [situation catalog](/blog/en/where-fpf-helps/) looked at 25 concrete cases where FPF patterns solve real problems.
+
+This post answers the third question: how to start. No course, no prior study of a 7-megabyte file, no special environment. Three steps, two examples, and a list of traps - especially one that catches nearly everyone on the first LLM + FPF attempt.
+
+Key framing: FPF is not a tool you need to master. It is an instruction the LLM reads. Your task remains your task: describe the situation, ask the question, get a response with disciplined structure rather than generic advice. The model handles everything else.
+
+## The minimal protocol: three steps
+
+### Step 1. Load the FPF file into an LLM chat
+
+The FPF specification lives in an open repository: [github.com/ailev/FPF](https://github.com/ailev/FPF). It is one large markdown file. Download it, open a chat with any LLM - ChatGPT, Claude, Gemini, whichever you prefer - and attach the file.
+
+One detail that affects quality: if you are also working with your own document - a PRD, spec, technical brief, postmortem - attach it first, then FPF. An LLM's context window is processed in order, so earlier content carries more weight. Your task should be in focus; FPF is the instruction layered on top.
+
+No special prompt engineering needed. Just the file and a question. If the model responds superficially, repeat the question and ask it to "use patterns from FPF." One clarification usually does it.
+
+### Step 2. Formulate a task about your project immediately
+
+Open the conversation like this: "You have the FPF file loaded - a specification for reasoning. Help me with a task: [your task in your own words]."
+
+Skip "studying FPF" first. Ask questions about your project now, and the LLM will apply patterns from the file. The response will include names like `A.6 Boundary Discipline` or `F.18 Name Card`. An unfamiliar name is useful: it becomes the entry point for a follow-up. "Tell me more about F.18 and how you applied it to my situation." That is how FPF gets learned - not from abstract reading, but through your own work.
+
+Keep conversations focused on one task. Cramming five questions into one chat dilutes context and degrades response quality.
+
+### Step 3. Work in pieces
+
+The algorithm for one working iteration:
+
+1. Formulate the task and send it
+2. Get a response with FPF patterns
+3. Clarify anything unclear ("show me more concretely," "what if this condition were removed?")
+4. Bring it to a state you can actually use
+5. Record the result - in a document, a spec, a task
+
+Recording the result matters: the chat does not persist, and the LLM will not remember this conversation a week from now. Pull anything useful into your own artifacts.
+
+The right size for one iteration is a task that fits in one paragraph. If the description stretches to a page, break it into parts first. An LLM handles "help me rename role X in context Y" far better than "help me figure out the team structure."
+
+FPF updates often: the authors commit nearly every day. If you use FPF regularly, delete the old file from the chat once a day and reload. New patterns appear, and existing wording gets refined.
+
+## Example one: renaming a role at a professional education program
+
+A case from practice: a professional education program for engineering managers restructured its format. What used to be classes, instructors, and textbooks became internships, mentors, and work assignments on participants' own projects. A problem surfaced: what do you call participants now? The word "intern" technically fits, but the participants themselves dislike it - it carries connotations of unpaid labor at a large corporation.
+
+Prompt to the LLM after loading FPF:
+
+```
+A professional education program for engineering managers has been rebranded
+as a studio. Instead of classes there are internships, instead of homework
+there are work assignments on participants' own projects, instead of teachers
+there are mentors. What do we call former students? "Intern" does not work
+due to its connotations. Provide a Name Card per F.18.
+```
+
+The LLM returns a Name Card following pattern F.18 - FPF's card format for designing terms. Abbreviated:
+
+```
+Name Card: StudioResident / studio resident
+
+1. Row ID: UTS.EMStudio.Role.StudioResident.v1
+2. Twin labels:
+   - Tech: StudioResident
+   - Plain: "engineering manager studio resident"
+   - Short: "studio resident"
+3. Context: EngineerManagerStudio.v2025
+   "A studio where learning happens through internships on participants' own projects"
+4. Kind: U.Role (a role-mask a professional temporarily inhabits)
+5. Aliases / risky aliases:
+   - "intern" - risky (carries connotations of unpaid labor)
+6. Boundary: StudioResident is active only during the program period;
+   before and after, the participant holds a different role
+```
+
+This is not a final answer. It is a draft for discussion: does "resident" fit, is the emphasis on "studio" right, does it collide with other roles in the program's ecosystem? What follows are iterations through dialogue: "give me a variant without the word 'studio'," "show how the Name Card changes if the time boundary is removed," "what is the risk of the short form 'resident' without context."
+
+The key difference from a typical LLM suggestion: the F.18 structure exists in the FPF specification, so it can be cited, compared, and challenged. The answer has a form, not just content - making it reviewable as a working artifact rather than something to take on faith.
+
+In practice: bringing this Name Card to a team meeting is far easier than arriving with "we talked it over and landed on 'resident.'" The `risky aliases` field explains why "intern" cannot stay even as informal shorthand. The `Boundary` field shows the label only works inside the program - graduates need a separate card. Each field becomes its own focused conversation, not one undifferentiated "do we like it."
+
+## Example two: renaming a role on an IT team
+
+The same pattern, context closer to product teams.
+
+Situation: a SaaS company had a "Developer Advocate" role. During a restructuring, the main focus shifted from marketing-driven content to contributions to open-source projects and community-driven content. The old title carries marketing associations - a new name is needed that reflects the changed nature of the work.
+
+Prompt:
+
+```
+We had a "Developer Advocate" role - now the core work is PR contributions
+to open-source projects and community-driven content, not marketing.
+How should we rename it? Name Card per F.18.
+```
+
+The LLM returns (abbreviated):
+
+```
+Name Card: CommunityEngineer / community engineer
+
+1. Row ID: UTS.SaaSCo.Role.CommunityEngineer.v1
+2. Twin labels:
+   - Tech: CommunityEngineer
+   - Plain: "community engineer"
+3. Context: SaaSCo.DevRel.v2026
+4. Kind: U.Role
+5. Aliases / risky:
+   - "Developer Advocate" - retiring; associated with marketing-driven work
+   - "Open Source Engineer" - does not convey the community focus, only OSS
+6. Boundary: contributes to external projects and publications,
+   not to internal feature development
+```
+
+Here F.18 surfaces something easy to miss in a brainstorm: the `risky aliases` section shows which terms cannot serve as synonyms because they carry old meanings. "Open Source Engineer" describes part of the work but drops the community half. "Developer Advocate" is the retiring title; running both names in parallel breeds organizational confusion.
+
+A draft, not a verdict - but a draft with structure: concrete fields to discuss, a form ready for review.
+
+Pattern F.18 is identical across both cases - the education program and the SaaS company - not because the cases are similar, but because F.18 is about designing names as such, independent of industry. Field content changes; form stays. That is what a pattern language means: a shared framework, concrete content.
+
+## Anti-pattern: the LLM pretending to use FPF
+
+The main trap when working with LLM + FPF is not the complexity of the patterns. It is that an LLM can generate responses that look like FPF application on the surface but are actually an imitation.
+
+Signs of hollow output:
+
+- The response contains many pattern IDs (`A.6`, `B.3.4`, `G.4`), but they explain nothing concrete - just decorations on top of generic advice
+- The structure looks formal, but the content is boilerplate from any management or systems engineering textbook
+- When asked "show me a specific piece of pattern X from the specification," the LLM paraphrases rather than quoting
+- The response works equally well for any similar task - it is not anchored to the specifics of your case
+
+How to check. Ask for specifics: "FPF pattern A.6 classifies into L/A/D/E - show me exactly how you applied each category to my contract, with concrete entries." If the LLM evades and gives a generic answer, it improvised rather than working from the file.
+
+A second filter: ask the same question twice, a few messages apart. Substantially different structures in the two answers means the first was improvised. When an LLM works from an actual pattern, the structure stays stable - F.18 fields are F.18 fields, not reinvented each time.
+
+A third check: ask the LLM to cite the specific line or heading in the FPF file where the pattern is described. If it names a section, locate it in your downloaded copy and compare. Explanation instead of citation usually means the pattern was invented on the fly.
+
+This is not a reason to avoid LLMs. It is a reason not to accept a nicely formatted response as automatically correct. Verification through specifics takes one or two minutes and filters most hallucination cases. Early attempts are where this surfaces most: the model sees a large file, infers the expected response style, but does not anchor to the actual content. Form looks right; substance is generic.
+
+## Frequently asked questions
+
+**Do you need to read all of FPF before starting?** No. Around 3,000 headings - reading it cover-to-cover takes days, and reading without a task gives minimal return. FPF reveals itself through application. Formulate a real task, look at which patterns the LLM used, and study those. If `G.4 CAL Pack` appears, ask the same LLM with the same loaded file to explain G.4. Three targeted questions beat an hour of sequential reading.
+
+**FPF updates constantly - do you need to track changes?** If you use it occasionally, no. For regular work, updating the file daily makes sense: wording changes, new patterns appear. Most day-to-day tasks are unaffected by a one-day version gap, but for sustained work on a specific pattern, keeping the current file is better.
+
+**FPF did not answer my question - is that normal?** The task probably falls outside FPF's scope. FPF covers the discipline of reasoning: how to structure, name, and verify logical correctness. Forecasts, facts, and judgment calls require other tools. If the task is structural but the response is not working, narrow it: instead of "help with product strategy," try "classify the claims in this document using A.6."
+
+**Where to start right now?** Take a real document you are working with - a spec, technical brief, postmortem, or process description. Load it along with FPF and ask: "Find category errors in this document and suggest corrections using A.7." In 10-15 minutes you will know if FPF belongs in your workflow.
+
+---
+
+Links:
+- FPF itself: [github.com/ailev/FPF](https://github.com/ailev/FPF)
+- What FPF is (long overview): [/blog/en/what-is-fpf/](/blog/en/what-is-fpf/)
+- Where it helps (25 situations): [/blog/en/where-fpf-helps/](/blog/en/where-fpf-helps/)

@@ -27,7 +27,7 @@ dev                     ← integration branch
 ```
 <type>(<scope>): <description>
 
-[body — what and why]
+[body - what and why]
 
 Refs: RFC-001, FR-001..004
 ```

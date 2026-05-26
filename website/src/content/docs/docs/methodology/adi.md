@@ -169,6 +169,6 @@ This entire analysis took 15 minutes and saved weeks of potential rework if the 
 ## Related
 
 - [CLI: forgeplan reason](/docs/cli/reason/), [forgeplan fpf](/docs/cli/fpf/), [forgeplan fpf-search](/docs/cli/fpf-search/)
-- [FPF Knowledge Base guide](/docs/guides/fpf/) — how the B.3/B.5 context works
-- [Evidence & R_eff](/docs/methodology/evidence/) — what Induction consumes
-- [Routing & Depth](/docs/methodology/routing/) — where ADI becomes mandatory
+- [FPF Knowledge Base guide](/docs/guides/fpf/) - how the B.3/B.5 context works
+- [Evidence & R_eff](/docs/methodology/evidence/) - what Induction consumes
+- [Routing & Depth](/docs/methodology/routing/) - where ADI becomes mandatory
