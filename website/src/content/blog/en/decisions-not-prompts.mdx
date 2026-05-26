@@ -1,0 +1,205 @@
+---
+title: "The decision graveyard: why my AI restarts the same argument every session"
+description: "When AI breaks something, the problem almost never is the model. The problem is that the model has nowhere to put the decision. Six months of practice with ForgePlan: four ideas, three gaps, one star on GitHub."
+slug: decisions-not-prompts
+lang: en
+publishedAt: 2026-04-22
+kind: explainer
+topic: methodology
+cover: '/blog-covers/reshenia-ne-prompty.webp'
+draft: false
+translations:
+  ru: decisions-not-prompts
+---
+
+### Lead
+
+Hi. My name is Ilya. I build an open-source tool for AI agents, and over the past six months I keep catching myself thinking the same thing: when my Claude Code breaks something, the problem is almost never the model. The problem is that the model has nowhere to put the decision.
+
+Five months ago I had a telling conversation. Friday - an agent picked Postgres in one session, wrote the migrations, everything was fine. Monday - a different session, and the agent solemnly proposes "maybe MongoDB after all? here are the arguments." The arguments are compelling. Not because the agent is broken - it is just that **every session starts with zero memory**. This agent has no colleague to ping. No corner of Slack where "we already decided this in March" is pinned. No head that holds the "why."
+
+That is the decision graveyard. Before AI it was invisible: decisions died quietly when the last engineer who remembered them left. With agents it became visible every day. I open a new session and read an argument we already closed once.
+
+Six months ago I started writing a tool to solve this - through one simple idea: **a decision is a first-class artifact with a lifecycle, required fields, and visible trust**. The artifact lives in git as a markdown file, lands in the index automatically, the agent sees it the same way you do.
+
+This post is about what I learned in those six months, where I got things wrong, and where I am still getting them wrong. Not an ad. The project is open source, Rust, MIT, **one star on GitHub**. Why one star - that comes at the end, and it is not the story I expected to tell.
+
+---
+
+### Where decisions go to die
+
+Knowledge about "why we did it this way" is stored in most teams in three places: code, documentation files, and people's heads. All three are unreliable for their own reasons.
+
+In code the decision **is not written** - what is written is the result of the decision. The file `db.py` shows that Postgres was chosen. It does not explain why not MongoDB, what the arguments were, what was rejected and why. A year later you open `db.py` and see Postgres. A good choice? A bad one? How would I know.
+
+In documentation files the decision exists but **drifts out of sync** with the code. The document we wrote when choosing Postgres describes the architecture of October 2024. Today is October 2026. The ORM library changed, sharding was added, Redis from the original schema was dropped. The document is formally present, but in practice it is a map of terrain that no longer exists.
+
+In people's heads the decision **also exists, but it is mortal**. The engineer who led the project leaves - half the reasoning leaves with them. Nobody thought to ask "why" at the right moment. The decision is in a file; the rationale is nowhere.
+
+This worked poorly even when people made decisions - at least you could have the conversation "wait, we discussed this in March." When agents started making decisions, the problem became sharp. An agent has no head to "remember why" with. It clones the repository every session, sees exactly what is in the files, and makes a decision **based on those files** - not on your shared understanding that was never written down.
+
+> "Information that is not in the repo does not exist for the agent."
+> - walkinglabs, lecture 3
+
+Walkinglabs is a free course on harness engineering for AI agents (12 short lectures, about 3 hours). The quote above is the central idea of lecture three. Not "should be in the repo," but **does not exist**. If the knowledge is in your head or in Slack - the agent cannot see it. It will rediscover the question, make a decision, implement it. Next session - the same thing again, pointing in a different direction.
+
+Both poles of documentation are about **file freshness**. But the real problem is about **the link between the file and the decision**. Documentation can be current and still useless: it describes "what exists," not "why this way." Decisions in one place, documentation in another, code in a third.
+
+I was looking for a way to merge them into one.
+
+---
+
+### Why I started building ForgePlan
+
+The starting pain was not about AI. It was about that very fragmentation.
+
+A year ago I needed to explain to a new team member why we had chosen Postgres. I opened `git log` - nothing useful. Confluence had a "Choice of database" page, but from the previous architecture. Slack returned a thread of 200 messages, half deleted. In the end I just retold it from memory. Three weeks later that same person suggested MongoDB - because the actual arguments had never been written down anywhere.
+
+The decision exists. The rationale does not. A year later - the same conversation replays.
+
+I started building a tool that forces decisions into first-class artifacts. Not free-form markdown, but files with required structure: mandatory sections, linked evidence, a reliability score **R_eff** calculated from the evidence attached to each decision.
+
+That is how the first artifact types in ForgePlan appeared: PRD (product requirements), RFC (architectural proposal), ADR (recorded decision), Spec (API/data contract), Evidence (proof - a test, a measurement, a review). Lifecycle: draft - active - superseded. Rust CLI, files in `.forgeplan/`, a semantic search index alongside.
+
+The turning point came when I discovered that our own markdown was **not the source of truth**. Artifacts lived in LanceDB (a local database for embeddings and fast search) as primary data. Markdown was an export from it.
+
+That sounded reasonable - the database is fast, vector search is snappy, files are for display. It worked until parallel agents appeared in the same repository. One agent saw state from the database, another from the files, both were "right," the state diverged. **There is no source of truth**: database and files both claim to be it.
+
+I inverted the dependency. ADR-003 formalized: **markdown is the source of truth, LanceDB is a derived index**. The database goes down - `forgeplan scan-import` rebuilds it in minutes. Migrate - take the `.forgeplan/` directory, done. The artifact does not depend on infrastructure; infrastructure depends on the artifact.
+
+This sounds cosmetic. In practice it was the shift from "we have recorded decisions" to "we have **the repository as a single source of truth**." A different model of work, and it turned out to be critical for agents. An agent clones the repo into a fresh sandbox and immediately sees everything, without data migration, without a separate database.
+
+After that ADR came PROB-048: 32 places in the codebase where command handlers wrote directly to LanceDB, bypassing markdown. Four rounds of hard review, 56 findings, a regression test guarding against the old behavior. A month and a half of work. That is the story that changed my view not of "what I am writing" but of **what a decision actually is in a system with AI agents**.
+
+From there came four ideas.
+
+---
+
+### What I learned in six months
+
+#### 1. A decision is an artifact with its own lifecycle
+
+Not a code comment. Not a commit message. Not a Confluence page. **A file with required structure, a link to its parent, a status.**
+
+ForgePlan has ten artifact types; in practice most teams use five or six: PRD, RFC, ADR, Evidence, Problem, Epic. The rest serve specific scenarios. The idea is strict: each type answers exactly one question. PRD - what and why. RFC - how to build it. ADR - why exactly this way. Evidence - does it work. Problem - what broke.
+
+Every artifact has a lifecycle: `draft -> active -> superseded | deprecated | stale`. **We supersede, we do not delete.** When a year later someone asks "have we tried this?" - the `superseded` artifact shows that we tried it, why we moved away, what replaced it. History is preserved.
+
+This is an idea I learned in reverse. The first version had only PRD - and it quickly became clear that "a product requirement" and "an architectural decision" are different things with different lives. PRD changes when the business changes its requirement. ADR changes when we revisit a technical choice. Collapse them into one artifact and every business change forces an architectural review, and vice versa.
+
+Ten types looks daunting, but nobody uses all of them at once. Teams adopt in natural order: first ADR (somewhere to record decisions), then PRD (separate "what" from "how"), then Evidence (something to prove things with), then the rest as the project grows.
+
+#### 2. R_eff is the weakest link, not the average
+
+R_eff is the reliability score of an artifact, calculated from attached evidence - tests, measurements, reviews. The core idea: **minimum, not average**. Three pieces of evidence at 0.9 and one at 0.1 - R_eff is 0.1, not 0.7.
+
+Deliberate: your confidence in a decision is no higher than its weakest evidence. One blind spot and everything sags. An average would hide this; the minimum does not.
+
+This is where I got hit hard myself. **PROB-034** is a story I was embarrassed to tell for a long time.
+
+R_eff itself was silently lying about its own honesty. If an EvidencePack (the body of a piece of evidence) was formatted incorrectly - missing explicit `verdict`, `congruence_level`, `evidence_type` fields - the parser silently applied CL0 ("contradicts context," penalty 0.9), and the score collapsed to near zero. The agent saw `R_eff = 0.10` and **had no idea why**. Just a low number, no explanation. A decision graveyard inside the tool that was supposed to prevent decision graveyards.
+
+> "Students cannot grade their own exams."
+> - walkinglabs, lecture 9
+
+Anthropic published a finding in 2025: agents that evaluate themselves systematically overrate. "Helpful" in their training means "yes, done." Asking an agent "check whether you did this right" is handing a student their own exam. They write "9 out of 10."
+
+The solution is a separate evaluator, separate contexts, ideally separate models. ForgePlan puts this gate directly into the lifecycle: `activate` refuses to move an artifact to `active` if R_eff is zero or validation errors exist. Architecturally enforced, not by agreement.
+
+PROB-034 ended with two rounds of review. A loud warning was added to the output: "EVID-091 has no structured fields - CL0 penalty applied." A red line was added to `CLAUDE.md` about the required body structure. The lesson is not "the scoring works" but **"if a self-checking mechanism stays silent about its own failures, it becomes a silent decision graveyard itself."**
+
+#### 3. Documentation and code must never drift apart
+
+The simplest way to ensure this is to not maintain them separately.
+
+In ForgePlan every CLI command and every MCP tool writes exactly one machine-readable pointer to the next step in its response. Five markers cover the entire working cycle:
+
+```
+$ forgeplan new prd "Auth system"
+Created: prd-auth-system (predicted PRD-74?)
+Next: forgeplan validate prd-auth-system
+
+$ forgeplan validate prd-auth-system
+PASS (0 MUST errors)
+Next: forgeplan reason prd-auth-system
+
+$ forgeplan score prd-auth-system
+R_eff = 0  (no evidence linked)
+Fix: forgeplan new evidence "PRD-074 verification"
+```
+
+`Next:` - primary action. `Or:` - alternative. `Wait:` - wait for a condition. `Done.` - terminal. `Fix:` - what to do about an error. In parallel the JSON output carries a `_next_action` field - the agent parses it structurally, no regex required.
+
+In version 0.25 these hints were present on 36% of commands. After the full audit - 100%. Tests make sure this contract cannot break unnoticed.
+
+This shifts you from "a separate instruction in `CLAUDE.md` explaining how to use the tool" to "the tool itself says what to do next." Documentation **is born at the moment of execution**. It cannot drift from the code - it is the code that prints it.
+
+A side effect I did not predict: onboarding new agents became trivial. Before, long instructions were needed to explain the sequence. Now - run a command, read `Next:`. The `CLAUDE.md` section for this shrank from ~50 lines to ~10.
+
+#### 4. The workflow is a pointer, not bureaucracy
+
+The last rule I added - and it came last: **"the artifact chain is a direction, not a required checklist."**
+
+In the first version I assumed every task needed PRD -> Spec -> RFC -> ADR. Two months in I realized: people will reject that. Half of tasks are trivial changes that do not need a PRD. A one-line bug fix does not need a Spec. Bumping a dependency is not a reason to file an RFC.
+
+ForgePlan now has a `route` command: it looks at the task description and says what depth is appropriate.
+
+- **Tactical** (quick, reversible) - no artifact needed, sometimes a `Note` that expires in 90 days
+- **Standard** (1-3 days, there is a real choice involved) - PRD + RFC
+- **Deep** (irreversible, 1-2 weeks) - PRD + Spec + RFC + ADR + required hypothesis reasoning
+- **Critical** (cross-team, strategy) - Epic + all of the above + adversarial review
+
+If the task is reversible and trivial - write code. No bureaucracy. Artifacts are for situations where **"a year from now someone will ask why."** If the honest answer is "nobody will ask" - skip it.
+
+Without this, ForgePlan would have turned into the second pole of documentation: formally correct, practically in the way.
+
+---
+
+### What ForgePlan does not do yet
+
+Since I am talking openly about how I build this - I should be honest about the gaps. Three I can see right now.
+
+**Gap 1: tracing an individual agent session.** The `health`, `graph`, and `blindspots` commands show repository state. What is missing is observability of a specific run: which tools the agent called, in what order, which `Next:` it ignored. On the roadmap, no date. Needs a trace store, a viewer, a privacy decision (token strings contain user input).
+
+**Gap 2: a sprint contract format.** PRD is too heavy for a day's task (mandatory sections, hypothesis reasoning, linked evidence). Note is too light - no requirement checklists. No intermediate format for "a 2-3 day commitment." I hit this pain every time I sit down to work on something for a single day.
+
+**Gap 3: the tool is effectively Claude Code-only.** Technically model-agnostic - a Rust CLI and an MCP server. But I only use and test it with Claude Code. Cursor, Copilot, Windsurf may work but I have not verified. Reasonable strategy for one person, but an honest limitation.
+
+---
+
+### Numbers
+
+State as of 2026-05-23 - pulled from the repository:
+
+- 343 artifacts in `.forgeplan/` (PRD / ADR / RFC / Spec / Epic / Evidence / Problem / Solution / Note / Refresh)
+- 1995 tests (`cargo test`, 0 failures)
+- 76 CLI commands
+- 73 MCP tools
+- 10 artifact types (most teams use 5-6 in practice)
+- Single binary, open source, MIT, ~41 MB
+- v0.30.0
+- 1 star on GitHub
+
+That last number is the key one. For a year and a half the repository description was "Backend and ForgePlan developer tools." **A promise that does not match the product.** People searching for "developer tools" arrive, see artifact lifecycles and R_eff scoring, and leave. People searching for an AI agent tool do not arrive, because those words are not in the description.
+
+The description was written before the industry had a word for this category. Now the word exists. The description needs rewriting. Lesson for anyone building an open-source technical project: **positioning is not marketing, it is part of the architecture**. If the description says one thing and the code does another, stars distribute in two directions away from true product-market fit.
+
+---
+
+### Conclusion
+
+What I learned in six months - one line each:
+
+1. When AI breaks something in a large system, it is almost never the model. It is that the model has nowhere to put the decision.
+2. Documentation and code always drift apart - except when documentation is **generated** by the code at runtime.
+3. A decision is a file with a lifecycle, not a comment and not a commit message.
+4. Trust in a decision equals the weakest piece of evidence, not the average. One blind spot - and everything sags.
+5. The artifact chain is a direction, not a required checklist. Otherwise the tool becomes its own antipattern.
+
+Three links that may be useful:
+
+- **walkinglabs.github.io/learn-harness-engineering/ru/** - a free course on harness engineering for AI agents, 12 short lectures, about 3 hours. The conceptual framework that helped me build my vocabulary.
+
+- **github.com/ForgePlan/forgeplan** - the practical implementation, Rust, MIT, single binary. `brew install ForgePlan/tap/forgeplan`. Documentation: forgeplan.dev/docs/.
+
+If you have feedback - especially on the three gaps above - open an issue. Honest criticism builds the tool faster than any code change.
