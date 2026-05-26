@@ -3,14 +3,14 @@ title: forgeplan recall
 description: "Search and filter your saved memories (not artifacts)"
 ---
 
-Search the **memory store** — ad-hoc observations, lessons, and context
+Search the **memory store** - ad-hoc observations, lessons, and context
 snippets saved via `forgeplan remember`. This is Forgeplan's lightweight
 personal note-taking lane, separate from artifacts. Use `recall` when you
 remember "we learned something about X" but there is no formal PRD or Note.
 
 ## When to use
 
-- "We agreed not to use crate X — why?"
+- "We agreed not to use crate X - why?"
 - Restore context at session start ("recall 'sprint 13'")
 - Pull prior lessons before a retro or postmortem
 - Fuel an AI agent with situational memory
@@ -76,7 +76,7 @@ Columns: date, category, title, then a body excerpt. `--json` returns the
 full record including any tags and the source (manual vs auto-retain).
 
 Unlike [`search`](/docs/cli/search/), `recall` is pure substring match with
-category filtering — fast and predictable, no BM25 or semantic ranking.
+category filtering - fast and predictable, no BM25 or semantic ranking.
 
 ## How it fits
 
@@ -89,10 +89,10 @@ memories    →  remember, recall
 ```
 
 If a memory is referenced multiple times, promote it to a `Note` artifact and
-link it — that's when it earns lifecycle and evidence.
+link it - that's when it earns lifecycle and evidence.
 
 ## See also
 
-- [`forgeplan search`](/docs/cli/search/) — artifact search
-- [`forgeplan journal`](/docs/cli/journal/) — decision timeline
-- [`forgeplan new note`](/docs/cli/new/) — promote a memory to a Note
+- [`forgeplan search`](/docs/cli/search/) - artifact search
+- [`forgeplan journal`](/docs/cli/journal/) - decision timeline
+- [`forgeplan new note`](/docs/cli/new/) - promote a memory to a Note

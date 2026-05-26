@@ -3,14 +3,14 @@ title: forgeplan_reason
 description: "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider."
 ---
 
-Runs the FPF ADI (Abduction → Deduction → Induction) reasoning cycle against an artifact, optionally seeded with FPF Knowledge Base context. Abduction generates 3+ competing hypotheses, Deduction produces testable predictions for each, and Induction synthesizes a conclusion with justified confidence. For Deep and Critical depth artifacts, ADI is **mandatory** — the agent should never commit code until `forgeplan_reason` has been consulted.
+Runs the FPF ADI (Abduction → Deduction → Induction) reasoning cycle against an artifact, optionally seeded with FPF Knowledge Base context. Abduction generates 3+ competing hypotheses, Deduction produces testable predictions for each, and Induction synthesizes a conclusion with justified confidence. For Deep and Critical depth artifacts, ADI is **mandatory** - the agent should never commit code until `forgeplan_reason` has been consulted.
 
 **Category**: Reasoning & AI
 
 ## When an agent calls this
 
-- After `forgeplan_validate` PASS but before coding a Deep/Critical artifact — the mandatory ADI gate.
-- When the user is hesitating between two approaches — ADI produces comparable predictions.
+- After `forgeplan_validate` PASS but before coding a Deep/Critical artifact - the mandatory ADI gate.
+- When the user is hesitating between two approaches - ADI produces comparable predictions.
 - During adversarial review: re-reason with different constraints to stress-test the current decision.
 
 ## Input parameters
@@ -66,11 +66,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan reason`](/docs/cli/reason/) — same pipeline, terminal output
+- [`forgeplan reason`](/docs/cli/reason/) - same pipeline, terminal output
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
 - [FPF methodology](/docs/methodology/adi/)
-- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) — direct KB lookup
-- [`forgeplan_decompose`](/docs/mcp/forgeplan_decompose/) — reasoning applied to breakdown
+- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) - direct KB lookup
+- [`forgeplan_decompose`](/docs/mcp/forgeplan_decompose/) - reasoning applied to breakdown

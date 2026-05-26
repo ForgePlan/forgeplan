@@ -1,0 +1,28 @@
+---
+title: "Forgeplan: agent harness для AI-кодинг агентов (Rust + LanceDB)"
+description: "Forgeplan - local-first Rust CLI + MCP сервер. Ограничивает где AI-агент может писать, что обязан читать, какие доказательства производить, какие гейты проходить. Markdown как источник правды, compile-enforced инвариант, weakest-link скоринг доверия, контракт hint-протокола."
+slug: forgeplan-rust-lancedb
+lang: ru
+publishedAt: 2026-05-03
+kind: explainer
+topic: methodology
+cover: '/blog-covers/forgeplan-rust-lancedb.webp'
+draft: false
+translations:
+  en: forgeplan-rust-lancedb
+---
+
+Forgeplan - это local-first Rust CLI + MCP сервер, который я теперь называю **agent harness**: структурированная среда, ограничивающая где AI-кодинг агент может писать, какое состояние обязан читать, какие доказательства обязан производить и какие гейты обязан пройти прежде чем объявить задачу выполненной. Фрейминг «harness engineering» взят из walkinglabs ([walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/)) - двенадцать коротких лекций, которые легитимизировали словарь, которым я полгода пользовался неточно.
+
+Что специфично для Forgeplan:
+
+- **Markdown - источник правды, LanceDB - производный индекс** (ADR-003, compile-enforced после очистки 32 нарушений, завершившейся локдауном через `pub(crate)`).
+- **Доверие = слабое звено.** `R_eff = min(evidence_scores)`, никогда среднее. CL-штраф (0.0/0.1/0.4/0.9) делает «прочитал в блоге» структурно слабее чем «измерили сами». Гейт активации блокирует `forgeplan activate` если `R_eff = 0`.
+- **Контракт hint-протокола** (PRD-071): каждый ответ CLI/MCP эмитирует ровно один терминальный hint следующего действия (`Next:` / `Or:` / `Fix:` / `Wait:` / `Done.`), чтобы агент никогда не изобретал порядок самостоятельно.
+- **73 MCP инструмента** для Claude Code, Cursor, Aider. Локальный поиск BGE-M3 1024d.
+
+Стек: Rust воркспейс из трёх крейтов, LanceDB embedded, fastembed, rmcp. Один stripped бинарник ~41 МБ. 1995 тестов.
+
+Чего не хватает: трассировка задач runtime на уровне сессии (H1); артефакт «Sprint Contract» между Note и PRD (H2); жёсткий лимит WIP=1 на захваты агентов (H9). Всё это в публичном роадмапе.
+
+Репозиторий: [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan). Установка: `brew install ForgePlan/tap/forgeplan`.

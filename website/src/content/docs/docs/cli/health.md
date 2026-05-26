@@ -1,6 +1,6 @@
 ---
 title: forgeplan health
-description: "Project health dashboard — blind spots, orphans, stale, at-risk artifacts"
+description: "Project health dashboard - blind spots, orphans, stale, at-risk artifacts"
 ---
 
 `forgeplan health` is the session-start command. It scans every artifact in
@@ -10,24 +10,24 @@ or out), **stale** (valid_until expired), and **at risk** (low R_eff or
 failing validation). If nothing is wrong it prints "Project looks healthy!"
 
 The **Unified Workflow Protocol** makes `forgeplan health` mandatory at the
-start of every session — before you write code, route a task, or open a new
+start of every session - before you write code, route a task, or open a new
 PR. If health shows debt, you clear it before starting new work. Do not
 accumulate debt.
 
 ## When to use
 
-- **Session start** — always, no exceptions. Part of the standard protocol
-- Before creating a PR — make sure your branch did not introduce new debt
-- In CI/CD — use `--ci` mode to block pipelines on regressions
+- **Session start** - always, no exceptions. Part of the standard protocol
+- Before creating a PR - make sure your branch did not introduce new debt
+- In CI/CD - use `--ci` mode to block pipelines on regressions
 - After `forgeplan scan-import` or any bulk ingestion
-- Weekly sprint review — check aggregate project health trends
-- Before a release — `--ci --fail-on "orphans=0,blind_spots=0"` as a release gate
+- Weekly sprint review - check aggregate project health trends
+- Before a release - `--ci --fail-on "orphans=0,blind_spots=0"` as a release gate
 
 ## When NOT to use
 
-- In a tight edit-compile loop — too noisy for per-save runs
-- For a single artifact — use `forgeplan context <ID>` or `forgeplan validate <ID>`
-- As a replacement for `forgeplan status` — health flags problems; status gives raw counts
+- In a tight edit-compile loop - too noisy for per-save runs
+- For a single artifact - use `forgeplan context <ID>` or `forgeplan validate <ID>`
+- As a replacement for `forgeplan status` - health flags problems; status gives raw counts
 
 ## Usage
 
@@ -69,7 +69,7 @@ Project Health
 Project looks healthy!
 ```
 
-### Example 2: Health with debt — clear it before new work
+### Example 2: Health with debt - clear it before new work
 
 ```bash
 forgeplan health
@@ -150,7 +150,7 @@ Drop this into `.github/workflows/ci.yml` after your `cargo test` job:
     forgeplan health --ci --fail-on "blind_spots=0,orphans=0"
 ```
 
-The strictest configuration — `blind_spots=0,orphans=0` — means **no**
+The strictest configuration - `blind_spots=0,orphans=0` - means **no**
 active PRD/RFC/ADR without evidence and **no** unlinked artifacts are
 allowed to land in `dev`. Loosen the thresholds if you need a grace period
 while migrating a brownfield workspace.
@@ -161,14 +161,14 @@ to cover both methodology debt (health) and structural completeness
 
 ## Output interpretation
 
-- **Blind spots** — `status=active` but R_eff=0 (no linked evidence). Means
+- **Blind spots** - `status=active` but R_eff=0 (no linked evidence). Means
   you activated an artifact on trust alone. Fix: create an EvidencePack with
   `verdict`, `congruence_level`, `evidence_type` fields and link it.
-- **Orphans** — no incoming or outgoing links. Either unfinished or forgotten.
+- **Orphans** - no incoming or outgoing links. Either unfinished or forgotten.
   Fix: link to parent/child or deprecate.
-- **Stale** — `valid_until` has passed. Fix: `forgeplan renew <ID>` to extend
+- **Stale** - `valid_until` has passed. Fix: `forgeplan renew <ID>` to extend
   or `forgeplan reopen <ID>` to supersede with a new draft.
-- **At risk** — low R_eff (<0.3), failing validation, or depth-mismatched.
+- **At risk** - low R_eff (<0.3), failing validation, or depth-mismatched.
   Fix: run `forgeplan context <ID>` and address the specific issue.
 
 Thresholds for concern:
@@ -191,9 +191,9 @@ session start                                                             end of
 
 ## See also
 
-- [`forgeplan status`](/docs/cli/status/) — raw counts without the health lens
-- [`forgeplan blindspots`](/docs/cli/blindspots/) — blind-spot-only view
-- [`forgeplan gaps`](/docs/cli/gaps/) — missing-artifact detection
-- [`forgeplan refresh`](/docs/cli/stale/) — bulk stale artifact review
-- [`forgeplan context`](/docs/cli/context/) — per-artifact deep-dive
+- [`forgeplan status`](/docs/cli/status/) - raw counts without the health lens
+- [`forgeplan blindspots`](/docs/cli/blindspots/) - blind-spot-only view
+- [`forgeplan gaps`](/docs/cli/gaps/) - missing-artifact detection
+- [`forgeplan refresh`](/docs/cli/stale/) - bulk stale artifact review
+- [`forgeplan context`](/docs/cli/context/) - per-artifact deep-dive
 - [Methodology: quality gates](/docs/methodology/overview/)

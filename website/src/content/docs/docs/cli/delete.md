@@ -10,7 +10,7 @@ where the artifact appears as source or target.
 **Deletion is destructive and not reversible.** Unless you are cleaning up a
 true mistake (e.g. a test artifact, a typo'd ID, a duplicate), you almost
 certainly want [`forgeplan deprecate`](/docs/cli/deprecate/) or
-[`forgeplan supersede`](/docs/cli/supersede/) instead — both preserve decision
+[`forgeplan supersede`](/docs/cli/supersede/) instead - both preserve decision
 history, which is the whole point of the methodology.
 
 ## Usage
@@ -40,7 +40,7 @@ forgeplan delete [OPTIONS] <ID>
 3. Deletes the artifact row from the LanceDB `artifacts` table.
 4. Cascade-deletes every relation in the `links` table where the artifact is
    source or target.
-5. Leaves other artifacts intact — but they may now reference a deleted ID.
+5. Leaves other artifacts intact - but they may now reference a deleted ID.
 
 ## Examples
 
@@ -59,7 +59,7 @@ forgeplan delete NOTE-042 --yes
 ## Safety: when NOT to delete
 
 Do **not** `delete` an active artifact as a way to "cancel" it. The methodology
-treats abandoned decisions as first-class history — they remain discoverable and
+treats abandoned decisions as first-class history - they remain discoverable and
 explain why the project went a different way.
 
 | Situation                                       | Do this instead                                                  |
@@ -73,7 +73,7 @@ explain why the project went a different way.
 Rule of thumb: if anything links **to** the artifact, deprecate. If it's a
 dead-end stub with no history, delete.
 
-## Before you delete — back up
+## Before you delete - back up
 
 Cascade deletion of relations cannot be undone without a git restore or an
 earlier export. Before bulk-deleting, run:
@@ -105,7 +105,7 @@ guide for why `rm -rf .forgeplan` is a banned shortcut.
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan deprecate`](/docs/cli/deprecate/) — terminal status, preserves history
-- [`forgeplan supersede`](/docs/cli/supersede/) — replace with a newer decision
-- [`forgeplan export`](/docs/cli/export/) — back up before bulk deletes
+- [`forgeplan deprecate`](/docs/cli/deprecate/) - terminal status, preserves history
+- [`forgeplan supersede`](/docs/cli/supersede/) - replace with a newer decision
+- [`forgeplan export`](/docs/cli/export/) - back up before bulk deletes
 - [Methodology guide](/docs/methodology/overview/)

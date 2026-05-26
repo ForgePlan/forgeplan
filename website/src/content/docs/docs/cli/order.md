@@ -1,6 +1,6 @@
 ---
 title: forgeplan order
-description: "Topological sort of artifacts — what to build first"
+description: "Topological sort of artifacts - what to build first"
 ---
 
 Sort all artifacts into topological execution order using dependency edges
@@ -10,9 +10,9 @@ depends on it."
 
 ## When to use
 
-- Sprint planning — sequence multiple PRDs correctly
-- Dependency auditing — spot missing edges that should exist
-- CI gate — fail the build on dependency cycles
+- Sprint planning - sequence multiple PRDs correctly
+- Dependency auditing - spot missing edges that should exist
+- CI gate - fail the build on dependency cycles
 
 ## Not to use when
 
@@ -65,10 +65,10 @@ One artifact per line, earliest-first (breadth-first tiebreaker):
 | Index   | Position in the topological walk                      |
 | ID      | Artifact ID                                           |
 | Title   | Short title                                           |
-| Status  | `[active]`, `[draft]`, etc. — lets you skip terminal  |
+| Status  | `[active]`, `[draft]`, etc. - lets you skip terminal  |
 
 If a cycle is detected, the command exits with status 1 and prints the cycle
-path — fix the offending `blocks` / `depends_on` edge and re-run.
+path - fix the offending `blocks` / `depends_on` edge and re-run.
 
 ## How it fits
 
@@ -84,6 +84,6 @@ and `blocked` is empty.
 
 ## See also
 
-- [`forgeplan blocked`](/docs/cli/blocked/) — unresolved blockers
-- [`forgeplan tree`](/docs/cli/tree/) — hierarchy view
-- [`forgeplan graph`](/docs/cli/graph/) — full edge graph
+- [`forgeplan blocked`](/docs/cli/blocked/) - unresolved blockers
+- [`forgeplan tree`](/docs/cli/tree/) - hierarchy view
+- [`forgeplan graph`](/docs/cli/graph/) - full edge graph

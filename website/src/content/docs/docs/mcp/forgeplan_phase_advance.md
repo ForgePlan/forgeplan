@@ -4,7 +4,7 @@ description: "Manually advance (or set) the advisory phase marker for an artifac
 ---
 
 Writes the next phase to `.forgeplan/state/<id>.yaml`, appending an immutable history
-entry with timestamp and optional reason. Advisory layer — does **not** validate phase
+entry with timestamp and optional reason. Advisory layer - does **not** validate phase
 ordering, so out-of-order jumps (e.g. straight to `done` for a one-line fix) are allowed
 by design. Full phase enforcement lands in a later PRD under EPIC-005. Use when
 auto-advancement missed a transition or when reclassifying workflow state.
@@ -68,18 +68,18 @@ Skip ahead (advisory, no validation gate):
 
 ## Typical sequence
 
-1. [`forgeplan_phase`](/docs/mcp/forgeplan_phase/) — read current state.
+1. [`forgeplan_phase`](/docs/mcp/forgeplan_phase/) - read current state.
 2. Do the work for the suggested-next phase.
 3. `forgeplan_phase_advance` to record the transition.
 4. Loop until `current_phase: "done"`.
 
 ## CLI equivalent
 
-[`forgeplan phase advance <id> --to <phase>`](/docs/cli/) — same write, same advisory
+[`forgeplan phase advance <id> --to <phase>`](/docs/cli/) - same write, same advisory
 semantics.
 
 ## See also
 
-- [`forgeplan_phase`](/docs/mcp/forgeplan_phase/) — read current state + history
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — the methodology activation gate
-- [Methodology guide](/docs/methodology/overview/) — Shape → Validate → Code → Evidence → Activate
+- [`forgeplan_phase`](/docs/mcp/forgeplan_phase/) - read current state + history
+- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the methodology activation gate
+- [Methodology guide](/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate

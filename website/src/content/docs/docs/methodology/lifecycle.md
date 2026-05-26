@@ -142,7 +142,7 @@ forgeplan reopen ADR-001 --reason "New alternatives available, needs fresh evalu
 
 ## Related
 
-- [Lifecycle v2 deep-dive](/docs/guides/lifecycle-v2/) — full state machine walkthrough with four real-world flows
+- [Lifecycle v2 deep-dive](/docs/guides/lifecycle-v2/) - full state machine walkthrough with four real-world flows
 - [CLI: review](/docs/cli/review/), [activate](/docs/cli/activate/), [supersede](/docs/cli/supersede/), [deprecate](/docs/cli/deprecate/), [renew](/docs/cli/renew/), [reopen](/docs/cli/reopen/), [stale](/docs/cli/stale/)
-- [Evidence & R_eff](/docs/methodology/evidence/) — why stale evidence degrades trust scores
-- [Routing & Depth](/docs/methodology/routing/) — validation gates differ by depth
+- [Evidence & R_eff](/docs/methodology/evidence/) - why stale evidence degrades trust scores
+- [Routing & Depth](/docs/methodology/routing/) - validation gates differ by depth

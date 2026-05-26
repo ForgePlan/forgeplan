@@ -4,9 +4,9 @@ description: "Remove a relation between two artifacts"
 ---
 
 Remove a typed relation between two artifacts. The inverse of
-[`forgeplan link`](/docs/cli/link/). Use `unlink` to fix mistakes — wrong
+[`forgeplan link`](/docs/cli/link/). Use `unlink` to fix mistakes - wrong
 direction, wrong relation type, stale edge left over from a superseded
-decision — without rewriting markdown by hand.
+decision - without rewriting markdown by hand.
 
 ## Usage
 
@@ -34,7 +34,7 @@ forgeplan unlink [OPTIONS] <SOURCE> <TARGET>
 1. Looks up the relation in the LanceDB `links` table keyed on
    `(source, target, relation)`.
 2. Deletes the row if found.
-3. Refreshes any derived caches — `score`, `graph`, and `blocked` will reflect
+3. Refreshes any derived caches - `score`, `graph`, and `blocked` will reflect
    the change on next run.
 4. Exits cleanly even if no matching relation exists, making the command
    idempotent and safe to script.
@@ -94,10 +94,10 @@ no-op.
 
 ## Notes
 
-- Unlink is idempotent — running it twice has the same effect as running it
+- Unlink is idempotent - running it twice has the same effect as running it
   once. No error on a missing edge.
 - To remove an artifact entirely (including all its links), use
-  [`forgeplan delete`](/docs/cli/delete/) — it cascade-deletes relations in a
+  [`forgeplan delete`](/docs/cli/delete/) - it cascade-deletes relations in a
   single pass.
 - Direct edits to `.forgeplan/<kind>s/<id>.md` never touch the `links` table.
   If you need to hand-edit relations, run
@@ -106,7 +106,7 @@ no-op.
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan link`](/docs/cli/link/) — create a relation
-- [`forgeplan graph`](/docs/cli/graph/) — visualize current relations
-- [`forgeplan score`](/docs/cli/score/) — recompute R_eff after unlinking
+- [`forgeplan link`](/docs/cli/link/) - create a relation
+- [`forgeplan graph`](/docs/cli/graph/) - visualize current relations
+- [`forgeplan score`](/docs/cli/score/) - recompute R_eff after unlinking
 - [Methodology guide](/docs/methodology/overview/)

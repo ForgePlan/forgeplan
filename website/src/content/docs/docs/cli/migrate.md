@@ -13,9 +13,9 @@ description: "Apply schema migrations to an existing workspace after upgrading t
 
 ## When NOT to use
 
-- On a brand-new workspace created by the current binary — there is nothing to migrate.
-- As a substitute for rebuilding the search index — migrations change schema, not content. For index rebuilds use [`forgeplan scan-import`](/docs/cli/scan-import/).
-- As a recovery tool for corrupted workspaces — migrations assume the LanceDB files are structurally valid. For corruption, restore from [`forgeplan export`](/docs/cli/export/) backup.
+- On a brand-new workspace created by the current binary - there is nothing to migrate.
+- As a substitute for rebuilding the search index - migrations change schema, not content. For index rebuilds use [`forgeplan scan-import`](/docs/cli/scan-import/).
+- As a recovery tool for corrupted workspaces - migrations assume the LanceDB files are structurally valid. For corruption, restore from [`forgeplan export`](/docs/cli/export/) backup.
 
 ## Usage
 
@@ -72,10 +72,10 @@ Always back up before running migrations against production workspaces with mean
 
 `migrate` is part of the upgrade path, not the daily artifact loop. A typical version bump goes:
 
-1. `forgeplan export --output pre-upgrade.json` — safety backup
+1. `forgeplan export --output pre-upgrade.json` - safety backup
 2. Upgrade the binary (`cargo install` / `brew upgrade`)
-3. `forgeplan migrate` — apply pending schema changes
-4. `forgeplan health` — verify the workspace is clean
+3. `forgeplan migrate` - apply pending schema changes
+4. `forgeplan health` - verify the workspace is clean
 5. Resume normal work (`forgeplan new`, `forgeplan validate`, etc.)
 
 If `migrate` is insufficient (e.g. a breaking schema change), fall back to the export + reinit + import cycle documented in [`forgeplan init`](/docs/cli/init/).
@@ -83,14 +83,14 @@ If `migrate` is insufficient (e.g. a breaking schema change), fall back to the e
 ## Safety notes
 
 - **Always export before migrating production workspaces.** `migrate` is designed to be non-destructive, but new binaries can have bugs. [`forgeplan export`](/docs/cli/export/) is cheap and fast; run it first.
-- **`migrate` is idempotent.** Running it twice in a row is safe — the second run detects no pending migrations.
-- **`.forgeplan/lance/` is gitignored** — if migration leaves it in a weird state on one machine, `rm -rf .forgeplan/lance && forgeplan scan-import` will rebuild the index from tracked markdown.
+- **`migrate` is idempotent.** Running it twice in a row is safe - the second run detects no pending migrations.
+- **`.forgeplan/lance/` is gitignored** - if migration leaves it in a weird state on one machine, `rm -rf .forgeplan/lance && forgeplan scan-import` will rebuild the index from tracked markdown.
 - **Schema version is tied to the binary.** Don't mix binaries of different versions against the same workspace without running `migrate` in between.
 
 ## See also
 
-- [`forgeplan export`](/docs/cli/export/) — mandatory safety backup before upgrading
-- [`forgeplan import`](/docs/cli/import/) — rollback path if migration fails
-- [`forgeplan init`](/docs/cli/init/) — last-resort full reinit
-- [`forgeplan scan-import`](/docs/cli/scan-import/) — rebuild the derived index from markdown
-- [`forgeplan health`](/docs/cli/health/) — post-migration verification
+- [`forgeplan export`](/docs/cli/export/) - mandatory safety backup before upgrading
+- [`forgeplan import`](/docs/cli/import/) - rollback path if migration fails
+- [`forgeplan init`](/docs/cli/init/) - last-resort full reinit
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild the derived index from markdown
+- [`forgeplan health`](/docs/cli/health/) - post-migration verification

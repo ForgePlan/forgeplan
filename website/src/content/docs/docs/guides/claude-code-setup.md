@@ -5,7 +5,7 @@ description: Configure Claude Code for maximum productivity with Forgeplan
 
 ## What is CLAUDE.md?
 
-`CLAUDE.md` is Claude Code's project memory — a file at your repo root that tells Claude about your project, conventions, and workflows. Claude reads it at every session start.
+`CLAUDE.md` is Claude Code's project memory - a file at your repo root that tells Claude about your project, conventions, and workflows. Claude reads it at every session start.
 
 ## Recommended CLAUDE.md Structure
 
@@ -30,9 +30,9 @@ Based on production configurations across multiple projects:
 - PR pipeline: Code → Audit → Fix → Test → PR
 
 ## Enforcement Hooks
-- forge-safety-hook.sh — blocks dangerous commands
-- pre-commit-fmt.sh — format check
-- commit-test-check.sh — tests for new functions
+- forge-safety-hook.sh - blocks dangerous commands
+- pre-commit-fmt.sh - format check
+- commit-test-check.sh - tests for new functions
 
 ## Memory (Hindsight)
 - Session start: memory_recall("project")
@@ -53,7 +53,7 @@ Add this to any project's CLAUDE.md to integrate Forgeplan:
 ## Forgeplan
 
 ### Session start
-forgeplan health   # blind spots, orphans — fix FIRST
+forgeplan health   # blind spots, orphans - fix FIRST
 
 ### Before any task
 forgeplan route "task description"   # determines depth
@@ -175,8 +175,8 @@ project/
 
 ## Best Practices
 
-1. **Keep CLAUDE.md under 500 lines** — Claude reads it every session. Too long = wasted context.
-2. **Put details in docs/, not CLAUDE.md** — reference `docs/guides/X.md` for deep content.
-3. **Update after decisions** — new convention? Add it to CLAUDE.md immediately.
-4. **Hooks over instructions** — "never force push" in CLAUDE.md is a suggestion. A hook is enforcement.
-5. **Forgeplan health first** — always start session with `forgeplan health` to catch blind spots.
+1. **Keep CLAUDE.md under 500 lines** - Claude reads it every session. Too long = wasted context.
+2. **Put details in docs/, not CLAUDE.md** - reference `docs/guides/X.md` for deep content.
+3. **Update after decisions** - new convention? Add it to CLAUDE.md immediately.
+4. **Hooks over instructions** - "never force push" in CLAUDE.md is a suggestion. A hook is enforcement.
+5. **Forgeplan health first** - always start session with `forgeplan health` to catch blind spots.

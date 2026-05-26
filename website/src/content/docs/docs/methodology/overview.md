@@ -109,16 +109,16 @@ The litmus test: "Will someone (including future me) ever ask why this decision 
 The rest of the methodology expands on ten rules. Each has its own doc --
 this list is the index.
 
-1. **Route before you code** — [Routing & Depth](/docs/methodology/routing/)
-2. **Shape → Validate → ADI → Code → Evidence → Activate** — full cycle, not a checklist
-3. **`[Actor] can [capability]`** — no implementation leakage in PRD FRs
-4. **Child references parent** — PRD→Epic, RFC→PRD, ADR→RFC
-5. **Supersede, don't delete** — [Lifecycle](/docs/methodology/lifecycle/)
-6. **Quality gates by depth** — Tactical = nothing, Standard = Verification Gate, Deep+ = Adversarial Review
-7. **Session start: `health` + memory recall** — fix orphans and blind spots first
-8. **Work isn't done until R_eff > 0 + activated** — [Evidence & R_eff](/docs/methodology/evidence/)
-9. **ADI is mandatory on Deep+** — [ADI Reasoning](/docs/methodology/adi/)
-10. **Stale = re-validate, don't ignore** — set `valid_until` on every ADR
+1. **Route before you code** - [Routing & Depth](/docs/methodology/routing/)
+2. **Shape → Validate → ADI → Code → Evidence → Activate** - full cycle, not a checklist
+3. **`[Actor] can [capability]`** - no implementation leakage in PRD FRs
+4. **Child references parent** - PRD→Epic, RFC→PRD, ADR→RFC
+5. **Supersede, don't delete** - [Lifecycle](/docs/methodology/lifecycle/)
+6. **Quality gates by depth** - Tactical = nothing, Standard = Verification Gate, Deep+ = Adversarial Review
+7. **Session start: `health` + memory recall** - fix orphans and blind spots first
+8. **Work isn't done until R_eff > 0 + activated** - [Evidence & R_eff](/docs/methodology/evidence/)
+9. **ADI is mandatory on Deep+** - [ADI Reasoning](/docs/methodology/adi/)
+10. **Stale = re-validate, don't ignore** - set `valid_until` on every ADR
 
 ## Tooling
 
@@ -128,11 +128,11 @@ Additional plugins provide code auditing (`/audit`), sprint planning (`/sprint`)
 
 ## Next Steps
 
-- [Quick Start](/docs/getting-started/quick-start/) — first artifact in 10 minutes
-- [First Artifact Tutorial](/docs/guides/first-artifact/) — hands-on 20-minute walkthrough
-- [Routing & Depth](/docs/methodology/routing/) — how to choose the right level
-- [Artifact Lifecycle](/docs/methodology/lifecycle/) — draft → active → terminal
-- [Evidence & R_eff Scoring](/docs/methodology/evidence/) — how trust is measured
-- [ADI Reasoning](/docs/methodology/adi/) — structured thinking before building
-- [CLI Reference](/docs/cli/) — every command documented
-- [FPF Framework Guide](/docs/guides/fpf/) — the reasoning backbone
+- [Quick Start](/docs/getting-started/quick-start/) - first artifact in 10 minutes
+- [First Artifact Tutorial](/docs/guides/first-artifact/) - hands-on 20-minute walkthrough
+- [Routing & Depth](/docs/methodology/routing/) - how to choose the right level
+- [Artifact Lifecycle](/docs/methodology/lifecycle/) - draft → active → terminal
+- [Evidence & R_eff Scoring](/docs/methodology/evidence/) - how trust is measured
+- [ADI Reasoning](/docs/methodology/adi/) - structured thinking before building
+- [CLI Reference](/docs/cli/) - every command documented
+- [FPF Framework Guide](/docs/guides/fpf/) - the reasoning backbone

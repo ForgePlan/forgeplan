@@ -1,6 +1,6 @@
 ---
 title: Forgeplan Workflow Plugin
-description: /forge command — full methodology cycle for Claude Code
+description: /forge command - full methodology cycle for Claude Code
 ---
 
 ## What It Does

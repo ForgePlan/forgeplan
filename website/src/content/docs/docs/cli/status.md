@@ -1,12 +1,12 @@
 ---
 title: forgeplan status
-description: "Quick summary dashboard — kind × status breakdown and recent activity"
+description: "Quick summary dashboard - kind × status breakdown and recent activity"
 ---
 
 `forgeplan status` prints a compact snapshot of the workspace: how many
 artifacts of each kind exist, what their lifecycle status is, and what has
 changed recently. It is the "what's in this project?" command, not the
-"what's broken?" command — for problem detection use `forgeplan health`.
+"what's broken?" command - for problem detection use `forgeplan health`.
 
 Use it when you open a project you have not touched in a week, when you
 want to see sprint velocity at a glance, or when you are writing a status
@@ -18,15 +18,15 @@ report and need the current counts.
 - Writing a weekly/sprint status report
 - Confirming that `forgeplan scan-import` picked up recently edited files
 - Sanity check after a bulk import or merge
-- Pre-standup — see what moved since yesterday
-- Demo — quick overview slide for stakeholders
+- Pre-standup - see what moved since yesterday
+- Demo - quick overview slide for stakeholders
 
 ## When NOT to use
 
-- Detecting debt or quality issues — use `forgeplan health` (blind spots, orphans)
-- Per-artifact inspection — use `forgeplan get <ID>` or `forgeplan context <ID>`
-- CI gating — status has no exit-code semantics; use `health --ci`
-- Finding a specific artifact — use `forgeplan search` or `forgeplan list`
+- Detecting debt or quality issues - use `forgeplan health` (blind spots, orphans)
+- Per-artifact inspection - use `forgeplan get <ID>` or `forgeplan context <ID>`
+- CI gating - status has no exit-code semantics; use `health --ci`
+- Finding a specific artifact - use `forgeplan search` or `forgeplan list`
 
 ## Usage
 
@@ -95,21 +95,21 @@ tail.
 
 ## Output interpretation
 
-- **Artifacts by kind** — totals per ArtifactKind, split by lifecycle status.
+- **Artifacts by kind** - totals per ArtifactKind, split by lifecycle status.
   `draft`, `active`, `stale`, `superseded`, `deprecated`, `expired` are the
   possible states. Draft-heavy means unfinished work; superseded-heavy means
   healthy evolution.
-- **Recent activity** — last 7 days of create / update / link / activate /
+- **Recent activity** - last 7 days of create / update / link / activate /
   supersede events. Pulled from the decision journal.
 
 Red flags:
 
-- Many drafts and no active — you create artifacts but never finish them
-- Zero recent activity over multiple days — project may be abandoned or work
+- Many drafts and no active - you create artifacts but never finish them
+- Zero recent activity over multiple days - project may be abandoned or work
   happening outside the CLI (direct markdown edits without `scan-import`)
-- Evidence count disproportionately low vs PRD count — missing evidence
+- Evidence count disproportionately low vs PRD count - missing evidence
   coverage; run `forgeplan health` for specifics
-- Notes with many `expired` entries — auto-expiration working as intended,
+- Notes with many `expired` entries - auto-expiration working as intended,
   no action needed
 
 ## How it fits the workflow
@@ -127,8 +127,8 @@ session start → [status] → health → route → Shape → ...
 
 ## See also
 
-- [`forgeplan health`](/docs/cli/health/) — problem detection and next actions
-- [`forgeplan list`](/docs/cli/list/) — filterable artifact listing
-- [`forgeplan search`](/docs/cli/search/) — keyword / semantic search
-- [`forgeplan context`](/docs/cli/context/) — per-artifact full view
-- [`forgeplan journal`](/docs/cli/journal/) — full decision history
+- [`forgeplan health`](/docs/cli/health/) - problem detection and next actions
+- [`forgeplan list`](/docs/cli/list/) - filterable artifact listing
+- [`forgeplan search`](/docs/cli/search/) - keyword / semantic search
+- [`forgeplan context`](/docs/cli/context/) - per-artifact full view
+- [`forgeplan journal`](/docs/cli/journal/) - full decision history

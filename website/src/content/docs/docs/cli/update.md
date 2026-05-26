@@ -7,7 +7,7 @@ Update an artifact's metadata (title, status, depth) or replace its body content
 without regenerating the file from a template. This is the low-level escape hatch
 when you need to change a single field without rewriting the whole artifact.
 
-For most lifecycle transitions, prefer the dedicated commands — they run
+For most lifecycle transitions, prefer the dedicated commands - they run
 validation gates and enforce the state machine. Use `update` only when no
 dedicated command exists or when you are scripting a bulk-edit.
 
@@ -64,7 +64,7 @@ Replace body from a file:
 forgeplan update NOTE-042 --body @./draft.md
 ```
 
-Force-set status (skipping the lifecycle state machine — use with care):
+Force-set status (skipping the lifecycle state machine - use with care):
 
 ```bash
 forgeplan update PRD-001 --status active
@@ -89,7 +89,7 @@ dedicated commands instead:
 Because the markdown files are the source of truth (ADR-003), editing
 `.forgeplan/<kind>s/<id>.md` in your editor and then running
 [`forgeplan scan-import`](/docs/cli/scan-import/) is often the most ergonomic
-workflow — especially for body edits, structured field updates, or batch
+workflow - especially for body edits, structured field updates, or batch
 changes. `forgeplan update` shines when you are scripting or want to avoid
 opening the file at all.
 
@@ -104,7 +104,7 @@ opening the file at all.
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan activate`](/docs/cli/activate/) — preferred way to change status
-- [`forgeplan scan-import`](/docs/cli/scan-import/) — rebuild index after direct edits
-- [`forgeplan validate`](/docs/cli/validate/) — check that the artifact is still valid
+- [`forgeplan activate`](/docs/cli/activate/) - preferred way to change status
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild index after direct edits
+- [`forgeplan validate`](/docs/cli/validate/) - check that the artifact is still valid
 - [Methodology guide](/docs/methodology/overview/)

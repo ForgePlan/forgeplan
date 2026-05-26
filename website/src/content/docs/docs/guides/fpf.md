@@ -1,17 +1,17 @@
 ---
-title: FPF — First Principles Framework
+title: FPF - First Principles Framework
 description: Structured reasoning with decompose, evaluate, and reason patterns
 ---
 
 ## What is FPF?
 
-The First Principles Framework (FPF) is an "Operating System for Thought" — a transdisciplinary architecture for reasoning. It turns raw intelligence (human or machine) into organisationally usable reasoning.
+The First Principles Framework (FPF) is an "Operating System for Thought" - a transdisciplinary architecture for reasoning. It turns raw intelligence (human or machine) into organisationally usable reasoning.
 
 FPF is built into Forgeplan via the `/fpf` command and the `forgeplan fpf` CLI.
 
 ## Three Reasoning Modes
 
-### /fpf decompose — Break it down
+### /fpf decompose - Break it down
 
 When you have a complex system and need to understand its parts.
 
@@ -26,7 +26,7 @@ Output:
 
 **When to use:** Starting a new feature, understanding existing system, planning architecture.
 
-### /fpf evaluate — Compare options
+### /fpf evaluate - Compare options
 
 When you need to choose between alternatives with evidence scoring.
 
@@ -42,7 +42,7 @@ Output:
 
 **When to use:** Technology selection, architecture decisions, trade-off analysis.
 
-### /fpf reason — Think it through
+### /fpf reason - Think it through
 
 When you need to understand why something happened or how to approach a problem.
 
@@ -80,8 +80,8 @@ forgeplan reason PRD-001 --fpf
 |---------|--------------|
 | **Bounded Context** | A part of the system with clear boundaries and its own vocabulary |
 | **Trust Calculus** | Scoring confidence: how much can you trust a claim? |
-| **F-G-R** | Formality × Granularity × Reliability — quality dimensions |
-| **ADI Cycle** | Abduction → Deduction → Induction — structured reasoning loop |
+| **F-G-R** | Formality × Granularity × Reliability - quality dimensions |
+| **ADI Cycle** | Abduction → Deduction → Induction - structured reasoning loop |
 | **Category Error** | Confusing role vs function, method vs work |
 | **Gamma Algebra** | How parts compose into wholes preserving properties |
 

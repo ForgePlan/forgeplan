@@ -5,22 +5,22 @@ description: "Calibrated effort estimate from FR/Phase items with grade profiles
 
 `forgeplan estimate` turns an artifact's Functional Requirements and Implementation
 Phases into an effort number. It reads the complexity of each item (Fibonacci
-1/2/3/5/8/13) and multiplies by the grade profile from your config — junior, middle,
-senior, principal, or AI — per domain (backend/frontend/devops/ai_ml). Review overhead
+1/2/3/5/8/13) and multiplies by the grade profile from your config - junior, middle,
+senior, principal, or AI - per domain (backend/frontend/devops/ai_ml). Review overhead
 and a safety margin are added on top, so the output is a realistic planning number, not
 a best-case.
 
 ## When to use
 
 - Sprint planning: estimate every candidate PRD/RFC to fit capacity (≈40–50% of nominal).
-- Capacity check before committing to an epic — is this 2 weeks or 2 months?
-- Delegating to a teammate — `--grade middle` to see what the task looks like for them.
-- Agent planning — `--grade ai` to get the AI-assisted fast path (×0.03–0.4 multiplier).
+- Capacity check before committing to an epic - is this 2 weeks or 2 months?
+- Delegating to a teammate - `--grade middle` to see what the task looks like for them.
+- Agent planning - `--grade ai` to get the AI-assisted fast path (×0.03–0.4 multiplier).
 
 ## When NOT to use
 
-- On Notes or Problems — they have no FR/Phase structure to estimate.
-- As a contract — estimates are for planning, not promises. Calibrate with `calibrate-estimate` after the fact.
+- On Notes or Problems - they have no FR/Phase structure to estimate.
+- As a contract - estimates are for planning, not promises. Calibrate with `calibrate-estimate` after the fact.
 
 ## Usage
 
@@ -57,7 +57,7 @@ forgeplan estimate PRD-001 --my-grade
 Output:
 
 ```text
-PRD-001 — Auth System
+PRD-001 - Auth System
   FR-001  login flow          complexity=5  senior  → 6h
   FR-002  session refresh     complexity=3  senior  → 3h
   FR-003  logout              complexity=2  senior  → 1h
@@ -104,7 +104,7 @@ nuance the rule engine misses.
 | Safety       | +15% buffer for surprise                                           |
 | Total        | realistic sprint-planning number                                   |
 
-Red flag: totals over 40h — consider splitting the PRD or escalating depth.
+Red flag: totals over 40h - consider splitting the PRD or escalating depth.
 
 ## How it fits the workflow
 
@@ -118,8 +118,8 @@ shows how accurate the number was.
 
 ## See also
 
-- [`forgeplan calibrate`](/docs/cli/calibrate/) — depth calibration, feeds estimation scale
-- [`forgeplan calibrate-estimate`](/docs/cli/calibrate-estimate/) — estimate accuracy after sprint
-- [`forgeplan route`](/docs/cli/route/) — routing to depth before estimating
+- [`forgeplan calibrate`](/docs/cli/calibrate/) - depth calibration, feeds estimation scale
+- [`forgeplan calibrate-estimate`](/docs/cli/calibrate-estimate/) - estimate accuracy after sprint
+- [`forgeplan route`](/docs/cli/route/) - routing to depth before estimating
 - [Depth Calibration](/docs/methodology/routing/)
 - [CLI overview](/docs/cli/)

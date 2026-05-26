@@ -15,11 +15,11 @@ Receipts старше TTL (30 дней по умолчанию, ленивая �
 
 ## Когда агент вызывает
 
-- «Восстанови PRD-042» — пользователь заметил, что вчера был удалён не тот артефакт.
+- «Восстанови PRD-042» - пользователь заметил, что вчера был удалён не тот артефакт.
 - После `forgeplan_supersede`, который агент осознаёт как ошибочный: восстановить
   оригинал.
 - Точечное восстановление, когда [`forgeplan_undo_last`](/ru/docs/mcp/forgeplan_undo_last/)
-  откатил бы не ту операцию — передача ID точнее, чем «самое последнее».
+  откатил бы не ту операцию - передача ID точнее, чем «самое последнее».
 - Аудит receipt в trash перед фиксацией реального восстановления.
 
 ## Входные параметры
@@ -76,18 +76,18 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::RestoreParams
 
 ## Типичная последовательность
 
-1. [`forgeplan_activity`](/ru/docs/mcp/forgeplan_activity/) — найти, когда произошла деструктивная операция.
-2. `forgeplan_restore` — восстановить конкретный артефакт.
-3. [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/) — проверить тело, статус, связи.
-4. При необходимости — вручную перевосстановить пропущенные связи.
+1. [`forgeplan_activity`](/ru/docs/mcp/forgeplan_activity/) - найти, когда произошла деструктивная операция.
+2. `forgeplan_restore` - восстановить конкретный артефакт.
+3. [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/) - проверить тело, статус, связи.
+4. При необходимости - вручную перевосстановить пропущенные связи.
 
 ## CLI эквивалент
 
-[`forgeplan restore <id>`](/ru/docs/cli/) — та же семантика восстановления.
+[`forgeplan restore <id>`](/ru/docs/cli/) - та же семантика восстановления.
 
 ## См. также
 
-- [`forgeplan_undo_last`](/ru/docs/mcp/forgeplan_undo_last/) — откатить самую последнюю деструктивную операцию (без указания ID)
-- [`forgeplan_activity`](/ru/docs/mcp/forgeplan_activity/) — найти receipt перед восстановлением
-- [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) — мягкое удаление, которое это откатывает
+- [`forgeplan_undo_last`](/ru/docs/mcp/forgeplan_undo_last/) - откатить самую последнюю деструктивную операцию (без указания ID)
+- [`forgeplan_activity`](/ru/docs/mcp/forgeplan_activity/) - найти receipt перед восстановлением
+- [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) - мягкое удаление, которое это откатывает
 - [Обзор MCP](/ru/docs/mcp/)

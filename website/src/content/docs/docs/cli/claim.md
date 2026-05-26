@@ -1,30 +1,30 @@
 ---
 title: forgeplan claim
-description: "Claim an artifact for exclusive work — TTL-based advisory lock for multi-agent dispatch (PRD-057)."
+description: "Claim an artifact for exclusive work - TTL-based advisory lock for multi-agent dispatch (PRD-057)."
 ---
 
-`forgeplan claim` reserves an artifact for a specific agent, so other agents know not to touch it. It writes a small file at `.forgeplan/claims/<id>.yaml` containing the agent identity and an expiry time (TTL — time-to-live, after which the claim is considered abandoned and another agent can pick up the work). The expiry defaults to 30 minutes and caps at 24 hours.
+`forgeplan claim` reserves an artifact for a specific agent, so other agents know not to touch it. It writes a small file at `.forgeplan/claims/<id>.yaml` containing the agent identity and an expiry time (TTL - time-to-live, after which the claim is considered abandoned and another agent can pick up the work). The expiry defaults to 30 minutes and caps at 24 hours.
 
-This is an **advisory lock**, not a hard lock — no other Forgeplan command refuses to run because something is claimed. The convention is that agents check [`forgeplan claims`](/docs/cli/claims/) before starting work and respect what they see. The dispatcher ([`forgeplan dispatch`](/docs/cli/dispatch/)) does honour claims and excludes already-claimed artifacts from its plans.
+This is an **advisory lock**, not a hard lock - no other Forgeplan command refuses to run because something is claimed. The convention is that agents check [`forgeplan claims`](/docs/cli/claims/) before starting work and respect what they see. The dispatcher ([`forgeplan dispatch`](/docs/cli/dispatch/)) does honour claims and excludes already-claimed artifacts from its plans.
 
 Two safety properties:
 
-- **No double-claim** — if a different agent already holds a live claim for this artifact, the call fails with a clear error message.
-- **Renewal is idempotent** — the same agent calling `claim` again refreshes the expiry without changing the holder. Use this on long-running work to keep the claim alive.
+- **No double-claim** - if a different agent already holds a live claim for this artifact, the call fails with a clear error message.
+- **Renewal is idempotent** - the same agent calling `claim` again refreshes the expiry without changing the holder. Use this on long-running work to keep the claim alive.
 
 Mirrors [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) on the MCP side.
 
 ## When to use
 
-- A sub-agent received a bucket from [`forgeplan dispatch`](/docs/cli/dispatch/) — claim the artifact before editing any files.
-- Long-running work (large refactor, multi-PR feature) — call `claim` again every 20 minutes or so to refresh the expiry before it runs out.
-- An orchestrator script wants to claim on behalf of a sub-agent that does not speak MCP — pass `--agent worker-1` explicitly.
+- A sub-agent received a bucket from [`forgeplan dispatch`](/docs/cli/dispatch/) - claim the artifact before editing any files.
+- Long-running work (large refactor, multi-PR feature) - call `claim` again every 20 minutes or so to refresh the expiry before it runs out.
+- An orchestrator script wants to claim on behalf of a sub-agent that does not speak MCP - pass `--agent worker-1` explicitly.
 
 ## When NOT to use
 
-- Single-agent workflow — nothing to race against, no need for a claim.
-- You expect a hard lock that blocks other commands — claims are advisory; agents must voluntarily check them.
-- Without thinking about TTL — the default 30 minutes prevents abandoned claims from blocking the workspace forever. Set it higher only if you plan to renew before it expires.
+- Single-agent workflow - nothing to race against, no need for a claim.
+- You expect a hard lock that blocks other commands - claims are advisory; agents must voluntarily check them.
+- Without thinking about TTL - the default 30 minutes prevents abandoned claims from blocking the workspace forever. Set it higher only if you plan to renew before it expires.
 
 ## Usage
 
@@ -77,11 +77,11 @@ The same agent calling `claim` again on its own artifact extends the expiry with
 
 ## How it fits the workflow
 
-This is step 2 of the multi-agent loop: `dispatch` → **`claim`** → work → `release`. After [`forgeplan dispatch`](/docs/cli/dispatch/) hands out buckets, each sub-agent claims its artifact before touching files. When work is done (or the agent crashes), the slot is freed via [`forgeplan release`](/docs/cli/release/) — use `--force` on `release` when reaping a crashed worker's claim.
+This is step 2 of the multi-agent loop: `dispatch` → **`claim`** → work → `release`. After [`forgeplan dispatch`](/docs/cli/dispatch/) hands out buckets, each sub-agent claims its artifact before touching files. When work is done (or the agent crashes), the slot is freed via [`forgeplan release`](/docs/cli/release/) - use `--force` on `release` when reaping a crashed worker's claim.
 
 ## See also
 
-- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) — MCP equivalent
-- [`forgeplan release`](/docs/cli/release/) — drop an active claim
-- [`forgeplan claims`](/docs/cli/claims/) — list active claims
-- [`forgeplan dispatch`](/docs/cli/dispatch/) — produces the work plan claims protect
+- [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) - MCP equivalent
+- [`forgeplan release`](/docs/cli/release/) - drop an active claim
+- [`forgeplan claims`](/docs/cli/claims/) - list active claims
+- [`forgeplan dispatch`](/docs/cli/dispatch/) - produces the work plan claims protect

@@ -1,15 +1,15 @@
 ---
 title: forgeplan log
-description: "Show change log — audit trail of artifact mutations"
+description: "Show change log - audit trail of artifact mutations"
 ---
 
-Show the change log — an append-only audit trail of every artifact mutation
+Show the change log - an append-only audit trail of every artifact mutation
 in the workspace. Each entry records who/what touched which artifact, when,
 and via which source (CLI command, file edit, git sync, or reindex).
 
 ## When to use
 
-- "What changed in the last day?" — morning standup context
+- "What changed in the last day?" - morning standup context
 - Debugging why a score or status shifted unexpectedly
 - Reviewing a teammate's activity on a shared workspace
 - Verifying a git-sync or reindex pass worked
@@ -56,7 +56,7 @@ History of one specific PRD:
 forgeplan log PRD-001
 ```
 
-Only CLI-originated mutations, last 50 — filter out noise from file edits:
+Only CLI-originated mutations, last 50 - filter out noise from file edits:
 
 ```bash
 forgeplan log --source cli --limit 50
@@ -98,6 +98,6 @@ health     (aggregated project state)
 
 ## See also
 
-- [`forgeplan journal`](/docs/cli/journal/) — decision-only timeline
-- [`forgeplan health`](/docs/cli/health/) — aggregated dashboard
-- [`forgeplan session`](/docs/cli/session/) — current workflow phase
+- [`forgeplan journal`](/docs/cli/journal/) - decision-only timeline
+- [`forgeplan health`](/docs/cli/health/) - aggregated dashboard
+- [`forgeplan session`](/docs/cli/session/) - current workflow phase

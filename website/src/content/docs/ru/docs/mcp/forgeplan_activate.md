@@ -3,14 +3,14 @@ title: forgeplan_activate
 description: "Активирует артефакт (черновик → активный). Требует прохождения всех правил валидации MUST."
 ---
 
-Переводит артефакт из состояния `draft` в `active`. Это гейт жизненного цикла, обеспечивающий качество: если `forgeplan_validate` сообщит о каком-либо сбое MUST, активация будет отклонена со списком блокирующих факторов. После активации артефакт учитывается в `forgeplan_health`, отображается в `forgeplan_list --status active` и становится цитируемым решением. Для Note и Problem гейт валидации отсутствует — они активируются немедленно.
+Переводит артефакт из состояния `draft` в `active`. Это гейт жизненного цикла, обеспечивающий качество: если `forgeplan_validate` сообщит о каком-либо сбое MUST, активация будет отклонена со списком блокирующих факторов. После активации артефакт учитывается в `forgeplan_health`, отображается в `forgeplan_list --status active` и становится цитируемым решением. Для Note и Problem гейт валидации отсутствует - они активируются немедленно.
 
 **Категория**: Жизненный цикл
 
 ## Когда агент вызывает это
 
-- После заполнения заглушки PRD + `validate` PASS + прикреплённое доказательство + R_eff > 0 — «готово к отправке».
-- В конце чеклиста спринта: все FR проверены, все тесты зелёные, PR объединён — время переключить рубильник.
+- После заполнения заглушки PRD + `validate` PASS + прикреплённое доказательство + R_eff > 0 - «готово к отправке».
+- В конце чеклиста спринта: все FR проверены, все тесты зелёные, PR объединён - время переключить рубильник.
 - Когда пользователь говорит «пометь PRD-042 как активный сейчас», и агент проверил гейты.
 
 ## Входные параметры
@@ -66,15 +66,15 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ActivateParam
 
 ## Типичная последовательность
 
-Полный цикл: `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` PASS → код → `forgeplan_new evidence` → `forgeplan_link` → `forgeplan_score` > 0 → `forgeplan_activate`. Никогда не активируйте PRD без кода и доказательств — это становится ложным обещанием.
+Полный цикл: `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` PASS → код → `forgeplan_new evidence` → `forgeplan_link` → `forgeplan_score` > 0 → `forgeplan_activate`. Никогда не активируйте PRD без кода и доказательств - это становится ложным обещанием.
 
 ## Эквивалент CLI
 
-- [`forgeplan activate`](/ru/docs/cli/activate/) — тот же переход
+- [`forgeplan activate`](/ru/docs/cli/activate/) - тот же переход
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — предварительная проверка
-- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) — следующий этап жизненного цикла
-- [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) — окончательное списание
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) - предварительная проверка
+- [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) - следующий этап жизненного цикла
+- [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) - окончательное списание

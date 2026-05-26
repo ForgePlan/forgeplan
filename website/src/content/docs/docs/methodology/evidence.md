@@ -157,7 +157,7 @@ forgeplan health            # Full project health dashboard
 
 ## Gotchas and migration notes
 
-### PROB-034 (v0.17.2) — multi-line HTML comment trap
+### PROB-034 (v0.17.2) - multi-line HTML comment trap
 
 The default evidence template ships with a multi-line HTML help comment:
 
@@ -173,7 +173,7 @@ placeholder line `congruence_level: 0 | 1 | 2 | 3 (CL3=...)` was matched
 as if it were a real structured field, the non-numeric value failed to parse,
 `explicit_cl` became `None`, and the parser silently defaulted to CL3 (no
 penalty). This meant **every evidence artifact created via the default template
-since v0.17.0 had its real `congruence_level` shadowed** — R_eff was
+since v0.17.0 had its real `congruence_level` shadowed** - R_eff was
 artificially inflated across the workspace.
 
 v0.17.2 implements a proper multi-line comment state machine that skips all
@@ -185,27 +185,27 @@ lines between `<!--` and `-->`.
 forgeplan score --all
 ```
 
-Old R_eff values may drop — this is correct. The previous values were silently
+Old R_eff values may drop - this is correct. The previous values were silently
 wrong. Any evidence that explicitly set `congruence_level` in the Structured
 Fields section will now be honored, and low CL values will properly penalize
 R_eff.
 
-### SourceTier precedence — conservative `min()` rule
+### SourceTier precedence - conservative `min()` rule
 
 When an artifact has both a `source_tier` tag and an explicit
 `congruence_level` in its Structured Fields, the system takes
-`min(tier_cl, explicit_cl)` — the **more conservative** value wins. A tag can
+`min(tier_cl, explicit_cl)` - the **more conservative** value wins. A tag can
 never upgrade trust beyond what the structured fields claim.
 
 This protects against CL upgrade attacks via tag manipulation: tagging an
 artifact `source_tier=T1` does not override an explicit `congruence_level: 0`
-in the body. See [`forgeplan tag` — Source Tier and CL mapping](/docs/cli/tag/#source-tier-and-cl-mapping-v0170-prd-035)
+in the body. See [`forgeplan tag` - Source Tier and CL mapping](/docs/cli/tag/#source-tier-and-cl-mapping-v0170-prd-035)
 for the full tier-to-CL table and examples.
 
 ## Related
 
 - [CLI: forgeplan score](/docs/cli/score/), [forgeplan blindspots](/docs/cli/blindspots/), [forgeplan decay](/docs/cli/decay/), [forgeplan health](/docs/cli/health/)
 - [CLI: forgeplan new](/docs/cli/new/), [forgeplan link](/docs/cli/link/)
-- [Artifact Lifecycle](/docs/methodology/lifecycle/) — stale evidence and renew
-- [ADI Reasoning](/docs/methodology/adi/) — induction phase consumes evidence
-- [First Artifact Tutorial](/docs/guides/first-artifact/) — creating evidence hands-on
+- [Artifact Lifecycle](/docs/methodology/lifecycle/) - stale evidence and renew
+- [ADI Reasoning](/docs/methodology/adi/) - induction phase consumes evidence
+- [First Artifact Tutorial](/docs/guides/first-artifact/) - creating evidence hands-on

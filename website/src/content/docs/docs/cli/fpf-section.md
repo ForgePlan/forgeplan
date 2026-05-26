@@ -3,18 +3,18 @@ title: forgeplan fpf section
 description: "Show a specific FPF section by ID (e.g. B.3 for Trust Calculus)"
 ---
 
-`forgeplan fpf section <ID>` prints the full body of one **First Principles Framework** section, addressed by its canonical ID (like `B.3` or `A.1.2`). It's the `less` of the FPF KB — use it when a search result is interesting and you want to read the whole thing.
+`forgeplan fpf section <ID>` prints the full body of one **First Principles Framework** section, addressed by its canonical ID (like `B.3` or `A.1.2`). It's the `less` of the FPF KB - use it when a search result is interesting and you want to read the whole thing.
 
 ## When to use
 
-- **After a promising `fpf search` hit** — read the full section, not just the snippet.
-- **When a methodology doc or `forgeplan reason` output cites an FPF ID** — jump straight to the source.
-- **While writing ADRs or RFCs** — quote the section you're relying on verbatim.
+- **After a promising `fpf search` hit** - read the full section, not just the snippet.
+- **When a methodology doc or `forgeplan reason` output cites an FPF ID** - jump straight to the source.
+- **While writing ADRs or RFCs** - quote the section you're relying on verbatim.
 
 ## When NOT to use
 
-- For discovery — use [`forgeplan fpf search`](/docs/cli/fpf-search/) when you don't yet know the section ID.
-- For the full index — use [`forgeplan fpf list`](/docs/cli/fpf-list/).
+- For discovery - use [`forgeplan fpf search`](/docs/cli/fpf-search/) when you don't yet know the section ID.
+- For the full index - use [`forgeplan fpf list`](/docs/cli/fpf-list/).
 
 ## Usage
 
@@ -67,7 +67,7 @@ forgeplan new adr "Evidence grading policy"
 
 ## See also
 
-- [`forgeplan fpf`](/docs/cli/fpf/) — parent command
-- [`forgeplan fpf search`](/docs/cli/fpf-search/) — find sections by content
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) — all sections at a glance
+- [`forgeplan fpf`](/docs/cli/fpf/) - parent command
+- [`forgeplan fpf search`](/docs/cli/fpf-search/) - find sections by content
+- [`forgeplan fpf list`](/docs/cli/fpf-list/) - all sections at a glance
 - [Methodology guide](/docs/methodology/overview/)

@@ -5,14 +5,14 @@ description: "Checkbox-based progress tracker for artifacts"
 
 Parse checkbox lists (`- [ ]` / `- [x]`) inside artifact bodies and report
 how much is done. The convention is that each functional requirement (FR)
-or implementation phase in a PRD/RFC is a checkbox — so `progress` answers
+or implementation phase in a PRD/RFC is a checkbox - so `progress` answers
 "how much of this PRD is implemented?"
 
 ## When to use
 
-- Sprint standups — quick percent complete per PRD
-- Release prep — which PRDs are not 100% yet
-- Reporting — pipe JSON into dashboards
+- Sprint standups - quick percent complete per PRD
+- Release prep - which PRDs are not 100% yet
+- Reporting - pipe JSON into dashboards
 
 ## Not to use when
 
@@ -93,6 +93,6 @@ health    →  aggregate both
 
 ## See also
 
-- [`forgeplan score`](/docs/cli/score/) — R_eff quality metric
-- [`forgeplan health`](/docs/cli/health/) — project rollup
-- [`forgeplan list`](/docs/cli/list/) — find candidate IDs
+- [`forgeplan score`](/docs/cli/score/) - R_eff quality metric
+- [`forgeplan health`](/docs/cli/health/) - project rollup
+- [`forgeplan list`](/docs/cli/list/) - find candidate IDs

@@ -1,5 +1,5 @@
 ---
-title: Hint Contract — Reading Forgeplan Output
+title: Hint Contract - Reading Forgeplan Output
 description: How agents read Forgeplan's deterministic next-action hints across CLI text, JSON, and MCP responses
 ---
 
@@ -21,17 +21,17 @@ Each costs tokens and risks correctness. The contract eliminates ambiguity by gu
 
 Every Forgeplan output, regardless of surface, satisfies these:
 
-1. **PRESENCE** — every response either emits a next-action OR is explicitly terminal. No silent gaps.
-2. **ACTIONABILITY** — the next-action is a full, copy-pasteable command with real IDs, never a fragment or placeholder.
-3. **DETERMINISM** — same input state always produces the same hint string. No randomness.
-4. **CONDITIONALITY** — hints appear only when actionable. Terminal states emit `Done.` rather than fake "all done!".
-5. **CONSISTENCY** — text and JSON renderings carry the same semantic content. CLI mirrors MCP semantics.
+1. **PRESENCE** - every response either emits a next-action OR is explicitly terminal. No silent gaps.
+2. **ACTIONABILITY** - the next-action is a full, copy-pasteable command with real IDs, never a fragment or placeholder.
+3. **DETERMINISM** - same input state always produces the same hint string. No randomness.
+4. **CONDITIONALITY** - hints appear only when actionable. Terminal states emit `Done.` rather than fake "all done!".
+5. **CONSISTENCY** - text and JSON renderings carry the same semantic content. CLI mirrors MCP semantics.
 
 ## The 5 Hint Markers
 
 | Marker | When emitted | Agent action |
 |---|---|---|
-| `Next: <full command>` | Primary action — recommended next step | Execute exactly as written |
+| `Next: <full command>` | Primary action - recommended next step | Execute exactly as written |
 | `Or: <command>` | Alternate when primary blocks (e.g. claim held) | Use only if primary fails |
 | `Wait: <condition>` | Async/TTL state | Retry after the condition |
 | `Done.` | Workflow complete (terminal) | Move on, do not loop |
@@ -55,7 +55,7 @@ Every Forgeplan output, regardless of surface, satisfies these:
 
 ```
 Next: forgeplan score PRD-001
-  R_eff is 0 — link evidence to enable activation
+  R_eff is 0 - link evidence to enable activation
 ```
 Specific, full command, real ID, rationale explains *why*.
 
@@ -71,7 +71,7 @@ Fix: forgeplan activate PRD-001
 ```
 Error has clear, executable remediation.
 
-### Bad ❌ (pre-v0.25.0 patterns — should never appear in v0.25.0+ output)
+### Bad ❌ (pre-v0.25.0 patterns - should never appear in v0.25.0+ output)
 
 ```
 suggested next: adi
@@ -98,21 +98,21 @@ When an agent receives any Forgeplan output:
    - CLI JSON: read `_next_action` field (or stderr `Next:` for list/tree)
    - MCP: read `_next_action` field of response
 2. **Execute primary if present**.
-   - If `Next:` or `Fix:` — execute the command **exactly as written**
+   - If `Next:` or `Fix:` - execute the command **exactly as written**
    - Do not paraphrase, do not substitute placeholders
    - Do not split into multiple commands
 3. **Use `Or:` only if primary blocks**.
 4. **On `Wait:`, retry after condition**.
-5. **On `Done.`, the workflow is complete** — move to next task, do not loop.
-6. **On no hint and not terminal — report a contract violation**. This is a bug in Forgeplan. Do not improvise.
+5. **On `Done.`, the workflow is complete** - move to next task, do not loop.
+6. **On no hint and not terminal - report a contract violation**. This is a bug in Forgeplan. Do not improvise.
 
 ## What NOT to Do
 
-1. **Don't paraphrase the hint** — full command is given for a reason
-2. **Don't combine `Next:` + `Or:`** in same call — pick one
-3. **Don't ignore `Done.`** — explicit terminal signal
-4. **Don't substitute `EVID-NNN` placeholders** — first run `forgeplan_new evidence`, then use the real ID
-5. **Don't panic on `Wait:`** — async/TTL is normal; just retry
+1. **Don't paraphrase the hint** - full command is given for a reason
+2. **Don't combine `Next:` + `Or:`** in same call - pick one
+3. **Don't ignore `Done.`** - explicit terminal signal
+4. **Don't substitute `EVID-NNN` placeholders** - first run `forgeplan_new evidence`, then use the real ID
+5. **Don't panic on `Wait:`** - async/TTL is normal; just retry
 
 ## Practical Workflow Patterns
 
@@ -161,8 +161,8 @@ forgeplan_claim("PRD-054")
 
 The contract is enforced by:
 
-1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` — 36 tests, fails CI if any command lacks contract marker
-2. **Audit script** `scripts/audit-hints.sh` — coverage metric, target 100%, currently 100% (70/70 commands)
+1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 tests, fails CI if any command lacks contract marker
+2. **Audit script** `scripts/audit-hints.sh` - coverage metric, target 100%, currently 100% (70/70 commands)
 
 ## Quick Reference Card
 
@@ -189,10 +189,10 @@ The marketplace plugin **`forgeplan-workflow` v1.5.0+** teaches Claude Code agen
 /plugin marketplace update ForgePlan-marketplace
 ```
 
-Your agent will read `Next:`/`Fix:` hints across `/forge-cycle`, the `forge-advisor` agent, and the methodology skill — no manual configuration needed.
+Your agent will read `Next:`/`Fix:` hints across `/forge-cycle`, the `forge-advisor` agent, and the methodology skill - no manual configuration needed.
 
 ## Related
 
-- **Forgeplan v0.25.0 release** — first version shipping the contract ([CHANGELOG](/docs/changelog/))
-- **Marketplace plugin forgeplan-workflow v1.5.0** — agent-side awareness layer
-- **Lifecycle model** ([read more](/docs/methodology/lifecycle/)) — hints integrate with status transitions (draft → active → terminal)
+- **Forgeplan v0.25.0 release** - first version shipping the contract ([CHANGELOG](/docs/changelog/))
+- **Marketplace plugin forgeplan-workflow v1.5.0** - agent-side awareness layer
+- **Lifecycle model** ([read more](/docs/methodology/lifecycle/)) - hints integrate with status transitions (draft → active → terminal)

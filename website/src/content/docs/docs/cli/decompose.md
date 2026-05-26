@@ -11,21 +11,21 @@ by hand.
 
 The output is a draft RFC artifact with filled **Implementation Phases**
 checkboxes, linked back to the source PRD via an `implements` relation. You
-still review and edit it — decompose is a first draft, not the final word.
+still review and edit it - decompose is a first draft, not the final word.
 
 ## When to use
 
 - PRD is validated (`forgeplan validate PRD-XXX` = PASS) and reasoned (`forgeplan reason`)
-- Depth is **Standard** or higher — Tactical tasks do not need a separate RFC
+- Depth is **Standard** or higher - Tactical tasks do not need a separate RFC
 - You are transitioning from Shape to Code and want a checklist-ready plan
 - The PRD has 5+ functional requirements and phasing is non-obvious
 
 ## When NOT to use
 
-- Depth is **Tactical** — go straight to code
-- PRD is still a stub (missing Problem, Goals, FR) — decompose will hallucinate phases
-- An RFC for this PRD already exists — use `forgeplan update` or supersede flow instead
-- You disagree with the PRD's goals — fix the PRD first, don't paper over it with an RFC
+- Depth is **Tactical** - go straight to code
+- PRD is still a stub (missing Problem, Goals, FR) - decompose will hallucinate phases
+- An RFC for this PRD already exists - use `forgeplan update` or supersede flow instead
+- You disagree with the PRD's goals - fix the PRD first, don't paper over it with an RFC
 
 ## Usage
 
@@ -89,9 +89,9 @@ Created RFC-018 (draft) linked to PRD-042
 
 Red flags:
 
-- Single phase with 20 sub-tasks — the PRD is too broad, split into multiple PRDs
-- Phases reference FRs that are not in the PRD — LLM hallucination, re-run or edit
-- No rollback/evidence phase — add it manually before activation
+- Single phase with 20 sub-tasks - the PRD is too broad, split into multiple PRDs
+- Phases reference FRs that are not in the PRD - LLM hallucination, re-run or edit
+- No rollback/evidence phase - add it manually before activation
 
 ## How it fits the workflow
 
@@ -107,8 +107,8 @@ Shape → Validate → Reason → [decompose] → Code → Evidence → Activate
 
 ## See also
 
-- [`forgeplan reason`](/docs/cli/reason/) — run ADI before decomposing
-- [`forgeplan new`](/docs/cli/new/) — create the source PRD
-- [`forgeplan validate`](/docs/cli/validate/) — gate for decomposition input
-- [`forgeplan generate`](/docs/cli/generate/) — generate content for any artifact kind
+- [`forgeplan reason`](/docs/cli/reason/) - run ADI before decomposing
+- [`forgeplan new`](/docs/cli/new/) - create the source PRD
+- [`forgeplan validate`](/docs/cli/validate/) - gate for decomposition input
+- [`forgeplan generate`](/docs/cli/generate/) - generate content for any artifact kind
 - [Methodology: PRD → RFC flow](/docs/methodology/overview/)

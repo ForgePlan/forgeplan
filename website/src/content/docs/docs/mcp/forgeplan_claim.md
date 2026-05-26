@@ -1,12 +1,12 @@
 ---
 title: forgeplan_claim
-description: "Claim an artifact for exclusive work — TTL-based advisory lock for multi-agent dispatch."
+description: "Claim an artifact for exclusive work - TTL-based advisory lock for multi-agent dispatch."
 ---
 
 Writes `.forgeplan/claims/<id>.yaml` declaring that a specific agent is working on the
 artifact. Holds the workspace lock for the duration of the write so two sub-agents cannot
 race the same claim. Fails with a clear error when a different agent already holds a live
-claim; same-agent calls renew the TTL (idempotent for the holder). Advisory by design —
+claim; same-agent calls renew the TTL (idempotent for the holder). Advisory by design -
 no other tool blocks on claims, but orchestrators should consult
 [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) before dispatching parallel work.
 
@@ -68,18 +68,18 @@ Renewing an existing claim (same agent, any TTL):
 
 ## Typical sequence
 
-1. [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) — orchestrator builds buckets.
+1. [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) - orchestrator builds buckets.
 2. Worker calls `forgeplan_claim` on its assigned artifact.
 3. Worker does the actual code / artifact edits.
-4. [`forgeplan_release`](/docs/mcp/forgeplan_release/) — drop the claim when done.
+4. [`forgeplan_release`](/docs/mcp/forgeplan_release/) - drop the claim when done.
 
 ## CLI equivalent
 
-[`forgeplan claim`](/docs/cli/) — same semantics, used by orchestrators that drive
+[`forgeplan claim`](/docs/cli/) - same semantics, used by orchestrators that drive
 sub-agents through shell rather than MCP.
 
 ## See also
 
-- [`forgeplan_release`](/docs/mcp/forgeplan_release/) — drop an active claim
-- [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) — list active claims
-- [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) — produces the work plan claims protect (full PRD-057 protocol)
+- [`forgeplan_release`](/docs/mcp/forgeplan_release/) - drop an active claim
+- [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) - list active claims
+- [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) - produces the work plan claims protect (full PRD-057 protocol)

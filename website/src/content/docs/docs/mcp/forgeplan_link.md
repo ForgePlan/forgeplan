@@ -3,7 +3,7 @@ title: forgeplan_link
 description: "Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines."
 ---
 
-Creates a typed relationship between two artifacts. Links are how Forgeplan builds its dependency graph — they drive health reports, R_eff scoring, topological ordering, and visual graphs. The agent calls this every time it creates supporting evidence, a replacement RFC, or a child PRD that inherits from an Epic.
+Creates a typed relationship between two artifacts. Links are how Forgeplan builds its dependency graph - they drive health reports, R_eff scoring, topological ordering, and visual graphs. The agent calls this every time it creates supporting evidence, a replacement RFC, or a child PRD that inherits from an Epic.
 
 **Category**: Editing Artifacts
 
@@ -58,11 +58,11 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan link`](/docs/cli/link/) — same operation, positional args
+- [`forgeplan link`](/docs/cli/link/) - same operation, positional args
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_score`](/docs/mcp/forgeplan_score/) — consumes link graph for R_eff
-- [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) — visualize the link graph
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — stateful version of a supersedes link
+- [`forgeplan_score`](/docs/mcp/forgeplan_score/) - consumes link graph for R_eff
+- [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) - visualize the link graph
+- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - stateful version of a supersedes link

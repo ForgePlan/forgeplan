@@ -1,12 +1,12 @@
 ---
 title: forgeplan_release
-description: "Release an active claim — drop the lock so other sub-agents can pick up the artifact."
+description: "Release an active claim - drop the lock so other sub-agents can pick up the artifact."
 ---
 
 Удаляет файл клейма по адресу `.forgeplan/claims/<id>.yaml`. По умолчанию вызов
-отказывается работать, если клейм держит другой агент — передайте `force: true`
+отказывается работать, если клейм держит другой агент - передайте `force: true`
 (escape hatch оркестратора), чтобы переопределить после краша суб-агента. Отсутствие
-клейма — no-op (идемпотентно). Удерживает workspace-lock на время записи, чтобы
+клейма - no-op (идемпотентно). Удерживает workspace-lock на время записи, чтобы
 конкурентные claim/release-вызовы не могли чередоваться.
 
 **Категория**: Multi-agent
@@ -14,7 +14,7 @@ description: "Release an active claim — drop the lock so other sub-agents can 
 ## Когда агент вызывает
 
 - Работник заканчивает артефакт и освобождает слот для следующего раунда диспатча.
-- Работник упал / превысил TTL — оркестратор force-релизит с `agent: null, force: true`.
+- Работник упал / превысил TTL - оркестратор force-релизит с `agent: null, force: true`.
 - Ошибочный клейм: агент схватил не тот ID, немедленно релизит для повтора.
 - Уборка в конце сессии: пройтись по активным клеймам и снять каждый перед выходом.
 
@@ -23,8 +23,8 @@ description: "Release an active claim — drop the lock so other sub-agents can 
 | Имя | Тип | Обязательно | Описание |
 |---|---|---|---|
 | `id` | `string` | yes | ID артефакта, чей клейм снять. |
-| `agent` | `string` | no | Идентичность агента (должна совпадать с держателем, если не задано `force: true`). По умолчанию — `clientInfo` MCP-вызывающего. |
-| `force` | `bool` | no (default `false`) | Force-release независимо от держателя — override оркестратора для упавших суб-агентов. |
+| `agent` | `string` | no | Идентичность агента (должна совпадать с держателем, если не задано `force: true`). По умолчанию - `clientInfo` MCP-вызывающего. |
+| `force` | `bool` | no (default `false`) | Force-release независимо от держателя - override оркестратора для упавших суб-агентов. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/types.rs::ReleaseParams`_
 
@@ -79,10 +79,10 @@ _Источник схемы: `crates/forgeplan-mcp/src/types.rs::ReleaseParams`
 
 ## CLI эквивалент
 
-[`forgeplan release <id>`](/ru/docs/cli/) — те же семантики.
+[`forgeplan release <id>`](/ru/docs/cli/) - те же семантики.
 
 ## См. также
 
-- [`forgeplan_claim`](/ru/docs/mcp/forgeplan_claim/) — взять клейм
-- [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/) — посмотреть, кто что держит
-- [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) — пере-диспатч после релиза
+- [`forgeplan_claim`](/ru/docs/mcp/forgeplan_claim/) - взять клейм
+- [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/) - посмотреть, кто что держит
+- [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) - пере-диспатч после релиза

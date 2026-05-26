@@ -1,9 +1,9 @@
 ---
 title: Artifact Lifecycle v2 (stale, renew, reopen)
-description: "Full state machine for Forgeplan artifacts — from draft to active, terminal states, and the stale/renew/reopen pattern for decision freshness."
+description: "Full state machine for Forgeplan artifacts - from draft to active, terminal states, and the stale/renew/reopen pattern for decision freshness."
 ---
 
-Forgeplan artifacts are not just files — they are **decisions with a lifetime**.
+Forgeplan artifacts are not just files - they are **decisions with a lifetime**.
 A PRD that was correct six months ago may be wrong today. An ADR that
 captured your architecture may be superseded by a better one. Evidence that
 justified a choice may expire as the world changes.
@@ -65,7 +65,7 @@ draft → active → superseded   (terminal)
 The initial state of every artifact. `forgeplan new prd "..."` creates a
 draft from a template. Drafts can be freely edited.
 
-- **Notes and Problems**: no validation gate — you can activate immediately.
+- **Notes and Problems**: no validation gate - you can activate immediately.
 - **PRD, RFC, ADR, Epic, Spec**: MUST rules from the validator must pass
   before activation. Run `forgeplan validate PRD-001` to check.
 
@@ -85,7 +85,7 @@ on linked evidence.
 An active artifact can leave this state in three ways: `supersede`,
 `deprecate`, or by becoming `stale` when its `valid_until` date passes.
 
-### `superseded` — terminal
+### `superseded` - terminal
 
 The artifact was replaced by a more recent one. You **must** point to the
 replacement:
@@ -95,9 +95,9 @@ forgeplan supersede ADR-003 --by ADR-007
 ```
 
 The old artifact keeps all its history and links, but it's no longer in
-force. `forgeplan health` will not flag it as missing evidence — it's done.
+force. `forgeplan health` will not flag it as missing evidence - it's done.
 
-### `deprecated` — terminal
+### `deprecated` - terminal
 
 The artifact is no longer applicable, and there is no single replacement.
 You must give a reason:
@@ -121,7 +121,7 @@ so you are forced to revisit old decisions instead of silently trusting them.
 
 From `stale` you have three options: `renew`, `deprecate`, or `reopen`.
 
-### `renew` — stale back to active
+### `renew` - stale back to active
 
 Use `renew` when the decision is still correct and you just want to extend
 its validity window:
@@ -133,9 +133,9 @@ forgeplan renew PRD-005 \
 ```
 
 The artifact returns to `active` with a new `valid_until`. Nothing else
-changes — same ID, same history, same links.
+changes - same ID, same history, same links.
 
-### `reopen` — stale/active to a new draft (lineage)
+### `reopen` - stale/active to a new draft (lineage)
 
 Use `reopen` when the old decision needs to be **re-made from scratch**.
 The original artifact moves to `deprecated` (terminal), and Forgeplan
@@ -160,25 +160,25 @@ This is a deliberate design choice:
 - **Auditability.** If a deprecated ADR could silently become active again,
   every linked decision would need to be re-verified. Terminal states mean
   "this decision has left the graph."
-- **Lineage.** `reopen` already covers "re-evaluate this decision" — it
+- **Lineage.** `reopen` already covers "re-evaluate this decision" - it
   creates a new draft as a clear continuation. Resurrecting the old
   artifact would erase the history of the break.
 - **Trust.** When you read a `superseded` PRD, you know exactly what
   happened: it was replaced by the artifact in `--by`. No ambiguity.
 
 If you want a soft "paused" state, use a `stale` artifact with a far-future
-`valid_until` — it stays live and reviewable.
+`valid_until` - it stays live and reviewable.
 
 ## Practical flows
 
-### Flow 1 — Normal PRD lifecycle
+### Flow 1 - Normal PRD lifecycle
 
 The happy path for any Standard+ depth task:
 
 ```bash
 # 1. Shape
 forgeplan new prd "Auth System"
-# edit .forgeplan/prds/PRD-018-auth-system.md — fill all MUST sections
+# edit .forgeplan/prds/PRD-018-auth-system.md - fill all MUST sections
 
 # 2. Validate
 forgeplan validate PRD-018
@@ -197,7 +197,7 @@ forgeplan score PRD-018           # R_eff > 0
 Пример сценария: типичный спринт для фичи 1-3 дня. Артефакт живёт в
 `active` столько, сколько актуально его решение.
 
-### Flow 2 — Replacing an ADR
+### Flow 2 - Replacing an ADR
 
 You wrote ADR-003 ("SQLite storage") a year ago. Now you are moving to
 LanceDB and need to capture the new decision without losing history.
@@ -215,7 +215,7 @@ forgeplan supersede ADR-003 --by ADR-007
 Now `forgeplan list --status active` hides ADR-003, and anyone reading
 ADR-003 sees "superseded by ADR-007" at the top. The DAG stays consistent.
 
-### Flow 3 — Renewing a stale PRD
+### Flow 3 - Renewing a stale PRD
 
 A PRD from six months ago had `valid_until: 2026-04-01`. It's now April 11
 and `forgeplan health` flags it as stale:
@@ -230,17 +230,17 @@ correct, you just forgot to extend the date:
 
 ```bash
 forgeplan renew PRD-012 \
-  --reason "Re-validated after Q2 planning — scope unchanged" \
+  --reason "Re-validated after Q2 planning - scope unchanged" \
   --until 2026-10-01
 ```
 
 Back to `active`. The reason is recorded in the artifact history so future
 readers know **why** you trusted it.
 
-### Flow 4 — Reopening a stale decision
+### Flow 4 - Reopening a stale decision
 
 Same starting point: PRD-012 is stale. But this time you find that
-PROB-021 uncovered a flawed assumption. The PRD is not just out of date —
+PROB-021 uncovered a flawed assumption. The PRD is not just out of date -
 it is **wrong in its current form** and needs re-thinking from scratch.
 
 ```bash
@@ -260,7 +260,7 @@ that story months later.
 
 ## Anti-patterns
 
-Things to avoid — each one breaks an assumption the rest of Forgeplan
+Things to avoid - each one breaks an assumption the rest of Forgeplan
 makes about the artifact graph.
 
 - **Activating without evidence.** `activate` doesn't require linked
@@ -272,7 +272,7 @@ makes about the artifact graph.
   `deprecate --reason "..."` if there is no single replacement.
 - **Reopening an active artifact lightly.** `reopen` is for re-evaluation
   when the underlying assumptions have changed. If the artifact is still
-  correct and just needs a fresh date, use `renew` — it's lossless.
+  correct and just needs a fresh date, use `renew` - it's lossless.
 - **Deleting instead of superseding.** Deleting a file loses the history,
   the links, and the audit trail. Always transition through the lifecycle.
   Files are the source of truth (see [ADR-003](#related)), but the state
@@ -282,9 +282,9 @@ makes about the artifact graph.
   a new draft and link it.
 - **Skipping self-link checks.** PROB-019 (self-link guard) was added to
   block `forgeplan link X X` and similar cycles. Don't work around the
-  guard — fix the link direction instead.
+  guard - fix the link direction instead.
 
-## DerivedStatus — quality, orthogonal to lifecycle
+## DerivedStatus - quality, orthogonal to lifecycle
 
 Alongside the lifecycle state, every artifact has a **DerivedStatus**
 computed from its evidence and validation state:
@@ -299,22 +299,22 @@ the lifecycle state machine:
 - Lifecycle answers "is this decision in force?"
 - DerivedStatus answers "how well-grounded is this decision?"
 
-An `active` PRD can be `UNDERFRAMED` (active but missing evidence — a
+An `active` PRD can be `UNDERFRAMED` (active but missing evidence - a
 blind spot). A `draft` PRD can already be `COMPARED` (rich evidence, not
 yet activated). Both dimensions matter, and `forgeplan health` surfaces
 mismatches between them.
 
 ## Related
 
-- **[ADR-005](https://github.com/ForgePlan/forgeplan/blob/main/.forgeplan/adrs/ADR-005-lifecycle-v2.md)** — the decision record introducing lifecycle v2.
-- **[ADR-003](https://github.com/ForgePlan/forgeplan/blob/main/.forgeplan/adrs/ADR-003-markdown-source-of-truth.md)** — markdown files are the source of truth, LanceDB is a derived index.
-- **PROB-019** — self-link guard, added while hardening the lifecycle transitions.
-- **PR #85** — Sprint 1 lifecycle cleanup: canonical transitions and terminal enforcement.
+- **[ADR-005](https://github.com/ForgePlan/forgeplan/blob/main/.forgeplan/adrs/ADR-005-lifecycle-v2.md)** - the decision record introducing lifecycle v2.
+- **[ADR-003](https://github.com/ForgePlan/forgeplan/blob/main/.forgeplan/adrs/ADR-003-markdown-source-of-truth.md)** - markdown files are the source of truth, LanceDB is a derived index.
+- **PROB-019** - self-link guard, added while hardening the lifecycle transitions.
+- **PR #85** - Sprint 1 lifecycle cleanup: canonical transitions and terminal enforcement.
 
 ## See also
 
-- [`forgeplan activate`](/docs/cli/activate/) — draft → active (with validation gate)
-- [`forgeplan supersede`](/docs/cli/supersede/) — active → superseded, requires `--by`
-- [`forgeplan deprecate`](/docs/cli/deprecate/) — active/stale → deprecated, requires `--reason`
-- [`forgeplan renew`](/docs/cli/renew/) — stale → active, extends `valid_until`
-- [`forgeplan reopen`](/docs/cli/reopen/) — stale/active → deprecated + new draft (lineage)
+- [`forgeplan activate`](/docs/cli/activate/) - draft → active (with validation gate)
+- [`forgeplan supersede`](/docs/cli/supersede/) - active → superseded, requires `--by`
+- [`forgeplan deprecate`](/docs/cli/deprecate/) - active/stale → deprecated, requires `--reason`
+- [`forgeplan renew`](/docs/cli/renew/) - stale → active, extends `valid_until`
+- [`forgeplan reopen`](/docs/cli/reopen/) - stale/active → deprecated + new draft (lineage)

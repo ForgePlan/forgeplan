@@ -1,0 +1,251 @@
+---
+title: "ForgePlan: where your team's decisions actually live, if they're not lost"
+description: "Six months of open development on a tool that turns team decisions into first-class git artefacts. What a decision graveyard is, how ForgePlan works, and why the repo has one star on GitHub - an honest report."
+slug: where-team-decisions-live
+lang: en
+publishedAt: 2026-04-05
+kind: explainer
+topic: methodology
+cover: '/blog-covers/gde-zhivut-resheniya.webp'
+draft: false
+translations:
+  ru: where-team-decisions-live
+---
+
+### Lead
+
+"Why did we pick Postgres over Mongo six months ago?" - a new senior asks at code review. Silence. Someone tries to remember a Slack thread. Someone else opens Notion. The Notion page says "ADR - TBD". Created in November. Decision made, rationale gone. Three weeks later the team will relitigate the same question and reach the same conclusion - nobody will think to dig through six-month-old git history.
+
+This is a **decision graveyard**. Most teams have one, and most teams carry it like a birthmark - never realising it's a diagnosis. The phrase "methodological gap" usually sounds corporate. Here it's literal: between the moment a team decides something and the moment someone needs to recall it, the information **vanishes**.
+
+My name is Ilya, and six months ago I started building a tool that forces decisions to be captured as proper artefacts - with mandatory structure, attached evidence, and a reliability score. Locally, in a `.forgeplan/` directory next to your code. A single Rust binary, open source under MIT. I've been eating my own dog food for six months - all ForgePlan decisions live in ForgePlan's own `.forgeplan/`. As of today: 343 artefacts, 1995 tests, version v0.30, and **one star** on GitHub. That last number is the main reason I'm writing this post.
+
+In this post I'll cover: what pain ForgePlan solves, what it actually does (no marketing fluff), how to try it in 60 seconds, the ecosystem that grew around the core, who it's for and who it's **not** for, and why there are so few stars despite the product working for half a year. At the end - where we're going next and a preview of upcoming posts.
+
+This is not an ad. It's the first of three posts about building in the open, and in it I'm being direct: the repo's positioning is currently broken, the description doesn't match reality, and I know at least three gaps in the roadmap that I'm openly tracking in the repo itself.
+
+---
+
+### What problem ForgePlan solves
+
+December, second hour of code review. A senior points at a line: "Why did we choose this auth library? I remember three options being discussed." Silence. I scroll through Slack - the thread exists, 47 messages, four reactions, a link to Notion. The Notion page says "ADR - TBD". Created in November. Decision made, rationale gone. This isn't made up - it's a scenario that repeated itself five times across my career in different teams.
+
+The artefacts a team produces while **making** a decision and the artefacts it produces while **implementing** one typically live in separate universes. Code gets versioned, reviewed, tested, deprecated by the rules. Decisions get a Slack thread and the hope that someone will remember. Six months later a new person arrives, finds no rationale, suggests "let's rewrite it" - and the team spends three weeks re-discussing the same question.
+
+Standard approaches fail for different reasons. **Notion/Confluence** - a universe separate from the code. A commit link to a Notion page can lead nowhere a year later (page moved, deleted, project archived). Code review doesn't touch the page content - nobody verifies that what was promised matches what was built. **Slack threads** - not a source of truth at all, they're oral history captured by accident. **ADRs in the repo as a plain markdown folder** - a step in the right direction, but without structure it becomes a dumping ground: some ADRs have three paragraphs, others have twenty, the fifth one has no status, the seventh has no rationale, the tenth links to code that was rewritten long ago.
+
+With AI agents in the team, this pain multiplies by an order of magnitude. An agent clones the repo into a fresh sandbox each session. It has no access to your Notion, your Slack, your memory of yesterday's meeting. If knowledge lives in your head, it doesn't exist for the agent. If knowledge lives in Slack, it doesn't exist for the agent. Only what's present as a file in the repository is real.
+
+Then comes an interesting effect. The discipline a team needs to work well with agents is **also useful** for the team without agents. Without agents, the penalty for poor discipline is weak - teams live with the cost without noticing it. With agents, the penalty becomes visible immediately - the agent gets confused, asks redundant questions, produces the wrong thing. And it turns out the conditions that make an agent useful are the same conditions that make humans faster: clear structure, explicit commitments, trackable state, build-time checks.
+
+I started ForgePlan to treat the decision graveyard. The first version was about humans. Four months in, I noticed I was increasingly being invited to discussions about "how this connects to AI agents" - and I realised I had unknowingly built a team discipline where agents feel at home by design, not by coincidence. That deserves its own post, coming in two weeks. In this one I focus on the baseline case: a team that doesn't want to lose decisions, regardless of who writes them.
+
+---
+
+### What ForgePlan is
+
+In one sentence: **a local command-line tool written in Rust that turns team decisions into proper artefacts in a `.forgeplan/` directory next to your code - with structure, a reliability score, and a lifecycle.**
+
+In more detail. Any team decision-making process breaks down into a few typical questions:
+
+- **What are we building and why?** - that's a PRD (Product Requirements Document).
+- **How will we build it?** - that's an RFC (Request for Comments, an architectural proposal with phases).
+- **Why this approach and not another?** - that's an ADR (Architecture Decision Record).
+- **What are the exact contracts?** - that's a Spec (API contracts, data models).
+- **What groups a set of related tasks?** - that's an Epic (grouping PRDs/RFCs/ADRs).
+- **What proves this works?** - that's Evidence (tests, measurements, reviews).
+
+Those are the six primary types. There are four supporting ones - Note (a micro-decision that expires in 90 days), Refresh (re-evaluation of a stale decision), Problem (a captured problem), Solution (options for solving it). All of them are plain markdown files in `.forgeplan/`, readable by both humans and agents without any special tooling.
+
+Every artefact has a **lifecycle**:
+
+```
+draft → active → {superseded | deprecated | stale}
+```
+
+An artefact starts as a draft. To become active, it must pass checks: `forgeplan validate` inspects whether mandatory sections are filled in; `forgeplan score` computes the reliability score; `forgeplan activate` blocks if either of those failed. An active artefact can then be **replaced** by another (`supersede` - "a new version has been accepted"), **retired** (`deprecate` - "we no longer use this"), or **expire** (`stale` - "the evidence has a TTL and it's run out, re-evaluation required"). Artefacts cannot be deleted - they're always visible in history.
+
+The reliability score is **R_eff** (reliability effective). The idea is simple: the overall reliability of an artefact equals the **weakest piece of evidence** it relies on. Not the average, not the median. If three EvidencePacks exist - two with solid measurements, one with an expired test - the overall score is pulled toward the weakest. This isn't a mathematical quirk; it's protection against averaging: one rotten link discredits the entire chain, and the tool says so honestly. No advanced math required - it's enough to understand that averaging metrics hides problems, while the minimum does not.
+
+Storage is **local**, in git. The `.forgeplan/` directory is committed alongside the code. No clouds, no subscription services, no API keys. Semantic search across artefacts runs on the embedded BGE-M3 model (via `fastembed`, no network needed). Indexing uses a local LanceDB instance, but it can be painlessly rebuilt at any time with `forgeplan scan-import` from the markdown - because markdown is the source of truth here, and the index is a derived cache. This is a shift from "we have recorded decisions" to "the repository is the single source of truth about the project". The difference is not cosmetic: in the first framing, knowledge depends on infrastructure; in the second, infrastructure depends on knowledge.
+
+Links between artefacts are **typed**. Not "here's a link to another document", but explicit relations: `informs` (one informs another), `refines` (adds detail), `contains` (is part of), `supersedes` (replaces). The `forgeplan graph` command renders a mermaid diagram of all relations. `forgeplan blindspots` finds active decisions with **no** supporting evidence. `forgeplan stale` shows artefacts past their expiry. `forgeplan health` combines all of this into a single view.
+
+Under the hood - three Rust crates: the core library (~12.8k lines), the CLI (76 commands), and an MCP server (73 tools, for AI agents via the Model Context Protocol). One binary, around 41 MB after compression, installable via `brew`, an install script, or by building from source.
+
+---
+
+### The 60-second demo
+
+Let's see what this looks like in practice. Say your team needs to add OAuth2 authentication.
+
+```
+$ forgeplan init -y
+✓ Workspace initialized at .forgeplan/
+
+$ forgeplan route "Add OAuth2 authentication"
+Depth:      Standard
+Pipeline:   PRD → RFC
+Confidence: 92%
+Next: forgeplan new prd "OAuth2 Authentication"
+
+$ forgeplan new prd "OAuth2 Authentication"
+Created: prd-oauth2-authentication (predicted PRD-77?)
+Next: forgeplan validate prd-oauth2-authentication
+
+$ forgeplan validate prd-oauth2-authentication
+PASS (0 MUST errors)
+Next: forgeplan reason prd-oauth2-authentication
+
+$ forgeplan reason prd-oauth2-authentication
+Hypothesis 1: Session-based flow      (confidence: 0.6)
+Hypothesis 2: JWT with refresh        (confidence: 0.8) ← best supported
+Hypothesis 3: Delegated to OAuth proxy (confidence: 0.4)
+Next: forgeplan new evidence "PRD-077 verification"
+
+$ forgeplan new evidence "15 tests pass, p95 180ms on benchmark"
+$ forgeplan link EVID-118 prd-oauth2-authentication --relation informs
+$ forgeplan score prd-oauth2-authentication
+R_eff: 1.00  (Adequate)
+Next: forgeplan activate prd-oauth2-authentication
+
+$ forgeplan activate prd-oauth2-authentication
+✓ prd-oauth2-authentication (draft → active)
+Done.
+```
+
+Here's what happened. `route` determined the appropriate depth (Standard - 1-3 days, PRD and RFC required). `new` created an artefact with a short label (slug). `validate` checked the mandatory sections. `reason` ran the **ADI** reasoning process (Abduction - Deduction - Induction): generate three hypotheses, evaluate each, pick the strongest - this guards against anchoring on the first idea that comes to mind. `score` computed reliability from the weakest piece of evidence. `activate` moved the draft to active state.
+
+Each command prints a **hint to the next step** via a `Next:` or `Done.` marker. This isn't decoration - it's a contract: workflow documentation is generated by the code at runtime, so it can never drift from how the program actually works. An agent needs these hints to avoid guessing; a human needs them to avoid memorising all 76 commands.
+
+The entire cycle takes about a minute of clock time, plus filling in the artefact body (requirements, motivation, goals, constraints - that's what actually makes the artefact useful).
+
+---
+
+### The ecosystem: core plus three satellites
+
+ForgePlan CLI is the core. Three separate products have grown around it to make the experience more comfortable.
+
+**`forgeplan-web` - the decision graph in the browser.** A standalone SvelteKit application. Launched with one command:
+
+```
+$ npx @forgeplan/web
+Server running at http://localhost:5173
+```
+
+A browser opens and you see your entire `.forgeplan/` as an interactive graph. Artefacts are nodes, relations are edges, colours are types (PRD, RFC, ADR...), brightness maps to reliability score, size maps to the number of incoming links. Five layout modes: automatic physics-based layout (force-directed), type-based lanes, dependency matrix, radial, tree. You can filter by status, search by text, click nodes and read their content in a side panel. Everything is local - the app reads files from the `.forgeplan/` directory alongside it, nothing is sent anywhere.
+
+**`forgeplan-hud` - a status line for Claude Code.** A thin two-line utility that shows at the bottom of the terminal while an agent runs: which artefact is currently active, its reliability score, how many orphans are in the repo (artefacts with no links), how many have gone stale. Update time - around 60 milliseconds. Implemented in bash + jq on top of `forgeplan health --json` output, because for this simple task a Rust binary is overkill and script cold-start time turned out to be better. A small tool that eliminates 80% of context switches: no need to open a separate tab and run `forgeplan health` every few minutes.
+
+**`forgeplan-marketplace` - a plugin catalogue for Claude Code.** A separate open repository with 12 plugins, over 60 agents, and 16 skills. Plugins install directly into Claude Code through its built-in manager. The largest one is `fpl-skills` - a set of 15 skills for working with the methodology: task routing by depth, evidence structuring, lifecycle state management, invariant restoration. The marketplace is also MIT, no subscriptions.
+
+The relationship between all four. The CLI is the only required component: everything else is optional. The web app reads data the CLI has already created; the HUD reads CLI output; marketplace plugins call the CLI and the MCP server. You can install only the CLI and work without anything else. You can add the web viewer so the team can see a shared graph during a meeting. You can add the HUD if you use Claude Code and want to see current state without context switching. You can add plugins if you want to extend the agents' skill set.
+
+A Tauri desktop app is on the roadmap without a date. It will be a desktop wrapper around the web app for those who don't want to keep an `npx` process running separately.
+
+---
+
+### Who it's for - and who it's not for
+
+**It's a fit if:**
+
+- Your team **spends time relitigating the same questions**. If "why did we pick X?" keeps coming up every two months, you have a decision graveyard. ForgePlan helps.
+- You **use AI coding agents** (Claude Code, Cursor, Aider, Continue). For agents, it's critical that knowledge lives in the repository - anything not in the repo **does not exist** for them. ForgePlan turns decisions into files that agents see automatically.
+- You write in **Rust, Python, TypeScript, Go, Java, C#, Swift** - any language, really. ForgePlan has no stack dependency; it works with markdown in `.forgeplan/`. The tool itself is written in Rust, but that's an implementation detail.
+- You **store decisions in git** or want to start. If you're willing to commit markdown, that's enough.
+- You make **medium-to-large technical decisions** at least once a week. If decisions are rare, the tool will sit idle.
+
+**It's not a fit if:**
+
+- You need a **cloud service with a subscription**. ForgePlan is local, there's no hosted version, sync happens through git. If your team needs a central external service, this isn't it.
+- You need a **Jira/Linear replacement**. ForgePlan is not task management. It has no deadlines, assignments, or sprints in the traditional sense. It answers "what did we decide and why", not "who is doing what by Wednesday". Connecting it to Jira/Linear is possible (there's a separate tool called Orchestra from the same author), but it doesn't come out of the box.
+- You need something for **non-engineers**. ForgePlan lives in the terminal and the filesystem. The web viewer helps with reading, but creating artefacts is most comfortable from a terminal. A product manager without CLI experience will find it uncomfortable.
+- You need **a ready-made integration with GitHub Issues or Linear**. Two-way sync is on the roadmap, but it's not there yet.
+
+If you fall in the "it's a fit" category, the next section shows how to install and try it.
+
+---
+
+### What's been built: numbers and an honest status
+
+As of writing (May 8, 2026):
+
+- **343 artefacts** in `.forgeplan/` - 60 PRDs, 12 ADRs, 9 RFCs, 4 Specs, 8 Epics, plus Evidence, Problems, Notes, Refresh.
+- **1995 tests**, 0 failures, 0 warnings on two feature configs.
+- **76 CLI commands**, **73 MCP tools**.
+- **3 Rust crates**: forgeplan-core (12.8k lines), forgeplan-cli, forgeplan-mcp.
+- **v0.30.0** today, release cadence every 2-4 weeks.
+- **One binary**, around 41 MB after compression (`strip` + `lto` + `codegen-units=1` + `opt-level=z`).
+- **MIT licence**, repository open.
+
+And the last number, the one people usually hide - **one star on GitHub**.
+
+I'm not pretending it's not there. The reason is straightforward and engineering-flavoured: the repo description said **"Backend and ForgePlan developer tools"** for a year and a half. That's a promise that doesn't match reality. People searching for "backend developer tools" arrive, see artefact lifecycles, reliability scoring, decision graphs - and leave, because that's not what they were looking for. People searching for decision discipline or a way to work with AI agents in a team never arrive, because those words aren't in the description.
+
+This isn't "marketing let engineering down". It's **positioning as part of the architecture**. If the repo description says one thing and the code does another, stars scatter in both directions away from true product-market fit: the people who need it don't come, and the people who do come leave. I wrote the description before the tool had a clear audience. Now - I'm rewriting it.
+
+This post is part of that rewrite. If you've read this far and it resonates, it means the description is starting to work. Before, very few people got this far - they were lost at the first sentence.
+
+---
+
+### How to try it
+
+Installation - one command:
+
+```bash
+brew install ForgePlan/tap/forgeplan
+```
+
+(macOS and Linux. For Windows - building from source via `cargo install --path crates/forgeplan-cli` for now. A pre-built Windows binary is on the roadmap.)
+
+Verify the install:
+
+```bash
+forgeplan --version
+```
+
+Go to any git repo and initialise:
+
+```bash
+cd ~/projects/your-project
+forgeplan init -y
+forgeplan health
+```
+
+`init -y` creates the `.forgeplan/` directory with all subdirectories and templates. `health` confirms everything is working - it prints `Healthy` status and shows no orphans or stale artefacts.
+
+Then try the same 60-second cycle shown above: `route -> new prd -> validate -> reason -> score -> activate`. Each command tells you what to do next - no need to memorise all 76 commands.
+
+If you want visualisation:
+
+```bash
+npx @forgeplan/web
+```
+
+A browser opens at `localhost:5173`. The graph will be empty (you just started), but it's the baseline. As artefacts accumulate, the graph fills in.
+
+Full documentation - `docs/methodology/FORGEPLAN-GUIDE.md` in the repository. Full index - `docs/README.md`. Repository: `github.com/ForgePlan/forgeplan`.
+
+---
+
+### What's next
+
+The near-term roadmap has three items, no more:
+
+1. **Sprint contract as a separate artefact type.** Right now a PRD is too heavy for a day-sized task (13 mandatory sections, three-hypothesis reasoning, evidence links). A Note is too light - no checklists, no links. There's no intermediate format for "the team's 2-3 day commitment", and I hit this gap every week.
+2. **Desktop wrapper via Tauri.** The web app exists, but launching `npx` each time is an extra step. A desktop application will simplify life for people who don't want to keep a background process running.
+3. **Two-way sync with GitHub Issues / Linear.** Right now the connection between a ForgePlan artefact and a GitHub Issue is only through a reference in a commit message. The goal is for a PRD to automatically create an Issue, and vice versa.
+
+The full list of open questions lives in the repository, in `.forgeplan/problems/` (currently 62 problems at various stages of elaboration) and in issues tagged `roadmap`.
+
+This post is the first in a series. Coming next:
+
+- **In two weeks** - a longer piece on a broader theme: ForgePlan as a scaffold for AI agents. ForgePlan grew out of decision discipline, but four months in it turned out that exactly the same mechanisms make it a comfortable environment for agent tasks - five WALKINGLABS subsystems (rules, tools, environment, state, checks) map one-to-one onto our commands. If this post is about **what** ForgePlan does, the next one will be about **the direction** it's evolving in with the arrival of agents.
+- **In six weeks** - a report titled "Six months of open development: five lessons". Concrete stories from PROB-034 (the day the tool was lying to me), PROB-048 (four rounds of review to make markdown the authoritative source), PROB-060 (how numbering broke when multiple agents worked in parallel). Each story is a lesson at the methodology level, not just a bug fix.
+
+Where to follow updates:
+
+- **Repository** - `github.com/ForgePlan/forgeplan` (Rust, MIT, releases every 2-4 weeks).
+- **Documentation** - `forgeplan.dev` (methodology, guides, artefact index).
+
+If something here resonated - write in issues or in the channel. Feedback on the "not a fit" section is especially valuable: every time someone says "I tried it, didn't work for me because ...", I get a concrete question for the next deep-dive. Open development lives on honest criticism, not praise.

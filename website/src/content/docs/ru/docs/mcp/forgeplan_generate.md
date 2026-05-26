@@ -10,7 +10,7 @@ description: "Генерирует полный текст артефакта и
 ## Когда агент вызывает это
 
 - Пользователь предоставляет подробное описание и хочет получить готовый к ревью первый черновик, а не пустую заглушку.
-- Миграция решения из истории чата в формальный ADR — используйте сводку чата в качестве описания.
+- Миграция решения из истории чата в формальный ADR - используйте сводку чата в качестве описания.
 - Массовая инициализация: превращение неформальной дорожной карты в 5 черновиков PRD за одну сессию.
 
 ## Входные параметры
@@ -24,7 +24,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GenerateParam
 
 ## Возвращает
 
-Идентификатор нового артефакта плюс сгенерированный текст. В отличие от `forgeplan_new`, агент обычно может сразу перейти к `forgeplan_validate` без промежуточного `forgeplan_update` — текст уже заполнен.
+Идентификатор нового артефакта плюс сгенерированный текст. В отличие от `forgeplan_new`, агент обычно может сразу перейти к `forgeplan_validate` без промежуточного `forgeplan_update` - текст уже заполнен.
 
 Пример структуры ответа:
 
@@ -59,11 +59,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GenerateParam
 
 ## Эквивалент CLI
 
-- [`forgeplan generate`](/ru/docs/cli/generate/) — та же операция
+- [`forgeplan generate`](/ru/docs/cli/generate/) - та же операция
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) — альтернатива с пустой заглушкой
-- [`forgeplan_capture`](/ru/docs/mcp/forgeplan_capture/) — захват решений из беседы
-- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) — всегда валидировать сгенерированный вывод
+- [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - альтернатива с пустой заглушкой
+- [`forgeplan_capture`](/ru/docs/mcp/forgeplan_capture/) - захват решений из беседы
+- [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) - всегда валидировать сгенерированный вывод

@@ -4,7 +4,7 @@ description: "Rebuild LanceDB index from .md files (files-first sync, ADR-003)"
 ---
 
 Rebuild the LanceDB search and metadata index from the markdown files in
-`.forgeplan/`. This is a read-only operation against your markdown sources —
+`.forgeplan/`. This is a read-only operation against your markdown sources -
 the `.md` files are the source of truth (ADR-003), and `lance/` is a derived,
 gitignored cache that can always be recomputed.
 
@@ -32,17 +32,17 @@ forgeplan reindex
 
 ## When to run
 
-- **After `git clone`** — `.forgeplan/lance/` is gitignored and doesn't exist
+- **After `git clone`** - `.forgeplan/lance/` is gitignored and doesn't exist
   on a fresh checkout. Run `forgeplan init -y && forgeplan reindex` to
   bootstrap the workspace.
-- **After manual markdown edits** — if you edited PRD/RFC files outside the
+- **After manual markdown edits** - if you edited PRD/RFC files outside the
   CLI (text editor, find-and-replace), `reindex` syncs the changes into
   LanceDB so `search`, `list`, and `health` see them.
-- **After `git pull`** that brought in new artifacts from teammates — see also
+- **After `git pull`** that brought in new artifacts from teammates - see also
   [`forgeplan git-sync`](/docs/cli/git-sync/) for the incremental variant.
-- **Recovery from corruption** — if `lance/` is damaged or LanceDB schema
+- **Recovery from corruption** - if `lance/` is damaged or LanceDB schema
   migrated, a full reindex rebuilds from markdown truth.
-- **Schema migration** — new LanceDB columns in a Forgeplan upgrade require
+- **Schema migration** - new LanceDB columns in a Forgeplan upgrade require
   reindex to populate them.
 
 ## Example
@@ -64,7 +64,7 @@ forgeplan search "auth"
 
 `reindex` is **safe to run at any time**. It never writes to `.md` files, only
 to the `lance/` derived index. If you're unsure whether the index is
-in sync, just run it — the cost is a scan of your artifact tree (seconds for
+in sync, just run it - the cost is a scan of your artifact tree (seconds for
 typical workspaces).
 
 ## v0.18.0 note (PROB-027)
@@ -77,7 +77,7 @@ without a separate `init` step on existing workspaces.
 ## Orphan relation cleanup (v0.17.1 hotfix)
 
 As of v0.17.1 (PROB-028, PRD-044) `reindex` runs a **Phase 3** pass that trims
-orphan relations — links in the `relations` table whose source or target
+orphan relations - links in the `relations` table whose source or target
 artifact no longer exists in the `artifacts` table.
 
 Before v0.17.1, deleting or deprecating an artifact left its relation rows
@@ -93,7 +93,7 @@ Removal reasons reported in the output:
 
 | Reason                         | What happened                                    |
 |--------------------------------|--------------------------------------------------|
-| `corrupt kind field`           | Row with unparseable kind — no valid directory    |
+| `corrupt kind field`           | Row with unparseable kind - no valid directory    |
 | `no .md file found`            | LanceDB row with no corresponding markdown file   |
 | `orphan relation (source missing)` | Relation pointing from a deleted artifact     |
 | `orphan relation (target missing)` | Relation pointing to a deleted artifact      |
@@ -101,26 +101,26 @@ Removal reasons reported in the output:
 
 ### When to run
 
-- **After bulk deletes** — if you removed several `.md` files manually.
-- **After manual `.md` removes** — `rm .forgeplan/prds/prd-old.md` leaves a
+- **After bulk deletes** - if you removed several `.md` files manually.
+- **After manual `.md` removes** - `rm .forgeplan/prds/prd-old.md` leaves a
   dangling LanceDB row until you reindex.
-- **Session start after `git pull`** — teammates may have deprecated or deleted
+- **Session start after `git pull`** - teammates may have deprecated or deleted
   artifacts on their branches.
-- **After upgrade from pre-v0.17.1** — one reindex cleans up any accumulated
+- **After upgrade from pre-v0.17.1** - one reindex cleans up any accumulated
   orphan relations from the pre-fix era.
 
 ## `reindex` vs `scan-import`
 
-- **`reindex`** — targeted rebuild of LanceDB from current markdown state.
+- **`reindex`** - targeted rebuild of LanceDB from current markdown state.
   Use in normal day-to-day work.
-- **[`scan-import`](/docs/cli/scan-import/)** — lower-level scanner that can
+- **[`scan-import`](/docs/cli/scan-import/)** - lower-level scanner that can
   also import legacy/foreign artifacts into a fresh workspace. Prefer
   `reindex` unless you're doing a one-time import or migration.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan scan-import`](/docs/cli/scan-import/) — bulk import + rescan
-- [`forgeplan git-sync`](/docs/cli/git-sync/) — incremental sync after pull
-- [`forgeplan watch`](/docs/cli/watch/) — continuous auto-sync daemon
-- [`forgeplan health`](/docs/cli/health/) — verify index integrity
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - bulk import + rescan
+- [`forgeplan git-sync`](/docs/cli/git-sync/) - incremental sync after pull
+- [`forgeplan watch`](/docs/cli/watch/) - continuous auto-sync daemon
+- [`forgeplan health`](/docs/cli/health/) - verify index integrity

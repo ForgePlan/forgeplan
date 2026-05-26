@@ -3,16 +3,16 @@ title: forgeplan_fpf_list
 description: "List every FPF (First Principles Framework) knowledge-base section. Returns the full catalogue of 204 sections as a flat table of {id, title, summary} so the agent can pick what to fetch next via forgeplan_fpf_section."
 ---
 
-Returns the complete catalogue of FPF knowledge-base sections — the hierarchical taxonomy behind Forgeplan's reasoning engine. Each section is a small, self-contained piece of the First Principles Framework (ADI cycle, trust calculus, bounded contexts, explore/investigate/exploit, etc.). `forgeplan_fpf_list` is the agent's index: browse it, decide which sections look relevant, then pull full content via `forgeplan_fpf_section` or search contents via `forgeplan_fpf_search`.
+Returns the complete catalogue of FPF knowledge-base sections - the hierarchical taxonomy behind Forgeplan's reasoning engine. Each section is a small, self-contained piece of the First Principles Framework (ADI cycle, trust calculus, bounded contexts, explore/investigate/exploit, etc.). `forgeplan_fpf_list` is the agent's index: browse it, decide which sections look relevant, then pull full content via `forgeplan_fpf_section` or search contents via `forgeplan_fpf_search`.
 
 **Category**: FPF Knowledge Base
 
 ## When an agent calls this
 
 - First call of a session when the agent needs to remember what FPF topics exist at all.
-- Before `forgeplan_fpf_section` — confirm the exact ID of a section (e.g. `B.3` for Trust Calculus).
+- Before `forgeplan_fpf_section` - confirm the exact ID of a section (e.g. `B.3` for Trust Calculus).
 - When the user asks "does FPF have anything to say about X?" and the agent wants to scan titles before committing to a vector search.
-- As a sanity check after `forgeplan fpf ingest` — the list should return ~204 sections on a fresh ingest.
+- As a sanity check after `forgeplan fpf ingest` - the list should return ~204 sections on a fresh ingest.
 
 ## What you get back
 
@@ -65,11 +65,11 @@ forgeplan_fpf_search  { query: "…" }   ← content-level search (keyword or BG
 
 ## CLI equivalent
 
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) — same catalogue rendered as a terminal table.
+- [`forgeplan fpf list`](/docs/cli/fpf-list/) - same catalogue rendered as a terminal table.
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_fpf_section`](/docs/mcp/forgeplan_fpf_section/) — fetch full body of one section
-- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) — keyword / semantic search
-- [`forgeplan_fpf_rules`](/docs/mcp/forgeplan_fpf_rules/) — rules derived from the framework
+- [`forgeplan_fpf_section`](/docs/mcp/forgeplan_fpf_section/) - fetch full body of one section
+- [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) - keyword / semantic search
+- [`forgeplan_fpf_rules`](/docs/mcp/forgeplan_fpf_rules/) - rules derived from the framework

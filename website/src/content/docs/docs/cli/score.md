@@ -1,11 +1,11 @@
 ---
 title: forgeplan score
-description: "Compute R_eff — the weakest-link evidence trust score for a decision."
+description: "Compute R_eff - the weakest-link evidence trust score for a decision."
 ---
 
 `forgeplan score` computes the **R_eff** (effective reliability) of a decision artifact
 based on the EvidencePacks linked to it. R_eff follows the weakest-link rule from
-Quint-code: `R_eff = min(evidence_scores)` — **never an average**. One weak piece of
+Quint-code: `R_eff = min(evidence_scores)` - **never an average**. One weak piece of
 evidence sinks the whole decision, which is the whole point: a PRD backed by one strong
 benchmark and one refuted test is still a risky PRD.
 
@@ -17,14 +17,14 @@ blind spot.
 ## When to use
 
 - Right after linking a new EvidencePack (`forgeplan link EVID-012 PRD-001 --relation informs`).
-- Before `forgeplan activate` — if R_eff is still 0, you are activating a promise without proof.
+- Before `forgeplan activate` - if R_eff is still 0, you are activating a promise without proof.
 - In bulk with `--all` after a sprint to refresh cached R_eff on every active decision.
 - As a debugging tool: if health flags a blind spot, `score --json` shows which evidence is dragging the min down.
 
 ## When NOT to use
 
-- On Notes, Problems, or Epics — they are not decisions and carry no R_eff.
-- Before you have any evidence — the answer will always be 0.0.
+- On Notes, Problems, or Epics - they are not decisions and carry no R_eff.
+- Before you have any evidence - the answer will always be 0.0.
 
 ## Usage
 
@@ -58,7 +58,7 @@ forgeplan score PRD-001
 Typical output:
 
 ```text
-PRD-001 — Auth System
+PRD-001 - Auth System
   Evidence contributions:
     EVID-012  supports  CL3  valid  → 1.00
     EVID-015  supports  CL2  valid  → 0.90
@@ -89,7 +89,7 @@ forgeplan score PRD-001 --json | jq '.r_eff, .weakest_link'
 
 | R_eff range | DerivedStatus  | What it means                               |
 |-------------|----------------|---------------------------------------------|
-| 0.00        | UNDERFRAMED    | No evidence linked — blind spot             |
+| 0.00        | UNDERFRAMED    | No evidence linked - blind spot             |
 | 0.01–0.39   | FRAMED         | Weak evidence or refuting signals dominate  |
 | 0.40–0.69   | EXPLORING      | Some support, some doubt                    |
 | 0.70–0.89   | COMPARED       | Strong support, at least one caveat         |
@@ -109,15 +109,15 @@ narrows as more independent evidence is linked.
 Old format (v0.16 and earlier):
 
 ```text
-PRD-001 — Auth System
+PRD-001 - Auth System
   R_eff = 0.80
 ```
 
 New format (v0.17+):
 
 ```text
-PRD-001 — Auth System
-  R_eff = 0.80 [0.65 — 0.92]
+PRD-001 - Auth System
+  R_eff = 0.80 [0.65 - 0.92]
 ```
 
 The bracketed range is a lower / upper bound. Read it as: "point estimate 0.80,
@@ -128,22 +128,22 @@ deciding whether a decision is safe to ship.
 ### Why it matters
 
 A point R_eff of 0.80 looks the same whether it is backed by **one** benchmark
-at CL3 or **five** benchmarks at CL3. But one-piece evidence is brittle — if
+at CL3 or **five** benchmarks at CL3. But one-piece evidence is brittle - if
 that single EvidencePack turns out to be wrong, your R_eff collapses. The
 confidence interval exposes that brittleness:
 
 | Situation                            | R_eff    | Interval              |
 |--------------------------------------|----------|-----------------------|
-| 1 supports / CL3 evidence            | 0.80     | `[0.40 — 0.92]` wide  |
-| 5 supports / CL3, 1 weakens / CL2    | 0.80     | `[0.72 — 0.88]` narrow|
-| 1 supports / CL3 with valid_until expiring | 0.80 | `[0.30 — 0.90]` wide (decay) |
+| 1 supports / CL3 evidence            | 0.80     | `[0.40 - 0.92]` wide  |
+| 5 supports / CL3, 1 weakens / CL2    | 0.80     | `[0.72 - 0.88]` narrow|
+| 1 supports / CL3 with valid_until expiring | 0.80 | `[0.30 - 0.90]` wide (decay) |
 
 A wide interval means "R_eff looks fine but you are one surprise away from
-falling off a cliff — add more evidence." A narrow interval means
+falling off a cliff - add more evidence." A narrow interval means
 "R_eff is stable, multiple independent proofs agree."
 
 The interval is computed as a heuristic over evidence count, CL distribution,
-verdict mix, and `valid_until` proximity — it is not a formal statistical
+verdict mix, and `valid_until` proximity - it is not a formal statistical
 confidence interval, and you should not treat it as one.
 
 ## How it fits the workflow
@@ -159,8 +159,8 @@ code → new evidence → link → score → review → activate
 
 ## See also
 
-- [`forgeplan fgr`](/docs/cli/fgr/) — orthogonal F-G-R quality axis
-- [`forgeplan decay`](/docs/cli/decay/) — preview R_eff impact when evidence expires
-- [`forgeplan review`](/docs/cli/review/) — checks R_eff > 0 as part of the gate
-- [Evidence methodology](/docs/methodology/evidence/) — CL, verdict, decay explained
+- [`forgeplan fgr`](/docs/cli/fgr/) - orthogonal F-G-R quality axis
+- [`forgeplan decay`](/docs/cli/decay/) - preview R_eff impact when evidence expires
+- [`forgeplan review`](/docs/cli/review/) - checks R_eff > 0 as part of the gate
+- [Evidence methodology](/docs/methodology/evidence/) - CL, verdict, decay explained
 - [CLI overview](/docs/cli/)

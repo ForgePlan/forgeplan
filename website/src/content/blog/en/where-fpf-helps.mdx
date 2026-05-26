@@ -1,0 +1,218 @@
+---
+title: "Where FPF helps: 25 situations across 12 fields"
+description: "From a payments API to a family decision about moving countries - concrete situations where Anatoly Levenchuk's FPF patterns turn confusion into working structure. Each case maps to a specific FPF pattern."
+slug: where-fpf-helps
+lang: en
+publishedAt: 2026-05-26
+kind: explainer
+topic: methodology
+cover: '/blog-covers/where-fpf-helps.webp'
+draft: false
+translations:
+  ru: where-fpf-helps
+---
+
+In [the previous post](/blog/en/what-is-fpf/) I covered what FPF is as a whole: where the framework comes from, why it exists, and how its basic vocabulary works. This post is a companion: where exactly these patterns apply.
+
+25 situations across 12 fields. For each one: which FPF pattern solves the problem and what changes as a result.
+
+Every case follows the same structure:
+
+- **Situation** - a real scenario where something goes wrong
+- **FPF Pattern** - a specific mechanism from the specification
+- **What changes** - a concrete result after applying the pattern
+
+An important caveat: this is not a call to "implement FPF everywhere." On the contrary - each specific pattern answers a specific problem. If the problem does not exist, the pattern is not needed. The cases below show where the problem does exist and which tool resolves it.
+
+Some patterns in the FPF specification sound intimidating: `A.6.3.RT RepresentationTransduction`, `B.5.2.1 Creative Abduction NQD`, `G.4 CAL Pack`. In practice, each one stands for a concrete question - "what exactly is forbidden here?" or "how many hypotheses did we consider before publishing?" - which makes sense without any special vocabulary. I will refer to each pattern by its spec identifier, but describe its meaning in plain language.
+
+The cases are independent of each other: you can start from whichever section matches your context. Product teams - with Product/Engineering. Lawyers - with Law & Compliance. Executives - with Business & Strategy. Scientists and clinicians - with their respective sections. If you want the big picture first, "What stood out" at the end covers five patterns that cut across all 12 fields and explain why the same tools prove useful in contexts that seem to have nothing in common.
+
+## Product / Engineering
+
+### 1. Payments API: the contract soup
+
+- **Situation.** The payments team ships API v2. A single document mixes: "no refunds older than 180 days," "the merchant must return HTTP 200 to the webhook within 5 seconds," "on failure - log to audit," and "the partner bank decides the FX rate." Integrators break unpredictably; support drowns.
+- **FPF Pattern.** A.6 Boundary Discipline (L/A/D/E) - separate into Laws / Admissibility / Deontics / Effects.
+- **What changes.** Every statement gets a type. Testers write separate suites for prohibitions and for obligations. Lawyers read only L+D; SRE reads only E.
+
+### 2. "The release deployed itself"
+
+- **Situation.** Post-incident postmortem: "The CI/CD pipeline decided to ship the hotfix without running the smoke test." The team defends itself: "That's how the process is configured." Management is angry: who specifically decided to skip the smoke test?
+- **FPF Pattern.** A.3 Transformer Quartet - a process does not "decide" anything; the system-bearer acting in a role decides.
+- **What changes.** The postmortem records an explicit "release engineer in the on-call role, absent green-flag condition," not "the pipeline." Now you can fix either the role or the MethodDescription.
+
+### 3. The SRE dashboard is green - and lying
+
+- **Situation.** 12 SLI graphs are green; the customer complains about latency. It turns out that alerting rules had not been updated in 9 months, the latency bucket was widened in March, and no one revised the thresholds.
+- **FPF Pattern.** B.3.4 Evidence Decay + Epistemic Debt - every SLI needs a valid_until date and a refresh policy.
+- **What changes.** The dashboard shows not only the color but also the age of the threshold definition. Older than 90 days triggers a visual "stale" marker and a Refresh task to the owner.
+
+### 4. The architect chose Kafka "because Kafka"
+
+- **Situation.** During review the tech lead defends the decision "event bus = Kafka." When asked "what else did you consider?" the answer is "nothing, Kafka is the standard." A year later the team hits ops complexity that does not fit their actual load.
+- **FPF Pattern.** B.5.2 Abductive Loop - at least 2 candidates and 2 filters, with explicit Abort/Defer decisions.
+- **What changes.** The RFC requires alternatives (NATS, Redpanda, SQS) plus elimination criteria. The decision becomes reviewable rather than a matter of the architect's taste.
+
+### 5. "We have no release process"
+
+- **Situation.** A new VP Eng hears from everyone: "we have no process." Meanwhile releases ship and incidents get resolved. Nobody can articulate what exactly is missing.
+- **FPF Pattern.** A.15 Role-Method-Work Alignment - five distinct entities; you need to find out which ones are absent.
+- **What changes.** An audit reveals: Capability exists (the team knows how), Work exists (it gets done), MethodDescription is absent (nowhere written down), and no Role is formally assigned. Fixed by two documents, not by "rolling out a process."
+
+## Business & Strategy
+
+### 6. Due diligence: "the company is growing"
+
+- **Situation.** An investor looks at a target: revenue +40% YoY. They buy. Six months later they discover that the growth came from a single contract that is about to expire; the net new customer pipeline has been negative for six months.
+- **FPF Pattern.** C.27 Dyn0/Dyn1/Dyn2 - distinguish state, rate, and rate of change of the rate.
+- **What changes.** The DD checklist adds "show us the second-order derivative on pipeline and cohort." The deal either collapses or the price gets adjusted.
+
+### 7. A 5-year strategy with no alternatives
+
+- **Situation.** The CEO presents to the board: "Strategy 2030: focus on enterprise." One board member asks: "What else did you consider and why did you discard it?" No coherent answer exists.
+- **FPF Pattern.** E.9 DRR - Problem frame + Decision + Alternatives + Basis + Loss/Recoverability.
+- **What changes.** The strategy comes with a ledger of 4-5 rejected options and the criteria that eliminated them. The board can contest the choice on its merits rather than taking it on faith. At the next review it is easy to see which input assumptions have changed.
+
+### 8. Pre-IPO: "we're ready"
+
+- **Situation.** The CFO says "ready for IPO." Legal says "ready." The controls team says "we have a SOX baseline, tested it a year ago." The auditor finds that half the controls were never reviewed after the cloud migration.
+- **FPF Pattern.** B.5.1 Explore -> Shape -> Evidence -> Operate with AssuranceLevel - "have" does not mean "at L2."
+- **What changes.** Each control gets an explicit assurance level and a last-evidence date. "Ready" becomes a matrix: 60% L2, 25% L1, 15% L0 - plus a plan to close the gaps.
+
+## Science & R&D
+
+### 9. The lab and the "obvious" experiment
+
+- **Situation.** The PI publishes a result; the reviewer asks for the protocol. The PhD student who ran the experiment has left. Nobody can reproduce it: "we did it the usual way." A repeat experiment produces a different curve.
+- **FPF Pattern.** A.15 Role-Method-Work - distinguish MethodDescription (the text), Method (the bearer), Work (the specific run).
+- **What changes.** The lab introduces a requirement: every Work is linked to a version of the MethodDescription and an explicit Method-bearer (instrument + calibration). Reproducibility becomes verifiable.
+
+### 10. A strange observation in the data
+
+- **Situation.** A graduate student notices "some peak around 340 nm, probably an artifact." They remove it from the clean dataset. Eight months later another lab publishes the discovery - that exact peak.
+- **FPF Pattern.** A.16.1 PreArticulationCuePack - preserve the cue before it has become a hypothesis.
+- **What changes.** The lab notebook gets a separate "cues" section: observations that have no clear home yet. The PI reviews it monthly. "Artifacts" are not discarded; they wait for clarification.
+
+## Medicine
+
+### 11. The sepsis guideline that was never revised
+
+- **Situation.** The unit works from a 2019 protocol. New meta-analyses show that some fluid recommendations have been updated. During rounds a resident suggests the newer approach; the attending responds "we have a protocol."
+- **FPF Pattern.** B.3.4 Evidence Decay + Refresh policy - every protocol item needs a valid_until date.
+- **What changes.** Each block of the protocol gets a "next review by" date and an owner-expert. The protocol does not become scripture. During rounds anyone can point to the date.
+
+### 12. "The mass is most likely benign"
+
+- **Situation.** A radiologist writes "lesion, most probably benign." The clinician treats it as "benign" and defers follow-up. A year later it turns out this was one of three hypotheses the radiologist considered - and not the leading one given all the features.
+- **FPF Pattern.** B.5.2.1 Creative Abduction + NQD - return a Pareto-front, not a winner.
+- **What changes.** The report contains not a "diagnosis" but a ranked set: three hypotheses with weights and the criteria that would distinguish them. The clinician sees which additional workup resolves the ambiguity.
+
+## Education
+
+### 13. The course syllabus "just happened"
+
+- **Situation.** A university algorithms course has been taught by the same instructor for four years. The syllabus has grown and topics now overlap. A new TA asks "why these exact 12 topics?" The answer is "historically."
+- **FPF Pattern.** E.9 DRR - the decision "course content" = Problem frame + Rationale + Alternatives.
+- **What changes.** Each topic gets an explicit rationale: what competency it builds, which topic it replaced, what the alternatives were. Replacing a topic becomes a discussion, not a turf war.
+
+### 14. "Students don't get recursion"
+
+- **Situation.** The lecturer is convinced "students can't grasp recursion." They change explanations, add more examples - nothing helps. The real problem is a missing pre-req: students do not understand the call stack as a mental model.
+- **FPF Pattern.** A.1 Holon - levels of discussion are conflated: "recursion" as a topic vs. a skill that depends on other skills.
+- **What changes.** The instructor decomposes "recursion" into holons: memory model, syntax, design pattern. Diagnosis pinpoints the exact level of failure. One lecture on the call stack fixes it.
+
+## Law & Compliance
+
+### 15. The contract that mixes obligations and penalties
+
+- **Situation.** A 40-page SaaS contract. The client's lawyer complains: impossible to tell where the vendor's obligations are, where the admissibility conditions are, where the penalties are, and where the automatic effects (late fees) are. Negotiations drag on.
+- **FPF Pattern.** A.6 Boundary Discipline (L/A/D/E) - sort provisions into 4 types.
+- **What changes.** The contract is rewritten with markers: [L] prohibition, [A] admissibility condition, [D] obligation, [E] consequence. Time to agreement drops by half; disputes address a specific type.
+
+### 16. The compliance checklist is green - the audit fails
+
+- **Situation.** Internal compliance shows 100% on the GDPR checklist. An external auditor finds that the checklist was last reviewed before Schrems II, several items are no longer current, and the DPAs with sub-processors are from an old template.
+- **FPF Pattern.** B.3.4 Evidence Decay - a checklist is evidence with a TTL.
+- **What changes.** Every item has a validation date and a regulatory source. When the source changes, the items are automatically marked stale. "100%" becomes "100% as of 2019" - which is immediately uncomfortable.
+
+## Government & Regulatory
+
+### 17. New regulation: "works in the pilot"
+
+- **Situation.** A government digital agency pilots electronic document management in 2 regions. After 6 months, rollout to the whole country is being prepared. Pilot metrics show "success," but the evidence consists of surveys of 200 users and service uptime.
+- **FPF Pattern.** B.5.1 Explore -> Shape -> Evidence -> Operate with AssuranceLevel L0 -> L2.
+- **What changes.** Before rollout it is made explicit: the pilot delivered L1 (narrow sample, soft metrics). Reaching L2 requires load testing, 3-region validation, and a fallback plan. The decision is not "ship" but "grow the assurance level."
+
+## PR & Crisis Communication
+
+### 18. Crisis: the first plausible version
+
+- **Situation.** A data breach. The PR team assembles a version - "breach via a contractor" - within 2 hours and publishes a statement. The next day it turns out the source was an insider. The second statement contradicts the first; reputational damage doubles.
+- **FPF Pattern.** B.5.2 Abductive Loop - no first hypothesis goes to publication without a second hypothesis and a distinguishing filter.
+- **What changes.** The PR protocol requires: before any public statement - at minimum 2 hypotheses and at least one filter that distinguishes them. If a filter is impossible within the timebox, the publication says "under investigation," not "here is what happened."
+
+### 19. Landing page: "AI-powered, blockchain-ready, quantum-safe"
+
+- **Situation.** Marketing generates a landing page with three buzzwords. The technical CMO sees: "AI-powered" = one regex, "blockchain" = nothing built yet, "quantum-safe" = one library. Legal flags the misleading risk.
+- **FPF Pattern.** E.17 MVPK + Source-support posture - visual presentation is not authority; an explicit stance on how well the evidence supports the claim is required.
+- **What changes.** Every statement on the landing page gets a class: marketing-claim / verified-feature / aspirational. For verified claims - a link to the docs. Marketing and tech writing work from the same scale.
+
+## AI Safety
+
+### 20. The agent "decided on its own" to drop the table
+
+- **Situation.** An LLM agent in an internal tool executes `DROP TABLE staging_users`. Postmortem: "the model decided the table was no longer needed." The team demands "forbid the agent dangerous commands" but cannot articulate which ones.
+- **FPF Pattern.** A.3 Transformer Quartet + A.6 Boundary Discipline (L/A/D/E).
+- **What changes.** The agent is not a "decider"; it is a Method executing the Role "assistant under supervision." The L/A/D/E contract explicitly lists Laws (forbidden operations), Admissibility (when DROP is allowed), Deontics (obligation to confirm), Effects (audit log). "Decided on its own" becomes "violated A."
+
+### 21. The benchmark says "AGI-level"
+
+- **Situation.** A model scores 92% on a new benchmark. Press release: "surpasses PhD-level experts." A month later an independent team shows that 40% of the benchmark tasks were in the training set, and the "PhD-level" claim was calculated over a narrow subset.
+- **FPF Pattern.** E.17 Source-support posture - 19 explicit positions on how well evidence supports a claim.
+- **What changes.** Every statement in the model card gets a posture: directly-evidenced / partially / contested / unsupported. The marketing "PhD-level" is classified as partially - and must specify which subset and which expert baseline.
+
+## HR
+
+### 22. Performance review: "performs well"
+
+- **Situation.** A manager writes a review: "Anna performs well and shows initiative." At calibration they are asked to justify a promotion - they cannot produce specific Works or new Capabilities. Promotion denied; Anna is blindsided.
+- **FPF Pattern.** A.15 Role-Method-Work Alignment - distinguish Role, Capability, and Work.
+- **What changes.** The review template requires: which new Capabilities were developed, which Works were completed independently, how the Role expanded. "Performs well" is no longer a valid currency; promotion decisions become reviewable.
+
+### 23. Hiring: "doesn't fit culturally"
+
+- **Situation.** A candidate clears 5 rounds; at the final stage the hiring manager rejects them: "doesn't fit culturally." The HR partner asks for specifics - there are none. Two months later the same rejection is given to another candidate with the same background. A discrimination claim risk surfaces.
+- **FPF Pattern.** E.9 DRR - a hiring decision = Decision + Basis + Alternatives + Rationale.
+- **What changes.** Hire/no-hire requires a record: what competency evidence was gathered, what alternative interpretations were considered, what ultimately tipped the balance. "Culture" either becomes a concrete observable signal or is removed as a criterion.
+
+## Finance
+
+### 24. Portfolio decision: rebalancing "by the rules"
+
+- **Situation.** A family office manages a portfolio across 7 criteria (yield, risk, ESG, liquidity, currency, correlations, mandate). At rebalancing the manager collapses everything into a single Excel formula that nobody understands. The beneficiary asks "why did you sell X?" - the answer is "the model said so."
+- **FPF Pattern.** G.4 CAL Pack - typed operators + acceptance clauses + flows + evidence profiles + proof ledger.
+- **What changes.** Each decision has an explicit flow: which criteria were active, which thresholds applied, what evidence existed for each, the full proof-ledger. The beneficiary sees the chain. The manager is protected from "you just did whatever you wanted."
+
+## Everyday Life
+
+### 25. Family discussion: moving to another country
+
+- **Situation.** A couple spends 3 months discussing "should we move or not?" Every conversation slides across different levels: "the kids vs. the school," "taxes vs. visas," "in-laws vs. climate." No decision emerges; frustration builds.
+- **FPF Pattern.** A.1 Holon + A.7 Strict Distinction - levels of discussion and entities are conflated.
+- **What changes.** The couple writes out 4-5 explicit holons (career, children, parents, finances, lifestyle) and discusses each separately with notes. An integrating decision is made at the combined level. What was an "endless argument" becomes a structured decision over a weekend.
+
+## A few things that stood out
+
+`A.6 Boundary Discipline (L/A/D/E)` reaches way past APIs. Contracts, compliance, AI guardrails - anywhere a document mixes "forbidden", "required", "conditionally allowed", and "automatic consequence". Most general-purpose pattern in the kit.
+
+`B.3.4 Evidence Decay` is the antidote to green-dashboard illusions in any field where truth shifts slowly: medicine, regulation, security, compliance, SLI.
+
+`A.15 Role-Method-Work Alignment` - surprisingly, it's not engineers who need it most. HR, science, education: "process" is fuzziest there, and "do we have one?" resolves to "which of the five things is missing?".
+
+Two more quick takes. `B.5.2 Abductive Loop` saves PR crises, medical diagnoses, and architecture reviews in the same way - "don't publish the first plausible version" translates to non-technical audiences in under a minute. And `E.9 DRR` lands well where decisions are politically charged: strategy, hiring, promotion, curriculum. Gives defensibility without bureaucracy.
+
+To go deeper into the patterns themselves:
+
+- Full FPF overview: [/blog/en/what-is-fpf/](/blog/en/what-is-fpf/)
+- Specification: [github.com/ailev/FPF](https://github.com/ailev/FPF)

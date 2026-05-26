@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: "Complete reference for .forgeplan/config.yaml — LLM providers, embeddings, storage, estimate engine, FPF trust calculus tuning."
+description: "Complete reference for .forgeplan/config.yaml - LLM providers, embeddings, storage, estimate engine, FPF trust calculus tuning."
 ---
 
 The `.forgeplan/config.yaml` file is the single configuration point for a Forgeplan workspace. This page is the authoritative reference for every top-level key, every nested section, and every environment variable recognised by the CLI and MCP server.
@@ -13,7 +13,7 @@ After `forgeplan init -y`, the `.forgeplan/` directory is created next to your c
 
 ```
 .forgeplan/
-├── config.yaml         ← workspace config (GITIGNORED — contains env refs)
+├── config.yaml         ← workspace config (GITIGNORED - contains env refs)
 │
 ├── adrs/               ← git-tracked markdown artifacts (source of truth)
 ├── rfcs/
@@ -27,11 +27,11 @@ After `forgeplan init -y`, the `.forgeplan/` directory is created next to your c
 ├── refresh/
 ├── memory/             ← decision journal (git-tracked)
 │
-├── lance/              ← GITIGNORED — derived LanceDB index (rebuildable)
-└── .fastembed_cache/   ← GITIGNORED — embedding model cache
+├── lance/              ← GITIGNORED - derived LanceDB index (rebuildable)
+└── .fastembed_cache/   ← GITIGNORED - embedding model cache
 ```
 
-Per ADR-003, **markdown files are the source of truth**; `lance/` is a derived index you can rebuild at any time with `forgeplan scan-import`. Never commit `lance/`, `.fastembed_cache/`, or `config.yaml` — they are listed in the default `.gitignore`.
+Per ADR-003, **markdown files are the source of truth**; `lance/` is a derived index you can rebuild at any time with `forgeplan scan-import`. Never commit `lance/`, `.fastembed_cache/`, or `config.yaml` - they are listed in the default `.gitignore`.
 
 :::caution[Reinit wipes local state]
 Running `forgeplan init -y` in an existing workspace will overwrite `config.yaml`. Always back up first:
@@ -57,7 +57,7 @@ created_at: 2026-03-24
 | `version` | `u32` | `1` | Config schema version. Bumped only on breaking schema migrations. |
 | `project_name` | `string` | `""` | Human-readable project name. Shown in `forgeplan health`, reports, and export. |
 | `default_depth` | `enum` | `standard` | Default depth used by `forgeplan route` when heuristics are inconclusive. One of `tactical`, `standard`, `deep`, `critical`. |
-| `id_digits` | `u32` | `3` | Zero-padding width for artifact IDs (e.g. `PRD-001` vs `PRD-0001`). Change only at workspace creation — existing IDs are not renumbered. |
+| `id_digits` | `u32` | `3` | Zero-padding width for artifact IDs (e.g. `PRD-001` vs `PRD-0001`). Change only at workspace creation - existing IDs are not renumbered. |
 | `created_at` | `date` | today | `YYYY-MM-DD` when the workspace was initialised. Read-only metadata. |
 
 ### Depth values
@@ -71,7 +71,7 @@ created_at: 2026-03-24
 
 See [Depth Calibration guide](/docs/methodology/routing/) for routing heuristics.
 
-## `llm:` — LLM Provider
+## `llm:` - LLM Provider
 
 Used by `forgeplan generate`, `forgeplan reason` (ADI), `forgeplan route` (Level 1+), and MCP tools that call an LLM.
 
@@ -94,7 +94,7 @@ llm:
 | `base_url` | `string?` | provider-specific | Override base URL for self-hosted or proxy endpoints. Useful for Ollama, LiteLLM, or Azure-compatible gateways. |
 | `max_tokens` | `u32` | `4096` | Max response tokens. Increase for long ADI reasoning; decrease to save cost. |
 | `temperature` | `f32` | `0.7` | Sampling temperature for `generate`. `0.0` = deterministic, `1.0` = creative. |
-| `reason_temperature` | `f32?` | — | Override used only by `forgeplan reason`. Structured ADI output benefits from a lower value (typically `0.2`–`0.3`). Falls back to `temperature` if unset. |
+| `reason_temperature` | `f32?` | - | Override used only by `forgeplan reason`. Structured ADI output benefits from a lower value (typically `0.2`–`0.3`). Falls back to `temperature` if unset. |
 
 ### Provider matrix
 
@@ -103,14 +103,14 @@ llm:
 | `openai` | `OPENAI_API_KEY` | `https://api.openai.com/v1` | OpenAI-compatible. |
 | `claude` | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1` | Uses Anthropic-specific headers automatically. |
 | `gemini` | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai` | Uses Google's OpenAI-compatible shim. |
-| `ollama` | — (none) | `http://localhost:11434/v1` | Fully local. No API key required. |
-| `custom` | — | — | You **must** set `base_url` and `api_key_env` explicitly. |
+| `ollama` | - (none) | `http://localhost:11434/v1` | Fully local. No API key required. |
+| `custom` | - | - | You **must** set `base_url` and `api_key_env` explicitly. |
 
 ### Recommended models (2026)
 
 | Provider | Model | When to use |
 |----------|-------|-------------|
-| Gemini | `gemini-3-flash-preview` | **Default** — fast, cheap, strong ADI output (currently used by the Forgeplan repo itself). |
+| Gemini | `gemini-3-flash-preview` | **Default** - fast, cheap, strong ADI output (currently used by the Forgeplan repo itself). |
 | Gemini | `gemini-3-pro` | Deep reasoning, critical decisions, long context. |
 | OpenAI | `gpt-5-mini` | Balanced price/quality for generate + route. |
 | OpenAI | `gpt-5` | Critical ADI, adversarial review. |
@@ -119,7 +119,7 @@ llm:
 | Anthropic | `claude-opus-4-6` | Critical decisions, long-form reasoning. |
 
 :::note[Switching providers mid-project]
-You can switch providers at any time — artefacts are model-agnostic. Existing ADI records, reviews, and generated content remain valid. Only new LLM calls will use the new provider.
+You can switch providers at any time - artefacts are model-agnostic. Existing ADI records, reviews, and generated content remain valid. Only new LLM calls will use the new provider.
 :::
 
 ### Env overrides (LLM)
@@ -136,7 +136,7 @@ The following environment variables override `llm:` fields at runtime without ed
 
 Priority: **env var > config.yaml > default**.
 
-## `embedding:` — Semantic Search
+## `embedding:` - Semantic Search
 
 Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time (included in official release binaries).
 
@@ -155,9 +155,9 @@ embedding:
 
 | Model | Dim | Languages | When to pick |
 |-------|-----|-----------|--------------|
-| `bge-m3` | 1024 | Multilingual (100+) | **Default** — best quality, supports Russian + English mixed workspaces. |
+| `bge-m3` | 1024 | Multilingual (100+) | **Default** - best quality, supports Russian + English mixed workspaces. |
 | `bge-small-en` | 384 | English only | Fastest, smallest cache. Pick for English-only projects on low-RAM machines. |
-| `multilingual-e5-small` | 384 | Multilingual | Middle ground — faster than bge-m3, still multilingual. |
+| `multilingual-e5-small` | 384 | Multilingual | Middle ground - faster than bge-m3, still multilingual. |
 | `multilingual-e5-base` | 768 | Multilingual | Higher quality than e5-small at ~2x cost. |
 
 :::caution[Switching models requires reindex]
@@ -170,9 +170,9 @@ Embedding vectors from different models are **not compatible**. After changing `
 |---------|-----------|
 | `FORGEPLAN_EMBEDDING_MODEL` | `model` |
 
-If the `semantic-search` feature is disabled at build time, Forgeplan still runs — it silently falls back to BM25 keyword search. See the [Search guide](/docs/guides/search-v2/) for details on the hybrid search stack.
+If the `semantic-search` feature is disabled at build time, Forgeplan still runs - it silently falls back to BM25 keyword search. See the [Search guide](/docs/guides/search-v2/) for details on the hybrid search stack.
 
-## `storage:` — Storage Backend
+## `storage:` - Storage Backend
 
 ```yaml
 storage:
@@ -189,7 +189,7 @@ storage:
 
 | Driver | Use case |
 |--------|----------|
-| `lancedb` | **Default** — embedded columnar DB with native vector search. Persists to `lance/`. Recommended for all real projects. |
+| `lancedb` | **Default** - embedded columnar DB with native vector search. Persists to `lance/`. Recommended for all real projects. |
 | `sqlite` | Legacy / lightweight fallback. No vector search. |
 | `memory` | In-memory only, lost on process exit. Used by tests and ephemeral CI runs. |
 
@@ -200,7 +200,7 @@ storage:
 | `FORGEPLAN_STORAGE_DRIVER` | `driver` |
 | `FORGEPLAN_STORAGE_PATH` | `path` |
 
-## `memory:` — Decision Memory Bank
+## `memory:` - Decision Memory Bank
 
 ```yaml
 memory:
@@ -217,9 +217,9 @@ memory:
 |---------|-----------|
 | `FORGEPLAN_MEMORY_DRIVER` | `driver` |
 
-## `estimate:` — Estimate Engine
+## `estimate:` - Estimate Engine
 
-Configures `forgeplan estimate` — the multi-grade estimation model that combines your domain expertise with AI task-type multipliers. Every field is optional; omit the whole section to use defaults.
+Configures `forgeplan estimate` - the multi-grade estimation model that combines your domain expertise with AI task-type multipliers. Every field is optional; omit the whole section to use defaults.
 
 ```yaml
 estimate:
@@ -240,7 +240,7 @@ estimate:
     coding_infra: 0.25       # mixed coding + infrastructure
     design_coding: 0.30      # design + implementation
     pure_infra: 0.50         # infrastructure only
-    coordination: 1.00       # meetings, reviews — AI can't help
+    coordination: 1.00       # meetings, reviews - AI can't help
   review_overhead: 0.30      # 30% added to AI time for human review
   safety_margin: 0.50        # warn if sprint > 50% loaded
 ```
@@ -249,7 +249,7 @@ estimate:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `grade_profile` | `map<string, grade>` | — | Per-domain developer grade. Keys are free-form domain names; at minimum define `default`. |
+| `grade_profile` | `map<string, grade>` | - | Per-domain developer grade. Keys are free-form domain names; at minimum define `default`. |
 | `grade_multipliers` | `map<string, f64>` | see below | Time multiplier per grade, relative to a senior baseline of `1.0`. |
 | `ai_task_multipliers` | `map<string, f64>` | see below | Fraction of human time AI takes for each task type. |
 | `review_overhead` | `f64` | `0.30` | Fraction added to AI-assisted time to cover human review. `0.30` = 30%. |
@@ -259,20 +259,20 @@ estimate:
 
 | Grade | Default multiplier | Meaning |
 |-------|-------------------:|---------|
-| `junior` | 2.0 | Learning the domain — takes 2x a senior's time. |
-| `middle` | 1.5 | Can ship independently — 1.5x a senior. |
+| `junior` | 2.0 | Learning the domain - takes 2x a senior's time. |
+| `middle` | 1.5 | Can ship independently - 1.5x a senior. |
 | `senior` | 1.0 | Baseline. |
-| `principal` | 0.7 | Deep domain expert — 30% faster than senior. |
-| `ai` | 0.4 | AI as a virtual collaborator — conservative base. Refined by `ai_task_multipliers`. |
+| `principal` | 0.7 | Deep domain expert - 30% faster than senior. |
+| `ai` | 0.4 | AI as a virtual collaborator - conservative base. Refined by `ai_task_multipliers`. |
 
 ### AI task types
 
 | Task type | Default | Typical work |
 |-----------|--------:|--------------|
-| `pure_coding` | 0.10 | Writing pure code — functions, tests, refactors. AI excels here. |
+| `pure_coding` | 0.10 | Writing pure code - functions, tests, refactors. AI excels here. |
 | `coding_infra` | 0.25 | Coding mixed with tooling (CI, scripts, configs). |
 | `design_coding` | 0.30 | Design decisions + implementation. |
-| `pure_infra` | 0.50 | Infra-only work — AI helps but human validates each step. |
+| `pure_infra` | 0.50 | Infra-only work - AI helps but human validates each step. |
 | `coordination` | 1.00 | Meetings, reviews, stakeholder alignment. AI cannot help. |
 
 ### Worked example
@@ -289,9 +289,9 @@ estimate:
 
 See [`forgeplan estimate`](/docs/cli/estimate/) for the CLI reference.
 
-## `fpf:` — FPF Trust Calculus Engine
+## `fpf:` - FPF Trust Calculus Engine
 
-Tunes the [FPF Engine](/docs/methodology/adi/): explore/exploit thresholds, reliability weights, congruence-level penalties, and ADI reasoning caps. Every sub-field has safe defaults — tune only if you have empirical reason to.
+Tunes the [FPF Engine](/docs/methodology/adi/): explore/exploit thresholds, reliability weights, congruence-level penalties, and ADI reasoning caps. Every sub-field has safe defaults - tune only if you have empirical reason to.
 
 ```yaml
 fpf:
@@ -319,7 +319,7 @@ fpf:
     auto_save: true
 ```
 
-### `fpf.weights` — Reliability component weights
+### `fpf.weights` - Reliability component weights
 
 Components of the reliability score inside F-G-R. Values do not need to sum to 1.0, but conventionally do.
 
@@ -329,7 +329,7 @@ Components of the reliability score inside F-G-R. Values do not need to sum to 1
 | `links` | `0.3` | Max bonus awarded for incoming/outgoing typed links. |
 | `freshness` | `0.2` | Bonus if the artefact is not stale (`valid_until` in the future). |
 
-### `fpf.thresholds` — Explore/Exploit cutoffs
+### `fpf.thresholds` - Explore/Exploit cutoffs
 
 Decision thresholds used by hardcoded rules and by [`forgeplan route`](/docs/cli/route/).
 
@@ -341,26 +341,26 @@ Decision thresholds used by hardcoded rules and by [`forgeplan route`](/docs/cli
 | `exploit_fgr` | `0.6` | F-G-R overall required to confirm EXPLOIT (combined with `exploit_reff`). |
 | `explore_fgr` | `0.4` | F-G-R below this -> **EXPLORE** priority 1 (combined with `explore_reff`). |
 
-### `fpf.cl_penalties` — Congruence Level penalties
+### `fpf.cl_penalties` - Congruence Level penalties
 
 Penalty applied to evidence based on how well its context matches the artefact it informs. `CL3` (same context) is penalty-free; `CL0` (opposed context) is heavily discounted.
 
 | Field | Default | Meaning |
 |-------|--------:|---------|
-| `cl0` | `0.9` | Opposed context — near-zero trust. |
-| `cl1` | `0.4` | Different context — significant discount. |
-| `cl2` | `0.1` | Similar context — minor discount. |
-| `cl3` | `0.0` | Same context — no penalty. |
+| `cl0` | `0.9` | Opposed context - near-zero trust. |
+| `cl1` | `0.4` | Different context - significant discount. |
+| `cl2` | `0.1` | Similar context - minor discount. |
+| `cl3` | `0.0` | Same context - no penalty. |
 
 See [Evidence guide](/docs/methodology/evidence/) for how `congruence_level` is set on an EvidencePack body.
 
-### `fpf.decay` — Evidence decay
+### `fpf.decay` - Evidence decay
 
 | Field | Default | Meaning |
 |-------|--------:|---------|
-| `expired_score` | `0.1` | Score assigned to evidence past `valid_until`. `0.1` reflects "stale, not absent" — the evidence existed, just needs re-verification. |
+| `expired_score` | `0.1` | Score assigned to evidence past `valid_until`. `0.1` reflects "stale, not absent" - the evidence existed, just needs re-verification. |
 
-### `fpf.adi` — ADI reasoning configuration
+### `fpf.adi` - ADI reasoning configuration
 
 Controls `forgeplan reason` behaviour.
 
@@ -371,7 +371,7 @@ Controls `forgeplan reason` behaviour.
 | `temperature_cap` | `f32` | `0.3` | Upper bound on temperature used for ADI reasoning, regardless of `llm.temperature`. Keeps ADI output structured. |
 | `auto_save` | `bool` | `true` | Automatically persist ADI results as an `AdiRecord` linked to the artefact. |
 
-### `fpf.rules` — Declarative explore-exploit rules (advanced)
+### `fpf.rules` - Declarative explore-exploit rules (advanced)
 
 Optional list of user-defined explore/exploit rules (FPF Engine Phase 2). When empty, built-in `default_rules()` are used. Schema and examples live in the [FPF rules guide](/docs/cli/fpf-rules/).
 
@@ -379,7 +379,7 @@ Optional list of user-defined explore/exploit rules (FPF Engine Phase 2). When e
 All `fpf.*` numeric fields must be finite and non-negative. Rule names must be unique. `forgeplan init` and `forgeplan health` will fail fast on malformed values.
 :::
 
-## `integrity:` — Health & MCP Input Limits
+## `integrity:` - Health & MCP Input Limits
 
 Thresholds used by `forgeplan health` (duplicate detection, stub detection) and DoS-protection limits enforced by the MCP server on incoming `forgeplan_new` / `forgeplan_update` calls.
 
@@ -404,7 +404,7 @@ integrity:
 The MCP server is network-reachable when run over stdio by a shared LLM agent. The MCP limits protect against runaway prompts or buggy clients that would otherwise fill up `lance/` with multi-megabyte artefacts.
 :::
 
-## Environment Variables — Complete List
+## Environment Variables - Complete List
 
 | Variable | Section | Effect |
 |----------|---------|--------|
@@ -421,13 +421,13 @@ The MCP server is network-reachable when run over stdio by a shared LLM agent. T
 | `FORGEPLAN_STORAGE_PATH` | storage | Override `storage.path`. |
 | `FORGEPLAN_MEMORY_DRIVER` | memory | Override `memory.driver`. |
 
-API keys themselves are **never** stored in `config.yaml` — only the **name** of the env variable is stored under `api_key_env`. This keeps the config file safe to share across machines (once `.forgeplan/config.yaml` itself is in `.gitignore`).
+API keys themselves are **never** stored in `config.yaml` - only the **name** of the env variable is stored under `api_key_env`. This keeps the config file safe to share across machines (once `.forgeplan/config.yaml` itself is in `.gitignore`).
 
 ## Critical Notes & Git Safety
 
 :::caution[.forgeplan/ is partially gitignored]
-- **Tracked**: `adrs/`, `rfcs/`, `prds/`, `epics/`, `specs/`, `problems/`, `solutions/`, `evidence/`, `notes/`, `refresh/`, `memory/` — these are the source of truth.
-- **Not tracked**: `config.yaml`, `lance/`, `.fastembed_cache/` — local, rebuildable, or secret.
+- **Tracked**: `adrs/`, `rfcs/`, `prds/`, `epics/`, `specs/`, `problems/`, `solutions/`, `evidence/`, `notes/`, `refresh/`, `memory/` - these are the source of truth.
+- **Not tracked**: `config.yaml`, `lance/`, `.fastembed_cache/` - local, rebuildable, or secret.
 
 This means `config.yaml` is **lost on fresh clone**. Every developer configures their own LLM provider and keys via `forgeplan init -y` + manual edit.
 :::
@@ -465,7 +465,7 @@ forgeplan list                      # verify artefacts are back
 AI agents (Claude Code, Codex, others) running Forgeplan must always use:
 
 ```bash
-forgeplan init -y      # NEVER interactive — -y is required
+forgeplan init -y      # NEVER interactive - -y is required
 ```
 
 Interactive mode will hang in an agent harness. The `-y` flag accepts all defaults and writes a minimal `config.yaml`, which the agent can then edit.
@@ -475,7 +475,7 @@ Interactive mode will hang in an agent harness. The `-y` flag accepts all defaul
 ### "API key not found"
 
 ```
-error: LLM API key not set — expected env var GEMINI_API_KEY
+error: LLM API key not set - expected env var GEMINI_API_KEY
 ```
 
 **Cause**: `llm.api_key_env` points to an unset variable, or the `provider` default env var is unset.
@@ -497,7 +497,7 @@ Use `forgeplan health` to confirm the LLM subsystem reports "ready".
 **Fix**:
 1. Lower `llm.max_tokens` to reduce per-request cost.
 2. Switch to a cheaper model (`gemini-3-flash-preview`, `gpt-5-mini`, `claude-haiku-4-5-20251001`).
-3. Retry with exponential backoff — Forgeplan surfaces the provider error verbatim so you can distinguish 429 from 5xx.
+3. Retry with exponential backoff - Forgeplan surfaces the provider error verbatim so you can distinguish 429 from 5xx.
 
 ### Embeddings fail to load / semantic search returns empty
 
@@ -512,11 +512,11 @@ rm -rf .forgeplan/.fastembed_cache
 forgeplan scan-import                # re-downloads model + reindexes
 ```
 
-If semantic search is unavailable, Forgeplan falls back to BM25 keyword search automatically — no data is lost. See the [Search guide](/docs/guides/search-v2/) for the hybrid stack.
+If semantic search is unavailable, Forgeplan falls back to BM25 keyword search automatically - no data is lost. See the [Search guide](/docs/guides/search-v2/) for the hybrid stack.
 
 ### "Invalid config: fpf.thresholds.explore_reff must be finite"
 
-**Cause**: malformed YAML — a numeric field is `NaN`, `Infinity`, or a string that didn't parse as a number.
+**Cause**: malformed YAML - a numeric field is `NaN`, `Infinity`, or a string that didn't parse as a number.
 
 **Fix**: open `.forgeplan/config.yaml` and ensure every numeric field under `fpf:`, `estimate:`, and `integrity:` is a plain decimal. Run `forgeplan health` to revalidate.
 
@@ -536,15 +536,15 @@ forgeplan export --output backup.json
 rm -rf .forgeplan/lance
 forgeplan init -y                    # recreates lance/
 forgeplan scan-import                # reindex from markdown
-# markdown is the source of truth — no artefacts are lost
+# markdown is the source of truth - no artefacts are lost
 ```
 
 ## See Also
 
-- [`forgeplan init`](/docs/cli/init/) — workspace bootstrap command
-- [`forgeplan estimate`](/docs/cli/estimate/) — estimate engine CLI
-- [`forgeplan reason`](/docs/cli/reason/) — ADI reasoning command
-- [Evidence guide](/docs/methodology/evidence/) — how `congruence_level` and `valid_until` feed into R_eff
-- [Search v2 guide](/docs/guides/search-v2/) — hybrid BM25 + semantic search stack
-- [Lifecycle v2 guide](/docs/guides/lifecycle-v2/) — artefact state machine and how `integrity:` settings affect health
-- [Depth Calibration](/docs/methodology/routing/) — how `default_depth` interacts with `forgeplan route`
+- [`forgeplan init`](/docs/cli/init/) - workspace bootstrap command
+- [`forgeplan estimate`](/docs/cli/estimate/) - estimate engine CLI
+- [`forgeplan reason`](/docs/cli/reason/) - ADI reasoning command
+- [Evidence guide](/docs/methodology/evidence/) - how `congruence_level` and `valid_until` feed into R_eff
+- [Search v2 guide](/docs/guides/search-v2/) - hybrid BM25 + semantic search stack
+- [Lifecycle v2 guide](/docs/guides/lifecycle-v2/) - artefact state machine and how `integrity:` settings affect health
+- [Depth Calibration](/docs/methodology/routing/) - how `default_depth` interacts with `forgeplan route`

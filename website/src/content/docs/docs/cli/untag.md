@@ -36,7 +36,7 @@ forgeplan untag <ID> <TAGS>...
 3. Removes each match from the `tags:` list.
 4. Rewrites frontmatter and re-indexes the artifact in LanceDB.
 
-Unknown tags are silently ignored — `untag` is idempotent and safe to script.
+Unknown tags are silently ignored - `untag` is idempotent and safe to script.
 
 ## Examples
 
@@ -71,7 +71,7 @@ forgeplan list --tag wip --format ids | \
 ```
 
 For tag canonicalization across the whole workspace (PROB-026 fix), prefer
-[`forgeplan reindex`](/docs/cli/reindex/) — it normalizes every tag in place
+[`forgeplan reindex`](/docs/cli/reindex/) - it normalizes every tag in place
 without needing explicit untag/tag pairs.
 
 ## Notes
@@ -79,13 +79,13 @@ without needing explicit untag/tag pairs.
 - `untag` is case-insensitive on the input: `forgeplan untag PRD-001 Legacy`
   will remove `legacy`.
 - If you want to move an artifact from one tag to another, run `untag` then
-  `tag` — there is no `retag` helper.
-- Removing a tag does not affect relations or scoring — tags are pure metadata.
+  `tag` - there is no `retag` helper.
+- Removing a tag does not affect relations or scoring - tags are pure metadata.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan tag`](/docs/cli/tag/) — add tags
-- [`forgeplan reindex`](/docs/cli/reindex/) — canonicalize tags workspace-wide
-- [`forgeplan list`](/docs/cli/list/) — filter artifacts by tag
+- [`forgeplan tag`](/docs/cli/tag/) - add tags
+- [`forgeplan reindex`](/docs/cli/reindex/) - canonicalize tags workspace-wide
+- [`forgeplan list`](/docs/cli/list/) - filter artifacts by tag
 - [Methodology guide](/docs/methodology/overview/)

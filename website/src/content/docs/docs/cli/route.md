@@ -9,25 +9,25 @@ Deep / Critical), a **pipeline** (which artifacts to create, e.g. `PRD → RFC`
 or `Epic → PRD[] → Spec[] → RFC[] → ADR[]`), a **confidence** score, and a
 short list of **alternatives** in case the primary suggestion feels off.
 
-Routing is rule-based by default (Level 0 — fast, deterministic, no LLM
+Routing is rule-based by default (Level 0 - fast, deterministic, no LLM
 required). Pass `--level 1` to get LLM-classified routing with explanations.
 The goal is the same: stop you from over-engineering a one-hour fix, and
 stop you from skipping the PRD on a week-long refactor.
 
 ## When to use
 
-- Starting any new task — bug, feature, refactor, doc update
+- Starting any new task - bug, feature, refactor, doc update
 - Deciding whether you need a PRD, RFC, ADR, or just a Note
 - Second-guessing yourself: "Is this really Tactical? Could it be Standard?"
-- Onboarding — helps new contributors calibrate against the methodology
-- Pre-flight check before a sprint — route each task, sum depths, verify capacity
+- Onboarding - helps new contributors calibrate against the methodology
+- Pre-flight check before a sprint - route each task, sum depths, verify capacity
 
 ## When NOT to use
 
-- The task already has an artifact — use `forgeplan calibrate <ID>` to re-route instead
-- You are mid-implementation — route is a planning tool, not an in-flight check
-- For pure hotfix on `main` — you skip methodology anyway
-- For housekeeping commits (dependency bump, lint fix) — just commit, no routing
+- The task already has an artifact - use `forgeplan calibrate <ID>` to re-route instead
+- You are mid-implementation - route is a planning tool, not an in-flight check
+- For pure hotfix on `main` - you skip methodology anyway
+- For housekeeping commits (dependency bump, lint fix) - just commit, no routing
 
 ## Usage
 
@@ -80,7 +80,7 @@ Level 1 invokes the configured LLM (Gemini, GPT, Claude) to classify the
 task against FPF heuristics. Slower (~2s) but handles ambiguous phrasing
 and cross-cutting concerns better than the keyword matcher.
 
-### Example 3: Trivial task — no artifact needed
+### Example 3: Trivial task - no artifact needed
 
 ```bash
 forgeplan route "fix typo in README"
@@ -90,13 +90,13 @@ Output:
 
 ```
 Depth:      Tactical
-Pipeline:   (none — commit directly)
+Pipeline:   (none - commit directly)
 Confidence: 99%
 ```
 
 You are allowed to skip the artifact. Just commit.
 
-### Example 4: Critical task — full pipeline
+### Example 4: Critical task - full pipeline
 
 ```bash
 forgeplan route "redesign artifact storage to use content-addressable hashing"
@@ -115,25 +115,25 @@ Do **not** shortcut this. Create the Epic first.
 
 ## Output interpretation
 
-- **Depth** — one of four levels. Drives quality gates: Tactical = no gates,
+- **Depth** - one of four levels. Drives quality gates: Tactical = no gates,
   Standard = Verification Gate, Deep = Adversarial Review, Critical = review + ADR
-- **Pipeline** — ordered list of artifacts to create. Guideline, not contract —
+- **Pipeline** - ordered list of artifacts to create. Guideline, not contract -
   you may collapse steps if the project phase allows
-- **Confidence** — 0-100%. Below 70% means the description is ambiguous; rerun
+- **Confidence** - 0-100%. Below 70% means the description is ambiguous; rerun
   with more detail or use `--level 1`
-- **Alternatives** — two or three other plausible routes. Pick one if the
+- **Alternatives** - two or three other plausible routes. Pick one if the
   primary does not match your intuition
 
 Red flags:
 
-- Confidence < 50% — description is too vague, add context ("component X", "user-facing", "affects DB schema")
-- Route says Tactical for what feels like a week of work — add detail about blast radius
-- Route says Critical for a one-liner — simplify the description
+- Confidence < 50% - description is too vague, add context ("component X", "user-facing", "affects DB schema")
+- Route says Tactical for what feels like a week of work - add detail about blast radius
+- Route says Critical for a one-liner - simplify the description
 
 ## Routing Skills Memory (v0.17+, PRD-040)
 
 As of v0.17.0 (PRD-040, Scoring Intelligence) the router keeps a **routing
-skills memory** — a rolling log of past depth predictions plus their
+skills memory** - a rolling log of past depth predictions plus their
 subsequently-observed accuracy. This memory decays on a **90-day exponential
 window with a 30-day half-life**: a correct prediction you made yesterday
 carries almost its full weight, a correct prediction from two months ago
@@ -160,13 +160,13 @@ team doing mostly product features. Routing Skills Memory lets the router
 **adapt to your team's actual decision patterns** instead of shipping a
 fixed ruleset that is right on average and wrong for you.
 
-No configuration is required — the memory starts empty on a fresh
+No configuration is required - the memory starts empty on a fresh
 workspace and builds up automatically every time you `forgeplan activate`
 an artifact that was previously routed. As of v0.18.0 there is no dedicated
 `route --stats` flag yet; the memory is consulted internally by `route` and
 only surfaces through the confidence score and alternatives list. If you
 want to see whether the memory is influencing a decision, run
-`forgeplan route --level 1` and read the LLM rationale — it references the
+`forgeplan route --level 1` and read the LLM rationale - it references the
 historical signal when relevant.
 
 ## How it fits the workflow
@@ -183,8 +183,8 @@ you are here
 
 ## See also
 
-- [`forgeplan new`](/docs/cli/new/) — create the artifact suggested by route
-- [`forgeplan reason`](/docs/cli/reason/) — required for Deep/Critical depth
-- [`forgeplan calibrate`](/docs/cli/calibrate/) — re-route an existing artifact
-- [`forgeplan health`](/docs/cli/health/) — session start check
+- [`forgeplan new`](/docs/cli/new/) - create the artifact suggested by route
+- [`forgeplan reason`](/docs/cli/reason/) - required for Deep/Critical depth
+- [`forgeplan calibrate`](/docs/cli/calibrate/) - re-route an existing artifact
+- [`forgeplan health`](/docs/cli/health/) - session start check
 - [Methodology: depth calibration](/docs/methodology/overview/)

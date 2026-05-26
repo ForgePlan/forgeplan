@@ -5,7 +5,7 @@ description: "Check artifact completeness against depth-aware MUST/SHOULD rules 
 
 `forgeplan validate` runs the schema validator against one artifact (or all of them) and
 reports every violation of the rules registered for that kind and depth. MUST rules are
-blocking — they prevent `forgeplan activate` from flipping the lifecycle to `active`.
+blocking - they prevent `forgeplan activate` from flipping the lifecycle to `active`.
 SHOULD rules are warnings that shape quality but do not block the gate. The validator is
 depth-aware: a Tactical PRD has a thinner rule set than a Deep PRD, so you are never
 penalised for choosing the right depth.
@@ -13,14 +13,14 @@ penalised for choosing the right depth.
 ## When to use
 
 - Immediately after creating an artifact from a template (catch empty MUST sections before you forget).
-- Right before `forgeplan activate` — activation refuses to proceed on MUST failures anyway.
+- Right before `forgeplan activate` - activation refuses to proceed on MUST failures anyway.
 - In CI with `--ci` on the docs / artifacts branch to block merges that introduce stub PRDs.
 - During `/audit` to run `--adversarial` and surface devil's-advocate findings.
 
 ## When NOT to use
 
-- On a Note or freshly routed Tactical task — there is nothing to validate yet.
-- As a substitute for human review — the validator checks structure, not reasoning quality.
+- On a Note or freshly routed Tactical task - there is nothing to validate yet.
+- As a substitute for human review - the validator checks structure, not reasoning quality.
 
 ## Usage
 
@@ -55,7 +55,7 @@ forgeplan validate PRD-001
 Prints a table of MUST and SHOULD findings. Typical output:
 
 ```text
-PRD-001 — Auth System
+PRD-001 - Auth System
   MUST  Missing section: Problem
   MUST  FR list empty
   SHOULD density < 50 words in Goals
@@ -78,7 +78,7 @@ GitHub Action on branches that touch `.forgeplan/`.
 forgeplan validate ADR-005 --adversarial
 ```
 
-Runs the devil's-advocate pass (BMAD-inspired). Reviewers MUST find problems — if the
+Runs the devil's-advocate pass (BMAD-inspired). Reviewers MUST find problems - if the
 adversarial pass reports zero issues, re-run with a stronger model or escalate to `/audit`.
 
 ### Machine-readable output
@@ -89,16 +89,16 @@ forgeplan validate PRD-001 --json | jq '.must_violations'
 
 ## Output interpretation
 
-- **MUST** — blocking. Activation will refuse. Fix before PR.
-- **SHOULD** — warning. Track them, but they do not block the gate.
-- **Rule aliases** apply (`## Motivation` == `## Problem`, `## Out of Scope` == `## Non-Goals`) — see the methodology guide for the full list.
+- **MUST** - blocking. Activation will refuse. Fix before PR.
+- **SHOULD** - warning. Track them, but they do not block the gate.
+- **Rule aliases** apply (`## Motivation` == `## Problem`, `## Out of Scope` == `## Non-Goals`) - see the methodology guide for the full list.
 - Exit code `0` = clean, `1` = MUST failure (in `--ci` mode only).
 
 ## CI mode (`--ci`)
 
 Added in Sprint 11.3 as part of the methodology integrity work (PRD-034 / PRD-043),
 `forgeplan validate --ci` turns the validator into a **hard pipeline gate**. In CI mode
-the command exits 1 if **any MUST rule** fails on an `active` or `stale` artifact —
+the command exits 1 if **any MUST rule** fails on an `active` or `stale` artifact -
 **drafts are intentionally excluded** so you are not blocked by work-in-progress stubs
 that have not been activated yet.
 
@@ -145,8 +145,8 @@ on top of it. `activate` refuses to run unless `validate` passes.
 
 ## See also
 
-- [`forgeplan review`](/docs/cli/review/) — adds lifecycle checklist on top of validation
-- [`forgeplan activate`](/docs/cli/activate/) — the gate `validate` feeds
-- [`forgeplan score`](/docs/cli/score/) — quality beyond structural rules
-- [Quality Gates](/docs/methodology/evidence/) — MUST/SHOULD/adversarial philosophy
+- [`forgeplan review`](/docs/cli/review/) - adds lifecycle checklist on top of validation
+- [`forgeplan activate`](/docs/cli/activate/) - the gate `validate` feeds
+- [`forgeplan score`](/docs/cli/score/) - quality beyond structural rules
+- [Quality Gates](/docs/methodology/evidence/) - MUST/SHOULD/adversarial philosophy
 - [CLI overview](/docs/cli/)

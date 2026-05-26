@@ -54,15 +54,15 @@ With typical agent context:
 
 ## Typical sequence
 
-`forgeplan_list --status active` (or `--status stale`) → pick target → confirm with user → `forgeplan_deprecate id=X reason="..."` → `forgeplan_health` to verify the blind-spot list shrinks. For stale artifacts, the alternative is `forgeplan_renew` (extend validity) — pick the right path based on whether the decision is still correct.
+`forgeplan_list --status active` (or `--status stale`) → pick target → confirm with user → `forgeplan_deprecate id=X reason="..."` → `forgeplan_health` to verify the blind-spot list shrinks. For stale artifacts, the alternative is `forgeplan_renew` (extend validity) - pick the right path based on whether the decision is still correct.
 
 ## CLI equivalent
 
-- [`forgeplan deprecate`](/docs/cli/deprecate/) — same operation
+- [`forgeplan deprecate`](/docs/cli/deprecate/) - same operation
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) — when a replacement exists
-- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) — precedes deprecate for expired artifacts
-- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) — irreversible removal (avoid)
+- [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - when a replacement exists
+- [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) - precedes deprecate for expired artifacts
+- [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) - irreversible removal (avoid)

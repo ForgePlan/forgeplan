@@ -9,10 +9,10 @@ Check whether a methodology phase transition is allowed by the session state mac
 
 ## When an agent calls it
 
-- **Before code** — "can I go from shaping to coding?" — confirms a validated artifact exists.
-- **Before commit** — agents and hooks call guard to block commits without an artifact at Standard+ depth.
-- **Before PR** — ensures evidence and R_eff gates are met.
-- **Recovery** — after an error, guard tells you which prerequisite is missing and how to fix it.
+- **Before code** - "can I go from shaping to coding?" - confirms a validated artifact exists.
+- **Before commit** - agents and hooks call guard to block commits without an artifact at Standard+ depth.
+- **Before PR** - ensures evidence and R_eff gates are met.
+- **Recovery** - after an error, guard tells you which prerequisite is missing and how to fix it.
 
 This is the mechanism that prevents "code first, document later" drift. When enforcement is enabled, violations block the operation with a clear reason.
 
@@ -42,7 +42,7 @@ Blocked case:
   "allowed": false,
   "from": "shaping",
   "to": "coding",
-  "reason": "No validated artifact — run forgeplan_validate first",
+  "reason": "No validated artifact - run forgeplan_validate first",
   "fix": "forgeplan validate PRD-042"
 }
 ```
@@ -55,8 +55,8 @@ Blocked case:
 
 ## Typical sequence
 
-1. `forgeplan_session` — know where you are.
-2. `forgeplan_guard` with `target_phase` — check the next hop.
+1. `forgeplan_session` - know where you are.
+2. `forgeplan_guard` with `target_phase` - check the next hop.
 3. If `allowed: false`, follow `fix` instruction (validate, link evidence, etc.).
 4. Retry guard → proceed.
 
@@ -68,6 +68,6 @@ forgeplan guard --target coding
 
 ## See also
 
-- [`forgeplan_session`](/docs/mcp/forgeplan_session/) — current phase.
-- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) — unblock the shaping → coding transition.
+- [`forgeplan_session`](/docs/mcp/forgeplan_session/) - current phase.
+- [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - unblock the shaping → coding transition.
 - [Methodology guide](/docs/methodology/overview/)

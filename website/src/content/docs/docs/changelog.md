@@ -1,6 +1,6 @@
 ---
 title: Changelog
-description: "Forgeplan release notes — every public version with added features, fixes, and breaking changes."
+description: "Forgeplan release notes - every public version with added features, fixes, and breaking changes."
 ---
 
 All notable changes to Forgeplan are documented here. Format loosely follows
@@ -25,11 +25,11 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [0.32.1] - 2026-05-21
 
-**Hotfix release.** v0.32.0 shipped with a Cargo.toml regression that prevented Windows binary publication via cargo-dist. macOS / Linux binaries also did not publish because cargo-dist exits the entire workflow when any target fails. No semantic / behaviour changes — purely a build-time dependency placement fix.
+**Hotfix release.** v0.32.0 shipped with a Cargo.toml regression that prevented Windows binary publication via cargo-dist. macOS / Linux binaries also did not publish because cargo-dist exits the entire workflow when any target fails. No semantic / behaviour changes - purely a build-time dependency placement fix.
 
 ### Fixed
 
-- **Windows build** — `tera` / `walkdir` / `globset` were accidentally placed inside the `[target.'cfg(unix)'.dependencies]` block (commit `a3b6ed3` audit-r3 closure on 2026-05-20 when adding `libc` for `O_NOFOLLOW`). The three crates are cross-platform and used unconditionally in `src/ingest/` and `src/projection/`. Moved back into the canonical `[dependencies]` block; only `libc = "0.2"` remains unix-gated. cargo-dist v0.32.0 Release workflow failed with 20 `error[E0432]/E0433]` "cannot find module or crate" errors on `x86_64-pc-windows-msvc`; v0.32.1 Release workflow re-triggers and publishes all four target binaries plus the homebrew-tap formula bump.
+- **Windows build** - `tera` / `walkdir` / `globset` were accidentally placed inside the `[target.'cfg(unix)'.dependencies]` block (commit `a3b6ed3` audit-r3 closure on 2026-05-20 when adding `libc` for `O_NOFOLLOW`). The three crates are cross-platform and used unconditionally in `src/ingest/` and `src/projection/`. Moved back into the canonical `[dependencies]` block; only `libc = "0.2"` remains unix-gated. cargo-dist v0.32.0 Release workflow failed with 20 `error[E0432]/E0433]` "cannot find module or crate" errors on `x86_64-pc-windows-msvc`; v0.32.1 Release workflow re-triggers and publishes all four target binaries plus the homebrew-tap formula bump.
 
 ### Internal
 
@@ -42,9 +42,9 @@ Sprint headline: **Epic #287 brownfield extraction surface + 3 pre-Epic issues (
 
 Three parallel sprints landed into one release:
 
-### A. Issues #286 / #288 / #289 — pre-Epic methodology hardening
+### A. Issues #286 / #288 / #289 - pre-Epic methodology hardening
 
-- **Link upsert + `forgeplan_unlink` MCP tool** (issue #286) — `forgeplan_link`
+- **Link upsert + `forgeplan_unlink` MCP tool** (issue #286) - `forgeplan_link`
   gains optional `replace: bool` parameter. When true and an edge between
   `(source, target)` already exists with a different relation, the old edge
   is replaced (audit-r2 ordering: add new first, then delete old, so a
@@ -55,26 +55,26 @@ Three parallel sprints landed into one release:
   `forgeplan link --replace` CLI flag. The `LinkResponse.auto_activated`
   field is new (see #288 below); consumers using
   `#[serde(deny_unknown_fields)]` need to relax that.
-- **Pipeline hygiene primitives** (issue #288) — `forgeplan_link` gains
+- **Pipeline hygiene primitives** (issue #288) - `forgeplan_link` gains
   optional `auto_activate_source_if_complete: bool`. When true and the
   source matches the canonical "ready to activate" predicate
   (`kind=evidence + status=draft + body has verdict + congruence_level`),
   it is silently promoted `draft → active`. Audit-r2 dropped the
   defunct `R_eff>0` check from the gate (evidence artifacts have no
-  incoming evidence by design, so cached R_eff is always 0 — the check
+  incoming evidence by design, so cached R_eff is always 0 - the check
   was dead code). Audit-r3 F1 unified this predicate as
   `lifecycle::ready_to_activate`, shared by auto-activate, the
   `stale_drafts.ReadyToActivate` health classification, and the
   `stuck_draft` anomaly. Response `LinkResponse.auto_activated:
   Option<String>` carries the id when the transition fires. Failure is
-  non-fatal — the link itself already committed; tracing::warn fires
+  non-fatal - the link itself already committed; tracing::warn fires
   and the response hints at manual retry. `forgeplan_health` gains
   `stale_drafts: Vec<StaleDraft>` (24h threshold default;
   `VerdictThresholds.stale_ready_drafts` default 5 → Unhealthy). Hint
-  chain enhanced — when the link source is a complete-but-still-draft
+  chain enhanced - when the link source is a complete-but-still-draft
   EVID, the response ends with `Activate: forgeplan_activate <id>` so
   the next step is unambiguous.
-- **`forgeplan_anomalies` tool + v1 catalog** (issue #289) — new MCP tool +
+- **`forgeplan_anomalies` tool + v1 catalog** (issue #289) - new MCP tool +
   CLI command surfaces pipeline anomalies with structured severity + tier
   classification (auto / adi / user) so plugin-layer orchestrators
   (`/forge-cycle`, `/forge-cleanup`) can dispatch resolutions without
@@ -90,7 +90,7 @@ Three parallel sprints landed into one release:
   `_next_action` matching the MCP wire shape (audit-r3 HIGH-1 closure
   for PRD-071 parity).
 - **MCP tool count: 73 tools total in v0.32.0** (authoritative count via `#[tool(...)]`
-  macro; drift detector fix in commit a3e52c4 — prior narrative cited wrong baseline).
+  macro; drift detector fix in commit a3e52c4 - prior narrative cited wrong baseline).
   v0.31.x had 64. This release adds `forgeplan_unlink` (#286) and `forgeplan_anomalies`
   (#289) at section A (+2), plus 7 brownfield tools in section B (#287 Epic):
   `forgeplan_hypothesis_status`, `_promote`, `_coverage_business`, `_contradictions`,
@@ -100,7 +100,7 @@ Three parallel sprints landed into one release:
 
 - **`forgeplan_core::dispatch::SerialEntry`** is now `#[non_exhaustive]`
   (CR-H3). Downstream Rust callers can no longer use struct-literal
-  construction or exhaustive pattern-matching across crate boundaries —
+  construction or exhaustive pattern-matching across crate boundaries -
   use `SerialEntry::new(id, reason)` instead. The JSON wire format is
   unchanged (serde keeps the same shape). Added `Display` impl rendering
   `<id> (<reason>)` for uniform CLI output.
@@ -116,79 +116,79 @@ Three parallel sprints landed into one release:
 
 #### A.2 Fixed (issues #286 / #288 / #289)
 
-- **CR-C4: `secrets.yaml` → `secrets.env`** — the template shipped by
+- **CR-C4: `secrets.yaml` → `secrets.env`** - the template shipped by
   `forgeplan init` was named `.yaml` but contained shell `export` syntax,
   failing YAML lint and `serde_yaml::from_str`. Renamed to `.env`
   (dotenv/direnv convention) across all 7 code surfaces + 2 doc
   surfaces. Existing workspaces migrate via `forgeplan init --force`.
-  Also removes the literal `sk-...` placeholder from the template — that
+  Also removes the literal `sk-...` placeholder from the template - that
   prefix was raising TruffleHog/gitleaks false-positives on every CI run.
-- **SEC-H1: backfill on existing workspaces** — `forgeplan init --force`
+- **SEC-H1: backfill on existing workspaces** - `forgeplan init --force`
   now writes `.gitkeep` placeholders into every empty artifact subdir
-  and creates the `secrets.env` template if missing. Idempotent — never
+  and creates the `secrets.env` template if missing. Idempotent - never
   clobbers a user-edited template containing real keys. Closes the
   migration gap for workspaces created before PRD-077 FR-001 / FR-002.
-- **CR-H4: dispatch multi-parent blocker reason** — `forgeplan dispatch`
+- **CR-H4: dispatch multi-parent blocker reason** - `forgeplan dispatch`
   and `forgeplan_dispatch` MCP tool previously reported a single
   arbitrary parent for blocked artifacts (`HashMap` collapsed
   multi-parent edges to last-seen target) AND counted `informs` as a
   structural blocker (the relation type was dropped in the lookup
   build). Both fixed by extracting `build_blocker_reasons_from_slice`
-  to `forgeplan_core::dispatch` — CLI and MCP now share one
+  to `forgeplan_core::dispatch` - CLI and MCP now share one
   implementation. The helper uses
   `graph::topological::is_structural_relation` (the same predicate
   `kahn_sort` uses), so the canonical structural-relation list
   (`based_on`, `refines`, `supersedes`, `contradicts`) drives both
-  "what blocks the topo sort?" and "what blocks dispatch?" — they can
+  "what blocks the topo sort?" and "what blocks dispatch?" - they can
   no longer drift. Multiple parents are listed alphabetically:
   `blocked by dependencies: PRD-001, PRD-002, RFC-003`.
 
-### B. Epic #287 — brownfield extraction surface
+### B. Epic #287 - brownfield extraction surface
 
 6 new `ArtifactKind` variants (`use_case`, `glossary`, `invariant`, `scenario`, `hypothesis`, `domain_model`) with Factum/Intent two-tier validation, 7 new MCP tools (`forgeplan_hypothesis_status` / `_promote` / `_coverage_business` / `_contradictions` / `_orphans` / `_interview_packet_draft` / `_ingest`), brownfield graph rendering (`forgeplan_graph --brownfield-only`), and a Hypothesis lifecycle state machine (parked → inferred → strong-inferred → verified → refuted with terminal absorbing states).
 
-5 adversarial audit rounds — r4 (13 findings closed), r5 (8 deferred items closed inline), r6 (ARCH-H1 consolidation + PROB-069), r7 (full-branch review, 13 more findings), plus E2E coverage. **ADR-014** added for AnomalyKind catalog evolution policy.
+5 adversarial audit rounds - r4 (13 findings closed), r5 (8 deferred items closed inline), r6 (ARCH-H1 consolidation + PROB-069), r7 (full-branch review, 13 more findings), plus E2E coverage. **ADR-014** added for AnomalyKind catalog evolution policy.
 
-Phase E (`forgeplan_render_canonical` + `forgeplan_export_rag`) split into [`marketplace#79`](https://github.com/ForgePlan/marketplace/issues/79) — those tools live in plugin layer (wrap brownfield-pack skills C10/C12), not core.
+Phase E (`forgeplan_render_canonical` + `forgeplan_export_rag`) split into [`marketplace#79`](https://github.com/ForgePlan/marketplace/issues/79) - those tools live in plugin layer (wrap brownfield-pack skills C10/C12), not core.
 
 ### C. 6 dogfood-discovered issues (#290..#295)
 
 Collected from real-world workspace usage in `marketplace` repo, filed upstream, fixed in this release:
 
-- **#290 `forgeplan_release_notes` split-repo discovery** — new `find_git_root` with 3-tier discovery (start → walk up bounded by `.forgeplan/` marker or 8 hops → walk down one level with symlink rejection and deterministic ordering). Fixes "not a git repository" failure when `.forgeplan/` and `.git/` are in different directories.
-- **#291 `forgeplan_restore` target_status override** — new `apply_restore_with_target` accepts explicit `target_status` (`draft`/`active`/`deprecated`). Lifecycle FSM validates the transition before mutation. Response surfaces `restored_status` + `restored_status_source` so operators see exactly which state was applied.
-- **#292 `forgeplan_discover_*` status field disambiguation** — added `session_status` (explicit session state) and `artifact_status` (always `draft` for newly-created findings) to all three discover tools. Legacy `status` field kept for backward compat (zero breakage on existing consumers). `_field_warnings` deprecation channel announces upcoming removal of legacy `status`.
-- **#293 `forgeplan_drift` markdown-table parser** — `extract_path_from_line` now handles backtick-quoted paths, pipe-delimited table cells, and `(planned)`/`(done)` annotations. Closes silent false-negative where drift detector returned `changed_files: []` for artifacts with table-formatted `## Affected Files`. Control chars / ANSI escapes also rejected (closes downstream-display injection vector).
-- **#294 `forgeplan_activate` error UX** — "No evidence linked" error now teaches the canonical 5-step fix order verbatim in the error message (`forgeplan_new evidence → update → link informs → activate EVID → activate parent`). Operators no longer reach for `--force` as a shortcut.
-- **#295 `forgeplan_new(kind=evidence, parent_id=...)` auto-link** — optional `parent_id` parameter creates the `informs` link in one call. Closes the 3-step boilerplate (new → update → link) observed in 100% of measured EVIDs across 12 sprints. Auto-link uses `add_link_with_projection` (file-first per ADR-003); response carries `auto_linked` + `auto_link_warnings` fields.
+- **#290 `forgeplan_release_notes` split-repo discovery** - new `find_git_root` with 3-tier discovery (start → walk up bounded by `.forgeplan/` marker or 8 hops → walk down one level with symlink rejection and deterministic ordering). Fixes "not a git repository" failure when `.forgeplan/` and `.git/` are in different directories.
+- **#291 `forgeplan_restore` target_status override** - new `apply_restore_with_target` accepts explicit `target_status` (`draft`/`active`/`deprecated`). Lifecycle FSM validates the transition before mutation. Response surfaces `restored_status` + `restored_status_source` so operators see exactly which state was applied.
+- **#292 `forgeplan_discover_*` status field disambiguation** - added `session_status` (explicit session state) and `artifact_status` (always `draft` for newly-created findings) to all three discover tools. Legacy `status` field kept for backward compat (zero breakage on existing consumers). `_field_warnings` deprecation channel announces upcoming removal of legacy `status`.
+- **#293 `forgeplan_drift` markdown-table parser** - `extract_path_from_line` now handles backtick-quoted paths, pipe-delimited table cells, and `(planned)`/`(done)` annotations. Closes silent false-negative where drift detector returned `changed_files: []` for artifacts with table-formatted `## Affected Files`. Control chars / ANSI escapes also rejected (closes downstream-display injection vector).
+- **#294 `forgeplan_activate` error UX** - "No evidence linked" error now teaches the canonical 5-step fix order verbatim in the error message (`forgeplan_new evidence → update → link informs → activate EVID → activate parent`). Operators no longer reach for `--force` as a shortcut.
+- **#295 `forgeplan_new(kind=evidence, parent_id=...)` auto-link** - optional `parent_id` parameter creates the `informs` link in one call. Closes the 3-step boilerplate (new → update → link) observed in 100% of measured EVIDs across 12 sprints. Auto-link uses `add_link_with_projection` (file-first per ADR-003); response carries `auto_linked` + `auto_link_warnings` fields.
 
-### D. Audit-r-dogfood — 8 findings closed inline before release
+### D. Audit-r-dogfood - 8 findings closed inline before release
 
 3 parallel adversarial agents (security/code-quality/architecture) reviewed the 6 dogfood fixes. 24 findings total (after dedup). Closed inline:
 
-- **SEC-1 HIGH** — `find_git_root` rejects symlinks via `symlink_metadata`, bounds walk-up by `.forgeplan/` marker, sorts walk-down candidates alphabetically. Closes: attacker plants `subdir/.git -> /other-user-repo/.git` → release_notes leaks their commits.
-- **CODE-1 HIGH** — `restored_status_source` compares actual values (after trim+lowercase) instead of just `target_status.is_some()`. Previously reported `explicit_override` even on no-op overrides.
-- **SEC-2 MED** — `target_status` FSM transition validation. Forbidden transitions (e.g. `deprecated → draft`) rejected before any mutation.
-- **SEC-3 MED** — control chars + Unicode line separators (`U+0085/2028/2029`) rejected in `extract_path_from_line` results. Closes ANSI-escape injection in MCP `DriftedFile.path`.
-- **SEC-4 MED** — `auto_link_warnings` route errors through `sanitize_error_chain`. Wave 9 SEC-H3 regression closed — raw `{e}` HOME paths no longer leak.
-- **CODE-2 MED** — `_field_warnings` deprecation channel added to `_start` and `_complete` (was only in `_finding`). All three discover tools now consistent.
-- **CODE-4 / ARCH-2 MED** — `NewArtifactResponse` gets proper `auto_linked` + `auto_link_warnings` DTO fields (`#[serde(skip_serializing_if)]`). Replaces post-hoc `serde_json::Value` mutation that broke JsonSchema codegen for TS clients.
-- **CODE-7 LOW** — `target_status` trimmed before validation so `Some("  active  ")` no longer falls through with inscrutable error.
+- **SEC-1 HIGH** - `find_git_root` rejects symlinks via `symlink_metadata`, bounds walk-up by `.forgeplan/` marker, sorts walk-down candidates alphabetically. Closes: attacker plants `subdir/.git -> /other-user-repo/.git` → release_notes leaks their commits.
+- **CODE-1 HIGH** - `restored_status_source` compares actual values (after trim+lowercase) instead of just `target_status.is_some()`. Previously reported `explicit_override` even on no-op overrides.
+- **SEC-2 MED** - `target_status` FSM transition validation. Forbidden transitions (e.g. `deprecated → draft`) rejected before any mutation.
+- **SEC-3 MED** - control chars + Unicode line separators (`U+0085/2028/2029`) rejected in `extract_path_from_line` results. Closes ANSI-escape injection in MCP `DriftedFile.path`.
+- **SEC-4 MED** - `auto_link_warnings` route errors through `sanitize_error_chain`. Wave 9 SEC-H3 regression closed - raw `{e}` HOME paths no longer leak.
+- **CODE-2 MED** - `_field_warnings` deprecation channel added to `_start` and `_complete` (was only in `_finding`). All three discover tools now consistent.
+- **CODE-4 / ARCH-2 MED** - `NewArtifactResponse` gets proper `auto_linked` + `auto_link_warnings` DTO fields (`#[serde(skip_serializing_if)]`). Replaces post-hoc `serde_json::Value` mutation that broke JsonSchema codegen for TS clients.
+- **CODE-7 LOW** - `target_status` trimmed before validation so `Some("  active  ")` no longer falls through with inscrutable error.
 
 ### E. New methodology documentation
 
-- **`docs/methodology/CROSS-REPO-WORKFLOW.ru.md`** — protocol for coordinating issues / fixes / feature requests across the multi-repo ForgePlan org (`forgeplan` core ↔ `marketplace` ↔ `forgeplan-hud` ↔ ...). Codifies the 5 typical failure modes when 1→5 repos org grows without conventions, label taxonomy proposal, session-start inbox sweep protocol for AI agents, 4-phase implementation roadmap.
+- **`docs/methodology/CROSS-REPO-WORKFLOW.ru.md`** - protocol for coordinating issues / fixes / feature requests across the multi-repo ForgePlan org (`forgeplan` core ↔ `marketplace` ↔ `forgeplan-hud` ↔ ...). Codifies the 5 typical failure modes when 1→5 repos org grows without conventions, label taxonomy proposal, session-start inbox sweep protocol for AI agents, 4-phase implementation roadmap.
 
 ### Deferred to v0.33.0 (tracked as GitHub issues)
 
-- **[#296](https://github.com/ForgePlan/forgeplan/issues/296)** — Architectural debt cluster (ARCH-1/3/4/5/6/7): ADR for status deprecation, explicit `git_root` param, invert restore as shim, undo::restore projection exemption, methodology doc location, shared evidence_recipe helper.
-- **[#297](https://github.com/ForgePlan/forgeplan/issues/297)** — Security follow-ups (SEC-5/6): TOCTOU window in find_git_root, sanitize_for_hint on activate error path.
-- **[#298](https://github.com/ForgePlan/forgeplan/issues/298)** — Code quality edge cases (CODE-5/6/8/9/10/11): paths with `(parens)` in name, tab-indented bullets, walk_artifact_changes integration test, backticks-in-path edge.
+- **[#296](https://github.com/ForgePlan/forgeplan/issues/296)** - Architectural debt cluster (ARCH-1/3/4/5/6/7): ADR for status deprecation, explicit `git_root` param, invert restore as shim, undo::restore projection exemption, methodology doc location, shared evidence_recipe helper.
+- **[#297](https://github.com/ForgePlan/forgeplan/issues/297)** - Security follow-ups (SEC-5/6): TOCTOU window in find_git_root, sanitize_for_hint on activate error path.
+- **[#298](https://github.com/ForgePlan/forgeplan/issues/298)** - Code quality edge cases (CODE-5/6/8/9/10/11): paths with `(parens)` in name, tab-indented bullets, walk_artifact_changes integration test, backticks-in-path edge.
 
 ### Cross-repo follow-ups
 
-- **[marketplace#86](https://github.com/ForgePlan/marketplace/issues/86)** — docs update for `discover_finding` workaround references (now obsolete after #292 closure).
-- **[marketplace#79](https://github.com/ForgePlan/marketplace/issues/79)** — Phase E split: `forgeplan_render_canonical` + `forgeplan_export_rag` in `forgeplan-brownfield-pack` plugin.
+- **[marketplace#86](https://github.com/ForgePlan/marketplace/issues/86)** - docs update for `discover_finding` workaround references (now obsolete after #292 closure).
+- **[marketplace#79](https://github.com/ForgePlan/marketplace/issues/79)** - Phase E split: `forgeplan_render_canonical` + `forgeplan_export_rag` in `forgeplan-brownfield-pack` plugin.
 
 ### Tests, pipeline, scope
 
@@ -197,30 +197,30 @@ Collected from real-world workspace usage in `marketplace` repo, filed upstream,
 - **5 audit rounds** + 1 final audit-r-release-candidate. Total findings closed inline: r4=13, r5=8, r6=2 (ARCH-H1 + PROB-069), r7=13, r-dogfood=8, r-release=4 → 48 closures, 0 net CRIT/HIGH deferred.
 - **ADR-014** new methodology artefact (`EVID-128 informs ADR-014`).
 - **PROB-069** flaky stress-test budget calibration closed (`EVID-129 informs PROB-069`).
-- **PROB-068** init/scan-import data-loss closure re-published as `EVID-130` (was silently shadowed by a duplicate `EVID-122` ID in markdown projection — audit-r-release F1-CODE fix preserves the evidence).
+- **PROB-068** init/scan-import data-loss closure re-published as `EVID-130` (was silently shadowed by a duplicate `EVID-122` ID in markdown projection - audit-r-release F1-CODE fix preserves the evidence).
 
 ### Security (RED-LINE #10 compliance)
 
 Dependabot alerts triage for v0.32.0, per RED-LINE #10 mandate:
 
-- **#33** — `devalue` HIGH severity (Svelte DoS via sparse array deserialization, GHSA-77vg-94rm-hx3p, ecosystem `npm`, `website/package-lock.json`).
-  **Status: addressed** — bumped 5.6.4 → 5.8.1 in commit `82d4634` (PR #302). Limited exposure: `website/` is a static Astro SSG; the Rust CLI/MCP binaries do not ship JS. Post-bump `npm audit` reports 0 vulnerabilities. The GitHub alert will auto-close after this release reaches `main`.
-- **#3** — `lru` LOW severity (`IterMut` Stacked Borrows violation, GHSA-rhfx-m35p-ff5j, ecosystem `rust`).
-  **Status: accepted-with-justification** — same as v0.28.0 / v0.29.0 / v0.30.0 / v0.31.0 changelogs. Transitive via `tantivy 0.24` → `lance 4.0` → `lancedb 0.27`; `cargo update -p lru` is a no-op because tantivy pins `lru = "^0.12"`. Direct upgrade to 0.16.3 requires bumping tantivy major, cascading into Lance/LanceDB upgrades — out of scope for v0.32.0 patch. Impact in our context is LOW: Stacked Borrows is a Miri-only analyser concern, not a runtime exploit; the vulnerable code path is internal to tantivy's caching layer, never reached by forgeplan user input; forgeplan is local-first CLI/MCP with no remote-trigger surface. Tracked for v0.33+ when LanceDB upgrade lands.
+- **#33** - `devalue` HIGH severity (Svelte DoS via sparse array deserialization, GHSA-77vg-94rm-hx3p, ecosystem `npm`, `website/package-lock.json`).
+  **Status: addressed** - bumped 5.6.4 → 5.8.1 in commit `82d4634` (PR #302). Limited exposure: `website/` is a static Astro SSG; the Rust CLI/MCP binaries do not ship JS. Post-bump `npm audit` reports 0 vulnerabilities. The GitHub alert will auto-close after this release reaches `main`.
+- **#3** - `lru` LOW severity (`IterMut` Stacked Borrows violation, GHSA-rhfx-m35p-ff5j, ecosystem `rust`).
+  **Status: accepted-with-justification** - same as v0.28.0 / v0.29.0 / v0.30.0 / v0.31.0 changelogs. Transitive via `tantivy 0.24` → `lance 4.0` → `lancedb 0.27`; `cargo update -p lru` is a no-op because tantivy pins `lru = "^0.12"`. Direct upgrade to 0.16.3 requires bumping tantivy major, cascading into Lance/LanceDB upgrades - out of scope for v0.32.0 patch. Impact in our context is LOW: Stacked Borrows is a Miri-only analyser concern, not a runtime exploit; the vulnerable code path is internal to tantivy's caching layer, never reached by forgeplan user input; forgeplan is local-first CLI/MCP with no remote-trigger surface. Tracked for v0.33+ when LanceDB upgrade lands.
 
-### Hardening sprint (closes #305 + #306 + #308 — PR #309)
+### Hardening sprint (closes #305 + #306 + #308 - PR #309)
 
 Post-release-prep hardening sprint discovered + fixed 1 new bug + 1 docs drift + 3 audit follow-ups:
 
-- **PROB-074 / #305** — **MCP server stale lance handle after external reindex.** Long-running MCP daemon held LanceDB Dataset handles pinned to a manifest snapshot from server-start time; external `forgeplan reindex` rewrote the lance fragments, leaving the cached UUIDs pointing at deleted files. Discovered live during v0.32 surface validation: 5/6 MCP tools failed with `lance error: Not found: ...lance/data/<uuid>.lance`; `forgeplan_session` worked (file-only, no LanceDB), validating ADR-003 file-first invariant. Fix: hybrid `is_stale_manifest_error` (lancedb::Error downcast + string-match fallback) + `LanceStore::refresh()` via `Table::checkout_latest()` + `with_retry_on_stale` retry loop (N=3, 100/250ms backoff) + 250ms refresh-rate debounce + MCP `safe_mcp_error_anyhow` PRD-071-anchored `Wait:` hint emission on `MutationError::RetryExhausted`. 14 new tests.
-- **#306** — **Docs drift: MCP tool count 81 → 73.** `scripts/check-mcp-tool-count.sh` counted `async fn forgeplan_*` declarations, which include 8 inline `#[cfg(test)]` test functions sharing the prefix (e.g. `forgeplan_get_accepts_slug_or_display_id`). Authoritative count via the `#[tool(...)]` macro = 73. Script regex changed to `^[[:space:]]*#\[tool\(`. Sanity floor bumped from `< 10` to `< 30`. Updated 20+ doc locations across README, CLAUDE, docs/, website/.
-- **PROB-075 / #308** — **PROB-074 audit follow-ups F-2/F-3/F-4 closed inline.** F-2 retry budget + `MutationError::RetryExhausted` typed variant (non_exhaustive — non-breaking). F-3 rate-limit via `last_refresh_ms: AtomicI64` CAS-debounced at 250ms. F-4 `lancedb::Error` downcast first with string match as fallback (defense-in-depth — `lancedb` is a direct workspace dep, `lance-core` skipped per existing version-skew rationale). F-6 (manifest-version-skew test gap) deferred to v0.33.
-- **Adversarial 3-agent audit** (security-expert + code-reviewer + architect-reviewer) found 13 findings (1 CRIT + 4 HIGH + 4 MEDIUM + 4 LOW). All 5 blockers closed inline by second coder pass. Architect's "phantom hypothesis" concern (Concern #4 — "PROB-074 may not fire in production, LanceDB auto-recovers") **refuted by two independent signals**: (a) live in-session reproducer of PROB-074 while preparing to invoke ADI itself via MCP; (b) ADI cycle output recommended exactly the H1+H2 hybrid we shipped, confidence: High. Captured as EVID-132.
+- **PROB-074 / #305** - **MCP server stale lance handle after external reindex.** Long-running MCP daemon held LanceDB Dataset handles pinned to a manifest snapshot from server-start time; external `forgeplan reindex` rewrote the lance fragments, leaving the cached UUIDs pointing at deleted files. Discovered live during v0.32 surface validation: 5/6 MCP tools failed with `lance error: Not found: ...lance/data/<uuid>.lance`; `forgeplan_session` worked (file-only, no LanceDB), validating ADR-003 file-first invariant. Fix: hybrid `is_stale_manifest_error` (lancedb::Error downcast + string-match fallback) + `LanceStore::refresh()` via `Table::checkout_latest()` + `with_retry_on_stale` retry loop (N=3, 100/250ms backoff) + 250ms refresh-rate debounce + MCP `safe_mcp_error_anyhow` PRD-071-anchored `Wait:` hint emission on `MutationError::RetryExhausted`. 14 new tests.
+- **#306** - **Docs drift: MCP tool count 81 → 73.** `scripts/check-mcp-tool-count.sh` counted `async fn forgeplan_*` declarations, which include 8 inline `#[cfg(test)]` test functions sharing the prefix (e.g. `forgeplan_get_accepts_slug_or_display_id`). Authoritative count via the `#[tool(...)]` macro = 73. Script regex changed to `^[[:space:]]*#\[tool\(`. Sanity floor bumped from `< 10` to `< 30`. Updated 20+ doc locations across README, CLAUDE, docs/, website/.
+- **PROB-075 / #308** - **PROB-074 audit follow-ups F-2/F-3/F-4 closed inline.** F-2 retry budget + `MutationError::RetryExhausted` typed variant (non_exhaustive - non-breaking). F-3 rate-limit via `last_refresh_ms: AtomicI64` CAS-debounced at 250ms. F-4 `lancedb::Error` downcast first with string match as fallback (defense-in-depth - `lancedb` is a direct workspace dep, `lance-core` skipped per existing version-skew rationale). F-6 (manifest-version-skew test gap) deferred to v0.33.
+- **Adversarial 3-agent audit** (security-expert + code-reviewer + architect-reviewer) found 13 findings (1 CRIT + 4 HIGH + 4 MEDIUM + 4 LOW). All 5 blockers closed inline by second coder pass. Architect's "phantom hypothesis" concern (Concern #4 - "PROB-074 may not fire in production, LanceDB auto-recovers") **refuted by two independent signals**: (a) live in-session reproducer of PROB-074 while preparing to invoke ADI itself via MCP; (b) ADI cycle output recommended exactly the H1+H2 hybrid we shipped, confidence: High. Captured as EVID-132.
 
-### Internal — sprint hygiene
+### Internal - sprint hygiene
 
-- **CI workflow** `.github/workflows/forgeplan-health.yml` — replaced broken `mv .forgeplan .forgeplan-src && init && cp -r src/{kind}/ dst/` (trailing-slash flat-copy bug + Epic #287 brownfield kinds never added) with single `forgeplan reindex` call (`lance/` is gitignored per ADR-003, reindex rebuilds from `.forgeplan/<kind>/*.md`).
-- **PRD-002 stub** superseded by ADR-006 — old broken CI workflow hid the stub for 2 months. PRD-002 scope was absorbed by ADR-006 + RFC-001 + PRD-013/018/040/041/042 long ago.
+- **CI workflow** `.github/workflows/forgeplan-health.yml` - replaced broken `mv .forgeplan .forgeplan-src && init && cp -r src/{kind}/ dst/` (trailing-slash flat-copy bug + Epic #287 brownfield kinds never added) with single `forgeplan reindex` call (`lance/` is gitignored per ADR-003, reindex rebuilds from `.forgeplan/<kind>/*.md`).
+- **PRD-002 stub** superseded by ADR-006 - old broken CI workflow hid the stub for 2 months. PRD-002 scope was absorbed by ADR-006 + RFC-001 + PRD-013/018/040/041/042 long ago.
 - **Test count**: 3084 / 0 failed (+17 over v0.31 baseline of 3067).
 - **Clippy**: 0 warnings on default + semantic-search feature configs.
 - **Drift detector**: 0 drift after sweep.
@@ -233,31 +233,31 @@ findings (1 CRITICAL, 2 HIGH, 9 MED, 7 LOW) across logic, architecture,
 security, and test-quality dimensions. 26 commits, ~3500 LOC net.
 
 Key security closures landing in this release:
-- **SEC-C1+C2 input gate** — `validate_title` lifted to `forgeplan-core::artifact::validation`
+- **SEC-C1+C2 input gate** - `validate_title` lifted to `forgeplan-core::artifact::validation`
   and gated at all 4 mutation paths (CLI new, CLI update, MCP new, MCP update). Pre-fix,
-  3 of 4 paths bypassed control-char + BIDI override rejection — Trojan Source titles
+  3 of 4 paths bypassed control-char + BIDI override rejection - Trojan Source titles
   could be planted via `forgeplan update` or MCP.
-- **SEC-H1 output gate** — `sanitize_for_hint` propagated to 8 CLI command print sites
+- **SEC-H1 output gate** - `sanitize_for_hint` propagated to 8 CLI command print sites
   (list, search, blindspots, journal, decay, embed, promote, calibrate-estimate). LOG-001
   closure for the v0.30 audit was partial; this completes it.
-- **SEC-H2 HOME sanitizer hardening** — `sanitize_text_with` now masks bare HOME at
+- **SEC-H2 HOME sanitizer hardening** - `sanitize_text_with` now masks bare HOME at
   end-of-string or followed by a non-path boundary character. Pre-fix, error chains of
   the form `"chdir failed: /Users/alice"` leaked the username through MCP error JSON
   and Claude Desktop logs.
-- **SEC-H3 MCP error sanitisation** — all 40+ `McpError::internal_error` call sites
+- **SEC-H3 MCP error sanitisation** - all 40+ `McpError::internal_error` call sites
   route through `sanitize_error_chain`. Pre-fix only 3 typed-error variants (`StoreFatal`,
   `StoreTransient`, `FileNotFound`) went through the sanitiser.
-- **ARCH-C1 health JSON helper extract** — `pub fn forgeplan_core::health::health_report_to_json`
+- **ARCH-C1 health JSON helper extract** - `pub fn forgeplan_core::health::health_report_to_json`
   is now the single source of truth for the CLI `--json` + MCP `forgeplan_health` wire
   shape. Eliminates the third recurrence of "two surfaces serialising the same domain
   object" (PROB-064 was the first, CR-001 the second). Helper also bundles SEC-M1
-  closure — every title/message/reason/issue/advisory string is sanitised before
+  closure - every title/message/reason/issue/advisory string is sanitised before
   serialisation.
 
 ### Added
 
 - **`forgeplan release-notes [--since <ref>] [--until <ref>] [--output text|markdown|json] [--draft]`**
-  — auto-generate Keep-a-Changelog–shaped release notes from artifacts
+  - auto-generate Keep-a-Changelog–shaped release notes from artifacts
   that changed between two git refs. Walks `git log --diff-filter=AM`
   over `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`,
   resolves each touched basename to a canonical artifact id (handles
@@ -267,13 +267,13 @@ Key security closures landing in this release:
   plain EVID→Internal. Quality gate (default): only records with
   `status==active` or `r_eff_score > 0` are emitted; `--draft` waives.
   Companion MCP tool `forgeplan_release_notes` returns the same JSON
-  shape. Closes v0.31.0 Wave 4 MAJOR-3 (manual CHANGELOG sync pain) —
+  shape. Closes v0.31.0 Wave 4 MAJOR-3 (manual CHANGELOG sync pain) -
   the feature self-uses at the next release. Refs: EVID-123.
-- **`forgeplan health --strict` flag** — exit 1 if verdict ∈
+- **`forgeplan health --strict` flag** - exit 1 if verdict ∈
   {NeedsAttention, Unhealthy} OR any of {orphans, blind_spots,
   active_stubs, at_risk} > 0. Designed for CI gates that want a single
-  boolean signal (default `forgeplan health` always exits 0 — advisory
-  tool). Empty workspaces (verdict=Empty) exit 0 — "no artifacts" is not
+  boolean signal (default `forgeplan health` always exits 0 - advisory
+  tool). Empty workspaces (verdict=Empty) exit 0 - "no artifacts" is not
   a critical signal. Advisory-only signals (phase mismatches alone) stay
   advisory and exit 0, consistent with PROB-063 (advisory ≠ critical).
   JSON mode (`--json --strict`) adds a parseable `exit_code` integer
@@ -289,19 +289,19 @@ Key security closures landing in this release:
 
 ### Fixed
 
-- **PROB-067 — `forgeplan_new` ID-counter race across parallel git
+- **PROB-067 - `forgeplan_new` ID-counter race across parallel git
   worktrees**. Two workers in sibling worktrees of the same repo
   invoking `forgeplan_new` simultaneously could each compute
   `max(NNN)+1` and produce duplicate `EVID-NNN` numbers (or silently
   overwrite a pre-existing artifact body, per the v0.31.0 sprint
   incident with EVID-118/EVID-119). Fix combo Option B + Option D:
-  1. **Cross-worktree per-kind lock** — id allocation now serializes
+  1. **Cross-worktree per-kind lock** - id allocation now serializes
      through `<git-common-dir>/forgeplan/id-<KIND>.lock` (shared
      across all worktrees of the same repo) with graceful fallback to
      a workspace-local lock when no git common-dir is available
      (fresh clones, non-git directories). Per-kind granularity keeps
      `new prd` and `new evidence` allocations independent.
-  2. **Post-write collision detection** — after the projection write
+  2. **Post-write collision detection** - after the projection write
      the allocator re-checks that no sibling file owns the same
      `{ID}-` prefix; on collision the file is rolled back and the
      allocation retries with the next number (cap 5, panic above to
@@ -315,44 +315,44 @@ Key security closures landing in this release:
 
 ### Security
 
-- **Bump openssl 0.10.78 → 0.10.79** — closes two GitHub Dependabot
+- **Bump openssl 0.10.78 → 0.10.79** - closes two GitHub Dependabot
   alerts on the transitive dependency tree (reqwest → rustls → lance):
-  - **#27 (HIGH)** — rust-openssl undefined behavior в
+  - **#27 (HIGH)** - rust-openssl undefined behavior в
     `X509Ref::ocsp_responders` для non-UTF-8 OCSP URLs (CVE pending).
-  - **#28 (MEDIUM)** — heap buffer overflow при AES key-wrap-with-padding
+  - **#28 (MEDIUM)** - heap buffer overflow при AES key-wrap-with-padding
     encryption.
 
-- **Bump mermaid 11.14.0 → 11.15.0 в `website/`** — closes four GitHub
+- **Bump mermaid 11.14.0 → 11.15.0 в `website/`** - closes four GitHub
   Dependabot alerts on the documentation site dependency tree:
-  - **#32 (MEDIUM, GHSA-6m6c-36f7-fhxh)** — Gantt charts vulnerable to
+  - **#32 (MEDIUM, GHSA-6m6c-36f7-fhxh)** - Gantt charts vulnerable to
     infinite-loop DoS.
-  - **#31 (MEDIUM, GHSA-ghcm-xqfw-q4vr)** — improper sanitization of
+  - **#31 (MEDIUM, GHSA-ghcm-xqfw-q4vr)** - improper sanitization of
     `classDef` in state diagrams (HTML injection).
-  - **#30 (MEDIUM, GHSA-87f9-hvmw-gh4p)** — improper sanitization of
+  - **#30 (MEDIUM, GHSA-87f9-hvmw-gh4p)** - improper sanitization of
     configuration (CSS injection).
-  - **#29 (MEDIUM, GHSA-xcj9-5m2h-648r)** — improper sanitization of
+  - **#29 (MEDIUM, GHSA-xcj9-5m2h-648r)** - improper sanitization of
     `classDefs` in diagrams (CSS injection).
 
-- **Bump uuid 11.1.0 → 14.0.0 в `website/`** — closes Dependabot alert
-  **#26 (MEDIUM, GHSA-w5hq-g745-h8pq)** — missing buffer bounds check в
+- **Bump uuid 11.1.0 → 14.0.0 в `website/`** - closes Dependabot alert
+  **#26 (MEDIUM, GHSA-w5hq-g745-h8pq)** - missing buffer bounds check в
   `v3/v5/v6` when buf is provided. Major bump landed via mermaid 11.15.0
   broadening its peer range (`^11 || ^12 || ^13 || ^14`); npm resolved
   to latest 14.0.0. `npm audit` reports 0 vulnerabilities post-bump.
 
-- **`lru` 0.12.5 alert deferred** (#3, LOW, GHSA-rhfx-m35p-ff5j) —
+- **`lru` 0.12.5 alert deferred** (#3, LOW, GHSA-rhfx-m35p-ff5j) -
   `IterMut` Stacked Borrows violation. Blocked upstream: `tantivy
   v0.24.2` pins `lru = "^0.12.0"`, and `lance v4.0.0` pins
   `tantivy = "=0.24.1"`. Bump requires `lance ≥4.1` (not yet released
   с newer tantivy). Justification: LOW severity, Forgeplan не использует
-  `lru::IterMut` напрямую — code path is tantivy-internal text index
+  `lru::IterMut` напрямую - code path is tantivy-internal text index
   iteration, not exposed через our search API. Tracked для re-triage
   on next lance upstream release.
 
-- **`cargo-deny` CI gate added** — new `.github/workflows/security.yml`
+- **`cargo-deny` CI gate added** - new `.github/workflows/security.yml`
   runs `cargo deny check advisories licenses bans sources` on push to
   dev/main, on PRs against dev/main, и weekly cron (Mon 07:23 UTC).
   Config: `deny.toml` at repo root. Initial rollout
-  `continue-on-error: true` — establishes baseline, then flips to
+  `continue-on-error: true` - establishes baseline, then flips to
   blocking after first clean run. Closes RED LINE #10 mechanism gap
   (Dependabot mandate had no automated enforcement before release).
   Schema is cargo-deny 0.19+ (action @v2.x).
@@ -364,11 +364,11 @@ Key security closures landing in this release:
   `tree`, `git_sync`, `log_cmd`, `context`, `promote`, `reopen`,
   `scan_import`, `setup_skill`, `tag`, `recall`, `remember`, `migrate`,
   `migrate_dry_run`, `reconcile_ids`, `ci_assign_id`. The `watch`
-  command is intentionally deferred — long-running foreground watcher
+  command is intentionally deferred - long-running foreground watcher
   is untestable via `assert_cmd` без SIGTERM handling и timing races
   (module-level unit tests cover the core debouncer logic).
 - **+59 MCP tool contract tests** в
-  `crates/forgeplan-mcp/tests/integration_full_coverage.rs` — coverage
+  `crates/forgeplan-mcp/tests/integration_full_coverage.rs` - coverage
   expanded 14 → 61 unique handlers (100% user-facing tools reachable
   через JSON-RPC duplex transport). LLM-dependent group (capture /
   reason / decompose / generate) pins `is_error=true` contract; other
@@ -378,11 +378,11 @@ Key security closures landing in this release:
   `claim/release` cycle, `dispatch` planner JSON, `phase-advance`
   round-trip. Runtime budget ≤3s on warm cache.
 - **Shared MCP test fixture** extracted to
-  `crates/forgeplan-mcp/tests/common/mod.rs` (McpFixture + helpers) —
+  `crates/forgeplan-mcp/tests/common/mod.rs` (McpFixture + helpers) -
   removes ~200 LOC of verbatim duplication between `integration_e2e.rs`
   и `integration_full_coverage.rs`.
 
-## [0.30.0] — 2026-05-06 — defensive sprint: security trio + cache self-healing + MCP transport parity + Wave 3 paper cuts
+## [0.30.0] - 2026-05-06 - defensive sprint: security trio + cache self-healing + MCP transport parity + Wave 3 paper cuts
 
 **Highlights** (11 PROBs closed in single defensive sprint):
 
@@ -391,11 +391,11 @@ Key security closures landing in this release:
 - **Quality**: PROB-051 (4/7 items) phase-fold unification + perf scans + module rustdocs, PROB-056 `partial_verdict` field surfaces phase-fold contract в type system, PROB-032 search score breakdown coherent с total
 - **Paper cuts**: PROB-027/030/033 verified-already-closed via E2E + PROB-038 NEW validator strip pipeline (HTML comments + fenced code + inline backticks), PROB-028 reindex resilience против Phase-1 abort, **PROB-059** body↔links drift validate warning (strict `## Related Artifacts` parser)
 
-**Cross-surface symmetry pattern emerged 7×** в этом sprint — fixing security primitive on primary path while leaving symmetric override paths unguarded. Now baseline audit prompt asks "grep ALL consumers" before declaring closure.
+**Cross-surface symmetry pattern emerged 7×** в этом sprint - fixing security primitive on primary path while leaving symmetric override paths unguarded. Now baseline audit prompt asks "grep ALL consumers" before declaring closure.
 
 **Test count**: 1977 → **1489 lib + integration suites = ~1995 tests** (+ regression coverage по каждому PROB).
 
-**Quality gates**: `cargo fmt --check`, `cargo clippy --workspace --all-targets --features test-helpers -- -D warnings`, `cargo test --workspace --features test-helpers` — all clean across all 38 suites, 0 failures.
+**Quality gates**: `cargo fmt --check`, `cargo clippy --workspace --all-targets --features test-helpers -- -D warnings`, `cargo test --workspace --features test-helpers` - all clean across all 38 suites, 0 failures.
 
 **Deferred to v0.31.0+**:
 - PROB-049 follow-up retry-loop (typed-error refactor через scoring path)
@@ -403,9 +403,9 @@ Key security closures landing in this release:
 - PROB-058 deferred ACs (driver-trait parity, r_eff_local perf bound)
 - PROB-059 follow-ups: `forgeplan reconcile` interactive command, workspace-wide drift cleanup
 
-### Added (Validation — PROB-059 closure, body↔links drift warning)
+### Added (Validation - PROB-059 closure, body↔links drift warning)
 
-- **PROB-059 ✅ — `body-links-drift` validate warning** (SHOULD-level).
+- **PROB-059 ✅ - `body-links-drift` validate warning** (SHOULD-level).
   New `body-links-drift` rule в `validation::base_rules()` flags
   artifacts whose body `## Related Artifacts` table mentions IDs not
   present в frontmatter `links:` array. Source-of-truth-divergence
@@ -415,7 +415,7 @@ Key security closures landing in this release:
 
   **Strict parser by design**: targets only formal `## Related Artifacts`
   table rows. Free-text mentions ("see also PRD-005") elsewhere в body
-  are ignored — incidental references shouldn't trigger drift warnings.
+  are ignored - incidental references shouldn't trigger drift warnings.
   HTML comments, fenced code blocks, и inline backtick code stripped
   via shared `strip_non_prose_for_leakage` helper (DRY против PROB-038).
 
@@ -437,23 +437,23 @@ Key security closures landing in this release:
   (out of scope для v1), workspace-wide `--apply` bulk fix, template
   hint в frontmatter, `--strict` flag для CI.
 
-### Fixed (Wave 3 batch closure — PROB-027 + PROB-030 + PROB-033 + PROB-038)
+### Fixed (Wave 3 batch closure - PROB-027 + PROB-030 + PROB-033 + PROB-038)
 
-- **PROB-027 ✅ verified-already-closed** — `forgeplan reindex` now
+- **PROB-027 ✅ verified-already-closed** - `forgeplan reindex` now
   rebuilds LanceDB from scratch when `lance/` dir missing. Closure
   shipped в earlier sprint (`LanceStore::init()` instead of `open()`
   in `reindex.rs:35`). E2E verified: `rm -rf .forgeplan/lance && forgeplan
   reindex` recreates table + repopulates от .md files.
-- **PROB-030 ✅ verified-already-closed** — BM25 prefix search regression.
+- **PROB-030 ✅ verified-already-closed** - BM25 prefix search regression.
   Closure shipped: `combined_score` uses `bm25_norm.max(keyword_score)`
   at smart.rs:153 (substring fallback already в place). E2E verified:
   `forgeplan search "auth"` returns 2 PRDs titled "Authentication ..."
   с kw=0.80.
-- **PROB-033 ✅ verified-already-closed** — `forgeplan new evidence` no
+- **PROB-033 ✅ verified-already-closed** - `forgeplan new evidence` no
   longer blocked by session state machine on fresh workspace. E2E
   verified: fresh init → new prd → new evidence works without
   `--force`.
-- **PROB-038 ✅ NEW closure** — Validator false-positive on tech names
+- **PROB-038 ✅ NEW closure** - Validator false-positive on tech names
   в HTML comments. Pre-PROB-038 `find_tech_leakage()` scanned raw text
   including `<!-- -->` comments и code fences. Template guidance comments
   с phrases like "DON'T leak React/Django/AWS into FR" были false-flagged.
@@ -465,13 +465,13 @@ Key security closures landing in this release:
   2. Strip fenced code blocks (\`\`\`...\`\`\`)
   3. Strip inline backtick code (\`Tech\`)
 
-  Real prose leakage в FR/NFR continues to trigger — only template
+  Real prose leakage в FR/NFR continues to trigger - only template
   guidance + code/quote contexts are immune.
 
   **E2E impact**: fresh PRD via `forgeplan new prd "Auth Test"` validate
   output went от 7 false positives (`aws, django, docker, oauth2,
   postgresql, react, redis, rest`) → 1 residual (`OAuth2` mention в
-  template's NFR-003 example row — actual prose, not in scope of this
+  template's NFR-003 example row - actual prose, not in scope of this
   fix). 86% reduction.
 
   **Tests**: +5 unit tests in `validation::checks::tests`
@@ -479,11 +479,11 @@ Key security closures landing in this release:
   regression guard). Suite: lib 1477 → 1483 PASS, 0 failures across
   38 suites.
 
-### Fixed (Search UX — PROB-032 closure, score breakdown lies)
+### Fixed (Search UX - PROB-032 closure, score breakdown lies)
 
-- **PROB-032 ✅ — `forgeplan search` score breakdown coherent с total**.
+- **PROB-032 ✅ - `forgeplan search` score breakdown coherent с total**.
   Pre-PROB-032 the display showed `kw=0.0 sem=0.0 r=0.0 g=0.0` while
-  total score was non-zero (e.g. 0.57) — violating "sum ≈ total"
+  total score was non-zero (e.g. 0.57) - violating "sum ≈ total"
   expectation и lying к user about ranking composition.
 
   **Root cause**: `SmartSearchResult` carries TWO keyword channels
@@ -509,9 +509,9 @@ Key security closures landing in this release:
   formula uses `max()` / `mean()` / `weighted_sum()` over multiple
   channels, display MUST show the actually-contributing channel(s).
 
-### Fixed (Reindex — PROB-028 closure, reindex resilience)
+### Fixed (Reindex - PROB-028 closure, reindex resilience)
 
-- **PROB-028 ✅ — `forgeplan reindex` resilience против Phase-1 abort**.
+- **PROB-028 ✅ - `forgeplan reindex` resilience против Phase-1 abort**.
   v0.17.1 introduced Phase 2/3 orphan trim (rows whose `.md` disappeared,
   и orphan relations cascading from trimmed artifacts) but the trim path
   was **unreachable** on workspaces с ANY title-divergent record. Phase 1
@@ -537,21 +537,21 @@ Key security closures landing in this release:
     files failed.
 
   **Tests**: +2 CLI integration tests (`cli_reindex_resilience`):
-  - `reindex_trims_orphan_after_md_file_deleted` — PROB-028 AC-5 verbatim
+  - `reindex_trims_orphan_after_md_file_deleted` - PROB-028 AC-5 verbatim
   - `reindex_continues_after_per_file_error_and_still_trims_orphans`
-    — recreates project-workspace bug shape
+    - recreates project-workspace bug shape
 
   **Real E2E**: project workspace orphans (PRD-001, SPEC-001) trimmed
   cleanly после fix; `forgeplan health` now reports clean (0 orphans).
 
   **Lesson**: when introducing a new pipeline phase, audit ALL paths
   через which the previous phase can short-circuit. `?` propagation в
-  a `for` loop is the most common offender — converting к
+  a `for` loop is the most common offender - converting к
   `match … { Ok ⇒ continue; Err ⇒ log + continue }` is the pattern.
 
-### Refactor (Architecture — PROB-056 closure, leaky verdict abstraction)
+### Refactor (Architecture - PROB-056 closure, leaky verdict abstraction)
 
-- **PROB-056 ✅ — `HealthReport.partial_verdict` field surfaces
+- **PROB-056 ✅ - `HealthReport.partial_verdict` field surfaces
   phase-fold contract в the type system**. Pre-PROB-056 the single
   `verdict` field silently switched semantic between callers:
   `health_report()` populated it as partial (phase_mismatches=0),
@@ -568,19 +568,19 @@ Key security closures landing in this release:
   as base для their own `compute_verdict_with()` recomputation.
 
   **Wire format**: `verdict` JSON field unchanged. New `partial_verdict`
-  appears in `--json` output (additive — non-breaking). CLI/MCP code
-  paths unchanged — both already route through `health_report_with_phase`
+  appears in `--json` output (additive - non-breaking). CLI/MCP code
+  paths unchanged - both already route through `health_report_with_phase`
   (PROB-051 closure) so `verdict` is the right value to consume.
 
   **Tests**: +2 unit tests validating invariants:
-  - `health_report_partial_verdict_equals_verdict_when_no_phase` —
+  - `health_report_partial_verdict_equals_verdict_when_no_phase` -
     legacy path both fields equal
-  - `health_report_with_phase_partial_verdict_invariant` —
+  - `health_report_with_phase_partial_verdict_invariant` -
     `partial_verdict` ALWAYS equals legacy `verdict` для same workspace,
     even when post-fold `verdict` diverges
 
   **Design choice**: additive (new field) vs hard rename (`verdict` →
-  `partial_verdict`). Picked additive — hard rename would force all
+  `partial_verdict`). Picked additive - hard rename would force all
   CLI/MCP/external code to migrate while still leaving the dual-semantic
   foot-gun on the JSON wire field name. Additive split lets `verdict`
   keep "best-known" user-facing semantic (= what consumers actually
@@ -590,9 +590,9 @@ Key security closures landing in this release:
 
   Suite: lib 1475 → **1477** PASS, 0 failures across 38 suites.
 
-### Fixed (Security — PROB-054 closure, prompt-injection-via-filesystem)
+### Fixed (Security - PROB-054 closure, prompt-injection-via-filesystem)
 
-- **PROB-054 ✅ — `produces_at` prompt-injection validator** (CWE-94
+- **PROB-054 ✅ - `produces_at` prompt-injection validator** (CWE-94
   / OWASP A03). Pre-PROB-054 `Step.produces_at` path was spliced into
   the `claude --print` natural-language prompt body via
   `to_string_lossy()` без character validation:
@@ -615,8 +615,8 @@ Key security closures landing in this release:
   helper in `claude_print.rs` with conservative allowlist regex
   `^[A-Za-z0-9._/-]+$` (alphanumeric, dot, underscore, forward slash,
   hyphen). Wired into both:
-  - `assemble_prompt()` — validates BEFORE splicing into prompt body
-  - `add_dir_for_produces_at()` — symmetric guard so argv splice fails
+  - `assemble_prompt()` - validates BEFORE splicing into prompt body
+  - `add_dir_for_produces_at()` - symmetric guard so argv splice fails
     on the same input
 
   Error messages use `escape_debug` for log-injection defense-in-depth
@@ -625,9 +625,9 @@ Key security closures landing in this release:
   **Tests**: +6 unit tests (5 char-class + 1 symmetric add_dir guard;
   mandate was 3). Suite: lib 1469 → 1475 PASS.
 
-### Fixed (Trust calculus + Performance — PROB-051 partial closure, Wave-1 Round 5 audit deferred)
+### Fixed (Trust calculus + Performance - PROB-051 partial closure, Wave-1 Round 5 audit deferred)
 
-- **PROB-051 partial ✅ — phase-fold unification + perf scans + module
+- **PROB-051 partial ✅ - phase-fold unification + perf scans + module
   docs** (Roadmap Tier 2 v0.30.0 Wave 1.3). Closes 4 of 7 deferred Round 5
   audit items in single sprint:
 
@@ -635,7 +635,7 @@ Key security closures landing in this release:
     `forgeplan_health` handler computed phase mismatches inline (читая
     `read_phase` для each active artifact) и folded the count into the
     verdict, while CLI `forgeplan health` ignored phase tracking entirely
-    — same workspace could return DIFFERENT verdicts через CLI vs MCP.
+    - same workspace could return DIFFERENT verdicts через CLI vs MCP.
     New `forgeplan_core::health::health_report_with_phase(store, ws)`
     folds the mismatch count via `compute_verdict_with` and is consumed
     by both CLI и MCP, guaranteeing identical verdicts.
@@ -643,7 +643,7 @@ Key security closures landing in this release:
   - **P-H1 single-scan**: pre-PROB-051 MCP forgeplan_health called
     `store.list_records(None)` twice (once inside `health_report`, once
     again for phase mismatch loop). Post-PROB-051 the new function does
-    a single scan и passes records через to both consumers — eliminates
+    a single scan и passes records через to both consumers - eliminates
     the duplicate query on every MCP health call.
 
   - **P-H2 parallel `read_phase`**: pre-PROB-051 phase reads ran
@@ -665,12 +665,12 @@ Key security closures landing in this release:
 
   **Side benefit**: CLI `forgeplan health` now renders a `Phase
   mismatches (N)` advisory section in text mode and `phase_mismatches[]`
-  array в `--json` output — operators using CLI no longer have to switch
+  array в `--json` output - operators using CLI no longer have to switch
   to MCP to see this advisory data.
 
   **Tests**: +2 lib unit tests
   (`health_report_with_phase_matches_legacy_for_empty_workspace`,
-  `health_report_with_phase_matches_legacy_when_no_mismatches`) — guard
+  `health_report_with_phase_matches_legacy_when_no_mismatches`) - guard
   against future drift between the two folding paths. Suite: lib 1467 →
   **1469** PASS, 0 failures across 38 suites.
 
@@ -679,14 +679,14 @@ Key security closures landing in this release:
   P-M1/M2 (perf items needing benchmark scaffold first), P-L5 (config
   caching), D-LOW-2/4 (doc cleanup), Round 4 M1 (typed-error sanitisation).
 
-### Fixed (Security — PROB-052 closure, Round 7 audit)
+### Fixed (Security - PROB-052 closure, Round 7 audit)
 
-- **PROB-052 ✅ — `which_in_path` TOCTOU + symlink-follow + perm gate
+- **PROB-052 ✅ - `which_in_path` TOCTOU + symlink-follow + perm gate
   hardening** (CWE-367 + CWE-426). Pre-PROB-052 the PATH-search helper
   did `is_file()` (silently follows symlinks), no `canonicalize`, no
   exec-bit / write-bit checks, no parent-directory permission check.
   Round 6 audit MED-1 flagged the function as exploitable on the
-  default Homebrew posture (`/usr/local/bin` 0o775 group=admin —
+  default Homebrew posture (`/usr/local/bin` 0o775 group=admin -
   any admin user can plant a hijacking binary).
 
   **Fix**: new `pub(super) resolve_safe_path` helper:
@@ -698,7 +698,7 @@ Key security closures landing in this release:
   - Windows skips the perm gate (ACL out of scope, documented) but
     still applies canonicalize + non-file rejection.
   - Empty PATH entries (POSIX `:` interpreted as `.`) are explicitly
-    skipped — no implicit cwd lookup (hijack vector for cloned hostile
+    skipped - no implicit cwd lookup (hijack vector for cloned hostile
     repos).
 
   **Round 7 audit (2026-05-06) closures**:
@@ -706,7 +706,7 @@ Key security closures landing in this release:
     branches in `AgentDispatcher::resolve_claude_binary`,
     `PluginDispatcher::resolve_binary`, и `resolve_forgeplan_binary`
     used bare `is_file()`. Round 7 routed all 4 surfaces through
-    `resolve_safe_path` so the gate applies symmetrically — operator
+    `resolve_safe_path` so the gate applies symmetrically - operator
     config setting `claude_binary = /usr/local/bin/claude` (group=admin
     Homebrew dir) is now rejected just like the PATH-resolved case.
   - **MED-1/MED-2 log-injection**: `tracing::warn!` rejection messages
@@ -730,21 +730,21 @@ Key security closures landing in this release:
   (PROB-050 A-6 pattern).
 
   **AC tracking**: AC-1/3/5/6 closed; AC-2 partial (file write-bit
-  clause closed; parent-dir *ownership* clause re-scoped — single-user
+  clause closed; parent-dir *ownership* clause re-scoped - single-user
   threat model bounded by parent-mode gate; multi-user shared
   workstation deferred until trigger fires); AC-4 caching re-scoped as
-  "no caching by design" — dispatcher recreated per `dispatch()` call,
+  "no caching by design" - dispatcher recreated per `dispatch()` call,
   per the AC's own MUST-NOT clause ("MUST NOT cache the resolved path
   indefinitely") which a `OnceCell<PathBuf>` would violate.
 
   **Files touched**: `helpers.rs` (+130 src + +160 tests),
   `agent_dispatcher.rs::resolve_claude_binary`,
   `plugin_dispatcher.rs::resolve_binary`. Suite: lib 1464 → 1467
-  (+3 net; sprint shipped 7 — exceeds AC-5 mandate of 3).
+  (+3 net; sprint shipped 7 - exceeds AC-5 mandate of 3).
 
-### Added (Security — PROB-053 / PRD-074 closure)
+### Added (Security - PROB-053 / PRD-074 closure)
 
-- **PROB-053 / PRD-074 ✅ — `Delegation::Command` shell-execution gate**
+- **PROB-053 / PRD-074 ✅ - `Delegation::Command` shell-execution gate**
   (CWE-78 / CWE-94 default-deny). The dispatcher refuses
   `delegate_to: command` steps unless ONE of the two opt-ins is present:
   - **CLI flag `--allow-shell`** on `forgeplan playbook run` (per
@@ -791,7 +791,7 @@ Key security closures landing in this release:
 
   **BREAKING (forgeplan-core lib only)**:
   - `validate_command_delegate_security(step, allow_shell)` parameter
-    renamed from `yes_flag` (semantics changed — now a dedicated
+    renamed from `yes_flag` (semantics changed - now a dedicated
     shell-exec opt-in, not the blanket --yes).
   - `SecurityError::ShellRequiresYes` renamed →
     `SecurityError::ShellRequiresAllowShell` (variant tag matches the
@@ -802,7 +802,7 @@ Key security closures landing in this release:
     existing `yes_flag`; defaults к `false`). Library consumers
     constructing `ExecutorConfig` directly must add the field.
   - `Config` struct gained `playbook: Option<PlaybookConfig>` field
-    (defaults к `None` — existing workspaces parse identically).
+    (defaults к `None` - existing workspaces parse identically).
 
   **Quality gates**: cargo fmt clean, clippy
   `--workspace --all-targets --features test-helpers -- -D warnings`
@@ -810,7 +810,7 @@ Key security closures landing in this release:
   shell-exec warning escape, full-argv render, pathological truncation,
   PlaybookConfig serde round-trip).
 
-  **Audit Round 7** (3 parallel adversarial agents — architect, code-reviewer,
+  **Audit Round 7** (3 parallel adversarial agents - architect, code-reviewer,
   security): 9+ findings closed in this PR (HIGH-A: yes-shadow + bad
   hint, HIGH-B: config-only banner, HIGH-D: silent config swallow,
   HIGH-E: MCP description, HIGH-F: terminal-injection sanitization,
@@ -819,15 +819,15 @@ Key security closures landing in this release:
   F4 MCP stderr trust asymmetry, MED-E `ExecutorConfig` field coupling,
   MED-1 ExecutorConfig invariant, plus LOW-1..LOW-4 cosmetic.
 
-### Fixed (Trust calculus — PROB-057 / PRD-075 closure)
+### Fixed (Trust calculus - PROB-057 / PRD-075 closure)
 
-- **PROB-057 / PRD-075 ✅ — R_eff cache self-healing on link/unlink/activate**.
+- **PROB-057 / PRD-075 ✅ - R_eff cache self-healing on link/unlink/activate**.
   Discovered during the PROB-053 PR review session: `forgeplan link` /
   `forgeplan activate` previously emitted a `Hint::info("verify R_eff")`
   pointing at `forgeplan score <ID>` but never invoked the recompute.
   Cached `r_eff_score` in LanceDB stayed stale until a manual `score`
   / `score-all` run, leaking stale values to **four** downstream
-  consumers — `forgeplan get` UI (`get.rs:80`), search filter
+  consumers - `forgeplan get` UI (`get.rs:80`), search filter
   `--has-evidence` (`search/filter.rs:93-94`), F-G-R quality grading
   (`scoring/fgr.rs:150`) и LLM ADI prompt context
   (`llm/reason.rs:218`). User-observed reproducer: PRD-074 reported
@@ -840,11 +840,11 @@ Key security closures landing in this release:
   synchronously after each `link`, `unlink`, `activate` mutation.
   `score` / `score-all` route through the same helper to keep one
   canonical "recompute + persist" path. Failure during auto-recompute
-  is non-fatal — the mutation succeeded, and `forgeplan score-all`
+  is non-fatal - the mutation succeeded, and `forgeplan score-all`
   remains the authoritative full-tree reconciliation surface.
 
   **Scope**: target artifact only. Parent / ancestor walk left to
-  `score-all` (PRD-075 §Non-Goals — bounded mutator latency). Schema
+  `score-all` (PRD-075 §Non-Goals - bounded mutator latency). Schema
   unchanged: workspaces from v0.29 read identically. `r_eff_recursive`
   signature preserved for downstream callers.
 
@@ -857,7 +857,7 @@ Key security closures landing in this release:
   unknown-id error surfacing. Full workspace test suite stays green
   (no regressions across the 1985-test baseline).
 
-### Changed (Trust calculus — PROB-058 partial closure, Round 9 audit)
+### Changed (Trust calculus - PROB-058 partial closure, Round 9 audit)
 
 - **PROB-058 AC-2/4/5/6 closed + MCP transport parity** (Round 9
   adversarial audit, 2 parallel agents). Cache self-healing now extends
@@ -866,32 +866,32 @@ Key security closures landing in this release:
     workspace lock and call `sync_score_target` after mutation; CLI
     parity restored. Hint strings updated к `forgeplan_score_all`
     (FR-009).
-  - **MCP `forgeplan_score`** — pre-Round-9 this tool computed
+  - **MCP `forgeplan_score`** - pre-Round-9 this tool computed
     `r_eff_recursive` for display but **never persisted** the
     recomputed value (latent bug since MCP launch). Now routes through
     `sync_score_target` to write the cache.
   - **`forgeplan score` / `score --all`** acquire `open_store_locked()`
     so concurrent CLI/MCP mutators serialize correctly. Trade-off:
-    `score --all` now holds the lock for the entire batch — на dense
+    `score --all` now holds the lock for the entire batch - на dense
     graphs (>200 artifacts × deep deps) this can starve concurrent
     callers past the 30 s lock timeout. PROB-058 AC-3 (`r_eff_local`
     variant) tracks the bound.
   - **AC-2 regression test**: real concurrent-writer test added
     (`parallel_score_all_invocations_serialize_via_workspace_lock`)
     spawning two `forgeplan score --all` processes via OS-level fs2
-    advisory lock — closes the methodology gap that motivated
+    advisory lock - closes the methodology gap that motivated
     `feedback_meta_tooling_discipline.md`.
   - **AC-4 hint contract**: 3 negative tests (link / unlink / activate)
     use line-shape match (not substring contains) to prevent
     concatenated drift like `score-all && score <ID>` from passing.
-  - **AC-5 threat model**: PRD-075 §"Threat Model — Mutation Latency
+  - **AC-5 threat model**: PRD-075 §"Threat Model - Mutation Latency
     Side-Channel" documents the timing oracle posture for
     multi-tenant/MCP-shared deployments, with explicit
     trigger-to-revisit conditions.
   - **AC-6 docstring**: `sync_score_target` rewrites scope to
     distinguish evidence collection (bidirectional), dependency
     recursion (descendant-only), and transitive parent rescore (out of
-    scope) — fixes Round 9 HIGH-3 factual mismatch with implementation.
+    scope) - fixes Round 9 HIGH-3 factual mismatch with implementation.
 
   **Deferred to follow-up sprint** (PROB-058 AC-1, AC-3): driver-trait
   parity for `sync_score_target` (требует `r_eff_recursive` signature
@@ -905,12 +905,12 @@ Key security closures landing in this release:
   Suite total: **1985 baseline → ~1995+ tests pass**, 0 fail across
   all gates (fmt / clippy --deny-warnings / workspace test).
 
-## [0.29.0] — 2026-05-05 — verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
+## [0.29.0] - 2026-05-05 - verdict aggregator + typed errors + claude --print refactor + CWE-426 hardening
 
 Bundles 10 merge-PRs (#239..#248) since v0.28.0 (2026-05-03). Five
 load-bearing themes:
 
-**(1) PROB-029 — typed `Verdict` aggregator on `HealthReport`** —
+**(1) PROB-029 - typed `Verdict` aggregator on `HealthReport`** -
 `forgeplan health` теперь возвращает структурированный `Empty / Healthy /
 NeedsAttention / Unhealthy` verdict с configurable thresholds, MCP +
 CLI surfaces консистентны, banner driven off verdict (eliminates the
@@ -921,7 +921,7 @@ before fallthrough; `Verdict::Empty` is now a proper 4th variant
 (was deferred at Round 5 via manual overrides; resolved by-construction
 in Round 6).
 
-**(2) PROB-049 — typed errors H-class** —
+**(2) PROB-049 - typed errors H-class** -
 `MutationError::StoreError` split into `StoreTransient` (recoverable) +
 `StoreFatal` (not recoverable). `MutationContext<'_>` introduced for
 all 17 projection helpers, replacing separate `(workspace, store)`
@@ -931,37 +931,37 @@ of `forgeplan-core`; CLI/MCP surfaces unaffected. Round 6 audit honesty
 note: `is_recoverable()` is intentionally infrastructure-only in
 v0.29.0; first MCP retry-loop consumer wires in v0.30.0.
 
-**(3) PROB-050 — `claude --print` dispatch refactor (A-4..A-15)** —
+**(3) PROB-050 - `claude --print` dispatch refactor (A-4..A-15)** -
 Single source of truth in `playbook::dispatch::claude_print`:
 `invoke()` (full 9-step orchestration), `build_argv()` (argv +
 both security gates inline), `parse_envelope()` (UTF-8-trimmed JSON
-decode — silent divergence закрыт), `format_timeout_msg()` (uniform
-second/millisecond rendering — Round 6 audit closure: sub-second
+decode - silent divergence закрыт), `format_timeout_msg()` (uniform
+second/millisecond rendering - Round 6 audit closure: sub-second
 durations now render `Nms` instead of truncating to "0s"). 
 `helpers::which_in_path` consolidated; 3 identical local copies
 removed. `DISPATCH_ENV_LOCK` (cfg(test)) closes cross-test PATH-
 mutation race. **Argv shape byte-identical pre/post**; agent diagnostic
 strings unified to plugin's pre-existing format (Round 6 audit
-honesty correction — pre-claim of "no behaviour change" was incorrect
+honesty correction - pre-claim of "no behaviour change" was incorrect
 about diagnostic strings while correct about argv shape).
 
-**(4) PROB-050 A-14 — CWE-426 binary-substitution mitigation
+**(4) PROB-050 A-14 - CWE-426 binary-substitution mitigation
 fully closed** (Round 6 broadens original mitigation):
 - **Env-var path**: `$FORGEPLAN_CLAUDE_BIN` / `$FORGEPLAN_BIN` gated
-  behind `#[cfg(test)]` — release binaries do not contain the
+  behind `#[cfg(test)]` - release binaries do not contain the
   symbol.
 - **Struct-API path** (Round 6 audit HIGH-1): `pub claude_binary` field
-  + `pub with_claude_binary` builder — equivalent compile-time injection
-  surface — demoted to private field; builder gated behind
+  + `pub with_claude_binary` builder - equivalent compile-time injection
+  surface - demoted to private field; builder gated behind
   `cfg(any(test, all(feature = "test-helpers", debug_assertions)))`.
   Symmetric across `AgentDispatcher` + `PluginDispatcher`. Real E2E:
   `strings target/release/forgeplan | grep -c FORGEPLAN_CLAUDE_BIN` →
   `0` (symbol absent from release binary).
 
-**(5) PROB-051 — Wave-1 audit closures** (cherry-picked from
+**(5) PROB-051 - Wave-1 audit closures** (cherry-picked from
 `integration/w1-audit-v3`): EVID-103 documents Round 4 + Round 5
 audit on the integration branch (8 HIGH found+closed Round 4; 7 NEW
-HIGH found Round 5 — 4 closed inline, 3 architectural deferred to
+HIGH found Round 5 - 4 closed inline, 3 architectural deferred to
 PROB-051 itself).
 
 ### Pre-conditions verified before cutting
@@ -971,34 +971,34 @@ PROB-051 itself).
   -- -D warnings` clean (0 warnings)
 - `cargo test --workspace --features test-helpers` все PASS
   (1977 tests, 0 failed, 5 ignored, 38 suites)
-- `forgeplan health` clean — verdict `Healthy`, 0 blind spots,
+- `forgeplan health` clean - verdict `Healthy`, 0 blind spots,
   0 orphans, 0 stale
 - Real E2E #1 (Verdict::Empty release binary) PASS
 - Real E2E #2 (CWE-426 strings binary check, 0 occurrences) PASS
 - Real E2E #3 (real workspace health smoke) PASS
 - Real E2E #4..#6 (format_timeout_msg, dispatch parity, validate) PASS
 
-### Security — Dependabot (Round 4 triage, 2026-05-05)
+### Security - Dependabot (Round 4 triage, 2026-05-05)
 
 - 17 of 18 alerts from v0.28.0 round 3 closed automatically with the
   v0.28.0 → main merge (rust patches + npm audit fix cycle).
 - **1 alert remains open**: `lru 0.12.5` ([Alert #3], CVSS 0.0,
   Miri-only stacked-borrows in `IterMut`). Transitive via
   `tantivy → lance → lancedb`; no direct exploit surface. Carry-forward
-  to v0.30.0 — accepted-with-justification, re-evaluate on
+  to v0.30.0 - accepted-with-justification, re-evaluate on
   tantivy 0.25 release. Full triage:
   [`docs/operations/dependabot-triage-2026-05-05.md`](docs/operations/dependabot-triage-2026-05-05.md).
 
 ### Added (CI infrastructure, methodology)
 
-- **PROB-050 A-30 ✅ closes — `docs/operations/QUALITY-GATES.{md,ru.md}`
+- **PROB-050 A-30 ✅ closes - `docs/operations/QUALITY-GATES.{md,ru.md}`
   documents all CI quality gates** (fmt, clippy, test, health, validate,
   drift detector). Cross-referenced from `CLAUDE.md §Hooks enforcement`
   and `docs/methodology/release-workflow.md §Pre-conditions`.
 
-### Changed (forgeplan-core public API — BREAKING for direct library consumers)
+### Changed (forgeplan-core public API - BREAKING for direct library consumers)
 
-- **PROB-050 A-7 ✅ closes — `playbook::dispatch::claude_print` symbol
+- **PROB-050 A-7 ✅ closes - `playbook::dispatch::claude_print` symbol
   visibility tightened**. Following empirical verification (`rg <name>
   crates/`) that no in-tree consumer outside the dispatch module reads
   these symbols, the following `pub` items were tightened:
@@ -1015,22 +1015,22 @@ PROB-051 itself).
   reaching into helpers. If a use case requires a tightened symbol, open
   a PROB issue justifying the public contract.
 
-### Changed (forgeplan-core public API — additive, but downstream library consumers should rebuild)
+### Changed (forgeplan-core public API - additive, but downstream library consumers should rebuild)
 
-- **PROB-050 A-4 + A-5 + A-6 + A-11 + A-15 ✅ close — `claude --print`
+- **PROB-050 A-4 + A-5 + A-6 + A-11 + A-15 ✅ close - `claude --print`
   dispatch refactor**. Single source of truth in
   `playbook::dispatch::claude_print`:
-  - `claude_print::invoke()` — full 9-step orchestration
+  - `claude_print::invoke()` - full 9-step orchestration
     (argv + env + prompt + spawn + timeout + parse + render).
     AgentDispatcher and PluginDispatcher reduce to (a) variant unpack,
     (b) name validation, (c) binary resolution, (d) call invoke.
-  - `claude_print::build_argv()` — argv construction with both security
+  - `claude_print::build_argv()` - argv construction with both security
     gates inline (`validate_allowed_tools` + `add_dir_for_produces_at`).
     Argv-shape parity between dispatchers now enforced by construction.
-  - `claude_print::parse_envelope()` — UTF-8-trimmed JSON envelope decode.
-    Plugin dispatcher previously had no `.trim()` — silent divergence
+  - `claude_print::parse_envelope()` - UTF-8-trimmed JSON envelope decode.
+    Plugin dispatcher previously had no `.trim()` - silent divergence
     from agent path closed.
-  - `claude_print::format_timeout_msg()` — uniform second/millisecond
+  - `claude_print::format_timeout_msg()` - uniform second/millisecond
     rendering. Agent dispatcher previously leaked `Duration` Debug repr;
     plugin dispatcher used `.as_secs()` only. PR-E Round 6 audit closure:
     sub-second durations now render `Nms` (was: `0s` for any
@@ -1039,14 +1039,14 @@ PROB-051 itself).
     common-case `Ns` rendering is byte-stable.
   - `helpers::which_in_path` promoted from `fn` to `pub(super) fn`;
     3 identical local copies removed from the dispatchers.
-  - `claude_print::DISPATCH_ENV_LOCK` — `#[cfg(test)] pub(super) static
+  - `claude_print::DISPATCH_ENV_LOCK` - `#[cfg(test)] pub(super) static
     tokio::sync::Mutex<()>` shared by `agent_dispatcher::tests`,
     `plugin_dispatcher::tests`, and `helpers::tests` (Round 5 audit
     Logic LOW-1 + PR-E audit HIGH-1: cross-test PATH-mutation race
     fully closed).
   - **Behaviour delta** (corrected from earlier honesty-of-claim audit):
     argv shape IS byte-identical pre/post; agent-side diagnostic strings
-    were unified to plugin's pre-existing format — specifically
+    were unified to plugin's pre-existing format - specifically
     `"failed to decode claude --print JSON envelope"` (was "produced
     unparseable JSON envelope" agent-side), `format_timeout_msg`
     output (was `Duration` Debug repr agent-side), and the new
@@ -1054,14 +1054,14 @@ PROB-051 itself).
     path always had it). Operators / scripts / log-grep regexes that
     matched the old agent-only strings need a one-line update.
 
-- **PROB-049 H-1 ✅ closes — `MutationError::StoreError` split into typed
+- **PROB-049 H-1 ✅ closes - `MutationError::StoreError` split into typed
   variants `StoreTransient` (recoverable) and `StoreFatal` (not recoverable).**
   The legacy `StoreError(#[from] anyhow::Error)` collapse-everything variant is
   removed. Categorisation logic (`MutationError::from_store_err`) inspects the
   `anyhow::Error` chain (lancedb / std::io shapes) and routes between the two.
-  Default fallthrough is `StoreTransient` — strict refinement of legacy
+  Default fallthrough is `StoreTransient` - strict refinement of legacy
   recoverable=true. **Honesty note** (PR-E Round 6 audit HIGH-2):
-  `is_recoverable()` is intentionally infrastructure-only in v0.29.0 —
+  `is_recoverable()` is intentionally infrastructure-only in v0.29.0 -
   no MCP / CLI retry loop currently consumes it. The audit flagged this
   as a risk (variants drifting from real failure modes without a
   consumer). Mitigation: this CHANGELOG block is the load-bearing
@@ -1070,14 +1070,14 @@ PROB-051 itself).
   contention) will close the loop. Until then, downstream library
   consumers calling `is_recoverable()` should treat the boolean as a
   *hint* rather than a stable contract.
-- **PROB-049 H-6 ✅ closes — `MutationContext` introduced for projection helpers.**
+- **PROB-049 H-6 ✅ closes - `MutationContext` introduced for projection helpers.**
   All 17 file-first mutation helpers in `forgeplan_core::projection` now take
   `&MutationContext<'_>` instead of separate `(workspace, store)` arguments.
   47 call sites updated across `forgeplan-cli` + `forgeplan-mcp`. The struct
-  is `#[non_exhaustive]` and constructed via `MutationContext::new(...)` —
+  is `#[non_exhaustive]` and constructed via `MutationContext::new(...)` -
   external library consumers may not use a struct literal.
-- **PROB-049 H-4 ✅ closes — `# Errors` rustdoc on all 17 projection helpers.**
-- **PROB-029 ✅ closes — typed `Verdict` aggregator (`Empty / Healthy /
+- **PROB-049 H-4 ✅ closes - `# Errors` rustdoc on all 17 projection helpers.**
+- **PROB-029 ✅ closes - typed `Verdict` aggregator (`Empty / Healthy /
   NeedsAttention / Unhealthy`) on `HealthReport`.** Pure
   `compute_verdict[_with]` functions with configurable
   `VerdictThresholds`. Both new public types are `#[non_exhaustive]`. CLI
@@ -1098,7 +1098,7 @@ PROB-051 itself).
 
 ### Security
 
-- **PROB-050 A-14 ✅ closes — CWE-426 binary substitution mitigated**
+- **PROB-050 A-14 ✅ closes - CWE-426 binary substitution mitigated**
   (PR-E Round 6 audit HIGH closure broadens the original mitigation).
   Two equivalent injection surfaces are now both closed:
 
@@ -1123,7 +1123,7 @@ PROB-051 itself).
      aliases `with_task_tool` / `with_task_tool_path`) behind
      `#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]`.
      Pattern mirrors `LanceStore` test-helper gating in
-     `crates/forgeplan-core/src/db/store.rs:361-384` —
+     `crates/forgeplan-core/src/db/store.rs:361-384` -
      `debug_assertions` ensures a downstream consumer who accidentally
      enables `test-helpers` in a `--release` build still gets a
      compile error, not a silent activation. Both surfaces now
@@ -1133,7 +1133,7 @@ PROB-051 itself).
 
   **Migration for operators** (CLI / brew / binary distributions):
   the env-var path was never a documented contract; operators relying on
-  it for production override should pin `claude` via `$PATH` — that is
+  it for production override should pin `claude` via `$PATH` - that is
   the only supported binary-resolution surface at the CLI / playbook
   layer. There is no per-invocation override at the YAML schema (SPEC-003)
   today; tracked as PROB-050 A-31 if such a surface becomes needed.
@@ -1144,30 +1144,30 @@ PROB-051 itself).
   profile, or unit-test cfg). For production wiring, use `new()` and
   rely on `$PATH` resolution.
 
-### Deferred to v0.30.0 (PR-E Round 6 audit findings — pre-existing surfaces, not v0.29.0 regressions)
+### Deferred to v0.30.0 (PR-E Round 6 audit findings - pre-existing surfaces, not v0.29.0 regressions)
 
 - **TOCTOU + symlink-follow in `which_in_path`** (Sec MED-1):
   `is_file()` follows symlinks, no `canonicalize`, no executable-bit
   check. Window between resolve and `Command::spawn` allows TOCTOU
   swap on a writable PATH dir. Pre-existing surface (existed before
-  PR-E refactor). Tracked as **PROB-052** — consider canonicalize +
+  PR-E refactor). Tracked as **PROB-052** - consider canonicalize +
   parent-dir ownership/mode check + path caching on dispatcher.
 - **`Delegation::Command` CWE-78 surface** (Sec MED-2):
   `Delegation::Command { command: Vec<String> }` parses directly from
   YAML with no allowlist / signing / user-facing warning. Real shell
   injection vector if playbooks loaded from network/marketplace.
-  Tracked as **PROB-053** — gate behind feature flag /
+  Tracked as **PROB-053** - gate behind feature flag /
   `--allow-shell` CLI flag, or require signing for marketplace.
 - **`assemble_prompt` produces_at injection** (Sec LOW-1):
   workspace-relative path is splice-formatted into natural-language
   prompt; backticks could close markdown code-fence and inject
   prompt-instructions to the agent. Pre-existing surface. Tracked
-  as **PROB-054** — validate `produces_at` against
+  as **PROB-054** - validate `produces_at` against
   `^[A-Za-z0-9._/-]+$` before splicing.
 - **`claude_print` god-module split** (Arch MED-2):
   module is 1066 LOC with ~9 responsibilities (argv, env, prompt,
   validators, byte-truncation, JSON parsing, failure rendering,
-  timeout formatting, test mutex). Tracked as **PROB-055** —
+  timeout formatting, test mutex). Tracked as **PROB-055** -
   refactor into `claude_print/{argv.rs, envelope.rs, validators.rs,
   invoke.rs, test_lock.rs}` keeping `mod.rs` as façade. Cosmetic /
   maintainability, not security.
@@ -1177,16 +1177,16 @@ PROB-051 itself).
   consider removing stored field in v0.30.0 or renaming to
   `partial_verdict`. Tracked as **PROB-056**.
 
-## [0.28.0] — 2026-05-03 — file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
+## [0.28.0] - 2026-05-03 - file-first invariant compile-enforced + claude --print dispatchers + canonical playbooks
 
 Bundles 14 merge-PRs (#224..#237) since v0.27.0 (2026-04-28). Three
 load-bearing themes: **(1) PRD-073 file-first invariant compile-enforced**
-(ADR-003 — `LanceStore::*` mutating methods are now `pub(crate)`,
+(ADR-003 - `LanceStore::*` mutating methods are now `pub(crate)`,
 file-first projection wrappers are the only mutation surface), **(2)
-ADR-011 Phase B Wave 1** — Plugin and Agent dispatchers shell out to
+ADR-011 Phase B Wave 1** - Plugin and Agent dispatchers shell out to
 `claude --print` on the real `claude` 2.1.126 binary, replacing the
 fictional `task-tool` from ADR-010, **(3) Track 4-A8 canonical
-playbooks** — `release.yaml` + `brownfield-docs.yaml` ship as runnable
+playbooks** - `release.yaml` + `brownfield-docs.yaml` ship as runnable
 templates for marketplace skill/mapping authors.
 
 Real-E2E verification of Phase B Wave 1 (PR 1 / 2026-05-03,
@@ -1208,7 +1208,7 @@ forgeplan health clean.
 
 ### Added (CI infrastructure)
 
-- **`scripts/check-mcp-tool-count.sh`** — drift detector: compares actual MCP
+- **`scripts/check-mcp-tool-count.sh`** - drift detector: compares actual MCP
   tool count in `crates/forgeplan-mcp/src/server.rs` against all documentation
   locations (README, CLAUDE.md, website, docs). Introduced after a v0.28.0
   release audit (external OpenAI agent) found 18 stale references across the
@@ -1243,7 +1243,7 @@ forgeplan health clean.
   `audit.yaml` steps 1-3). Real-E2E proof on 2026-05-04: all 3 parallel
   agents successfully spawned, claude resolved bare slugs
   (`architect-reviewer`, `code-reviewer`, `security-expert`), 502s
-  wall-clock real work + ~$3.50 spent — closing what would have been
+  wall-clock real work + ~$3.50 spent - closing what would have been
   a guaranteed `DispatchError::Transport` reject pre-spawn.
 - **PROB-050 A-29 NEW** (discovered during A-28 verification):
   `claude_print::DEFAULT_BUDGET_USD = $1.00` слишком низок для
@@ -1257,7 +1257,7 @@ forgeplan health clean.
 
 - `website/public/robots.txt`: explicit `Allow: /` for 18 named AI
   crawlers (GPTBot, ClaudeBot, Google-Extended, CCBot, Applebot,
-  PerplexityBot, и т.д.) — Forgeplan документация specifically built
+  PerplexityBot, и т.д.) - Forgeplan документация specifically built
   for agentic consumers, signal openness explicitly rather than rely
   on absence of `Disallow`.
 - `website/public/llms.txt`: curated entry-point per emerging
@@ -1266,13 +1266,13 @@ forgeplan health clean.
   links, CLI/MCP reference, getting-started anchor. Without this, AI
   agents had to guess which paths matter.
 
-### Detail — PRD-073 file-first invariant (EVID-094 R_eff=0.80 grade A)
+### Detail - PRD-073 file-first invariant (EVID-094 R_eff=0.80 grade A)
 
 Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
 (general / live-test / Rust-focused / final team-lead) closed
 7 CRITICAL + 13 HIGH findings. PROB-048 deprecated as resolved.
 
-### Added — file-first projection helpers (15 total)
+### Added - file-first projection helpers (15 total)
 
 - 9 mutation helpers: `create_artifact_with_projection`,
   `delete_artifact_with_projection`, `update_metadata_with_projection`,
@@ -1335,8 +1335,8 @@ Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
   // After (MutationResult):
   match create_artifact_with_projection(...).await {
       Err(MutationError::InvalidId(_)) => /* fatal input */,
-      Err(e) if e.is_recoverable()     => /* transient — retry ok */,
-      Err(_)                           => /* fatal — surface to user */,
+      Err(e) if e.is_recoverable()     => /* transient - retry ok */,
+      Err(_)                           => /* fatal - surface to user */,
       Ok(path) => /* happy path */,
   }
   ```
@@ -1347,11 +1347,11 @@ Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
   with the actual on-disk location. CLI callers (`reindex`, `git_sync`,
   `watch`) updated. (PRD-073 Phase 3c)
 - **`update_body_with_projection` now returns `RowNotFound`** (not
-  `StoreError`) for the missing-id case — fixes Wave 1A audit finding
+  `StoreError`) for the missing-id case - fixes Wave 1A audit finding
   where `is_recoverable() == true` would have mislabeled an
   unrecoverable input error as a transient I/O failure.
 
-### Changed (behavioral — visible to CLI users)
+### Changed (behavioral - visible to CLI users)
 
 - **All 22 CLI mutation handlers now hold an exclusive workspace lock**
   (30 s timeout) for the duration of the operation. Concurrent
@@ -1367,7 +1367,7 @@ Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
   (PRD-073 Phase 3c R2 audit M-R2-3 / security). Previously, an
   artifact created with a Cyrillic / CJK / emoji title (anything that
   slugifies to empty) was rendered with `title: untitled` in the file
-  frontmatter — losing the user's original title from the on-disk
+  frontmatter - losing the user's original title from the on-disk
   representation while the DB row preserved it. The Phase 3c
   `projection_slug` helper now applies the `untitled` fallback only
   to the on-disk filename (e.g. `prds/PRD-001-untitled.md`), and the
@@ -1416,7 +1416,7 @@ Phase 3a → 3b → 3c → 4. Four adversarial audit rounds
 - `forgeplan new` non-tty similar-title prompt: explicit `Error: ...
   Fix: --allow-duplicate` instead of silent cancel.
 
-## [0.27.0] — 2026-04-28 — Real subprocess dispatchers + init recommendation hints + greenfield playbook (EPIC-007 Phase 6)
+## [0.27.0] - 2026-04-28 - Real subprocess dispatchers + init recommendation hints + greenfield playbook (EPIC-007 Phase 6)
 
 Phase 6 переводит engine layer из v0.26.0 в **user-facing activation**.
 PRD-072 / RFC-007 / ADR-010 закрывают Phase 5 deferral: 5 production
@@ -1424,110 +1424,110 @@ PRD-072 / RFC-007 / ADR-010 закрывают Phase 5 deferral: 5 production
 direct call), `forgeplan init` теперь эмитит recommendation hints, и
 канонический `greenfield-kickoff.yaml` доступен в marketplace.
 
-### Added — Real subprocess dispatchers (PRD-072 / RFC-007 / ADR-010)
+### Added - Real subprocess dispatchers (PRD-072 / RFC-007 / ADR-010)
 
-- **`forgeplan-core::playbook::dispatch::{plugin,agent,skill,command,forgeplan_core}_dispatcher`** —
+- **`forgeplan-core::playbook::dispatch::{plugin,agent,skill,command,forgeplan_core}_dispatcher`** -
   5 production реализаций trait `Dispatcher`. Замена `MockDispatcher::AlwaysOk`
   в `playbook run --yes` и MCP `forgeplan_playbook_run`.
-- **`PluginDispatcher` (FR-1)** — claude-code-plugin subprocess invocation,
+- **`PluginDispatcher` (FR-1)** - claude-code-plugin subprocess invocation,
   default 600s timeout, fallback_hint surfacing на missing-install.
-- **`AgentDispatcher` (FR-2)** — task-tool agent-invoke, default 300s timeout,
+- **`AgentDispatcher` (FR-2)** - task-tool agent-invoke, default 300s timeout,
   symmetric к plugin path.
-- **`SkillDispatcher` (FR-3)** — in-process v1 stub (trace-only). Real registry
+- **`SkillDispatcher` (FR-3)** - in-process v1 stub (trace-only). Real registry
   resolution отложена в Wave 5.
-- **`CommandDispatcher` (FR-4)** — security-hardened: `env_clear` + allow-list,
+- **`CommandDispatcher` (FR-4)** - security-hardened: `env_clear` + allow-list,
   no shell expansion, `--yes` gate trust upstream. Default 180s.
-- **`ForgeplanCoreDispatcher` (FR-5)** — direct internal call (no subprocess)
+- **`ForgeplanCoreDispatcher` (FR-5)** - direct internal call (no subprocess)
   для `ingest`/`new`/`validate`/`activate`/`search`. Замена Phase 5 CLI
-  shell-out — теперь делегация выполняется в том же процессе.
-- **`dispatch::helpers::run_subprocess`** — общая обёртка `tokio::process::Command`
+  shell-out - теперь делегация выполняется в том же процессе.
+- **`dispatch::helpers::run_subprocess`** - общая обёртка `tokio::process::Command`
   с `kill_on_drop(true)`, `Stdio::piped` для stdout/stderr, `Stdio::null` для stdin,
   concurrent drain через `tokio::join!`, 10 MiB cap, timeout с child kill.
 - **Pre-Wave 0 split**: `dispatch.rs` (single 466 LOC) → `dispatch/` directory
   с per-delegate modules. `mod.rs` сохраняет trait + Mock/Recording stubs +
   DispatchError + SecurityError без изменения публичного API.
 
-### Added — Init recommendation wiring (PRD-067 AC-3/4/5/7 closed)
+### Added - Init recommendation wiring (PRD-067 AC-3/4/5/7 closed)
 
-- **`commands::init::run` extension (FR-6)** — после workspace creation
+- **`commands::init::run` extension (FR-6)** - после workspace creation
   собирает project signals (`detect_signals`) + installed plugins
   (`detect_plugins(extended_registry)`) + `build_recommendations` +
   `format_recommendations` → emit на stderr.
-- **3 bundled `KnownPlaybook` descriptors** — `greenfield-kickoff`,
-  `brownfield-docs`, `brownfield-code` — для recommendation engine
+- **3 bundled `KnownPlaybook` descriptors** - `greenfield-kickoff`,
+  `brownfield-docs`, `brownfield-code` - для recommendation engine
   до момента когда полные marketplace YAML файлы land.
 - **Backward compat**: `FORGEPLAN_HINTS=0` или non-TTY stderr → no
   recommendation emission (PRD-067 AC-7).
 - **Non-fatal degradation**: signal/plugin detection failure → warning
   на stderr + продолжение init (no abort).
 
-### Added — Canonical greenfield playbook (PRD-072 FR-7)
+### Added - Canonical greenfield playbook (PRD-072 FR-7)
 
-- **`marketplace/playbooks/greenfield-kickoff.yaml`** — 7 шагов через
+- **`marketplace/playbooks/greenfield-kickoff.yaml`** - 7 шагов через
   `ForgeplanCore` + 1 optional `Skill` step. Все мандатные шаги без
   внешних плагинов: `capture-vision` (note) → `stack-decision` (adr) →
   `kickoff-epic` (epic) → 3× `prd-feature` (parallel after epic) →
   `scaffold-docs` (skill, `on_error: continue`).
 - **`forgeplan playbook validate`** проходит: `OK: greenfield-kickoff
   (7 steps)` + `Done.` hint.
-- **Documentation footer в YAML** — purpose, expected duration, fit
+- **Documentation footer в YAML** - purpose, expected duration, fit
   в methodology.
 
-### Changed — Schema 1.0 → 1.1 (additive)
+### Changed - Schema 1.0 → 1.1 (additive)
 
-- **`Step.timeout_seconds: Option<u32>`** (FR-8) — backward compat:
+- **`Step.timeout_seconds: Option<u32>`** (FR-8) - backward compat:
   старые playbook'и без поля грузятся OK с дефолтом per-delegate
   type (300s general / 600s plugin / 180s command/skill).
 - **`SPEC-003 schema_version`** bumped 1.0 → 1.1. Loader принимает
   оба значения (semver-range minor bump).
 
-### Fixed — Phase 6 real-world bugs (PR #220, commit 69ea571)
+### Fixed - Phase 6 real-world bugs (PR #220, commit 69ea571)
 
 После merge'а Phase 6 в dev manual smoke testing на release binary
 обнаружил 4 production bugs, которые 1834 automated тестов пропустили:
 
-- **HIGH `playbook show <name>`** — name lookup НЕ находил
+- **HIGH `playbook show <name>`** - name lookup НЕ находил
   `marketplace/playbooks/`. Discovery roots расширены до workspace
   marketplace, не только `.forgeplan/playbooks/` + `~/.claude/plugins/*/playbooks/`.
   Теперь shipping playbooks доступны через name lookup, не только absolute path.
-- **HIGH `plugins doctor`** — exit 0 при missing plugins (документировано
+- **HIGH `plugins doctor`** - exit 0 при missing plugins (документировано
   exit 1). Fixed: `if !missing.is_empty() || !outdated.is_empty() { exit(1) }`.
   CI gate теперь работает.
-- **HIGH `marketplace/playbooks/brownfield-code.yaml`** — `detect-c4-need`
+- **HIGH `marketplace/playbooks/brownfield-code.yaml`** - `detect-c4-need`
   step missing `input.id`, validate fails на step 1. Removed broken step,
   playbook reduced 5 → 4 steps, validate clean.
-- **CRITICAL systemic** — все error paths возвращали `exit 0`
+- **CRITICAL systemic** - все error paths возвращали `exit 0`
   (`eprintln!("Error:..."); return Ok(())`). Fixed ~10 sites в
   `commands/playbook.rs` + `ingest.rs`: explicit `std::process::exit(1)`.
   Real CI integration теперь catches all CLI failures.
-- **BONUS dev profile fix (commit 0acf884)** — `[profile.dev] debug =
+- **BONUS dev profile fix (commit 0acf884)** - `[profile.dev] debug =
   "line-tables-only"` снижает linker memory ~50%. Закрыт recurring
   `collect2: ld signal 7 [Bus error]` OOM на ubuntu-latest 16GB
   который преследовал PR #217+ Phase 5/6 PRs. Universal CI speedup.
 
-### Fixed — PROB-047 mitigation 1 (PR #221, commit 80f458c)
+### Fixed - PROB-047 mitigation 1 (PR #221, commit 80f458c)
 
 `scan-import` classifier (`crates/forgeplan-core/src/scan/detect.rs`)
 ошибочно классифицировал product guides и instruction files как
 PRD-артефакты через **Tier 3 content heuristics** (`## Goals`,
 `## Problem`, `## Decision` headings). PR #218 был symptom-only
-cleanup — false-positives recurred при следующем scan-import.
+cleanup - false-positives recurred при следующем scan-import.
 
-- **`is_doc_path(relative_path: &Path) -> bool`** — blacklist для:
+- **`is_doc_path(relative_path: &Path) -> bool`** - blacklist для:
   recursive `docs/`, `marketplace/`, plus root-level meta-files
   (`CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`,
   `CONTRIBUTING.md`, `TODO.md`, `ROADMAP.md`, `LICENSE.md`,
   `SECURITY.md`, plus `.ru.md` localized variants).
-- **`detect_kind_with_path(filename, relative_path, content)`** —
+- **`detect_kind_with_path(filename, relative_path, content)`** -
   path-aware variant suppresses Tier 3 ONLY. Tier 1 (frontmatter
   `kind:`) и Tier 2 (filename pattern PRD-XXX/RFC-XXX) остаются
-  authoritative — explicit signals always win.
+  authoritative - explicit signals always win.
 - **`detect_kind`** retained as wrapper passing `None` for path
-  — backward compat with all 15 existing tests.
+  - backward compat with all 15 existing tests.
 - **+11 unit tests**: `is_doc_path` matrix coverage + path-aware
   Tier 3 suppression + Tier 1/Tier 2 precedence under docs.
 - **EVID-092** (verdict: supports, congruence_level: 3, evidence_type:
-  test) — same-context measurement linked to PROB-047. R_eff: 0.0 → 0.71 (B).
+  test) - same-context measurement linked to PROB-047. R_eff: 0.0 → 0.71 (B).
 - **Mitigations 2-5 deferred to Phase 7+** sprint (frontmatter precedence
   formalization, scan-import default `--dry-run` + opt-in `--apply`,
   content_hash idempotency, brownfield test fixtures).
@@ -1535,10 +1535,10 @@ cleanup — false-positives recurred при следующем scan-import.
 ### Workspace hygiene (PR #221)
 
 - `.forgeplan/journal/` (PRD-065 playbook runtime per-run JSONL) → gitignore.
-- PROB-046 deprecated — resolved via PRD-071 hint contract (shipped v0.25.0).
+- PROB-046 deprecated - resolved via PRD-071 hint contract (shipped v0.25.0).
 - EPIC-007 advisory phase advanced to evidence (children 4/5 shipped).
 - 9 untracked scan-import false-positives removed via `forgeplan reindex`.
-- `forgeplan health`: "Project looks healthy" — 0 blind spots, 0 orphans,
+- `forgeplan health`: "Project looks healthy" - 0 blind spots, 0 orphans,
   0 phase mismatches, 0 duplicate pairs.
 
 ### Stats
@@ -1557,82 +1557,82 @@ cleanup — false-positives recurred при следующем scan-import.
   - Wave 1: 6 parallel agents (helpers + 5 dispatchers, strict file ownership)
   - Wave 2: 1 agent (init wiring + integration tests)
   - Wave 3: 1 agent (greenfield-kickoff.yaml + validate)
-  - Wave 4: 1 agent (this — docs + EVID-091 + CHANGELOG + TODO)
+  - Wave 4: 1 agent (this - docs + EVID-091 + CHANGELOG + TODO)
 
 ### Deferred to follow-up sprint
 
-- **`Step.timeout_seconds` per-step override (FR-8 wiring)** — schema field
+- **`Step.timeout_seconds` per-step override (FR-8 wiring)** - schema field
   landed, executor wiring partial; full per-step override через
-  `dispatch::helpers::run_subprocess` parameter — Wave 5.
-- **Real `SkillDispatcher` registry** — текущий impl = trace-only stub
+  `dispatch::helpers::run_subprocess` parameter - Wave 5.
+- **Real `SkillDispatcher` registry** - текущий impl = trace-only stub
   (loggable invariants + fallback_hint). Wave 5 = real skill resolution
   через agent-skills capability registry.
-- **Per-step env allow-list extension** — сейчас allow-list захардкожен
-  в helpers (`PATH`, `HOME`, `FORGEPLAN_WORKSPACE`). PRD-076 (TBD) —
+- **Per-step env allow-list extension** - сейчас allow-list захардкожен
+  в helpers (`PATH`, `HOME`, `FORGEPLAN_WORKSPACE`). PRD-076 (TBD) -
   декларативный `step.env:` override с whitelist через mapping.
-- **MCP `forgeplan_ingest`** wrapper — pure CLI command в v0.27.0
+- **MCP `forgeplan_ingest`** wrapper - pure CLI command в v0.27.0
   (still); MCP wrapper remains deferred (CLI cover via `forgeplan serve`).
-- **3 canonical playbooks** — `brownfield-docs.yaml`, `audit.yaml`,
-  `release.yaml` — backlog (greenfield + brownfield-code published).
-- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals.
+- **3 canonical playbooks** - `brownfield-docs.yaml`, `audit.yaml`,
+  `release.yaml` - backlog (greenfield + brownfield-code published).
+- **Parallel step execution** - sequential в v1 per PRD-065 Non-Goals.
 
 ### References
 
-- ADR-010 `.forgeplan/adrs/ADR-010-*.md` — subprocess invocation strategy
-- RFC-007 `.forgeplan/rfcs/RFC-007-*.md` — Phase 6 dispatcher architecture
-- PRD-072 `.forgeplan/prds/PRD-072-*.md` — Phase 6 PRD (FR-1..FR-10)
-- EVID-090 — Spike-2 tokio::process measurement (CL3 same-context)
-- EVID-091 — Phase 6 closure evidence pack (this release)
-- EPIC-007 — Playbook Runtime + Pack Marketplace (parent)
+- ADR-010 `.forgeplan/adrs/ADR-010-*.md` - subprocess invocation strategy
+- RFC-007 `.forgeplan/rfcs/RFC-007-*.md` - Phase 6 dispatcher architecture
+- PRD-072 `.forgeplan/prds/PRD-072-*.md` - Phase 6 PRD (FR-1..FR-10)
+- EVID-090 - Spike-2 tokio::process measurement (CL3 same-context)
+- EVID-091 - Phase 6 closure evidence pack (this release)
+- EPIC-007 - Playbook Runtime + Pack Marketplace (parent)
 
-## [0.26.0] — 2026-04-28 — Playbook runtime + Ingest engine + Plugin detection (EPIC-007 Phase 2)
+## [0.26.0] - 2026-04-28 - Playbook runtime + Ingest engine + Plugin detection (EPIC-007 Phase 2)
 
-Forgeplan становится **оркестратором**. Три новых core capabilities (PRD-065 / PRD-066 / PRD-067) воплощают ADR-009: сам forgeplan-core не генерирует документы — он **знает когда какой playbook запускать**, **кому делегировать каждый шаг**, и **как ингестить output в forge-граф** с обязательной `## Sources` секцией (hallucination-proof invariant). Реализация — четырёхволновой sprint, 9 параллельных агентов, ~9000 LOC, +168 unit tests, plus integration E2E из Wave 4.
+Forgeplan становится **оркестратором**. Три новых core capabilities (PRD-065 / PRD-066 / PRD-067) воплощают ADR-009: сам forgeplan-core не генерирует документы - он **знает когда какой playbook запускать**, **кому делегировать каждый шаг**, и **как ингестить output в forge-граф** с обязательной `## Sources` секцией (hallucination-proof invariant). Реализация - четырёхволновой sprint, 9 параллельных агентов, ~9000 LOC, +168 unit tests, plus integration E2E из Wave 4.
 
-### Added — Playbook runtime (PRD-065 / SPEC-003)
+### Added - Playbook runtime (PRD-065 / SPEC-003)
 
-- **`forgeplan-core::playbook::{types,loader,executor,dispatch,journal}`** — декларативная YAML-схема + runtime executor.
+- **`forgeplan-core::playbook::{types,loader,executor,dispatch,journal}`** - декларативная YAML-схема + runtime executor.
 - **5 типов делегации** (strict typed, no arbitrary shell): `plugin` (Claude Code plugin via Task tool), `agent` (subagent via Task tool), `skill` (agent-skills capability), `command` (opt-in shell), `forgeplan_core` (internal op: `ingest`/`new`/`validate`/`activate`/`search`).
 - **DAG-ordering** через `requires:` (step IDs), цикл-detection, unknown-ref detection в loader.
-- **`fallback_hint`** — точная install-команда, эмитится если plugin/skill не установлен (AC-4 PRD-065).
-- **Journal** в `.forgeplan/journal/playbook-runs.jsonl` — resumable partial failures.
+- **`fallback_hint`** - точная install-команда, эмитится если plugin/skill не установлен (AC-4 PRD-065).
+- **Journal** в `.forgeplan/journal/playbook-runs.jsonl` - resumable partial failures.
 - **JSON Schema** опубликована в `docs/schemas/playbook.schema.yaml` (FR-2).
 
-### Added — Ingest engine (PRD-066 / SPEC-004)
+### Added - Ingest engine (PRD-066 / SPEC-004)
 
-- **`forgeplan-core::ingest::{types,sources,template,engine,idempotency}`** — declarative mapping engine.
+- **`forgeplan-core::ingest::{types,sources,template,engine,idempotency}`** - declarative mapping engine.
 - **Tera-style шаблоны** с **whitelist filters** (10): `trim`, `lower`, `upper`, `bullet_list`, `comma_list`, `slugify`, `truncate`, `default(value=...)`, `replace`, `table`. Любой не-whitelisted filter → load error (security boundary, ADR-009).
-- **`## Sources` invariant** — `sources_section.include: false` отвергается deserialization, артефакт без Sources не создаётся.
-- **`compat_spec_version`** per mapping — semver-pinning upstream plugin output, fail-fast при upstream breaking change.
+- **`## Sources` invariant** - `sources_section.include: false` отвергается deserialization, артефакт без Sources не создаётся.
+- **`compat_spec_version`** per mapping - semver-pinning upstream plugin output, fail-fast при upstream breaking change.
 - **5 source kinds**: `c4-documentation`, `autoresearch`, `git-log`, `ddd-model`, `sparc-spec`.
 - **6 target artifact kinds**: `prd`, `adr`, `epic`, `note`, `spec`, `problem`.
-- **Idempotency** через `source_hash` — re-run = update existing, не дубликаты (AC-3 PRD-066).
+- **Idempotency** через `source_hash` - re-run = update existing, не дубликаты (AC-3 PRD-066).
 - **JSON Schema** опубликована в `docs/schemas/mapping.schema.yaml` (FR-2).
 
-### Added — Plugin detection + self-describing hints (PRD-067)
+### Added - Plugin detection + self-describing hints (PRD-067)
 
-- **`forgeplan-core::plugins::{detection,registry,hints}`** — детектит installed plugins.
+- **`forgeplan-core::plugins::{detection,registry,hints}`** - детектит installed plugins.
 - **Detection paths**: `~/.claude/plugins/cache/`, `.claude/plugins/`, `.agentskills/`, `.cursor/skills/`.
 - **Project signals**: `empty_repo`, `legacy_code_no_docs`, `docs_vault_present`, `has_package_json`, `has_cargo_toml`, `git_commit_count`.
-- **Recommendation engine** — signals × installed_plugins → applicable playbooks; emitted в init hint.
+- **Recommendation engine** - signals × installed_plugins → applicable playbooks; emitted в init hint.
 - **CLI**: `forgeplan plugins {list|doctor|info <name>}`.
 
-### Added — CLI / MCP surface
+### Added - CLI / MCP surface
 
 - **5 new CLI commands**: `forgeplan playbook {list|show|run|validate}`, `forgeplan ingest`, `forgeplan plugins {list|doctor|info}`.
 - **8 new MCP tools** wrapping the same surface for agent integration.
-- All новые команды эмитят PRD-071 hint markers (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — coverage 100% по drift-prevention audit script.
+- All новые команды эмитят PRD-071 hint markers (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) - coverage 100% по drift-prevention audit script.
 
-### Added — Canonical marketplace assets
+### Added - Canonical marketplace assets
 
-- **`marketplace/mappings/c4-to-forge.yaml`** — production-ready mapping для c4-architecture plugin output. Per EVID-088 (Spike-1 measurement): target=`note` по умолчанию (не `prd`/`spec`) — code-derived артефакты не имеют product-context для PRD/SPEC validation gate.
-- **`marketplace/playbooks/brownfield-code.yaml`** — 5-step canonical playbook: `detect-c4-need` → `run-c4-architecture` (Plugin) → `ingest-c4` (ForgeplanCore + mapping) → `run-history-miner` (Skill) → `summary-note` (ForgeplanCore). `triggered_by: { has_git: true, commit_count_min: 50, has_docs: false }`.
+- **`marketplace/mappings/c4-to-forge.yaml`** - production-ready mapping для c4-architecture plugin output. Per EVID-088 (Spike-1 measurement): target=`note` по умолчанию (не `prd`/`spec`) - code-derived артефакты не имеют product-context для PRD/SPEC validation gate.
+- **`marketplace/playbooks/brownfield-code.yaml`** - 5-step canonical playbook: `detect-c4-need` → `run-c4-architecture` (Plugin) → `ingest-c4` (ForgeplanCore + mapping) → `run-history-miner` (Skill) → `summary-note` (ForgeplanCore). `triggered_by: { has_git: true, commit_count_min: 50, has_docs: false }`.
 
-### Added — Documentation
+### Added - Documentation
 
-- **`docs/operations/PLAYBOOK-AUTHORING.ru.md`** — guide для авторов playbook'ов: 5 типов делегации, DAG, fallback hints, conventions.
-- **`docs/operations/INGEST-MAPPINGS.ru.md`** — guide для авторов mapping'ов: Tera caveat (`default(value="...")`), whitelist, hallucination-proof invariant, target=note default per EVID-088.
-- **`docs/README.md` + `docs/README.ru.md`** — index updates.
+- **`docs/operations/PLAYBOOK-AUTHORING.ru.md`** - guide для авторов playbook'ов: 5 типов делегации, DAG, fallback hints, conventions.
+- **`docs/operations/INGEST-MAPPINGS.ru.md`** - guide для авторов mapping'ов: Tera caveat (`default(value="...")`), whitelist, hallucination-proof invariant, target=note default per EVID-088.
+- **`docs/README.md` + `docs/README.ru.md`** - index updates.
 
 ### Stats
 
@@ -1643,52 +1643,52 @@ Forgeplan становится **оркестратором**. Три новых
 
 ### Deferred to follow-up sprint
 
-- **Real Plugin / Agent / Skill dispatchers** — Wave 3 экзекутор делегирует через mocked Task tool subprocess в этом релизе. Production wiring (через runtime Task tool API) — следующий sprint.
-- **MCP `forgeplan_ingest`** — pure CLI command в v0.26.0; MCP wrapper отложен (CLI cover тех же scenarios через `forgeplan serve`).
-- **`brownfield-docs-pack` / `greenfield-pack`** — only `brownfield-code.yaml` published canonical в этом релизе.
-- **Parallel step execution** — sequential в v1 per PRD-065 Non-Goals; parallelizable DAG planner — v2.
+- **Real Plugin / Agent / Skill dispatchers** - Wave 3 экзекутор делегирует через mocked Task tool subprocess в этом релизе. Production wiring (через runtime Task tool API) - следующий sprint.
+- **MCP `forgeplan_ingest`** - pure CLI command в v0.26.0; MCP wrapper отложен (CLI cover тех же scenarios через `forgeplan serve`).
+- **`brownfield-docs-pack` / `greenfield-pack`** - only `brownfield-code.yaml` published canonical в этом релизе.
+- **Parallel step execution** - sequential в v1 per PRD-065 Non-Goals; parallelizable DAG planner - v2.
 
 ### References
 
-- ADR-009 `.forgeplan/adrs/ADR-009-*.md` — orchestrator pivot decision
-- EPIC-007 — Playbook runtime + Pack marketplace (parent)
-- PRD-065 / SPEC-003 — Playbook runtime + schema
-- PRD-066 / SPEC-004 — Ingest engine + mapping schema
-- PRD-067 — Plugin detection + hints
-- EVID-088 — Spike-1 c4-to-forge concept validation (CL3)
-- EVID-089 — Phase 5 implementation evidence pack
+- ADR-009 `.forgeplan/adrs/ADR-009-*.md` - orchestrator pivot decision
+- EPIC-007 - Playbook runtime + Pack marketplace (parent)
+- PRD-065 / SPEC-003 - Playbook runtime + schema
+- PRD-066 / SPEC-004 - Ingest engine + mapping schema
+- PRD-067 - Plugin detection + hints
+- EVID-088 - Spike-1 c4-to-forge concept validation (CL3)
+- EVID-089 - Phase 5 implementation evidence pack
 
-## [0.25.0] — 2026-04-27 — Unified hint contract across CLI + MCP (PRD-071 complete)
+## [0.25.0] - 2026-04-27 - Unified hint contract across CLI + MCP (PRD-071 complete)
 
-Forgeplan теперь говорит агентам что делать дальше. Каждый CLI и MCP вывод эмитит **один** контрактный маркер (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) — никаких больше «agent reads no-hint output → re-reads CLAUDE.md → guesses → loops». 5-rule контракт (PRESENCE / ACTIONABILITY / DETERMINISM / CONDITIONALITY / CONSISTENCY) реализован за 5 циклов multi-agent sprint, audit coverage 0% → **100% (70/70)**.
+Forgeplan теперь говорит агентам что делать дальше. Каждый CLI и MCP вывод эмитит **один** контрактный маркер (`Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`) - никаких больше «agent reads no-hint output → re-reads CLAUDE.md → guesses → loops». 5-rule контракт (PRESENCE / ACTIONABILITY / DETERMINISM / CONDITIONALITY / CONSISTENCY) реализован за 5 циклов multi-agent sprint, audit coverage 0% → **100% (70/70)**.
 
-### Added — 5-rule hint contract (PRD-071)
+### Added - 5-rule hint contract (PRD-071)
 
-- **`Next: <full command>`** — primary action with real IDs (no `<placeholder>`)
-- **`Or: <command>`** — alternate when primary blocks
-- **`Wait: <condition>`** — async/TTL retry signal
-- **`Done.`** — terminal success (workflow complete)
-- **`Fix: <command>`** — error remediation (paired with `Error:` line)
+- **`Next: <full command>`** - primary action with real IDs (no `<placeholder>`)
+- **`Or: <command>`** - alternate when primary blocks
+- **`Wait: <condition>`** - async/TTL retry signal
+- **`Done.`** - terminal success (workflow complete)
+- **`Fix: <command>`** - error remediation (paired with `Error:` line)
 - JSON output: `_next_action` field (string or null)
 - MCP responses: `_next_action` in success + error data
 
-### Added — Drift prevention infrastructure
+### Added - Drift prevention infrastructure
 
-- **`crates/forgeplan-cli/tests/hint_contract.rs`** — 36 integration tests asserting every covered command emits contract marker AND no forbidden placeholders. New CLI/MCP command without hint **fails CI**.
-- **`scripts/audit-hints.sh`** — coverage metric (CI-ready), recognizes all 5 markers.
-- **`docs/methodology/agent-protocol.md`** — full contract spec with good/bad hint examples and agent reading protocol.
-- **`CLAUDE.md`** — Hint protocol section (5-line agent reference).
+- **`crates/forgeplan-cli/tests/hint_contract.rs`** - 36 integration tests asserting every covered command emits contract marker AND no forbidden placeholders. New CLI/MCP command without hint **fails CI**.
+- **`scripts/audit-hints.sh`** - coverage metric (CI-ready), recognizes all 5 markers.
+- **`docs/methodology/agent-protocol.md`** - full contract spec with good/bad hint examples and agent reading protocol.
+- **`CLAUDE.md`** - Hint protocol section (5-line agent reference).
 
-### Changed — backward-compat preserved
+### Changed - backward-compat preserved
 
 - `forgeplan list --json` and `forgeplan tree --json` retain bare-array stdout (`jq '.[]'` and existing scripts not broken). Hint moves to **stderr** in JSON mode.
-- All existing CLI text outputs preserved — hints are additive new lines at end.
+- All existing CLI text outputs preserved - hints are additive new lines at end.
 - MCP `_next_action` field was already present (just normalizing values).
 
-### Fixed — edge cases
+### Fixed - edge cases
 
-- 9 commands (get/delete/update/score/estimate/progress/calibrate/validate/link) now emit `Fix: forgeplan list` on "Artifact not found" errors. Previously only `Error:` line — failed PRESENCE rule for not-found path.
-- Audit script now recognizes `Fix:`/`Or:`/`Wait:`/`Done.` markers (was only `Next:` — produced false negatives).
+- 9 commands (get/delete/update/score/estimate/progress/calibrate/validate/link) now emit `Fix: forgeplan list` on "Artifact not found" errors. Previously only `Error:` line - failed PRESENCE rule for not-found path.
+- Audit script now recognizes `Fix:`/`Or:`/`Wait:`/`Done.` markers (was only `Next:` - produced false negatives).
 
 ### Sprint metrics
 
@@ -1698,10 +1698,10 @@ Forgeplan теперь говорит агентам что делать дал�
 - 0 fmt diffs, 0 clippy warnings
 - EVID-086 linked to PRD-071, R_eff 0.70 (overall 0.80 A grade)
 
-## [0.24.0] — 2026-04-19 — Orchestrator dispatcher for 2-5 sub-agents (PRD-057 complete)
+## [0.24.0] - 2026-04-19 - Orchestrator dispatcher for 2-5 sub-agents (PRD-057 complete)
 
-Forgeplan now dispatches work. One MCP call — `forgeplan_dispatch
---agents N` — hands the orchestrator a parallel-safe plan: which
+Forgeplan now dispatches work. One MCP call - `forgeplan_dispatch
+--agents N` - hands the orchestrator a parallel-safe plan: which
 artifacts each sub-agent should work on, which defer to a serial queue,
 and human-readable reasoning for every decision. Ends the manual
 "read graph + blocked + list + mental overlap calc" loop that was the
@@ -1711,22 +1711,22 @@ Four increments (Inc 2, 3, 4) + two adversarial audit rounds (R2 3-agent
 mid-sprint, R3 4-agent final) + 94 net new tests (1391 total). Builds
 on the Inc 1 workspace lock shipped in v0.23.1.
 
-### Added — Agent identity (Inc 2, FR-009 + AC-5)
+### Added - Agent identity (Inc 2, FR-009 + AC-5)
 
 - **`AgentIdentity`** captures which MCP client last mutated an artifact
   via `clientInfo` and stamps `last_modified_by: name/version` into
   frontmatter on every write.
-- **Unknown-frontmatter preservation** — `projection` now keeps
+- **Unknown-frontmatter preservation** - `projection` now keeps
   agent-owned fm fields (`last_modified_by`, `domain`,
   `affected_files`) across re-renders triggered by unrelated tools.
-- **Unicode / control-char rejection** in `AgentIdentity::new` — blocks
+- **Unicode / control-char rejection** in `AgentIdentity::new` - blocks
   bidi override, ZWJ, RTL, newlines, path separators.
-- **Activity log** carries the captured `clientInfo` — previous `None`
+- **Activity log** carries the captured `clientInfo` - previous `None`
   TODO closed.
 
-### Added — Claim protocol (Inc 3, FR-004..006, FR-014, AC-2..3)
+### Added - Claim protocol (Inc 3, FR-004..006, FR-014, AC-2..3)
 
-- **`ClaimStore`** — soft-coordination signal "agent X works on ID
+- **`ClaimStore`** - soft-coordination signal "agent X works on ID
   until T". YAML files at `.forgeplan/claims/<ID>.yaml` (gitignored).
   TTL 1 min..24 h, default 30 min. Same-agent calls renew; expired
   claims transparently overwritten.
@@ -1735,23 +1735,23 @@ on the Inc 1 workspace lock shipped in v0.23.1.
 - **Atomic writes** via tempfile + rename.
 - **64 KB YAML cap** + path-traversal guard (R2 security HIGH fix).
 
-### Added — Orchestrator dispatcher (Inc 4, FR-001..003, FR-010..011, AC-1)
+### Added - Orchestrator dispatcher (Inc 4, FR-001..003, FR-010..011, AC-1)
 
 - **`forgeplan_dispatch`** returns `{buckets, serial_queue, reasoning,
   candidate_count, claimed_count, blocked_count, skipped_parse_errors}`.
 - **Jaccard file-overlap detection** (0.3 default threshold).
   Empty `affected_files` biases to serial (R-2 safety).
-- **Least-loaded-first greedy packing** — distributes, deterministic.
-- **Graph-aware** — blocked artifacts excluded via `kahn_sort`.
-- **Claim-aware** — claimed artifacts skipped with reasoning.
+- **Least-loaded-first greedy packing** - distributes, deterministic.
+- **Graph-aware** - blocked artifacts excluded via `kahn_sort`.
+- **Claim-aware** - claimed artifacts skipped with reasoning.
 - **Skill matching** via `agent_skills` vs artifact `domain`.
-- **Markdown-section fallback** — legacy artifacts with only
+- **Markdown-section fallback** - legacy artifacts with only
   `## Affected Files` body section are hydrated via
   `extract_affected_files(body)`.
 - **Input clamps**: `MAX_AGENTS=64`, `MAX_SKILLS_PER_AGENT=32`,
   `MAX_AFFECTED_FILES=512`, 512-byte path cap (R3 CWE-770 fix).
 
-### Added — Integration surface (FR-012, FR-013)
+### Added - Integration surface (FR-012, FR-013)
 
 - **`forgeplan_health`** body includes `active_claims`,
   `active_claim_count`, `skipped_claim_files`.
@@ -1768,7 +1768,7 @@ on the Inc 1 workspace lock shipped in v0.23.1.
 ### Performance
 
 - Read-only tools (`dispatch`, `claims`, `health`, `get`) don't acquire
-  the workspace lock — orchestrator 1 Hz polling doesn't serialize
+  the workspace lock - orchestrator 1 Hz polling doesn't serialize
   writers (R2 architect MED).
 - `ClaimStore::list_active_map` for O(1) dispatcher joins.
 
@@ -1778,7 +1778,7 @@ on the Inc 1 workspace lock shipped in v0.23.1.
   (inc. hardening), 14 MCP wiring + validation, 10 dogfood E2E, 4
   workflow variations, 1 AC-4 concurrent-forgeplan_new unique-ID E2E.
 - **Two adversarial audit rounds** (R2 3-agent, R3 4-agent with
-  production-validator for FR/AC task-completion) — 30 findings
+  production-validator for FR/AC task-completion) - 30 findings
   closed with regression tests.
 
 ### Deferred to v0.25+
@@ -1796,11 +1796,11 @@ on the Inc 1 workspace lock shipped in v0.23.1.
 ### References
 
 - PRD-057 `.forgeplan/prds/PRD-057-*.md`
-- EVID-077 `.forgeplan/evidence/EVID-077-*.md` — R_eff=1.00, CL3
+- EVID-077 `.forgeplan/evidence/EVID-077-*.md` - R_eff=1.00, CL3
 
-## [0.23.1] — 2026-04-19 — Multi-agent workspace lock foundation (PRD-057 Inc 1)
+## [0.23.1] - 2026-04-19 - Multi-agent workspace lock foundation (PRD-057 Inc 1)
 
-First safety primitive for multi-agent workflow — workspace-level file
+First safety primitive for multi-agent workflow - workspace-level file
 lock that serializes LanceDB write operations across 2-5 concurrent
 sub-agents sharing a `.forgeplan/` directory. Patch bump, no breaking
 changes, no new user-facing tools.
@@ -1811,16 +1811,16 @@ changes, no new user-facing tools.
   RAII guard and `acquire_workspace_lock` async helper. Uses `fs2`
   flock primitive (Unix) / LockFileEx (Windows). Released automatically
   on drop including process crash.
-- **30-second timeout** with exponential backoff (10ms → 1000ms) —
+- **30-second timeout** with exponential backoff (10ms → 1000ms) -
   no indefinite hang if a sibling agent is stuck.
 - **Symlink guards** on both workspace directory and lock file
   (parity with PRD-055 R3 + PRD-056 hardening).
-- **`#[must_use]`** on guard — compiler catches accidental immediate
+- **`#[must_use]`** on guard - compiler catches accidental immediate
   drop via `let _ =`.
 
 ### Wrapped with lock (all MCP write entry points)
 
-- `forgeplan_new` — prevents duplicate ID collision under concurrent
+- `forgeplan_new` - prevents duplicate ID collision under concurrent
   `next_id` allocation.
 - `forgeplan_update`
 - `forgeplan_delete`
@@ -1849,17 +1849,17 @@ changes, no new user-facing tools.
 ### Audit
 
 5-agent audit Round 1 (security + logic + arch + rust + task-completion)
-found 1 CRITICAL + 2 HIGH + 4 MEDIUM — **all fixed** in the same PR
+found 1 CRITICAL + 2 HIGH + 4 MEDIUM - **all fixed** in the same PR
 before merge. Net verdict: APPROVE_WITH_FIXES from all 5 agents post-
 hotfix.
 
-### Not included — planned for v0.24.0
+### Not included - planned for v0.24.0
 
 - `Claim` module + `forgeplan_claim` / `_release` / `_claims` MCP
   tools (PRD-057 Inc 3).
 - Agent identity capture (`client_info` → `last_modified_by`
   frontmatter field) (PRD-057 Inc 2).
-- `forgeplan_dispatch --agents N` tool (PRD-057 Inc 4) — the dispatcher
+- `forgeplan_dispatch --agents N` tool (PRD-057 Inc 4) - the dispatcher
   that suggests parallel-safe buckets based on dep graph, file-overlap
   Jaccard, and domain-skill matching.
 
@@ -1867,7 +1867,7 @@ Refs: EPIC-005, PRD-057 Inc 1, PR #192.
 
 ---
 
-## [0.23.0] — 2026-04-18 — Advisory phase state machine (PRD-056, EPIC-005)
+## [0.23.0] - 2026-04-18 - Advisory phase state machine (PRD-056, EPIC-005)
 
 First shipped child of **EPIC-005 "Phase state machine & workflow-aware
 methodology umbrella"**. Every artifact in the greenfield workflow now
@@ -1875,17 +1875,17 @@ has a visible `current_phase` that auto-advances through the methodology
 cycle (`shape → validate → adi → code → test → audit → evidence → done`)
 with full transition history on disk.
 
-**Advisory-only** — no existing tool is blocked. Full enforcement lands
+**Advisory-only** - no existing tool is blocked. Full enforcement lands
 in a later PRD under EPIC-005.
 
-### Added — phase state module (`forgeplan-core::phase`)
+### Added - phase state module (`forgeplan-core::phase`)
 
 - Per-artifact state file at `.forgeplan/state/<ID>.yaml` (gitignored)
   with `current_phase`, `workflow_type`, `advanced_at`, append-only
   `history: Vec<PhaseTransition>`, `schema_version`.
 - `Phase` enum (Unknown/Shape/Validate/Adi/Code/Test/Audit/Evidence/Done)
   with `as_str()` and `suggested_next()` helpers.
-- `WorkflowType` enum (currently Greenfield — brownfield/hotfix/research/
+- `WorkflowType` enum (currently Greenfield - brownfield/hotfix/research/
   review-fix/refactor are follow-up child PRDs under EPIC-005).
 - Atomic writes: tmp+rename with pid+nanos+AtomicU64-counter filename,
   `create_new(true)` against symlink planting, fsync(file) + fsync(dir).
@@ -1895,9 +1895,9 @@ in a later PRD under EPIC-005.
   `MAX_REASON_LEN=512`, `MAX_STATE_FILE_BYTES=1 MiB`, `MAX_ARTIFACT_ID_LEN=128`.
 - Forward-compat: `schema_version > CURRENT` → refused (no silent data loss).
 - Corrupt YAML quarantined to `<id>.yaml.corrupt.<timestamp>` rather
-  than clobbered — preserves audit-trail forensics.
+  than clobbered - preserves audit-trail forensics.
 
-### Added — auto-advancement hooks (MCP server)
+### Added - auto-advancement hooks (MCP server)
 
 - `forgeplan_new` → `phase=shape` on successful artifact creation.
 - `forgeplan_validate` PASS → `phase=validate`.
@@ -1905,35 +1905,35 @@ in a later PRD under EPIC-005.
 - All hooks fire-and-forget: failures logged via `tracing::warn`,
   never break the calling tool (advisory invariant).
 
-### Added — MCP tools
+### Added - MCP tools
 
-- **`forgeplan_phase <id>`** — read current phase + workflow_type +
+- **`forgeplan_phase <id>`** - read current phase + workflow_type +
   timestamps + full append-only history. Missing state returns
   `{current_phase: "unknown"}`, never an error.
-- **`forgeplan_phase_advance <id> --to <phase> [--reason]`** — manual
+- **`forgeplan_phase_advance <id> --to <phase> [--reason]`** - manual
   override, appends to history, does NOT validate ordering (advisory
   layer allows out-of-order jumps). `reason` capped at 4096 bytes at
   MCP boundary + 512 bytes on persist.
 - `PhaseArg` JSON-Schema enum so LLM clients constrain-sample exact
-  values — no paraphrases.
+  values - no paraphrases.
 
-### Added — integration
+### Added - integration
 
 - `forgeplan_get` response now appends current phase to `_next_action`
   (`"… Phase: \`shape\` → next \`validate\`."`) when tracking is active.
-- `forgeplan_health` response includes `advisory_phase_mismatches[]` —
+- `forgeplan_health` response includes `advisory_phase_mismatches[]` -
   artifacts with `status=active` but `current_phase` still early-cycle
-  (shape/validate/adi). Strictly advisory — no health failure.
+  (shape/validate/adi). Strictly advisory - no health failure.
 
-### Added — config
+### Added - config
 
 - New optional `phase.enabled: bool` block in `.forgeplan/config.yaml`
   (default `true`). Flip to `false` for exact pre-v0.23.0 semantics
   without recompile.
 
-### Fixed — hygiene
+### Fixed - hygiene
 
-- `.gitignore`: added `.forgeplan/logs/` (forgotten in v0.21.0 — activity
+- `.gitignore`: added `.forgeplan/logs/` (forgotten in v0.21.0 - activity
   log was leaking into git) and `.forgeplan/state/` (new in this release).
 
 ### Verification
@@ -1948,14 +1948,14 @@ in a later PRD under EPIC-005.
   architect): 2 CRITICAL + 7 HIGH + 3 MEDIUM findings, **all fixed**
   before ship. R_eff(PRD-056) = 1.00, Grade A.
 
-### Not included — deferred to follow-up PRDs
+### Not included - deferred to follow-up PRDs
 
-- `forgeplan_phase_backfill` command (FR-009, COULD) — populate
+- `forgeplan_phase_backfill` command (FR-009, COULD) - populate
   phase state for existing ~100 artifacts.
-- Full phase enforcement ("замки") — tools refuse to work not in their
+- Full phase enforcement ("замки") - tools refuse to work not in their
   phase. Separate PRD under EPIC-005.
 - Brownfield, audit-hotfix, research, review-fix, refactor workflow
-  phase enums — each own child PRD under EPIC-005.
+  phase enums - each own child PRD under EPIC-005.
 - Read-side `O_NOFOLLOW` TOCTOU closure (platform module needed).
 - `thiserror`-typed `PhaseError` (advisory module, anyhow is fine here).
 
@@ -1963,13 +1963,13 @@ Refs: EPIC-005, PRD-056, EVID-076.
 
 ---
 
-## [0.22.1] — 2026-04-18 — Undo hardening (post-ship audit Round 3)
+## [0.22.1] - 2026-04-18 - Undo hardening (post-ship audit Round 3)
 
 Security + correctness hotfix for the undo subsystem shipped in v0.22.0.
 A 4-agent multi-lens audit of the PRD-055 code found 2 CRITICAL + 5 HIGH
 real issues. All fixed here with regression tests.
 
-### Fixed — Security
+### Fixed - Security
 
 - **Path traversal via tampered `projection_path`** (C-1 sec). Restore no
   longer trusts `receipt.snapshot.projection_path` verbatim. Destination
@@ -1983,11 +1983,11 @@ real issues. All fixed here with regression tests.
   content planted in a receipt can no longer ride into agent context.
 - **Symlinked trash directory or source projection** (H-2 sec). Both
   `write_receipt` and `trash_projection` now `symlink_metadata`-check
-  their inputs and refuse if either is a symlink — prevents an attacker
+  their inputs and refuse if either is a symlink - prevents an attacker
   who can write the `.forgeplan/` tree from redirecting rename targets
   outside the workspace.
 
-### Fixed — Correctness
+### Fixed - Correctness
 
 - **`mark_consumed` failure silently left receipt unconsumed** (C-1
   logic, FR-011). A subsequent `undo_last` re-applied the same receipt
@@ -2010,7 +2010,7 @@ real issues. All fixed here with regression tests.
 ### Hardened
 
 - Parent-directory fsync after `write_receipt` file sync (ext4/xfs
-  durability — `fsync(file)` alone can lose the directory entry on a
+  durability - `fsync(file)` alone can lose the directory entry on a
   hard crash).
 - `is_cross_device` now handles Windows `ERROR_NOT_SAME_DEVICE` (17) in
   addition to Unix `EXDEV` (18).
@@ -2029,13 +2029,13 @@ security-auditor, rust-pro, architect-reviewer).
 
 ---
 
-## [0.22.0] — 2026-04-18 — Reversible destructive ops (PRD-055 complete)
+## [0.22.0] - 2026-04-18 - Reversible destructive ops (PRD-055 complete)
 
-Completes the undo story started in v0.21.0. Every destructive operation —
-`delete`, `supersede`, `deprecate` — is now recoverable via a single tool
+Completes the undo story started in v0.21.0. Every destructive operation -
+`delete`, `supersede`, `deprecate` - is now recoverable via a single tool
 call within a 30-day TTL window.
 
-### Added — wrapping of destructive ops (PRD-055 increment 2)
+### Added - wrapping of destructive ops (PRD-055 increment 2)
 
 All three destructive tool handlers now go through `soft_delete_capture`
 before mutating the store:
@@ -2055,14 +2055,14 @@ Every destructive-op response now includes a `receipt_id` field and a
 `_next_action` hint pointing at `forgeplan_undo_last` or
 `forgeplan_restore <id>`.
 
-### Added — restore and undo-last tools (PRD-055 increment 3)
+### Added - restore and undo-last tools (PRD-055 increment 3)
 
-- **`forgeplan_restore id=<ID>`** — finds the newest non-consumed receipt
+- **`forgeplan_restore id=<ID>`** - finds the newest non-consumed receipt
   for that ID, applies restore. For delete: recreates the store row,
   moves the projection back, re-links all captured relations. For
   supersede/deprecate: resets status to pre-op value and drops the new
   link. Orphaned relation targets are tracked in `relations_skipped`.
-- **`forgeplan_undo_last within_hours=<N>`** — finds the newest
+- **`forgeplan_undo_last within_hours=<N>`** - finds the newest
   non-consumed receipt across all artifacts within the window (default
   24h, max 720h), applies the same restore logic. Never guesses: returns
   an explicit error if the window is empty.
@@ -2096,31 +2096,31 @@ Refs: PRD-055 (now functionally complete), PRD-054.
 
 ---
 
-## [0.21.0] — 2026-04-18 — Activity log + soft-delete receipt infrastructure
+## [0.21.0] - 2026-04-18 - Activity log + soft-delete receipt infrastructure
 
 Builds on the v0.20.0 tool-quality work. Adds two pieces of observability
 and recovery infrastructure that make agent-driven use of forgeplan
 materially safer.
 
-### Added — Activity log (PRD-054)
+### Added - Activity log (PRD-054)
 
 Every MCP tool invocation is now recorded in an append-only JSONL file at
 `.forgeplan/logs/tools-YYYY-MM-DD.jsonl`. One file per UTC day, daily
 rotation happens automatically on first write. Each entry captures
 timestamp, tool name, SHA-256-prefix hash of args (args content is
-NOT logged by default — prevents secrets in titles / descriptions from
+NOT logged by default - prevents secrets in titles / descriptions from
 leaking into the log), duration, status (`ok` / `tool_err` / `rpc_err`),
 workspace path, and optional client info.
 
 Two new MCP tools surface the log:
 
-- `forgeplan_activity` — query with `since_hours` (default 24, max 720),
+- `forgeplan_activity` - query with `since_hours` (default 24, max 720),
   `tool` (comma-separated filter), `status`, `limit` (max 5000). Returns
   entries, warnings about corrupted lines, and a `_next_action` hint.
-- `forgeplan_activity_stats` — per-tool aggregates (count, err_count,
+- `forgeplan_activity_stats` - per-tool aggregates (count, err_count,
   p50/p95/total ms), sorted by total time descending.
 
-Dispatch wrapper sits on top of rmcp's `ToolRouter.call` — any existing
+Dispatch wrapper sits on top of rmcp's `ToolRouter.call` - any existing
 or future tool is logged automatically without per-handler changes. Log
 writes fire-and-forget via `tokio::spawn` so the tool response path adds
 zero latency. Log-write failures are observed via `tracing::warn` and
@@ -2128,7 +2128,7 @@ never fail the parent tool call.
 
 CLI parity is planned for a future release.
 
-### Added — Soft-delete receipt infrastructure (PRD-055, increment 1 of 3)
+### Added - Soft-delete receipt infrastructure (PRD-055, increment 1 of 3)
 
 Foundation for reversible destructive operations. New module
 `forgeplan-core::undo` provides the receipt data model, JSON
@@ -2137,7 +2137,7 @@ cross-platform filesystem rename with fallback to copy+remove for
 cross-device moves.
 
 Does NOT yet wire into `forgeplan_delete` / `forgeplan_supersede` /
-`forgeplan_deprecate` — those still do hard-delete. Wiring is
+`forgeplan_deprecate` - those still do hard-delete. Wiring is
 planned for v0.22.0. This release ships the underlying primitives so
 integration tests and tooling can exercise the receipt format now.
 
@@ -2145,7 +2145,7 @@ Key design decisions documented inline in PRD-055:
 1. Move-to-trash plus receipt, not store tombstone column
 2. JSON format, not binary
 3. One receipt per operation (inspectable history)
-4. Write receipt BEFORE mutation (crash invariant — orphan receipts are
+4. Write receipt BEFORE mutation (crash invariant - orphan receipts are
    harmless, but the reverse order would cause data loss)
 5. Lazy TTL purge on invocation, no background daemon
 6. Relations captured in receipt, not re-derived on restore
@@ -2153,9 +2153,9 @@ Key design decisions documented inline in PRD-055:
 Default TTL: 30 days. Configurable per-workspace once the wiring lands
 in v0.22.0.
 
-### Changed — Developer experience
+### Changed - Developer experience
 
-- Pinned Rust toolchain to 1.95 via `rust-toolchain.toml` — prevents
+- Pinned Rust toolchain to 1.95 via `rust-toolchain.toml` - prevents
   the class of bug where `cargo clippy` passes locally but fails on CI
   due to a version skew between developer and runner (hit PR #178 on
   first push with `clippy::unnecessary_sort_by`).
@@ -2180,99 +2180,99 @@ Refs: PRD-054, PRD-055.
 
 ---
 
-## [0.20.0] — 2026-04-18 — MCP silent-failure hotfix + tool quality (3-round audit)
+## [0.20.0] - 2026-04-18 - MCP silent-failure hotfix + tool quality (3-round audit)
 
 Originally a v0.19.1 hotfix for two independent silent failures blocking
-MCP adoption in v0.19.0 — users who ran `brew install forgeplan &&
+MCP adoption in v0.19.0 - users who ran `brew install forgeplan &&
 forgeplan mcp install --client claude && restart Claude Code` got
 **zero tools visible**. Grew via three full audit rounds into a feature
 release: every tool now carries workflow guidance and is hardened
 against invisible prompt-injection.
 
-### Fixed — the original hotfix
+### Fixed - the original hotfix
 
-- **`ServerCapabilities::default()` returned empty `{}`** — per MCP spec,
+- **`ServerCapabilities::default()` returned empty `{}`** - per MCP spec,
   clients skip `tools/list` when `tools` capability is absent. All 45
   tools invisible after `forgeplan mcp install`. Fix:
   `ServerCapabilities::builder().enable_tools().build()`.
-- **`.mcp.json` carried `transport: "stdio"` field** — not MCP spec,
+- **`.mcp.json` carried `transport: "stdio"` field** - not MCP spec,
   silently ignored by Claude Code, compounded the capability miss. Fix:
   drop `transport`; `smart_merge` narrowly removes legacy entries.
 
-### Added — tool discoverability
+### Added - tool discoverability
 
-- **ToolAnnotations on all 45 tools** — `title`, `readOnlyHint`,
+- **ToolAnnotations on all 45 tools** - `title`, `readOnlyHint`,
   `destructiveHint`, `idempotentHint`, `openWorldHint`. Claude Code now
   auto-approves safe reads and warns before destructive ops.
-- **Schema enums × 6** — `relation`, `kind`, `status`, `journal.kind`,
+- **Schema enums × 6** - `relation`, `kind`, `status`, `journal.kind`,
   `phase`, `grade` switched from prose strings to JSON-Schema enums.
   LLMs constrain-sample against these so `"informs"` is verbatim, not
   paraphrased as `"inform"`.
-- **`_next_action` on 42/42 tools** — 34 as structured JSON field on
+- **`_next_action` on 42/42 tools** - 34 as structured JSON field on
   success, 8 as `_next_action:` prose in error text (via `err_hinted` /
-  `artifact_not_found` / `llm_err`). Every response — success or
-  error — tells the agent what to do next.
+  `artifact_not_found` / `llm_err`). Every response - success or
+  error - tells the agent what to do next.
 
-### Security — invisible prompt-injection hardening
+### Security - invisible prompt-injection hardening
 
 - **`sanitize_for_hint()`** strips structural punctuation plus invisible
   Unicode classes: zero-width joiners, bidi overrides/isolates, BOM,
   soft-hyphen, variation selectors, tag characters. Applied at every
   `format!` splice of user-controlled values. 15 new unit tests.
-- **`llm_err` no longer echoes upstream error bodies** — provider errors
+- **`llm_err` no longer echoes upstream error bodies** - provider errors
   sometimes include request IDs and header fragments; now logged only.
 
-### Fixed — silent-failure class
+### Fixed - silent-failure class
 
-- `unwrap_or(Value::Null)` replaced with `hinted_result<T>()` helper —
+- `unwrap_or(Value::Null)` replaced with `hinted_result<T>()` helper -
   serialization failure surfaces as `McpError::internal_error` instead
   of a `Null` response.
 - `forgeplan_blocked.blocked_count` was reporting `cycles.len()` instead
   of `blocked.len()`; fixed.
-- `forgeplan_fpf_check` dead match arms (`"deny"/"block"/"warn"`) —
+- `forgeplan_fpf_check` dead match arms (`"deny"/"block"/"warn"`) -
   core emits `EXPLORE`/`INVESTIGATE`/`EXPLOIT`; match rewritten.
 - Race-condition panic in `forgeplan_link` when artifact deleted
-  concurrently — fixed.
+  concurrently - fixed.
 
 Refs: PROB-039, PRD-048, three audit rounds evidence.
 
 ---
 
-## [0.19.0] — 2026-04-16 — One-command MCP install + Clippy 1.95 + website i18n RU
+## [0.19.0] - 2026-04-16 - One-command MCP install + Clippy 1.95 + website i18n RU
 
 Feature release: `forgeplan mcp install` for frictionless AI agent setup,
 website i18n with 144 Russian pages, Mermaid diagrams, and Rust 1.95 clippy compliance.
 
 ### Added
 
-- **`forgeplan mcp install --client claude|cursor|windsurf`** — one-command
+- **`forgeplan mcp install --client claude|cursor|windsurf`** - one-command
   MCP server configuration. Smart-merge replaces `command`/`args`/`transport`
   while preserving user `env` (API keys, custom paths). Idempotent, safe to
   re-run. Cross-platform: macOS / Linux / Windows.
-- **`forgeplan mcp serve`** — alias for `forgeplan serve` (MCP convention naming).
-- **`--use-name [forgeplan|fpl]`** — write the short binary name instead of
+- **`forgeplan mcp serve`** - alias for `forgeplan serve` (MCP convention naming).
+- **`--use-name [forgeplan|fpl]`** - write the short binary name instead of
   absolute path. For terminal-based clients where `$PATH` is set up.
-- **`--scope user|project`** — install to user-global (`~/.claude.json`)
+- **`--scope user|project`** - install to user-global (`~/.claude.json`)
   or project-local (`./.mcp.json`).
-- **`--dry-run`** — preview proposed changes without writing.
-- **`--binary-path`** — override binary path with validation (absolute, exists,
+- **`--dry-run`** - preview proposed changes without writing.
+- **`--binary-path`** - override binary path with validation (absolute, exists,
   executable, no control chars / bidi overrides).
 - **Binary detection** prefers PATH-resolved symlink over `current_exe()`.
   Fixes Homebrew upgrade breakage where versioned Cellar path goes stale.
-- **Symlink rejection** in atomic write — prevents `.mcp.json -> /etc/passwd`
+- **Symlink rejection** in atomic write - prevents `.mcp.json -> /etc/passwd`
   type attacks via pre-planted symlinks.
-- **Website i18n** — 144 Russian pages via Starlight native i18n + Gemini 2.5
+- **Website i18n** - 144 Russian pages via Starlight native i18n + Gemini 2.5
   Flash batch translation. Language switcher EN↔RU. (PRD-047)
 - **6 Mermaid diagrams** in EN+RU docs (pipeline, ADI, R_eff, tutorial,
   lifecycle, graph).
-- **MCP setup guide** — `docs/guides/mcp-setup` (EN + RU). Covers quick install,
+- **MCP setup guide** - `docs/guides/mcp-setup` (EN + RU). Covers quick install,
   smart-merge, troubleshooting.
-- **Website UI polish** — wider search bar, compact theme toggle + language
+- **Website UI polish** - wider search bar, compact theme toggle + language
   switcher, Cloudflare `/ru/` redirects.
 
 ### Fixed
 
-- **Clippy 1.95 compliance** — `collapsible_match` (8 occurrences in
+- **Clippy 1.95 compliance** - `collapsible_match` (8 occurrences in
   `forgeplan-core`) and `unnecessary_sort_by` (3 occurrences) converted to
   match guards and `sort_by_key(Reverse(...))`.
 - **PROB-026** tag canonicalization + **PROB-027** reindex without `lance/`.
@@ -2288,7 +2288,7 @@ website i18n with 144 Russian pages, Mermaid diagrams, and Rust 1.95 clippy comp
 
 ---
 
-## [0.18.0] — 2026-04-11 — Production BM25 + Russian morphology + quality gates
+## [0.18.0] - 2026-04-11 - Production BM25 + Russian morphology + quality gates
 
 Feature release upgrading the search engine and codifying quality rules.
 
@@ -2307,7 +2307,7 @@ Feature release upgrading the search engine and codifying quality rules.
   in frontmatter.
 - **O(N) batch search**. Single-pass `search_scores()` replaces O(N²)
   per-record `.score()` calls. 193-artifact corpus: 0.23s.
-- **8-point verification checklist** in CLAUDE.md — mandatory before
+- **8-point verification checklist** in CLAUDE.md - mandatory before
   every commit/PR. Covers: unit tests, edge cases, E2E on fresh
   workspace, verbatim template test, dogfood stress test, regression
   guard (A/B), negative tests, cross-language verification.
@@ -2325,20 +2325,20 @@ Feature release upgrading the search engine and codifying quality rules.
   plural forms (1), stop-word resilience (1), noise stripping (2),
   frontmatter false-positive guard (1).
 
-## [0.17.2] — 2026-04-09 — Quality hotfix: scoring & search integrity
+## [0.17.2] - 2026-04-09 - Quality hotfix: scoring & search integrity
 
 Fixes **five** real bugs found during a dedicated /forge E2E verification
 sprint on a fresh workspace (separate from the dogfood audit that produced
 v0.17.1). Each bug was reproduced on the v0.17.1 release binary before
 fixing, and the fix verified A/B on an identical workspace.
 
-The headline fix is **PROB-034 (CRITICAL)** — a silent trust-calculus
+The headline fix is **PROB-034 (CRITICAL)** - a silent trust-calculus
 regression present since v0.17.0 that inflated R_eff scores across every
 workspace using the default evidence template.
 
 ### Fixed
 
-- **PROB-034 (CRITICAL) — Multi-line HTML comments shadowed real
+- **PROB-034 (CRITICAL) - Multi-line HTML comments shadowed real
   structured fields in `extract_field`.**
   `crates/forgeplan-core/src/scoring/evidence.rs::extract_field` skipped
   only lines *literally starting* with `<!--`, not lines *inside* a
@@ -2358,10 +2358,10 @@ workspace using the default evidence template.
   default template silently reset to CL3 (no penalty), artificially
   inflating R_eff across every workspace since v0.17.0.
   - Fix: `extract_field` now implements a proper multi-line comment
-    state machine — tracks an `in_multiline_comment` boolean, skipping
+    state machine - tracks an `in_multiline_comment` boolean, skipping
     all lines between `<!--` and `-->` when they span multiple lines.
   - Affects all fields parsed via `extract_field`: `verdict`,
-    `congruence_level`, `evidence_type`, `source_tier` — all were
+    `congruence_level`, `evidence_type`, `source_tier` - all were
     silently defaulted. The fix is transitive.
   - A/B verification on `/tmp/fp-prob034-repro` with identical workspace:
     v0.17.1 binary → `r_eff=1.0000, CL=3`; v0.17.2 binary →
@@ -2369,18 +2369,18 @@ workspace using the default evidence template.
   - Regression tests: `extract_field_ignores_multiline_html_comments`,
     `extract_field_multiline_comment_nested_fields_all_ignored`.
 
-- **PROB-030 — BM25 prefix queries returned 0 results.**
+- **PROB-030 - BM25 prefix queries returned 0 results.**
   `crates/forgeplan-core/src/search/smart.rs` computed `keyword_score`
   (substring match) for diagnostics but passed only `bm25_norm` to
   `combined_score`. BM25 is token-based, so `auth` did not match the
   token `authentication`, and prefix queries silently returned nothing.
-  - Fix: `let keyword_channel = bm25_norm.max(kw);` — BM25 still wins
+  - Fix: `let keyword_channel = bm25_norm.max(kw);` - BM25 still wins
     on exact-token matches (richer signal), but substring fallback kicks
     in when BM25 returns 0 for prefix queries.
   - Regression tests: `smart_search_prefix_query_falls_back_to_substring`,
     `smart_search_exact_token_still_wins_over_prefix`.
 
-- **PROB-031 — CLI `score` command had its own divergent evidence
+- **PROB-031 - CLI `score` command had its own divergent evidence
   parser.** The CLI `parse_evidence_from_record` in `score.rs`
   duplicated core's function but with a different default CL (CL0 vs
   CL3), creating a visible contradiction: display said
@@ -2395,21 +2395,21 @@ workspace using the default evidence template.
   - Regression test:
     `score_uses_core_parser_with_cl3_default_when_no_structured_fields`.
 
-- **PROB-032 — `forgeplan search` breakdown line lied about
+- **PROB-032 - `forgeplan search` breakdown line lied about
   components.** Display showed `kw=0.0 sem=0.0 r=0.0 g=0.0` while total
   was 0.57. Caused by PROB-030: `kw` was computed but never flowed into
   `combined_score`.
   - Auto-fixed as side effect of PROB-030. Breakdown now shows real
     component values.
 
-- **PROB-033 — `forgeplan new evidence` printed confusing session
+- **PROB-033 - `forgeplan new evidence` printed confusing session
   warning after `forgeplan route`.** The session state machine
   attempted a `Routing → Evidence` transition, which is disallowed.
   The file WAS created, but stderr showed
-  `Session: Cannot go from 'routing' to 'evidence'` — blocking
+  `Session: Cannot go from 'routing' to 'evidence'` - blocking
   legitimate backfill, audit, brownfield, and evidence-import flows
   in perception if not in fact.
-  - Fix: `forgeplan new evidence` is now phase-agnostic — it never
+  - Fix: `forgeplan new evidence` is now phase-agnostic - it never
     drives the session state machine. Only decision artifacts
     (prd/rfc/adr/epic/spec) advance to Shaping phase. Methodology
     guardrail still enforces at `activate` time via PRD-043 stub
@@ -2430,12 +2430,12 @@ workspace using the default evidence template.
 If you are upgrading from v0.17.0 or v0.17.1 and you have evidence
 artifacts in your workspace, your R_eff scores were potentially
 inflated by the CL3 default (PROB-034). Re-run `forgeplan score` on
-critical PRDs after upgrade — any evidence that explicitly set
+critical PRDs after upgrade - any evidence that explicitly set
 `congruence_level` in Structured Fields will now be honored, and weak
 CL values may cause R_eff to drop. This is correct behavior; the
 previous values were silently wrong.
 
-## [0.17.1] — 2026-04-09 — Post-v0.17.0 dogfood hotfix
+## [0.17.1] - 2026-04-09 - Post-v0.17.0 dogfood hotfix
 
 Fixes two bugs found during the v0.17.0 final dogfood audit when running
 `forgeplan tree` and `forgeplan health` on the dogfood workspace itself.
@@ -2444,7 +2444,7 @@ upstream bugs prevented them from being auto-resolved.
 
 ### Fixed
 
-- **PROB-028 — Phantom rows in `forgeplan tree`** (PRD-044).
+- **PROB-028 - Phantom rows in `forgeplan tree`** (PRD-044).
   `reindex` Phase 2 (orphan cleanup) previously skipped rows whose
   `kind` field failed to parse via `continue`, letting corrupt/empty
   kind rows escape trim forever. Additionally, orphan relations whose
@@ -2460,7 +2460,7 @@ upstream bugs prevented them from being auto-resolved.
     `no .md file found` vs `orphan relation (source|target|both missing)`.
   - `reindex` output gains a new counter: "K removed, N orphan relations"
 
-- **PROB-029 — `forgeplan health` verdict contradicted its own warnings**
+- **PROB-029 - `forgeplan health` verdict contradicted its own warnings**
   (PRD-045). Sprint 13.1 added `active_stubs` and `possible_duplicates`
   detection (PRD-043) and wired them into the warning display, but the
   `generate_next_actions` summary function was never updated to read
@@ -2485,11 +2485,11 @@ upstream bugs prevented them from being auto-resolved.
   without): clap `--help` text, CHANGELOG entry, CLAUDE.md workflow
   section if user-facing, `docs/methodology/` subsection if
   command-level." Red flag: a PR adding a flag/command without
-  touching clap help + CHANGELOG is incomplete — block merge.
+  touching clap help + CHANGELOG is incomplete - block merge.
 
 ### Stats
 
-- 1131 tests pass (+3 from v0.17.0 — PRD-045 verdict aggregator tests)
+- 1131 tests pass (+3 from v0.17.0 - PRD-045 verdict aggregator tests)
 - 0 warnings on both default and `--features semantic-search` builds
 - Clippy strict (`-D warnings`) clean on Rust 1.94
 - Dogfood verification: `forgeplan tree` on dogfood workspace no
@@ -2500,13 +2500,13 @@ upstream bugs prevented them from being auto-resolved.
 
 - PROB-028 (phantom rows reindex bug)
 - PROB-029 (health verdict logic bug)
-- PRD-044 (reindex trim orphans — closes PROB-028)
-- PRD-045 (health verdict aggregator — closes PROB-029)
+- PRD-044 (reindex trim orphans - closes PROB-028)
+- PRD-045 (health verdict aggregator - closes PROB-029)
 - NOTE-044 (sprint checklist framework, docs completeness rule added)
-- NOTE-046 (dogfood cleanup task — duplicate EVID pairs, deferred)
-- NOTE-047 (dogfood cleanup task — false-active stubs, deferred)
+- NOTE-046 (dogfood cleanup task - duplicate EVID pairs, deferred)
+- NOTE-047 (dogfood cleanup task - false-active stubs, deferred)
 
-## [0.17.0] — 2026-04-08 — EPIC-003: Search, Discovery, Intelligence
+## [0.17.0] - 2026-04-08 - EPIC-003: Search, Discovery, Intelligence
 
 First release of EPIC-003. Adds keyword + semantic search, brownfield
 discovery, scoring/routing intelligence, FPF rule surface, methodology
@@ -2524,46 +2524,46 @@ integrity gates, and reusable sprint checklist framework.
 
 ### Added
 
-**Smart Search v2** — PRD-039, Sprint 13.2
+**Smart Search v2** - PRD-039, Sprint 13.2
 - BM25 ranking replaces substring scoring in `forgeplan search`
 - Composable filter DSL (`--status`, `--depth`, `--since`, `--with-evidence`)
 - 1-hop graph neighbor expansion (opt-out via `--no-expand`)
 - Extended MCP `search` tool parameters
 
-**Brownfield Discovery** — PRD-035, Sprints 13.3 + 13.4
+**Brownfield Discovery** - PRD-035, Sprints 13.3 + 13.4
 - Tags system in frontmatter + LanceDB schema (v3→v4 migration)
 - `forgeplan tag` / `untag` commands + `list --tag key=value` filter
 - SourceTier → Congruence Level mapping (T1→CL3, T2→CL2, T3→CL1)
 - `forgeplan discover` CLI command (session state machine)
 - MCP tools: `forgeplan_discover_start`, `_scan`, `_next`, `_status`
 
-**Scoring & Routing Intelligence** — PRD-040, Sprint 13.5
+**Scoring & Routing Intelligence** - PRD-040, Sprint 13.5
 - Routing Skills Memory with exponential decay (90-day half-life)
 - R_eff confidence intervals heuristic (widens with sparse/stale evidence)
-- `forgeplan score` displays `[low — high]` interval alongside point estimate
+- `forgeplan score` displays `[low - high]` interval alongside point estimate
 
-**FPF Rules Surface** — PRD-041, Sprint 13.6
-- `forgeplan fpf rules` — action-grouped tree (EXPLORE/INVESTIGATE/EXPLOIT)
+**FPF Rules Surface** - PRD-041, Sprint 13.6
+- `forgeplan fpf rules` - action-grouped tree (EXPLORE/INVESTIGATE/EXPLOIT)
   with `--flat` and `--json` modes
-- `forgeplan fpf check <id>` — per-artifact rule match introspection
+- `forgeplan fpf check <id>` - per-artifact rule match introspection
   with `--verbose` (unmatched list) and `--json` (canonical shape)
 - MCP tools: `forgeplan_fpf_rules` (with `action`/`name`/`summary`/`source`
   filters) and `forgeplan_fpf_check`
 
-**FPF KB Vector Search** — PRD-042, Sprint 13.7 (supersedes PRD-018)
+**FPF KB Vector Search** - PRD-042, Sprint 13.7 (supersedes PRD-018)
 - `embedding` column (`FixedSizeList<Float32, 1024>`) added to `fpf_spec`
   table, backward-compatible migration via `NewColumnTransform::AllNulls`
 - `LanceStore::search_fpf_by_vector(query_vec, limit)` using LanceDB native
   `vector_search` with `DistanceType::Cosine`
 - `forgeplan fpf search <query> --semantic` CLI flag
 - MCP `forgeplan_fpf_search` gains `semantic: Option<bool>` param
-- **Two-layer graceful fallback** — compile-time (feature off) + runtime
+- **Two-layer graceful fallback** - compile-time (feature off) + runtime
   (Embedder init fail / encode fail / vector search fail) → warning +
   keyword fallback
 - NaN/Inf rejection at `insert_fpf_chunks` boundary
 - Runtime `Embedder::dim() == EMBEDDING_DIM` assertion
 
-**Methodology Integrity** — PRD-043, Sprint 13.1
+**Methodology Integrity** - PRD-043, Sprint 13.1
 - Duplicate guard (`forgeplan new` detects existing similar artifacts)
 - Stub detection (blocks `activate` on unfilled templates)
 - Health detection (`forgeplan health --ci` exits non-zero on blind spots)
@@ -2571,7 +2571,7 @@ integrity gates, and reusable sprint checklist framework.
 - State machine: `Phase` enum with `validate_transition` enforcing
   Idle → Routing → Shaping → Coding → Evidence → PR for Standard+ depth
 
-**Sprint Checklist Framework** — NOTE-044 (post-closeout deliverable)
+**Sprint Checklist Framework** - NOTE-044 (post-closeout deliverable)
 - Reusable quality gate for every future sprint, 7 phases with red flags
 - Encodes lessons from Sprint 13.7 retrospective
 - Explicit "what not to skip" checklist for planning / implementation /
@@ -2584,10 +2584,10 @@ integrity gates, and reusable sprint checklist framework.
   embeddings.
 - **MCP tool registry expanded** from ~37 to ~47 tools
 - **CI linter**: `forgeplan health --ci` + `validate --ci` land (Sprint 11.3)
-- **FpfStorage trait extended** — `insert_fpf_chunks` now accepts optional
+- **FpfStorage trait extended** - `insert_fpf_chunks` now accepts optional
   embeddings; `search_fpf_by_vector` added to trait (no default impl,
   forcing explicit backend choice per Sprint 13.7 hotfix re-audit)
-- **CLI `fpf search` input validation** — empty / oversized (>8192 chars)
+- **CLI `fpf search` input validation** - empty / oversized (>8192 chars)
   queries rejected before store access
 - **MCP param length bounds** on `forgeplan_fpf_search` and
   `forgeplan_fpf_rules` (id ≤128, name ≤128, action ≤64, source ≤16)
@@ -2596,7 +2596,7 @@ integrity gates, and reusable sprint checklist framework.
 
 ### Deprecated / Superseded
 
-- **PRD-018 "FPF Knowledge Base — semantic search"** — superseded by PRD-042.
+- **PRD-018 "FPF Knowledge Base - semantic search"** - superseded by PRD-042.
   PRD-018 was a false-active stub with R_eff=1.0 but no real implementation,
   flagged by Sprint 13.1 methodology integrity work. PRD-042 closes the gap
   with actual BGE-M3 integration + supersedes PRD-018 to terminal state.
@@ -2633,12 +2633,12 @@ integrity gates, and reusable sprint checklist framework.
 
 ### Methodology lessons captured
 
-- **Dependent sprint branch base verification** — new CLAUDE.md section
+- **Dependent sprint branch base verification** - new CLAUDE.md section
   covering the Sprint 13.1.5 rebase hell that taught us to verify parent
   branches contain expected commits before spawning teammates
-- **Sprint Checklist Framework (NOTE-044)** — reusable 7-phase gate to
+- **Sprint Checklist Framework (NOTE-044)** - reusable 7-phase gate to
   prevent planning gaps (was: "user had to ask 'what did we miss'")
-- **Sprint 13.7 Deferred Debts (NOTE-045)** — backlog tracking for the
+- **Sprint 13.7 Deferred Debts (NOTE-045)** - backlog tracking for the
   8 non-blocking items that rolled forward from the retrospective
 
 ### Related PRs

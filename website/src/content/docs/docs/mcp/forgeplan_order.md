@@ -3,16 +3,16 @@ title: forgeplan_order
 description: "Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only."
 ---
 
-Return all artifacts in topological order — parents before children, based purely on structural relations (`based_on`, `refines`, `supersedes`, `contradicts`). Each node is classified as `ready` (no unmet prerequisites) or `blocked`. Cycles in the graph are detected and reported separately.
+Return all artifacts in topological order - parents before children, based purely on structural relations (`based_on`, `refines`, `supersedes`, `contradicts`). Each node is classified as `ready` (no unmet prerequisites) or `blocked`. Cycles in the graph are detected and reported separately.
 
 **Category**: Dashboards & Graph
 
 ## When an agent calls it
 
-- **Sprint scheduling** — work through the `ready` list first to avoid blocking yourself.
-- **Release planning** — determine the activation order for a batch of draft artifacts.
-- **Cycle detection** — find reference loops (e.g. two PRDs mutually `based_on` each other).
-- **Import verification** — after `forgeplan_import`, sanity-check the graph is a DAG.
+- **Sprint scheduling** - work through the `ready` list first to avoid blocking yourself.
+- **Release planning** - determine the activation order for a batch of draft artifacts.
+- **Cycle detection** - find reference loops (e.g. two PRDs mutually `based_on` each other).
+- **Import verification** - after `forgeplan_import`, sanity-check the graph is a DAG.
 
 ## Input parameters
 
@@ -53,10 +53,10 @@ If cycles exist, they're reported:
 
 ## Typical sequence
 
-1. `forgeplan_order` — get the full ordering.
+1. `forgeplan_order` - get the full ordering.
 2. Pick the first `ready: true` node.
 3. `forgeplan_get` → `forgeplan_validate` → `forgeplan_activate`.
-4. Re-run `forgeplan_order` — downstream nodes should now become ready.
+4. Re-run `forgeplan_order` - downstream nodes should now become ready.
 
 ## CLI equivalent
 
@@ -66,6 +66,6 @@ forgeplan order
 
 ## See also
 
-- [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) — focused view on blocked artifacts only.
-- [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) — Mermaid rendering of the same graph.
+- [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) - focused view on blocked artifacts only.
+- [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) - Mermaid rendering of the same graph.
 - [Methodology guide](/docs/methodology/overview/)

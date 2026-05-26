@@ -143,6 +143,6 @@ go higher. Escalation is always safe; de-escalation carries risk.
 ## Related
 
 - [CLI: forgeplan route](/docs/cli/route/)
-- [ADI Reasoning](/docs/methodology/adi/) — mandatory for Deep/Critical
-- [Artifact Lifecycle](/docs/methodology/lifecycle/) — validation gates differ by depth
-- [Quick Start](/docs/getting-started/quick-start/) — see routing in the full cycle
+- [ADI Reasoning](/docs/methodology/adi/) - mandatory for Deep/Critical
+- [Artifact Lifecycle](/docs/methodology/lifecycle/) - validation gates differ by depth
+- [Quick Start](/docs/getting-started/quick-start/) - see routing in the full cycle

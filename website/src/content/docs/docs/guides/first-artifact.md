@@ -1,6 +1,6 @@
 ---
 title: First Artifact Tutorial
-description: "A 20-minute hands-on walkthrough: create, validate, reason, prove, and activate your first PRD — with common errors and how to fix them."
+description: "A 20-minute hands-on walkthrough: create, validate, reason, prove, and activate your first PRD - with common errors and how to fix them."
 ---
 
 This is the long version of the [Quick Start](/docs/getting-started/quick-start/).
@@ -15,7 +15,7 @@ trains you on the full Forgeplan cycle.
 A PRD for a small, real feature: **"Add a `--dry-run` flag to `forgeplan
 new` so users can preview what would be created without writing files."**
 
-It is intentionally small — routing will probably say `Standard`, which
+It is intentionally small - routing will probably say `Standard`, which
 means we hit every step except the Epic/Spec tiers. Perfect training load.
 
 ```mermaid
@@ -33,7 +33,7 @@ flowchart LR
 - A directory where you can create a workspace (throwaway is fine)
 - Optional: a `GEMINI_API_KEY` or other LLM provider for ADI reasoning
 
-## Step 1 — Initialize the workspace
+## Step 1 - Initialize the workspace
 
 ```bash
 mkdir ~/forgeplan-tutorial && cd ~/forgeplan-tutorial
@@ -61,17 +61,17 @@ Project Health
   Blind spots: 0
   Orphans: 0
   Stale: 0
-  Status: OK — empty workspace
+  Status: OK - empty workspace
 ```
 
 ### Error you might hit
 
-**`Error: .forgeplan/ already exists`** — you ran `init` in an existing
+**`Error: .forgeplan/ already exists`** - you ran `init` in an existing
 workspace. Either `cd` elsewhere or `rm -rf .forgeplan` (only on a
-throwaway tutorial directory — never on a real project without exporting
+throwaway tutorial directory - never on a real project without exporting
 first: `forgeplan export --output backup.json`).
 
-## Step 2 — Route the task
+## Step 2 - Route the task
 
 ```bash
 forgeplan route "add --dry-run flag to forgeplan new for preview"
@@ -94,11 +94,11 @@ Recommendation:
   3. forgeplan reason PRD-XXX  (recommended at Standard)
 ```
 
-If the router says `Tactical`, override and treat it as Standard anyway —
+If the router says `Tactical`, override and treat it as Standard anyway -
 we want to practice the full cycle. See
 [Routing & Depth](/docs/methodology/routing/) for the decision tree.
 
-## Step 3 — Shape: create the PRD
+## Step 3 - Shape: create the PRD
 
 ```bash
 forgeplan new prd "CLI dry-run flag"
@@ -129,8 +129,8 @@ preview what files would be created before committing. Mistakes
 
 ## Non-Goals
 
-- Not a full "simulation mode" — only covers the `new` command
-- Not a rollback mechanism — files that were created without `--dry-run`
+- Not a full "simulation mode" - only covers the `new` command
+- Not a rollback mechanism - files that were created without `--dry-run`
   stay created
 
 ## Target Users
@@ -148,10 +148,10 @@ agents that want to preview their output before committing.
 ```
 
 Notice: no mention of "use clap" or "emit JSON" or any specific
-implementation. That is rule 3 — FRs describe capabilities, not
+implementation. That is rule 3 - FRs describe capabilities, not
 implementations. See [Methodology Overview](/docs/methodology/overview/).
 
-## Step 4 — Validate
+## Step 4 - Validate
 
 ```bash
 forgeplan validate PRD-001
@@ -167,25 +167,25 @@ PRD-001: PASS ✓
 
 ### Errors you will probably hit
 
-**`MUST error: Problem section missing`** — you forgot a required header.
+**`MUST error: Problem section missing`** - you forgot a required header.
 Aliases work: `## Motivation`, `## Background`, `## Problem Statement` all
 count as Problem. Add one.
 
-**`MUST error: implementation leakage in FR2`** — you wrote something like
+**`MUST error: implementation leakage in FR2`** - you wrote something like
 "Use JSON output with serde". Rewrite as "User can see the exact file path
 and content". The validator flags library names and technology choices in
 requirements.
 
-**`MUST error: no functional requirements`** — the `## Functional
+**`MUST error: no functional requirements`** - the `## Functional
 Requirements` section exists but has no bullets. Add at least one FR with
 the `[Actor] can [capability]` pattern.
 
-**`MUST error: vague goal "system should be fast"`** — validator caught an
+**`MUST error: vague goal "system should be fast"`** - validator caught an
 unmeasurable claim. Rewrite with numbers or remove.
 
 Re-run `forgeplan validate PRD-001` after each fix.
 
-## Step 5 — Reason (ADI)
+## Step 5 - Reason (ADI)
 
 ```bash
 forgeplan reason PRD-001
@@ -197,12 +197,12 @@ and key), you will see something like:
 ```
 ADI cycle for PRD-001
 ─────────────────────
-Abduction — 3 hypotheses:
+Abduction - 3 hypotheses:
   H1: Single --dry-run flag that short-circuits file write
   H2: Separate `forgeplan preview new` command
   H3: Interactive confirmation prompt (y/n before write)
 
-Deduction — predictions per hypothesis:
+Deduction - predictions per hypothesis:
   H1:
     - Minimal code change, 1 branch in `new` command
     - Reusable: same flag can extend to other write commands
@@ -216,29 +216,29 @@ Deduction — predictions per hypothesis:
     - No way to see output before committing
     - Violates `-y` non-interactive contract
 
-Induction — evidence check:
-  H1: supports — aligns with existing flag patterns (e.g. `init -y`)
-  H2: weakens — duplication + discoverability win does not offset cost
-  H3: refutes — breaks AI agent workflow (see MUST in CLAUDE.md)
+Induction - evidence check:
+  H1: supports - aligns with existing flag patterns (e.g. `init -y`)
+  H2: weakens - duplication + discoverability win does not offset cost
+  H3: refutes - breaks AI agent workflow (see MUST in CLAUDE.md)
 
 Recommendation: H1
 Confidence: 0.87
 ```
 
 No LLM configured? You will get a template asking you to fill in the
-hypotheses manually. That still counts — the value is in thinking through
+hypotheses manually. That still counts - the value is in thinking through
 alternatives, not in LLM output.
 
 See [ADI Reasoning](/docs/methodology/adi/) for why this step exists.
 
 ### Error
 
-**`Error: no LLM provider configured`** — open `.forgeplan/config.yaml`
+**`Error: no LLM provider configured`** - open `.forgeplan/config.yaml`
 and add a provider block. For the tutorial you can skip this and write
 the 3 hypotheses directly into the PRD body under a `## Reasoning`
 section.
 
-## Step 6 — Build
+## Step 6 - Build
 
 Write the code. For this tutorial, pretend you implemented H1 and
 wrote tests. In real Forgeplan work you would:
@@ -250,13 +250,13 @@ cargo check     # 0 warnings, 0 errors
 ```
 
 All three must pass before you create evidence claiming they do. If
-`cargo check` has warnings, fix them — Forgeplan's own CLAUDE.md rule
+`cargo check` has warnings, fix them - Forgeplan's own CLAUDE.md rule
 is "0 warnings, 0 errors" on every commit.
 
-## Step 7 — Prove: create Evidence
+## Step 7 - Prove: create Evidence
 
 ```bash
-forgeplan new evidence "CLI dry-run — 8 unit tests pass, flag works end-to-end"
+forgeplan new evidence "CLI dry-run - 8 unit tests pass, flag works end-to-end"
 ```
 
 ```
@@ -295,7 +295,7 @@ evidence_type: test` lines, the R_eff parser falls back to CL0 with a 0.9
 penalty. Your score will be near zero even though the evidence is strong.
 Always include the three fields.
 
-## Step 8 — Check the score
+## Step 8 - Check the score
 
 ```bash
 forgeplan score PRD-001
@@ -305,21 +305,21 @@ Expected:
 
 ```
 PRD-001: CLI dry-run flag
-  R_eff = 1.00 — Adequate
+  R_eff = 1.00 - Adequate
   Evidence:
     EVID-001: supports, CL3, test → score 1.0
 ```
 
 ### What if R_eff = 0.0?
 
-1. `forgeplan list evidence` — is EVID-001 in the workspace?
+1. `forgeplan list evidence` - is EVID-001 in the workspace?
 2. `cat .forgeplan/evidence/EVID-001-*.md | grep -E "verdict|congruence_level|evidence_type"`
-   — all three fields present?
-3. `forgeplan link EVID-001 PRD-001 --relation informs` — was the link created?
+   - all three fields present?
+3. `forgeplan link EVID-001 PRD-001 --relation informs` - was the link created?
 
 See [Evidence & R_eff](/docs/methodology/evidence/) for the full formula.
 
-## Step 9 — Activate
+## Step 9 - Activate
 
 ```bash
 forgeplan review PRD-001
@@ -346,7 +346,7 @@ If the validation gate fails here, the transition is rejected. The most
 common cause is that you edited the PRD after step 4 and introduced a
 MUST violation. Re-run `forgeplan validate PRD-001` and fix it.
 
-## Step 10 — Verify
+## Step 10 - Verify
 
 ```bash
 forgeplan health
@@ -356,14 +356,14 @@ forgeplan health
 Project Health
   Total artifacts: 2 (PRD-001, EVID-001)
   Active: 1
-  Draft: 1 (EVID-001 — evidence packs stay draft)
+  Draft: 1 (EVID-001 - evidence packs stay draft)
   Blind spots: 0
   Orphans: 0
   Stale: 0
   Status: HEALTHY
 ```
 
-Congratulations — you have a fully traced decision with measurable trust.
+Congratulations - you have a fully traced decision with measurable trust.
 
 ## What you learned
 
@@ -375,16 +375,16 @@ Congratulations — you have a fully traced decision with measurable trust.
   missing sections before they became habits.
 - **Reason with ADI.** You generated alternatives before committing to
   one, which is how you avoid "I wish we had thought of that" moments.
-- **Prove with evidence.** R_eff is not a decoration — it is the number
+- **Prove with evidence.** R_eff is not a decoration - it is the number
   that tells you whether you should trust your own decision.
 - **Activate only when ready.** The gate prevents "active PRDs with no
-  code" — a false promise to future readers.
+  code" - a false promise to future readers.
 
 ## Next steps
 
 - Run the full cycle on a real task in your main project
 - Read [Methodology Overview](/docs/methodology/overview/) for the 10 rules
-- Explore [CLI Reference](/docs/cli/) — every command is documented
+- Explore [CLI Reference](/docs/cli/) - every command is documented
 - Dive into [Artifact Lifecycle](/docs/methodology/lifecycle/) to learn
   `supersede`, `deprecate`, `renew`, and `reopen`
 - Check [Configuration](/docs/getting-started/configuration/) to set up

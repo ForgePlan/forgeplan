@@ -1,6 +1,6 @@
 ---
 title: forgeplan get
-description: "Read full artifact content by ID — AI-friendly markdown fetch"
+description: "Read full artifact content by ID - AI-friendly markdown fetch"
 ---
 
 Read the full markdown content of an artifact by ID. This is how AI agents
@@ -43,7 +43,7 @@ forgeplan get [OPTIONS] <ID>
 
 ## Examples
 
-Read a PRD in full — the standard AI-agent fetch:
+Read a PRD in full - the standard AI-agent fetch:
 
 ```bash
 forgeplan get PRD-001
@@ -55,7 +55,7 @@ Read an RFC and pipe through a pager:
 forgeplan get RFC-002 | less
 ```
 
-JSON output — body plus all frontmatter, ready for `jq`:
+JSON output - body plus all frontmatter, ready for `jq`:
 
 ```bash
 forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruence_level'
@@ -94,8 +94,8 @@ For AI agents using MCP, `get` maps 1:1 to the `read_artifact` tool.
 
 ## See also
 
-- [`forgeplan list`](/docs/cli/list/) — discover IDs
-- [`forgeplan search`](/docs/cli/search/) — find by query
-- [`forgeplan validate`](/docs/cli/validate/) — quality check
-- [`forgeplan score`](/docs/cli/score/) — R_eff + F-G-R metrics
+- [`forgeplan list`](/docs/cli/list/) - discover IDs
+- [`forgeplan search`](/docs/cli/search/) - find by query
+- [`forgeplan validate`](/docs/cli/validate/) - quality check
+- [`forgeplan score`](/docs/cli/score/) - R_eff + F-G-R metrics
 - [Methodology guide](/docs/methodology/overview/)

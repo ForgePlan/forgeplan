@@ -1,16 +1,26 @@
 ---
 interface Props {
   cover?: string;
+  coverAlt?: string;
   topic: string;
   kind: string;
   title: string;
 }
-const { cover, topic, kind, title } = Astro.props;
+const { cover, coverAlt, topic, kind, title } = Astro.props;
 ---
 {cover ? (
   <div class={`blog-hero blog-hero-cover blog-hero-topic-${topic}`}>
     <div class="blog-hero-image">
-      <img src={cover} alt={title} class="blog-hero-img" />
+      <img
+        src={cover}
+        alt={coverAlt ?? ''}
+        class="blog-hero-img"
+        loading="eager"
+        fetchpriority="high"
+        decoding="async"
+        width="1280"
+        height="624"
+      />
     </div>
     <div class="blog-hero-meta">
       <p class="eyebrow">{kind} · {topic}</p>

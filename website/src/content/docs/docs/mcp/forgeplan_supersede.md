@@ -3,13 +3,13 @@ title: forgeplan_supersede
 description: "Supersede an artifact (active → superseded). Creates a supersedes link to the replacement and marks the original as terminal."
 ---
 
-Marks an active artifact as superseded by a newer one. This is a **terminal** transition — once superseded, the artifact never goes back to active. The tool also creates a `supersedes` link automatically, so the decision history is preserved and traceable. Agents use this when a PRD/RFC/ADR is being replaced (not retired, not deleted) by a new, better version.
+Marks an active artifact as superseded by a newer one. This is a **terminal** transition - once superseded, the artifact never goes back to active. The tool also creates a `supersedes` link automatically, so the decision history is preserved and traceable. Agents use this when a PRD/RFC/ADR is being replaced (not retired, not deleted) by a new, better version.
 
 **Category**: Lifecycle
 
 ## When an agent calls this
 
-- Redesign: new RFC-019 replaces RFC-018 — agent calls `supersede RFC-018 --by RFC-019`.
+- Redesign: new RFC-019 replaces RFC-018 - agent calls `supersede RFC-018 --by RFC-019`.
 - Second iteration of a decision after new evidence contradicts the old one.
 - Renaming/restructuring: create new artifact, then supersede the old so history stays linked.
 
@@ -54,15 +54,15 @@ With typical agent context:
 
 ## Typical sequence
 
-`forgeplan_new` (replacement) → `forgeplan_update` → `forgeplan_validate` PASS → `forgeplan_activate` the replacement → `forgeplan_supersede` the old one. Never supersede before the replacement is active — you'd leave an orphan.
+`forgeplan_new` (replacement) → `forgeplan_update` → `forgeplan_validate` PASS → `forgeplan_activate` the replacement → `forgeplan_supersede` the old one. Never supersede before the replacement is active - you'd leave an orphan.
 
 ## CLI equivalent
 
-- [`forgeplan supersede`](/docs/cli/supersede/) — same operation
+- [`forgeplan supersede`](/docs/cli/supersede/) - same operation
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) — preceding step
-- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) — retirement without replacement
-- [`forgeplan_link`](/docs/mcp/forgeplan_link/) — manual link creation
+- [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - preceding step
+- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - retirement without replacement
+- [`forgeplan_link`](/docs/mcp/forgeplan_link/) - manual link creation
