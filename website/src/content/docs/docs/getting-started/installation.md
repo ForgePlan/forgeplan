@@ -53,15 +53,15 @@ Run these inside a Claude Code session:
 
 After reload, `/smith-bootstrap` for a fresh repo or `/smith` for next-action recommendations are ready to use.
 
-### Why all five MUST plugins are needed
+### What each plugin gives you
 
-| Plugin | Provides | Without it |
-|---|---|---|
-| `fpl-skills` | `/smith`, `/forge-cycle`, `/audit`, `/sprint`, `/forgeplan-cookbook`, 34 skills total | No orchestrator, no methodology routing |
-| `agents-pro` | smith agent body, guardian, brief-intake, adr-architect, research-analyst (28 agents) | No Profile A creators, no guardian gate |
-| `agents-sparc` | specification, architecture, pseudocode, refinement, sparc-orchestrator | First PRD silently falls back to generic Profile A, misses SPARC contract |
-| `agents-core` | coder, code-reviewer, tester (11 agents) | No Profile C-coder for actual code work, no canonical reviewers |
-| `forgeplan-workflow` | `/forge-cycle` (reactive enforcer), `/forge-audit`, guardian gate enforcement | No 4-layer pipeline driver, no `/forge` command, no audit |
+| Plugin | What you can do with it |
+|---|---|
+| `fpl-skills` | Type `/smith` and it figures out what kind of task you have and which methodology fits. Drives the day-to-day commands: `/forge-cycle` to walk a task to completion, `/audit` for multi-expert code review, `/sprint` for wave-based execution, `/forgeplan-cookbook` to look up the right forgeplan tool. The skills brain of the system. |
+| `agents-pro` | Dispatch named specialists when you need them: `brief-intake` turns a vague idea into a structured Brief, `adr-architect` produces architecture decisions with three considered alternatives, `research-analyst` gathers prior art before you commit to a direction, `guardian` runs the last check before activation. |
+| `agents-sparc` | Use the SPARC five-phase flow for any new feature: Specification → Pseudocode → Architecture → Refinement → Completion. Without it, the first PRD on a fresh project lands without the SPARC structure and you have to redo the spec phase by hand. |
+| `agents-core` | Actually write, review, and test code. The `coder` agent edits files in an isolated worktree, `code-reviewer` produces structured findings against the spec, `tester` runs the suite and reports coverage delta. |
+| `forgeplan-workflow` | Run the `/forge-cycle` command — the reactive enforcer that walks an artifact through validate → ADI → review → activate one step at a time. Plus `/forge-audit` for multi-expert code audit and the guardian gate enforcement that decides whether a PRD is ready to ship. |
 
 ### Optional plugins
 

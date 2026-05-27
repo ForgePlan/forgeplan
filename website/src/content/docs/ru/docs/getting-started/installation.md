@@ -53,15 +53,15 @@ forgeplan setup-skill
 
 После reload `/smith-bootstrap` для нового репо или `/smith` для рекомендаций следующего действия готовы к работе.
 
-### Зачем нужны все 5 MUST плагинов
+### Что даёт каждый плагин
 
-| Плагин | Что даёт | Без него |
-|---|---|---|
-| `fpl-skills` | `/smith`, `/forge-cycle`, `/audit`, `/sprint`, `/forgeplan-cookbook`, всего 34 skill'а | Нет оркестратора, нет методологического routing'а |
-| `agents-pro` | тело smith-агента, guardian, brief-intake, adr-architect, research-analyst (28 агентов) | Нет Profile A создателей, нет guardian gate |
-| `agents-sparc` | specification, architecture, pseudocode, refinement, sparc-orchestrator | Первый PRD silently fallback'ит на generic Profile A, теряя SPARC контракт |
-| `agents-core` | coder, code-reviewer, tester (11 агентов) | Нет Profile C-coder для реального кода, нет канонических ревьюеров |
-| `forgeplan-workflow` | `/forge-cycle` (reactive enforcer), `/forge-audit`, guardian gate enforcement | Нет драйвера 4-слойного пайплайна, нет команды `/forge`, нет audit |
+| Плагин | Что ты сможешь сделать |
+|---|---|
+| `fpl-skills` | Набираешь `/smith` — он сам понимает какая у тебя задача и какая методология подходит. Драйвит каждодневные команды: `/forge-cycle` чтобы провести задачу до конца, `/audit` для multi-expert code review, `/sprint` для волновой реализации, `/forgeplan-cookbook` чтобы быстро найти нужный forgeplan-инструмент. Мозги системы. |
+| `agents-pro` | Запускаешь именованных специалистов когда нужно: `brief-intake` превращает мутную идею в структурированный Brief, `adr-architect` пишет архитектурное решение с тремя обдуманными альтернативами, `research-analyst` собирает prior art до того как ты прыгнешь в реализацию, `guardian` делает последнюю проверку перед активацией артефакта. |
+| `agents-sparc` | Используешь SPARC пятифазный поток для любой новой фичи: Specification → Pseudocode → Architecture → Refinement → Completion. Без него первый PRD на новом проекте ляжет без SPARC-структуры — придётся переделывать spec-фазу руками. |
+| `agents-core` | Реально пишешь, ревьюишь и тестируешь код. Агент `coder` правит файлы в изолированном worktree, `code-reviewer` выдаёт структурированные findings против спеки, `tester` гоняет suite и считает coverage delta. |
+| `forgeplan-workflow` | Запускаешь команду `/forge-cycle` — reactive-enforcer который проводит артефакт через validate → ADI → review → activate шаг за шагом. Плюс `/forge-audit` для multi-expert audit'а и guardian gate, который решает готов ли PRD к merge. |
 
 ### Опциональные плагины
 
