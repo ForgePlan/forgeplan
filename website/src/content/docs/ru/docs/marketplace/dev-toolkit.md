@@ -10,7 +10,8 @@ description: Аудит кода, планирование спринтов, и�
 ## Установка
 
 ```bash
-npx skills add ForgePlan/marketplace --plugin dev-toolkit
+/plugin marketplace add ForgePlan/marketplace
+/plugin install dev-toolkit@ForgePlan-marketplace
 ```
 
 ## Команды

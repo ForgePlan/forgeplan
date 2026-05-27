@@ -8,7 +8,7 @@ description: Установите Forgeplan - CLI, AI Skill или MCP Server
 Установите навык `/forge` для Claude Code, Cursor, Codex, Gemini и более чем 40 AI-агентов:
 
 ```bash
-npx skills add ForgePlan/marketplace --skill forge
+forgeplan setup-skill   # пишет ~/.claude/skills/forge/SKILL.md, без сети
 ```
 
 После установки используйте в чате:

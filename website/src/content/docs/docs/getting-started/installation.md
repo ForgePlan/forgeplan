@@ -8,7 +8,7 @@ description: Install Forgeplan - CLI, AI Skill, or MCP Server
 Install the `/forge` skill for Claude Code, Cursor, Codex, Gemini and 40+ AI agents:
 
 ```bash
-npx skills add ForgePlan/marketplace --skill forge
+forgeplan setup-skill   # writes ~/.claude/skills/forge/SKILL.md, no network
 ```
 
 After installation, use in chat:
