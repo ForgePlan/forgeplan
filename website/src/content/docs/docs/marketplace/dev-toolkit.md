@@ -10,7 +10,8 @@ The **dev-toolkit** plugin provides language-agnostic development tools for Clau
 ## Installation
 
 ```bash
-npx skills add ForgePlan/marketplace --plugin dev-toolkit
+/plugin marketplace add ForgePlan/marketplace
+/plugin install dev-toolkit@ForgePlan-marketplace
 ```
 
 ## Commands

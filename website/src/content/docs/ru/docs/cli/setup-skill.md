@@ -19,7 +19,7 @@ description: "Устанавливает навык /forge в Claude Code, чт�
 - Если вы не используете Claude Code — навык специфичен для Claude Code и не влияет на использование CLI.
 - Если вы вручную настроили `~/.claude/skills/forge/SKILL.md` и не хотите его перезаписывать (команда переустановит встроенную версию).
 - В качестве замены для `forgeplan init` — это только устанавливает файл навыка, он не создает рабочее пространство.
-- Если вам нужны плагины маркетплейса (`/audit`, `/sprint`, `/fpf` и т. д.) — они устанавливаются отдельно через `npx skills add ForgePlan/marketplace --plugin <name>`. См. [Обзор маркетплейса](/docs/marketplace/overview/).
+- Если вам нужны плагины маркетплейса (`/audit`, `/sprint`, `/fpf` и т. д.) — они устанавливаются отдельно через `/plugin install <name>@ForgePlan-marketplace` (после `/plugin marketplace add ForgePlan/marketplace`). См. [Обзор маркетплейса](/docs/marketplace/overview/).
 
 ## Использование
 

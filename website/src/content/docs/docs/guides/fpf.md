@@ -89,7 +89,8 @@ forgeplan reason PRD-001 --fpf
 
 ```bash
 # As Claude Code plugin
-npx skills add ForgePlan/marketplace --plugin fpf
+/plugin marketplace add ForgePlan/marketplace
+/plugin install fpf@ForgePlan-marketplace
 
 # Or use built-in CLI
 forgeplan fpf search "trust"

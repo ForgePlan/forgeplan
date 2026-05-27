@@ -122,7 +122,7 @@ this list is the index.
 
 ## Tooling
 
-In AI coding agents this entire methodology is packaged as the `/forge` skill. Install it with `forgeplan setup-skill` (offline, built into the binary) or `npx skills add ForgePlan/marketplace --skill forge`. The skill wraps `route -> new -> validate -> reason -> activate` into a single conversational command.
+In AI coding agents this entire methodology is packaged as the `/forge` skill. Install it with `forgeplan setup-skill` (offline, built into the binary) or get the full `forgeplan-workflow` plugin via `/plugin install forgeplan-workflow@ForgePlan-marketplace`. The skill wraps `route -> new -> validate -> reason -> activate` into a single conversational command.
 
 Additional plugins provide code auditing (`/audit`), sprint planning (`/sprint`), FPF reasoning (`/fpf`), and more. Full plugin catalog: [Marketplace Overview](/docs/marketplace/overview/).
 

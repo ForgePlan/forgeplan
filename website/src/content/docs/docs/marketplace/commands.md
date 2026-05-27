@@ -4,7 +4,7 @@ description: All slash commands from ForgePlan marketplace plugins
 ---
 
 :::note[Installation required]
-Commands listed below come from external marketplace plugins. Install them with `npx skills add ForgePlan/marketplace --plugin <name>` or use the built-in `forgeplan setup-skill` for the core `/forge` skill.
+Commands listed below come from external marketplace plugins. Install them with `/plugin install <name>@ForgePlan-marketplace` (after `/plugin marketplace add ForgePlan/marketplace`) or use the built-in `forgeplan setup-skill` for the core `/forge` skill.
 :::
 
 ## Core Commands (forgeplan-workflow)

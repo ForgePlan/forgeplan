@@ -136,5 +136,5 @@ Beyond the built-in CLI, Forgeplan integrates with AI coding agents via the `/fo
 - [**Dev Toolkit**](/docs/marketplace/dev-toolkit/) — `/sprint`, `/audit`, `/recall`, `/research`, `/build`
 - [**Marketplace Overview**](/docs/marketplace/overview/) — full plugin catalog
 
-Install the core skill with `forgeplan setup-skill` or `npx skills add ForgePlan/marketplace --skill forge`. Additional plugins are available via `npx skills add ForgePlan/marketplace --plugin <name>`.
+Install the core skill with `forgeplan setup-skill` or get the full `forgeplan-workflow` plugin via `/plugin install forgeplan-workflow@ForgePlan-marketplace`. Additional plugins are available via `/plugin install <name>@ForgePlan-marketplace` (after `/plugin marketplace add ForgePlan/marketplace`).
 

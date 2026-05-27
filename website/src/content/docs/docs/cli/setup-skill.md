@@ -19,7 +19,7 @@ The skill file is embedded directly into the `forgeplan` binary at compile time 
 - If you don't use Claude Code — the skill is Claude-Code-specific and has no effect on plain CLI usage.
 - If you've customized `~/.claude/skills/forge/SKILL.md` manually and don't want to overwrite it (the command re-installs the bundled version).
 - As a substitute for `forgeplan init` — this only installs the skill file, it does not create a workspace.
-- If you want marketplace plugins (`/audit`, `/sprint`, `/fpf`, etc.) — those are installed separately via `npx skills add ForgePlan/marketplace --plugin <name>`. See the [Marketplace Overview](/docs/marketplace/overview/).
+- If you want marketplace plugins (`/audit`, `/sprint`, `/fpf`, etc.) — those are installed separately via `/plugin install <name>@ForgePlan-marketplace` (after `/plugin marketplace add ForgePlan/marketplace`). See the [Marketplace Overview](/docs/marketplace/overview/).
 
 ## Usage
 

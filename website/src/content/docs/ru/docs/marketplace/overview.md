@@ -27,11 +27,12 @@ Marketplace поставляется с плагинами, охватывающ
 ### Через npx (реестр marketplace)
 
 ```bash
-# Установить конкретный плагин
-npx skills add ForgePlan/marketplace --plugin dev-toolkit
+# Установить конкретный плагин (изнутри сессии Claude Code)
+/plugin marketplace add ForgePlan/marketplace
+/plugin install dev-toolkit@ForgePlan-marketplace
 
-# Установить навык forge (методология)
-npx skills add ForgePlan/marketplace --skill forge
+# Установить навык forge (методология) — офлайн, маркетплейс не нужен
+forgeplan setup-skill
 ```
 
 ### Через встроенный CLI (офлайн, без сети)

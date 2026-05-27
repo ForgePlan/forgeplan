@@ -41,7 +41,8 @@ SPARC — это структурированная методология ра�
 ## Установка
 
 ```bash
-npx skills add ForgePlan/marketplace --plugin agents-sparc
+/plugin marketplace add ForgePlan/marketplace
+/plugin install agents-sparc@ForgePlan-marketplace
 ```
 
 ## Интеграция с Forgeplan
