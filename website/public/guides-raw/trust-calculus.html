@@ -390,12 +390,12 @@
     <div class="hypotheses">
       <div class="hypo h1">
         <div class="tag-row"><span class="dot"></span><span>H1 · гипотеза</span></div>
-        <div class="title">Bottleneck в индексе</div>
+        <div class="title">Узкое место в индексе</div>
         <p class="hint">Прогноз: <code>EXPLAIN ANALYZE</code> показывает &gt;50 ms на индексном поиске.</p>
       </div>
       <div class="hypo h2">
         <div class="tag-row"><span class="dot"></span><span>H2 · гипотеза</span></div>
-        <div class="title">Bottleneck в re-ranking</div>
+        <div class="title">Узкое место в re-ranking</div>
         <p class="hint">Прогноз: flamegraph показывает &gt;60% времени в <code>rerankCandidates</code>.</p>
       </div>
       <div class="hypo h3">
@@ -472,7 +472,7 @@
       Лучшее supporting evidence - E6 (внутренний бенчмарк): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
       H1 опровергнута собственным замером E2 (EXPLAIN ANALYZE показал 18-24 ms, это
       <i>weakens</i> гипотезу). H2 имеет WLNK=7 от flamegraph, но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у H3.
-      DDR пишется по H3 с условиями пересмотра - decay-триггеры показаны в pipeline ниже.
+      DDR пишется по H3 с условиями пересмотра - decay-триггеры показаны в конвейере ниже.
     </p>
     <span class="winner-tag">H3 · activated</span>
   </div>
