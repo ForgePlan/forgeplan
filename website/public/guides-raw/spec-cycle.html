@@ -318,7 +318,7 @@
     <div class="pipe-box">
       <div class="step-tag">01 · Spec</div>
       <div class="step-title">Проверяемое поведение</div>
-      <div class="step-desc">Behavior · Invariants · Triggers · Out-of-scope</div>
+      <div class="step-desc">Поведение · Invariants · Триггеры · Out-of-scope</div>
     </div>
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
@@ -378,7 +378,7 @@
         <span class="sp-status">active</span>
       </div>
       <div class="sp-sec">
-        <div class="sec-tag">Behavior</div>
+        <div class="sec-tag">Поведение</div>
         <ul>
           <li>POST /notes/:id/tags с валидным массивом → 200 + список тегов</li>
           <li>POST с дубликатом существующего тега → 200, идемпотентно</li>
@@ -393,7 +393,7 @@
         </ul>
       </div>
       <div class="sp-sec">
-        <div class="sec-tag">Triggers · review zone</div>
+        <div class="sec-tag">Триггеры · review zone</div>
         <ul>
           <li>Изменение лимита тегов → review search-spec (фильтрация)</li>
           <li>Смена нормализации → review migration-spec</li>
@@ -522,7 +522,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
     </div>
 
     <p style="margin-top: 16px; font-size: 14px; color: var(--text-3);">
-      Каскад явно записывается в секции <i>Triggers</i> или в отдельном файле зависимостей.
+      Каскад явно записывается в секции <i>Триггеры</i> или в отдельном файле зависимостей.
       Когда вы готовите delta, чарт показывает, что ещё нужно проверить - это уберегает от
       ситуации «поменяли одну спеку, через месяц всплыло в трёх соседних». Длина бара -
       грубая оценка усилий ревью, не точное число.
@@ -572,7 +572,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
         <b>CL0</b> статья про противоположный контекст (penalty 0.9).
       </li>
       <li>
-        <span class="term">Score</span> · <code>max(0, verdict − CL_penalty)</code> для одного evidence.
+        <span class="term">Оценка</span> · <code>max(0, verdict − CL_penalty)</code> для одного evidence.
       </li>
       <li>
         <span class="term">R_eff</span> · <code>min(scores)</code> по всем evidence решения. Не среднее.
@@ -592,7 +592,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
             <th>Evidence</th>
             <th>Verdict</th>
             <th>CL</th>
-            <th class="num">Score</th>
+            <th class="num">Оценка</th>
             <th></th>
           </tr>
         </thead>
@@ -615,7 +615,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
           </tr>
           <tr>
             <td class="id">E3</td>
-            <td class="evidence">Mailing list: деградация JSON1 на 100k записей</td>
+            <td class="evidence">Рассылка: деградация JSON1 на 100k записей</td>
             <td><span class="verdict-pill weakens">weakens</span></td>
             <td><span class="cl-pill cl1">CL1</span></td>
             <td class="num score low">0.1</td>
@@ -657,14 +657,14 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
         <div class="decay-track"></div>
         <div class="decay-marker now"><div class="m-dot"></div><div class="m-lbl">сейчас · fresh</div></div>
         <div class="decay-marker valid"><div class="m-dot"></div><div class="m-lbl">valid_until · 2026-10-01</div></div>
-        <div class="decay-marker stale"><div class="m-dot"></div><div class="m-lbl">истекло · stale · score → 0.1</div></div>
+        <div class="decay-marker stale"><div class="m-dot"></div><div class="m-lbl">истекло · stale · оценка → 0.1</div></div>
       </div>
       <div class="decay-text">
         Любое evidence имеет срок годности. Бенчмарк 2023 года для Redis 6.x не валиден для
-        Redis 7.4. Production-наблюдение на 50 RPS не применимо к 500 RPS. Хороший артефакт
+        Redis 7.4. Наблюдение на продакшене при 50 RPS не применимо к 500 RPS. Хороший артефакт
         это признаёт заранее через frontmatter <code>valid_until: 2026-10-01</code> и
         <code>refresh_trigger: notes_count &gt; 100_000</code>. Когда <code>valid_until</code>
-        истекает - score evidence падает до <b>0.1 (stale)</b>, не absent. Решение было,
+        истекает - оценка evidence падает до <b>0.1 (stale)</b>, не absent. Решение было,
         контекст мог измениться, требуется reaffirm или supersede.
       </div>
     </div>
@@ -674,7 +674,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
       <p>
         R_eff = 0.1 не значит «всё плохо, разваливай». Это сигнал «решение держится на одном
         слабом звене - обратите внимание». Стратегия: либо <b class="k">собрать ещё evidence</b>
-        (CL3-замер, который опровергнет E3 или подтвердит, что mailing list ситуация не наша),
+        (CL3-замер, который опровергнет E3 или подтвердит, что ситуация из рассылки не наша),
         либо <b class="k">принять риск явно</b> с пометкой в DDR «опираемся на E1, E3 слабее,
         пересмотр через 30 дней или после 100k заметок».
       </p>
@@ -698,7 +698,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
       <div class="step-num">01 · Spec</div>
       <div class="step-content">
         <h4>Пишете <code>notes-tagging-spec.md</code> с четырьмя секциями</h4>
-        <p>Behavior (3 контракта поведения), Invariants (ASCII 1-32, max 10 тегов), Triggers (ссылки на search и migration), Out-of-scope (иерархия, цвета). Spec проверяема - каждое поведение можно превратить в тест.</p>
+        <p>Поведение (3 контракта поведения), Invariants (ASCII 1-32, max 10 тегов), Триггеры (ссылки на search и migration), Out-of-scope (иерархия, цвета). Spec проверяема - каждое поведение можно превратить в тест.</p>
       </div>
     </div>
     <div class="worked-step">
@@ -712,7 +712,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
       <div class="step-num">03 · R_eff</div>
       <div class="step-content">
         <h4>Считаете для решения «junction table vs JSON»</h4>
-        <p>Три evidence: свой бенчмарк (CL3, supports, 1.0), SQLite docs (CL1, supports, 0.6), mailing list про деградацию JSON1 (CL1, weakens, 0.1). R_eff = min = 0.1. Среднее 0.57 обмануло бы - решение at risk.</p>
+        <p>Три evidence: свой бенчмарк (CL3, supports, 1.0), SQLite docs (CL1, supports, 0.6), рассылка про деградацию JSON1 (CL1, weakens, 0.1). R_eff = min = 0.1. Среднее 0.57 обмануло бы - решение at risk.</p>
       </div>
     </div>
     <div class="worked-step">
