@@ -121,7 +121,7 @@ PRD -> Epic, RFC -> PRD, ADR -> RFC. Всегда отслеживается в�
 
 ## Инструментарий
 
-В агентах ИИ-кодирования вся эта методология упакована как навык `/forge`. Установите его с помощью `forgeplan setup-skill` (офлайн, встроен в бинарный файл) или `npx skills add ForgePlan/marketplace --skill forge`. Навык объединяет `route -> new -> validate -> reason -> activate` в одну разговорную команду.
+В агентах ИИ-кодирования вся эта методология упакована как навык `/forge`. Установите его с помощью `forgeplan setup-skill` (офлайн, встроен в бинарный файл) или установите полный плагин `forgeplan-workflow` через `/plugin install forgeplan-workflow@ForgePlan-marketplace`. Навык объединяет `route -> new -> validate -> reason -> activate` в одну разговорную команду.
 
 Дополнительные плагины предоставляют аудит кода (`/audit`), планирование спринтов (`/sprint`), обоснование FPF (`/fpf`) и многое другое. Полный каталог плагинов: [Обзор Marketplace](/docs/marketplace/overview/).
 

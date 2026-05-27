@@ -136,4 +136,4 @@ Forgeplan поставляется с **61 командой верхнего у�
 - [**Dev Toolkit**](/docs/marketplace/dev-toolkit/) - `/sprint`, `/audit`, `/recall`, `/research`, `/build`
 - [**Обзор маркетплейса**](/docs/marketplace/overview/) - полный каталог плагинов
 
-Установите основной навык с помощью `forgeplan setup-skill` или `npx skills add ForgePlan/marketplace --skill forge`. Дополнительные плагины доступны через `npx skills add ForgePlan/marketplace --plugin <name>`.
+Установите основной навык с помощью `forgeplan setup-skill` или установите полный плагин `forgeplan-workflow` через `/plugin install forgeplan-workflow@ForgePlan-marketplace`. Дополнительные плагины доступны через `/plugin install <name>@ForgePlan-marketplace` (после `/plugin marketplace add ForgePlan/marketplace`).
