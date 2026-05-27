@@ -27,11 +27,12 @@ For the full list of slash commands across all plugins, see [Commands Reference]
 ### Via npx (marketplace registry)
 
 ```bash
-# Install a specific plugin
-npx skills add ForgePlan/marketplace --plugin dev-toolkit
+# Install a specific plugin (run inside a Claude Code session)
+/plugin marketplace add ForgePlan/marketplace
+/plugin install dev-toolkit@ForgePlan-marketplace
 
-# Install the forge skill (methodology)
-npx skills add ForgePlan/marketplace --skill forge
+# Install the forge skill (methodology) — offline, no marketplace needed
+forgeplan setup-skill
 ```
 
 ### Via built-in CLI (offline, no network)

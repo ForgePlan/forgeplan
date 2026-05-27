@@ -4,7 +4,7 @@ description: Все слеш-команды из плагинов ForgePlan Mark
 ---
 
 :::note[Требуется установка]
-Перечисленные ниже команды поступают из внешних плагинов маркетплейса. Установите их с помощью `npx skills add ForgePlan/marketplace --plugin <name>` или используйте встроенную команду `forgeplan setup-skill` для основной команды `/forge`.
+Перечисленные ниже команды поступают из внешних плагинов маркетплейса. Установите их с помощью `/plugin install <name>@ForgePlan-marketplace` (после `/plugin marketplace add ForgePlan/marketplace`) или используйте встроенную команду `forgeplan setup-skill` для основной команды `/forge`.
 :::
 
 ## Основные команды (forgeplan-workflow)

@@ -18,7 +18,8 @@ description: Команда /forge - полный цикл методологи�
 ### Через маркетплейс (npx)
 
 ```bash
-npx skills add ForgePlan/marketplace --skill forge
+/plugin marketplace add ForgePlan/marketplace
+/plugin install forgeplan-workflow@ForgePlan-marketplace
 ```
 
 ### Через встроенный CLI (офлайн, без сети)

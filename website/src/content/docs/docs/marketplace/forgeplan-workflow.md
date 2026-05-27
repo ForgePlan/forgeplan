@@ -18,7 +18,8 @@ This triggers: Route -> Shape -> Validate -> Code -> Evidence -> Activate.
 ### Via marketplace (npx)
 
 ```bash
-npx skills add ForgePlan/marketplace --skill forge
+/plugin marketplace add ForgePlan/marketplace
+/plugin install forgeplan-workflow@ForgePlan-marketplace
 ```
 
 ### Via built-in CLI (offline, no network)
