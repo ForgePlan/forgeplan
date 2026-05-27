@@ -1937,31 +1937,19 @@ article.guide-embedded {
   min-height: calc(100vh - 200px);
 }
 
-/* === PR-2A-followup: GUIDE article width = site/footer width === */
-/*
- * Lesson <main> originally has max-width 1080px (narrower than site).
- * Override to match site footer-inner (1280 max + 32 padding = content 1216),
- * which also matches /blog and /blog/welcome content areas.
+/* GUIDE article width — defer to each lesson's inline CSS.
+ *
+ * Lesson HTMLs in /public/guides-raw/*.html ship their own max-width on
+ * <main> (1080px is the common value) and a text max-width on <p> (760px).
+ * That combination gives a readable line-length for long-form guides.
+ *
+ * An earlier override forced .guide-embedded main to 1280px and .guide-embedded
+ * p to max-width:none "to match site footer width". That produced ~1216px
+ * lines on /guides/trust-calculus-overview and other guides — way past the
+ * 45-75 char readable range. The override has been removed: lesson inline
+ * CSS now wins the cascade as originally intended. Sections that need to
+ * be full-width (.scenario, .axes, .pipeline) define their own width.
  */
-/* !important required: scoped lesson CSS loads AFTER blog-theme.css via
-   <style is:global set:html>, so its '.guide-embedded main { max-width: 1080 }'
-   would otherwise win cascade. */
-.guide-embedded main {
-  max-width: 1280px !important;
-  margin: 0 auto !important;
-  padding: 32px 32px 64px !important;
-  box-sizing: border-box !important;
-}
-
-/* Lesson text blocks: lesson originally caps p at 760px, p.lead at 820px.
-   Override to use full container width так чтобы header content of the
-   lesson (eyebrow + h1 + lead) tянутся на всю ширину блока контейнера
-   (1216 = 1280 - 2*32 padding). Body paragraphs follow same rule for
-   visual rhythm with full-width sections (.scenario, .axes, .pipeline). */
-.guide-embedded p,
-.guide-embedded p.lead {
-  max-width: none !important;
-}
 
 /* === PR-2A-followup: tester-flagged contrast fixes (WCAG AA) === */
 /* Source: agents-core:tester sub-agent visual verification report */
