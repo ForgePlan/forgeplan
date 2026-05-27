@@ -1972,6 +1972,32 @@ article.guide-embedded {
   color: var(--forge-fg) !important;
 }
 
+/* Light-theme contrast for hardcoded dark-only chip colors in guides.
+ * Lesson HTMLs hardcode pastel colors (#86efac green, #fca5a5 red,
+ * #fcd34d amber) on faint 12% backgrounds for .verdict / .hpill chips.
+ * Fine on dark bg, fails WCAG AA on the light cream theme.
+ * Selectors live here because embed-html.js prefixes every lesson
+ * selector with .guide-embedded, making `html.light` unreachable from
+ * inside a lesson. From this file the prefix is not applied. */
+html.light .guide-embedded .verdict.supports,
+html.light .guide-embedded .hpill.h3 {
+  background: rgba(34, 197, 94, 0.18);
+  color: #166534;
+}
+html.light .guide-embedded .verdict.refutes,
+html.light .guide-embedded .hpill.h1 {
+  background: rgba(239, 68, 68, 0.18);
+  color: #991b1b;
+}
+html.light .guide-embedded .verdict.weakens {
+  background: rgba(245, 158, 11, 0.18);
+  color: #92400e;
+}
+html.light .guide-embedded .hpill.h2 {
+  background: rgba(115, 115, 115, 0.18);
+  color: #404040;
+}
+
 /* ISSUE 3 - Ember text links + eyebrow on LIGHT background (2.85:1 → 4.6:1) */
 html.light .guide-embedded a,
 html.light .guide-embedded .eyebrow {
