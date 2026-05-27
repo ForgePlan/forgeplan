@@ -202,7 +202,7 @@
     <div class="pipe-box">
       <div class="step-tag">03 · release</div>
       <div class="step-title">Возвращает в pool</div>
-      <div class="step-desc">Workflow завершён · готов следующий claim</div>
+      <div class="step-desc">Порядок работы завершён · готов следующий claim</div>
     </div>
   </div>
 
@@ -290,7 +290,7 @@
         <div class="pc-tag">03 · worker</div>
         <div class="pc-cmd">forgeplan release &lt;id&gt;</div>
         <div class="pc-desc">Возвращает артефакт в общий pool. После release другой agent (или вы сами) может его claim'ить. Если работа не завершена и TTL близок - продлеваем claim, не release.</div>
-        <div class="pc-when">когда - после завершения workflow на артефакте</div>
+        <div class="pc-when">когда - после завершения работы над артефактом</div>
       </div>
     </div>
 
@@ -471,7 +471,7 @@
     <div class="worked-step">
       <div class="step-num">05 · release</div>
       <div class="step-content">
-        <h4>Workflow закрыт → <code>release</code> возвращает в pool</h4>
+        <h4>Порядок работы завершён → <code>release</code> возвращает в pool</h4>
         <p>После activate каждого PRD worker делает release. Orchestrator видит, что bucket опустел, запускает следующую волну dispatch или закрывает сессию.</p>
       </div>
     </div>

@@ -218,7 +218,7 @@
   <p class="lead">
     «Нужен ли тут PRD?» «А RFC?» «Можно ли просто закоммитить?» Эти споры съедают часы, и
     обычно сходятся на той же логике: чем выше сложность × обратимость × радиус, тем тяжелее
-    pipeline. Forgeplan делает эту логику CLI-командой <code>forgeplan route</code>. Ниже -
+    конвейер. Forgeplan делает эту логику CLI-командой <code>forgeplan route</code>. Ниже -
     тот же routing в виде калькулятора: <b class="k">подвиньте слайдеры, увидьте депт-уровень
     и обязательные артефакты в реальном времени</b>.
   </p>
@@ -239,7 +239,7 @@
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
       <div class="step-tag">03 · output</div>
-      <div class="step-title">Tier + pipeline</div>
+      <div class="step-title">Tier + конвейер</div>
       <div class="step-desc"><span class="dp-tac">tac</span> · <span class="dp-std">std</span> · <span class="dp-deep">deep</span> · <span class="dp-crit">crit</span></div>
     </div>
   </div>
@@ -248,7 +248,7 @@
   <h2>Зачем калибровать</h2>
   <div class="concept">
     <div class="concept-tag">аналогия досмотра в аэропорту</div>
-    <h3 class="concept-h">«Полный pipeline ко всему» остановит работу. «Никакого pipeline» обрушит качество</h3>
+    <h3 class="concept-h">«Полный конвейер ко всему» остановит работу. «Никакого конвейера» обрушит качество</h3>
     <p class="analogy">
       В аэропорту три процедуры: внутренний рейс - быстрая проверка, международный - полный,
       transit - отдельная. Применить «полный» ко всем - аэропорт остановится. Применить
@@ -256,14 +256,14 @@
     </p>
     <p class="analogy">
       Forgeplan делает то же самое для разработки: депт-уровень определяется по характеристикам
-      задачи, а pipeline (какие артефакты создавать) выводится из уровня. Спорить можно - но
+      задачи, а конвейер (какие артефакты создавать) выводится из уровня. Спорить можно - но
       с CLI, не друг с другом. Калькулятор ниже - это та же формула, только наглядно.
     </p>
   </div>
 
   <!-- ============ THE CALCULATOR ============ -->
   <h2>Калькулятор</h2>
-  <p>Подвиньте слайдеры или кликните чекбоксы. Маркер на шкале и pipeline внизу обновятся мгновенно. Пресеты сверху загружают типовые сценарии.</p>
+  <p>Подвиньте слайдеры или кликните чекбоксы. Маркер на шкале и конвейер внизу обновятся мгновенно. Пресеты сверху загружают типовые сценарии.</p>
 
   <div class="calc">
     <div class="calc-head">
@@ -370,7 +370,7 @@
       <!-- Pipeline + reasons -->
       <div class="out-row">
         <div class="pipeline-box">
-          <div class="pb-tag">pipeline · что создавать</div>
+          <div class="pb-tag">конвейер · что создавать</div>
           <div class="pipeline-flow" id="pipeline-flow">
             <!-- populated by JS -->
           </div>
@@ -401,8 +401,8 @@
   <div class="tiers">
     <div class="tier-card tac">
       <div class="tc-tag">● tactical</div>
-      <div class="tc-pipe none">pipeline: пусто</div>
-      <div class="tc-when">Косметика, переименования, тривиальный bug-fix. Достаточно commit message. Quality gates не запускаются.</div>
+      <div class="tc-pipe none">конвейер: пусто</div>
+      <div class="tc-when">Косметика, переименования, тривиальный баг-фикс. Достаточно commit message. Quality gates не запускаются.</div>
     </div>
     <div class="tier-card std">
       <div class="tc-tag">● standard</div>

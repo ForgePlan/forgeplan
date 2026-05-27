@@ -1979,20 +1979,61 @@ article.guide-embedded {
  * Selectors live here because embed-html.js prefixes every lesson
  * selector with .guide-embedded, making `html.light` unreachable from
  * inside a lesson. From this file the prefix is not applied. */
+/* GREEN family — dark forest green */
 html.light .guide-embedded .verdict.supports,
-html.light .guide-embedded .hpill.h3 {
+html.light .guide-embedded .verdict-pill.supports,
+html.light .guide-embedded .hpill.h3,
+html.light .guide-embedded .mt-marker.next,
+html.light .guide-embedded .g-status.pass,
+html.light .guide-embedded .ws-status.active,
+html.light .guide-embedded .cl-pill.cl3,
+html.light .guide-embedded .ic-row.additive .ic-type,
+html.light .guide-embedded .agent-pill.a2,
+html.light .guide-embedded .node.adr,
+html.light .guide-embedded .node.spec {
   background: rgba(34, 197, 94, 0.18);
   color: #166534;
 }
+
+/* RED family — dark red */
 html.light .guide-embedded .verdict.refutes,
-html.light .guide-embedded .hpill.h1 {
+html.light .guide-embedded .verdict-pill.refutes,
+html.light .guide-embedded .hpill.h1,
+html.light .guide-embedded .mt-marker.fix,
+html.light .guide-embedded .cl-pill.cl0 {
   background: rgba(239, 68, 68, 0.18);
   color: #991b1b;
 }
-html.light .guide-embedded .verdict.weakens {
+
+/* AMBER family — burnt amber */
+html.light .guide-embedded .verdict.weakens,
+html.light .guide-embedded .verdict-pill.weakens,
+html.light .guide-embedded .mt-marker.wait,
+html.light .guide-embedded .cl-pill.cl1,
+html.light .guide-embedded .agent-pill.a3,
+html.light .guide-embedded .cl2,
+html.light .guide-embedded .node.evid {
   background: rgba(245, 158, 11, 0.18);
   color: #92400e;
 }
+
+/* BLUE family — dark navy */
+html.light .guide-embedded .mt-marker.or,
+html.light .guide-embedded .node.prd,
+html.light .guide-embedded .node.rfc,
+html.light .guide-embedded .agent-pill.a1,
+html.light .guide-embedded .oc-pill.theory {
+  background: rgba(96, 165, 250, 0.18);
+  color: #1e3a8a;
+}
+
+/* PINK family — dark magenta */
+html.light .guide-embedded .oc-pill.interactive {
+  background: rgba(236, 72, 153, 0.18);
+  color: #831843;
+}
+
+/* GRAY family — neutral pill */
 html.light .guide-embedded .hpill.h2 {
   background: rgba(115, 115, 115, 0.18);
   color: #404040;

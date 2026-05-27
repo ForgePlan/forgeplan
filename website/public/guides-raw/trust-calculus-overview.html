@@ -163,7 +163,7 @@
   <p class="eyebrow">TRUST CALCULUS · ОБЗОР</p>
   <h1>Trust Calculus: оценка доверия к решению по трём осям</h1>
   <p class="lead">
-    Whitepaper от вендора и замер на ваших данных, сделанный коллегой в
+    Исследование от вендора и замер на ваших данных, сделанный коллегой в
     пятницу вечером, - у них может быть одинаковое «среднее качество».
     Но это разные ставки. Одно доказательство подтверждает решение в
     вашем контексте, другое создаёт иллюзию уверенности там, где её нет.
@@ -219,7 +219,7 @@
       <div class="axis-body">
         Насколько точно сформулировано само доказательство. Расплывчатый
         вывод «работает быстрее» - низкая строгость. Конкретное
-        утверждение «p95 latency 42ms при 1000 RPS на конфигурации X» -
+        утверждение «p95 задержка 42ms при 1000 RPS на конфигурации X» -
         высокая строгость. Важно: строгость формулировки - это не то же
         самое, что правдивость. Строго сформулированная ложь остаётся
         ложью. Но строгость позволяет хотя бы проверить утверждение.
@@ -228,7 +228,7 @@
         <div class="scale-item lo">0.0-0.3 · «быстрее», «лучше»</div>
         <div class="scale-item">0.4-0.6 · частично с числами</div>
         <div class="scale-item hi">0.7-1.0 · метрика + условия</div>
-        <div class="scale-item">- · пример: peer review</div>
+        <div class="scale-item">- · пример: независимое рецензирование</div>
       </div>
     </div>
 
@@ -262,10 +262,10 @@
         0.9 для одной задачи и 0.3 для другой.
       </div>
       <div class="axis-scale">
-        <div class="scale-item lo">0.0-0.3 · вендорский whitepaper</div>
+        <div class="scale-item lo">0.0-0.3 · исследование вендора</div>
         <div class="scale-item">0.4-0.6 · независимая публикация</div>
         <div class="scale-item hi">0.7-1.0 · ваш замер на ваших данных</div>
-        <div class="scale-item">- · пример: production profile</div>
+        <div class="scale-item">- · пример: продакшен-профиль</div>
       </div>
     </div>
   </div>
@@ -335,7 +335,7 @@
   <ul>
     <li><b class="k">Само доказательство</b> - что именно: ссылка, цитата, результат замера.</li>
     <li><b class="k">F / G / R</b> - три числа от 0 до 1, по одному на каждую ось.</li>
-    <li><b class="k">Итоговый score</b> - min(F, G, R), рассчитывается автоматически.</li>
+    <li><b class="k">Итоговая оценка</b> - min(F, G, R), рассчитывается автоматически.</li>
     <li><b class="k">Уровень контекстного соответствия (CL)</b> - насколько это доказательство вообще относится к вашей ситуации.</li>
   </ul>
   <p>
@@ -409,13 +409,13 @@
         <th class="score-cell">R</th>
         <th class="score-cell">min</th>
         <th>CL</th>
-        <th class="score-cell">Score</th>
+        <th class="score-cell">Оценка</th>
       </tr>
     </thead>
     <tbody>
       <tr>
         <td class="mono">Д1</td>
-        <td>Whitepaper вендора: «LanceDB на 5× быстрее при аналитических запросах»</td>
+        <td>Исследование вендора: «LanceDB на 5× быстрее при аналитических запросах»</td>
         <td class="score-cell"><span class="score-lo">0.3</span></td>
         <td class="score-cell"><span class="score-lo">0.4</span></td>
         <td class="score-cell"><span class="score-lo">0.2</span></td>
@@ -435,7 +435,7 @@
       </tr>
       <tr>
         <td class="mono">Д3</td>
-        <td>Замер нашей команды: 500K документов, наша нагрузка, сравнение p95 latency и throughput</td>
+        <td>Замер нашей команды: 500K документов, наша нагрузка, сравнение p95 задержки и пропускной способности</td>
         <td class="score-cell"><span class="score-hi">0.9</span></td>
         <td class="score-cell"><span class="score-hi">0.9</span></td>
         <td class="score-cell"><span class="score-hi">0.95</span></td>
@@ -448,7 +448,7 @@
 
   <div class="result-row">
     R_eff = min(0.12, 0.54, 0.90) = <span class="r-eff">0.12</span>
-    &nbsp;·&nbsp; Сигнал слабый - тянет вниз Д1 (вендорский whitepaper)
+    &nbsp;·&nbsp; Сигнал слабый - тянет вниз Д1 (исследование вендора)
   </div>
 
   <p style="margin-top: 20px;">
@@ -510,7 +510,7 @@
     type: 'bar',
     data: {
       labels: [
-        'Д1 · Whitepaper вендора',
+        'Д1 · Исследование вендора',
         'Д2 · Независимый бенчмарк',
         'Д3 · Замер нашей команды'
       ],

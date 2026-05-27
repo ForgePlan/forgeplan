@@ -463,7 +463,7 @@ reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</spa
       <div class="st-step aging">
         <div class="stm-tag">02 · истечение</div>
         <div class="stm-title">active → stale (auto)</div>
-        <div class="stm-desc">valid_until прошёл. Артефакт переходит в stale без вашего действия. Score evidence → 0.1.</div>
+        <div class="stm-desc">valid_until прошёл. Артефакт переходит в stale без вашего действия. Оценка evidence → 0.1.</div>
       </div>
       <div class="st-step choice">
         <div class="stm-tag">03 · выбор</div>
@@ -492,7 +492,7 @@ reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available
     <div class="insight">
       <div class="insight-tag">Связь со scoring</div>
       <p>
-        Когда evidence становится stale, его score падает до 0.1 (а не до 0 - «решение было,
+        Когда evidence становится stale, его оценка падает до 0.1 (а не до 0 - «решение было,
         контекст мог измениться»). Это значит, что R_eff = min(scores) у всего связанного
         артефакта тоже падает до 0.1 - <b class="k">тихий сигнал</b>, который виден в
         health-дашборде системы. Игнорировать его = молчаливо принимать риск.
