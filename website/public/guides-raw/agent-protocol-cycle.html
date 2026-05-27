@@ -396,12 +396,12 @@ or ask the orchestrator to force-release.
   </div>
 
   <!-- WORKFLOW PATTERNS -->
-  <h2>Три workflow-паттерна · как контракт работает в реальности</h2>
+  <h2>Три паттерна порядка работы · как контракт работает в реальности</h2>
 
   <div class="pattern">
     <div class="p-tag">Паттерн A</div>
     <div class="p-title">Shape → Validate → Activate</div>
-    <p>Типовой happy path. Каждый шаг возвращает <code>Next:</code> с конкретной командой следующего шага. Агент идёт по цепочке без переоткрытия методологии.</p>
+    <p>Типовой штатный путь. Каждый шаг возвращает <code>Next:</code> с конкретной командой следующего шага. Агент идёт по цепочке без переоткрытия методологии.</p>
     <div class="p-flow"><span class="fp-cmd">forgeplan_route("add OAuth login")</span>
   → <span class="m-next">Next:</span> forgeplan new prd "OAuth login support"
 
@@ -418,7 +418,7 @@ or ask the orchestrator to force-release.
 
   <div class="pattern">
     <div class="p-tag">Паттерн B</div>
-    <div class="p-title">Recovery from error</div>
+    <div class="p-title">Восстановление после ошибки</div>
     <p>Команда вернула ошибку - но не «вот текст ошибки, разбирайся», а <code>Error:</code> + <code>Fix:</code> с готовой командой восстановления.</p>
     <div class="p-flow"><span class="fp-cmd">forgeplan_activate("PRD-042")</span>
   → <span class="m-fix">Error:</span> No evidence linked
@@ -432,7 +432,7 @@ or ask the orchestrator to force-release.
   <div class="pattern">
     <div class="p-tag">Паттерн C</div>
     <div class="p-title">Multi-agent dispatch с claim-конфликтом</div>
-    <p>Несколько агентов работают параллельно. Если claim занят другим - <code>Or:</code> предлагает alternative, не блокирует worker.</p>
+    <p>Несколько агентов работают параллельно. Если claim занят другим - <code>Or:</code> предлагает альтернативу, не блокирует worker.</p>
     <div class="p-flow"><span class="fp-cmd">forgeplan_dispatch(--agents 3)</span>
   → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl 30
   → <span class="m-or">Or:</span>   forgeplan list --status draft
@@ -443,8 +443,8 @@ or ask the orchestrator to force-release.
   </div>
 
   <!-- QUICK REFERENCE CARD -->
-  <h2>Quick reference card</h2>
-  <p>Распечатать и держать рядом. Если в output Forgeplan нет маркера и состояние не terminal - это bug, а не «нужно подумать».</p>
+  <h2>Краткий справочник</h2>
+  <p>Распечатать и держать рядом. Если в output Forgeplan нет маркера и состояние не terminal - это баг, а не «нужно подумать».</p>
   <div class="refcard">
     <div class="refcard-head">
       <span>FORGEPLAN HINT CONTRACT</span>

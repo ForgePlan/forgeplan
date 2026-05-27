@@ -260,11 +260,11 @@
 <main>
 
   <!-- ============ HERO ============ -->
-  <p class="eyebrow">Цикл одной фичи · теория</p>
+  <p class="eyebrow">Цикл одной функции · теория</p>
   <h1>BMAD · 13-step PRD · Adversarial Review</h1>
   <p class="lead">
-    Как одна строка из Slack превращается в production-ready фичу без скоупа-монстра и пропущенных
-    edge cases. Четыре фазы <b class="k">BMAD</b> расширяют пространство решений и выбирают одно.
+    Как одна строка из Slack превращается в готовую к выпуску функцию без скоупа-монстра и пропущенных
+    граничных случаев. Четыре фазы <b class="k">BMAD</b> расширяют пространство решений и выбирают одно.
     Тринадцать секций <b class="k">PRD</b> фиксируют контракт. <b class="k">Adversarial Review</b>
     чужими глазами проверяет, что в PRD нет противоречий и wishful thinking.
   </p>
@@ -278,7 +278,7 @@
   <div class="pipeline">
     <div class="pipe-box">
       <div class="step-tag">01 · BMAD</div>
-      <div class="step-title">4 фазы воронки</div>
+      <div class="step-title">4 фазы отбора</div>
       <div class="step-desc"><span class="ph-b">B</span> → <span class="ph-m">M</span> → <span class="ph-a">A</span> → <span class="ph-d">D</span></div>
     </div>
     <div class="pipe-arrow">→</div>
@@ -296,7 +296,7 @@
   </div>
 
   <!-- ============ CONCEPT 01 · BMAD ============ -->
-  <h2>01 · BMAD - четыре фазы от идеи до delivery</h2>
+  <h2>01 · BMAD - четыре фазы от идеи до сдачи</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 01 · аналогия архитектора</div>
     <h3 class="concept-h">Архитектор не начинает с чертежей</h3>
@@ -323,7 +323,7 @@
         <span class="term"><span class="ph-m">M</span>odeling</span> · структурирование.
         Выбранное направление распадается на user stories (кто → что хочет → зачем),
         data model (какие сущности появляются), state machine. Здесь проявляются
-        edge cases.
+        граничные случаи.
       </li>
       <li>
         <span class="term"><span class="ph-a">A</span>rchitecting</span> · выбор решения.
@@ -331,7 +331,7 @@
       </li>
       <li>
         <span class="term"><span class="ph-d">D</span>elivery</span> · артефакты.
-        Финальный PRD, test plan, migration plan, чек-лист для deploy. То, что можно
+        Финальный PRD, test plan, migration plan, чек-лист для выкатки. То, что можно
         передать команде и уйти пить кофе.
       </li>
     </ul>
@@ -372,7 +372,7 @@
         <div class="ph-tag">M · Modeling</div>
         <div class="ph-title">Структурирование</div>
         <div class="ph-q">Как это разложить?</div>
-        <div class="ph-out"><b>На выходе</b><br>User stories, data model, edge cases</div>
+        <div class="ph-out"><b>На выходе</b><br>User stories, data model, граничные случаи</div>
       </div>
       <div class="bm-phase a">
         <div class="ph-tag">A · Architecting</div>
@@ -392,27 +392,27 @@
       <div class="insight-tag">BMAD не про бюрократию</div>
       <p>
         Четыре вопроса - что? как разложить? как реализовать? как сдать? - задаются в любом
-        случае. В плохом процессе их задают в коде и находят ответы через production-инцидент.
+        случае. В плохом процессе их задают в коде и находят ответы через инцидент в проде.
         В хорошем - задают в документе за день до начала работы.
       </p>
     </div>
   </div>
 
   <!-- ============ CONCEPT 02 · 13-step PRD ============ -->
-  <h2>02 · 13-step PRD - формат, который не пропустит edge cases</h2>
+  <h2>02 · 13-step PRD - формат, который не пропустит граничные случаи</h2>
   <div class="concept">
-    <div class="concept-tag">Концепция 02 · аналогия pre-flight чек-листа</div>
-    <h3 class="concept-h">Тринадцать обязательных секций, без которых проект «забывает» edge case</h3>
+    <div class="concept-tag">Концепция 02 · аналогия предполётного чек-листа</div>
+    <h3 class="concept-h">Тринадцать обязательных секций, без которых проект «забывает» граничный случай</h3>
     <p class="analogy">
       Итак, BMAD дал четыре фазы. На выходе фазы <span class="ph-d">Delivery</span> появляется
       <b class="k">PRD (Product Requirements Document)</b>. Но PRD - не свободный текст. Это жёстко
       структурированный документ из <b class="k">13 обязательных секций</b>.
     </p>
     <p class="analogy">
-      Аналогия - pre-flight чек-лист пилота. Сорок пунктов, ни один не пропускается, потому что
+      Аналогия - предполётный чек-лист пилота. Сорок пунктов, ни один не пропускается, потому что
       забытый = падение. Список не про бюрократию, а про то, что пилот физически не может держать
       40 вещей в голове, и чтение чек-листа дешевле крушения. PRD работает так же: 13 пунктов, без
-      которых проект «забывает» edge case и падает в production.
+      которых проект «забывает» граничный случай и падает в проде.
     </p>
 
     <!-- PRD card mockup -->
@@ -440,7 +440,7 @@
     </div>
 
     <p style="margin-top: 22px;">
-      Три секции из этих тринадцати - критичные, потому что их инженеры рефлекторно пропускают:
+      Три секции из этих тринадцати - критичные, потому что инженеры их рефлекторно пропускают:
     </p>
 
     <ul class="deflist">
@@ -456,7 +456,7 @@
       </li>
       <li>
         <span class="term">10 · Risks</span> · что может сломаться.
-        Без явных risks первый production-инцидент застаёт врасплох.
+        Без явных рисков первый инцидент в проде застаёт врасплох.
       </li>
     </ul>
 
@@ -476,10 +476,10 @@
     <div class="insight">
       <div class="insight-tag">PRD пишет агент · ручные шаги делаете вы</div>
       <p>
-        PM-агент BMAD (John) генерирует первую версию за минуту. Но три гейта качества -
+        PM-агент BMAD (John) генерирует первую версию за минуту. Но три контрольные точки качества -
         <b class="k">Information Density</b> (шаг 3), <b class="k">Measurability</b> (шаг 5),
         <b class="k">Implementation Leakage</b> (шаг 7) - это ручной проход. Без него PRD
-        остаётся набором слов. Сравните: «система должна быть удобной» (filler) против
+        остаётся набором слов. Сравните: «система должна быть удобной» (пустышка) против
         <code>POST /notes/:id/tags возвращает 200 за &lt; 50ms на базе 1000 заметок</code> (измеримо).
         Команда из пяти людей может работать со вторым. С первым - не может.
       </p>
@@ -588,8 +588,8 @@
   </div>
 
   <!-- ============ WORKED EXAMPLE ============ -->
-  <h2>Цикл на одной фиче · Tags + Saved Searches</h2>
-  <p>Как все три концепции складываются в один проход - от строки в Slack до PRD, прошедшего внешний ревью.</p>
+  <h2>Цикл на одной функции · Tags + Saved Searches</h2>
+  <p>Как все три концепции складываются в один проход - от строки в Slack до PRD, прошедшего внешнее ревью.</p>
   <div class="worked">
     <div class="worked-step">
       <div class="step-num">01 · <span class="ph-b">Brainstorming</span></div>
@@ -601,7 +601,7 @@
     <div class="worked-step">
       <div class="step-num">02 · <span class="ph-m">Modeling</span></div>
       <div class="step-content">
-        <h4>Edge cases вылезают</h4>
+        <h4>Граничные случаи вылезают</h4>
         <p>User stories («как пользователь, я хочу искать заметки по сочетанию тегов»), data model (таблицы <code>tags</code>, <code>note_tags</code>), state machine («тег с 0 заметок - удаляется автоматически или висит?»). Откладываются на Open Questions.</p>
       </div>
     </div>
@@ -616,14 +616,14 @@
       <div class="step-num">04 · <span class="ph-d">Delivery</span></div>
       <div class="step-content">
         <h4>13-step PRD за минуту от PM-агента</h4>
-        <p>PM-агент BMAD (John) генерирует PRD-074 со всеми 13 секциями. Вы делаете ручной проход по гейтам качества - Information Density / Measurability / Implementation Leakage. Non-Goals и Open Questions заполнены.</p>
+        <p>PM-агент BMAD (John) генерирует PRD-074 со всеми 13 секциями. Вы делаете ручной проход по контрольным точкам качества - Information Density / Measurability / Implementation Leakage. Non-Goals и Open Questions заполнены.</p>
       </div>
     </div>
     <div class="worked-step crit">
       <div class="step-num">05 · Adversarial Review</div>
       <div class="step-content">
         <h4>Новая сессия находит 6 проблем</h4>
-        <p>Промпт «найди минимум 3» возвращает 6 находок. После фильтрации: 2 РЕАЛЬНЫЕ (пропущен edge case «удаление тега во время поиска», нечёткое AC для производительности), 3 FALSE POSITIVE (закрыто в Section 8), 1 НИТПИК. Две реальные правки уходят в PRD. PRD-074 переходит в статус <code>active</code>.</p>
+        <p>Промпт «найди минимум 3» возвращает 6 находок. После фильтрации: 2 РЕАЛЬНЫЕ (пропущен граничный случай «удаление тега во время поиска», нечёткое AC для производительности), 3 FALSE POSITIVE (закрыто в Section 8), 1 НИТПИК. Две реальные правки уходят в PRD. PRD-074 переходит в статус <code>active</code>.</p>
       </div>
     </div>
   </div>
@@ -633,10 +633,10 @@
   <div class="teaching">
     <ol>
       <li><b>Сверху вниз, без скип-сечения.</b> BMAD даёт фазы, PRD фиксирует контракт, Adversarial Review проверяет на честность. Каждая концепция строится на предыдущей.</li>
-      <li><b>На воронке BMAD обратите внимание на цвета.</b> <span class="ph-b">B</span>rainstorming - голубой (расширение), <span class="ph-m">M</span>odeling - зелёный (структура), <span class="ph-a">A</span>rchitecting - оранжевый (это точка выбора, самый важный момент), <span class="ph-d">D</span>elivery - серый (артефакты уходят команде).</li>
+      <li><b>На схеме BMAD обратите внимание на цвета.</b> <span class="ph-b">B</span>rainstorming - голубой (расширение), <span class="ph-m">M</span>odeling - зелёный (структура), <span class="ph-a">A</span>rchitecting - оранжевый (это точка выбора, самый важный момент), <span class="ph-d">D</span>elivery - серый (артефакты уходят команде).</li>
       <li><b>На карточке PRD три секции подсвечены оранжевым.</b> Non-Goals, Risks, Open Questions - именно их инженеры пропускают рефлекторно. Если в вашем PRD они пустые - это сигнал.</li>
       <li><b>Сравните две колонки Adversarial Review.</b> Левая (та же сессия) - 0 находок, скрытые проблемы остаются. Правая (новая сессия) - 5-7 находок, из которых 2 типично реальные. Разница не в модели, а в контексте.</li>
-      <li><b>Worked example «Tags + Saved Searches» - это шаблон.</b> Подставьте на его место свою фичу и пройдите те же пять шагов. Если на каком-то шаге застряли - там и есть слабое место процесса.</li>
+      <li><b>Пример «Tags + Saved Searches» - это шаблон.</b> Подставьте на его место свою функцию и пройдите те же пять шагов. Если на каком-то шаге застряли - там и есть слабое место процесса.</li>
     </ol>
   </div>
 
