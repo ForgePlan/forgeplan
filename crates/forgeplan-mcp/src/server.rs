@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{NaiveDate, Utc};
@@ -242,9 +242,25 @@ const WORKSPACE_STORE_CACHE_CAP: usize = 32;
 
 #[derive(Clone)]
 pub struct ForgeplanServer {
-    store: Arc<RwLock<Option<Arc<LanceStore>>>>,
     workspace_root: PathBuf,
-    workspace_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Default workspace path established by `forgeplan_init` (or seeded from
+    /// `find_workspace(workspace_root)` at construction). `None` until one is
+    /// established.
+    ///
+    /// ADR-016 Phase 2: this REPLACES the former split-brain pair
+    /// `workspace_path` + `store`. The store for this path no longer lives in a
+    /// dedicated handle — it lives in `workspace_store_cache` keyed canonically,
+    /// exactly like every other workspace. `default_workspace` is therefore the
+    /// single source of truth for "which workspace did this server default to";
+    /// the store is looked up from the ONE cache. This collapses the EVID-139
+    /// state-drift window where the two handles could disagree.
+    ///
+    /// `pub` purely to preserve backward-compat with the in-crate
+    /// `#[cfg(test)] mod tests`, which pre-seeds a server by writing this field
+    /// directly (`*server.default_workspace.write().await = Some(ws)`) — exactly
+    /// as it did with the former `pub workspace_path`. Visibility tightening is
+    /// out of scope for Phase 2.
+    pub default_workspace: Arc<RwLock<Option<PathBuf>>>,
     /// Cached identity of the calling MCP client (`name/version`).
     /// Populated lazily from `context.peer.peer_info()` in `call_tool` and
     /// read by write handlers to stamp `last_modified_by` on artifacts
@@ -252,16 +268,19 @@ pub struct ForgeplanServer {
     /// client identity set during `initialize`, so a plain RwLock is
     /// sufficient — no per-request plumbing needed.
     current_identity: Arc<RwLock<Option<AgentIdentity>>>,
-    /// Per-workspace `LanceStore` cache for `resolve_workspace` (PRD-078 FR-006).
+    /// The ONE per-workspace `LanceStore` cache (ADR-016 Phase 2: single store
+    /// map; PRD-078 FR-006).
     ///
     /// Key: canonicalised absolute path of the `.forgeplan/` directory.
     /// Value: shared store handle. Capped at [`WORKSPACE_STORE_CACHE_CAP`]
     /// entries — a `tracing::warn!` fires above the threshold but the entry is
     /// still inserted to keep the server functional.
     ///
-    /// The legacy `self.store` / `self.workspace_path` fields remain for
-    /// `forgeplan_init` and read-only tools that have not been migrated yet
-    /// (Phase 1 scope — W3 migrates remaining handlers in Phase 3).
+    /// Holds the store for EVERY workspace — including the default one
+    /// (`default_workspace`) established by `forgeplan_init`. There is no longer
+    /// a separate legacy store handle: `require_store` and
+    /// `resolve_workspace_core` Step 3 both read the default workspace's store
+    /// from THIS cache.
     workspace_store_cache: Arc<RwLock<HashMap<PathBuf, Arc<LanceStore>>>>,
     tool_router: ToolRouter<Self>,
 }
@@ -269,18 +288,24 @@ pub struct ForgeplanServer {
 impl ForgeplanServer {
     pub async fn new(workspace_root: PathBuf) -> Self {
         let ws = workspace::find_workspace(&workspace_root);
-        let store = if let Some(ref ws_path) = ws {
-            LanceStore::open(ws_path).await.ok().map(Arc::new)
-        } else {
-            None
-        };
+
+        // ADR-016 Phase 2: build the single store map up-front instead of a
+        // dedicated `store` handle. If a workspace is found at construction,
+        // open its store and seed the cache under the canonical key so the very
+        // first paramless resolve (or `require_store`) is a cache hit — exactly
+        // the behaviour the old eager `self.store` provided.
+        let mut cache: HashMap<PathBuf, Arc<LanceStore>> = HashMap::new();
+        if let Some(ref ws_path) = ws
+            && let Some(store) = LanceStore::open(ws_path).await.ok().map(Arc::new)
+        {
+            cache.insert(Self::canonical_ws_dir(ws_path.clone()), store);
+        }
 
         Self {
-            store: Arc::new(RwLock::new(store)),
             workspace_root,
-            workspace_path: Arc::new(RwLock::new(ws)),
+            default_workspace: Arc::new(RwLock::new(ws)),
             current_identity: Arc::new(RwLock::new(None)),
-            workspace_store_cache: Arc::new(RwLock::new(HashMap::new())),
+            workspace_store_cache: Arc::new(RwLock::new(cache)),
             tool_router: Self::tool_router(),
         }
     }
@@ -311,18 +336,37 @@ impl ForgeplanServer {
         }
     }
 
-    /// Clone the Arc<LanceStore> and immediately release the RwLock guard.
-    /// This prevents holding the lock across .await points in tool handlers.
+    /// Clone the Arc<LanceStore> for the default workspace and immediately
+    /// release the RwLock guards. This prevents holding a lock across `.await`
+    /// points in tool handlers.
+    ///
+    /// ADR-016 Phase 2: the legacy `self.store` handle is gone. The store for
+    /// the default workspace lives in `workspace_store_cache`, seeded by
+    /// `forgeplan_init` (and by `new()` at construction) under the canonical key.
+    /// The ~21 read handlers that call this (Phase 3 migrates their call-sites,
+    /// NOT this body) keep working: we look the store up from the single cache
+    /// using the default workspace path. Behaviour is identical to the old
+    /// field read — present after init, "not initialized" before.
     async fn require_store(&self) -> Result<Arc<LanceStore>, String> {
-        self.store
+        let ws =
+            self.default_workspace.read().await.clone().ok_or_else(|| {
+                "Workspace not initialized. Call forgeplan_init first.".to_string()
+            })?;
+        let key = Self::canonical_ws_dir(ws);
+        self.workspace_store_cache
             .read()
             .await
-            .clone()
+            .get(&key)
+            .cloned()
             .ok_or_else(|| "Workspace not initialized. Call forgeplan_init first.".into())
     }
 
+    /// ADR-016 Phase 2: re-pointed from the removed `self.workspace_path` to
+    /// `default_workspace` (the path `forgeplan_init` / `new()` established).
+    /// Call-sites are unchanged (Phase 3 migrates the ~21 read handlers); only
+    /// the field this reads from moved.
     async fn require_workspace(&self) -> Result<PathBuf, String> {
-        self.workspace_path
+        self.default_workspace
             .read()
             .await
             .clone()
@@ -497,27 +541,33 @@ impl ForgeplanServer {
             }
         }
 
-        // ── Step 3: legacy workspace_path (set by forgeplan_init) OR cwd ──
+        // ── Step 3: default workspace (set by forgeplan_init / new) OR cwd ──
         //
-        // When `forgeplan_init` has already run for this server instance,
-        // `self.workspace_path` holds the authoritative `.forgeplan/` path and
-        // the accompanying `self.store` is already open.  Reusing these is the
-        // correct backward-compatible behaviour: single-worktree users and all
-        // existing tests that pre-initialise the server via `workspace_path`/
-        // `store` fields continue to work identically to v0.32.x (AC-2).
+        // When `forgeplan_init` has already run for this server instance (or a
+        // workspace was found at construction in `new`), `self.default_workspace`
+        // holds the authoritative `.forgeplan/` path and its store is already in
+        // the single `workspace_store_cache`. Reusing it is the correct
+        // backward-compatible behaviour: single-worktree users and all existing
+        // tests that pre-initialise the server (now via `default_workspace`)
+        // continue to work identically to v0.32.x (AC-2).
         //
-        // Only when `workspace_path` is `None` (server started cold, no
-        // `forgeplan_init` call yet) do we fall back to `current_dir()`.
-        if let Some(ws_dir) = self.workspace_path.read().await.clone() {
-            // Re-use the legacy store handle directly to avoid a redundant open.
-            if let Some(existing_store) = self.store.read().await.clone() {
-                return Ok(ResolvedWorkspace {
-                    workspace_dir: Self::canonical_ws_dir(ws_dir),
-                    resolved_via: ResolutionSource::Cwd,
-                    store: existing_store,
-                });
-            }
-            // workspace_path set but store not yet opened — open via cache.
+        // ADR-016 Phase 2: collapsed onto the single source of truth. The legacy
+        // gate was `workspace_path.is_some() && store.is_some()`. We preserve
+        // that exact two-part semantics: read `default_workspace`, then look its
+        // store up from the ONE cache via `get_or_open_store`. Because
+        // `seed_default` / `new` always insert the store BEFORE publishing
+        // `default_workspace`, this is a pure cache hit — no disk re-open,
+        // byte-identical to the old field reuse. The `resolved_via` stays
+        // `Cwd` to match the prior labelling of this reuse path (callers and the
+        // worktree e2e suite assert on it).
+        //
+        // If `default_workspace` is set but its store is somehow absent from the
+        // cache (e.g. an eviction under cache pressure since seeding),
+        // `get_or_open_store` transparently re-opens and re-caches it — the same
+        // recovery the old `workspace_path set but store not yet opened` branch
+        // performed. Only when `default_workspace` is `None` (cold start, no init)
+        // do we fall through to `current_dir()`.
+        if let Some(ws_dir) = self.default_workspace.read().await.clone() {
             let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
                 McpError::invalid_params(
                     format!(
@@ -534,7 +584,7 @@ impl ForgeplanServer {
             });
         }
 
-        // workspace_path not set — cold start / no init yet.  Try cwd.
+        // default_workspace not set — cold start / no init yet.  Try cwd.
         //
         // ── Multi-worktree detection gate (ADR-015 Option E / PRD-078 FR-004) ─
         //
@@ -631,18 +681,45 @@ impl ForgeplanServer {
         std::fs::canonicalize(&ws_dir).unwrap_or(ws_dir)
     }
 
+    /// ADR-016 Phase 2: record `ws` as the default workspace AND seed its
+    /// already-opened `store` into the single store cache under the canonical
+    /// key.
+    ///
+    /// This is the collapse point. Where the legacy code set two independent
+    /// handles (`*self.workspace_path.write() = Some(ws)` plus
+    /// `*self.store.write() = Some(store)`), we now set ONE path
+    /// (`default_workspace`) and place its store in `workspace_store_cache` —
+    /// the same map every other workspace uses. Ordering matters: the store is
+    /// inserted into the cache BEFORE `default_workspace` is published, so any
+    /// reader that observes a non-`None` `default_workspace` is guaranteed to
+    /// find the store already present (no torn intermediate state — fixes the
+    /// EVID-139 drift window). The cache key uses `canonical_ws_dir`, identical
+    /// to `get_or_open_store` and `require_store`, so all three agree.
+    async fn seed_default(&self, ws: PathBuf, store: Arc<LanceStore>) {
+        let key = Self::canonical_ws_dir(ws.clone());
+        self.workspace_store_cache.write().await.insert(key, store);
+        *self.default_workspace.write().await = Some(ws);
+    }
+
     /// Return a cached `LanceStore` for `workspace_dir`, or open and cache a
     /// new one.  Keys are canonicalised so symlink paths don't produce
     /// duplicate handles.
     ///
     /// Uses `std::fs::canonicalize`; on Windows paths, non-UTF8 separators
     /// are preserved — no `dunce` crate dependency needed for the common case.
-    async fn get_or_open_store(&self, workspace_dir: &PathBuf) -> anyhow::Result<Arc<LanceStore>> {
+    async fn get_or_open_store(&self, workspace_dir: &Path) -> anyhow::Result<Arc<LanceStore>> {
         // Canonicalize to collapse symlinks / `.` / `..` before keying the cache.
         // Falls back to the raw path when canonicalize fails (e.g. non-existent
         // symlink components) — the store open will also fail in that case, so
         // the key correctness is moot.
-        let key = std::fs::canonicalize(workspace_dir).unwrap_or_else(|_| workspace_dir.clone());
+        //
+        // ADR-016 Phase 2: routes through the SAME `canonical_ws_dir` helper used
+        // by `new()`'s seed, `seed_default`, and Step 3 of the resolution chain.
+        // Identical keying is load-bearing: the default workspace seeded into the
+        // cache MUST hash to the same key a later `get_or_open_store(&ws)` (or a
+        // `require_store` lookup) computes, otherwise the seed is a phantom and
+        // the init'd-server fast-path silently re-opens from disk (or misses).
+        let key = Self::canonical_ws_dir(workspace_dir.to_path_buf());
 
         // Fast path: cache hit (shared read lock).
         {
@@ -686,8 +763,11 @@ impl ForgeplanServer {
     }
 
     /// Load workspace config once. Returns None if workspace not initialized or config missing.
+    ///
+    /// ADR-016 Phase 2: re-pointed from the removed `self.workspace_path` to
+    /// `default_workspace` (the path `forgeplan_init` / `new` established).
     async fn load_workspace_config(&self) -> Option<forgeplan_core::config::types::Config> {
-        let ws_guard = self.workspace_path.read().await;
+        let ws_guard = self.default_workspace.read().await;
         let ws = ws_guard.as_ref()?;
         forgeplan_core::workspace::load_config(ws).ok()
     }
@@ -2077,8 +2157,15 @@ impl ForgeplanServer {
             .await
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("LanceDB init failed: {e}")))?;
 
-        *self.store.write().await = Some(Arc::new(new_store));
-        *self.workspace_path.write().await = Some(ws.clone());
+        // ADR-016 Phase 2: instead of setting two independent handles
+        // (`self.store` + `self.workspace_path`), record ONE default workspace
+        // path and seed its freshly-initialised store into the single shared
+        // cache under the canonical key. `require_store` / `require_workspace`
+        // and `resolve_workspace_core` Step 3 all read from this single source
+        // of truth, so a subsequent paramless resolve returns this workspace
+        // with a working store — backward-compat AC-2 holds, with no drift
+        // window between the path and its store (EVID-139).
+        self.seed_default(ws.clone(), Arc::new(new_store)).await;
 
         hinted_result(
             &InitResponse {
@@ -10061,7 +10148,9 @@ impl rmcp::ServerHandler for ForgeplanServer {
 
         // Snapshot workspace path if available. Skip logging when
         // workspace not initialized (first-run `forgeplan_init`).
-        if let Some(ws) = self.workspace_path.read().await.as_ref() {
+        // ADR-016 Phase 2: reads `default_workspace` (the collapsed single
+        // source of truth) instead of the removed `workspace_path`.
+        if let Some(ws) = self.default_workspace.read().await.as_ref() {
             let ws = ws.clone();
             // PRD-057 FR-009: pass the captured name/version into the
             // activity log so retrospective audits can reconstruct *which*
@@ -10910,8 +10999,12 @@ mod claim_mcp_tests {
         let server = ForgeplanServer::new(root).await;
         // Prime the server's workspace_path and store handle (find_workspace
         // may not pick up the test .forgeplan/).
-        *server.workspace_path.write().await = Some(ws);
-        *server.store.write().await = Some(std::sync::Arc::new(store));
+        // ADR-016 Phase 2: the split-brain `workspace_path` + `store` fields are
+        // gone. Pre-seed the server through the same path `forgeplan_init` uses:
+        // one default workspace + its store in the single cache.
+        server
+            .seed_default(ws.clone(), std::sync::Arc::new(store))
+            .await;
         (server, tmp)
     }
 
@@ -10932,7 +11025,7 @@ mod claim_mcp_tests {
             .await
             .unwrap();
 
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         let store = ClaimStore::new(&ws);
         let claim = store.get("PRD-100").await.unwrap().unwrap();
         assert_eq!(claim.agent_id, "orchestrator/1.0");
@@ -10955,7 +11048,7 @@ mod claim_mcp_tests {
             .await
             .unwrap();
 
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         let store = ClaimStore::new(&ws);
         let claim = store.get("PRD-101").await.unwrap().unwrap();
         assert_eq!(claim.agent_id, "worker-1");
@@ -10988,7 +11081,7 @@ mod claim_mcp_tests {
     async fn claim_rejects_existing_claim_by_different_agent() {
         // AC-2 at the MCP boundary.
         let (server, _tmp) = initialized_server().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         let store = ClaimStore::new(&ws);
         store
@@ -11018,7 +11111,7 @@ mod claim_mcp_tests {
     #[tokio::test]
     async fn release_by_owner_removes_claim() {
         let (server, _tmp) = initialized_server().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         *server.current_identity.write().await = Some(AgentIdentity::new("owner", "1.0").unwrap());
 
@@ -11050,7 +11143,7 @@ mod claim_mcp_tests {
     #[tokio::test]
     async fn release_force_reaps_other_agent_claim() {
         let (server, _tmp) = initialized_server().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         let store = ClaimStore::new(&ws);
         store
@@ -11125,8 +11218,12 @@ mod claim_mcp_tests {
             .await
             .unwrap();
         let server = ForgeplanServer::new(root).await;
-        *server.workspace_path.write().await = Some(ws);
-        *server.store.write().await = Some(std::sync::Arc::new(store));
+        // ADR-016 Phase 2: the split-brain `workspace_path` + `store` fields are
+        // gone. Pre-seed the server through the same path `forgeplan_init` uses:
+        // one default workspace + its store in the single cache.
+        server
+            .seed_default(ws.clone(), std::sync::Arc::new(store))
+            .await;
         (server, tmp)
     }
 
@@ -11143,12 +11240,7 @@ mod claim_mcp_tests {
         affected_files: &[&str],
         domain: Option<&str>,
     ) {
-        let store = server
-            .store
-            .read()
-            .await
-            .clone()
-            .expect("store initialized");
+        let store = server.require_store().await.expect("store initialized");
         let artifact = forgeplan_core::db::store::NewArtifact {
             id: id.into(),
             kind: "prd".into(),
@@ -11265,7 +11357,7 @@ mod claim_mcp_tests {
         // (they go sequentially). To force `serial_queue` → use overlapping
         // files so the second truly conflicts with the bucket-resident.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-930", "A", &["shared.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-931", "B", &["shared.rs"], None).await;
 
@@ -11287,7 +11379,7 @@ mod claim_mcp_tests {
     async fn dispatch_dogfood_five_agents_distribute_evenly() {
         // PRD-057 target upper bound.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         for i in 0..5 {
             seed_real_prd(
                 &server,
@@ -11334,7 +11426,7 @@ mod claim_mcp_tests {
         // R3 audit HIGH: legacy artifact with only `## Affected Files`
         // section (no FM key) must still be eligible for parallel buckets.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         let store = forgeplan_core::db::store::LanceStore::open(&ws)
             .await
@@ -11392,18 +11484,13 @@ mod claim_mcp_tests {
     async fn dispatch_dogfood_blocked_artifact_skipped() {
         // FR-003: blocked by draft parent → skipped from plan.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         seed_real_prd(&server, &ws, "PRD-960", "Parent", &["a.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-961", "Child", &["b.rs"], None).await;
         // Use the server's own store handle so the relation and subsequent
         // list_records/get_all_relations calls observe the same state.
-        let store = server
-            .store
-            .read()
-            .await
-            .clone()
-            .expect("store initialized");
+        let store = server.require_store().await.expect("store initialized");
         store
             .add_relation_for_test("PRD-961", "PRD-960", "based_on")
             .await
@@ -11426,7 +11513,7 @@ mod claim_mcp_tests {
     async fn dispatch_dogfood_claim_release_full_cycle() {
         // Full MCP round-trip: seed → claim → dispatch skips → release → dispatch restores.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-970", "A", &["a/x.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-971", "B", &["b/y.rs"], None).await;
 
@@ -11466,7 +11553,7 @@ mod claim_mcp_tests {
     #[tokio::test]
     async fn dispatch_dogfood_skill_routing_end_to_end() {
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(
             &server,
             &ws,
@@ -11505,7 +11592,7 @@ mod claim_mcp_tests {
     async fn dispatch_dogfood_health_surfaces_claims() {
         // FR-012 verification through full MCP surface.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-990", "A", &["a.rs"], None).await;
 
         server
@@ -11536,7 +11623,7 @@ mod claim_mcp_tests {
     async fn dispatch_dogfood_get_surfaces_claim_info() {
         // FR-013 verification.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-991", "Claimed artifact", &["x.rs"], None).await;
 
         server
@@ -11573,12 +11660,12 @@ mod claim_mcp_tests {
     #[tokio::test]
     async fn dispatch_workflow_kind_filter_narrows_candidates() {
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-A01", "Prd one", &["a.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-A02", "Prd two", &["b.rs"], None).await;
         // Seed a non-PRD artifact through the store directly.
         {
-            let store = server.store.read().await.clone().unwrap();
+            let store = server.require_store().await.unwrap();
             let artifact = forgeplan_core::db::store::NewArtifact {
                 id: "RFC-A01".into(),
                 kind: "rfc".into(),
@@ -11623,7 +11710,7 @@ mod claim_mcp_tests {
         // all makes the pair conflict. With 3 artifacts all sharing one
         // file and only 2 agents, the third must serialize.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-T01", "A", &["a.rs", "shared.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-T02", "B", &["b.rs", "shared.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-T03", "C", &["c.rs", "shared.rs"], None).await;
@@ -11656,7 +11743,7 @@ mod claim_mcp_tests {
         // threshold=1.0: only identical file sets conflict. Non-identical
         // partial overlap → parallelized.
         let (server, _tmp) = initialized_server_with_store().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         seed_real_prd(&server, &ws, "PRD-T10", "A", &["a.rs", "shared.rs"], None).await;
         seed_real_prd(&server, &ws, "PRD-T11", "B", &["b.rs", "shared.rs"], None).await;
 
@@ -11712,7 +11799,7 @@ mod claim_mcp_tests {
         assert_ne!(r_claim.is_error, Some(true));
 
         // Inc 2 identity stamp: forgeplan_new should have stamped.
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         let slug = forgeplan_core::artifact::types::slugify("Full cycle");
         let path = ws.join(format!("prds/{created_id}-{slug}.md"));
         let content = tokio::fs::read_to_string(&path).await.unwrap();
@@ -11845,7 +11932,7 @@ mod claim_mcp_tests {
     #[tokio::test]
     async fn claims_list_returns_live_entries_sorted() {
         let (server, _tmp) = initialized_server().await;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         let store = ClaimStore::new(&ws);
         store
@@ -11893,8 +11980,12 @@ mod prob060_response_shape_tests {
             .await
             .unwrap();
         let server = ForgeplanServer::new(root).await;
-        *server.workspace_path.write().await = Some(ws);
-        *server.store.write().await = Some(std::sync::Arc::new(store));
+        // ADR-016 Phase 2: the split-brain `workspace_path` + `store` fields are
+        // gone. Pre-seed the server through the same path `forgeplan_init` uses:
+        // one default workspace + its store in the single cache.
+        server
+            .seed_default(ws.clone(), std::sync::Arc::new(store))
+            .await;
         (server, tmp)
     }
 
@@ -12205,8 +12296,8 @@ mod prob060_response_shape_tests {
         // serialize — `slug` becomes None (omitted), `id_canonical` falls
         // back to lowercased id, `id_display` falls back to verbatim id.
         let (server, _tmp) = fresh_server().await;
-        let store = server.store.read().await.clone().unwrap();
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = server.require_store().await.unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
 
         // Seed a legacy-shape artifact directly into the store (bypass
         // forgeplan_new so frontmatter has no slug/predicted/assigned).
@@ -12336,8 +12427,8 @@ mod prob060_response_shape_tests {
         let display_id = new_body["id"].as_str().unwrap().to_string();
 
         // Force pre-merge state on disk (assigned_number → null) and reindex.
-        let store = server.store.read().await.clone().unwrap();
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = server.require_store().await.unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         make_pre_merge_via_disk(&ws, &store, &display_id).await;
 
         // Read via slug — resolver maps to canonical id, hint should
@@ -12419,8 +12510,8 @@ mod prob060_response_shape_tests {
         let slug = new_body["slug"].as_str().unwrap().to_string();
         let display_id = new_body["id"].as_str().unwrap().to_string();
 
-        let store = server.store.read().await.clone().unwrap();
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let store = server.require_store().await.unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         make_pre_merge_via_disk(&ws, &store, &display_id).await;
 
         let r = server
@@ -12507,8 +12598,12 @@ mod phase5_tests {
             .await
             .unwrap();
         let server = ForgeplanServer::new(root.clone()).await;
-        *server.workspace_path.write().await = Some(ws);
-        *server.store.write().await = Some(std::sync::Arc::new(store));
+        // ADR-016 Phase 2: the split-brain `workspace_path` + `store` fields are
+        // gone. Pre-seed the server through the same path `forgeplan_init` uses:
+        // one default workspace + its store in the single cache.
+        server
+            .seed_default(ws.clone(), std::sync::Arc::new(store))
+            .await;
 
         // Snapshot HOME + cwd so the [`EnvSnapshot`] guard can restore them.
         let prev_home = std::env::var_os("HOME").unwrap_or_default();
@@ -12642,7 +12737,7 @@ steps:
   - id: only
     delegate_to: { type: agent, name: a }
 "#;
-        let ws = server.workspace_path.read().await.clone().unwrap();
+        let ws = server.default_workspace.read().await.clone().unwrap();
         tokio::fs::write(ws.join("playbooks/hello.yaml"), yaml)
             .await
             .unwrap();
