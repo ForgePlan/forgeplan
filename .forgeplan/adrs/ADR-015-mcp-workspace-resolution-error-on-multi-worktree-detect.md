@@ -19,7 +19,6 @@ status: draft
 title: MCP workspace resolution — error on multi-worktree detect
 ---
 
-# ADR-015: MCP workspace resolution — error on multi-worktree detect
 
 ## Context
 
@@ -39,17 +38,21 @@ Cross-refs: PRD-078 (полный design + ACs), RFC-010 (implementation phases)
 
 ## Decision
 
-**Selected**: Option E — Error response при missing workspace в multi-worktree environment.
+**Selected**: двухслойный механизм —
+1. **H1 (PRIMARY)**: per-call `workspace` параметр на mutating MCP tools + `FORGEPLAN_WORKSPACE` env var (H2) с resolution chain `param → env → cwd`. Это **основной** механизм, закрывающий PROB-072: subagent в worktree передаёт `workspace=<свой worktree>`, projection лендится правильно.
+2. **Option E (BEST-EFFORT NET)**: error response `-32602` когда detection видит multi-worktree env И ни param, ни env не переданы. Это **подстраховка** от silent fallback в подмножестве случаев (см. Known Limitation ниже), не самостоятельная гарантия.
 
-**Why Selected**:
+**Why this split (honest re-assessment 2026-05-29, post-implementation)**:
 
-1. **Structural impossibility of silent fallback**. PROB-072 САМО родилось из silent fallback. Любой soft-signal вариант (warning) через 6 месяцев деградирует до «agents учатся игнорить» — мы видели это раньше. E — единственный механизм, который physically нельзя обойти silent.
+Изначально ADR формулировал Option E как ГЛАВНУ�ю anti-silent-fallback гарантию. После реализации и e2e-тестов это оказалось **переоценкой**. Реальная картина:
 
-2. **Smart detection limits blast radius**. Error срабатывает ТОЛЬКО когда `git rev-parse --git-common-dir` ≠ `--show-toplevel` (т.е. реально multi-worktree env). Single-worktree user не платит и не видит изменений — backward compat сохранён через detection gate.
+1. **H1 (param) — настоящий fix**. Production-сценарий PROB-072 (Claude Code запускает MCP server в main repo, subagent работает в worktree, процесс общий) закрывается ТОЛЬКО тем, что subagent передаёт `workspace` param. Detection (Option E) здесь **не срабатывает** — cwd процесса сервера заморожен на main repo, а main repo сам по себе не «linked worktree», поэтому `git-common-dir == show-toplevel` → detection возвращает false → gate молчит.
 
-3. **Proven channel**. MCP error -32602 response path **уже доказан работающим** — мы видели lance error / artifact-not-found errors попадающие до user в чат (через JSON-RPC `error` поле). Это не theoretical channel, а exercised path.
+2. **Option E ловит более узкий случай**: когда сам MCP server запущен с cwd внутри worktree (e.g. dev запускает `forgeplan-mcp` из worktree-папки, или per-worktree spawn). Тогда detection срабатывает и error не даёт молча писать не туда. AC-3 e2e тест проверяет именно этот случай (создаёт реальный worktree, запускает сервер с cwd внутри, ждёт -32602).
 
-4. **Simpler mental model than D'**. Два режима (single-worktree implicit / multi-worktree required) проще трёх (implicit / warning / strict).
+3. **Proven channel**. MCP error -32602 response path доказан работающим (lance / artifact-not-found errors доходят до user в чат через JSON-RPC `error` поле). Канал реальный, не theoretical.
+
+4. **Полное покрытие требует cooperation от agent runtime** — agent ДОЛЖЕН передавать `workspace` param. Это не недостаток дизайна, а граница ответственности: core предоставляет механизм (param) + подстраховку (detection net), agent framework отвечает за передачу param. Plugin-layer workaround пользователя (forgeplan-marketplace `a9a825c`) как раз это и делает — и теперь может переехать на стандартный `workspace` param вместо dual-location verify hook.
 
 ## Alternatives Considered
 
@@ -60,14 +63,15 @@ Cross-refs: PRD-078 (полный design + ACs), RFC-010 (implementation phases)
 | C — Push to plugin/agent layer | Rejected | Нарушает principle decomposition (proper fix принадлежит core, не каждому plugin layer-у). Дублирует существующий user workaround. Не generalizes на другие agent frameworks (Claude Code, OpenCode, Cursor — разные обходы). |
 | D — Stderr warning + opt-in strict env | Rejected | Default mode (stderr) broken по той же причине что B. Strict-only часть превращается в opt-in A. |
 | D' — Response payload warning + opt-in strict | Rejected as primary, kept as fallback | F-G-R close to E (0.80 vs 0.85) но проигрывает по «failure visibility». Soft signal через 6 месяцев деградирует. Удержан как Growth Vision PRD-078: config toggle `workspace_mismatch_policy: error \| warn`. |
-| **E — Error on detect + opt-in strict env** | **Chosen** | Structural prevention of silent fallback + smart detection sparing single-worktree users + proven error channel. |
+| **E — Error on detect + opt-in strict env** | **Chosen as NET, not primary** | Подстраховка от silent fallback в случае server-cwd-in-worktree + smart detection sparing single-worktree users + proven error channel. Primary fix — H1 (param). См. Decision + Known Limitation для точной роли. |
 | F — Noop, document как known limitation | Rejected | Не решает PROB-072. Users с забытым `workspace` param получают тот же drift который и привёл к filing. Через год тот же ticket. |
 
 ## Consequences
 
 ### Positive
 
-- Silent fallback в multi-worktree env становится structurally невозможен — корневая причина PROB-072 закрыта
+- Корневая причина PROB-072 закрыта для production-сценария через H1 (agent передаёт `workspace` param → projection лендится в правильный worktree)
+- Silent fallback дополнительно перехватывается Option E net в случае server-cwd-in-worktree (см. Known Limitation для точной границы покрытия)
 - Backward compatibility сохранена для single-worktree workflows (detection не срабатывает → no error)
 - Error message содержит actionable suggestion (auto-detected правильный path) — agent может self-correct в следующем вызове
 - Plugin-layer workaround пользователя (forgeplan-marketplace `a9a825c` — dual-location verify, 11 agent definitions с Materialize sections) может быть **депрекейтнут** после v0.33 release
@@ -86,6 +90,18 @@ Cross-refs: PRD-078 (полный design + ACs), RFC-010 (implementation phases)
 - **R-1**: latency cost git rev-parse превышает NFR-001 budget (<5ms p95) — mitigation: caching layer в Growth Vision. Evidence: bench в PROB-073 sprint
 - **R-2**: MCP клиент (не Claude Code) не пропускает `FORGEPLAN_WORKSPACE` env var до child process — strict CI mode ломается в OpenCode/Cursor. Mitigation: short evidence test на OpenCode/Cursor до v0.33 release
 - **R-3**: Error message wording не actionable достаточно — mitigation NFR-003 + AC-3 в PRD-078 enforce wording с auto-detected suggested path
+
+### Known Limitation (Option E detection coverage)
+
+**Option E detection НЕ покрывает главный production-сценарий PROB-072.** Это сознательно принятая граница, не баг:
+
+| Сценарий | Кто запускает MCP server cwd | Detection (Option E) | Чем закрыт |
+|----------|------------------------------|----------------------|------------|
+| **Production** (главный): Claude Code в main repo, subagent в worktree, общий MCP процесс | main repo | ❌ не срабатывает (cwd == main, не worktree) | ✅ H1 — agent передаёт `workspace` param |
+| **Dev/per-worktree spawn**: MCP server запущен с cwd внутри worktree | worktree | ✅ срабатывает → -32602 | ✅ Option E net + H1 |
+| **Single-worktree** (обычный): всё в одном репо | main repo | ❌ не срабатывает (правильно) | n/a — backward compat, никаких изменений |
+
+**Вывод**: anti-silent-fallback гарантия достигается **комбинацией** H1 (agent передаёт param) + Option E (net для случая server-cwd-in-worktree). Полная защита от «agent забыл param» в production-сценарии **невозможна на стороне core** без cooperation от agent runtime — потому что core физически не знает в каком worktree «должен» работать subagent, если subagent сам этого не сообщил. Это корректная decomposition: core даёт механизм, agent framework отвечает за его использование. Документировать в user-facing docs (`docs/operations/MULTI-AGENT.ru.md`): «при multi-worktree пайплайнах каждый subagent ОБЯЗАН передавать `workspace`».
 
 ## Invariants
 
@@ -234,6 +250,7 @@ R_eff = min(evidence_scores). Самое слабое звено решения:
 | PROB-067 | Problem | informs (per-workspace lock refactor — Phase 3) |
 | PROB-073 | Problem | informs (latency budget shared, bench evidence cross-link) |
 | ADR-003 | ADR | preserves (file-first invariant сохраняется) |
+
 
 
 

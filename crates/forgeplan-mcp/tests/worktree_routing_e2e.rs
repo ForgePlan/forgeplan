@@ -328,10 +328,19 @@ async fn ac1_worktree_workspace_param_routes_correctly_ac3_missing_param_errors(
     let resp = env.assert_ok();
 
     // resolved_workspace must point to the worktree.
+    //
+    // HIGH-1 (audit F-1): resolved_workspace is now CANONICALIZED, so on
+    // platforms where the temp root is a symlink (macOS: /tmp -> /private/tmp)
+    // the returned path is the canonical form. Compare against the canonical
+    // worktree root, not the raw spelling, otherwise this asserts a pre-fix
+    // expectation. Falls back to the raw root if canonicalize fails.
+    let wt_root_canon = std::fs::canonicalize(&wt_root)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| wt_root_str.clone());
     let resolved_ws = resp["resolved_workspace"].as_str().unwrap_or("");
     assert!(
-        resolved_ws.starts_with(&wt_root_str),
-        "AC-1: resolved_workspace '{resolved_ws}' must be inside worktree '{wt_root_str}'"
+        resolved_ws.starts_with(&wt_root_canon),
+        "AC-1: resolved_workspace '{resolved_ws}' must be inside canonical worktree '{wt_root_canon}'"
     );
 
     // resolved_via must be "param".

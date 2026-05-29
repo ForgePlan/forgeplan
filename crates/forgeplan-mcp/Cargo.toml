@@ -28,7 +28,6 @@ anyhow.workspace = true
 chrono.workspace = true
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-lru = "0.12"
 
 [features]
 semantic-search = ["forgeplan-core/semantic-search"]
