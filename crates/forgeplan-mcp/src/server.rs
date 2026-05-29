@@ -192,9 +192,10 @@ mod workspace_trace_unit_tests {
 // ── Server struct ────────────────────────────────────────────
 
 /// Maximum number of per-workspace `LanceStore` handles held in the cache
-/// before a warning is emitted (FR-006 / PRD-078). The cap is advisory —
-/// entries above the threshold are still inserted; the warning surfaces to
-/// `tracing` so operators can investigate unexpected workspace proliferation.
+/// (FR-006 / PRD-078, audit MED-5). The cap is LOAD-BEARING: when reached,
+/// `get_or_open_store` evicts one entry before inserting so the handle pool
+/// stays bounded over a long-lived server session. A `tracing::warn!` fires on
+/// eviction so operators can investigate unexpected workspace proliferation.
 const WORKSPACE_STORE_CACHE_CAP: usize = 32;
 
 #[derive(Clone)]
@@ -344,7 +345,7 @@ impl ForgeplanServer {
                         )
                     })?;
                     return Ok(ResolvedWorkspace {
-                        workspace_dir: ws_dir,
+                        workspace_dir: Self::canonical_ws_dir(ws_dir),
                         resolved_via: ResolutionSource::Param,
                         store,
                     });
@@ -379,7 +380,7 @@ impl ForgeplanServer {
                         )
                     })?;
                     return Ok(ResolvedWorkspace {
-                        workspace_dir: ws_dir,
+                        workspace_dir: Self::canonical_ws_dir(ws_dir),
                         resolved_via: ResolutionSource::Env,
                         store,
                     });
@@ -411,7 +412,7 @@ impl ForgeplanServer {
             // Re-use the legacy store handle directly to avoid a redundant open.
             if let Some(existing_store) = self.store.read().await.clone() {
                 return Ok(ResolvedWorkspace {
-                    workspace_dir: ws_dir,
+                    workspace_dir: Self::canonical_ws_dir(ws_dir),
                     resolved_via: ResolutionSource::Cwd,
                     store: existing_store,
                 });
@@ -427,7 +428,7 @@ impl ForgeplanServer {
                 )
             })?;
             return Ok(ResolvedWorkspace {
-                workspace_dir: ws_dir,
+                workspace_dir: Self::canonical_ws_dir(ws_dir),
                 resolved_via: ResolutionSource::Cwd,
                 store,
             });
@@ -451,7 +452,16 @@ impl ForgeplanServer {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::invalid_params(format!("could not determine current directory: {e}"), None)
         })?;
-        if workspace::detect_multi_worktree(&cwd) {
+        // LOW-7 (ADR-015 §Rollback): `FORGEPLAN_DISABLE_WORKTREE_DETECT=1`
+        // escape hatch. When set truthy, skip the multi-worktree detection gate
+        // entirely and fall through to plain cwd resolution (as if single-
+        // worktree). This is the documented first-line rollback if detection
+        // produces false-positives in an unforeseen git topology. Read lazily
+        // per-call (same contract as FORGEPLAN_WORKSPACE).
+        let detect_disabled = std::env::var("FORGEPLAN_DISABLE_WORKTREE_DETECT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !detect_disabled && workspace::detect_multi_worktree(&cwd) {
             // Build a human-readable / agent-parseable suggestion: the
             // show-toplevel of the current worktree is the most likely
             // workspace root the caller intended.  Falls back to cwd when
@@ -484,7 +494,7 @@ impl ForgeplanServer {
                     )
                 })?;
                 Ok(ResolvedWorkspace {
-                    workspace_dir: ws_dir,
+                    workspace_dir: Self::canonical_ws_dir(ws_dir),
                     resolved_via: ResolutionSource::Cwd,
                     store,
                 })
@@ -496,6 +506,22 @@ impl ForgeplanServer {
                 None,
             )),
         }
+    }
+
+    /// Canonicalize a resolved workspace dir so the SAME canonical path is used
+    /// for BOTH the store-cache key AND the per-workspace `.lock` (audit HIGH-1 /
+    /// CWE-667/362). Without this, `/x/repo` and `/x/repo/` (trailing slash), or
+    /// a symlink alias, share one cached `LanceStore` (cache key is canonical)
+    /// but take DIFFERENT `.lock` files (lock keyed on the raw path) → lost
+    /// mutual exclusion → the PROB-067 concurrent-write race reopens for every
+    /// mutating handler except `forgeplan_new`.
+    ///
+    /// Falls back to the raw path when `canonicalize` fails (e.g. the `.forgeplan/`
+    /// dir does not exist yet) — the subsequent store-open would fail too, so the
+    /// key correctness is moot in that case. Canonicalization is idempotent, so
+    /// passing the result back into `get_or_open_store` still produces a cache hit.
+    fn canonical_ws_dir(ws_dir: PathBuf) -> PathBuf {
+        std::fs::canonicalize(&ws_dir).unwrap_or(ws_dir)
     }
 
     /// Return a cached `LanceStore` for `workspace_dir`, or open and cache a
@@ -529,12 +555,22 @@ impl ForgeplanServer {
             return Ok(Arc::clone(existing));
         }
 
+        // MED-5 (CWE-770): make the cap LOAD-BEARING. When at/over capacity,
+        // evict one entry before inserting so the cache cannot grow without
+        // bound over a long-lived server session addressing many worktrees.
+        // The evicted store is an `Arc<LanceStore>` — any in-flight caller
+        // holding a clone keeps it alive; it is simply re-opened on next access.
+        // Eviction order is HashMap-arbitrary (not strict LRU) which is
+        // sufficient for a bounded handle pool at this scale (cap 32); a true
+        // LRU is unnecessary and would force a write-lock on the read fast-path.
         let cache_len = guard.len();
-        if cache_len >= WORKSPACE_STORE_CACHE_CAP {
+        if cache_len >= WORKSPACE_STORE_CACHE_CAP
+            && let Some(evict_key) = guard.keys().next().cloned()
+        {
+            guard.remove(&evict_key);
             tracing::warn!(
-                "workspace_store_cache has {} entries (cap {}); inserting anyway. \
-                 Investigate unexpected workspace proliferation (PRD-078).",
-                cache_len,
+                "workspace_store_cache at cap {} — evicted one entry to stay bounded \
+                 (PRD-078 MED-5). Investigate unexpected workspace proliferation if frequent.",
                 WORKSPACE_STORE_CACHE_CAP
             );
         }
@@ -13041,6 +13077,33 @@ mod resolve_workspace_tests {
         )
         .expect("write config.yaml");
         dir
+    }
+
+    /// HIGH-1 regression (audit F-1 / CWE-667): the canonical workspace dir used
+    /// for BOTH the store-cache key AND the per-workspace `.lock` must be
+    /// identical across path spellings (plain vs trailing-slash). Before the
+    /// `canonical_ws_dir` fix, `/x/repo` and `/x/repo/` shared one cached store
+    /// but took different `.lock` files → lost mutual exclusion → PROB-067 race
+    /// reopened for every mutating handler except `forgeplan_new`. Tests the
+    /// canonicalization directly (no store-open needed) so it is deterministic.
+    #[test]
+    fn canonical_ws_dir_stable_across_trailing_slash() {
+        let ws = mk_fake_workspace();
+        let plain = ws.path().join(".forgeplan");
+        let trailing = PathBuf::from(format!("{}/", plain.display()));
+
+        let cp = ForgeplanServer::canonical_ws_dir(plain.clone());
+        let ct = ForgeplanServer::canonical_ws_dir(trailing);
+
+        assert_eq!(
+            cp, ct,
+            "canonical workspace_dir must be identical across trailing slash (HIGH-1)"
+        );
+        assert_eq!(
+            forgeplan_core::workspace::lock_path(&cp),
+            forgeplan_core::workspace::lock_path(&ct),
+            "lock_path must be identical across path spellings (HIGH-1)"
+        );
     }
 
     /// `resolve_workspace` with explicit `param_workspace` pointing to a valid

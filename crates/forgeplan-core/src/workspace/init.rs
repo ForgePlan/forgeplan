@@ -265,11 +265,36 @@ pub fn find_workspace(start: &Path) -> Option<PathBuf> {
 pub fn detect_multi_worktree(cwd: &Path) -> bool {
     let common_dir = match git_common_dir(cwd) {
         Some(p) => p,
-        None => return false, // not in a git repo or git unavailable
+        None => {
+            // git_common_dir returns None for two distinct reasons:
+            // (a) git is not installed / not on PATH — subprocess failed
+            // (b) cwd is genuinely not inside a git repository
+            // Both are treated identically (graceful fallback to single-worktree),
+            // but we emit a trace-level note so operators can tell the difference
+            // from their logs.  This is intentionally NOT warn-level for the
+            // common case — tracing a plain non-git workspace would be noisy.
+            tracing::debug!(
+                cwd = %cwd.display(),
+                "detect_multi_worktree: git --git-common-dir unavailable or not a git repo \
+                 — assuming single-worktree (ADR-015 graceful fallback)"
+            );
+            return false;
+        }
     };
     let show_toplevel = match git_show_toplevel(cwd) {
         Some(p) => p,
-        None => return false, // should not happen if common_dir succeeded
+        None => {
+            // git-common-dir succeeded but show-toplevel did not.  This is
+            // unexpected (both commands succeed inside a normal repo) and
+            // warrants a warn so the operator can investigate.
+            tracing::warn!(
+                cwd = %cwd.display(),
+                common_dir = %common_dir.display(),
+                "detect_multi_worktree: git --git-common-dir succeeded but \
+                 git --show-toplevel failed — assuming single-worktree (LOW-8 fix)"
+            );
+            return false;
+        }
     };
 
     // common_dir is `<repo-root>/.git` (or `<repo-root>/.git/worktrees/<name>`
