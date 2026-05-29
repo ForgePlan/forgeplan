@@ -95,3 +95,4 @@ MED-4/5/6 + LOW-7/8/9 — fold into fix round or explicit follow-up issue.
 - Pre-audit pipeline: fmt ✅ clippy ✅ test ✅ (~3100 tests, 0 failed)
 
 
+

@@ -19,7 +19,6 @@ status: draft
 title: MCP workspace resolution — error on multi-worktree detect
 ---
 
-
 ## Context
 
 PROB-072 zafilen 2026-05-20 после dogfood feedback одного из активных пользователей: его subagent в git worktree вызывает `forgeplan_new` через MCP, projection лендится в main repo, Guardian не находит файл в worktree и отправляет переделывать. Loop неубиваем без core fix потому что MCP server фиксирует CWD на startup (`crates/forgeplan-mcp/src/main.rs:11`: `let cwd = std::env::current_dir()?;`).
@@ -250,6 +249,7 @@ R_eff = min(evidence_scores). Самое слабое звено решения:
 | PROB-067 | Problem | informs (per-workspace lock refactor — Phase 3) |
 | PROB-073 | Problem | informs (latency budget shared, bench evidence cross-link) |
 | ADR-003 | ADR | preserves (file-first invariant сохраняется) |
+
 
 
 
