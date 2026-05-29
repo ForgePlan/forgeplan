@@ -65,6 +65,48 @@ impl ResolutionSource {
     }
 }
 
+/// How the resolution chain treats a cold-start multi-worktree environment
+/// (ADR-016 Phase 1).
+///
+/// The chain (param → env → legacy → cwd) is identical for every caller; the
+/// ONLY behavioural axis a caller picks is what happens when, on a cold start
+/// (no `param`, no `FORGEPLAN_WORKSPACE`, no `forgeplan_init`), the current
+/// directory is a linked git worktree:
+///
+/// - [`DetectionPolicy::Strict`] — fire the `-32602`
+///   `multi_worktree_workspace_required` error so the caller retries with an
+///   explicit `workspace` parameter. This is the **mutating** contract
+///   (ADR-015 Option E): a write must never silently land in the wrong
+///   `.forgeplan/`.
+/// - [`DetectionPolicy::SoftFallback`] — skip the detection gate and fall
+///   through to plain cwd resolution (`find_workspace`). This is the
+///   **read-only** contract: a read is harmless if it resolves the nearest
+///   workspace, and forcing a parameter on every read would reopen the
+///   Guardian-loop friction (PROB-072) on the read side.
+///
+/// Read/write differ ONLY by this one enum value — the resolution chain body
+/// is written exactly once in [`ForgeplanServer::resolve_workspace_core`]
+/// (ADR-016 Invariant: "Resolution chain in exactly one place"). The escape
+/// hatch `FORGEPLAN_DISABLE_WORKTREE_DETECT=1` (LOW-7) collapses `Strict` to
+/// the same fall-through behaviour as `SoftFallback`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetectionPolicy {
+    /// Mutating tools: cold-start multi-worktree → structured `-32602` error.
+    Strict,
+    /// Read-only tools: cold-start multi-worktree → fall through to cwd
+    /// resolution (no error). Phase 3 (W3) routes read handlers here.
+    ///
+    /// `#[allow(dead_code)]` is a deliberate Phase-1 marker: the only
+    /// non-test constructor of this variant is `resolve_workspace_read`,
+    /// which Phase 3 wires into the 21 read handlers. Until then it is
+    /// exercised solely by `resolve_workspace_tests` (`#[cfg(test)]`), so the
+    /// non-test lib build sees the variant as unconstructed. Remove this
+    /// `allow` in Phase 3 when the first read handler calls
+    /// `resolve_workspace_read`.
+    #[allow(dead_code)]
+    SoftFallback,
+}
+
 /// Result of `ForgeplanServer::resolve_workspace`.
 ///
 /// Carries the resolved `.forgeplan/` path, which resolution step produced it,
@@ -287,12 +329,69 @@ impl ForgeplanServer {
             .ok_or_else(|| "Workspace not initialized. Call forgeplan_init first.".into())
     }
 
-    /// Resolve the workspace to use for a single mutating MCP tool call.
+    /// Resolve the workspace to use for a single **mutating** MCP tool call
+    /// (thin wrapper over [`Self::resolve_workspace_core`] with
+    /// [`DetectionPolicy::Strict`]).
     ///
-    /// Resolution chain (FR-001, ADR-015):
+    /// Strict policy: a cold-start multi-worktree environment returns the
+    /// structured `-32602` `multi_worktree_workspace_required` error rather
+    /// than silently resolving the nearest `.forgeplan/` — a write must never
+    /// land in the wrong workspace (ADR-015 Option E).
+    ///
+    /// Behaviour is byte-identical to the pre-ADR-016 `resolve_workspace`
+    /// (zero behavioural change for every existing write call-site).
+    pub(crate) async fn resolve_workspace(
+        &self,
+        param_workspace: Option<&str>,
+    ) -> Result<ResolvedWorkspace, McpError> {
+        self.resolve_workspace_core(param_workspace, DetectionPolicy::Strict)
+            .await
+    }
+
+    /// Resolve the workspace to use for a single **read-only** MCP tool call
+    /// (thin wrapper over [`Self::resolve_workspace_core`] with
+    /// [`DetectionPolicy::SoftFallback`]).
+    ///
+    /// Soft-fallback policy: a cold-start multi-worktree environment skips the
+    /// detection error-gate and falls through to plain cwd resolution. A read
+    /// is harmless if it resolves the nearest workspace, and forcing an
+    /// explicit `workspace` parameter on every read would reopen the
+    /// Guardian-loop friction (PROB-072) on the read side (ADR-016, closes
+    /// audit HIGH-2).
+    ///
+    /// Phase 3 (W3) migrates the 21 read handlers to call this. For ADR-016
+    /// Phase 1 it exists and is unit-tested; no handler is re-pointed yet.
+    ///
+    /// `#[allow(dead_code)]` is a deliberate Phase-1 marker: this wrapper is
+    /// the public surface Phase 3 consumes (the 21 read handlers switch from
+    /// `require_workspace()` to `resolve_workspace_read`). Until that wiring
+    /// lands, the only callers are `resolve_workspace_tests` (`#[cfg(test)]`),
+    /// so the non-test lib build flags it unused. Remove this `allow` in
+    /// Phase 3 alongside the first handler migration.
+    #[allow(dead_code)]
+    pub(crate) async fn resolve_workspace_read(
+        &self,
+        param_workspace: Option<&str>,
+    ) -> Result<ResolvedWorkspace, McpError> {
+        self.resolve_workspace_core(param_workspace, DetectionPolicy::SoftFallback)
+            .await
+    }
+
+    /// Single resolution chain shared by reads and writes (ADR-016 Phase 1).
+    ///
+    /// Resolution chain (FR-001, ADR-015) — written **exactly once**:
     ///   1. `param_workspace` — caller-supplied explicit path (FR-002)
     ///   2. `FORGEPLAN_WORKSPACE` env var, **read at call time** (FR-003, not cached at startup)
-    ///   3. `std::env::current_dir()` — legacy / single-worktree behaviour (AC-2)
+    ///   3. legacy `workspace_path` (set by `forgeplan_init`) — AC-2 backward compat
+    ///   4. `std::env::current_dir()` — cold-start / single-worktree behaviour (AC-2)
+    ///
+    /// The `policy` argument is the ONLY thing that differs between a read and
+    /// a write: it gates the cold-start multi-worktree detection error
+    /// ([`DetectionPolicy::Strict`] errors, [`DetectionPolicy::SoftFallback`]
+    /// falls through). Every other step — param/env/legacy/cwd resolution,
+    /// `~` expansion, relative-path rejection, canonicalisation, the
+    /// `FORGEPLAN_DISABLE_WORKTREE_DETECT` escape hatch, and
+    /// `get_or_open_store` — is identical for both policies.
     ///
     /// Returns a [`ResolvedWorkspace`] that includes the `.forgeplan/` path,
     /// the resolution source (for NFR-004), and a ready-to-use `LanceStore`
@@ -301,9 +400,10 @@ impl ForgeplanServer {
     /// Rejects relative paths in `param_workspace` with `McpError::invalid_params`
     /// (risk CR-5 from team lead brief: relative paths are ambiguous across
     /// agent CWDs in multi-worktree pipelines).
-    pub(crate) async fn resolve_workspace(
+    pub(crate) async fn resolve_workspace_core(
         &self,
         param_workspace: Option<&str>,
+        policy: DetectionPolicy,
     ) -> Result<ResolvedWorkspace, McpError> {
         // ── Step 1: param ────────────────────────────────────────────────
         if let Some(raw) = param_workspace {
@@ -461,7 +561,14 @@ impl ForgeplanServer {
         let detect_disabled = std::env::var("FORGEPLAN_DISABLE_WORKTREE_DETECT")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        if !detect_disabled && workspace::detect_multi_worktree(&cwd) {
+        // ADR-016 Phase 1: the detection error-gate is policy-gated. Under
+        // `Strict` (mutating tools) a cold-start multi-worktree returns the
+        // structured `-32602` error; under `SoftFallback` (read-only tools) we
+        // skip the gate and fall through to plain cwd resolution. This is the
+        // SINGLE behavioural difference between reads and writes — everything
+        // above and below this block is shared.
+        let gate_active = policy == DetectionPolicy::Strict;
+        if gate_active && !detect_disabled && workspace::detect_multi_worktree(&cwd) {
             // Build a human-readable / agent-parseable suggestion: the
             // show-toplevel of the current worktree is the most likely
             // workspace root the caller intended.  Falls back to cwd when
@@ -13155,6 +13262,124 @@ mod resolve_workspace_tests {
                     "unexpected error (not store-open): {msg}"
                 );
             }
+        }
+    }
+
+    /// ADR-016 Phase 1: `resolve_workspace_read` (SoftFallback) with an
+    /// explicit `param_workspace` routes to that exact workspace and reports
+    /// `ResolutionSource::Param`. Mirrors `resolve_workspace_prefers_param_over_env`
+    /// but exercises the soft-fallback read wrapper — proving the read path
+    /// honours an explicit param identically to the write path (the param
+    /// branch is shared, before the policy-gated detection block).
+    #[tokio::test]
+    #[serial(env_forgeplan_workspace)]
+    async fn resolve_workspace_read_param_routes() {
+        let param_ws = mk_fake_workspace();
+        let env_ws = mk_fake_workspace(); // different dir — param must still win
+        let server = make_server(param_ws.path()).await;
+
+        // Set env to a different workspace — explicit param must take priority
+        // on the read path too.
+        // SAFETY: serialised with `#[serial(env_forgeplan_workspace)]`; no
+        // concurrent threads within this serial group touch FORGEPLAN_WORKSPACE.
+        unsafe {
+            std::env::set_var("FORGEPLAN_WORKSPACE", env_ws.path().to_str().unwrap());
+        }
+        let result = server
+            .resolve_workspace_read(Some(param_ws.path().to_str().unwrap()))
+            .await;
+        unsafe { std::env::remove_var("FORGEPLAN_WORKSPACE") };
+
+        match result {
+            Ok(rw) => {
+                assert_eq!(
+                    rw.resolved_via,
+                    ResolutionSource::Param,
+                    "read path: expected Param, got {:?}",
+                    rw.resolved_via.as_str()
+                );
+                assert!(
+                    rw.workspace_dir.starts_with(param_ws.path()),
+                    "read path: resolved dir {:?} must be inside param workspace {:?}",
+                    rw.workspace_dir,
+                    param_ws.path()
+                );
+            }
+            Err(e) => {
+                // Store open may fail for an uninitialised Lance index; that is
+                // acceptable as long as the resolution source/path was correct.
+                // A `.forgeplan/`-not-found error would be a real failure.
+                let msg = e.message.clone();
+                assert!(
+                    msg.contains("store could not be opened")
+                        || msg.contains("lance")
+                        || msg.contains("Lance"),
+                    "read path: unexpected error (not store-open): {msg}"
+                );
+            }
+        }
+    }
+
+    /// ADR-016 Phase 1 (no-chain-divergence proof): given the SAME explicit
+    /// `param_workspace`, the Strict wrapper (`resolve_workspace`) and the
+    /// SoftFallback wrapper (`resolve_workspace_read`) resolve to the SAME
+    /// `workspace_dir`. The detection policy only affects the cold-start
+    /// multi-worktree branch; the param branch is shared, so both wrappers
+    /// must agree byte-for-byte. This is the regression guard against the
+    /// ~90-line chain duplication that ADR-016 removed.
+    #[tokio::test]
+    #[serial(env_forgeplan_workspace)]
+    async fn resolve_workspace_strict_and_read_agree_on_param() {
+        let ws = mk_fake_workspace();
+        let server = make_server(ws.path()).await;
+
+        // Ensure env does not interfere — both calls hit the param branch.
+        // SAFETY: serialised with `#[serial(env_forgeplan_workspace)]`.
+        unsafe { std::env::remove_var("FORGEPLAN_WORKSPACE") };
+
+        let param = ws.path().to_str().unwrap();
+        let strict = server.resolve_workspace(Some(param)).await;
+        let soft = server.resolve_workspace_read(Some(param)).await;
+
+        match (strict, soft) {
+            (Ok(s), Ok(r)) => {
+                assert_eq!(
+                    s.workspace_dir, r.workspace_dir,
+                    "Strict and SoftFallback must resolve the same workspace_dir for \
+                     an explicit param (no chain divergence)"
+                );
+                assert_eq!(
+                    s.resolved_via,
+                    ResolutionSource::Param,
+                    "Strict: expected Param, got {:?}",
+                    s.resolved_via.as_str()
+                );
+                assert_eq!(
+                    r.resolved_via,
+                    ResolutionSource::Param,
+                    "SoftFallback: expected Param, got {:?}",
+                    r.resolved_via.as_str()
+                );
+            }
+            // If the store cannot be opened (uninitialised Lance index), BOTH
+            // wrappers must fail the same way — the param branch is shared, so
+            // an asymmetric outcome would itself be a divergence bug.
+            (Err(se), Err(re)) => {
+                for (label, msg) in [("Strict", &se.message), ("SoftFallback", &re.message)] {
+                    assert!(
+                        msg.contains("store could not be opened")
+                            || msg.contains("lance")
+                            || msg.contains("Lance"),
+                        "{label}: unexpected error (not store-open): {msg}"
+                    );
+                }
+            }
+            (strict, soft) => panic!(
+                "Strict and SoftFallback diverged on an explicit param: \
+                 strict_ok={}, soft_ok={}",
+                strict.is_ok(),
+                soft.is_ok()
+            ),
         }
     }
 
