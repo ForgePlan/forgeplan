@@ -11,6 +11,10 @@ links:
   relation: informs
 - target: EVID-139
   relation: informs
+- target: PROB-072
+  relation: informs
+- target: PROB-067
+  relation: informs
 status: draft
 title: Extract WorkspaceResolver — single resolution chain + DetectionPolicy, collapse store split-brain
 ---
@@ -31,6 +35,18 @@ Decided via ADI (`forgeplan reason PROB-076`, gemini-3.1-pro-preview, 2026-05-30
 - HIGH-1 canonical-path guarantee moves inside the resolver (one canonical path for cache key AND lock) — preserved by construction, unit-testable in isolation.
 
 **Why Selected** (ADI verdict, confidence High): the Acceptance Criteria already mandate touching all 21 read handlers, so the marginal cost of also retiring the legacy fields is low while the gain (single source of truth, isolated testability of the HIGH-1 invariant, no state-drift risk) is high. Pure Approach A (policy enum, keep split-brain) was rejected because it leaves the state-drift vector (read hits stale legacy store while write updates cache → phantom artifacts) — the exact bug class that produced this whole effort.
+
+### Implementation Note — what actually shipped (post-ship reconciliation, audit ARCH-2)
+
+**The shipped code realizes the SUBSTANCE of this decision but NOT the literal `WorkspaceResolver` TYPE extraction.** The Layer-7 adversarial audit (ARCH-2) correctly flagged that no `struct WorkspaceResolver` exists in the codebase (`grep` is empty) — what shipped is the in-place variant (closer to Option B): the single resolution chain and the collapsed store live as **methods + fields on `ForgeplanServer`**, not on a dedicated extracted type.
+
+The decision's substance WAS delivered:
+- **Single chain**: `ForgeplanServer::resolve_workspace_core(param, policy)` is the one resolution chain (param → env → default → cwd → canonicalize). `resolve_workspace(p)` = `core(p, Strict)` (writes), `resolve_workspace_read(p)` = `core(p, SoftFallback)` (reads) — thin wrappers, zero chain duplication. ✅
+- **DetectionPolicy** enum parameterizes read-vs-write — exactly as decided. ✅
+- **Split-brain collapsed**: legacy `self.store` / `self.workspace_path` retired in favour of a single `default_workspace` + `workspace_store_cache`; `forgeplan_init` seeds via `seed_default(path, store)`. ✅
+- **HIGH-1 canonical guarantee** lives in `canonical_ws_dir` + `get_or_open_store`, used by both the cache key and the lock. ✅
+
+Only the **encapsulation shape** differs: the logic is on `ForgeplanServer` rather than a separate `WorkspaceResolver` struct. This was a deliberate trade-off — Risk **R-2** (extraction churn in a degraded shell that had already failed 3 sub-agent waves) materialized, making a clean mid-PR type extraction too costly relative to its marginal benefit once the single-chain + single-store substance was already in place. A future follow-up MAY extract the type for isolated unit-testing of the resolver without a full `ForgeplanServer` (the one benefit not yet realized); it is not required for correctness. Throughout this ADR, read "`WorkspaceResolver::resolve`" / "`resolver.seed`" as the shipped `ForgeplanServer::resolve_workspace_core` / `seed_default` methods.
 
 ## Alternatives Considered
 
@@ -101,6 +117,9 @@ Decided via ADI (`forgeplan reason PROB-076`, gemini-3.1-pro-preview, 2026-05-30
 
 ## Reasoning Trace
 ADI on PROB-076 generated H1 (policy enum only), H2 (enum + collapse in-place), H3 (extract WorkspaceResolver). Recommended hybrid H3+H2 (extract + collapse), confidence High — because all read handlers must be touched regardless, the marginal cost of collapsing split-brain is low and removes the state-drift class. Evidence probes: H2 blast radius = 12 prod + ~24 test `workspace_path` sites + 2 `self.store` (bounded, auditable); H3 resolver signature = self-contained (owns cache + default_workspace), no back-ref/lifetime issues.
+
+
+
 
 
 
