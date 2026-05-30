@@ -72,6 +72,41 @@ pub(crate) fn git_show_toplevel(cwd: &Path) -> Option<PathBuf> {
     Some(abs)
 }
 
+/// Run `git rev-parse --git-dir` from `cwd` and return the canonicalized
+/// absolute path of the per-context git directory.
+///
+/// This is git's OWN definition of "am I in a linked worktree": `--git-dir`
+/// differs from `--git-common-dir` **iff** the cwd is inside a linked worktree.
+/// - plain repo:      git-dir == common-dir == `<root>/.git`
+/// - linked worktree: git-dir == `<main>/.git/worktrees/<name>` ≠ common-dir (`<main>/.git`)
+/// - submodule:       git-dir == common-dir == `<parent>/.git/modules/<name>`  (NOT a worktree)
+/// - bare repo:       git-dir == common-dir
+///
+/// Comparing `git-dir` vs `common-dir` therefore avoids the submodule
+/// false-positive that a `common-dir-parent ≠ show-toplevel` comparison
+/// produces (a submodule's common-dir parent is `.git/modules`, which is never
+/// the submodule's show-toplevel).
+///
+/// Returns `None` under the same conditions as [`git_common_dir`].
+pub(crate) fn git_dir(cwd: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--git-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(&raw);
+    // `--git-dir` is relative when invoked from the repo root; canonicalize
+    // against `cwd` like the siblings.
+    let abs = if p.is_absolute() { p } else { cwd.join(p) };
+    Some(abs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
