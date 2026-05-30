@@ -755,15 +755,12 @@ impl ForgeplanServer {
         Ok(new_store)
     }
 
-    /// Load workspace config once. Returns None if workspace not initialized or config missing.
-    ///
-    /// ADR-016 Phase 2: re-pointed from the removed `self.workspace_path` to
-    /// `default_workspace` (the path `forgeplan_init` / `new` established).
-    async fn load_workspace_config(&self) -> Option<forgeplan_core::config::types::Config> {
-        let ws_guard = self.default_workspace.read().await;
-        let ws = ws_guard.as_ref()?;
-        forgeplan_core::workspace::load_config(ws).ok()
-    }
+    // ADR-016 audit (config-axis leak fix): the former `load_workspace_config`
+    // helper read the server's `default_workspace` config and was the source of
+    // the XW-1/XW-3/score/fpf_rules config leaks — a worktree-routed handler got
+    // its store from the resolved workspace but its config from the default.
+    // All callers now load config from their resolved `workspace_dir` via
+    // `workspace::load_config(&resolved.workspace_dir)`, so this helper is gone.
 
     /// Build EstimateConfig from workspace config, falling back to defaults.
     fn build_estimate_config(
@@ -2127,6 +2124,13 @@ struct FpfRulesParams {
     /// Filter by source: "config" or "default". For debugging workspace state.
     #[serde(default)]
     source: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -3069,9 +3073,13 @@ impl ForgeplanServer {
             .filter(|(src, tgt, _)| src == &target.id || tgt == &target.id)
             .count();
 
-        let fpf_weights = self
-            .load_workspace_config()
-            .await
+        // ADR-016 audit XW (config-axis leak fix): load config from the RESOLVED
+        // worktree (`ws`), not `self.load_workspace_config()` (which reads the
+        // server's default_workspace). Without this, a `workspace=<wt>` score
+        // would persist into the resolved store but weight via the WRONG tree's
+        // fpf config — the same silent-drop class as the store leak.
+        let fpf_weights = workspace::load_config(&ws)
+            .ok()
             .and_then(|c| c.fpf.map(|f| f.weights));
         let fgr_score = fgr::compute(
             &target.id,
@@ -6774,7 +6782,15 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         use forgeplan_core::fpf;
 
-        let ws_config = self.load_workspace_config().await;
+        // ADR-016 audit (config-axis leak): FpfRulesParams now carries
+        // `workspace`; resolve the worktree (SoftFallback read) so a
+        // `workspace=<wt>` call returns THAT tree's FPF rules, not the server
+        // default_workspace's. Previously it silently read the default config.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
+        };
+        let ws_config = workspace::load_config(&resolved.workspace_dir).ok();
         let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
         // FIX 4: validate param lengths before doing any work.
         if p.action.as_deref().map(|s| s.len()).unwrap_or(0) > 64 {
@@ -6899,6 +6915,7 @@ impl ForgeplanServer {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
+        let ws = resolved.workspace_dir.clone();
         let store = resolved.store;
 
         // FIX 4: param length bound.
@@ -6906,7 +6923,9 @@ impl ForgeplanServer {
             return Ok(err_result("artifact id too long (max 128)"));
         }
 
-        let ws_config = self.load_workspace_config().await;
+        // ADR-016 audit XW-1 (config-axis leak fix): FPF rules must come from
+        // the RESOLVED worktree, not the server default_workspace.
+        let ws_config = workspace::load_config(&ws).ok();
         let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
 
         let result = match fpf::check_artifact_against_rules(&store, &p.id, fpf_cfg).await {
@@ -7112,6 +7131,7 @@ impl ForgeplanServer {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
+        let ws = resolved.workspace_dir.clone();
         let store = resolved.store;
 
         let record = match store.get_record(&p.id).await {
@@ -7154,8 +7174,10 @@ impl ForgeplanServer {
             );
         }
 
-        // Load config once from workspace
-        let ws_config = self.load_workspace_config().await;
+        // Load config once from the RESOLVED worktree (ADR-016 audit XW-3
+        // config-axis leak fix): both llm_config and build_estimate_config must
+        // derive from the resolved worktree, not the server default_workspace.
+        let ws_config = workspace::load_config(&ws).ok();
 
         // Score: LLM or rule-based
         let llm_config = ws_config.as_ref().and_then(|c| c.llm.as_ref());
