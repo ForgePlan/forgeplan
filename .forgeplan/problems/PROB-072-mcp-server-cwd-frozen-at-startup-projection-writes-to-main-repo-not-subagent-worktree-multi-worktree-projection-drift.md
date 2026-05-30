@@ -117,3 +117,4 @@ correct fix is in MCP server — it should know about worktrees.
 
 
 
+
