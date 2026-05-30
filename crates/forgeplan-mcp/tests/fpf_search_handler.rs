@@ -57,6 +57,28 @@ fn params(
         query: query.to_string(),
         limit,
         semantic,
+        workspace: None,
+    })
+}
+
+/// Like [`params`] but pins an EXPLICIT `workspace` path. ADR-016 Phase 3c
+/// routed `forgeplan_fpf_search` through the shared `resolve_workspace_read`
+/// chain, so a param-less call now soft-falls-back to the process CWD — which,
+/// during `cargo test`, is a REAL forgeplan workspace and makes a "no
+/// workspace" assertion non-deterministic. Passing an explicit absolute path
+/// that has NO `.forgeplan/` makes the resolution error deterministic
+/// regardless of ambient CWD / `FORGEPLAN_WORKSPACE`.
+fn params_ws(
+    query: &str,
+    limit: Option<usize>,
+    semantic: Option<bool>,
+    workspace: &std::path::Path,
+) -> Parameters<FpfSearchParams> {
+    Parameters(FpfSearchParams {
+        query: query.to_string(),
+        limit,
+        semantic,
+        workspace: Some(workspace.display().to_string()),
     })
 }
 
@@ -126,56 +148,75 @@ async fn fpf_search_oversized_query_rejected() {
 
 #[tokio::test]
 async fn fpf_search_boundary_query_length_passes_validation() {
-    // Exactly 8192 chars — still passes the bound check, then hits
-    // "workspace not initialized" (since we use the no-workspace server).
-    // This pins the off-by-one guarantee.
+    // Exactly 8192 chars — still passes the bound check, then hits the
+    // workspace-resolution gate. This pins the off-by-one guarantee.
+    //
+    // ADR-016 Phase 3c: the gate is now `resolve_workspace_read` (shared read
+    // chain), so we pin an EXPLICIT workspace path with no `.forgeplan/` to
+    // make the resolution error deterministic. The resolver reports the
+    // missing `.forgeplan/` rather than the old `require_store` "Workspace not
+    // initialized" string.
     let (srv, _tmp) = server_without_workspace().await;
+    let no_ws = TempDir::new().expect("no-workspace tempdir");
     let exact = "a".repeat(8192);
     let r = srv
-        .forgeplan_fpf_search(params(&exact, None, None))
+        .forgeplan_fpf_search(params_ws(&exact, None, None, no_ws.path()))
         .await
         .unwrap();
-    // Bounds passed, next error is store-not-initialized.
-    assert_is_error(&r, "Workspace not initialized");
+    // Bounds passed, next gate is workspace resolution → missing `.forgeplan/`.
+    assert_is_error(&r, ".forgeplan");
 }
 
 // ── workspace-gated tests (tempdir workspace, no FPF ingest) ────────────────
 
 #[tokio::test]
 async fn fpf_search_without_workspace_reports_not_initialized() {
+    // ADR-016 Phase 3c: `forgeplan_fpf_search` resolves via the shared
+    // `resolve_workspace_read` chain. A param-less call now soft-falls-back
+    // to the process CWD (a real workspace under `cargo test`), so to pin the
+    // "no usable workspace → clean error" contract deterministically we pass
+    // an explicit path with no `.forgeplan/`. The resolver names the missing
+    // `.forgeplan/` instead of the legacy `require_store` string.
     let (srv, _tmp) = server_without_workspace().await;
+    let no_ws = TempDir::new().expect("no-workspace tempdir");
     let r = srv
-        .forgeplan_fpf_search(params("trust", None, None))
+        .forgeplan_fpf_search(params_ws("trust", None, None, no_ws.path()))
         .await
         .unwrap();
-    assert_is_error(&r, "Workspace not initialized");
+    assert_is_error(&r, ".forgeplan");
 }
 
 #[tokio::test]
 async fn fpf_search_skeleton_workspace_reports_not_initialized() {
     // `.forgeplan/` dir skeleton exists (config.yaml + subdirs) but no Lance
-    // tables. `LanceStore::open` fails internally and the server keeps
-    // `store = None`, so the FPF call still surfaces the
-    // "Workspace not initialized" error. This pins behaviour for the
-    // "half-initialized workspace" edge case.
-    let (srv, _tmp) = server_with_skeleton_workspace().await;
+    // tables. ADR-016 Phase 3c routes this through `resolve_workspace_read`,
+    // which FINDS the `.forgeplan/` dir then fails to OPEN the store (the
+    // `artifacts` table is absent). The error is the resolver's precise
+    // "store could not be opened" rather than the legacy "Workspace not
+    // initialized" string — a strictly more informative message for the
+    // "half-initialized workspace" edge case. We pin the skeleton root as an
+    // EXPLICIT workspace param so resolution is deterministic (param step wins
+    // over any ambient `FORGEPLAN_WORKSPACE`).
+    let (srv, tmp) = server_with_skeleton_workspace().await;
     let r = srv
-        .forgeplan_fpf_search(params("trust", None, None))
+        .forgeplan_fpf_search(params_ws("trust", None, None, tmp.path()))
         .await
         .unwrap();
-    assert_is_error(&r, "Workspace not initialized");
+    assert_is_error(&r, "store could not be opened");
 }
 
 #[tokio::test]
 async fn fpf_search_skeleton_workspace_semantic_flag_same_gate() {
-    // Semantic flag does not bypass the store gate — same "not initialized"
-    // error whether semantic=true or false. Pins order of checks.
-    let (srv, _tmp) = server_with_skeleton_workspace().await;
+    // Semantic flag does not bypass the workspace-resolution gate — same
+    // "store could not be opened" error whether semantic=true or false. Pins
+    // order of checks. ADR-016 Phase 3c: explicit workspace param for
+    // deterministic resolution (see sibling test for the wording rationale).
+    let (srv, tmp) = server_with_skeleton_workspace().await;
     let r = srv
-        .forgeplan_fpf_search(params("trust", None, Some(true)))
+        .forgeplan_fpf_search(params_ws("trust", None, Some(true), tmp.path()))
         .await
         .unwrap();
-    assert_is_error(&r, "Workspace not initialized");
+    assert_is_error(&r, "store could not be opened");
 }
 
 // ── intentionally deferred (require seeded FPF KB) ──────────────────────────

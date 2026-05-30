@@ -769,3 +769,304 @@ async fn e3_env_var_routes_read() {
 //     no-gate behaviour is exercised by the migrated read handlers in
 //     `server.rs` Phase-1 unit tests (`resolve_workspace_read_*`).
 // ─────────────────────────────────────────────────────────────────────
+
+// ═════════════════════════════════════════════════════════════════════
+// PHASE 3c — handlers that previously called `require_store()` directly
+// (silent-drop of the `workspace` param) are now worktree-aware. These
+// three tests pin one representative per migration category over the REAL
+// JSON-RPC transport. They are PARAM-EXPLICIT (no `FORGEPLAN_WORKSPACE`
+// mutation), so they are deterministic and need no `#[serial]` group.
+//
+// The proof shape is the same in all three: an artifact is written to a
+// LINKED WORKTREE via `forgeplan_new workspace=<wt>`, while the MCP server
+// is rooted at the MAIN repo (a *different* directory whose `.forgeplan/`
+// is empty). The migrated handler is then invoked with `workspace=<wt>`.
+// It can only find the artifact if it resolved the WORKTREE store — if it
+// had fallen back to `require_store()` (the server's default/main store),
+// the artifact would be invisible. So a positive result is a direct
+// regression guard against the silent-drop bug.
+// ═════════════════════════════════════════════════════════════════════
+
+/// Phase 3c · Category A (read, silent-drop fixed) — `forgeplan_list`
+/// honours the `workspace` param.
+///
+/// Before Phase 3c, `forgeplan_list` ignored its `workspace` field and read
+/// `self.require_store()` (the server's startup store). The module note for
+/// P3 above explicitly called this out as the reason P3 could not be proven
+/// over `forgeplan_list`. This test closes that gap: a PRD written only to
+/// the worktree must appear in `forgeplan_list workspace=<wt>`, and must NOT
+/// appear in a `forgeplan_list workspace=<main>` against the (empty) main
+/// store.
+///
+/// Both halves are PARAM-EXPLICIT (worktree vs main) — never param-less — so
+/// the test is deterministic and immune to `FORGEPLAN_WORKSPACE` set by a
+/// concurrent test in this binary (e.g. `e3_env_var_routes_read`). It also
+/// keys the negative assertion on the artifact's globally-unique SLUG, not
+/// its display id (`PRD-001`), which collides across fresh workspaces.
+#[tokio::test]
+async fn phase3c_list_honors_workspace_param() {
+    if !git_available() {
+        eprintln!("SKIP phase3c_list: git not found in PATH");
+        return;
+    }
+    let Some(env) = setup_main_plus_worktree("feat/p3c-list", "p3c-list-main", "p3c-list-wt").await
+    else {
+        return; // skip already logged
+    };
+
+    // Server rooted at MAIN; the worktree is a different dir with its own store.
+    let fixture = McpFixture::new_rooted(env.main_root.clone()).await;
+    let wt_param = env.wt_root.display().to_string();
+    let main_param = env.main_root.display().to_string();
+
+    // Write a PRD ONLY into the worktree.
+    let write = fixture
+        .call_tool_json(
+            "forgeplan_new",
+            serde_json::json!({
+                "kind": "prd",
+                "title": "P3c list-routing",
+                "workspace": wt_param,
+            }),
+        )
+        .await;
+    let write_resp = write.assert_ok();
+    let id = write_resp["id"].as_str().expect("id").to_string();
+    assert!(!id.is_empty(), "created id must be non-empty");
+    // Globally-unique slug (derived from the title) — used for the negative
+    // assertion because the display id (`PRD-001`) collides across the two
+    // fresh workspaces.
+    let slug = write_resp["slug"]
+        .as_str()
+        .or_else(|| write_resp["id_canonical"].as_str())
+        .expect("forgeplan_new must return a slug / id_canonical")
+        .to_string();
+    assert!(!slug.is_empty(), "created slug must be non-empty");
+
+    // ── list scoped to the worktree → MUST include the worktree artifact ──
+    let listed = fixture
+        .call_tool_json(
+            "forgeplan_list",
+            serde_json::json!({ "workspace": wt_param }),
+        )
+        .await;
+    let listed_resp = listed.assert_ok();
+    let body = listed.raw_text.clone();
+    assert!(
+        body.contains(&slug),
+        "Phase 3c list: worktree-scoped `forgeplan_list` must contain the \
+         worktree artifact slug '{slug}'. Full response:\n{}",
+        serde_json::to_string_pretty(listed_resp).unwrap_or(body.clone())
+    );
+
+    // ── list scoped to the MAIN repo (explicit param, empty store) → MUST
+    //    NOT contain the worktree artifact slug. This proves the `workspace`
+    //    param actually switched stores rather than the artifact leaking into
+    //    both. Param-explicit (not param-less) → deterministic, no dependence
+    //    on the ambient `FORGEPLAN_WORKSPACE`. ──
+    let listed_main = fixture
+        .call_tool_json(
+            "forgeplan_list",
+            serde_json::json!({ "workspace": main_param }),
+        )
+        .await;
+    assert!(
+        !listed_main.raw_text.contains(&slug),
+        "Phase 3c list: main-scoped `forgeplan_list` must NOT contain the \
+         worktree-only artifact slug '{slug}' — if it does, the `workspace` \
+         param did not switch stores. Response:\n{}",
+        listed_main.raw_text
+    );
+}
+
+/// Phase 3c · Category B (WRITE, silent-drop fixed) — `forgeplan_score`
+/// honours the `workspace` param via the **Strict** resolver.
+///
+/// `forgeplan_score` MUTATES (it persists the recomputed R_eff back to the
+/// store via `sync_score_target`). Before Phase 3c it resolved the lock
+/// path from the param but pulled the STORE from `require_store()` (the
+/// default workspace) — so a score requested for a worktree-only artifact
+/// either scored the wrong store or returned not-found. After Phase 3c the
+/// store comes from the Strict-resolved worktree, the write lands in the
+/// worktree, and the mutating-tool response carries `resolved_via=param`
+/// pointing inside the worktree. A successful score of an artifact that
+/// exists ONLY in the worktree is the direct proof.
+#[tokio::test]
+async fn phase3c_score_honors_workspace_param_write() {
+    if !git_available() {
+        eprintln!("SKIP phase3c_score: git not found in PATH");
+        return;
+    }
+    let Some(env) =
+        setup_main_plus_worktree("feat/p3c-score", "p3c-score-main", "p3c-score-wt").await
+    else {
+        return;
+    };
+
+    let fixture = McpFixture::new_rooted(env.main_root.clone()).await;
+    let wt_param = env.wt_root.display().to_string();
+
+    // Write a PRD ONLY into the worktree.
+    let write = fixture
+        .call_tool_json(
+            "forgeplan_new",
+            serde_json::json!({
+                "kind": "prd",
+                "title": "P3c score-routing",
+                "workspace": wt_param,
+            }),
+        )
+        .await;
+    let id = write.assert_ok()["id"].as_str().expect("id").to_string();
+
+    // ── score scoped to the worktree → MUST succeed (artifact exists only
+    //    in the worktree store; default/main store does not have it) ──
+    let scored = fixture
+        .call_tool_json(
+            "forgeplan_score",
+            serde_json::json!({ "id": id, "workspace": wt_param }),
+        )
+        .await;
+    let scored_resp = scored.assert_ok();
+
+    // The scored artifact id must round-trip — if score had used the default
+    // store, the artifact would be not-found and `assert_ok` above would have
+    // failed on the error envelope. This is the behavioural proof that the
+    // Strict resolver routed the store to the worktree by param.
+    //
+    // NOTE (product boundary, verified against server.rs): `forgeplan_score`
+    // returns a bare `ScoreResponse` via `hinted_result` and does NOT inject
+    // the `resolved_workspace` / `resolved_via` workspace-trace fields — the
+    // trace is wired into other mutating tools, but score is out of that
+    // contract's scope. So routing is proven BEHAVIOURALLY (id round-trip +
+    // physical placement below), not via trace fields.
+    assert_eq!(
+        scored_resp["id"].as_str().unwrap_or(""),
+        id,
+        "Phase 3c score: scored artifact id must match the worktree artifact \
+         (it exists only in the worktree store; a default-store score would be \
+         not-found). Response:\n{}",
+        scored.raw_text
+    );
+
+    // Physical proof: the artifact .md lives in the worktree, never the main repo.
+    let main_prds = env.main_root.join(".forgeplan").join("prds");
+    let main_md_count = std::fs::read_dir(&main_prds)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(
+        main_md_count,
+        0,
+        "Phase 3c score: NO PRD .md may exist under the main repo {} (found {}) \
+         — the write must have stayed in the worktree",
+        main_prds.display(),
+        main_md_count
+    );
+}
+
+/// Phase 3c · Category C (read, gap closed — new `workspace` field) —
+/// `forgeplan_search` honours the newly-added `workspace` param.
+///
+/// `SearchParams` had NO `workspace` field before Phase 3c, so the handler
+/// could not be worktree-routed at all. Phase 3c added the field and
+/// migrated the handler to `resolve_workspace_read`. This test writes a PRD
+/// with a distinctive title token into the worktree and proves that a
+/// worktree-scoped `forgeplan_search` finds it (while a MAIN-scoped search on
+/// the empty main store does not).
+///
+/// Both searches are PARAM-EXPLICIT (worktree vs main) and the discriminator
+/// is the unique title token — so the test is deterministic and immune to a
+/// concurrent test's `FORGEPLAN_WORKSPACE` (a param-less search would soft-
+/// fall-back to that env workspace and flake).
+#[tokio::test]
+async fn phase3c_search_honors_workspace_param() {
+    if !git_available() {
+        eprintln!("SKIP phase3c_search: git not found in PATH");
+        return;
+    }
+    let Some(env) =
+        setup_main_plus_worktree("feat/p3c-search", "p3c-search-main", "p3c-search-wt").await
+    else {
+        return;
+    };
+
+    let fixture = McpFixture::new_rooted(env.main_root.clone()).await;
+    let wt_param = env.wt_root.display().to_string();
+    let main_param = env.main_root.display().to_string();
+
+    // A distinctive, low-collision token so the search match is unambiguous
+    // and cannot appear in any other test's workspace.
+    let token = "Zylkraphite";
+    let write = fixture
+        .call_tool_json(
+            "forgeplan_new",
+            serde_json::json!({
+                "kind": "prd",
+                "title": format!("P3c search {token}"),
+                "workspace": wt_param,
+            }),
+        )
+        .await;
+    let write_resp = write.assert_ok();
+    let id = write_resp["id"].as_str().expect("id").to_string();
+    let slug = write_resp["slug"]
+        .as_str()
+        .or_else(|| write_resp["id_canonical"].as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // ── search scoped to the worktree → MUST return a non-empty result set
+    //    that references the worktree artifact. We assert on the STRUCTURED
+    //    `results` array (not raw text): the "no hits" hint echoes the query
+    //    token back, so a raw-text token check would false-positive. ──
+    let searched = fixture
+        .call_tool_json(
+            "forgeplan_search",
+            serde_json::json!({ "query": token, "workspace": wt_param }),
+        )
+        .await;
+    let searched_resp = searched.assert_ok();
+    let wt_results = searched_resp["results"]
+        .as_array()
+        .expect("search response must carry a `results` array");
+    assert!(
+        !wt_results.is_empty(),
+        "Phase 3c search: worktree-scoped `forgeplan_search` must return ≥1 \
+         result for the unique token '{token}'. Response:\n{}",
+        serde_json::to_string_pretty(searched_resp).unwrap_or_default()
+    );
+    // And at least one result must reference our artifact (id or slug).
+    let results_blob = serde_json::to_string(wt_results).unwrap_or_default();
+    assert!(
+        results_blob.contains(&id) || (!slug.is_empty() && results_blob.contains(&slug)),
+        "Phase 3c search: worktree-scoped results must reference the artifact \
+         (id '{id}' or slug '{slug}'). Results:\n{results_blob}"
+    );
+
+    // ── MAIN-scoped search (explicit param, empty store) → MUST return ZERO
+    //    results. We assert on the STRUCTURED `results` array length (the
+    //    "no hits" hint text echoes the token, so a raw-text check is wrong).
+    //    Explicit main param removes any ambient `FORGEPLAN_WORKSPACE`
+    //    dependence; the empty result set proves the param switched stores. ──
+    let searched_main = fixture
+        .call_tool_json(
+            "forgeplan_search",
+            serde_json::json!({ "query": token, "workspace": main_param }),
+        )
+        .await;
+    let main_resp = searched_main.assert_ok();
+    let main_results = main_resp["results"]
+        .as_array()
+        .expect("search response must carry a `results` array");
+    assert!(
+        main_results.is_empty(),
+        "Phase 3c search: main-scoped `forgeplan_search` must return ZERO \
+         results for the worktree-only token '{token}' — a non-empty set means \
+         the `workspace` param did not switch stores. Response:\n{}",
+        serde_json::to_string_pretty(main_resp).unwrap_or_default()
+    );
+}

@@ -495,6 +495,13 @@ pub struct DispatchResponse {
 pub struct BlockedParams {
     /// Optional artifact ID to check. If omitted, shows all blocked artifacts.
     pub id: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
