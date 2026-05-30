@@ -457,7 +457,7 @@ impl ForgeplanServer {
             // Reject relative paths — they are ambiguous in multi-worktree
             // pipelines where each agent may have a different CWD.
             if candidate.is_relative() {
-                return Err(McpError::invalid_params(
+                return Err(safe_invalid_params(
                     format!(
                         "workspace path must be absolute (got: `{raw}`). \
                          Pass the absolute path, e.g. `workspace: \"{abs_hint}\"`",
@@ -473,7 +473,7 @@ impl ForgeplanServer {
             match workspace::find_workspace(&candidate) {
                 Some(ws_dir) => {
                     let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                        McpError::invalid_params(
+                        safe_invalid_params(
                             format!(
                                 "workspace `{raw}` found at `{}` but store could not be opened: {e}",
                                 ws_dir.display()
@@ -488,7 +488,7 @@ impl ForgeplanServer {
                     });
                 }
                 None => {
-                    return Err(McpError::invalid_params(
+                    return Err(safe_invalid_params(
                         format!(
                             "no `.forgeplan/` directory found at or above `{raw}`. \
                              Run `forgeplan init` in the target workspace first."
@@ -507,7 +507,7 @@ impl ForgeplanServer {
             match workspace::find_workspace(&candidate) {
                 Some(ws_dir) => {
                     let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                        McpError::invalid_params(
+                        safe_invalid_params(
                             format!(
                                 "FORGEPLAN_WORKSPACE=`{env_val}` found `.forgeplan/` at \
                                  `{}` but store could not be opened: {e}",
@@ -523,7 +523,7 @@ impl ForgeplanServer {
                     });
                 }
                 None => {
-                    return Err(McpError::invalid_params(
+                    return Err(safe_invalid_params(
                         format!(
                             "FORGEPLAN_WORKSPACE=`{env_val}` but no `.forgeplan/` found \
                              at or above that path. Run `forgeplan init` there first."
@@ -562,7 +562,7 @@ impl ForgeplanServer {
         // do we fall through to `current_dir()`.
         if let Some(ws_dir) = self.default_workspace.read().await.clone() {
             let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                McpError::invalid_params(
+                safe_invalid_params(
                     format!(
                         "workspace found at `{}` but store could not be opened: {e}",
                         ws_dir.display()
@@ -593,7 +593,7 @@ impl ForgeplanServer {
         // any subprocess error) we fall through unchanged — backward compat
         // preserved for all single-worktree users (AC-2).
         let cwd = std::env::current_dir().map_err(|e| {
-            McpError::invalid_params(format!("could not determine current directory: {e}"), None)
+            safe_invalid_params(format!("could not determine current directory: {e}"), None)
         })?;
         // LOW-7 (ADR-015 §Rollback): `FORGEPLAN_DISABLE_WORKTREE_DETECT=1`
         // escape hatch. When set truthy, skip the multi-worktree detection gate
@@ -617,7 +617,7 @@ impl ForgeplanServer {
             // workspace root the caller intended.  Falls back to cwd when
             // `git show-toplevel` is unavailable (non-git or missing git).
             let suggested = workspace::suggest_workspace_path(&cwd);
-            return Err(McpError::invalid_params(
+            return Err(safe_invalid_params(
                 format!(
                     "multi-worktree environment detected; the `workspace` parameter is \
                      required. Suggested: workspace=\"{s}\". Or set \
@@ -635,7 +635,7 @@ impl ForgeplanServer {
         match workspace::find_workspace(&cwd) {
             Some(ws_dir) => {
                 let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                    McpError::invalid_params(
+                    safe_invalid_params(
                         format!(
                             "workspace found at `{}` but store could not be opened: {e}",
                             ws_dir.display()
@@ -649,7 +649,7 @@ impl ForgeplanServer {
                     store,
                 })
             }
-            None => Err(McpError::invalid_params(
+            None => Err(safe_invalid_params(
                 "no `.forgeplan/` directory found in current directory or any parent. \
                  Run `forgeplan init` first, or pass an explicit `workspace` parameter."
                     .to_string(),
@@ -884,6 +884,32 @@ fn safe_mcp_error<E: std::fmt::Display>(e: E) -> McpError {
     append_stale_hint_if_needed(&mut sanitised);
 
     McpError::internal_error(sanitised, None)
+}
+
+/// SEC-1 (audit Layer 7): build an `invalid_params` (-32602) error whose human
+/// message AND structured `data` are run through the `$HOME` / scratch-path
+/// sanitizer, so `resolve_workspace_core` error responses (cold-start / bad
+/// param / multi-worktree-detected) don't leak absolute paths or the OS
+/// username into the MCP transcript (which may be logged or forwarded to a
+/// third-party LLM). Mirrors [`safe_mcp_error`] but for the `invalid_params`
+/// code resolution uses, and additionally masks path-bearing fields in `data`
+/// (e.g. `suggested_workspace`).
+fn safe_invalid_params(msg: impl std::fmt::Display, data: Option<serde_json::Value>) -> McpError {
+    let sanitised = forgeplan_core::projection::sanitize_error_chain(&anyhow::anyhow!("{msg}"));
+    let safe_data = data.map(|mut d| {
+        if let Some(obj) = d.as_object_mut() {
+            // Mask any path-bearing string fields the resolver emits.
+            for key in ["suggested_workspace"] {
+                if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+                    let masked =
+                        forgeplan_core::projection::sanitize_error_chain(&anyhow::anyhow!("{v}"));
+                    obj.insert(key.to_string(), serde_json::Value::String(masked));
+                }
+            }
+        }
+        d
+    });
+    McpError::invalid_params(sanitised, safe_data)
 }
 
 /// Variant of [`safe_mcp_error`] for call sites that already hold an
