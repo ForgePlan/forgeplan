@@ -11,7 +11,7 @@ links:
   relation: informs
 - target: ADR-003
   relation: informs
-status: draft
+status: active
 title: MCP worktree-aware projection routing
 ---
 
@@ -309,6 +309,7 @@ And никаких регрессий в user's pipeline (verified empirically)
    - Verdict: E primary, D' as fallback design если cross-worktree convenience use case критичен
 
 > **Next step**: создать RFC с phased implementation + ADR documenting E choice; затем code; затем evidence; затем activate.
+
 
 
 

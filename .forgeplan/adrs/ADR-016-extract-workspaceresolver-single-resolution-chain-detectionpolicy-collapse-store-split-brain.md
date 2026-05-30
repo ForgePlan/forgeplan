@@ -15,7 +15,7 @@ links:
   relation: informs
 - target: PROB-067
   relation: informs
-status: draft
+status: active
 title: Extract WorkspaceResolver — single resolution chain + DetectionPolicy, collapse store split-brain
 ---
 
@@ -117,6 +117,7 @@ Only the **encapsulation shape** differs: the logic is on `ForgeplanServer` rath
 
 ## Reasoning Trace
 ADI on PROB-076 generated H1 (policy enum only), H2 (enum + collapse in-place), H3 (extract WorkspaceResolver). Recommended hybrid H3+H2 (extract + collapse), confidence High — because all read handlers must be touched regardless, the marginal cost of collapsing split-brain is low and removes the state-drift class. Evidence probes: H2 blast radius = 12 prod + ~24 test `workspace_path` sites + 2 `self.store` (bounded, auditable); H3 resolver signature = self-contained (owns cache + default_workspace), no back-ref/lifetime issues.
+
 
 
 

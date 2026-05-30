@@ -7,6 +7,10 @@ links:
   relation: informs
 - target: ADR-016
   relation: informs
+- target: ADR-015
+  relation: informs
+- target: PROB-072
+  relation: informs
 status: draft
 title: 'PRD-078 closure: 7-layer verify (3130 tests) + Layer-7 audit (0 HIGH+) + all real findings fixed'
 ---
@@ -76,6 +80,8 @@ Agent self-reports were explicitly distrusted; every gate below was re-executed 
 - Test command: `env -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY cargo test --workspace`
 - Shared target: `target-prd078-shared` (disk-constrained multi-worktree env, 4 worktrees)
 - Verifier discipline: independent re-run of every gate; agent self-reports distrusted by policy.
+
+
 
 
 

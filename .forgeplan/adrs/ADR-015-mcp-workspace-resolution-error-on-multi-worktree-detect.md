@@ -15,7 +15,7 @@ links:
   relation: informs
 - target: ADR-003
   relation: informs
-status: draft
+status: active
 title: MCP workspace resolution — error on multi-worktree detect
 ---
 
@@ -101,6 +101,17 @@ Cross-refs: PRD-078 (полный design + ACs), RFC-010 (implementation phases)
 | **Single-worktree** (обычный): всё в одном репо | main repo | ❌ не срабатывает (правильно) | n/a — backward compat, никаких изменений |
 
 **Вывод**: anti-silent-fallback гарантия достигается **комбинацией** H1 (agent передаёт param) + Option E (net для случая server-cwd-in-worktree). Полная защита от «agent забыл param» в production-сценарии **невозможна на стороне core** без cooperation от agent runtime — потому что core физически не знает в каком worktree «должен» работать subagent, если subagent сам этого не сообщил. Это корректная decomposition: core даёт механизм, agent framework отвечает за его использование. Документировать в user-facing docs (`docs/operations/MULTI-AGENT.ru.md`): «при multi-worktree пайплайнах каждый subagent ОБЯЗАН передавать `workspace`».
+
+### Read/Write Policy Asymmetry (DetectionPolicy — post-implementation, ADR-016)
+
+Реализация уточнила Option E до **асимметричной политики** (формализована как `DetectionPolicy` enum в ADR-016, единая resolution chain `resolve_workspace_core(param, policy)`):
+
+| Направление | Policy | detection-gate | Обоснование |
+|---|---|---|---|
+| **Write** (mutating: new/update/link/score/activate/…) | `Strict` | multi-worktree detected + `workspace` не передан → **`-32602`**, write не выполняется | Запись не в тот worktree = необратимый silent drift PROB-072 → строгий гейт на опасном направлении |
+| **Read** (get/list/search/graph/health/…) | `SoftFallback` | gate **не срабатывает**; резолв по chain `param → env → default` без error | Чтение из «не того» worktree исправимо повторным вызовом с `workspace=`; падать error'ом на read хуже по UX, чем вернуть данные из default |
+
+Принцип: **строгий гейт ставится только на необратимое направление (write)**. Read best-effort-резолвится и никогда не «падает» из-за detection — это снимает риск, что read-only инструмент (`forgeplan_get`, `health`, `list`) станет недоступен в multi-worktree окружении. Обе ветви используют ОДНУ chain, отличаясь лишь аргументом `policy` — без дублирования (см. ADR-016 §Decision).
 
 ## Invariants
 
@@ -237,7 +248,25 @@ R_eff = min(evidence_scores). Самое слабое звено решения:
 
 ## Implementation Log
 
-<!-- Add wave entries as phases complete -->
+### Activation 2026-05-30 (EVID-140)
+
+ADR-015 + ADR-016 + PRD-078 активированы. Статус acceptance criteria на момент активации (источник: EVID-140 — независимая 7-слойная проверка + Layer-7 adversarial аудит):
+
+- **FR-001..007**: ✅ реализованы (resolution chain, `workspace` param, lazy env, detection, `-32602` gate, per-workspace lock, `resolved_via`).
+- **AC-1** (worktree write → param): ✅ MET — `worktree_routing_e2e.rs`.
+- **AC-2** (backward-compat cwd): ✅ MET — `worktree_read_e2e` P2 + 3130-test suite.
+- **AC-3** (multi-worktree → `-32602` + suggestion): ✅ MET — `worktree_error_e2e.rs`.
+- **AC-4** (CI strict via env): ✅ MET — `worktree_read_e2e` E3.
+- **AC-5 / SC-4** (deprecate user workaround): ⏳ DEFERRED — empirical на ветке пользователя, post-activate.
+- **NFR-002 / SC-3** (regression 3084 → ≥): ✅ MET — **3130 passed, 0 failed** (CI-like, ambient API-keys unset).
+- **NFR-003 / NFR-004** (actionable error + `resolved_via`): ✅ MET.
+- **NFR-001 / SC-2** (latency <5ms p95): ⚠️ **DEFERRED to PROB-073** — bench не создан (`crates/forgeplan-core/benches/workspace_detection.rs` отсутствует). Accept-with-justification: detection = 1-2 `git rev-parse` subprocess на mutating-вызов при отсутствии `workspace`; ожидаемо <5ms, но не измерено. Pre-condition «Latency bench infra ready» оставлена `[ ]` сознательно.
+
+**Audit**: Layer-7 workflow (25 агентов, 10 confirmed / 10 refuted, **0 confirmed HIGH+**). Все реальные находки починены до активации: ARCH-3 (submodule false-positive — git-dir≠common-dir семантика + 2 edge-теста), 4 config-axis leaks (score/fpf_check/estimate/fpf_rules), SEC-1 (`$HOME` sanitizer на `-32602`), ARCH-2 (ADR-016 reconciliation). Detail: EVID-140, EVID-139.
+
+**Weakest-link update**: edge-case coverage добавлен (submodule + symlink regression в `detect_multi_worktree`) → detection reliability поднята с ~0.6 к целевым 0.85+ (см. §Weakest Link). Один остаточный ограничитель R_eff — зависимость ADR-003 (фундаментальный инвариант), не собственное доказательство решения.
+
+<!-- Add further wave entries as phases complete -->
 
 ## Related Artifacts
 
@@ -249,6 +278,9 @@ R_eff = min(evidence_scores). Самое слабое звено решения:
 | PROB-067 | Problem | informs (per-workspace lock refactor — Phase 3) |
 | PROB-073 | Problem | informs (latency budget shared, bench evidence cross-link) |
 | ADR-003 | ADR | preserves (file-first invariant сохраняется) |
+
+
+
 
 
 
