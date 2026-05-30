@@ -94,16 +94,9 @@ pub(crate) enum DetectionPolicy {
     /// Mutating tools: cold-start multi-worktree → structured `-32602` error.
     Strict,
     /// Read-only tools: cold-start multi-worktree → fall through to cwd
-    /// resolution (no error). Phase 3 (W3) routes read handlers here.
-    ///
-    /// `#[allow(dead_code)]` is a deliberate Phase-1 marker: the only
-    /// non-test constructor of this variant is `resolve_workspace_read`,
-    /// which Phase 3 wires into the 21 read handlers. Until then it is
-    /// exercised solely by `resolve_workspace_tests` (`#[cfg(test)]`), so the
-    /// non-test lib build sees the variant as unconstructed. Remove this
-    /// `allow` in Phase 3 when the first read handler calls
-    /// `resolve_workspace_read`.
-    #[allow(dead_code)]
+    /// resolution (no error). ADR-016 Phase 3 routes all 21 read handlers
+    /// here via `resolve_workspace_read`, so the variant now has live non-test
+    /// constructors and the Phase-1 `#[allow(dead_code)]` marker is removed.
     SoftFallback,
 }
 
@@ -363,8 +356,14 @@ impl ForgeplanServer {
 
     /// ADR-016 Phase 2: re-pointed from the removed `self.workspace_path` to
     /// `default_workspace` (the path `forgeplan_init` / `new()` established).
-    /// Call-sites are unchanged (Phase 3 migrates the ~21 read handlers); only
-    /// the field this reads from moved.
+    ///
+    /// ADR-016 Phase 3: all 21 read handlers that used to call this now route
+    /// through [`Self::resolve_workspace_read`] (SoftFallback, worktree-aware),
+    /// so this accessor has no remaining call-sites. It is retained (body
+    /// untouched) as the documented sibling of [`Self::require_store`] for the
+    /// default workspace and is marked `#[allow(dead_code)]` accordingly — the
+    /// single resolution chain is the only sanctioned path (ADR-016 AI Guidance).
+    #[allow(dead_code)]
     async fn require_workspace(&self) -> Result<PathBuf, String> {
         self.default_workspace
             .read()
@@ -403,16 +402,10 @@ impl ForgeplanServer {
     /// Guardian-loop friction (PROB-072) on the read side (ADR-016, closes
     /// audit HIGH-2).
     ///
-    /// Phase 3 (W3) migrates the 21 read handlers to call this. For ADR-016
-    /// Phase 1 it exists and is unit-tested; no handler is re-pointed yet.
-    ///
-    /// `#[allow(dead_code)]` is a deliberate Phase-1 marker: this wrapper is
-    /// the public surface Phase 3 consumes (the 21 read handlers switch from
-    /// `require_workspace()` to `resolve_workspace_read`). Until that wiring
-    /// lands, the only callers are `resolve_workspace_tests` (`#[cfg(test)]`),
-    /// so the non-test lib build flags it unused. Remove this `allow` in
-    /// Phase 3 alongside the first handler migration.
-    #[allow(dead_code)]
+    /// ADR-016 Phase 3 wired this into all 21 read handlers (the read tools
+    /// switched from `require_workspace()` to `resolve_workspace_read`), so the
+    /// Phase-1 `#[allow(dead_code)]` marker has been removed — this wrapper now
+    /// has live non-test callers.
     pub(crate) async fn resolve_workspace_read(
         &self,
         param_workspace: Option<&str>,
@@ -1383,6 +1376,13 @@ struct ActivityQueryParams {
     /// Cap result set (most recent N). Default 500, max 5000.
     #[serde(default)]
     limit: Option<u32>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1390,6 +1390,13 @@ struct ActivityStatsParams {
     /// Time window in hours. Default 24.
     #[serde(default)]
     since_hours: Option<u32>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1472,12 +1479,26 @@ struct ValidateParams {
     /// Artifact ID to validate (validates all if omitted)
     #[serde(default)]
     id: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ScoreParams {
     /// Artifact ID to score
     id: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1549,6 +1570,13 @@ struct AnomaliesParams {
     /// timestamp. Useful for diff-style polling.
     #[serde(default)]
     since: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1557,6 +1585,13 @@ struct HypothesisStatusParams {
     /// When `None`, returns the workspace-wide state distribution.
     #[serde(default)]
     id: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1565,13 +1600,36 @@ struct CoverageBusinessParams {
     /// Domain Model artifact provides the `expected` counts; this
     /// tool counts what's actually present in the workspace.
     domain_model_id: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct ContradictionsParams {}
+struct ContradictionsParams {
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct OrphansParams {}
+struct OrphansParams {
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
+}
 
 fn default_relation() -> RelationKind {
     RelationKind::Informs
@@ -1581,6 +1639,13 @@ fn default_relation() -> RelationKind {
 struct GetParams {
     /// Artifact ID to read
     id: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1622,6 +1687,13 @@ struct DeleteParams {
 struct RouteParams {
     /// Task description in natural language
     description: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1637,6 +1709,13 @@ struct GuardParams {
     /// `target_session_phase`.
     #[serde(alias = "target_phase")]
     target_session_phase: SessionPhaseKind,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1727,6 +1806,13 @@ impl From<PhaseArg> for forgeplan_core::phase::Phase {
 struct PhaseReadParams {
     /// Artifact ID whose phase state to read
     id: String,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1888,6 +1974,13 @@ struct ExportParams {
     /// Optional output file path. If omitted, returns JSON directly.
     #[serde(default)]
     output: Option<String>,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2596,14 +2689,15 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_status(&self) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: read tools resolve via SoftFallback (worktree-aware,
+        // no `-32602` gate, no lock). Paramless tool → `None`. Reuse the single
+        // resolved store rather than a second `require_store()` lookup.
+        let resolved = match self.resolve_workspace_read(None).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         let config = workspace::load_config(&ws)
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
@@ -2664,14 +2758,14 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ValidateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). Reuse the single resolved store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         let all_records = store
             .list_records(None)
@@ -2769,7 +2863,15 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ScoreParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws_opt = self.require_workspace().await.ok();
+        // ADR-016 Phase 3: SoftFallback read resolution for the optional lock
+        // path. `ws_opt` stays `Option<PathBuf>` so the pre-existing score-write
+        // lock logic below is byte-identical; the store keeps its own lookup
+        // because `ws_opt` is best-effort (`.ok()`).
+        let ws_opt = self
+            .resolve_workspace_read(p.workspace.as_deref())
+            .await
+            .ok()
+            .map(|r| r.workspace_dir);
         let store = match self.require_store().await {
             Ok(s) => s,
             Err(e) => return Ok(err_result(&e)),
@@ -3341,14 +3443,16 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<GetParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock) — this is the Journey-1 read-back path (subagent in worktree
+        // reads with workspace=X what it wrote with workspace=X). Reuse the
+        // single resolved store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // PROB-060 / SPEC-005 / ADR-012 — Phase 2.4 (CD-2 binding).
         //
@@ -3690,8 +3794,11 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<RouteParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Try Level 1 (LLM) if workspace has LLM config, with FPF context if available
-        let result = if let Ok(ws) = self.require_workspace().await {
+        // Try Level 1 (LLM) if workspace has LLM config, with FPF context if available.
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). The nested `require_store()` for FPF context is left as-is.
+        let result = if let Ok(r) = self.resolve_workspace_read(p.workspace.as_deref()).await {
+            let ws = r.workspace_dir;
             if let Ok(config) = workspace::load_config(&ws) {
                 if let Some(llm_cfg) = config.llm {
                     let llm_cfg = llm_cfg.with_env_overrides();
@@ -4196,14 +4303,14 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_health(&self) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). Paramless tool → `None`. Reuse the single resolved store.
+        let resolved = match self.resolve_workspace_read(None).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // PROB-051 L-H3 + P-H1 + P-H2 closure: route through
         // `health_report_with_phase` so (a) `list_records` runs once
@@ -4369,14 +4476,15 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<AnomaliesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no
+        // `-32602` gate). The journal-write lock below keys on the resolved
+        // `ws`, so per-workspace isolation is preserved. Reuse the single store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
         // Audit-r3 M3 closure: the tool is read-only for the artifact
         // store but READS+WRITES the anomalies journal at
@@ -4476,14 +4584,14 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<HypothesisStatusParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate).
+        // The snapshot-read lock below keys on the resolved `ws`. Reuse the store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
         // Audit-r5 SEC-M2: acquire the lock only for the snapshot read,
         // then drop it before the pure-Rust report builder runs. LanceDB
         // list_records is already snapshot-consistent — holding the
@@ -4533,14 +4641,14 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<CoverageBusinessParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). Reuse the single resolved store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
         // Audit-r4 SEC-H1: sanitize_for_hint on every user-controlled string
         // before splicing it into the response body / next_action. Prior
         // revision left `p.domain_model_id` and `other.kind` raw — that's a
@@ -4603,16 +4711,16 @@ impl ForgeplanServer {
     )]
     async fn forgeplan_contradictions(
         &self,
-        Parameters(_p): Parameters<ContradictionsParams>,
+        Parameters(p): Parameters<ContradictionsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate).
+        // The snapshot-read lock below keys on the resolved `ws`. Reuse the store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
         // Audit-r5 SEC-M2: lock only for the snapshot read; the
         // O(N²) Jaccard pass (capped by SEC-M1) runs lock-free.
         let all_records = {
@@ -4651,16 +4759,16 @@ impl ForgeplanServer {
     )]
     async fn forgeplan_orphans(
         &self,
-        Parameters(_p): Parameters<OrphansParams>,
+        Parameters(p): Parameters<OrphansParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate).
+        // The snapshot-read lock below keys on the resolved `ws`. Reuse the store.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
         // Audit-r5 SEC-M2: lock only for the snapshot read.
         let (all_records, relations) = {
             let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
@@ -6079,9 +6187,12 @@ impl ForgeplanServer {
         });
 
         if let Some(ref output_path) = p.output {
-            let ws = match self.require_workspace().await {
-                Ok(ws) => ws,
-                Err(e) => return Ok(err_result(&e)),
+            // ADR-016 Phase 3: SoftFallback read resolution for the worktree the
+            // export file lands in. The store was already resolved above; we only
+            // need the resolved `ws` path here, so the resolved store is dropped.
+            let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+                Ok(r) => r.workspace_dir,
+                Err(e) => return Ok(safe_err_result("", e)),
             };
             let full_path = if std::path::Path::new(output_path).is_absolute() {
                 std::path::PathBuf::from(output_path)
@@ -6767,15 +6878,14 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_drift(&self) -> Result<CallToolResult, McpError> {
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). Paramless tool → `None`. One resolve yields both store and ws.
+        let resolved = match self.resolve_workspace_read(None).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-
-        let ws = match self.require_workspace().await {
-            Ok(p) => p,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let store = resolved.store;
+        let ws = resolved.workspace_dir;
         let workspace_root = ws.parent().unwrap_or(&ws).to_path_buf();
 
         let reports = forgeplan_core::drift::check_drift(&store, &workspace_root)
@@ -6825,15 +6935,14 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_coverage(&self) -> Result<CallToolResult, McpError> {
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). Paramless tool → `None`. One resolve yields both store and ws.
+        let resolved = match self.resolve_workspace_read(None).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-
-        let ws = match self.require_workspace().await {
-            Ok(p) => p,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let store = resolved.store;
+        let ws = resolved.workspace_dir;
         let project_root = ws.parent().unwrap_or(&ws).to_path_buf();
 
         let mut modules = forgeplan_core::coverage::scan_modules(&project_root)
@@ -7061,9 +7170,11 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_session(&self) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(p) => p,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). Paramless tool → `None`. No store needed by this handler.
+        let ws = match self.resolve_workspace_read(None).await {
+            Ok(r) => r.workspace_dir,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let session = forgeplan_core::session::SessionState::load(&ws);
@@ -7095,9 +7206,11 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<GuardParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(p) => p,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). No store needed by this handler.
+        let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r.workspace_dir,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let session = forgeplan_core::session::SessionState::load(&ws);
@@ -7442,9 +7555,11 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ActivityQueryParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). No store needed by this handler.
+        let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r.workspace_dir,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let since = p.since_hours.unwrap_or(24).clamp(1, 720);
@@ -7523,9 +7638,11 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ActivityStatsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). No store needed by this handler.
+        let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r.workspace_dir,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let since = p.since_hours.unwrap_or(24).clamp(1, 720);
@@ -7593,9 +7710,11 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<PhaseReadParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). No store needed by this handler.
+        let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r.workspace_dir,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
         let safe_id = sanitize_for_hint(&p.id);
 
@@ -7928,16 +8047,16 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ReleaseNotesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(w) => w,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
+        // no lock). One resolve yields both store and ws.
+        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match self.require_store().await {
-            Ok(s) => s,
-            Err(e) => return Ok(err_result(&e)),
-        };
+        let ws = resolved.workspace_dir;
+        let store = resolved.store;
 
-        // `require_workspace` returns the `.forgeplan/` dir; git operations
+        // The resolved `ws` is the `.forgeplan/` dir; git operations
         // need the repository root (its parent).
         let repo_root = match ws.parent() {
             Some(p) => p.to_path_buf(),
@@ -7992,11 +8111,15 @@ impl ForgeplanServer {
     // (counted in `skipped_count`) rather than corruption.
     async fn forgeplan_claims(
         &self,
-        Parameters(_p): Parameters<ClaimsListParams>,
+        Parameters(p): Parameters<ClaimsListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let ws = match self.require_workspace().await {
-            Ok(ws) => ws,
-            Err(e) => return Ok(err_result(&e)),
+        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no
+        // `-32602` gate, no lock — this read is polled at ~1 Hz, never the
+        // exclusive workspace lock). This handler uses a ClaimStore, not the
+        // LanceStore, so no resolved-store reuse applies.
+        let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+            Ok(r) => r.workspace_dir,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         let store = forgeplan_core::claim::ClaimStore::new(&ws);
@@ -11640,6 +11763,7 @@ mod claim_mcp_tests {
         let r = server
             .forgeplan_get(Parameters(GetParams {
                 id: "PRD-991".into(),
+                workspace: None,
             }))
             .await
             .unwrap();
@@ -11945,7 +12069,10 @@ mod claim_mcp_tests {
             .unwrap();
 
         let result = server
-            .forgeplan_claims(Parameters(ClaimsListParams { active: true }))
+            .forgeplan_claims(Parameters(ClaimsListParams {
+                active: true,
+                workspace: None,
+            }))
             .await
             .unwrap();
         assert_ne!(result.is_error, Some(true));
@@ -11998,6 +12125,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_new_response_includes_slug() {
         // CD-2 binding: NewArtifactResponse must carry the full identity
         // triple — slug + predicted + assigned + id_canonical + id_display
@@ -12057,6 +12185,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_get_returns_identity_fields() {
         // forgeplan_get round-trips the identity triple by re-parsing the
         // persisted frontmatter. Asserts the augment-on-create path lands
@@ -12078,7 +12207,10 @@ mod prob060_response_shape_tests {
         let expected_display = new_body["id_display"].as_str().unwrap().to_string();
 
         let get_resp = server
-            .forgeplan_get(Parameters(GetParams { id: id.clone() }))
+            .forgeplan_get(Parameters(GetParams {
+                id: id.clone(),
+                workspace: None,
+            }))
             .await
             .unwrap();
         let get_body = body_value(&get_resp);
@@ -12103,6 +12235,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_get_accepts_slug_or_display_id() {
         // The existing resolver wires both forms (display + slug) for the
         // 6 commands (Phase 1.5b). MCP `forgeplan_get` uses LanceStore::get_record
@@ -12128,6 +12261,7 @@ mod prob060_response_shape_tests {
         let by_display = server
             .forgeplan_get(Parameters(GetParams {
                 id: id_display.clone(),
+                workspace: None,
             }))
             .await
             .unwrap();
@@ -12135,7 +12269,10 @@ mod prob060_response_shape_tests {
 
         // 2. Look up via slug form.
         let by_slug = server
-            .forgeplan_get(Parameters(GetParams { id: slug.clone() }))
+            .forgeplan_get(Parameters(GetParams {
+                id: slug.clone(),
+                workspace: None,
+            }))
             .await
             .unwrap();
         let by_slug_body = body_value(&by_slug);
@@ -12152,6 +12289,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_list_returns_slug_per_item() {
         // CD-2: ListResponse.artifacts items must carry the identity triple
         // so an agent inspecting the list can pick canonical refs without
@@ -12212,6 +12350,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_search_returns_slug_field() {
         // CD-2: SearchResultDto exposes the identity triple in both keyword
         // and smart paths. We exercise the smart path (default mode) since
@@ -12290,6 +12429,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn legacy_artifact_without_slug_falls_back_gracefully() {
         // Backward compat: artifacts persisted before Phase 1 augmentation
         // have no `slug` field in their body. The response must still
@@ -12336,6 +12476,7 @@ mod prob060_response_shape_tests {
         let r = server
             .forgeplan_get(Parameters(GetParams {
                 id: "PRD-018".into(),
+                workspace: None,
             }))
             .await
             .unwrap();
@@ -12408,6 +12549,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_get_hint_uses_slug_pre_merge() {
         // CRIT-4: MCP `forgeplan_get` was using `r.id` for `_next_action`.
         // Verify ref_form-aware: pre-merge artifact → slug in hint.
@@ -12434,7 +12576,10 @@ mod prob060_response_shape_tests {
         // Read via slug — resolver maps to canonical id, hint should
         // surface the slug (not the display id).
         let r = server
-            .forgeplan_get(Parameters(GetParams { id: slug.clone() }))
+            .forgeplan_get(Parameters(GetParams {
+                id: slug.clone(),
+                workspace: None,
+            }))
             .await
             .unwrap();
         let body = body_value(&r);
@@ -12452,6 +12597,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_get_hint_uses_display_id_post_merge() {
         // Counter-test: post-merge artifact (assigned_number set) routes
         // through fallback → display id wins.
@@ -12472,6 +12618,7 @@ mod prob060_response_shape_tests {
         let r = server
             .forgeplan_get(Parameters(GetParams {
                 id: display_id.clone(),
+                workspace: None,
             }))
             .await
             .unwrap();
@@ -12486,6 +12633,7 @@ mod prob060_response_shape_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
     async fn forgeplan_update_hint_uses_slug_pre_merge() {
         // CRIT-4: MCP `forgeplan_update` was using `updated.id` for
         // `_next_action`. Verify slug propagation pre-merge.
@@ -13706,5 +13854,77 @@ mod resolve_workspace_tests {
         let _ = key; // suppress unused warning
         // The test verifies cache emptiness on construction (above) and that
         // the field exists and is readable — structural verification.
+    }
+
+    /// ADR-016 Phase 3 (Journey-1 read-back): the read resolution path a read
+    /// handler now uses (`resolve_workspace_read`) honours an explicit
+    /// `workspace` param and routes to THAT workspace — even when the server's
+    /// own `default_workspace` (its startup CWD, established by `new()`) points
+    /// at a DIFFERENT directory. This is the exact contract Phase 3 closes: a
+    /// subagent that wrote a PRD with `workspace=X` reads it back with
+    /// `workspace=X` and lands in X's `.forgeplan/`, not the main repo's.
+    ///
+    /// The full read handler can't be booted in a unit test without a seeded
+    /// Lance index, so we exercise `resolve_workspace_read` directly (the
+    /// orchestrator adds an e2e read-after-write separately). No env var is set
+    /// — this proves the param branch wins over the server default with no env
+    /// interference.
+    #[tokio::test]
+    #[serial(env_forgeplan_workspace)]
+    async fn read_handler_honors_workspace_param() {
+        // Server default = workspace A (its startup CWD).
+        let default_ws = mk_fake_workspace();
+        // The explicit param points at a DIFFERENT workspace B (the worktree).
+        let param_ws = mk_fake_workspace();
+        let server = make_server(default_ws.path()).await;
+
+        // Ensure the env var cannot influence resolution — the explicit param
+        // must win on its own.
+        // SAFETY: serialised with `#[serial(env_forgeplan_workspace)]`; no
+        // concurrent thread in this serial group touches FORGEPLAN_WORKSPACE.
+        unsafe { std::env::remove_var("FORGEPLAN_WORKSPACE") };
+
+        let result = server
+            .resolve_workspace_read(Some(param_ws.path().to_str().unwrap()))
+            .await;
+
+        match result {
+            Ok(rw) => {
+                assert_eq!(
+                    rw.resolved_via,
+                    ResolutionSource::Param,
+                    "read handler: explicit workspace param must resolve via Param, got {:?}",
+                    rw.resolved_via.as_str()
+                );
+                assert!(
+                    rw.workspace_dir.starts_with(param_ws.path()),
+                    "read handler: resolved dir {:?} must be inside the param workspace {:?} \
+                     (NOT the server default {:?})",
+                    rw.workspace_dir,
+                    param_ws.path(),
+                    default_ws.path(),
+                );
+                assert!(
+                    !rw.workspace_dir.starts_with(default_ws.path()),
+                    "read handler: resolved dir {:?} must NOT fall back to the server \
+                     default workspace {:?} when an explicit param is supplied",
+                    rw.workspace_dir,
+                    default_ws.path(),
+                );
+            }
+            Err(e) => {
+                // Store open may fail for an uninitialised Lance index; that is
+                // acceptable as long as the resolution path (param B, not the
+                // default A) was the one attempted. A `.forgeplan/`-not-found
+                // error for the param path would be a real failure.
+                let msg = e.message.clone();
+                assert!(
+                    msg.contains("store could not be opened")
+                        || msg.contains("lance")
+                        || msg.contains("Lance"),
+                    "read handler: unexpected error (not store-open): {msg}"
+                );
+            }
+        }
     }
 }

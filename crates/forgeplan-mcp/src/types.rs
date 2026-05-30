@@ -321,6 +321,13 @@ pub struct ClaimsListParams {
     /// Reserved for future filters; currently always returns only live claims.
     #[serde(default)]
     pub active: bool,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -335,6 +342,13 @@ pub struct ReleaseNotesParams {
     /// evidence). Default: false.
     #[serde(default)]
     pub draft: bool,
+    /// Optional explicit workspace directory for this call. When set, the MCP
+    /// server resolves the `.forgeplan/` projection from this path instead of
+    /// the server's startup CWD. Use this when the calling agent is running
+    /// in a git worktree separate from the MCP server's launch directory.
+    /// PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
