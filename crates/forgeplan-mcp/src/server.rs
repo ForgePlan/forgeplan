@@ -592,9 +592,16 @@ impl ForgeplanServer {
         // When detection returns `false` (plain repo, no git, non-git dir, or
         // any subprocess error) we fall through unchanged — backward compat
         // preserved for all single-worktree users (AC-2).
-        let cwd = std::env::current_dir().map_err(|e| {
-            safe_invalid_params(format!("could not determine current directory: {e}"), None)
-        })?;
+        // Use the server's startup directory (frozen at construction in `new`,
+        // per the PROB-072 "cwd frozen at startup" model) rather than a fresh
+        // `std::env::current_dir()`. Re-reading the live process cwd made the
+        // cold-start detection gate depend on WHERE the harness runs — green in a
+        // dev worktree (process cwd is itself a linked worktree) but wrong on CI
+        // (cwd is the main checkout), silently bypassing the gate. In production
+        // `workspace_root` == the launch cwd (main.rs passes `current_dir()` to
+        // `new`), so behaviour is unchanged; this only makes cold-start detection
+        // deterministic w.r.t. the server's own root.
+        let cwd = self.workspace_root.clone();
         // LOW-7 (ADR-015 §Rollback): `FORGEPLAN_DISABLE_WORKTREE_DETECT=1`
         // escape hatch. When set truthy, skip the multi-worktree detection gate
         // entirely and fall through to plain cwd resolution (as if single-
