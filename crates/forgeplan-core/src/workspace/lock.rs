@@ -324,4 +324,105 @@ mod tests {
         let still = std::fs::read_to_string(&victim).unwrap();
         assert_eq!(still, "sensitive");
     }
+
+    // ── PRD-078 Phase 3: multi-worktree lock isolation (PROB-067) ──────
+
+    /// PROB-067 surface: concurrent writes to DIFFERENT worktrees must use
+    /// INDEPENDENT lock files and therefore NOT serialise each other.
+    ///
+    /// Two tasks each hold the lock for their respective workspace for
+    /// `hold_ms` milliseconds and run concurrently. If the locks were shared
+    /// (same lock file), the total elapsed time would be ≥ 2×hold_ms (serial).
+    /// With independent locks the elapsed time should be close to 1×hold_ms
+    /// (parallel). We use a generous upper bound (2×hold_ms – 20ms slack)
+    /// to avoid flakiness on busy CI runners.
+    #[tokio::test]
+    async fn concurrent_writes_to_different_worktrees_use_independent_locks() {
+        let tmp1 = TempDir::new().unwrap();
+        let tmp2 = TempDir::new().unwrap();
+        let ws1 = tmp1.path().join(".forgeplan");
+        let ws2 = tmp2.path().join(".forgeplan");
+
+        let hold_ms = 60u64;
+
+        let ws1_c = ws1.clone();
+        let ws2_c = ws2.clone();
+
+        let started = tokio::time::Instant::now();
+
+        // Spawn both tasks simultaneously — each acquires its own workspace lock.
+        let t1 = tokio::spawn(async move {
+            let _g = acquire_workspace_lock(&ws1_c).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+        });
+        let t2 = tokio::spawn(async move {
+            let _g = acquire_workspace_lock(&ws2_c).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+        });
+
+        t1.await.unwrap();
+        t2.await.unwrap();
+
+        let elapsed = started.elapsed();
+
+        // If the two locks were independent (correct behaviour), both tasks ran
+        // in parallel, so total time ≈ hold_ms — well under 2×hold_ms.
+        // If they were accidentally serialised (regression), total ≥ 2×hold_ms.
+        let serial_lower_bound = Duration::from_millis(hold_ms * 2 - 20);
+        assert!(
+            elapsed < serial_lower_bound,
+            "independent worktree locks must run in parallel; \
+             elapsed {elapsed:?} ≥ serial lower bound {serial_lower_bound:?} \
+             — locks are being shared (PROB-067 regression)"
+        );
+
+        // Also confirm the lock files are at different paths.
+        assert_eq!(lock_path(&ws1), ws1.join(".lock"));
+        assert_eq!(lock_path(&ws2), ws2.join(".lock"));
+        assert_ne!(lock_path(&ws1), lock_path(&ws2));
+    }
+
+    /// Regression: same workspace still serialises writes (the existing
+    /// `concurrent_acquirers_serialize_and_total_time` test covers this but
+    /// we add an explicit named test that documents the PROB-067 invariant).
+    #[tokio::test]
+    async fn same_workspace_still_serialises() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+
+        let hold_ms = 25u64;
+        let n = 3usize;
+        let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let started = tokio::time::Instant::now();
+        let mut handles = Vec::new();
+        for _ in 0..n {
+            let ws = ws.clone();
+            let in_flight = in_flight.clone();
+            let max_in_flight = max_in_flight.clone();
+            handles.push(tokio::spawn(async move {
+                let _g = acquire_workspace_lock(&ws).await.unwrap();
+                let current = in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                max_in_flight.fetch_max(current, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+                in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            max_in_flight.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "same workspace: at most 1 concurrent holder"
+        );
+        let serial_lb = Duration::from_millis(hold_ms * n as u64 - 10);
+        assert!(
+            elapsed >= serial_lb,
+            "same workspace: elapsed {elapsed:?} < serial lb {serial_lb:?} — serialization broken"
+        );
+    }
 }

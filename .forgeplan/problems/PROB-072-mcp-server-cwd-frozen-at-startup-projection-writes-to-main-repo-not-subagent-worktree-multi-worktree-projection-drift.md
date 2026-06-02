@@ -7,7 +7,7 @@ links:
   relation: contradicts
 - target: PROB-067
   relation: informs
-status: draft
+status: deprecated
 title: MCP server cwd frozen at startup — projection writes to main repo, not subagent worktree (multi-worktree projection drift)
 ---
 
@@ -109,6 +109,14 @@ correct fix is in MCP server — it should know about worktrees.
 |----------|----------|
 | ADR-003 | violates (file-first invariant breaks when projection lands in wrong tree) |
 | PROB-067 | informs (forgeplan_new ID counter race in parallel worktrees — same surface) |
+
+
+
+
+
+
+
+
 
 
 

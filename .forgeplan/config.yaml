@@ -12,12 +12,12 @@ llm:
   # temperature: 0.3
   # reason_temperature: 0.3
   provider: gemini
-  model: gemini-3-flash-preview
+  model: gemini-3.1-pro-preview
   api_key_env: GEMINI_API_KEY
   # base_url: https://...    # override for custom endpoints
-  # max_tokens: 4096
-  # temperature: 0.7
-  # reason_temperature: 0.3  # lower temp for structured ADI output
+  max_tokens: 20096
+  temperature: 0.7
+  reason_temperature: 0.3 # lower temp for structured ADI output
 # ─── Embedding model (uncomment to configure) ────────────────────────
 # embedding:
 #   model: bge-m3             # bge-m3 | bge-small-en | multilingual-e5-small

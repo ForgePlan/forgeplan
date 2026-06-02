@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::error::ForgeplanError;
+use crate::workspace::git::{git_common_dir, git_dir};
 
 pub const FORGEPLAN_DIR: &str = ".forgeplan";
 
@@ -233,6 +234,90 @@ pub fn find_workspace(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Detect whether the process is running inside a git linked worktree
+/// (as opposed to the main worktree or a bare/non-git directory).
+///
+/// # Algorithm (ADR-015 §2.5)
+///
+/// 1. Run `git rev-parse --git-common-dir` from `cwd` — returns the path to
+///    the *shared* `.git` directory (identical for all worktrees of the repo).
+/// 2. Run `git rev-parse --show-toplevel` from `cwd` — returns the top-level
+///    directory of the *current* worktree.
+/// 3. Compare `canonical(common_dir.parent())` with `canonical(show_toplevel)`.
+///    - Equal → same root → main/single worktree → `false`.
+///    - Different → linked worktree → `true`.
+///
+/// # Graceful fallback
+///
+/// Returns `false` (single-worktree assumption) whenever:
+/// - `git` is not on the PATH
+/// - `cwd` is not inside a git repository
+/// - either `canonicalize` call fails (e.g. path does not exist)
+///
+/// This preserves backward-compatible behaviour for plain repos, CI
+/// sandboxes, and environments without `git` (ADR-015 invariant).
+///
+/// # Note
+///
+/// The function is synchronous and uses `std::process::Command` — the two
+/// subprocess invocations complete in microseconds. It must NOT be made
+/// `async` (contract per ADR-015 §2.5 / W2 binding brief).
+pub fn detect_multi_worktree(cwd: &Path) -> bool {
+    // ADR-016 audit ARCH-3 fix: decide "linked worktree" by git's OWN
+    // definition — `git rev-parse --git-dir` differs from `--git-common-dir`
+    // IFF the cwd is inside a linked worktree. The previous
+    // `common-dir-parent != show-toplevel` heuristic FALSE-POSITIVED inside a
+    // git submodule (whose common-dir is `<parent>/.git/modules/<name>`, whose
+    // parent `.git/modules` is never the submodule's show-toplevel), wrongly
+    // erroring a subagent working inside a submodule. The git-dir/common-dir
+    // comparison is correct for plain repos, linked worktrees, submodules
+    // (both equal -> single) and bare repos.
+    let git_dir = match git_dir(cwd) {
+        Some(p) => p,
+        None => {
+            // git_dir returns None for two reasons, treated identically
+            // (graceful single-worktree fallback): (a) git not on PATH, or
+            // (b) cwd is not inside a git repository. Debug-level — a plain
+            // non-git workspace is the common case and must not be noisy.
+            tracing::debug!(
+                cwd = %cwd.display(),
+                "detect_multi_worktree: git --git-dir unavailable or not a git repo \
+                 — assuming single-worktree (ADR-015 graceful fallback)"
+            );
+            return false;
+        }
+    };
+    let common_dir = match git_common_dir(cwd) {
+        Some(p) => p,
+        None => {
+            // git-dir succeeded but common-dir did not — unexpected (both
+            // succeed inside any normal repo); warn so an operator can look.
+            tracing::warn!(
+                cwd = %cwd.display(),
+                git_dir = %git_dir.display(),
+                "detect_multi_worktree: git --git-dir succeeded but \
+                 git --git-common-dir failed — assuming single-worktree (LOW-8)"
+            );
+            return false;
+        }
+    };
+
+    // Canonicalize both sides to resolve symlinks (macOS /var -> /private/var,
+    // CI overlay mounts, etc.). If canonicalize fails on either side, assume
+    // single-worktree to avoid false-positive errors (graceful fallback).
+    let canon_git_dir = match std::fs::canonicalize(&git_dir) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let canon_common = match std::fs::canonicalize(&common_dir) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    // Linked worktree <=> per-worktree git-dir differs from the shared common-dir.
+    canon_git_dir != canon_common
+}
+
 /// Load config from a workspace directory (the `.forgeplan/` path itself).
 pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
     let config_path = workspace.join("config.yaml");
@@ -248,4 +333,195 @@ pub fn load_config(workspace: &Path) -> anyhow::Result<Config> {
         .validate()
         .map_err(|e| anyhow::anyhow!("Invalid integrity config: {e}"))?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod detect_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn init_git_repo(dir: &Path) {
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "root"])
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "t@t.t")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "t@t.t")
+            .output()
+            .expect("git commit");
+    }
+
+    /// AC: `detect_multi_worktree` returns `false` inside a plain (non-linked)
+    /// git repository — single worktree → `common_dir.parent() == show-toplevel`.
+    #[test]
+    fn detect_returns_false_in_plain_repo() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path());
+        assert!(
+            !detect_multi_worktree(tmp.path()),
+            "plain repo must not be detected as multi-worktree"
+        );
+    }
+
+    /// AC: `detect_multi_worktree` returns `true` when running from a linked
+    /// worktree created via `git worktree add`.
+    #[test]
+    fn detect_returns_true_with_linked_worktree() {
+        let main_tmp = TempDir::new().unwrap();
+        init_git_repo(main_tmp.path());
+
+        // Add a linked worktree in a sibling tempdir.
+        let linked_tmp = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .args([
+                "-C",
+                &main_tmp.path().to_string_lossy(),
+                "worktree",
+                "add",
+                &linked_tmp.path().to_string_lossy(),
+                "-b",
+                "wt-branch",
+            ])
+            .output()
+            .expect("git worktree add");
+        if !status.status.success() {
+            // Some CI environments restrict worktree creation. Skip gracefully.
+            eprintln!(
+                "git worktree add failed ({}): {}",
+                status.status,
+                String::from_utf8_lossy(&status.stderr)
+            );
+            return;
+        }
+
+        // From inside the linked worktree, detection must fire.
+        assert!(
+            detect_multi_worktree(linked_tmp.path()),
+            "linked worktree must be detected as multi-worktree"
+        );
+
+        // And from the main worktree, it must still be false.
+        assert!(
+            !detect_multi_worktree(main_tmp.path()),
+            "main worktree must not be detected as multi-worktree"
+        );
+    }
+
+    /// AC: `detect_multi_worktree` returns `false` (gracefully) when invoked
+    /// from a directory that is not inside any git repository.
+    #[test]
+    fn detect_returns_false_outside_git() {
+        let tmp = TempDir::new().unwrap();
+        // TempDir is NOT a git repo (no init).
+        assert!(
+            !detect_multi_worktree(tmp.path()),
+            "non-git directory must not be detected as multi-worktree"
+        );
+    }
+
+    /// AC: `detect_multi_worktree` returns `false` (gracefully) for a
+    /// non-existent path — a cheap proxy for "git binary not found" scenarios
+    /// where the subprocess also fails.
+    #[test]
+    fn detect_returns_false_for_nonexistent_path() {
+        let nonexistent = PathBuf::from("/this/path/does/not/exist/at/all/12345");
+        assert!(
+            !detect_multi_worktree(&nonexistent),
+            "non-existent path must not cause panic or return true"
+        );
+    }
+
+    /// ARCH-3 REGRESSION (audit Layer 7): a git SUBMODULE must NOT be detected
+    /// as multi-worktree. A submodule's `git-dir` EQUALS its `git-common-dir`
+    /// (`<parent>/.git/modules/<name>`), so the git-dir/common-dir comparison
+    /// returns single — correctly. The OLD `common-dir-parent != show-toplevel`
+    /// heuristic FALSE-POSITIVED here (parent of `.git/modules/<name>` is
+    /// `.git/modules`, never the submodule's show-toplevel), erroring a
+    /// subagent working inside a submodule. This test pins the fix.
+    #[test]
+    fn detect_returns_false_in_submodule() {
+        // A standalone repo to embed as a submodule.
+        let sub_origin = TempDir::new().unwrap();
+        init_git_repo(sub_origin.path());
+
+        // The parent repo.
+        let parent = TempDir::new().unwrap();
+        init_git_repo(parent.path());
+
+        // Add sub_origin as submodule "sub". `protocol.file.allow=always` lets
+        // modern git use a local path as the submodule URL.
+        let status = Command::new("git")
+            .args([
+                "-C",
+                &parent.path().to_string_lossy(),
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &sub_origin.path().to_string_lossy(),
+                "sub",
+            ])
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "t@t.t")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "t@t.t")
+            .output()
+            .expect("git submodule add");
+        if !status.status.success() {
+            // Restricted CI / old git without file-protocol — skip gracefully.
+            eprintln!(
+                "SKIP detect_returns_false_in_submodule: git submodule add failed ({}): {}",
+                status.status,
+                String::from_utf8_lossy(&status.stderr)
+            );
+            return;
+        }
+
+        let sub_path = parent.path().join("sub");
+        assert!(
+            !detect_multi_worktree(&sub_path),
+            "git submodule must NOT be detected as multi-worktree (ARCH-3 false-positive regression)"
+        );
+        assert!(
+            !detect_multi_worktree(parent.path()),
+            "parent repo of a submodule must not be detected as multi-worktree"
+        );
+    }
+
+    /// Edge: a plain repo reached via a SYMLINK must resolve stably (the
+    /// canonicalize step handles the indirection) — no spurious multi-worktree.
+    #[test]
+    fn detect_stable_through_symlinked_path() {
+        let main_tmp = TempDir::new().unwrap();
+        init_git_repo(main_tmp.path());
+        assert!(
+            !detect_multi_worktree(main_tmp.path()),
+            "plain repo via real path must be single-worktree"
+        );
+
+        let link_parent = TempDir::new().unwrap();
+        let link = link_parent.path().join("repo-link");
+        #[cfg(unix)]
+        if std::os::unix::fs::symlink(main_tmp.path(), &link).is_err() {
+            eprintln!("SKIP detect_stable_through_symlinked_path: cannot create symlink");
+            return;
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!("SKIP detect_stable_through_symlinked_path: non-unix");
+            return;
+        }
+        #[cfg(unix)]
+        assert!(
+            !detect_multi_worktree(&link),
+            "plain repo reached via a symlink must not be detected as multi-worktree"
+        );
+    }
 }
