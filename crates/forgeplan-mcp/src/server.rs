@@ -919,6 +919,46 @@ fn safe_invalid_params(msg: impl std::fmt::Display, data: Option<serde_json::Val
     McpError::invalid_params(sanitised, safe_data)
 }
 
+/// Issue #350 (CRITICAL silent data-loss): expand a `@/path/to/file.md` body
+/// into the file's content, matching the CLI `forgeplan update --body @file`
+/// semantics so MCP and CLI stay symmetric. Before this, an agent mirroring the
+/// CLI `@filepath` pattern through MCP wrote the **literal** `@path` string into
+/// the artifact body — silently overwriting the real content.
+///
+/// Parity with `forgeplan-cli/src/commands/update.rs`:
+/// - a leading `@` means "read the rest as a file path";
+/// - if the file begins with YAML frontmatter, strip it (we store body only);
+/// - anything without a leading `@` is returned verbatim.
+///
+/// Safety: the caller applies the configured `mcp_max_body_len` DoS cap to the
+/// **expanded** content (so a short `@path` can't smuggle a huge file past the
+/// limit), and the read error is routed through [`safe_invalid_params`] so an
+/// absolute path / `$HOME` never leaks into the MCP transcript.
+async fn expand_body_filepath(body: &str) -> Result<String, McpError> {
+    let Some(path) = body.strip_prefix('@') else {
+        return Ok(body.to_string());
+    };
+    let raw = tokio::fs::read_to_string(path).await.map_err(|e| {
+        safe_invalid_params(
+            format!(
+                "@filepath body: cannot read file '{path}': {e}. \
+                 Pass the body content directly, or verify the path exists and is readable."
+            ),
+            None,
+        )
+    })?;
+    // CLI parity: a file may carry YAML frontmatter; we persist body only.
+    let content = if raw.starts_with("---") {
+        match forgeplan_core::artifact::frontmatter::parse_frontmatter(&raw) {
+            Ok((_fm, b)) => b.to_string(),
+            Err(_) => raw,
+        }
+    } else {
+        raw
+    };
+    Ok(content)
+}
+
 /// Variant of [`safe_mcp_error`] for call sites that already hold an
 /// `anyhow::Error` (not just a Display value). Preserves the error chain
 /// so typed downcasts (e.g. [`MutationError::RetryExhausted`]) can inject
@@ -3726,7 +3766,14 @@ impl ForgeplanServer {
                 None,
             ));
         }
-        if let Some(ref b) = p.body
+        // Issue #350: expand a `@/path` body into the file's content (CLI parity)
+        // BEFORE the length cap, so the cap measures the RESOLVED content — a short
+        // `@path` must not smuggle a huge file past the limit. `None` stays `None`.
+        let expanded_body: Option<String> = match p.body.as_deref() {
+            Some(b) => Some(expand_body_filepath(b).await?),
+            None => None,
+        };
+        if let Some(ref b) = expanded_body
             && b.len() > integrity_config.mcp_max_body_len
         {
             return Err(McpError::invalid_params(
@@ -3764,7 +3811,7 @@ impl ForgeplanServer {
             .map_err(safe_mcp_error)?;
         }
 
-        if let Some(ref body) = p.body {
+        if let Some(ref body) = expanded_body {
             projection::update_body_with_projection(&ctx, &p.id, body)
                 .await
                 .map_err(safe_mcp_error)?;
@@ -7548,8 +7595,11 @@ impl ForgeplanServer {
         }
         tags.push(format!("discover-session={}", session.id));
 
-        // Format body with source files metadata
-        let mut full_body = p.body.clone();
+        // Format body with source files metadata.
+        // Issue #350: expand a `@/path` finding body into the file's content
+        // (CLI parity) — without this, an agent passing `@file.md` would persist
+        // the literal `@path` string as the finding body (silent data loss).
+        let mut full_body = expand_body_filepath(&p.body).await?;
         if !p.source_files.is_empty() {
             full_body.push_str("\n\n## Source Files\n\n");
             for f in &p.source_files {
