@@ -48,6 +48,22 @@ pub struct ScanImportEntry {
     pub warnings: Vec<String>,
 }
 
+/// A set of source files on disk that all carry the SAME artifact id — a
+/// file-level id collision. Distinct from the title-similarity
+/// `AnomalyKind::DuplicateArtifact`, which works on the DB where two same-id
+/// files have already been collapsed into one row. Two `.md` with one id
+/// desync the resolver (status read from one file, body from another), so this
+/// surfaces them for cleanup. Origin is usually a legacy artifact (pre-Phase-1.5
+/// id-assignment) plus a hand-authored file that bypassed `create_artifact`'s
+/// dup-id guard (a RED-LINE #11 violation predating enforcement).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateIdGroup {
+    /// The artifact id shared by all `paths`.
+    pub id: String,
+    /// Relative paths of every file resolving to `id` (sorted, ≥2).
+    pub paths: Vec<String>,
+}
+
 /// Aggregate result of scan-import operation.
 #[derive(Debug, Clone)]
 pub struct ScanImportResult {
@@ -57,6 +73,34 @@ pub struct ScanImportResult {
     pub skipped: usize,
     pub unknown: usize,
     pub failed: usize,
+    /// File-level id collisions found during the scan (two+ files → one id).
+    /// Empty in the healthy case. Reported so the user can delete the stale
+    /// duplicate before the resolver returns desynced status/body.
+    pub duplicate_ids: Vec<DuplicateIdGroup>,
+}
+
+/// Group scan entries by their resolved artifact id and return every id that
+/// maps to more than one source file. Deterministic order (BTreeMap by id,
+/// paths sorted) so the report and tests are stable.
+pub fn find_duplicate_ids(entries: &[ScanImportEntry]) -> Vec<DuplicateIdGroup> {
+    use std::collections::BTreeMap;
+    let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for e in entries {
+        if let Some(id) = &e.artifact_id {
+            by_id
+                .entry(id.clone())
+                .or_default()
+                .push(e.relative_path.clone());
+        }
+    }
+    by_id
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .map(|(id, mut paths)| {
+            paths.sort();
+            DuplicateIdGroup { id, paths }
+        })
+        .collect()
 }
 
 /// Run scan-import: discover files, detect types, import into LanceDB.
@@ -167,6 +211,10 @@ async fn scan_and_import_inner(
         entries.push(entry);
     }
 
+    // File-level id-collision detection (PRD-008 dup class): surface any id
+    // that resolves from more than one source file on disk.
+    let duplicate_ids = find_duplicate_ids(&entries);
+
     Ok(ScanImportResult {
         entries,
         total_found,
@@ -174,6 +222,7 @@ async fn scan_and_import_inner(
         skipped,
         unknown,
         failed,
+        duplicate_ids,
     })
 }
 
@@ -576,6 +625,76 @@ mod tests {
         assert_eq!(result.imported, 1); // preview count
         // But artifact should NOT exist in store
         assert!(store.get_artifact("PRD-001").await.unwrap().is_none());
+    }
+
+    fn entry(id: Option<&str>, path: &str) -> ScanImportEntry {
+        ScanImportEntry {
+            relative_path: path.to_string(),
+            detected_kind: None,
+            detection_tier: None,
+            artifact_id: id.map(String::from),
+            status: ImportStatus::Skipped,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn find_duplicate_ids_groups_same_id_and_ignores_unique() {
+        let entries = vec![
+            entry(Some("PRD-008"), "prds/PRD-008-consistent-output.md"),
+            entry(Some("PRD-008"), "prds/PRD-008-cli-ux-redesign.md"),
+            entry(Some("PRD-001"), "prds/PRD-001-flow.md"), // unique → not flagged
+            entry(None, "docs/README.md"),                  // no id → ignored
+        ];
+        let dups = find_duplicate_ids(&entries);
+        assert_eq!(dups.len(), 1, "exactly one collision (PRD-008)");
+        assert_eq!(dups[0].id, "PRD-008");
+        assert_eq!(dups[0].paths.len(), 2);
+        // paths are sorted for a stable report
+        assert_eq!(dups[0].paths[0], "prds/PRD-008-cli-ux-redesign.md");
+    }
+
+    #[test]
+    fn find_duplicate_ids_empty_when_all_unique() {
+        let entries = vec![
+            entry(Some("PRD-001"), "a.md"),
+            entry(Some("PRD-002"), "b.md"),
+        ];
+        assert!(find_duplicate_ids(&entries).is_empty());
+    }
+
+    /// End-to-end: two files on disk carrying the SAME id are surfaced in the
+    /// scan result's `duplicate_ids` (the PRD-008 collision class).
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn scan_detects_duplicate_id_files() {
+        let (tmp, _ws, store) = setup_store().await;
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("PRD-009-first.md"),
+            "---\nkind: prd\nid: PRD-009\ntitle: First\n---\n# A",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.join("PRD-009-second.md"),
+            "---\nkind: prd\nid: PRD-009\ntitle: Second\n---\n# B",
+        )
+        .unwrap();
+
+        let opts = ScanImportOptions {
+            dry_run: true,
+            custom_path: None,
+        };
+        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+
+        assert_eq!(
+            result.duplicate_ids.len(),
+            1,
+            "PRD-009 file-level id collision must be detected"
+        );
+        assert_eq!(result.duplicate_ids[0].id, "PRD-009");
+        assert_eq!(result.duplicate_ids[0].paths.len(), 2);
     }
 
     #[tokio::test]
