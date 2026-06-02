@@ -73,7 +73,22 @@ This warrants a focused session (likely an ADR weighing re-open vs file-read vs 
 - PRD-078 (worktree routing — same store-handle surface)
 - ADR-003 (markdown source of truth — basis for fix direction 2)
 
+## Session-2 investigation refinement (2026-06-03)
 
+Three more probes, all to pin the mechanism — it is subtler than first stated:
 
+1. **In-process direct-store probes PASS** (content-correct):
+   - `update_body_changes_content` (existing): `create_artifact` → `update_body` → `get_record` sees new body. ✅
+   - `opened_store_sees_same_session_add` (new probe, then reverted): `LanceStore::open()` → `create_artifact` → `get_record` sees the row. ✅
+   So the staleness is NOT a simple `open()`-vs-`init()` handle difference, and NOT reproducible by calling the store methods directly in-process.
 
+2. **The McpFixture Journey-1 e2e does NOT actually cover this.** `worktree_read_e2e.rs::p1_journey1_write_then_read_in_worktree` (in CI, green) asserts only `!body.is_empty()` (line ~273) — a STALE template body is non-empty, so it passes. **Test-quality gap**: the read-back assertion must check the body CONTAINS what was written, not just non-empty. Fixing that assertion would have caught this.
+
+3. **MCP-new variants are inconsistent** (vs the solid CLI-new→stale case):
+   - CLI `new` (separate process) → MCP `update`(@file or inline) → MCP `get`: deterministic **stale template** 3/3; the file on disk has the new body. (Solid, concrete file-vs-DB mismatch.)
+   - MCP `new` → MCP `update`/`get` same session, WITH `workspace=`: update + get both `not found`.
+   - MCP `new` → MCP `update`/`get` same session, NO `workspace=`: update OK, get `not found`.
+   The inconsistency suggests either a second related issue OR an unreliable stdio-printf harness; a proper MCP client (not piped printf) is needed to disambiguate.
+
+**Refined status**: the read-after-write staleness is REAL and concretely evidenced (the CLI-new→update→get 3/3 file-vs-DB case), but the mechanism is NOT `checkout_latest`/`refresh` (both fix attempts failed) and NOT reproducible via direct in-process store calls. It needs a DEDICATED session with (a) a reliable MCP client harness, (b) a strengthened Journey-1 content assertion, (c) possibly a `lancedb` version bisect, before a fix is attempted. Do NOT claim fixed until the deterministic repro goes green through the real binary.
 
