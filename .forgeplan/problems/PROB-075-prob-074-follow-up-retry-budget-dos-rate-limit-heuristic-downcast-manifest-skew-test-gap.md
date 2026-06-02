@@ -11,7 +11,7 @@ links:
   relation: informs
 - target: PROB-073
   relation: informs
-status: draft
+status: deprecated
 title: PROB-074 follow-up — retry budget, DoS rate-limit, heuristic downcast, manifest-skew test gap
 ---
 
@@ -77,6 +77,9 @@ Current detector matches `"Not found:"` + (`.lance/data/` OR `.lance/_versions`)
 | ADR-003 | informs (lance index is the layer that fails — markdown-first invariant unaffected) |
 | PROB-072 | informs (same MCP daemon surface) |
 | PROB-073 | informs (rate-limit on refresh ties into per-call latency budget) |
+
+
+
 
 
 
