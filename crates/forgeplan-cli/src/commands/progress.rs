@@ -60,38 +60,84 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         );
     }
 
+    // If a specific ID is requested, resolve it FIRST so BOTH the JSON and
+    // the text path scope output to that single artifact. Phase 2.5
+    // (PROB-060) — accept slug or display id form via resolver.
+    //
+    // Dogfood v0.32.1 MED bug: the all-artifacts JSON block used to run
+    // unconditionally *before* this filter, so `progress <id> --json` emitted
+    // every artifact and silently ignored `<id>`. We now branch the JSON
+    // payload on `id` presence: scoped-to-one when `Some`, all when `None`.
+    let single: Option<(usize, &forgeplan_core::db::store::ArtifactRecord)> =
+        if let Some(target_id) = id {
+            let canonical = store.resolve_id(target_id).await?.ok_or_else(|| {
+                anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
+            })?;
+            let canonical_upper = canonical.to_uppercase();
+
+            // Find both progress and record in one pass
+            let found = records
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.id.to_uppercase() == canonical_upper);
+            let (idx, record) = found.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found
+Fix: forgeplan list",
+                    target_id
+                )
+            })?;
+            Some((idx, record))
+        } else {
+            None
+        };
+
     if json {
-        let data: Vec<_> = all_progress.iter().filter(|p| p.count.total > 0).map(|p| {
-            serde_json::json!({"id": p.id, "title": p.title, "kind": p.kind, "completed": p.count.completed, "total": p.count.total, "percent": p.percent()})
-        }).collect();
+        // Scoped JSON when an id was given (PROB-060 resolver already ran);
+        // otherwise the all-artifacts-with-checkboxes payload.
+        let data: Vec<_> = match single {
+            Some((idx, _)) => {
+                let p = &all_progress[idx];
+                // Mirror the text path: an artifact with no checkboxes is a
+                // valid result, just an empty `progress[]` (not an error).
+                if p.count.total > 0 {
+                    vec![serde_json::json!({"id": p.id, "title": p.title, "kind": p.kind, "completed": p.count.completed, "total": p.count.total, "percent": p.percent()})]
+                } else {
+                    Vec::new()
+                }
+            }
+            None => all_progress
+                .iter()
+                .filter(|p| p.count.total > 0)
+                .map(|p| {
+                    serde_json::json!({"id": p.id, "title": p.title, "kind": p.kind, "completed": p.count.completed, "total": p.count.total, "percent": p.percent()})
+                })
+                .collect(),
+        };
+        // For the scoped case, the global lowest-percent hint is misleading
+        // (it may point at a *different* artifact than the one requested).
+        // Recompute a focused hint for the single artifact instead.
+        let next_action = match single {
+            Some((idx, _)) => {
+                let p = &all_progress[idx];
+                if p.count.total > 0 && p.count.completed == p.count.total {
+                    Some(format!("forgeplan activate {}", p.id))
+                } else {
+                    Some(format!("forgeplan get {}", p.id))
+                }
+            }
+            None => hints::primary_action(&hints_vec),
+        };
         let payload = serde_json::json!({
             "progress": data,
-            "_next_action": hints::primary_action(&hints_vec),
+            "_next_action": next_action,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
-    // If specific ID requested, show only that artifact.
-    // Phase 2.5 (PROB-060) — accept slug or display id form via resolver.
-    if let Some(target_id) = id {
-        let canonical = store.resolve_id(target_id).await?.ok_or_else(|| {
-            anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
-        })?;
-        let canonical_upper = canonical.to_uppercase();
-
-        // Find both progress and record in one pass
-        let found = records
-            .iter()
-            .enumerate()
-            .find(|(_, r)| r.id.to_uppercase() == canonical_upper);
-        let (idx, record) = found.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Artifact '{}' not found
-Fix: forgeplan list",
-                target_id
-            )
-        })?;
+    // Text path for a specific ID (resolved above).
+    if let Some((idx, record)) = single {
         let p = &all_progress[idx];
 
         println!();

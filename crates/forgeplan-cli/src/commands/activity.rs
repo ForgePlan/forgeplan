@@ -54,12 +54,21 @@ pub async fn run(
     let result = query(&ws, &filter).await?;
 
     // Build hints — actionable next step depending on whether results are present.
+    //
+    // Dogfood v0.32.1 fix: don't tell the caller to "try a wider window:
+    // --since-hours 720" when they're ALREADY at (or above) the 720h ceiling.
+    // After the clamp above, `since == 720` means the caller requested >= 720,
+    // so the widen-window hint would be self-referential. Emit a terminal
+    // `Done.` instead.
+    let at_max_window = since >= 720;
     let mut hint_list: Vec<Hint> = Vec::new();
     if result.entries.is_empty() {
-        hint_list.push(
-            Hint::info("Try a wider window")
-                .with_action("forgeplan activity --since-hours 720".to_string()),
-        );
+        if !at_max_window {
+            hint_list.push(
+                Hint::info("Try a wider window")
+                    .with_action("forgeplan activity --since-hours 720".to_string()),
+            );
+        }
     } else {
         hint_list.push(
             Hint::info("See aggregated stats")
@@ -83,10 +92,18 @@ pub async fn run(
 
     // Human-readable table — Forge tone, no emoji.
     if result.entries.is_empty() {
-        println!(
-            "No tool calls in the last {since} hour(s). Try a wider window: \
-             `--since-hours 720` for the last 30 days."
-        );
+        if at_max_window {
+            // Already at the 720h ceiling — no wider window to suggest.
+            println!(
+                "No tool calls in the last {since} hour(s) — that's the maximum \
+                 window (30 days)."
+            );
+        } else {
+            println!(
+                "No tool calls in the last {since} hour(s). Try a wider window: \
+                 `--since-hours 720` for the last 30 days."
+            );
+        }
         if !result.warnings.is_empty() {
             println!();
             println!("{}", style("Warnings:").yellow().bold());
@@ -94,7 +111,12 @@ pub async fn run(
                 println!("  - {w}");
             }
         }
-        print!("{}", hints::render_next_action_line(&hint_list));
+        if at_max_window {
+            println!();
+            println!("Done.");
+        } else {
+            print!("{}", hints::render_next_action_line(&hint_list));
+        }
         return Ok(());
     }
 

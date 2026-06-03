@@ -940,8 +940,8 @@ enum PlaybookAction {
     },
     /// Validate playbook YAML against SPEC-003 schema.
     Validate {
-        /// Path to playbook YAML file
-        file: std::path::PathBuf,
+        /// Playbook name (e.g. brownfield-code) or path to .yaml file
+        target: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -1497,8 +1497,8 @@ async fn main() -> anyhow::Result<()> {
             PlaybookAction::Show { target, json } => {
                 commands::playbook::run_show(&target, json).await
             }
-            PlaybookAction::Validate { file, json } => {
-                commands::playbook::run_validate(&file, json).await
+            PlaybookAction::Validate { target, json } => {
+                commands::playbook::run_validate(&target, json).await
             }
             PlaybookAction::Run {
                 target,

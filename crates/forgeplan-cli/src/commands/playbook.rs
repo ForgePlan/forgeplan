@@ -300,12 +300,28 @@ pub async fn run_show(target: &str, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `forgeplan playbook validate <file> [--json]`
-pub async fn run_validate(file: &Path, json: bool) -> anyhow::Result<()> {
-    let yaml = match read_playbook_with_limits(file) {
+/// `forgeplan playbook validate <target> [--json]`
+///
+/// `target` may be a playbook name (matched against discovered playbooks) or
+/// a path to a `.yaml` file — same discovery contract as `show`/`run`.
+///
+/// Dogfood v0.32.1 LOW bug: this used to take a raw `PathBuf` and skip the
+/// `resolve_target` discovery step, so `playbook validate brownfield-code`
+/// (a name that `show`/`run` happily resolve) failed with "cannot read".
+/// A full path still works — `resolve_target` checks `path.exists()` first.
+pub async fn run_validate(target: &str, json: bool) -> anyhow::Result<()> {
+    let resolved = match resolve_target(target) {
+        Ok(path) => path,
+        Err(msg) => {
+            print_resolve_error(target, &msg, json);
+            std::process::exit(2);
+        }
+    };
+
+    let yaml = match read_playbook_with_limits(&resolved) {
         Ok(s) => s,
         Err(e) => {
-            print_playbook_read_error(file, &e, json);
+            print_playbook_read_error(&resolved, &e, json);
             std::process::exit(2);
         }
     };
@@ -318,7 +334,7 @@ pub async fn run_validate(file: &Path, json: bool) -> anyhow::Result<()> {
                     "name": pb.name,
                     "title": pb.title,
                     "steps_count": pb.steps.len(),
-                    "source_path": file.display().to_string(),
+                    "source_path": resolved.display().to_string(),
                     "_next_action": format!(
                         "forgeplan playbook run {} --yes --dry-run",
                         pb.name
@@ -333,7 +349,7 @@ pub async fn run_validate(file: &Path, json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         Err(err) => {
-            emit_loader_error(file, &err, json);
+            emit_loader_error(&resolved, &err, json);
             std::process::exit(2);
         }
     }
@@ -1164,6 +1180,38 @@ mod tests {
         let path = std::path::PathBuf::from("/nonexistent/forgeplan/playbooks/xyz-test-9999");
         let v = collect_yaml_files(&path).expect("ok");
         assert!(v.is_empty());
+    }
+
+    /// Dogfood v0.32.1 LOW fix (#3): `playbook validate` now routes through
+    /// `resolve_target`, exactly like `show`/`run`. A full path to an
+    /// existing `.yaml` must still resolve as-is (the fallback branch that
+    /// preserves the old PathBuf behaviour).
+    #[test]
+    fn resolve_target_accepts_full_path_to_existing_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("my-playbook.yaml");
+        std::fs::write(
+            &file,
+            "schema_version: \"1.0\"\nname: x\ntitle: t\nsteps: []\n",
+        )
+        .unwrap();
+        let got = resolve_target(file.to_str().unwrap()).expect("full path resolves");
+        assert_eq!(got, file);
+    }
+
+    /// A bogus path that is neither a real file nor a discoverable name must
+    /// surface an error (callers map this to `print_resolve_error` + exit 2).
+    #[test]
+    fn resolve_target_errors_on_unknown_path() {
+        // Disable host plugin discovery so an installed pack can't satisfy
+        // this lookup and flake the assertion.
+        // SAFETY: test-only env mutation, single-threaded within this test.
+        unsafe {
+            std::env::set_var("FORGEPLAN_DISABLE_PLUGIN_DISCOVERY", "1");
+        }
+        let bogus = "/nonexistent/dir/xyz-no-such-playbook-9999.yaml";
+        let err = resolve_target(bogus).expect_err("unknown path errors");
+        assert!(err.contains("no playbook"), "got: {err}");
     }
 
     #[test]
