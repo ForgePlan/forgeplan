@@ -2991,6 +2991,54 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// PROB-078 repro probe (mechanism A): a store handle opened AFTER a row
+    /// already exists — simulating an artifact created by a separate CLI
+    /// process before this MCP session — must observe its OWN in-place
+    /// `update_body` on a subsequent `get_record` through the SAME handle.
+    ///
+    /// This is the read-after-write path the stdio repro flagged stale. The
+    /// passing #350 in-process tests differ structurally: there the row is
+    /// created by the SAME handle's `add()` (which advances the snapshot),
+    /// which masks the bug. Here no in-session `add` advances the handle.
+    #[tokio::test]
+    async fn prob078_reopened_handle_sees_own_update_body() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+
+        // Phase 1: a "prior process" creates the row, then we drop that
+        // handle entirely (like a finished CLI invocation).
+        {
+            let creator = LanceStore::init(&ws).await.unwrap();
+            creator
+                .create_artifact(&sample_artifact("PRD-078"))
+                .await
+                .unwrap();
+        }
+
+        // Phase 2: THIS session opens a fresh handle. LanceDB snapshots the
+        // table version at open time (contains PRD-078 with the template
+        // body). No in-session `add` will advance this snapshot.
+        let session = LanceStore::open(&ws).await.unwrap();
+
+        // Sanity: the opened handle sees the pre-existing row (template body).
+        let before = session.get_record("PRD-078").await.unwrap().unwrap();
+        assert_eq!(before.body, "## Summary\n\nTest body content.");
+
+        // Phase 3: this session updates the body in place (LanceDB UPDATE).
+        let marker = "MARKER-PROB078-UNIQUE-DEADBEEF";
+        session.update_body("PRD-078", marker).await.unwrap();
+
+        // Phase 4: read back through the SAME handle. The bug under test:
+        // does the handle observe its own committed UPDATE, or return the
+        // stale (template) snapshot?
+        let after = session.get_record("PRD-078").await.unwrap().unwrap();
+        assert!(
+            after.body.contains(marker),
+            "read-after-write returned STALE body (PROB-078): got {:?}",
+            after.body
+        );
+    }
+
     #[tokio::test]
     async fn list_records_returns_full_data() {
         let tmp = TempDir::new().unwrap();
