@@ -11,7 +11,7 @@ links:
   relation: informs
 - target: PRD-078
   relation: informs
-status: draft
+status: deprecated
 title: MCP read-after-write returns stale body same session — cached LanceStore handle not advanced by checkout_latest
 ---
 
@@ -91,4 +91,55 @@ Three more probes, all to pin the mechanism — it is subtler than first stated:
    The inconsistency suggests either a second related issue OR an unreliable stdio-printf harness; a proper MCP client (not piped printf) is needed to disambiguate.
 
 **Refined status**: the read-after-write staleness is REAL and concretely evidenced (the CLI-new→update→get 3/3 file-vs-DB case), but the mechanism is NOT `checkout_latest`/`refresh` (both fix attempts failed) and NOT reproducible via direct in-process store calls. It needs a DEDICATED session with (a) a reliable MCP client harness, (b) a strengthened Journey-1 content assertion, (c) possibly a `lancedb` version bisect, before a fix is attempted. Do NOT claim fixed until the deterministic repro goes green through the real binary.
+
+
+
+## Resolution (2026-06-03): REFUTED — not a product bug
+
+A dedicated session built a RELIABLE, deterministic reproduction (replacing the
+hand-rolled stdio-printf repro) and the read-after-write staleness **does not
+reproduce**. PROB-078 is a **harness artifact**, not a product bug. This section
+supersedes the "Refined status" and "Revises PROB-075 F-6" conclusions above.
+
+### Evidence (commit `8aae19a`, EVID-146)
+
+Seven tests, three layers, all green (fmt 0 diffs, clippy -D warnings 0):
+
+- store: `prob078_reopened_handle_sees_own_update_body` — a handle opened at V1
+  (row created by a dropped handle) DOES observe its own `update_body` on a
+  later `get_record`. **Refutes the "handle not advanced by update()" claim**
+  in the Diagnostics section (point 3): LanceDB advances the handle on
+  `update().execute()`.
+- mcp in-process (McpFixture x3): full handler stack incl. the two-store probe,
+  which proves the param-path and default-path resolve the SAME cached
+  `Arc<LanceStore>`.
+- real binary (x3): the actual `forgeplan-mcp` over real stdio via the rmcp
+  child-process transport, incl. a BYTE-EXACT replica of the Reproduction block
+  above (real CLI creates a NOTE, real MCP `update -> get` with `workspace=WS`).
+  Fresh.
+
+### Why the original repro lied
+
+The "stale" reading came from the piped-printf stdio client (mis-framed /
+mis-sequenced JSON-RPC), not the product. The earlier "MCP-new variants are
+inconsistent / not found" symptoms (Session-2 point 3) were the same harness
+unreliability. The `Arc::as_ptr` "same instance" diagnostic was correct — and is
+exactly why there is no staleness: one handle, and it is fresh.
+
+### Corrections to this record
+
+- **Impact**: NOT a release blocker. v0.33 is unblocked on this axis.
+- **Revises PROB-075 F-6**: REVERSED. F-6's "deferred, test-only, not a
+  correctness bug" closure (EVID-144) is **vindicated** — the read path it would
+  exercise is correct. EVID-144 stands.
+- **Fix directions (1-3 above)**: do NOT implement. They would add latency for
+  no correctness benefit.
+
+### Residual
+
+Verified on macOS (same machine/scenario as the original repro); the 7 tests run
+on Linux CI after push. No breaking-change surface — tests only, no product code
+changed. See EVID-146.
+
+
 
