@@ -11,6 +11,36 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-06-04
+
+Sprint headline: **MCP worktree-aware routing (PRD-078) + read-after-write correctness investigation (PROB-078 refuted) + dogfood-driven CLI hardening.**
+
+### Added
+
+- **Worktree-aware MCP routing** (PRD-078 / ADR-015 / ADR-016) — `forgeplan_get`, `forgeplan_update`, and the other store-resolution MCP tools accept an optional absolute `workspace` parameter so an agent running in a linked git worktree reads/writes the correct `.forgeplan/`. Writes use a strict multi-worktree detection gate (structured `-32602` error when ambiguous); reads fall back softly. Closes PROB-072 (sub-agents writing to the wrong repo).
+- **Duplicate-id detector in `scan-import`** — surfaces colliding artifact ids (same `KIND-NNN` across multiple files) as a warning instead of silently importing one and dropping the other.
+
+### Fixed
+
+- **CRITICAL silent data loss (#350)** — `forgeplan_update` / `forgeplan_discover_finding` with `body=@/path/file.md` stored the literal `@path` string instead of the file's content; the loss was invisible until a later `forgeplan_get`. The MCP tools now expand `@file` to its content (CLI parity) and error loudly on a missing file.
+- **`claim` without `--agent` always failed** — the default agent-id `cli/<version>` contained a `/`, which the agent-id validator rejects. Default is now `cli-<version>`.
+- **`progress <id> --json` ignored the id** — the JSON path returned all artifacts; it now scopes to the requested id.
+- **`playbook validate <name>` did not resolve playbook names** — it required a full path (unlike `show`/`run`). Names now resolve via the same discovery.
+- **`order` mislabeled non-active artifacts** — deprecated/superseded artifacts printed as `(draft, …)`; they now show their real status.
+- **`activity` / `activity-stats` hint loop** — the "try a wider window" hint unconditionally suggested `--since-hours 720` even at the maximum window, looping hint-following agents; it is now suppressed at the max window.
+- **Stale-cache hardening (PROB-075)** — bounded retry budget + exponential backoff on transient LanceDB staleness, a refresh rate-limit/debounce, and a typed `lancedb::Error` downcast so artifact bodies echoing a "Not found:" marker no longer trigger spurious refreshes.
+
+### Security
+
+- **openssl 0.10.79 → 0.10.80** (Dependabot alert #34, MEDIUM) — potential out-of-bounds write in `CipherCtxRef::cipher_update_inplace`.
+- **Supply-chain hardening (PROB-070)** — all GitHub Actions `uses:` pinned to 40-char commit SHAs; CI-gate `continue-on-error` theatre removed.
+
+### Internal
+
+- **PROB-078 (MCP read-after-write staleness) investigated and REFUTED** — the reported "stale body after your own write in the same session" was an artifact of an unreliable hand-rolled stdio-printf repro client, not a product bug. Read-after-write is correct at every layer, proven by 7 new regression tests across three layers: store-level reopened-handle, in-process MCP (`McpFixture`, incl. a two-store probe), and the **real `forgeplan-mcp` binary over real stdio** via the rmcp child-process transport (incl. a byte-exact replica of the original repro). These tests are permanent read-after-write guards and replace a previously weak Journey-1 e2e assertion (content-match, not non-empty).
+- **Latency measured (PROB-073)** — multi-worktree detection ~12 ms p95; create-roundtrip hot spot is the LanceDB commit (~7 ms). Accepted as documented behavior for v0.33; no code change.
+- **Dependabot triage (RED LINE #10)** — openssl fixed (above); `lru` LOW (alert #3) carried accepted-with-justification (requirement pins 0.12.x; the 0.16.3 fix needs an out-of-scope major bump; no exploit path in our usage). Deferred to v0.34: lancedb 0.30 (storage core — untested major bump, highest regression risk), sha2 0.11, notify 8, arrow-schema 58. schemars 1.x remains a separate scoped sprint (#318).
+
 ## [0.32.1] - 2026-05-21
 
 **Hotfix release.** v0.32.0 shipped with a Cargo.toml regression that prevented Windows binary publication via cargo-dist. macOS / Linux binaries also did not publish because cargo-dist exits the entire workflow when any target fails. No semantic / behaviour changes — purely a build-time dependency placement fix.
