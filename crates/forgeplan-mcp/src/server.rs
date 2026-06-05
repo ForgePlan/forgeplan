@@ -3733,14 +3733,29 @@ impl ForgeplanServer {
             }
         };
 
+        // Issue #383: resolve slug / lowercase display-id input to the canonical
+        // DB id ONCE, mirroring the `forgeplan_get` handler. Without this every
+        // downstream id use hits the case-sensitive direct `id` column lookup and
+        // `forgeplan_update id=prd-001` fails with "not found" even though
+        // `forgeplan_get`/`validate`/`list` accept the same lowercase/slug form.
+        // `resolve_id(None)` falls back to the verbatim id so legacy artifacts
+        // (no slug field) still load via the original direct path.
+        let canonical = match store.resolve_id(&p.id).await {
+            Ok(Some(c)) => c,
+            Ok(None) => p.id.clone(),
+            Err(e) => return Ok(safe_err_result("", e)),
+        };
+
         // Verify exists. The helpers do their own sync_before_mutation; we
         // only need the existence check here (and presence info downstream).
         let pre_record = store
-            .get_record(&p.id)
+            .get_record(&canonical)
             .await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let _pre_record = match pre_record {
             Some(r) => r,
+            // Surface the user's original input in the not-found message (mirrors
+            // `forgeplan_get`) — most helpful when the id genuinely doesn't exist.
             None => return Ok(artifact_not_found(&p.id)),
         };
 
@@ -3803,7 +3818,7 @@ impl ForgeplanServer {
             let status_str = p.status.as_ref().map(|s| s.as_str());
             projection::update_metadata_with_projection(
                 &ctx,
-                &p.id,
+                &canonical,
                 status_str,
                 p.title.as_deref(),
             )
@@ -3812,14 +3827,14 @@ impl ForgeplanServer {
         }
 
         if let Some(ref body) = expanded_body {
-            projection::update_body_with_projection(&ctx, &p.id, body)
+            projection::update_body_with_projection(&ctx, &canonical, body)
                 .await
                 .map_err(safe_mcp_error)?;
         }
 
         // Re-fetch for the response payload.
         let updated = store
-            .get_record(&p.id)
+            .get_record(&canonical)
             .await
             .map_err(|e| safe_mcp_error_anyhow(&e))?
             .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
@@ -3842,8 +3857,10 @@ impl ForgeplanServer {
             other => format!("Updated ({other}). Inspect lifecycle: `forgeplan_review {safe_id}`."),
         };
         // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
+        // Issue #383: echo the resolved canonical id (== updated.id) rather than
+        // the raw input, so the agent sees the authoritative artifact id.
         let base = serde_json::json!({
-            "id": p.id,
+            "id": canonical,
             "message": "Updated successfully",
             "status": updated.status,
             "title": updated.title,
