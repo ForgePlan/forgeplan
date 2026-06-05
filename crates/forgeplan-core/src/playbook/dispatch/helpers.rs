@@ -227,7 +227,18 @@ pub async fn run_subprocess(
 /// Sized roughly per EVID-090 finding #2: a runaway child writing GB to
 /// stdout must not OOM us, but it also must not deadlock because we stopped
 /// reading.
-async fn read_capped<R>(mut reader: R, max_bytes: usize) -> std::io::Result<Vec<u8>>
+///
+/// ADR-017 (CR-1) widening rationale: promoted from helpers-private `fn` to
+/// `pub(crate) fn` so the `claude-code` LLM provider
+/// ([`crate::llm`]) reuses the identical bounded-drain pattern on the
+/// `claude --print` child instead of an unbounded `read_to_end` (which the
+/// auditor flagged as a real OOM vector despite the declared
+/// `MAX_OUTPUT_BYTES` cap that was never enforced). Takes the reader by
+/// value, so callers pass `child.stdout.take()` / `child.stderr.take()`
+/// directly; dropping the returned future drops the reader, which is exactly
+/// the property the provider's timeout path relies on (CR-2/CR-3) to release
+/// the pipes before `kill()` + `wait()`.
+pub(crate) async fn read_capped<R>(mut reader: R, max_bytes: usize) -> std::io::Result<Vec<u8>>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
