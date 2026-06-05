@@ -220,6 +220,13 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
             )
         })?
         .with_env_overrides();
+    // Keyless providers (ollama, claude-code per ADR-017) operate without
+    // an `api_key_env`: ollama hits a local HTTP server, claude-code reuses
+    // the local `claude login` keychain session. Requiring an API key for
+    // them would reject a valid config (ADR-017 AC-7) — short-circuit OK.
+    if llm.is_keyless_provider() {
+        return Ok(llm);
+    }
     if llm.resolve_api_key().is_none() {
         // SEC-C3: sanitize every attacker-controlled interpolation —
         // both `provider` (free-form config.yaml string) and

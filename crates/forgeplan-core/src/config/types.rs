@@ -370,6 +370,37 @@ impl LlmConfig {
     pub fn is_anthropic(&self) -> bool {
         self.provider == "claude"
     }
+
+    /// Whether this provider is the local `claude --print` shell-out
+    /// (ADR-017). Distinct from `claude` (the paid Anthropic HTTP API):
+    /// `claude-code` reuses the local `claude login` session and takes a
+    /// completely different code path in [`crate::llm::LlmClient::generate`]
+    /// (subprocess, not `http.post`).
+    pub fn is_claude_code(&self) -> bool {
+        self.provider == "claude-code"
+    }
+
+    /// Whether this provider needs NO API key to operate. Two providers
+    /// qualify:
+    /// - `ollama` — local HTTP server, no auth header.
+    /// - `claude-code` — reuses the local `claude login` keychain session
+    ///   (ADR-017), so it must NOT be gated behind an `api_key_env`.
+    ///
+    /// Callers that decide "is the LLM usable?" by probing
+    /// [`Self::resolve_api_key`] MUST treat these providers as available
+    /// even when `resolve_api_key()` returns `None` (it always does for
+    /// keyless providers). Used by `routing::route_with_llm_and_context`
+    /// and `cli::commands::common::require_llm_config` so an explicitly
+    /// configured `claude-code` provider is reachable (ADR-017 AC-6/AC-7).
+    ///
+    /// NOTE (ADR-017 AC-6): this method does NOT make `claude-code` an
+    /// *auto-detected* default — it only stops the keyless providers from
+    /// being mis-classified as "unavailable". Provider selection still
+    /// requires explicit `provider: claude-code` (or
+    /// `FORGEPLAN_LLM_PROVIDER=claude-code`).
+    pub fn is_keyless_provider(&self) -> bool {
+        self.provider == "ollama" || self.is_claude_code()
+    }
 }
 
 /// Embedding model configuration for semantic search.
@@ -720,6 +751,59 @@ mod llm_resolve_api_key_tests {
         });
 
         std::env::set_current_dir(prev_cwd).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod claude_code_provider_tests {
+    //! ADR-017 AC-6 — `claude-code` must NEVER be the auto-detected
+    //! default. Provider selection stays key-based / explicit. These tests
+    //! pin that the keyless-provider helper does not silently route
+    //! subscription usage.
+    use super::*;
+
+    #[test]
+    fn default_provider_is_not_claude_code() {
+        // The factory default is the OpenAI HTTP API, not claude-code.
+        assert_eq!(default_provider(), "openai");
+        let cfg = LlmConfig::default();
+        assert_eq!(cfg.provider, "openai");
+        assert!(!cfg.is_claude_code());
+        assert!(!cfg.is_keyless_provider());
+    }
+
+    #[test]
+    fn is_claude_code_only_true_for_exact_provider_string() {
+        let mut cfg = LlmConfig::default();
+        for p in [
+            "openai",
+            "claude",
+            "gemini",
+            "ollama",
+            "custom",
+            "anthropic",
+        ] {
+            cfg.provider = p.to_string();
+            assert!(!cfg.is_claude_code(), "{p} must not be claude-code");
+        }
+        cfg.provider = "claude-code".to_string();
+        assert!(cfg.is_claude_code());
+    }
+
+    #[test]
+    fn keyless_provider_set_is_exactly_ollama_and_claude_code() {
+        let mut cfg = LlmConfig::default();
+        for (p, expect) in [
+            ("openai", false),
+            ("claude", false),
+            ("gemini", false),
+            ("custom", false),
+            ("ollama", true),
+            ("claude-code", true),
+        ] {
+            cfg.provider = p.to_string();
+            assert_eq!(cfg.is_keyless_provider(), expect, "provider={p}");
+        }
     }
 }
 
