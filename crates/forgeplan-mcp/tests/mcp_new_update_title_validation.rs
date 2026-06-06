@@ -150,3 +150,74 @@ async fn mcp_update_accepts_benign_rename() {
         "rename response title must reflect the new value"
     );
 }
+
+// ── Issue #383: forgeplan_update id resolution (case-insensitive) ──────
+//
+// `forgeplan_get` / `validate` / `list` all accept a lowercase display id
+// (`prd-001`) or slug because they call `store.resolve_id` first. Pre-fix
+// `forgeplan_update` passed the raw `id` straight to the case-SENSITIVE
+// `get_record` direct-column lookup, so `forgeplan_update id=prd-001`
+// returned "Artifact 'prd-001' not found" while `PRD-001` worked. The fix
+// resolves the id once at the top of the handler (mirroring forgeplan_get).
+
+#[tokio::test]
+async fn mcp_update_accepts_lowercase_display_id() {
+    let fx = McpFixture::new().await;
+    let canonical_id = fx.seed_prd("Title for lowercase-id update").await;
+    // `forgeplan_new` returns the canonical display id (e.g. `PRD-001`).
+    // Reproduce the user's report by addressing the SAME artifact with the
+    // lowercased form an agent might paste from another tool's output.
+    let lower_id = canonical_id.to_lowercase();
+    assert_ne!(
+        lower_id, canonical_id,
+        "test precondition: seeded id must contain letters so lowercasing \
+         actually differs from the canonical form (got {canonical_id:?})"
+    );
+
+    let env = fx
+        .call_tool_json(
+            "forgeplan_update",
+            serde_json::json!({"id": lower_id, "title": "Updated via lowercase id"}),
+        )
+        .await;
+    // Pre-fix this asserted false: the handler returned an is_error body
+    // ("Artifact '<lower>' not found").
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["title"].as_str().unwrap(),
+        "Updated via lowercase id",
+        "lowercase-id update must mutate the same artifact"
+    );
+    // The echoed id is the resolved canonical form, not the raw lowercase input.
+    assert_eq!(
+        resp["id"].as_str().unwrap(),
+        canonical_id,
+        "response must echo the resolved canonical id"
+    );
+}
+
+#[tokio::test]
+async fn mcp_update_lowercase_id_persists_change() {
+    // Stronger guard: prove the lowercase-id update actually hit the right
+    // artifact by reading it back with forgeplan_get afterwards.
+    let fx = McpFixture::new().await;
+    let canonical_id = fx.seed_prd("Persistence check title").await;
+    let lower_id = canonical_id.to_lowercase();
+
+    fx.call_tool_json(
+        "forgeplan_update",
+        serde_json::json!({"id": lower_id, "title": "Persisted new title"}),
+    )
+    .await
+    .assert_ok();
+
+    let got = fx
+        .call_tool_json("forgeplan_get", serde_json::json!({"id": canonical_id}))
+        .await;
+    let resp = got.assert_ok();
+    assert_eq!(
+        resp["title"].as_str().unwrap(),
+        "Persisted new title",
+        "the title written via the lowercase id must be visible on the canonical artifact"
+    );
+}
