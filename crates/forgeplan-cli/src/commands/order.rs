@@ -20,6 +20,18 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     // For blocking logic: resolved = active + deprecated + superseded
     let resolved_ids = common::resolved_ids(&all_records);
 
+    // Dogfood v0.32.1 MED bug: the per-line label hardcoded "draft" for every
+    // non-active artifact, so a `deprecated`/`superseded`/`stale` artifact
+    // printed as `(draft, ready)`. Map each id to its REAL status so the
+    // label reflects the actual lifecycle state. Ids present in the relation
+    // graph but absent from the store (cross-PR forward refs) fall back to
+    // "unknown".
+    let status_by_id: std::collections::HashMap<&str, &str> = all_records
+        .iter()
+        .map(|r| (r.id.as_str(), r.status.as_str()))
+        .collect();
+    let real_status = |id: &str| -> &str { status_by_id.get(id).copied().unwrap_or("unknown") };
+
     let result = topological::kahn_sort(&all_relations, &resolved_ids);
 
     // PRD-071 contract: priority — fix cycles first, then activate ready
@@ -98,13 +110,19 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
             "o"
         };
 
-        let status: String = if active_ids.contains(id) {
+        // Use the artifact's REAL lifecycle status (draft / active / deprecated
+        // / superseded / stale / unknown) instead of assuming "draft" for every
+        // non-active row. Active artifacts keep the bare "active" label; for
+        // everything else we pair the real status with the readiness signal
+        // (blocked-by vs ready).
+        let lifecycle = real_status(id);
+        let status: String = if lifecycle == "active" {
             "active".to_string()
         } else if let Some(blockers) = blocked_map.get(id.as_str()) {
             let names: Vec<&str> = blockers.iter().map(|s| s.as_str()).collect();
-            format!("draft, blocked by {}", names.join(", "))
+            format!("{}, blocked by {}", lifecycle, names.join(", "))
         } else {
-            "draft, ready".to_string()
+            format!("{}, ready", lifecycle)
         };
 
         println!("    {} {} ({})", marker, id, status);

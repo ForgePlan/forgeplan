@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.139
 links:
 - target: PROB-051
   relation: based_on
-status: active
+status: deprecated
 title: v0.33.0 deferred audit findings — Wave 9 closure leftovers (Windows sanitizer, CI policy, supply-chain hygiene)
 ---
 
@@ -136,6 +136,8 @@ Each item is reversible — additive code or isolated config change.
 
 - Audit Wave 9 — security-expert + code-reviewer combined report
 - Reviewers' recommendations: SEC-001/CR-001/CR-002 + 8 inline closures landed in commit `b5a21bf`
+
+
 
 
 

@@ -121,6 +121,46 @@ impl McpFixture {
         }
     }
 
+    /// Create a fixture rooted at an EXISTING `root` directory (which must
+    /// already contain or will be the parent of `.forgeplan/`). Unlike
+    /// `new_with_seed`, this variant does NOT create a tempdir or init the
+    /// workspace — the caller is responsible for having already called
+    /// `forgeplan_core::workspace::init_workspace` (or `forgeplan_init` via
+    /// MCP) before constructing this fixture.
+    ///
+    /// Used by worktree_routing_e2e tests that set up real git worktrees in
+    /// caller-managed directories (PRD-078 Phase 3 / W3).
+    #[allow(dead_code)]
+    pub async fn new_rooted(root: PathBuf) -> Self {
+        // We still need a TempDir to keep the `_tempdir` field alive —
+        // but since the caller owns the actual data directory, we just
+        // store a dummy tempdir so the fixture compiles. The real cleanup
+        // responsibility belongs to the caller's TempDir.
+        let dummy_tempdir = TempDir::new().expect("dummy tempdir for new_rooted");
+
+        // Find workspace_path (the .forgeplan/ dir) at or above root.
+        let workspace_path =
+            workspace::find_workspace(&root).unwrap_or_else(|| root.join(".forgeplan"));
+
+        let server = ForgeplanServer::new(root.clone()).await;
+
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            if let Ok(running) = server.serve(server_io).await {
+                let _ = running.waiting().await;
+            }
+        });
+
+        let client = ().serve(client_io).await.expect("client initialize handshake");
+
+        Self {
+            _tempdir: dummy_tempdir,
+            workspace_path,
+            client,
+            _server_task: server_task,
+        }
+    }
+
     /// Issue a `tools/call` JSON-RPC request and parse the JSON payload
     /// returned by the tool. Handlers serialize their response DTO via
     /// `serde_json::to_string_pretty` and wrap it as `Content::text(...)`,

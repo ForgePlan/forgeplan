@@ -18,7 +18,7 @@ name = "forgeplan_mcp"
 path = "src/lib.rs"
 
 [dependencies]
-forgeplan-core = { path = "../forgeplan-core", version = "0.32.1" }
+forgeplan-core = { path = "../forgeplan-core", version = "0.33.0" }
 rmcp = { version = "1.7", features = ["server", "transport-io"] }
 schemars = "0.8"
 serde.workspace = true
@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 semantic-search = ["forgeplan-core/semantic-search"]
 
 [dev-dependencies]
-forgeplan-core = { path = "../forgeplan-core", version = "0.32.1", features = ["test-helpers"] }
+forgeplan-core = { path = "../forgeplan-core", version = "0.33.0", features = ["test-helpers"] }
 tempfile = "3"
 serde_yaml.workspace = true
 # Phase 2.4: enable the rmcp `client` role for E2E integration tests so we
@@ -41,7 +41,7 @@ serde_yaml.workspace = true
 # call_tool) over `tokio::io::duplex`. The runtime crate keeps only the
 # server feature; this dev-only addition gives `()` the `Service<RoleClient>`
 # impl needed by `ServiceExt::serve(transport)`.
-rmcp = { version = "1.7", features = ["server", "transport-io", "client"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "client", "transport-child-process"] }
 # CR-H6 (audit closure): tag every test that mutates HOME (or PATH) with
 # `#[serial_test::serial(env_home)]` so they cannot run in parallel within
 # this test binary. NB: serial_test locks are in-process — they do NOT

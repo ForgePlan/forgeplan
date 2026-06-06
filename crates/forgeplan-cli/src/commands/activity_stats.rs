@@ -32,12 +32,19 @@ pub async fn run(since_hours: u32, json: bool) -> anyhow::Result<()> {
     let total_errors: usize = stats.iter().map(|s| s.err_count).sum();
     let total_ms: u64 = stats.iter().map(|s| s.total_ms).sum();
 
+    // Dogfood v0.32.1 fix: suppress the "try a longer window: --since-hours
+    // 720" hint when the caller is ALREADY at (or above) the 720h ceiling.
+    // After the clamp above, `since == 720` means the caller requested >= 720,
+    // so the widen-window hint would be self-referential.
+    let at_max_window = since >= 720;
     let mut hint_list: Vec<Hint> = Vec::new();
     if stats.is_empty() {
-        hint_list.push(
-            Hint::info("Try a longer window")
-                .with_action("forgeplan activity-stats --since-hours 720".to_string()),
-        );
+        if !at_max_window {
+            hint_list.push(
+                Hint::info("Try a longer window")
+                    .with_action("forgeplan activity-stats --since-hours 720".to_string()),
+            );
+        }
     } else {
         hint_list.push(
             Hint::info("See raw entries")
@@ -60,11 +67,21 @@ pub async fn run(since_hours: u32, json: bool) -> anyhow::Result<()> {
     }
 
     if stats.is_empty() {
-        println!(
-            "No activity in the last {since} hour(s). Try a longer window: \
-             `--since-hours 720` for 30 days."
-        );
-        print!("{}", hints::render_next_action_line(&hint_list));
+        if at_max_window {
+            // Already at the 720h ceiling — no longer window to suggest.
+            println!(
+                "No activity in the last {since} hour(s) — that's the maximum \
+                 window (30 days)."
+            );
+            println!();
+            println!("Done.");
+        } else {
+            println!(
+                "No activity in the last {since} hour(s). Try a longer window: \
+                 `--since-hours 720` for 30 days."
+            );
+            print!("{}", hints::render_next_action_line(&hint_list));
+        }
         return Ok(());
     }
 

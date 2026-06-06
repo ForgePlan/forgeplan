@@ -14,11 +14,17 @@ use forgeplan_core::workspace;
 
 const MAX_TTL_MINUTES: u32 = 1440; // 24 h — matches claim::MAX_TTL.
 
-/// Default agent identity when caller omits `--agent`. Mirrors the MCP
-/// fallback: `cli/<crate version>` so each release has a stable signature
-/// while still being distinguishable from an MCP sub-agent.
+/// Default agent identity when caller omits `--agent`. Uses `cli-<crate
+/// version>` so each release has a stable signature while still being
+/// distinguishable from an MCP sub-agent.
+///
+/// **Must use `-` not `/`**: the CLI surface runs the *strict*
+/// [`claim::validate_agent_id`] which rejects `/` (it would let an operator
+/// enshrine the canonical MCP `name/version` path-shape as a CLI argument).
+/// A `cli/<version>` default therefore made bare `forgeplan claim <id>`
+/// (no `--agent`) always fail validation — the dogfood v0.32.1 HIGH bug.
 fn default_agent() -> String {
-    format!("cli/{}", env!("CARGO_PKG_VERSION"))
+    format!("cli-{}", env!("CARGO_PKG_VERSION"))
 }
 
 pub async fn run(
@@ -163,5 +169,35 @@ pub async fn run(
             std::process::exit(1);
         }
         Err(e) => anyhow::bail!("claim failed: {e}\nFix: forgeplan claims"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dogfood v0.32.1 HIGH fix (#1): the implicit `--agent` default MUST pass
+    /// the *strict* CLI-side validator (`claim::validate_agent_id`, which
+    /// rejects `/`). The old `cli/<version>` default contained a `/`, so bare
+    /// `forgeplan claim <id>` always errored before this fix.
+    #[test]
+    fn default_agent_passes_strict_validator() {
+        let agent = default_agent();
+        assert!(
+            !agent.contains('/'),
+            "default agent must not contain '/': {agent}"
+        );
+        claim::validate_agent_id(&agent)
+            .unwrap_or_else(|e| panic!("default agent `{agent}` rejected by validator: {e:?}"));
+    }
+
+    #[test]
+    fn default_agent_has_cli_prefix_and_version() {
+        let agent = default_agent();
+        assert!(agent.starts_with("cli-"), "expected cli- prefix: {agent}");
+        assert!(
+            agent.len() > "cli-".len(),
+            "expected a version suffix: {agent}"
+        );
     }
 }

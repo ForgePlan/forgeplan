@@ -120,6 +120,29 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
         }
     );
 
+    // File-level id-collision warning (PRD-008 dup class): two+ files → one id.
+    // The resolver then returns desynced status/body (status from one file,
+    // body from another), so surface this loudly for cleanup.
+    if !result.duplicate_ids.is_empty() {
+        println!();
+        println!(
+            "  {} {} duplicate-id collision(s) — multiple files resolve to one artifact id:",
+            style("⚠").red().bold(),
+            style(result.duplicate_ids.len()).red().bold()
+        );
+        for grp in &result.duplicate_ids {
+            println!("    {}", style(&grp.id).red().bold());
+            for p in &grp.paths {
+                println!("      {} {}", style("·").dim(), p);
+            }
+        }
+        println!(
+            "    {} keep ONE file; delete the stale duplicate .md so the resolver \
+             stops mixing status/body across files.",
+            style("Fix:").yellow().bold()
+        );
+    }
+
     if dry_run && result.imported > 0 {
         println!("\n  Run without {} to import.", style("--dry-run").cyan());
     }

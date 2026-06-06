@@ -77,9 +77,22 @@ use super::{DispatchError, DispatchOutcome};
 ///
 /// Test-only — gated behind `#[cfg(test)]` so it doesn't ship in release
 /// binaries. Visible to sibling modules (`agent_dispatcher`, `plugin_dispatcher`,
-/// `helpers`) via `pub(super)`.
+/// `helpers`) and — since ADR-017 — to `crate::llm`'s claude-code tests
+/// via `pub(crate)`.
+///
+/// ADR-017 widening rationale: the `claude-code` LLM provider reuses
+/// `resolve_claude_binary_for_provider`, which reads `FORGEPLAN_CLAUDE_BIN`
+/// then falls through to `which_in_path("claude")` on `PATH` — exactly the
+/// two process-global vars this lock protects. `llm`'s spawn-path tests
+/// MUST acquire this SAME lock (not a private one) so they don't race the
+/// `agent_dispatcher` tests that `remove_var("FORGEPLAN_CLAUDE_BIN")` under
+/// it. Without sharing the lock, a dispatch test clearing the override
+/// mid-flight makes the provider resolve the REAL `claude` and spawn a live
+/// generation. `serial_test::serial(env_path)` alone is insufficient because
+/// the `agent_dispatcher` env tests are guarded by THIS mutex, not by the
+/// `env_path` serial key.
 #[cfg(test)]
-pub(super) static DISPATCH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static DISPATCH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Default per-invocation budget when `Step.budget_usd` is `None`.
 /// Matches ADR-011 §Decision point 2 ("default $1.00, configurable per step").
@@ -99,6 +112,45 @@ pub(crate) const DEFAULT_BUDGET_USD: f64 = 1.00;
 /// as `DEFAULT_BUDGET_USD`).
 pub(crate) const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 
+/// Stock name of the headless Claude CLI binary. Single source of truth
+/// shared by the playbook dispatchers and the ADR-017 `claude-code` LLM
+/// provider. AC-2 (no identity spoofing): this is the *stock* binary name
+/// — the provider invokes it with stock flags, never an impersonating
+/// wrapper.
+pub(crate) const DEFAULT_CLAUDE_BINARY: &str = "claude";
+
+/// Resolve the `claude` binary for the ADR-017 `claude-code` LLM provider.
+///
+/// Mirrors `AgentDispatcher::resolve_claude_binary` precedence so the LLM
+/// provider and the playbook dispatchers agree on *which* binary runs:
+///
+/// 1. `$FORGEPLAN_CLAUDE_BIN` env override — **test builds only**
+///    (`#[cfg(test)]`). Release binaries silently ignore it, preserving
+///    the CWE-426 (uncontrolled-search-path / binary-substitution)
+///    boundary that PROB-050 A-14 established. The override is the hook
+///    the ADR-017 mock-binary tests use to point at a fake `claude`
+///    script without a real install.
+/// 2. `which claude` on `$PATH` via [`super::helpers::which_in_path`],
+///    which canonicalizes symlinks and applies the PROB-052 permission
+///    gates (rejects group/world-writable binaries + parent dirs).
+///
+/// Returns `None` when `claude` is not discoverable — the caller
+/// ([`crate::llm::LlmClient`]) maps that to a graceful "run `claude
+/// login`" error (AC-4), never a panic.
+pub(crate) fn resolve_claude_binary_for_provider() -> Option<std::path::PathBuf> {
+    // PROB-050 A-14 / ADR-017 AC-2 boundary: do NOT widen this
+    // `#[cfg(test)]` gate — a release-honoured `FORGEPLAN_CLAUDE_BIN`
+    // would reopen CWE-426 binary substitution on the provider path.
+    #[cfg(test)]
+    if let Ok(override_path) = std::env::var("FORGEPLAN_CLAUDE_BIN") {
+        let p = std::path::PathBuf::from(override_path);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    super::helpers::which_in_path(DEFAULT_CLAUDE_BINARY)
+}
+
 /// Structured envelope returned by `claude --print --output-format json`.
 /// EVID-093 documented 17 fields; this struct captures the load-bearing
 /// subset for dispatcher decisions. Unknown fields are ignored
@@ -112,7 +164,15 @@ pub(crate) const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 /// Used only inside the dispatch module (parse_envelope returns it,
 /// invoke consumes it). External library consumers would couple to
 /// claude CLI's private envelope shape — high churn risk.
-pub(super) struct ClaudePrintResponse {
+///
+/// ADR-017 (claude-code LLM provider): widened from `pub(super)` to
+/// `pub(crate)` so [`crate::llm::LlmClient::generate`] can decode the
+/// same `claude --print --output-format json` envelope it spawns. The
+/// visibility stays crate-internal — external library consumers still
+/// must not couple to claude CLI's envelope shape. The decode helpers
+/// (`is_success`, `render_failure_context`) remain `pub(super)` because
+/// the LLM provider only reads `.result`.
+pub(crate) struct ClaudePrintResponse {
     /// `true` iff `claude` itself reported an error condition (API error,
     /// budget exceeded mid-flight, internal failure). The exit code alone
     /// does not disambiguate.
@@ -418,7 +478,11 @@ pub(super) fn effective_budget_usd(step: &Step) -> f64 {
 /// Returns `serde_json::Error` when stdout is not parseable as a
 /// [`ClaudePrintResponse`]. Callers wrap in dispatcher-specific
 /// diagnostics (with agent name / plugin/target context).
-pub(super) fn parse_envelope(stdout: &[u8]) -> Result<ClaudePrintResponse, serde_json::Error> {
+///
+/// ADR-017: widened to `pub(crate)` (with `ClaudePrintResponse`) so the
+/// `claude-code` LLM provider reuses the identical UTF-8-trimmed decode
+/// instead of re-implementing envelope parsing.
+pub(crate) fn parse_envelope(stdout: &[u8]) -> Result<ClaudePrintResponse, serde_json::Error> {
     let s = String::from_utf8_lossy(stdout);
     serde_json::from_str(s.trim())
 }

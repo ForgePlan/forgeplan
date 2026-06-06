@@ -465,12 +465,58 @@ pub fn find_tech_leakage(text: &str) -> Vec<(usize, String)> {
     let mut results = Vec::new();
     for (i, line) in stripped.lines().enumerate() {
         for (keyword, re) in TECH_KEYWORD_REGEXES.iter() {
-            if re.is_match(line) {
+            // Issue #384: the security idiom "encrypted at-rest" / "data-at-rest"
+            // must NOT be flagged as the REST protocol. `-` is a word boundary, so
+            // `\bREST\b` matches the `rest` inside `at-rest`. Narrowly special-case
+            // ONLY the `rest` keyword: walk its match positions and suppress any
+            // occurrence that is the "at-rest" idiom, while standalone "REST" /
+            // "REST API" still flags. All other keywords keep the cheap is_match path.
+            if keyword == "rest" {
+                let has_real_rest = re
+                    .find_iter(line)
+                    .any(|m| !is_at_rest_idiom(line, m.start()));
+                if has_real_rest {
+                    results.push((i + 1, keyword.clone()));
+                }
+            } else if re.is_match(line) {
                 results.push((i + 1, keyword.clone()));
             }
         }
     }
     results
+}
+
+/// Issue #384 helper — decide whether a `rest` match at byte offset `match_start`
+/// is part of the "at-rest" security idiom (e.g. "encrypted at-rest",
+/// "data-at-rest") rather than the REST protocol.
+///
+/// True only when the match is immediately preceded by a standalone word `at`
+/// plus a single separator (`-` or space): `at-rest` / `at rest`. The leading
+/// word boundary guard prevents false suppression of tokens that merely end in
+/// `at` (e.g. "format-rest" → preceded by "format-", not the word "at").
+fn is_at_rest_idiom(line: &str, match_start: usize) -> bool {
+    let before = &line[..match_start];
+    // Strip exactly one separator immediately before the match (`at-rest` / `at rest`).
+    let Some(stem) = before
+        .strip_suffix('-')
+        .or_else(|| before.strip_suffix(' '))
+    else {
+        return false;
+    };
+    // The remaining text must end with the word `at` (case-insensitive).
+    let Some(tail_start) = stem.len().checked_sub(2) else {
+        return false;
+    };
+    if !stem.is_char_boundary(tail_start) || !stem[tail_start..].eq_ignore_ascii_case("at") {
+        return false;
+    }
+    // Guard: the `at` must itself be word-initial — the char before it (if any)
+    // must be a non-alphanumeric word boundary. Without this, "format-rest"
+    // (stem "format" ends in "at") would be wrongly suppressed.
+    match stem[..tail_start].chars().next_back() {
+        None => true,
+        Some(c) => !c.is_alphanumeric() && c != '_',
+    }
 }
 
 /// PROB-038 helper — remove HTML comments, fenced code blocks, и inline
@@ -1170,6 +1216,69 @@ mod tests {
         assert!(
             names.contains(&"postgresql"),
             "postgresql в prose: {names:?}"
+        );
+    }
+
+    // Issue #384 — the "encrypted at-rest" security idiom must NOT be flagged as
+    // the REST protocol, while standalone "REST" / "REST API" still flags.
+
+    /// Issue #384 — "encrypted at-rest" must NOT flag `rest`. `-` is a word
+    /// boundary so `\bREST\b` used to match the `rest` inside `at-rest`.
+    #[test]
+    fn find_tech_leakage_skips_at_rest_idiom() {
+        let text = "NFR-001: All secrets are encrypted at-rest and in transit";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            !leaks.iter().any(|(_, name)| name == "rest"),
+            "`at-rest` idiom must not flag REST; got: {leaks:?}"
+        );
+    }
+
+    /// Issue #384 — REGRESSION GUARD: a real REST protocol mention still flags.
+    /// The narrow at-rest suppression must not blind the matcher to "REST API".
+    #[test]
+    fn find_tech_leakage_still_flags_rest_protocol() {
+        let text = "FR-002: The service must expose a REST API for clients";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            leaks.iter().any(|(_, name)| name == "rest"),
+            "standalone `REST API` must still flag REST; got: {leaks:?}"
+        );
+    }
+
+    /// Issue #384 — variants of the idiom: "data-at-rest" (dash before `at`) and
+    /// "at rest" (space separator) are both suppressed.
+    #[test]
+    fn find_tech_leakage_skips_at_rest_variants() {
+        for text in ["Encrypt data-at-rest", "Stored at rest in the vault"] {
+            let leaks = find_tech_leakage(text);
+            assert!(
+                !leaks.iter().any(|(_, name)| name == "rest"),
+                "`{text}` must not flag REST; got: {leaks:?}"
+            );
+        }
+    }
+
+    /// Issue #384 — the word-boundary guard: a token that merely ENDS in `at`
+    /// before `-rest` (e.g. "format-rest") is NOT the idiom and still flags REST.
+    #[test]
+    fn find_tech_leakage_at_rest_guard_does_not_overmatch() {
+        let text = "FR-003: convert the payload to format-rest before sending";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            leaks.iter().any(|(_, name)| name == "rest"),
+            "`format-rest` is not the at-rest idiom and must still flag; got: {leaks:?}"
+        );
+    }
+
+    /// Issue #384 — suppression is case-insensitive on the idiom ("At-Rest").
+    #[test]
+    fn find_tech_leakage_skips_at_rest_mixed_case() {
+        let text = "Data is encrypted At-Rest per policy";
+        let leaks = find_tech_leakage(text);
+        assert!(
+            !leaks.iter().any(|(_, name)| name == "rest"),
+            "`At-Rest` (mixed case) must not flag REST; got: {leaks:?}"
         );
     }
 
