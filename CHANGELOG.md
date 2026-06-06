@@ -19,6 +19,7 @@ Sprint headline: **MCP worktree-aware routing (PRD-078) + read-after-write corre
 
 - **Worktree-aware MCP routing** (PRD-078 / ADR-015 / ADR-016) — `forgeplan_get`, `forgeplan_update`, and the other store-resolution MCP tools accept an optional absolute `workspace` parameter so an agent running in a linked git worktree reads/writes the correct `.forgeplan/`. Writes use a strict multi-worktree detection gate (structured `-32602` error when ambiguous); reads fall back softly. Closes PROB-072 (sub-agents writing to the wrong repo).
 - **Duplicate-id detector in `scan-import`** — surfaces colliding artifact ids (same `KIND-NNN` across multiple files) as a warning instead of silently importing one and dropping the other.
+- **`claude-code` LLM provider** (ADR-017) — an opt-in, keyless LLM provider that reuses your local `claude login` session via `claude --print`, so the in-Claude-Code workflow needs no second paid API key. **Personal/local use only** — it draws from your Claude plan under Anthropic's Terms (not free), each call is a new headless session (auth, not context), and ForgePlan does not spoof the Claude Code client identity. Guarded: prompt fed via stdin (dash-leading prompts inert), charset-gated model (argv-injection defence), recursion guard, env hygiene, no auto-tool grant. Never auto-selected — set `provider: claude-code` explicitly. Prefer `ollama` for key-free local use without the ToS boundary. See `docs/operations/LLM-PROVIDERS.md`.
 
 ### Fixed
 

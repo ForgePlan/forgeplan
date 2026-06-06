@@ -358,8 +358,11 @@ pub async fn route_with_llm_and_context(
         return route(description);
     }
 
-    // Check if API key is available before making the call
-    if llm_config.resolve_api_key().is_none() && !llm_config.provider.eq("ollama") {
+    // Check if API key is available before making the call.
+    // Keyless providers (ollama HTTP, claude-code shell-out per ADR-017)
+    // never resolve an API key — exempt them so an explicitly configured
+    // `claude-code` provider is reachable for routing (ADR-017 AC-6).
+    if llm_config.resolve_api_key().is_none() && !llm_config.is_keyless_provider() {
         return route(description);
     }
 
