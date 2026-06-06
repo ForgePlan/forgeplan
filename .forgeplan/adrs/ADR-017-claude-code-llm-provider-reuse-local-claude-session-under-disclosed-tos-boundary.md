@@ -2,7 +2,7 @@
 depth: standard
 id: ADR-017
 kind: adr
-status: draft
+status: active
 title: claude-code LLM provider — reuse local Claude session under disclosed ToS boundary
 ---
 
@@ -57,4 +57,6 @@ Security review (CWE-78 command-injection surface: prompt passed as a single arg
 - ForgePlan existing shell-out: ADR-011 (plugin/agent dispatch via `claude --print`), EVID-093 (spike), `claude_print.rs`.
 - Anthropic Jan-2026 enforcement against subscription-OAuth third-party tools / client-identity spoofing.
 - Supersedes the workaround in issue #382 (recommend `ollama` for key-free local use).
+
+
 
